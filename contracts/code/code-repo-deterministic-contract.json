@@ -63,7 +63,7 @@
   "optional_scopes_for_full_screen_parity": [],
   "source_docs_ref": "../source-docs.json",
   "source_doc_scopes": [
-    "repo_content"
+    "repo"
   ],
   "approved_drift": {
     "exclusions": [],

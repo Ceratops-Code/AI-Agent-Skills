@@ -50,6 +50,11 @@ PARAM_RE = re.compile(r"\$\{([^}]+)\}")
 USES_RE = re.compile(r"^\s*uses:\s*([^@\s]+)@([^\s#]+)", re.MULTILINE)
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 SECRET_NAME_RE = re.compile(r"\b(ARG|ENV)\s+[A-Za-z0-9_]*(TOKEN|SECRET|PASSWORD|KEY)[A-Za-z0-9_]*\b", re.IGNORECASE)
+FORK_PR_APPROVAL_RANK = {
+    "first_time_contributors_new_to_github": 0,
+    "first_time_contributors": 1,
+    "all_external_contributors": 2,
+}
 SURFACE_CHOICES = ("all", "repo", "code", "artifact")
 SUBSET_CHOICES = ("all", "health", "create", "settings", "dependency", "artifact", "content")
 DEPENDABOT_MANIFEST_PATTERNS = {
@@ -529,8 +534,97 @@ def config_path(paths: list[str], *names: str) -> str | None:
     return None
 
 
+def workflow_files(local: dict[str, Any]) -> dict[str, str]:
+    """Return workflow text files from the local scan."""
+
+    return {path: text for path, text in local.get("texts", {}).items() if path.startswith(".github/workflows/")}
+
+
 def workflow_text(local: dict[str, Any]) -> str:
-    return "\n".join(text for path, text in local.get("texts", {}).items() if path.startswith(".github/workflows/"))
+    return "\n".join(workflow_files(local).values())
+
+
+def workflows_with_permissions_write_all(local: dict[str, Any]) -> list[dict[str, str]]:
+    """Find workflows using the broad GitHub Actions `permissions: write-all` setting."""
+
+    matches: list[dict[str, str]] = []
+    for path, text in workflow_files(local).items():
+        if re.search(r"(?im)^\s*permissions:\s*write-all\s*(?:#.*)?$", text):
+            matches.append({"path": path, "permission": "write-all"})
+    return matches
+
+
+def workflows_with_top_level_write_permission(local: dict[str, Any], permission: str) -> list[dict[str, str]]:
+    """Find workflow-root `permissions` blocks granting one write permission.
+
+    This intentionally treats job-level permissions as acceptable evidence for
+    scoped publishing or attestation jobs, and reports only workflow-root grants.
+    """
+
+    permission_re = re.escape(permission)
+    matches: list[dict[str, str]] = []
+    for path, text in workflow_files(local).items():
+        if re.search(rf"(?im)^permissions:\s*\{{[^}}\n]*\b{permission_re}\s*:\s*write\b", text):
+            matches.append({"path": path, "permission": permission})
+            continue
+        lines = text.splitlines()
+        for index, line in enumerate(lines):
+            if not re.match(r"^permissions:\s*(?:#.*)?$", line):
+                continue
+            for child in lines[index + 1 :]:
+                stripped = child.strip()
+                if not stripped or stripped.startswith("#"):
+                    continue
+                if re.match(r"^\S", child):
+                    break
+                if re.match(rf"^\s+{permission_re}\s*:\s*write\b", child):
+                    matches.append({"path": path, "permission": permission})
+                    break
+            if matches and matches[-1]["path"] == path:
+                break
+    return matches
+
+
+def workflows_with_write_permission(local: dict[str, Any], permission: str) -> list[dict[str, str]]:
+    """Find any workflow permission grant for a specific write permission."""
+
+    permission_re = re.escape(permission)
+    matches: list[dict[str, str]] = []
+    for path, text in workflow_files(local).items():
+        if re.search(rf"(?im)^\s*{permission_re}\s*:\s*write\b", text):
+            matches.append({"path": path, "permission": permission})
+    return matches
+
+
+def retention_days_finding(check_id: str, res: ApiResult, expected: dict[str, Any]) -> list[dict[str, Any]]:
+    """Evaluate the Actions artifact/log retention maximum-days policy."""
+
+    if not res.ok:
+        return [finding(check_id, "WARN", "Actions artifact/log retention settings were unavailable.", actual={"status": res.status, "message": res.message})]
+    data = res.data if isinstance(res.data, dict) else {}
+    days = data.get("days")
+    max_days = expected.get("max_days")
+    if isinstance(days, int) and isinstance(max_days, int) and days <= max_days:
+        return [finding(check_id, "PASS", "Actions artifact/log retention is within policy.", actual=data)]
+    return [finding(check_id, "FAIL", "Actions artifact/log retention exceeds policy.", actual=days, expected=f"<= {max_days}", path="$.days")]
+
+
+def fork_pr_approval_finding(check_id: str, res: ApiResult, expected: dict[str, Any]) -> list[dict[str, Any]]:
+    """Evaluate fork-PR contributor approval by minimum strictness."""
+
+    if not res.ok:
+        return [finding(check_id, "WARN", "Fork PR contributor approval settings were unavailable.", actual={"status": res.status, "message": res.message})]
+    data = res.data if isinstance(res.data, dict) else {}
+    actual = data.get("approval_policy")
+    minimum = expected.get("minimum_approval_policy")
+    allowed = set(expected.get("allowed_policies") or [])
+    actual_rank = FORK_PR_APPROVAL_RANK.get(str(actual))
+    minimum_rank = FORK_PR_APPROVAL_RANK.get(str(minimum))
+    if actual in allowed or (
+        actual_rank is not None and minimum_rank is not None and actual_rank >= minimum_rank
+    ):
+        return [finding(check_id, "PASS", "Fork PR contributor approval policy is strict enough.", actual=data)]
+    return [finding(check_id, "FAIL", "Fork PR contributor approval policy is weaker than required.", actual=actual, expected=minimum, path="$.approval_policy")]
 
 
 def toml_key_present(text: str, key: str) -> bool:
@@ -992,13 +1086,39 @@ def evaluate_repo_check(
             drifts.append(finding(check_id, "FAIL", "Default workflow token permission is not read.", data.get("default_workflow_permissions"), "read", "$.default_workflow_permissions"))
         if data.get("can_approve_pull_request_reviews") is not False:
             drifts.append(finding(check_id, "FAIL", "Workflow token can approve PR reviews.", data.get("can_approve_pull_request_reviews"), False, "$.can_approve_pull_request_reviews"))
+        if workflows_with_permissions_write_all(local):
+            drifts.append(finding(check_id, "FAIL", "Workflow files use permissions: write-all.", actual=workflows_with_permissions_write_all(local), expected="least privilege workflow permissions"))
+        top_level_attestations = workflows_with_top_level_write_permission(local, "attestations")
+        if top_level_attestations:
+            drifts.append(finding(check_id, "FAIL", "Workflow-root attestations: write grants are not job scoped.", actual=top_level_attestations, expected="job-level attestations: write"))
+        top_level_artifact_metadata = workflows_with_top_level_write_permission(local, "artifact-metadata")
+        if top_level_artifact_metadata:
+            drifts.append(finding(check_id, "FAIL", "Workflow-root artifact-metadata: write grants are not job scoped.", actual=top_level_artifact_metadata, expected="job-level artifact-metadata: write"))
         return drifts or [finding(check_id, "PASS", "Workflow token defaults match contract.", actual=data)]
 
+    if check_id == "actions.artifact_log_retention":
+        res = result(fetched, "/repos/${owner}/${repo}/actions/permissions/artifact-and-log-retention", params)
+        return retention_days_finding(check_id, res, check.get("expected", {}))
+
+    if check_id == "actions.fork_pr_contributor_approval":
+        res = result(fetched, "/repos/${owner}/${repo}/actions/permissions/fork-pr-contributor-approval", params)
+        return fork_pr_approval_finding(check_id, res, check.get("expected", {}))
+
     if check_id == "actions.private_fork_pr_workflows":
-        data = result(fetched, "/repos/${owner}/${repo}/actions/permissions/fork-pr-workflows-private-repos", params).data
-        if data is None:
+        res = result(fetched, "/repos/${owner}/${repo}/actions/permissions/fork-pr-workflows-private-repos", params)
+        data = res.data if res.ok else None
+        if not isinstance(data, dict):
             return [finding(check_id, "SKIP", "Private fork PR workflow settings unavailable or not applicable.")]
-        return [finding(check_id, "PASS", "Private fork PR workflow settings fetched.", actual=data)]
+        drifts = []
+        if data.get("run_workflows_from_fork_pull_requests") is True:
+            drifts.append(finding(check_id, "WARN", "Private fork PR workflows run without an explicit approved drift record.", actual=True, expected="false unless approved", path="$.run_workflows_from_fork_pull_requests"))
+        if data.get("send_write_tokens_to_workflows") is not False:
+            drifts.append(finding(check_id, "FAIL", "Private fork PR workflows can receive write tokens.", actual=data.get("send_write_tokens_to_workflows"), expected=False, path="$.send_write_tokens_to_workflows"))
+        if data.get("send_secrets_and_variables") is not False:
+            drifts.append(finding(check_id, "FAIL", "Private fork PR workflows can receive secrets or variables.", actual=data.get("send_secrets_and_variables"), expected=False, path="$.send_secrets_and_variables"))
+        if data.get("require_approval_for_fork_pr_workflows") is not True:
+            drifts.append(finding(check_id, "FAIL", "Private fork PR workflows do not require approval.", actual=data.get("require_approval_for_fork_pr_workflows"), expected=True, path="$.require_approval_for_fork_pr_workflows"))
+        return drifts or [finding(check_id, "PASS", "Private fork PR workflow settings match contract.", actual=data)]
 
     if check_id == "actions.workflow_sha_pinning":
         unpinned = workflows_with_unpinned_refs(local)
@@ -1476,6 +1596,35 @@ def evaluate_artifact_check(check: dict[str, Any], params: dict[str, Any], local
             return [finding(check_id, "MANUAL", "Local build or consumer checks are intentionally not run by the bundled audit; use recorded commands when publishing.", actual=registries)]
         if check_id == "common.short_lived_identity_policy":
             return [finding(check_id, "MANUAL", "Publishing identity needs workflow and registry-specific review.", actual={"workflow_files": [p for p in local.get("files", []) if p.startswith(".github/workflows/")]})]
+        if check_id == "common.attestation_permissions":
+            text = workflow_text(local)
+            if not re.search(r"(?i)(actions/attest|attestations:\s*write|provenance|sbom|cosign)", text):
+                return [finding(check_id, "SKIP", "No attestation, provenance, SBOM, or signing workflow evidence detected.")]
+            drifts = []
+            top_level_attestations = workflows_with_top_level_write_permission(local, "attestations")
+            if top_level_attestations:
+                drifts.append(finding(check_id, "FAIL", "Workflow-root attestations: write grants are not job scoped.", actual=top_level_attestations, expected="job-level attestations: write"))
+            top_level_id_token = workflows_with_top_level_write_permission(local, "id-token")
+            if top_level_id_token:
+                drifts.append(finding(check_id, "WARN", "Workflow-root id-token: write should be scoped to publishing or attestation jobs.", actual=top_level_id_token, expected="job-level id-token: write when required"))
+            top_level_artifact_metadata = workflows_with_top_level_write_permission(local, "artifact-metadata")
+            if top_level_artifact_metadata:
+                drifts.append(finding(check_id, "FAIL", "Workflow-root artifact-metadata: write grants are not job scoped.", actual=top_level_artifact_metadata, expected="job-level artifact-metadata: write"))
+            if workflows_with_write_permission(local, "attestations") and "contents: read" not in text:
+                drifts.append(finding(check_id, "WARN", "Attestation workflow permissions do not visibly include contents: read.", expected="contents: read"))
+            return drifts or [finding(check_id, "PASS", "Attestation/provenance workflow permissions are scoped.")]
+        if check_id == "common.linked_artifact_metadata":
+            artifact_metadata_grants = workflows_with_write_permission(local, "artifact-metadata")
+            if not artifact_metadata_grants and not re.search(r"(?i)linked artifact metadata", workflow_text(local)):
+                return [finding(check_id, "SKIP", "No linked artifact metadata workflow evidence detected.")]
+            drifts = []
+            top_level_artifact_metadata = workflows_with_top_level_write_permission(local, "artifact-metadata")
+            if top_level_artifact_metadata:
+                drifts.append(finding(check_id, "FAIL", "Workflow-root artifact-metadata: write grants are not job scoped.", actual=top_level_artifact_metadata, expected="job-level artifact-metadata: write"))
+            publish_text = workflow_text(local)
+            if artifact_metadata_grants and not re.search(r"(?i)(gh release|npm publish|pypi|docker|ghcr|mvn deploy|nuget push|cargo publish|gem push)", publish_text):
+                drifts.append(finding(check_id, "WARN", "Linked artifact metadata permission is present without visible registry or release publication evidence.", actual=artifact_metadata_grants, expected="registry or release artifact publication evidence"))
+            return drifts or [finding(check_id, "PASS", "Linked artifact metadata workflow evidence is intentional and scoped.", actual=artifact_metadata_grants)]
         return [finding(check_id, "PASS", "Common artifact check recorded.", actual={"artifact_surface": sorted(artifacts)})]
 
     if check_id.startswith("pypi."):

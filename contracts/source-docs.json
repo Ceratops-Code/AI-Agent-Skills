@@ -226,6 +226,13 @@
       "url": "https://docs.github.com/en/actions/security-guides/using-artifact-attestations-to-establish-provenance-for-builds"
     },
     {
+      "id": "github.rest.artifact_metadata",
+      "scope": [
+        "artifact"
+      ],
+      "url": "https://docs.github.com/en/rest/orgs/artifact-metadata?apiVersion=2026-03-10"
+    },
+    {
       "id": "github.rest.orgs.issue_types",
       "scope": [
         "org"
@@ -356,14 +363,14 @@
       "scope": [
         "artifact"
       ],
-      "url": "https://docs.npmjs.com/trusted-publishing"
+      "url": "https://docs.npmjs.com/trusted-publishers/"
     },
     {
       "id": "npm.publish",
       "scope": [
         "artifact"
       ],
-      "url": "https://docs.npmjs.com/cli/v10/commands/npm-publish/"
+      "url": "https://docs.npmjs.com/cli/v11/commands/npm-publish/"
     },
     {
       "id": "npm.registry",

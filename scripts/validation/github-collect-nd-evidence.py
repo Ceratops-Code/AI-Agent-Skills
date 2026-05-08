@@ -107,6 +107,8 @@ def org_evidence(args: argparse.Namespace) -> dict[str, Any]:
         "ND.org.actions-policy-fit": [
             f"/orgs/{params['org_login']}/actions/permissions",
             f"/orgs/{params['org_login']}/actions/permissions/workflow",
+            f"/orgs/{params['org_login']}/actions/permissions/artifact-and-log-retention",
+            f"/orgs/{params['org_login']}/actions/permissions/fork-pr-contributor-approval",
             f"/orgs/{params['org_login']}/actions/runner-groups",
             f"/orgs/{params['org_login']}/actions/runners",
             f"/orgs/{params['org_login']}/actions/oidc/customization/sub",
@@ -205,7 +207,7 @@ def repo_or_artifact_evidence(args: argparse.Namespace, surface: str) -> dict[st
         "ND.github.repo-public-contract-accuracy": ["repo", "topics", "community_profile"],
         "ND.github.release-posture-fit": ["releases", "tags"],
         "ND.github.merge-branch-policy-fit": ["branch_protection", "rulesets", "expected_required_checks"],
-        "ND.github.actions-policy-fit": ["actions_permissions", "workflow_permissions", "default_branch_runs"],
+        "ND.github.actions-policy-fit": ["actions_permissions", "workflow_permissions", "artifact_log_retention", "fork_pr_contributor_approval", "default_branch_runs"],
         "ND.github.security-reporting-and-paid-surface-fit": ["security_and_analysis", "alerts", "private_vulnerability_reporting", "code_security_configuration"],
         "ND.github.dependabot-queue-fit": ["dependabot_alerts", "dependabot_pr_queue"],
         "ND.github.stale-state-intent-classification": ["pulls", "branches", "tags", "releases"],

@@ -865,7 +865,8 @@
     {
       "id": "common.linked_artifact_metadata",
       "source_lines": [
-        "gh-artifact-contract.md:3-6"
+        "gh-artifact-contract.md:3-6",
+        "source-docs.json:github.rest.artifact_metadata"
       ],
       "category": "common",
       "kind": "workflow_and_github_packages_scan",

@@ -109,6 +109,20 @@
         },
         {
           "method": "GET",
+          "endpoint": "/orgs/${org_login}/actions/permissions/artifact-and-log-retention",
+          "covers_checks": [
+            "actions.artifact_log_retention"
+          ]
+        },
+        {
+          "method": "GET",
+          "endpoint": "/orgs/${org_login}/actions/permissions/fork-pr-contributor-approval",
+          "covers_checks": [
+            "actions.fork_pr_contributor_approval"
+          ]
+        },
+        {
+          "method": "GET",
           "endpoint": "/orgs/${org_login}/actions/oidc/customization/sub",
           "covers_checks": [
             "actions.oidc_subject_claim_template"
@@ -482,6 +496,30 @@
       "expected": {
         "can_approve_pull_request_reviews": false,
         "default_workflow_permissions": "read"
+      }
+    },
+    {
+      "id": "actions.artifact_log_retention",
+      "endpoint": "/orgs/${org_login}/actions/permissions/artifact-and-log-retention",
+      "method": "GET",
+      "comparison": "retention_days_policy",
+      "settable": true,
+      "expected": {
+        "max_days": 90
+      }
+    },
+    {
+      "id": "actions.fork_pr_contributor_approval",
+      "endpoint": "/orgs/${org_login}/actions/permissions/fork-pr-contributor-approval",
+      "method": "GET",
+      "comparison": "fork_pr_contributor_approval_policy",
+      "settable": true,
+      "expected": {
+        "minimum_approval_policy": "first_time_contributors",
+        "allowed_policies": [
+          "first_time_contributors",
+          "all_external_contributors"
+        ]
       }
     },
     {
