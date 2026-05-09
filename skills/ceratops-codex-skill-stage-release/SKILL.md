@@ -69,7 +69,7 @@ Infer missing inputs from local repo state before asking.
 - Switch to the local release branch if it already exists; otherwise create it from `main`.
 - Fast-forward the existing release branch to `main` before merging new task branches.
 - Before merging each requested committed task branch into the active local `release/*` branch, run a blocking local code review against the current release branch state; any finding blocks staging until fixed and re-reviewed clean.
-- (D) Use this PowerShell sequence from the skill repo checkout for that review diff: `$mergeBase = git merge-base HEAD BRANCH; git diff $mergeBase BRANCH`, where `HEAD` is the active local `release/*` branch and `BRANCH` is the task branch being staged.
+- (D) Use this PowerShell command from the skill repo checkout for that review diff: `git diff (git merge-base HEAD BRANCH) BRANCH`, where `HEAD` is the active local `release/*` branch and `BRANCH` is the task branch being staged.
 - Merge each reviewed committed task branch into the local `release/*` branch with `git merge --no-edit BRANCH`.
 - If the skill repo checkout is dirty before staging, stop and resolve that state instead of merging into it blindly.
 
@@ -85,8 +85,7 @@ if (git show-ref --verify --quiet refs/heads/release/local) {
 } else {
     git switch -c release/local main
 }
-$mergeBase = git merge-base HEAD BRANCH
-git diff $mergeBase BRANCH
+git diff (git merge-base HEAD BRANCH) BRANCH
 # Run the blocking local code review on this diff and fix every finding before continuing.
 git merge --no-edit BRANCH
 if (Test-Path -LiteralPath .\skills\ceratops-codex-skill-stage-release\scripts\check-pending-release-work.ps1) {
