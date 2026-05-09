@@ -3,7 +3,6 @@ param(
     [string]$SkillsRepoRoot,
     [string]$MainBranch = "main",
     [string]$ReleaseBranch = "release/local",
-    [string[]]$StagedBranches = @(),
     [switch]$CleanMerged
 )
 
@@ -11,7 +10,7 @@ param(
 # staged skills repo release is treated as ready to ship. By default it reports
 # dirty worktrees or local branches that have commits not reachable from the
 # release branch. With -CleanMerged, it first removes clean task worktrees and
-# local branches whose commits are already reachable from synced main.
+# local branches whose commits are already reachable from the release branch.
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
@@ -24,13 +23,6 @@ if ([string]::IsNullOrWhiteSpace($SkillsRepoRoot)) {
 }
 
 $resolvedSkillsRepoRoot = (Resolve-Path -LiteralPath $SkillsRepoRoot).Path
-$StagedBranches = @(
-    $StagedBranches |
-        ForEach-Object { $_ -split "," } |
-        ForEach-Object { $_.Trim() } |
-        Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
-)
-
 function Invoke-Git {
     param([string[]]$Arguments)
 
@@ -112,7 +104,7 @@ function Test-IsProtectedBranch {
     if ([string]::IsNullOrWhiteSpace($BranchName)) {
         return $true
     }
-    return $BranchName -eq $MainBranch -or $BranchName -eq $ReleaseBranch -or $StagedBranches -contains $BranchName
+    return $BranchName -eq $MainBranch -or $BranchName -eq $ReleaseBranch
 }
 
 function Test-IsExcludedBranch {
@@ -121,9 +113,8 @@ function Test-IsExcludedBranch {
     if ([string]::IsNullOrWhiteSpace($BranchName)) {
         return $false
     }
-    # Main, the active release branch, and the branches explicitly staged into
-    # that release are expected. Every other branch is suspicious if it has
-    # commits that are not reachable from the release branch.
+    # Main and the active release branch are expected. Every other branch is
+    # suspicious if it has commits that are not reachable from the release branch.
     if (Test-IsProtectedBranch $BranchName) {
         return $true
     }
@@ -163,7 +154,7 @@ $skillsRepoPath = $resolvedSkillsRepoRoot.TrimEnd([IO.Path]::DirectorySeparatorC
 $expectedWorktreeRoot = Get-ExpectedWorktreeRoot
 
 if ($CleanMerged) {
-    Invoke-Git @("rev-parse", "--verify", $MainBranch)
+    Invoke-Git @("rev-parse", "--verify", $ReleaseBranch)
     if (Test-Path -LiteralPath $expectedWorktreeRoot) {
         foreach ($record in Get-WorktreeRecords) {
             $worktreePath = (Resolve-Path -LiteralPath $record.worktree).Path
@@ -179,7 +170,7 @@ if ($CleanMerged) {
             if (Test-IsProtectedBranch $branchName) {
                 continue
             }
-            if (-not (Test-GitSuccess @("merge-base", "--is-ancestor", $branchName, $MainBranch))) {
+            if (-not (Test-GitSuccess @("merge-base", "--is-ancestor", $branchName, $ReleaseBranch))) {
                 continue
             }
             if (-not (Test-PathWithin -Path $worktreePath -Parent $expectedWorktreeRoot)) {
@@ -187,7 +178,7 @@ if ($CleanMerged) {
                     Kind = "merged_worktree_outside_expected_root"
                     Branch = $branchName
                     Path = $worktreePath
-                    Detail = "merged into $MainBranch but not under $expectedWorktreeRoot"
+                    Detail = "merged into $ReleaseBranch but not under $expectedWorktreeRoot"
                 }
                 continue
             }
@@ -209,7 +200,7 @@ if ($CleanMerged) {
                 Kind = "merged_worktree_branch"
                 Branch = $branchName
                 Path = $worktreePath
-                Detail = "removed; merged into $MainBranch"
+                Detail = "removed; merged into $ReleaseBranch"
             }
         }
     }
@@ -218,25 +209,14 @@ if ($CleanMerged) {
         if (Test-IsProtectedBranch $branchName) {
             continue
         }
-        if (Test-GitSuccess @("merge-base", "--is-ancestor", $branchName, $MainBranch)) {
+        if (Test-GitSuccess @("merge-base", "--is-ancestor", $branchName, $ReleaseBranch)) {
             Invoke-Git @("branch", "-d", $branchName)
             $removed += [pscustomobject]@{
                 Kind = "merged_branch"
                 Branch = $branchName
                 Path = ""
-                Detail = "removed; merged into $MainBranch"
+                Detail = "removed; merged into $ReleaseBranch"
             }
-        }
-    }
-
-    $currentBranch = Get-CurrentBranch
-    if ($currentBranch -ne $ReleaseBranch -and (Test-GitSuccess @("rev-parse", "--verify", $ReleaseBranch)) -and (Test-GitSuccess @("merge-base", "--is-ancestor", $ReleaseBranch, $MainBranch))) {
-        Invoke-Git @("branch", "-d", $ReleaseBranch)
-        $removed += [pscustomobject]@{
-            Kind = "merged_release_branch"
-            Branch = $ReleaseBranch
-            Path = ""
-            Detail = "removed; merged into $MainBranch"
         }
     }
 }
@@ -250,10 +230,6 @@ if (-not (Test-GitSuccess @("rev-parse", "--verify", $ReleaseBranch))) {
         Write-Host "Pending local work outside '$ReleaseBranch' was found:"
         $findings | Sort-Object Kind, Branch, Path | Format-Table -AutoSize
         exit 2
-    }
-    if ($CleanMerged) {
-        Write-Host "Release branch '$ReleaseBranch' is absent after merged-work cleanup."
-        exit 0
     }
     Invoke-Git @("rev-parse", "--verify", $ReleaseBranch)
 }

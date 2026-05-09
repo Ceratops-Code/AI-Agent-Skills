@@ -37,7 +37,7 @@ Infer missing inputs from local repo state before asking.
 ### Skill-Specific Rules
 
 - Stage only committed task-worktree branches. Do not use this skill as a substitute for intentional commits on the source branches.
-- During staging, remove clean task worktrees and local task branches that are already merged into synced `main`, and remove a local `release/*` branch that is already merged into synced `main` before recreating or reusing the release branch. Do not remove dirty worktrees, branches requested for the current staged batch, protected branches, or worktrees outside the repo's expected `..\worktrees\<project>\` root.
+- During staging, after merging ready task branches into the local `release/*` branch, remove clean task worktrees and local task branches that are already merged into that `release/*` branch. Do not remove the release branch, dirty worktrees, protected branches, or worktrees outside the repo's expected `..\worktrees\<project>\` root.
 - Before reporting a staged release branch as ready to publish, check remaining local worktrees and local branches for staged, unstaged, untracked, or committed work that is not included in the release branch.
 - If another local branch or worktree has work not included in the release branch, stop before shipping and ask whether to commit and stage it into the same release, intentionally retain it for later, or clean it up; do not decide silently.
 - After a squash-merged ship, recreate or rebase long-lived task branches from updated `main` before staging more work. Do not re-merge a branch whose earlier contents already landed on `main` via squash.
@@ -57,7 +57,7 @@ Infer missing inputs from local repo state before asking.
 - Inspect remaining local worktrees and local branches before ship handoff so non-staged work is not silently left behind.
 - Confirm each branch to stage is intentionally committed and available to the shared repo.
 - Refresh remote refs with `git fetch --prune origin` before judging whether `origin/release/*` still exists or whether a prior staged branch or PR was already cleaned up.
-- After refreshing `main`, run the skill-local helper with `-CleanMerged` before creating or reusing `release/*` so local branches and worktrees already merged into `main` are removed instead of being retained across batches.
+- After merging ready task branches into `release/*`, run the skill-local helper with `-CleanMerged` so clean local branches and worktrees already merged into the staged release branch are removed instead of being retained across batches.
 - Assume the next ship will reuse the same `release/*` branch name remotely unless the user explicitly chose a different branch-naming scheme.
 - If a branch already shipped through a squash merge, recreate or rebase it on current `main` before staging new work from it.
 - Decide whether the release branch can be reused or whether manual release-branch cleanup is needed before staging.
@@ -76,7 +76,6 @@ Exact PowerShell command sequence for the default `release/local` branch:
 git fetch --prune origin
 git switch main
 git merge --ff-only origin/main
-powershell -ExecutionPolicy Bypass -File .\skills\ceratops-codex-skill-stage-release\scripts\check-pending-release-work.ps1 -SkillsRepoRoot . -CleanMerged -StagedBranches BRANCH
 if (git show-ref --verify --quiet refs/heads/release/local) {
     git switch release/local
     git merge --ff-only main
@@ -84,6 +83,7 @@ if (git show-ref --verify --quiet refs/heads/release/local) {
     git switch -c release/local main
 }
 git merge --no-edit BRANCH
+powershell -ExecutionPolicy Bypass -File .\skills\ceratops-codex-skill-stage-release\scripts\check-pending-release-work.ps1 -SkillsRepoRoot . -CleanMerged
 ```
 
 #### 3. Install and validate staged state
@@ -94,7 +94,7 @@ git merge --no-edit BRANCH
 
 #### 4. Report the staged state
 
-- Run the skill-local pending local work check before reporting the batch as ready to publish. Use `-CleanMerged` for the pre-staging cleanup pass; omit it for the final read-only pending-work pass unless another cleanup was explicitly requested. If the current directory is not the skills repo checkout, pass `-SkillsRepoRoot PATH`.
+- Run the skill-local pending local work check before reporting the batch as ready to publish. Use `-CleanMerged` for the post-merge cleanup pass; omit it for the final read-only pending-work pass unless another cleanup was explicitly requested. If the current directory is not the skills repo checkout, pass `-SkillsRepoRoot PATH`.
 - If the pending-work check reports any other dirty worktree, untracked work, staged work, unstaged work, or branch commits outside the release branch, stop before shipping and ask the user whether to include, retain, or clean up that work.
 - Report the active local `release/*` branch, the staged task branches, and any blockers that still prevent shipping.
 - Leave the skills repo checkout on the staged release branch only when the batch is intentionally active.
@@ -104,7 +104,7 @@ git merge --no-edit BRANCH
 ### Completion Gate
 
 - Verify the skills repo checkout is on the intended local `release/*` branch.
-- Verify each requested task branch was staged; clean source worktrees and source branches already merged into synced `main` were removed by the cleanup pass, and unmerged or dirty source worktrees and branches remain unless the user separately requested cleanup.
+- Verify each requested task branch was staged; clean source worktrees and source branches already merged into the staged `release/*` branch were removed by the cleanup pass, and unmerged or dirty source worktrees and branches remain unless the user separately requested cleanup.
 - Verify the pending local work check passed before ship handoff, or every reported non-staged branch or worktree is covered by an explicit user choice, retention reason, or blocker.
 - Verify the installed skill copies are managed runtime outputs and include fresh runtime manifests.
 - Verify the local validation batch passed or the blocking failures were reported.
