@@ -45,6 +45,11 @@ from typing import Any
 
 API_VERSION = "2026-03-10"
 PARAM_RE = re.compile(r"\$\{([^}]+)\}")
+FORK_PR_APPROVAL_RANK = {
+    "first_time_contributors_new_to_github": 0,
+    "first_time_contributors": 1,
+    "all_external_contributors": 2,
+}
 
 
 @dataclass
@@ -305,6 +310,45 @@ def error_matches(result: ApiResult, expected: dict[str, Any]) -> bool:
     if needle and needle not in (result.message or ""):
         return False
     return True
+
+
+def retention_days_drifts(check_id: str, data: Any, expected: dict[str, Any]) -> list[dict[str, Any]]:
+    """Compare Actions artifact/log retention against a contract max-days policy."""
+    max_days = expected.get("max_days")
+    days = data.get("days") if isinstance(data, dict) else None
+    if isinstance(days, int) and isinstance(max_days, int) and days <= max_days:
+        return []
+    return [
+        {
+            "check_id": check_id,
+            "path": "$.days",
+            "expected": f"<= {max_days}",
+            "actual": days,
+            "message": "Actions artifact and log retention exceeds policy.",
+        }
+    ]
+
+
+def fork_pr_approval_drifts(check_id: str, data: Any, expected: dict[str, Any]) -> list[dict[str, Any]]:
+    """Compare fork-PR approval policy by minimum strictness."""
+    actual = data.get("approval_policy") if isinstance(data, dict) else None
+    minimum = expected.get("minimum_approval_policy")
+    allowed = set(expected.get("allowed_policies") or [])
+    actual_rank = FORK_PR_APPROVAL_RANK.get(str(actual))
+    minimum_rank = FORK_PR_APPROVAL_RANK.get(str(minimum))
+    if actual in allowed or (
+        actual_rank is not None and minimum_rank is not None and actual_rank >= minimum_rank
+    ):
+        return []
+    return [
+        {
+            "check_id": check_id,
+            "path": "$.approval_policy",
+            "expected": minimum,
+            "actual": actual,
+            "message": "Fork PR contributor approval policy is weaker than required.",
+        }
+    ]
 
 
 def png_unique_rgba_colors(data: bytes) -> int:
@@ -591,6 +635,10 @@ def compare_check(
             ]
         return []
 
+    if comparison == "retention_days_policy":
+        return retention_days_drifts(check_id, result.data, expected)
+    if comparison == "fork_pr_contributor_approval_policy":
+        return fork_pr_approval_drifts(check_id, result.data, expected)
     if comparison == "selected_fields_equal":
         actual_subset = object_subset(result.data, expected)
         return [{"check_id": check_id, **drift} for drift in diff_values(actual_subset, expected)]

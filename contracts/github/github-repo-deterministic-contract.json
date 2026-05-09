@@ -611,6 +611,20 @@
         },
         {
           "method": "GET",
+          "endpoint": "/repos/${owner}/${repo}/actions/permissions/artifact-and-log-retention",
+          "covers_checks": [
+            "actions.artifact_log_retention"
+          ]
+        },
+        {
+          "method": "GET",
+          "endpoint": "/repos/${owner}/${repo}/actions/permissions/fork-pr-contributor-approval",
+          "covers_checks": [
+            "actions.fork_pr_contributor_approval"
+          ]
+        },
+        {
+          "method": "GET",
           "endpoint": "/repos/${owner}/${repo}/actions/permissions/fork-pr-workflows-private-repos",
           "covers_checks": [
             "actions.private_fork_pr_workflows"
@@ -972,6 +986,38 @@
         "workflow_files_must_not_use_permissions_write_all": true,
         "attestations_write_only_in_attestation_jobs": true,
         "artifact_metadata_write_only_when_linked_artifact_metadata_intended": true
+      }
+    },
+    {
+      "id": "actions.artifact_log_retention",
+      "source_lines": [
+        "source-docs.json:repo-and-artifact-standards",
+        "gh-repo-health-contract.md:3-8"
+      ],
+      "kind": "api",
+      "endpoint": "/repos/${owner}/${repo}/actions/permissions/artifact-and-log-retention",
+      "comparison": "retention_days_policy",
+      "applies_when": "repo.archived == false && type.workflow_surface has has_workflows",
+      "expected": {
+        "max_days": 90
+      }
+    },
+    {
+      "id": "actions.fork_pr_contributor_approval",
+      "source_lines": [
+        "source-docs.json:repo-and-artifact-standards",
+        "gh-repo-health-contract.md:3-8"
+      ],
+      "kind": "api",
+      "endpoint": "/repos/${owner}/${repo}/actions/permissions/fork-pr-contributor-approval",
+      "comparison": "fork_pr_contributor_approval_policy",
+      "applies_when": "repo.archived == false && type.workflow_surface has has_workflows",
+      "expected": {
+        "minimum_approval_policy": "first_time_contributors",
+        "allowed_policies": [
+          "first_time_contributors",
+          "all_external_contributors"
+        ]
       }
     },
     {

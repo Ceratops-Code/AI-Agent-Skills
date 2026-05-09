@@ -1,6 +1,6 @@
 ---
 name: ceratops-thread-side-task-handoff
-description: Create a minimal copy-paste prompt for spinning a newly discovered side task into another thread. Use when Codex should ignore most of the original task and capture only the side task's origin, conclusion, current objective, minimal refs, and next step.
+description: Create a minimal copy-paste prompt for spinning a newly discovered side task into another thread. Use when Codex should ignore most of the original task and capture only the side task's origin, conclusion, current objective, self-contained context, and next step.
 ---
 
 # Ceratops Thread Side-Task Handoff
@@ -17,8 +17,8 @@ Produce one minimal copy-paste prompt for starting a side task in a new thread.
 - What was discovered or concluded that created the side task.
 - The side task's current objective.
 - What stays in the current thread, if that matters.
-- The exact repos, files, PRs, tags, releases, images, paths, or automations the side task is likely to open immediately.
-- Optional evidence or background artifacts only when the first next step is likely to inspect them immediately.
+- The exact repo names, PRs, tags, releases, automations, or external entities needed to identify the side task.
+- The current evidence, conclusions, constraints, and next-step-critical details summarized in the prompt itself.
 - Any active constraints or instructions that materially affect the side task.
 
 Infer missing inputs from the current thread and local state before asking.
@@ -29,7 +29,7 @@ Infer missing inputs from the current thread and local state before asking.
 - What we came to eventually or discovered that created the side task
 - What the objective is now
 - What stays in the current thread, if relevant
-- Exact source-of-truth refs, kept minimal
+- Self-contained evidence and context, kept minimal
 - Active constraints or instructions that materially affect the work
 - The first next step or question for the new thread
 
@@ -43,11 +43,10 @@ Infer missing inputs from the current thread and local state before asking.
 - Prefer the discovered conclusion and current objective over chronology.
 - Reuse fresh state already established in the current thread by default.
 - Refresh only facts whose staleness would change or misdirect the first step in the new thread.
-- Keep refs exact but limited to the entities the next thread is likely to open first.
+- Do not include file paths or source-of-truth reference lists; summarize the relevant file contents, evidence, and conclusions inside the prompt itself.
+- Mention repo names, PR numbers, automation names, external URLs, or other non-file identifiers only when they are needed to identify the side task.
 - Include what stays in the current thread only when it matters for scope control.
-- Treat `source-of-truth refs` as the minimum exact entities the new thread is likely to open immediately because they directly govern, define, or evidence the side task itself.
-- Do not list general process instructions, generic runtime constraints, or merely helpful background artifacts as `source-of-truth refs` unless the side task is specifically about them or the first next step depends on opening them.
-- Put active instructions or process constraints under constraints, not under `source-of-truth refs`, unless those instruction files are themselves part of the side task.
+- Put active instructions or process constraints under constraints, summarized in prompt text.
 - If the user says `include the following questions`, `including the questions`, or equivalent wording, carry those questions into the prompt as next-thread asks instead of answering them here.
 - Do not ask for credentials unless verifying the handoff requires protected state that cannot be inferred locally.
 
@@ -75,9 +74,9 @@ Infer missing inputs from the current thread and local state before asking.
 
 ### Completion Gate
 
-- Verify the prompt includes the required content and enough exact refs to start correctly.
+- Verify the prompt includes the required content and enough self-contained context to start correctly without opening referenced files.
 - Verify the prompt excludes irrelevant branches of the original task unless they materially constrain the side task.
-- Verify each listed `source-of-truth ref` is first-step-relevant and authoritative for the side task itself, not just a generic constraint or a maybe-useful artifact.
+- Verify the prompt does not list file paths or source-of-truth reference sections, and summarizes any needed file-derived evidence directly.
 - Verify the prompt does not pretend a fresh re-check happened when it did not.
 
 ### Output Contract
