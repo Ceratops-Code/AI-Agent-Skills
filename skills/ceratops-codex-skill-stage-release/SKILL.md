@@ -3,7 +3,7 @@ name: ceratops-codex-skill-stage-release
 description: Stage committed Ceratops or compatible skill changes into a skill repo checkout's local `release/*` branch, using install and validation steps only when the repo provides them.
 ---
 
-# Ceratops Codex Skill Stage Release
+# Ceratops Skill Stage to Release
 
 ## Goal
 

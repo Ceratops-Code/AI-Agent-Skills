@@ -40,7 +40,7 @@ SECTIONS_START = "<!-- CERATOPS_SHARED_SECTIONS_START -->"
 SECTIONS_END = "<!-- CERATOPS_SHARED_SECTIONS_END -->"
 
 NAME_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$")
-SKILL_REF_RE = re.compile(r"\$([a-z0-9][a-z0-9-]*)")
+SKILL_REF_RE = re.compile(r"\$([a-z0-9]+(?:-[a-z0-9]+)+)(?![A-Za-z0-9_-])")
 README_SKILL_ROW_RE = re.compile(r"^\|\s*`(?P<name>ceratops-[a-z0-9-]+)`\s*\|", re.MULTILINE)
 ALLOWED_EXTERNAL_SKILL_REFS = {"skill-creator"}
 INTERFACE_FIELD_RE = re.compile(
@@ -269,7 +269,7 @@ def validate_workflow_target(command: str, skill_names: set[str]) -> list[str]:
 
 
 def check_skill_refs(path: pathlib.Path, text: str, skill_names: set[str]) -> list[str]:
-    """Reject `$ceratops-*` references that do not resolve to known skills."""
+    """Reject hyphenated `$skill-name` references that do not resolve."""
 
     errors: list[str] = []
     for ref in sorted(set(SKILL_REF_RE.findall(text))):
