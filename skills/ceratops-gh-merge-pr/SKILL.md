@@ -79,7 +79,7 @@ Infer missing inputs from `gh`, git remotes, the current branch, and live repo d
 
 #### 7. Clean up and verify
 
-- Delete the remote head branch only when the PR is merged, deletion is allowed, and the branch is not a reusable release or integration branch.
+- After a PR is merged, delete the remote head branch only for disposable branches; keep `release/local` and any other reusable release or integration branch.
 - After the merge, verify the live PR endpoint shows the PR as merged instead of reusing the pre-merge readiness script on a now-closed PR.
 - Sync the local default branch to the remote default branch without destructive resets.
 - Prune stale refs safely.
