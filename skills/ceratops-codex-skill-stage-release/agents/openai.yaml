@@ -1,6 +1,6 @@
 interface:
   display_name: "Ceratops Codex Skill Stage Release"
-  short_description: "Stage local skill batches onto skills repo release"
+  short_description: "Stage skill release batches"
   icon_small: "./assets/ceratops-logo-500.png"
   icon_large: "./assets/ceratops-logo-500.png"
-  default_prompt: "Use $ceratops-codex-skill-stage-release to merge ready skill branches into the local skills repo release branch, switch the skills repo checkout to that branch, and validate the staged batch."
+  default_prompt: "Use $ceratops-codex-skill-stage-release to merge ready skill branches into a local skill repo release branch and run only the install or validation steps the repo provides."

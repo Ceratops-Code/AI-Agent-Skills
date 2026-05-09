@@ -85,6 +85,8 @@ SECRET_PATTERNS = [
 
 
 def parse_frontmatter(path: pathlib.Path) -> tuple[dict[str, str], str]:
+    """Parse the simple YAML frontmatter format used by source skills."""
+
     text = path.read_text(encoding="utf-8")
     lines = text.splitlines()
     if not lines or lines[0] != "---":
@@ -109,10 +111,14 @@ def parse_frontmatter(path: pathlib.Path) -> tuple[dict[str, str], str]:
 
 
 def load_section_manifest() -> dict[str, object]:
+    """Load shared-section assignments and runtime payload declarations."""
+
     return json.loads(SECTION_MANIFEST.read_text(encoding="utf-8"))
 
 
 def parse_openai_interface(path: pathlib.Path) -> dict[str, str]:
+    """Extract the flat `interface` fields validated from `openai.yaml`."""
+
     data: dict[str, str] = {}
     text = path.read_text(encoding="utf-8")
     for key, raw_value in INTERFACE_FIELD_RE.findall(text):
@@ -124,10 +130,14 @@ def parse_openai_interface(path: pathlib.Path) -> dict[str, str]:
 
 
 def normalized_tokens(text: str) -> list[str]:
+    """Tokenize names and descriptions for loose metadata relevance checks."""
+
     return [token.lower() for token in re.findall(r"[A-Za-z0-9]+", text)]
 
 
 def meaningful_short_description_tokens(text: str) -> set[str]:
+    """Drop common filler so short-description comparisons use real terms."""
+
     return {
         token
         for token in normalized_tokens(text)
@@ -136,6 +146,8 @@ def meaningful_short_description_tokens(text: str) -> set[str]:
 
 
 def display_name_sane(skill_name: str, display_name: str) -> bool:
+    """Check that the UI display name still resembles the skill directory."""
+
     name_tokens = {token for token in normalized_tokens(skill_name) if token != "ceratops"}
     if not name_tokens:
         return False
@@ -145,6 +157,8 @@ def display_name_sane(skill_name: str, display_name: str) -> bool:
 
 
 def short_description_relevant(short_description: str, skill_description: str) -> bool:
+    """Check that the UI short description overlaps the trigger description."""
+
     short_tokens = meaningful_short_description_tokens(short_description)
     if not short_tokens:
         return False
@@ -155,6 +169,8 @@ def short_description_relevant(short_description: str, skill_description: str) -
 
 
 def rendered_sections_block(skill_name: str, manifest: dict[str, object]) -> str:
+    """Render shared sections to prove source assignments are buildable."""
+
     sections = manifest["sections"]
     assignments = manifest["skills"]
     section_names = assignments[skill_name]
@@ -170,6 +186,8 @@ def rendered_sections_block(skill_name: str, manifest: dict[str, object]) -> str
 
 
 def check_runtime_payloads(manifest: dict[str, object], skill_names: set[str]) -> list[str]:
+    """Validate declared runtime payload paths without copying any files."""
+
     errors: list[str] = []
     payloads = manifest.get("runtime_payloads", {})
     if not isinstance(payloads, dict):
@@ -194,10 +212,19 @@ def check_runtime_payloads(manifest: dict[str, object], skill_names: set[str]) -
 
 
 def readme_skill_rows(readme_text: str) -> set[str]:
+    """Return skill names documented in the README skill table."""
+
     return {match.group("name") for match in README_SKILL_ROW_RE.finditer(readme_text)}
 
 
 def validate_workflow_target(command: str, skill_names: set[str]) -> list[str]:
+    """Check that manifest maintenance workflow commands point to real targets.
+
+    The manifest is allowed to contain only the small command shapes used by
+    this repo's automation. Rejecting unknown forms keeps maintenance commands
+    portable and prevents hidden user-local paths from becoming policy.
+    """
+
     errors: list[str] = []
     normalized = command.strip().replace("\\", "/")
     parts = normalized.split()
@@ -242,6 +269,8 @@ def validate_workflow_target(command: str, skill_names: set[str]) -> list[str]:
 
 
 def check_skill_refs(path: pathlib.Path, text: str, skill_names: set[str]) -> list[str]:
+    """Reject `$ceratops-*` references that do not resolve to known skills."""
+
     errors: list[str] = []
     for ref in sorted(set(SKILL_REF_RE.findall(text))):
         if ref in ALLOWED_EXTERNAL_SKILL_REFS:
@@ -252,6 +281,8 @@ def check_skill_refs(path: pathlib.Path, text: str, skill_names: set[str]) -> li
 
 
 def check_retired_baseline_absent() -> list[str]:
+    """Ensure the retired best-practice baseline artifact did not come back."""
+
     errors: list[str] = []
     for path in ROOT.rglob("best-practice-baseline.md"):
         if not path.is_file() or ".git" in path.parts:
@@ -268,8 +299,8 @@ def check_section_sources(manifest: dict[str, object], skill_dirs: list[pathlib.
     sections = manifest.get("sections", {})
     assignments = manifest.get("skills", {})
     skill_names = {skill_dir.name for skill_dir in skill_dirs}
-    if "minimal" not in sections:
-        errors.append("section manifest must define minimal")
+    if "core" not in sections:
+        errors.append("section manifest must define core")
     if not isinstance(sections, dict):
         errors.append("section manifest sections must be an object")
         return errors
@@ -289,8 +320,8 @@ def check_section_sources(manifest: dict[str, object], skill_dirs: list[pathlib.
         if not isinstance(section_names, list) or not all(isinstance(item, str) for item in section_names):
             errors.append(f"{skill_name}: section assignment must be a list of section names")
             continue
-        if "minimal" not in section_names:
-            errors.append(f"{skill_name}: section assignment must include minimal")
+        if "core" not in section_names:
+            errors.append(f"{skill_name}: section assignment must include core")
         for section_name in section_names:
             if section_name not in sections:
                 errors.append(f"{skill_name}: unknown section assignment {section_name}")
@@ -314,6 +345,8 @@ def check_section_sources(manifest: dict[str, object], skill_dirs: list[pathlib.
 
 
 def check_skill(skill_dir: pathlib.Path, readme_rows: set[str], manifest: dict[str, object], skill_names: set[str]) -> list[str]:
+    """Validate one source skill, metadata file, icon, README row, and refs."""
+
     errors: list[str] = []
     name = skill_dir.name
     skill_md = skill_dir / "SKILL.md"
@@ -393,6 +426,8 @@ def check_skill(skill_dir: pathlib.Path, readme_rows: set[str], manifest: dict[s
 
 
 def check_secrets() -> list[str]:
+    """Scan text files for high-confidence secrets and local private paths."""
+
     errors: list[str] = []
     for path in ROOT.rglob("*"):
         if not path.is_file() or ".git" in path.parts:
@@ -409,6 +444,8 @@ def check_secrets() -> list[str]:
 
 
 def main() -> int:
+    """Run either section-only or full source consistency validation."""
+
     parser = argparse.ArgumentParser(description="Validate Ceratops skill source and runtime-generation inputs.")
     parser.add_argument("--mode", choices=["full", "sections"], default="full", help="Use sections for the lightweight shared-section check.")
     args = parser.parse_args()
@@ -444,8 +481,8 @@ def main() -> int:
     sections = manifest.get("sections", {})
     workflow_hints = manifest.get("maintenance_workflows", {})
     assignments = manifest.get("skills", {})
-    if "minimal" not in sections:
-        errors.append("section manifest must define minimal")
+    if "core" not in sections:
+        errors.append("section manifest must define core")
     if not isinstance(workflow_hints, dict):
         errors.append("section manifest maintenance_workflows must be an object")
     else:
@@ -468,8 +505,8 @@ def main() -> int:
         if not (ROOT / rel_path).is_file():
             errors.append(f"missing section file for {section_name}: {rel_path}")
     for skill_name, section_names in assignments.items():
-        if "minimal" not in section_names:
-            errors.append(f"{skill_name}: section assignment must include minimal")
+        if "core" not in section_names:
+            errors.append(f"{skill_name}: section assignment must include core")
         for section_name in section_names:
             if section_name not in sections:
                 errors.append(f"{skill_name}: unknown section assignment {section_name}")
