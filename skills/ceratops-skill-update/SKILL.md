@@ -46,7 +46,7 @@ Infer missing inputs from the current repo state before asking.
 #### 1. Inspect the current maintenance surface
 
 - Inspect the targeted skills, available shared section files, section manifest, runtime generation and validation scripts, touched helper-runtime files or claims, and repo docs that describe the current structure.
-- (D) Start maintenance inspection with targeted `rg` or path inventory and small line-window reads; broaden to full-file reads only for governing control files, ownership decisions, or unresolved context.
+- Start maintenance inspection with targeted `rg` or path inventory and small line-window reads; broaden to full-file reads only for governing control files, ownership decisions, or unresolved context.
 - Identify which parts are source of truth versus generated output.
 - Identify absent Ceratops repo components before treating template, validation, installation, or contract steps as required.
 - Classify the requested change as skill-local, shared, structural, validation-only, helper-runtime-adjacent, or docs-only.
@@ -60,18 +60,18 @@ Infer missing inputs from the current repo state before asking.
 #### 3. Apply the updates at the real source of truth
 
 - Update existing skills, shared sections, the section manifest, runtime payloads, runtime generation or validation scripts, helper-runtime files or claims, contracts, and repo docs only where the chosen ownership requires it and the target repo provides that surface.
-- (D) Before renaming or moving shared contracts, scripts, templates, or payload folders, build one old-to-new reference map and update docs, skills, manifests, validators, and checkers from that map before running validation.
+- Before renaming or moving shared contracts, scripts, templates, or payload folders, build one old-to-new reference map and update docs, skills, manifests, validators, and checkers from that map before running validation.
 - When removing, merging, or narrowing sections, update every affected assignment and keep runtime generated section source comments readable in installed `SKILL.md` files.
 - If the repo's current runtime generation or validation flow exists but no longer matches the section model, fix the scripts instead of working around them in skill text.
 
 #### 4. Run the needed checks
 
-- (D) If shared section source files or `templates/skill-sections.json` assignments changed and the manifest exists, run the shared-source check path from `templates/skill-sections.json`.
+- If shared section source files or `templates/skill-sections.json` assignments changed and the manifest exists, run the shared-source check path from `templates/skill-sections.json`.
 - Do not run validation solely because skill-local text, `agents/openai.yaml`, or repo docs changed; use targeted readback, stale-reference search, and diff review unless a broader check is made stale.
-- (D) If helper-runtime code or claims changed, run only the touched helper's own smoke command when that helper supports one.
-- (D) If runtime generation code changed and the repo provides a runtime-generation check path, run it.
+- If helper-runtime code or claims changed, run only the touched helper's own smoke command when that helper supports one.
+- If runtime generation code changed and the repo provides a runtime-generation check path, run it.
 - Reserve `governance_full_validation` for scheduled governance automation, explicit broad validation, validation-script changes, or a concrete cross-surface uncertainty.
-- (D) Re-open the changed files from disk and confirm source skills, manifest assignments, runtime payloads, docs, contracts, and metadata still align for the touched scope.
+- Re-open the changed files from disk and confirm source skills, manifest assignments, runtime payloads, docs, contracts, and metadata still align for the touched scope.
 
 #### 5. Report or hand off
 

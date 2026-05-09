@@ -57,9 +57,9 @@ Infer missing inputs from the repo's current structure and the user request befo
 
 #### 3. Run the needed checks
 
-- (D) When a new skill changes shared assignments and `templates/skill-sections.json` exists, run the shared-source check path from that manifest.
-- (D) If helper-runtime code or claims changed, run only the touched helper's own smoke command when that helper supports one.
-- (D) Re-open the changed files from disk and confirm the source skill, available runtime-generation inputs, manifest assignment, metadata, and docs all align.
+- When a new skill changes shared assignments and `templates/skill-sections.json` exists, run the shared-source check path from that manifest.
+- If helper-runtime code or claims changed, run only the touched helper's own smoke command when that helper supports one.
+- Re-open the changed files from disk and confirm the source skill, available runtime-generation inputs, manifest assignment, metadata, and docs all align.
 
 #### 4. Make it available locally
 

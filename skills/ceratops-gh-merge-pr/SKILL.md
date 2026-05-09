@@ -13,7 +13,7 @@ Merge one GitHub PR only after proving the PR-specific merge gates are satisfied
 
 ### Script Bundle
 
-- PR readiness contract check: `python scripts/validation/github-validate-pr-readiness-contract.py --pr NUMBER_OR_URL`
+- (D) PR readiness contract check: `python scripts/validation/github-validate-pr-readiness-contract.py --pr NUMBER_OR_URL`
 - Direct merge command: `gh pr merge --admin NUMBER_OR_URL_OR_BRANCH [--merge|--squash|--rebase] [--delete-branch]`
 
 ### Inputs To Capture
@@ -44,8 +44,8 @@ Infer missing inputs from `gh`, git remotes, the current branch, and live repo d
 
 #### 2. Run the live PR check first
 
-- Run `python scripts/validation/github-validate-pr-readiness-contract.py` before merge or auto-merge decisions.
-- Treat the script output as the first source of truth for draft state, mergeability, blocking review decisions, visible status-check failures, and pending status checks.
+- (D) Run `python scripts/validation/github-validate-pr-readiness-contract.py` before merge or auto-merge decisions.
+- (D) Treat the script output as the first source of truth for draft state, mergeability, blocking review decisions, visible status-check failures, and pending status checks.
 - Re-run the script after an action that could change readiness when the successful command result does not already prove the exact state, or when CI, merge queue, review, or conversation state is asynchronous.
 
 #### 3. Inspect only merge-decision exceptions

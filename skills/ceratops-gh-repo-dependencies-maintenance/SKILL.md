@@ -13,8 +13,8 @@ Handle repository dependencies as an end-to-end maintenance loop. Prefer safe au
 
 ### Script Bundle
 
-- Dependency/security posture check when live GitHub queue, alert, label, security-setting, Dependabot config, workflow ref, manifest, lockfile, or local file posture is in scope: `python scripts/validation/github-validate-repo-artifact-contract.py --repo OWNER/REPO --select repo:dependency --select code:dependency --local-repo-path PATH`
-- PR readiness contract check: `python scripts/validation/github-validate-pr-readiness-contract.py --pr NUMBER_OR_URL`
+- (D) Dependency/security posture check when live GitHub queue, alert, label, security-setting, Dependabot config, workflow ref, manifest, lockfile, or local file posture is in scope: `python scripts/validation/github-validate-repo-artifact-contract.py --repo OWNER/REPO --select repo:dependency --select code:dependency --local-repo-path PATH`
+- (D) PR readiness contract check: `python scripts/validation/github-validate-pr-readiness-contract.py --pr NUMBER_OR_URL`
 
 ### Inputs To Capture
 
@@ -51,7 +51,7 @@ Infer missing inputs from local files and live GitHub state before asking.
 
 #### 3. Re-check each candidate with scripts
 
-- Run the bundled PR-readiness script before enabling auto-merge or merging a dependency PR.
+- (D) Run the bundled PR-readiness script before enabling auto-merge or merging a dependency PR.
 - Include the live repo dependency selection only when the queue changes or explicitly verifies GitHub dependency/security posture such as vulnerability alerts, Dependabot security updates, Dependabot PR queue, code-scanning posture, dependency-review availability, or dependency labels.
 - Include the code dependency selection only when explicitly verifying Dependabot config, workflow SHA pinning, manifests, lockfiles, local secret-pattern posture, or other repository-content dependency posture.
 - Do not run broader GitHub, code, or artifact contract checks for ordinary dependency PRs whose only moving parts are manifests, lockfiles, tests, CI results, and PR readiness.
