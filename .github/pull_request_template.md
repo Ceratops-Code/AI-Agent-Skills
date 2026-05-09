@@ -4,7 +4,7 @@
 
 ## Validation
 
-- [ ] `powershell -ExecutionPolicy Bypass -File .\scripts\install-skills.ps1 -SkipInstall -Validate full`
+- [ ] `powershell -ExecutionPolicy Bypass -File .\scripts\install-skills.ps1 -RuntimeRoot <temp-runtime-root> -Validate full`
 
 ## Release impact
 
