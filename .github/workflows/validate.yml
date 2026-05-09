@@ -22,7 +22,9 @@ jobs:
 
       - name: Validate skills
         shell: pwsh
-        run: ./scripts/install-skills.ps1 -SkipInstall -Validate full
+        run: |
+          $runtimeRoot = Join-Path $env:RUNNER_TEMP "ceratops-runtime-skills"
+          ./scripts/install-skills.ps1 -RuntimeRoot $runtimeRoot -Validate full
 
       - name: Smoke-test PR readiness helper script
         run: python scripts/validation/github-validate-pr-readiness-contract.py --help
