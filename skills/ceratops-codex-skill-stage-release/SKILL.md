@@ -38,7 +38,7 @@ Infer missing inputs from local repo state before asking.
 ### Skill-Specific Rules
 
 - Stage only committed task-worktree branches. Do not use this skill as a substitute for intentional commits on the source branches.
-- During staging, after merging ready task branches into the local `release/*` branch, remove clean task worktrees and local task branches that are already merged into that `release/*` branch only when the repo provides a cleanup helper or the cleanup was explicitly requested. Do not remove the release branch, dirty worktrees, protected branches, or worktrees outside the repo's expected `..\worktrees\<project>\` root.
+- During staging, after merging ready task branches into the local `release/*` branch, remove clean task worktrees and local task branches that are already merged into that `release/*` branch. Use the cleanup helper when the repo provides one; otherwise remove them directly with safe scoped `git worktree remove` and `git branch -d` operations. Do not remove the release branch, dirty worktrees, protected branches, or worktrees outside the repo's expected `..\worktrees\<project>\` root.
 - Before reporting a staged release branch as ready to publish, check remaining local worktrees and local branches for staged, unstaged, untracked, or committed work that is not included in the release branch.
 - If another local branch or worktree has work not included in the release branch, stop before shipping and ask whether to commit and stage it into the same release, intentionally retain it for later, or clean it up; do not decide silently.
 - After a squash-merged ship, recreate or rebase long-lived task branches from updated `main` before staging more work. Do not re-merge a branch whose earlier contents already landed on `main` via squash.
@@ -58,7 +58,7 @@ Infer missing inputs from local repo state before asking.
 - Inspect remaining local worktrees and local branches before ship handoff so non-staged work is not silently left behind.
 - Confirm each branch to stage is intentionally committed and available to the shared repo.
 - Refresh remote refs with `git fetch --prune origin` before judging whether `origin/release/*` still exists or whether a prior staged branch or PR was already cleaned up.
-- After merging ready task branches into `release/*`, run the skill-local helper with `-CleanMerged` when it exists so clean local branches and worktrees already merged into the staged release branch are removed instead of being retained across batches.
+- After merging ready task branches into `release/*`, remove clean local branches and worktrees already merged into the staged release branch instead of retaining them across batches. Use the skill-local helper with `-CleanMerged` when it exists; otherwise use safe scoped direct git cleanup.
 - Assume the next ship will reuse the same `release/*` branch name remotely unless the user explicitly chose a different branch-naming scheme.
 - If a branch already shipped through a squash merge, recreate or rebase it on current `main` before staging new work from it.
 - Decide whether the release branch can be reused or whether manual release-branch cleanup is needed before staging.
@@ -68,7 +68,9 @@ Infer missing inputs from local repo state before asking.
 - From the skill repo checkout, refresh and fast-forward the default base branch when it exists locally; in this repo use `main`: `git fetch --prune origin`, `git switch main`, `git merge --ff-only origin/main`.
 - Switch to the local release branch if it already exists; otherwise create it from `main`.
 - Fast-forward the existing release branch to `main` before merging new task branches.
-- Merge each requested committed task branch into the local `release/*` branch with `git merge --no-edit BRANCH`.
+- Before merging each requested committed task branch into the active local `release/*` branch, run a blocking local code review against the current release branch state; any finding blocks staging until fixed and re-reviewed clean.
+- (D) Use this PowerShell command from the skill repo checkout for that review diff: `git diff (git merge-base HEAD BRANCH) BRANCH`, where `HEAD` is the active local `release/*` branch and `BRANCH` is the task branch being staged.
+- Merge each reviewed committed task branch into the local `release/*` branch with `git merge --no-edit BRANCH`.
 - If the skill repo checkout is dirty before staging, stop and resolve that state instead of merging into it blindly.
 
 Exact PowerShell command sequence for the default `release/local` branch:
@@ -83,9 +85,13 @@ if (git show-ref --verify --quiet refs/heads/release/local) {
 } else {
     git switch -c release/local main
 }
+git diff (git merge-base HEAD BRANCH) BRANCH
+# Run the blocking local code review on this diff and fix every finding before continuing.
 git merge --no-edit BRANCH
 if (Test-Path -LiteralPath .\skills\ceratops-codex-skill-stage-release\scripts\check-pending-release-work.ps1) {
     powershell -ExecutionPolicy Bypass -File .\skills\ceratops-codex-skill-stage-release\scripts\check-pending-release-work.ps1 -SkillsRepoRoot . -CleanMerged
+} else {
+    # Remove clean merged task worktrees and branches with safe scoped git cleanup.
 }
 ```
 
@@ -93,7 +99,7 @@ if (Test-Path -LiteralPath .\skills\ceratops-codex-skill-stage-release\scripts\c
 
 - (D) Run `powershell -ExecutionPolicy Bypass -File .\\scripts\\install-skills.ps1 -Validate full` from the skill repo checkout when that installer and validation path exist.
 - Confirm each installed Ceratops skill copy has `.ceratops-runtime-manifest.json` and was regenerated by the installer when the repo uses managed runtime copies.
-- When the target repo lacks install or validation scripts, skip those steps and report that the repo does not provide them.
+- If `scripts/install-skills.ps1` is absent but source `skills/<skill-name>` folders exist, copy each affected skill folder directly to `$CODEX_HOME/skills/<skill-name>` for the runtime update; skip only unavailable validation and report it.
 - (D) When the PR-readiness validator or installer changed and the relevant script exists, run `python scripts/validation/github-validate-pr-readiness-contract.py --help`.
 
 #### 4. Report the staged state
@@ -108,11 +114,12 @@ if (Test-Path -LiteralPath .\skills\ceratops-codex-skill-stage-release\scripts\c
 ### Completion Gate
 
 - Verify the skill repo checkout is on the intended local `release/*` branch.
-- Verify each requested task branch was staged; clean source worktrees and source branches already merged into the staged `release/*` branch were removed by the cleanup pass, and unmerged or dirty source worktrees and branches remain unless the user separately requested cleanup.
+- Verify every branch merged into the staged `release/*` branch had a clean blocking local code review against the then-current local release branch.
+- Verify each requested task branch was staged; clean source worktrees and source branches already merged into the staged `release/*` branch were removed, and unmerged or dirty source worktrees and branches remain unless the user separately requested cleanup.
 - Verify the pending local work check passed before ship handoff when the helper exists, or every reported non-staged branch or worktree is covered by an explicit user choice, retention reason, or blocker.
 - Verify the installed skill copies are managed runtime outputs and include fresh runtime manifests when the repo uses managed runtime copies.
 - Verify the local validation batch passed or the blocking failures were reported when the repo provides validation.
-- When a repo lacks cleanup, install, runtime, or validation helpers, verify the merge state and report the skipped unavailable steps instead of treating them as blockers.
+- When a repo lacks install, runtime, or validation helpers, verify the merge state and report the skipped unavailable steps instead of treating them as blockers.
 
 ### Output Contract
 

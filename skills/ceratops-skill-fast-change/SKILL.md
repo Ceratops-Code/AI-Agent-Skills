@@ -30,7 +30,7 @@ If the change is not exact, low-risk, and dependency-free, stop and use `$cerato
 - Before editing, verify only that the checkout is on the intended `release/*` branch, the target file exists, and the working tree is clean or the dirty files are exactly the intended change scope.
 - Apply only one simple, dependency-free source change such as a single rule update, a narrow wording fix, or one metadata correction.
 - After editing, review the changed diff, commit the source change on the release branch, and update only the affected runtime skill copy.
-- Prefer `scripts/install-skills.ps1 -Skill <skill-name>` for runtime update when the repo provides that installer; otherwise update only the directly corresponding runtime skill files that can be copied without generation.
+- Prefer `scripts/install-skills.ps1 -Skill <skill-name>` for runtime update when the repo provides that installer; if the installer is absent, copy the affected source skill folder contents from `skills/<skill-name>` to `$CODEX_HOME/skills/<skill-name>` after committing to the release branch.
 - Do not remove stale runtime folders, regenerate all skills, or update unrelated installed skills.
 - If the user requests propagation to active worktrees or branches, apply the same patch there only when it merges cleanly and commit each updated branch separately; report any branch that cannot receive the change without manual resolution.
 - Stop before destructive cleanup, broad refactors, template changes, helper changes, or changes with unverified dependencies.
