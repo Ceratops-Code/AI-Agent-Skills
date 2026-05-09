@@ -68,7 +68,9 @@ Infer missing inputs from local repo state before asking.
 - From the skill repo checkout, refresh and fast-forward the default base branch when it exists locally; in this repo use `main`: `git fetch --prune origin`, `git switch main`, `git merge --ff-only origin/main`.
 - Switch to the local release branch if it already exists; otherwise create it from `main`.
 - Fast-forward the existing release branch to `main` before merging new task branches.
-- Merge each requested committed task branch into the local `release/*` branch with `git merge --no-edit BRANCH`.
+- Before merging each requested committed task branch into the active local `release/*` branch, run a blocking local code review against the current release branch state; any finding blocks staging until fixed and re-reviewed clean.
+- (D) Use this PowerShell sequence from the skill repo checkout for that review diff: `$mergeBase = git merge-base HEAD BRANCH; git diff $mergeBase BRANCH`, where `HEAD` is the active local `release/*` branch and `BRANCH` is the task branch being staged.
+- Merge each reviewed committed task branch into the local `release/*` branch with `git merge --no-edit BRANCH`.
 - If the skill repo checkout is dirty before staging, stop and resolve that state instead of merging into it blindly.
 
 Exact PowerShell command sequence for the default `release/local` branch:
@@ -83,6 +85,9 @@ if (git show-ref --verify --quiet refs/heads/release/local) {
 } else {
     git switch -c release/local main
 }
+$mergeBase = git merge-base HEAD BRANCH
+git diff $mergeBase BRANCH
+# Run the blocking local code review on this diff and fix every finding before continuing.
 git merge --no-edit BRANCH
 if (Test-Path -LiteralPath .\skills\ceratops-codex-skill-stage-release\scripts\check-pending-release-work.ps1) {
     powershell -ExecutionPolicy Bypass -File .\skills\ceratops-codex-skill-stage-release\scripts\check-pending-release-work.ps1 -SkillsRepoRoot . -CleanMerged
@@ -110,6 +115,7 @@ if (Test-Path -LiteralPath .\skills\ceratops-codex-skill-stage-release\scripts\c
 ### Completion Gate
 
 - Verify the skill repo checkout is on the intended local `release/*` branch.
+- Verify every branch merged into the staged `release/*` branch had a clean blocking local code review against the then-current local release branch.
 - Verify each requested task branch was staged; clean source worktrees and source branches already merged into the staged `release/*` branch were removed, and unmerged or dirty source worktrees and branches remain unless the user separately requested cleanup.
 - Verify the pending local work check passed before ship handoff when the helper exists, or every reported non-staged branch or worktree is covered by an explicit user choice, retention reason, or blocker.
 - Verify the installed skill copies are managed runtime outputs and include fresh runtime manifests when the repo uses managed runtime copies.
