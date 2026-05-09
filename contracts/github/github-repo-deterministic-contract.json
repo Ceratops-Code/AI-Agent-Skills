@@ -548,6 +548,13 @@
           "covers_checks": [
             "content.community_profile_public"
           ]
+        },
+        {
+          "method": "GET",
+          "endpoint": "/orgs/${owner}",
+          "covers_checks": [
+            "repo.merge_settings"
+          ]
         }
       ]
     },
@@ -819,7 +826,7 @@
       "kind": "api",
       "endpoint": "/repos/${owner}/${repo}/topics",
       "comparison": "policy",
-      "applies_when": "repo.visibility == public && repo.archived == false",
+      "applies_when": "repo.archived == false",
       "expected": {
         "names.min_count": 1,
         "names.must_reflect_detected_artifact_types": true
@@ -853,7 +860,11 @@
       "comparison": "selected_fields_equal",
       "applies_when": "repo.archived == false && repo.fork == false",
       "expected": {
-        "allow_auto_merge": true,
+        "allow_auto_merge": {
+          "value": true,
+          "applies_when": "repo.visibility != private || owner.plan.name != free",
+          "skip_reason": "Auto-merge for private repositories is plan-gated on GitHub Free."
+        },
         "delete_branch_on_merge": true,
         "allow_update_branch": true
       },
@@ -874,7 +885,7 @@
       "kind": "api",
       "endpoint": "/repos/${owner}/${repo}/branches/${default_branch}",
       "comparison": "selected_fields_policy",
-      "applies_when": "repo.archived == false && repo.fork == false",
+      "applies_when": "repo.visibility == public && repo.archived == false && repo.fork == false",
       "expected": {
         "name": "${default_branch}",
         "protected": {
@@ -894,7 +905,7 @@
         "/repos/${owner}/${repo}/branches/${default_branch}/protection"
       ],
       "comparison": "any_enforcement_layer",
-      "applies_when": "repo.archived == false && repo.fork == false",
+      "applies_when": "repo.visibility == public && repo.archived == false && repo.fork == false",
       "expected": {
         "one_of": [
           "ruleset_targets_default_branch_with_active_enforcement",
@@ -911,7 +922,7 @@
       ],
       "kind": "api_composite",
       "comparison": "policy",
-      "applies_when": "process.default_branch_enforcement_present && repo.archived == false && repo.fork == false",
+      "applies_when": "repo.visibility == public && repo.archived == false && repo.fork == false",
       "expected": {
         "required_status_checks.strict": true,
         "required_status_checks.contexts": "${expected_required_checks}",
@@ -1255,7 +1266,7 @@
       "kind": "api",
       "endpoint": "/repos/${owner}/${repo}/community/profile",
       "comparison": "community_profile_policy",
-      "applies_when": "repo.visibility == public && repo.archived == false",
+      "applies_when": "repo.archived == false",
       "expected": {
         "health_percentage": {
           "minimum": 70
@@ -1306,6 +1317,9 @@
       "applies_when": "repo.archived == false",
       "expected": {
         "report_non_default_unprotected_branches": true,
+        "ignored_branch_names": [
+          "release/local"
+        ],
         "do_not_delete_automatically": true
       }
     },
