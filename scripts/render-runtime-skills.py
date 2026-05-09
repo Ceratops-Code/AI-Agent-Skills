@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build copy-based Ceratops runtime skill folders.
+"""Render copy-based Ceratops runtime skill folders.
 
 Source skill folders intentionally contain only the skill-specific delta in
 `SKILL.md`. This script expands shared template sections into a complete runtime
@@ -9,7 +9,7 @@ installs the result under a runtime skills directory such as
 
 Called by `scripts/install-skills.ps1` during local installs and runtime branch
 preview rebuilds. It can also be run directly for smoke tests with a temporary
-runtime root. The builder is the only script that writes installed skill
+runtime root. The renderer is the only script that writes installed skill
 contents; PowerShell wrappers only choose paths and Python execution.
 """
 
@@ -39,14 +39,25 @@ IGNORE_NAMES = {".git", "__pycache__", ".mypy_cache", ".pytest_cache"}
 
 
 def load_manifest() -> dict[str, object]:
+    """Load the shared-section and payload manifest used by every build."""
+
     return json.loads(SECTION_MANIFEST.read_text(encoding="utf-8"))
 
 
 def source_skill_names() -> list[str]:
+    """Return source skill folder names that contain a `SKILL.md` file."""
+
     return sorted(path.parent.name for path in SKILLS.glob("*/SKILL.md"))
 
 
 def validate_manifest(manifest: Mapping[str, object], skill_names: set[str]) -> list[str]:
+    """Validate manifest shape before any runtime folders are written.
+
+    The renderer fails before touching the runtime root when a skill assignment,
+    section path, or required core section is stale. This keeps install failures
+    cheap and prevents partially refreshed runtime copies.
+    """
+
     errors: list[str] = []
     sections = manifest.get("sections")
     assignments = manifest.get("skills")
@@ -68,8 +79,8 @@ def validate_manifest(manifest: Mapping[str, object], skill_names: set[str]) -> 
         if not isinstance(section_names, Sequence) or isinstance(section_names, str):
             errors.append(f"{skill_name}: section assignment must be a list")
             continue
-        if "minimal" not in section_names:
-            errors.append(f"{skill_name}: section assignment must include minimal")
+        if "core" not in section_names:
+            errors.append(f"{skill_name}: section assignment must include core")
         for section_name in section_names:
             if section_name not in sections:
                 errors.append(f"{skill_name}: unknown section assignment {section_name}")
@@ -80,12 +91,16 @@ def validate_manifest(manifest: Mapping[str, object], skill_names: set[str]) -> 
 
 
 def section_text(rel_path: str) -> str:
+    """Read one shared section and strip internal-only template comments."""
+
     lines = (ROOT / rel_path).read_text(encoding="utf-8").splitlines()
     visible = [line for line in lines if not line.strip().startswith("<!-- INTERNAL:")]
     return "\n".join(visible).strip("\n")
 
 
 def rendered_sections_block(skill_name: str, manifest: Mapping[str, object]) -> str:
+    """Render the generated shared-section block for one runtime skill."""
+
     sections = manifest["sections"]
     assignments = manifest["skills"]
     rendered: list[str] = []
@@ -132,6 +147,8 @@ def compose_runtime_skill(source_text: str, shared_block: str, skill_name: str) 
 
 
 def ignore_source_dir(_directory: str, names: list[str]) -> set[str]:
+    """Filter cache and VCS folders out of copied source skill trees."""
+
     return {name for name in names if name in IGNORE_NAMES}
 
 
@@ -178,6 +195,8 @@ def expand_payload_patterns(patterns: Sequence[str]) -> list[pathlib.Path]:
 
 
 def payload_patterns_for(skill_name: str, manifest: Mapping[str, object]) -> list[str]:
+    """Return global and skill-specific runtime payload patterns."""
+
     payloads = manifest.get("runtime_payloads", {})
     if not isinstance(payloads, Mapping):
         return []
@@ -190,6 +209,8 @@ def payload_patterns_for(skill_name: str, manifest: Mapping[str, object]) -> lis
 
 
 def is_managed_runtime_dir(path: pathlib.Path) -> bool:
+    """Identify runtime folders that this renderer is allowed to replace."""
+
     return (path / MANIFEST_NAME).is_file()
 
 
@@ -197,7 +218,7 @@ def is_windows_reparse_point(path: pathlib.Path) -> bool:
     """Return whether `path` is a Windows reparse-point directory entry.
 
     Older Ceratops installs used junctions from `$CODEX_HOME/skills` back into
-    the source checkout. During migration, the builder must remove only that
+    the source checkout. During migration, the renderer must remove only that
     junction entry and must not traverse into or delete the source checkout.
     """
 
@@ -211,7 +232,7 @@ def is_windows_reparse_point(path: pathlib.Path) -> bool:
 
 
 def remove_existing_runtime_target(path: pathlib.Path) -> None:
-    """Remove only targets that are known safe for this builder to replace."""
+    """Remove only targets that are known safe for this renderer to replace."""
 
     if not path.exists() and not path.is_symlink():
         return
@@ -267,6 +288,8 @@ def build_skill(skill_name: str, runtime_root: pathlib.Path, manifest: Mapping[s
 
 
 def remove_stale_managed_skills(runtime_root: pathlib.Path, expected: set[str]) -> list[str]:
+    """Remove generated Ceratops runtime folders no longer present in source."""
+
     removed: list[str] = []
     if not runtime_root.is_dir():
         return removed
@@ -282,10 +305,12 @@ def remove_stale_managed_skills(runtime_root: pathlib.Path, expected: set[str]) 
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Build copy-based Ceratops runtime skill folders.")
+    """Parse CLI arguments, validate source state, and build selected skills."""
+
+    parser = argparse.ArgumentParser(description="Render copy-based Ceratops runtime skill folders.")
     parser.add_argument("--runtime-root", required=True, type=pathlib.Path)
-    parser.add_argument("--skill", action="append", help="Build only this skill. Can be repeated.")
-    parser.add_argument("--remove-stale", action="store_true", help="Remove runtime folders previously generated by this builder but no longer present in source.")
+    parser.add_argument("--skill", action="append", help="Render only this skill. Can be repeated.")
+    parser.add_argument("--remove-stale", action="store_true", help="Remove runtime folders previously generated by this renderer but no longer present in source.")
     args = parser.parse_args()
 
     manifest = load_manifest()

@@ -207,6 +207,8 @@ def run_json_command(args: list[str], label: str) -> ApiResult:
 
 
 def http_json(url: str) -> dict[str, Any]:
+    """Fetch public registry metadata that is exposed as JSON over HTTPS."""
+
     req = urllib.request.Request(url, headers={"User-Agent": "github-health-contract-checker"})
     with urllib.request.urlopen(req, timeout=30) as response:
         text = response.read().decode("utf-8")
@@ -214,14 +216,20 @@ def http_json(url: str) -> dict[str, Any]:
 
 
 def endpoint_for(endpoint: str, params: dict[str, Any]) -> str:
+    """Resolve a contract endpoint template using active repo parameters."""
+
     return str(substitute(endpoint, params))
 
 
 def repo_slug(owner: str, repo: str) -> str:
+    """Return the GitHub `OWNER/REPO` slug used in reports and API calls."""
+
     return f"{owner}/{repo}"
 
 
 def split_repo(value: str) -> tuple[str, str]:
+    """Parse and validate an `OWNER/REPO` CLI value."""
+
     if "/" not in value:
         raise SystemExit("--repo must be OWNER/REPO")
     owner, name = value.split("/", 1)
@@ -487,10 +495,14 @@ def apply_explicit_check_ids(
 
 
 def as_list(data: Any) -> list[Any]:
+    """Return list data from API responses and treat all other shapes as empty."""
+
     return data if isinstance(data, list) else []
 
 
 def tree_paths(tree_data: Any) -> list[str]:
+    """Extract repository paths from the Git trees API response."""
+
     if not isinstance(tree_data, dict):
         return []
     items = tree_data.get("tree")
@@ -500,6 +512,8 @@ def tree_paths(tree_data: Any) -> list[str]:
 
 
 def path_matches(paths: list[str], patterns: list[str]) -> bool:
+    """Return whether any repo path matches one of the contract glob patterns."""
+
     for path in paths:
         for pattern in patterns:
             if fnmatch.fnmatch(path, pattern) or fnmatch.fnmatch(pathlib.PurePosixPath(path).name, pattern):
@@ -508,6 +522,8 @@ def path_matches(paths: list[str], patterns: list[str]) -> bool:
 
 
 def matching_paths(paths: list[str], patterns: list[str]) -> list[str]:
+    """Return every repo path matched by one of the contract glob patterns."""
+
     matched: list[str] = []
     for path in paths:
         for pattern in patterns:
@@ -518,6 +534,8 @@ def matching_paths(paths: list[str], patterns: list[str]) -> list[str]:
 
 
 def detect_dependabot_ecosystems(paths: list[str]) -> dict[str, list[str]]:
+    """Infer dependency ecosystems from known manifest file patterns."""
+
     detected: dict[str, list[str]] = {}
     for ecosystem, patterns in DEPENDABOT_MANIFEST_PATTERNS.items():
         matches = matching_paths(paths, patterns)
@@ -527,6 +545,8 @@ def detect_dependabot_ecosystems(paths: list[str]) -> dict[str, list[str]]:
 
 
 def config_path(paths: list[str], *names: str) -> str | None:
+    """Find a config file path by exact case-insensitive repository path."""
+
     name_set = {name.lower() for name in names}
     for path in paths:
         if path.lower() in name_set:
@@ -541,6 +561,8 @@ def workflow_files(local: dict[str, Any]) -> dict[str, str]:
 
 
 def workflow_text(local: dict[str, Any]) -> str:
+    """Concatenate local workflow files for text-level policy checks."""
+
     return "\n".join(workflow_files(local).values())
 
 
@@ -628,6 +650,8 @@ def fork_pr_approval_finding(check_id: str, res: ApiResult, expected: dict[str, 
 
 
 def toml_key_present(text: str, key: str) -> bool:
+    """Detect static or dynamic keys in TOML-like local configuration text."""
+
     escaped = re.escape(key)
     if re.search(rf"(?m)^\s*{escaped}\s*=", text):
         return True
@@ -674,6 +698,8 @@ def git_state(local: dict[str, Any], default_branch: str) -> dict[str, Any]:
     root = local["root"]
 
     def git(*args: str) -> tuple[int, str]:
+        """Run a local git command and return status plus compact output."""
+
         proc = subprocess.run(["git", *args], cwd=root, text=True, capture_output=True)
         return proc.returncode, (proc.stdout + proc.stderr).strip()
 
@@ -908,6 +934,8 @@ def classify(repo_info: dict[str, Any], paths: list[str], topics: list[str], loc
 
 
 def get_nested(data: Any, dotted: str) -> Any:
+    """Read a dotted path from a nested dict, returning None on mismatch."""
+
     value = data
     for part in dotted.split("."):
         if not isinstance(value, dict):
@@ -917,6 +945,8 @@ def get_nested(data: Any, dotted: str) -> Any:
 
 
 def open_alerts(data: Any) -> list[dict[str, Any]]:
+    """Normalize Dependabot alert payloads to alert dictionaries."""
+
     return [item for item in as_list(data) if isinstance(item, dict)]
 
 
@@ -936,6 +966,8 @@ def workflows_with_unpinned_refs(local: dict[str, Any]) -> list[dict[str, str]]:
 
 
 def text_contains(local: dict[str, Any], path: str, pattern: str) -> bool:
+    """Run a regex against one scanned local text file."""
+
     text = local.get("texts", {}).get(path)
     return bool(text and re.search(pattern, text, re.IGNORECASE | re.MULTILINE))
 
@@ -1343,14 +1375,30 @@ def regex_scan_check(check: dict[str, Any], local: dict[str, Any]) -> list[dict[
     if not local.get("available"):
         return [finding(check_id, "WARN", "Local repo is unavailable for regex scan.", actual=local.get("errors"))]
     matches = []
+    ignored_paths = set(check.get("expected", {}).get("ignore_paths", []))
     for pattern in check.get("expected", {}).get("forbidden_patterns", []):
         regex = re.compile(pattern)
         for path, text in local.get("texts", {}).items():
+            if path in ignored_paths:
+                continue
             if regex.search(text):
                 matches.append({"path": path, "pattern": pattern})
     if matches:
         return [finding(check_id, "FAIL", "Forbidden local pattern found.", actual=matches, expected="no matches")]
     return [finding(check_id, "PASS", "No forbidden local patterns found.")]
+
+
+def release_asset_names(releases: Any) -> list[dict[str, Any]]:
+    """Return uploaded GitHub release assets from fetched release metadata."""
+
+    assets: list[dict[str, Any]] = []
+    for release in as_list(releases):
+        if not isinstance(release, dict):
+            continue
+        for asset in as_list(release.get("assets")):
+            if isinstance(asset, dict):
+                assets.append({"release": release.get("tag_name") or release.get("name"), "asset": asset.get("name")})
+    return assets
 
 
 def apply_approved_drift(
@@ -1589,8 +1637,9 @@ def evaluate_artifact_check(check: dict[str, Any], params: dict[str, Any], local
         if check_id == "common.real_deliverable_classification":
             return [finding(check_id, "PASS", "Artifact surfaces classified.", actual=sorted(artifacts))]
         if check_id == "common.no_artifact_consistency":
-            if "no_artifact" in artifacts and releases:
-                return [finding(check_id, "FAIL", "No-artifact posture conflicts with release assets or release metadata.", actual=releases)]
+            release_assets = release_asset_names(releases)
+            if "no_artifact" in artifacts and release_assets:
+                return [finding(check_id, "FAIL", "No-artifact posture conflicts with uploaded release assets.", actual=release_assets)]
             return [finding(check_id, "PASS", "No-artifact posture has no deterministic conflict.")]
         if check_id in {"common.live_registry_verification", "common.local_build_package_consume"}:
             return [finding(check_id, "MANUAL", "Local build or consumer checks are intentionally not run by the bundled audit; use recorded commands when publishing.", actual=registries)]
@@ -1761,8 +1810,8 @@ def evaluate_artifact_check(check: dict[str, Any], params: dict[str, Any], local
         return [finding(check_id, "PASS", "Docker/OCI deterministic file or workflow evidence recorded.")]
 
     if check_id == "github_release_assets.attestation_verification":
-        if not releases:
-            return [finding(check_id, "SKIP", "No GitHub release metadata fetched.")]
+        if not release_asset_names(releases):
+            return [finding(check_id, "SKIP", "No uploaded GitHub release assets detected.")]
         text = workflow_text(local) + "\n" + "\n".join(local.get("texts", {}).get(path, "") for path in local.get("texts", {}) if path.lower().endswith((".md", ".yml", ".yaml")))
         if re.search(r"(?i)(actions/attest|attestations:\s*write|cosign|provenance)", text) and not re.search(r"(?i)(gh attestation verify|cosign verify|cosign verify-attestation)", text):
             return [finding(check_id, "WARN", "Release artifact attestation/signature evidence exists but no verification command is recorded.", expected="gh attestation verify or cosign verify")]
@@ -1921,6 +1970,8 @@ def print_human(report: dict[str, Any]) -> None:
 
 
 def main() -> int:
+    """Parse CLI arguments, collect evidence, compare contracts, and report."""
+
     parser = argparse.ArgumentParser(
         description="Check GitHub repo, repo-code, and artifact health contracts.",
         formatter_class=argparse.RawDescriptionHelpFormatter,

@@ -251,6 +251,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
+    """Parse CLI arguments, evaluate the live PR, and emit the report."""
+
     parser = build_parser()
     args = parser.parse_args()
     cwd = args.cwd.resolve()

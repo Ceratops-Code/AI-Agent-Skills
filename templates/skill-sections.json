@@ -1,6 +1,6 @@
 {
   "sections": {
-    "minimal": "templates/sections/minimal.md",
+    "core": "templates/sections/core.md",
     "gh-current-state": "templates/sections/gh-current-state.md",
     "gh-repo-health-contract": "templates/sections/gh-repo-health-contract.md",
     "gh-artifact-contract": "templates/sections/gh-artifact-contract.md",
@@ -28,13 +28,13 @@
       "assets/ceratops-logo-500.png"
     ],
     "ceratops-codex-skill-stage-release": [
-      "scripts/build-runtime-skills.py",
+      "scripts/render-runtime-skills.py",
       "scripts/install-skills.ps1",
       "scripts/validation/validate-skills-consistency.py",
       "templates"
     ],
     "ceratops-gh-codex-skill-ship": [
-      "scripts/build-runtime-skills.py",
+      "scripts/render-runtime-skills.py",
       "scripts/install-skills.ps1",
       "scripts/validation/validate-skills-consistency.py",
       "templates"
@@ -72,17 +72,22 @@
       "contracts"
     ],
     "ceratops-skill-create": [
-      "scripts/build-runtime-skills.py",
+      "scripts/render-runtime-skills.py",
       "scripts/install-skills.ps1",
       "scripts/validation/validate-skills-consistency.py",
       "templates"
     ],
     "ceratops-skill-update": [
-      "scripts/build-runtime-skills.py",
+      "scripts/render-runtime-skills.py",
       "scripts/install-skills.ps1",
       "scripts/validation/validate-skills-consistency.py",
       "templates",
       "contracts"
+    ],
+    "ceratops-skill-fast-change": [
+      "scripts/render-runtime-skills.py",
+      "scripts/install-skills.ps1",
+      "templates"
     ],
     "ceratops-code-consistency-audit": [
       "contracts/code/code-comment-nondeterministic-contract.md"
@@ -90,63 +95,81 @@
   },
   "skills": {
     "ceratops-automation-run": [
-      "minimal"
+      "core"
+    ],
+    "ceratops-produce-rule-update": [
+      "core"
+    ],
+    "ceratops-fixloop-breaker": [
+      "core"
+    ],
+    "ceratops-rework-analysis": [
+      "core"
+    ],
+    "ceratops-prompt-optimizer": [
+      "core"
+    ],
+    "ceratops-skill-optimize": [
+      "core"
+    ],
+    "ceratops-skill-fast-change": [
+      "core"
     ],
     "ceratops-code-consistency-audit": [
-      "minimal"
+      "core"
     ],
     "ceratops-codex-skill-stage-release": [
-      "minimal",
+      "core",
       "release-branch-runtime"
     ],
     "ceratops-skill-create": [
-      "minimal"
+      "core"
     ],
     "ceratops-skill-update": [
-      "minimal"
+      "core"
     ],
     "ceratops-gh-codex-skill-ship": [
-      "minimal",
+      "core",
       "release-branch-runtime"
     ],
     "ceratops-gh-merge-pr": [
-      "minimal",
+      "core",
       "gh-current-state"
     ],
     "ceratops-gh-repo-create-and-publish": [
-      "minimal",
+      "core",
       "gh-current-state",
       "gh-repo-health-contract",
       "gh-artifact-contract"
     ],
     "ceratops-gh-repo-dependencies-maintenance": [
-      "minimal",
+      "core",
       "gh-current-state",
       "gh-repo-health-contract"
     ],
     "ceratops-gh-repo-health-audit": [
-      "minimal",
+      "core",
       "gh-current-state",
       "gh-repo-health-contract",
       "gh-artifact-contract"
     ],
     "ceratops-gh-ship-change": [
-      "minimal"
+      "core"
     ],
     "ceratops-contract-review": [
-      "minimal"
+      "core"
     ],
     "ceratops-task-execute-in-stages": [
-      "minimal"
+      "core"
     ],
     "ceratops-thread-full-handoff": [
-      "minimal"
+      "core"
     ],
     "ceratops-thread-resume-manual-stop": [
-      "minimal"
+      "core"
     ],
     "ceratops-thread-side-task-handoff": [
-      "minimal"
+      "core"
     ]
   }
 }

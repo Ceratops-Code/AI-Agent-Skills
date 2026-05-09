@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Moved Ceratops skills to a copy-based runtime install model: source skills stay delta-only, `scripts/build-runtime-skills.py` renders shared sections, and `scripts/install-skills.ps1` copies managed runtime skill folders plus declared payloads.
+- Moved Ceratops skills to a copy-based runtime install model: source skills stay delta-only, `scripts/render-runtime-skills.py` renders shared sections, and `scripts/install-skills.ps1` copies managed runtime skill folders plus declared payloads.
 - Split health policy into deterministic and non-deterministic contracts for GitHub org settings, live GitHub repo settings, repo contents, code comments, and external artifact registries.
 - Renamed contract checker scripts under `scripts/validation/` and renamed the skill standards workflow to `ceratops-contract-review`.
 - Retired the separate standards baseline file; durable source tracking now lives in `contracts/source-docs.json`, deterministic JSON contracts, and non-deterministic contract review prompts.

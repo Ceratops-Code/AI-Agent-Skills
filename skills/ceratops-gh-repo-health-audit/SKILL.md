@@ -13,9 +13,9 @@ Validate that an existing GitHub repo is clean, current, secure, documented, pub
 
 ### Script Bundle
 
-- Full GitHub, code, and artifact contract check: `python scripts/validation/github-validate-repo-artifact-contract.py --repo OWNER/REPO --surface all --subset health --local-repo-path PATH`
-- Optional org contract check when org posture is in scope: `python scripts/validation/github-validate-org-contract.py --org ORG`
-- Add `--json` when another step needs structured findings, and add `--check-id` or a narrower `--subset` when only part of the contract is relevant.
+- (D) Full GitHub, code, and artifact contract check: `python scripts/validation/github-validate-repo-artifact-contract.py --repo OWNER/REPO --surface all --subset health --local-repo-path PATH`
+- (D) Optional org contract check when org posture is in scope: `python scripts/validation/github-validate-org-contract.py --org ORG`
+- (D) Add `--json` when another step needs structured findings, and add `--check-id` or a narrower `--subset` when only part of the contract is relevant.
 
 ### Inputs To Capture
 
@@ -43,8 +43,8 @@ Infer missing inputs from live repo state and local files before asking.
 
 #### 2. Run live contract checks first
 
-- Run the full GitHub, code, and artifact contract checker before treating repo health as clean.
-- Treat the contract checker output as the source of truth for machine-checkable GitHub settings, repo-content posture, stale queues, local checks, and artifact registry evidence.
+- (D) Run the full GitHub, code, and artifact contract checker before treating repo health as clean.
+- (D) Treat the contract checker output as the source of truth for machine-checkable GitHub settings, repo-content posture, stale queues, local checks, and artifact registry evidence.
 - If the checker reports a warning, manual finding, or blind spot, decide whether the gap is acceptable, needs a manual follow-up, or should be fixed now.
 
 #### 3. Research only when the next decision needs it

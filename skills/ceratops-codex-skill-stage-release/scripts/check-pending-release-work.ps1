@@ -3,14 +3,14 @@ param(
     [string]$SkillsRepoRoot,
     [string]$MainBranch = "main",
     [string]$ReleaseBranch = "release/local",
-    [string[]]$StagedBranches = @()
+    [switch]$CleanMerged
 )
 
 # Skill-local helper called only by ceratops-codex-skill-stage-release before a
-# staged skills repo release is treated as ready to ship. It is intentionally
-# read-only: it reports dirty worktrees or local branches that have commits not
-# reachable from the release branch, but it never cleans them up or changes Git
-# state.
+# staged skills repo release is treated as ready to ship. By default it reports
+# dirty worktrees or local branches that have commits not reachable from the
+# release branch. With -CleanMerged, it first removes clean task worktrees and
+# local branches whose commits are already reachable from the release branch.
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
@@ -23,7 +23,6 @@ if ([string]::IsNullOrWhiteSpace($SkillsRepoRoot)) {
 }
 
 $resolvedSkillsRepoRoot = (Resolve-Path -LiteralPath $SkillsRepoRoot).Path
-
 function Invoke-Git {
     param([string[]]$Arguments)
 
@@ -41,6 +40,19 @@ function Get-GitLines {
         throw "git failed: $($Arguments -join ' ')"
     }
     return @($output)
+}
+
+function Test-GitSuccess {
+    param([string[]]$Arguments)
+
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        $null = & git -C $resolvedSkillsRepoRoot @Arguments *>$null
+        return $LASTEXITCODE -eq 0
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
 }
 
 function Get-WorktreeRecords {
@@ -72,6 +84,10 @@ function Get-WorktreeRecords {
     return $records
 }
 
+function Get-CurrentBranch {
+    return (Get-GitLines @("branch", "--show-current") | Select-Object -First 1).Trim()
+}
+
 function Convert-BranchRefToName {
     param([string]$BranchRef)
 
@@ -82,25 +98,141 @@ function Convert-BranchRefToName {
     return $BranchRef
 }
 
+function Test-IsProtectedBranch {
+    param([string]$BranchName)
+
+    if ([string]::IsNullOrWhiteSpace($BranchName)) {
+        return $true
+    }
+    return $BranchName -eq $MainBranch -or $BranchName -eq $ReleaseBranch
+}
+
 function Test-IsExcludedBranch {
     param([string]$BranchName)
 
     if ([string]::IsNullOrWhiteSpace($BranchName)) {
         return $false
     }
-    # Main, the active release branch, and the branches explicitly staged into
-    # that release are expected. Every other branch is suspicious if it has
-    # commits that are not reachable from the release branch.
-    if ($BranchName -eq $MainBranch -or $BranchName -eq $ReleaseBranch) {
+    # Main and the active release branch are expected. Every other branch is
+    # suspicious if it has commits that are not reachable from the release branch.
+    if (Test-IsProtectedBranch $BranchName) {
         return $true
     }
-    return $StagedBranches -contains $BranchName
+    return $false
 }
 
-Invoke-Git @("rev-parse", "--verify", $ReleaseBranch)
+function Get-ExpectedWorktreeRoot {
+    $projectName = Split-Path -Leaf $resolvedSkillsRepoRoot
+    $projectsRoot = Split-Path -Parent $resolvedSkillsRepoRoot
+    return Join-Path (Join-Path $projectsRoot "worktrees") $projectName
+}
+
+function Test-PathWithin {
+    param(
+        [string]$Path,
+        [string]$Parent
+    )
+
+    $resolvedPath = (Resolve-Path -LiteralPath $Path).Path.TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+    $resolvedParent = (Resolve-Path -LiteralPath $Parent).Path.TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+    return $resolvedPath.StartsWith($resolvedParent + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)
+}
+
+function Get-WorktreeStatus {
+    param([string]$WorktreePath)
+
+    $status = @(& git -C $WorktreePath status --porcelain)
+    if ($LASTEXITCODE -ne 0) {
+        throw "git failed: status --porcelain in $WorktreePath"
+    }
+    return $status
+}
 
 $findings = @()
+$removed = @()
 $skillsRepoPath = $resolvedSkillsRepoRoot.TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+$expectedWorktreeRoot = Get-ExpectedWorktreeRoot
+
+if ($CleanMerged) {
+    Invoke-Git @("rev-parse", "--verify", $ReleaseBranch)
+    if (Test-Path -LiteralPath $expectedWorktreeRoot) {
+        foreach ($record in Get-WorktreeRecords) {
+            $worktreePath = (Resolve-Path -LiteralPath $record.worktree).Path
+            $normalizedWorktreePath = $worktreePath.TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+            if ($normalizedWorktreePath -ieq $skillsRepoPath) {
+                continue
+            }
+            if (-not ($record.PSObject.Properties.Name -contains "branch")) {
+                continue
+            }
+
+            $branchName = Convert-BranchRefToName $record.branch
+            if (Test-IsProtectedBranch $branchName) {
+                continue
+            }
+            if (-not (Test-GitSuccess @("merge-base", "--is-ancestor", $branchName, $ReleaseBranch))) {
+                continue
+            }
+            if (-not (Test-PathWithin -Path $worktreePath -Parent $expectedWorktreeRoot)) {
+                $findings += [pscustomobject]@{
+                    Kind = "merged_worktree_outside_expected_root"
+                    Branch = $branchName
+                    Path = $worktreePath
+                    Detail = "merged into $ReleaseBranch but not under $expectedWorktreeRoot"
+                }
+                continue
+            }
+
+            $status = @(Get-WorktreeStatus $worktreePath)
+            if ($status.Count -gt 0) {
+                $findings += [pscustomobject]@{
+                    Kind = "dirty_merged_worktree"
+                    Branch = $branchName
+                    Path = $worktreePath
+                    Detail = "$($status.Count) status entr$(if ($status.Count -eq 1) { 'y' } else { 'ies' }); not removed"
+                }
+                continue
+            }
+
+            Invoke-Git @("worktree", "remove", $worktreePath)
+            Invoke-Git @("branch", "-d", $branchName)
+            $removed += [pscustomobject]@{
+                Kind = "merged_worktree_branch"
+                Branch = $branchName
+                Path = $worktreePath
+                Detail = "removed; merged into $ReleaseBranch"
+            }
+        }
+    }
+
+    foreach ($branchName in Get-GitLines @("for-each-ref", "--format=%(refname:short)", "refs/heads")) {
+        if (Test-IsProtectedBranch $branchName) {
+            continue
+        }
+        if (Test-GitSuccess @("merge-base", "--is-ancestor", $branchName, $ReleaseBranch)) {
+            Invoke-Git @("branch", "-d", $branchName)
+            $removed += [pscustomobject]@{
+                Kind = "merged_branch"
+                Branch = $branchName
+                Path = ""
+                Detail = "removed; merged into $ReleaseBranch"
+            }
+        }
+    }
+}
+
+if (-not (Test-GitSuccess @("rev-parse", "--verify", $ReleaseBranch))) {
+    if ($removed.Count -gt 0) {
+        Write-Host "Removed merged local release work:"
+        $removed | Sort-Object Kind, Branch, Path | Format-Table -AutoSize
+    }
+    if ($findings.Count -gt 0) {
+        Write-Host "Pending local work outside '$ReleaseBranch' was found:"
+        $findings | Sort-Object Kind, Branch, Path | Format-Table -AutoSize
+        exit 2
+    }
+    Invoke-Git @("rev-parse", "--verify", $ReleaseBranch)
+}
 
 foreach ($record in Get-WorktreeRecords) {
     $worktreePath = (Resolve-Path -LiteralPath $record.worktree).Path
@@ -116,10 +248,7 @@ foreach ($record in Get-WorktreeRecords) {
 
     # Dirty worktrees outside the skills repo checkout are reported before shipping
     # so they are either staged, intentionally retained, or cleaned up.
-    $status = @(& git -C $worktreePath status --porcelain)
-    if ($LASTEXITCODE -ne 0) {
-        throw "git failed: status --porcelain in $worktreePath"
-    }
+    $status = @(Get-WorktreeStatus $worktreePath)
     if ($status.Count -gt 0) {
         $findings += [pscustomobject]@{
             Kind = "dirty_worktree"
@@ -146,6 +275,11 @@ foreach ($branchName in Get-GitLines @("for-each-ref", "--format=%(refname:short
             Detail = "$aheadCount commit$(if ($aheadCount -eq 1) { '' } else { 's' }) not in $ReleaseBranch"
         }
     }
+}
+
+if ($removed.Count -gt 0) {
+    Write-Host "Removed merged local release work:"
+    $removed | Sort-Object Kind, Branch, Path | Format-Table -AutoSize
 }
 
 if ($findings.Count -eq 0) {
