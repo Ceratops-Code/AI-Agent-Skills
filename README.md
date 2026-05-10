@@ -13,6 +13,7 @@ Reusable Ceratops skills for Codex and other `SKILL.md`-compatible agents.
 | `ceratops-gh-merge-pr` | Safely merge a GitHub PR, verify checks and protection with live scripted readiness checks, clean up branches, and sync local state. |
 | `ceratops-contract-review` | Review the GitHub, code, PR readiness, and artifact health contracts against current standards, then report proposed updates for explicit approval. |
 | `ceratops-produce-rule-update` | Produce durable rule or instruction updates from concrete failures or instruction gaps. |
+| `ceratops-rule-optimizer` | Optimize durable rule text after a concrete failure, gap, or weak candidate. |
 | `ceratops-fixloop-breaker` | Break repeated failed fix loops by requiring a run-by-run failure analysis before more code changes. |
 | `ceratops-rework-analysis` | Analyze recent Codex runs for deterministic rework causes and recommend low-maintenance producer controls. |
 | `ceratops-prompt-optimizer` | Rewrite rough prompts into clearer structured prompts without changing intent. |
