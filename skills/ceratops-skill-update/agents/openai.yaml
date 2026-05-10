@@ -1,6 +1,6 @@
 interface:
   display_name: "Ceratops Skill Update"
-  short_description: "Update existing Ceratops skills and keep the section system consistent"
+  short_description: "Update Ceratops or compatible skills"
   icon_small: "./assets/ceratops-logo-500.png"
   icon_large: "./assets/ceratops-logo-500.png"
-  default_prompt: "Use $ceratops-skill-update to update the Ceratops skills, decide automatically which source of truth to edit, run only the needed checks, and keep the repo consistent without leaving generated skill drift behind."
+  default_prompt: "Use $ceratops-skill-update to update Ceratops or compatible skills, editing the right source of truth and running only checks the target repo provides."

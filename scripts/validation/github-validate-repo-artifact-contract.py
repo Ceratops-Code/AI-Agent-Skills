@@ -145,6 +145,8 @@ def parse_error(stdout: str, stderr: str) -> tuple[int | None, str]:
             obj = json.loads(candidate)
         except json.JSONDecodeError:
             continue
+        if not isinstance(obj, dict):
+            continue
         status = obj.get("status")
         try:
             status_int = int(status) if status is not None else None
@@ -207,6 +209,8 @@ def run_json_command(args: list[str], label: str) -> ApiResult:
 
 
 def http_json(url: str) -> dict[str, Any]:
+    """Fetch public registry metadata that is exposed as JSON over HTTPS."""
+
     req = urllib.request.Request(url, headers={"User-Agent": "github-health-contract-checker"})
     with urllib.request.urlopen(req, timeout=30) as response:
         text = response.read().decode("utf-8")
@@ -214,14 +218,20 @@ def http_json(url: str) -> dict[str, Any]:
 
 
 def endpoint_for(endpoint: str, params: dict[str, Any]) -> str:
+    """Resolve a contract endpoint template using active repo parameters."""
+
     return str(substitute(endpoint, params))
 
 
 def repo_slug(owner: str, repo: str) -> str:
+    """Return the GitHub `OWNER/REPO` slug used in reports and API calls."""
+
     return f"{owner}/{repo}"
 
 
 def split_repo(value: str) -> tuple[str, str]:
+    """Parse and validate an `OWNER/REPO` CLI value."""
+
     if "/" not in value:
         raise SystemExit("--repo must be OWNER/REPO")
     owner, name = value.split("/", 1)
@@ -487,10 +497,14 @@ def apply_explicit_check_ids(
 
 
 def as_list(data: Any) -> list[Any]:
+    """Return list data from API responses and treat all other shapes as empty."""
+
     return data if isinstance(data, list) else []
 
 
 def tree_paths(tree_data: Any) -> list[str]:
+    """Extract repository paths from the Git trees API response."""
+
     if not isinstance(tree_data, dict):
         return []
     items = tree_data.get("tree")
@@ -500,6 +514,8 @@ def tree_paths(tree_data: Any) -> list[str]:
 
 
 def path_matches(paths: list[str], patterns: list[str]) -> bool:
+    """Return whether any repo path matches one of the contract glob patterns."""
+
     for path in paths:
         for pattern in patterns:
             if fnmatch.fnmatch(path, pattern) or fnmatch.fnmatch(pathlib.PurePosixPath(path).name, pattern):
@@ -508,6 +524,8 @@ def path_matches(paths: list[str], patterns: list[str]) -> bool:
 
 
 def matching_paths(paths: list[str], patterns: list[str]) -> list[str]:
+    """Return every repo path matched by one of the contract glob patterns."""
+
     matched: list[str] = []
     for path in paths:
         for pattern in patterns:
@@ -518,6 +536,8 @@ def matching_paths(paths: list[str], patterns: list[str]) -> list[str]:
 
 
 def detect_dependabot_ecosystems(paths: list[str]) -> dict[str, list[str]]:
+    """Infer dependency ecosystems from known manifest file patterns."""
+
     detected: dict[str, list[str]] = {}
     for ecosystem, patterns in DEPENDABOT_MANIFEST_PATTERNS.items():
         matches = matching_paths(paths, patterns)
@@ -527,6 +547,8 @@ def detect_dependabot_ecosystems(paths: list[str]) -> dict[str, list[str]]:
 
 
 def config_path(paths: list[str], *names: str) -> str | None:
+    """Find a config file path by exact case-insensitive repository path."""
+
     name_set = {name.lower() for name in names}
     for path in paths:
         if path.lower() in name_set:
@@ -541,6 +563,8 @@ def workflow_files(local: dict[str, Any]) -> dict[str, str]:
 
 
 def workflow_text(local: dict[str, Any]) -> str:
+    """Concatenate local workflow files for text-level policy checks."""
+
     return "\n".join(workflow_files(local).values())
 
 
@@ -628,6 +652,8 @@ def fork_pr_approval_finding(check_id: str, res: ApiResult, expected: dict[str, 
 
 
 def toml_key_present(text: str, key: str) -> bool:
+    """Detect static or dynamic keys in TOML-like local configuration text."""
+
     escaped = re.escape(key)
     if re.search(rf"(?m)^\s*{escaped}\s*=", text):
         return True
@@ -674,6 +700,8 @@ def git_state(local: dict[str, Any], default_branch: str) -> dict[str, Any]:
     root = local["root"]
 
     def git(*args: str) -> tuple[int, str]:
+        """Run a local git command and return status plus compact output."""
+
         proc = subprocess.run(["git", *args], cwd=root, text=True, capture_output=True)
         return proc.returncode, (proc.stdout + proc.stderr).strip()
 
@@ -908,6 +936,8 @@ def classify(repo_info: dict[str, Any], paths: list[str], topics: list[str], loc
 
 
 def get_nested(data: Any, dotted: str) -> Any:
+    """Read a dotted path from a nested dict, returning None on mismatch."""
+
     value = data
     for part in dotted.split("."):
         if not isinstance(value, dict):
@@ -917,6 +947,8 @@ def get_nested(data: Any, dotted: str) -> Any:
 
 
 def open_alerts(data: Any) -> list[dict[str, Any]]:
+    """Normalize Dependabot alert payloads to alert dictionaries."""
+
     return [item for item in as_list(data) if isinstance(item, dict)]
 
 
@@ -936,6 +968,8 @@ def workflows_with_unpinned_refs(local: dict[str, Any]) -> list[dict[str, str]]:
 
 
 def text_contains(local: dict[str, Any], path: str, pattern: str) -> bool:
+    """Run a regex against one scanned local text file."""
+
     text = local.get("texts", {}).get(path)
     return bool(text and re.search(pattern, text, re.IGNORECASE | re.MULTILINE))
 
@@ -957,11 +991,29 @@ def evaluate_repo_check(
     check_id = check["id"]
     repo_res = result(fetched, "/repos/${owner}/${repo}", params)
     repo_info = repo_res.data if repo_res.ok and isinstance(repo_res.data, dict) else {}
+    owner_res = result(fetched, "/orgs/${owner}", params)
+    owner_info = owner_res.data if owner_res.ok and isinstance(owner_res.data, dict) else {}
+    owner_plan = owner_info.get("plan") if isinstance(owner_info.get("plan"), dict) else {}
     default_branch = str(params.get("default_branch") or repo_info.get("default_branch") or "")
     tree_res = result(fetched, "/repos/${owner}/${repo}/git/trees/${default_branch}?recursive=1", params)
     paths = local.get("files") or tree_paths(tree_res.data)
     topics_res = result(fetched, "/repos/${owner}/${repo}/topics", params)
     topics = [str(t).lower() for t in (topics_res.data or {}).get("names", [])] if topics_res.ok and isinstance(topics_res.data, dict) else []
+    rule_context = {
+        "repo.visibility": repo_info.get("visibility"),
+        "repo.fork": bool(repo_info.get("fork")),
+        "repo.archived": bool(repo_info.get("archived")),
+        "owner.plan.name": owner_plan.get("name"),
+        "type.workflow_surface": types.get("workflow_surface", {}),
+        "artifact_surface": types.get("artifact_surface", []),
+        "owner_is_org": (repo_info.get("owner") or {}).get("type") == "Organization",
+        "expected_maintainer_bypass_actors": params.get("expected_maintainer_bypass_actors", []),
+        "open_dependabot_prs_count": 0,
+        "file:.github/dependabot.yml": local.get("texts", {}).get(".github/dependabot.yml", ""),
+    }
+    applies_when = check.get("applies_when")
+    if applies_when and not condition_matches(str(applies_when), rule_context):
+        return [finding(check_id, "SKIP", "Check does not apply to this repository context.", actual=rule_context)]
 
     if check_id.startswith("type."):
         return [finding(check_id, "PASS", "Repository types classified.", actual=types)]
@@ -1004,9 +1056,20 @@ def evaluate_repo_check(
     if check_id == "repo.merge_settings":
         expected = check.get("expected", {})
         drifts = []
-        for key, exp in expected.items():
+        skipped = []
+        for key, raw_spec in expected.items():
+            spec = raw_spec if isinstance(raw_spec, dict) else {"value": raw_spec}
+            field_applies = spec.get("applies_when")
+            if field_applies and not condition_matches(str(field_applies), rule_context):
+                skipped.append({"field": key, "reason": spec.get("skip_reason"), "context": rule_context})
+                continue
+            exp = spec.get("value")
             if isinstance(exp, bool) and repo_info.get(key) is not exp:
                 drifts.append(finding(check_id, "WARN", f"{key} mismatch.", actual=repo_info.get(key), expected=exp, path=f"$.{key}"))
+        if drifts:
+            return drifts
+        if skipped:
+            return [finding(check_id, "PASS", "Merge settings match deterministic defaults for applicable fields.", actual={"skipped": skipped})]
         return drifts or [finding(check_id, "PASS", "Merge settings match deterministic defaults.")]
 
     if check_id in {"process.default_branch_enforcement_present", "process.default_branch_name_and_protection_indicator"}:
@@ -1315,7 +1378,20 @@ def evaluate_repo_check(
         if check_id == "stale_state.local_path_references":
             return regex_scan_check(check, local)
         endpoint = check.get("endpoint")
-        data = result(fetched, endpoint, params).data if endpoint else None
+        res = result(fetched, endpoint, params) if endpoint else ApiResult(False, "GET", "missing endpoint")
+        data = res.data
+        if check_id == "stale_state.branches":
+            if not res.ok:
+                return [finding(check_id, "WARN", "Branch inventory could not be fetched.", actual={"status": res.status, "message": res.message})]
+            ignored = set(check.get("expected", {}).get("ignored_branch_names", []))
+            branches = [
+                item
+                for item in as_list(data)
+                if isinstance(item, dict) and item.get("name") != default_branch and item.get("name") not in ignored
+            ]
+            if not branches:
+                return [finding(check_id, "PASS", "No reportable non-default branches found.", actual=[])]
+            data = branches
         return [finding(check_id, "MANUAL", "Fetched stale-state inventory; classify active, retained, approved drift, or stale before cleanup.", actual=data)]
 
     if check_id == "local.git_state":
@@ -1343,14 +1419,30 @@ def regex_scan_check(check: dict[str, Any], local: dict[str, Any]) -> list[dict[
     if not local.get("available"):
         return [finding(check_id, "WARN", "Local repo is unavailable for regex scan.", actual=local.get("errors"))]
     matches = []
+    ignored_paths = set(check.get("expected", {}).get("ignore_paths", []))
     for pattern in check.get("expected", {}).get("forbidden_patterns", []):
         regex = re.compile(pattern)
         for path, text in local.get("texts", {}).items():
+            if path in ignored_paths:
+                continue
             if regex.search(text):
                 matches.append({"path": path, "pattern": pattern})
     if matches:
         return [finding(check_id, "FAIL", "Forbidden local pattern found.", actual=matches, expected="no matches")]
     return [finding(check_id, "PASS", "No forbidden local patterns found.")]
+
+
+def release_asset_names(releases: Any) -> list[dict[str, Any]]:
+    """Return uploaded GitHub release assets from fetched release metadata."""
+
+    assets: list[dict[str, Any]] = []
+    for release in as_list(releases):
+        if not isinstance(release, dict):
+            continue
+        for asset in as_list(release.get("assets")):
+            if isinstance(asset, dict):
+                assets.append({"release": release.get("tag_name") or release.get("name"), "asset": asset.get("name")})
+    return assets
 
 
 def apply_approved_drift(
@@ -1398,22 +1490,41 @@ def matches_rule(rule: dict[str, Any], check_id: str, path: str | None, rule_con
 def condition_matches(expression: str, rule_context: dict[str, Any]) -> bool:
     """Evaluate the small approved-drift condition language used by contracts.
 
-    The contract intentionally uses only simple boolean comparisons joined by
-    `&&`. Unknown values are treated as non-matches so a stale or under-fetched
-    bundle cannot silently approve drift.
+    The contract intentionally uses a small expression language. Unknown values
+    are treated as non-matches so a stale or under-fetched bundle cannot silently
+    approve or skip drift.
     """
 
     expression = expression.strip()
-    if not expression or expression == "true":
+    if not expression or expression in {"true", "always"}:
         return True
-    for clause in [part.strip() for part in expression.split("&&")]:
-        if not clause_matches(clause, rule_context):
-            return False
-    return True
+    return any(
+        all(clause_matches(clause, rule_context) for clause in [part.strip() for part in group.split("&&")])
+        for group in [part.strip() for part in expression.split("||")]
+    )
 
 
 def clause_matches(clause: str, rule_context: dict[str, Any]) -> bool:
     """Return whether one approved-drift condition clause is true."""
+
+    file_contains = re.fullmatch(r"file\s+(\S+)\s+contains\s+(.+)", clause)
+    if file_contains:
+        path, needle = file_contains.groups()
+        return needle in str(rule_context.get(f"file:{path}") or "")
+
+    has_match = re.fullmatch(r"([A-Za-z0-9_.]+)\s+has\s+([A-Za-z0-9_-]+)", clause)
+    if has_match:
+        key, member = has_match.groups()
+        actual = rule_context.get(key)
+        if isinstance(actual, dict):
+            return bool(actual.get(member))
+        if isinstance(actual, (list, set, tuple)):
+            return member in actual
+        return False
+
+    not_empty_match = re.fullmatch(r"([A-Za-z0-9_.]+)\s+is\s+not\s+empty", clause)
+    if not_empty_match:
+        return bool(rule_context.get(not_empty_match.group(1)))
 
     in_match = re.fullmatch(r"([A-Za-z0-9_.]+)\s+in\s+\[(.*)\]", clause)
     if in_match:
@@ -1422,22 +1533,46 @@ def clause_matches(clause: str, rule_context: dict[str, Any]) -> bool:
         options = [item.strip().strip("'\"") for item in raw_values.split(",") if item.strip()]
         return value in options
 
-    eq_match = re.fullmatch(r"([A-Za-z0-9_.]+)\s*==\s*(true|false|null|-?\d+|'[^']*'|\"[^\"]*\")", clause)
+    ne_match = re.fullmatch(r"([A-Za-z0-9_.]+)\s*!=\s*(true|false|null|-?\d+|'[^']*'|\"[^\"]*\"|[A-Za-z0-9_-]+)", clause)
+    if ne_match:
+        key, raw_expected = ne_match.groups()
+        actual = rule_context.get(key)
+        expected = parse_condition_value(raw_expected)
+        if actual is None:
+            return False
+        if isinstance(actual, (list, set, tuple)):
+            return expected not in actual
+        return actual != expected
+
+    gt_match = re.fullmatch(r"([A-Za-z0-9_.]+)\s*>\s*(-?\d+)", clause)
+    if gt_match:
+        key, raw_expected = gt_match.groups()
+        actual = rule_context.get(key)
+        return isinstance(actual, (int, float)) and actual > int(raw_expected)
+
+    eq_match = re.fullmatch(r"([A-Za-z0-9_.]+)\s*==\s*(true|false|null|-?\d+|'[^']*'|\"[^\"]*\"|[A-Za-z0-9_-]+)", clause)
     if not eq_match:
         return False
     key, raw_expected = eq_match.groups()
     actual = rule_context.get(key)
-    if raw_expected == "true":
-        expected: Any = True
-    elif raw_expected == "false":
-        expected = False
-    elif raw_expected == "null":
-        expected = None
-    elif raw_expected.lstrip("-").isdigit():
-        expected = int(raw_expected)
-    else:
-        expected = raw_expected.strip("'\"")
+    expected = parse_condition_value(raw_expected)
+    if actual is None:
+        return False
     return actual == expected
+
+
+def parse_condition_value(raw_expected: str) -> Any:
+    """Parse one scalar from the contract condition mini-language."""
+
+    if raw_expected == "true":
+        return True
+    if raw_expected == "false":
+        return False
+    if raw_expected == "null":
+        return None
+    if raw_expected.lstrip("-").isdigit():
+        return int(raw_expected)
+    return raw_expected.strip("'\"")
 
 
 def approved_drift_context(params: dict[str, Any], repo_context: dict[str, Any], local: dict[str, Any]) -> dict[str, Any]:
@@ -1452,6 +1587,7 @@ def approved_drift_context(params: dict[str, Any], repo_context: dict[str, Any],
     return {
         "repo.fork": bool(repo_data.get("fork")),
         "repo.archived": bool(repo_data.get("archived")),
+        "repo.visibility": repo_data.get("visibility"),
         "audit_only": bool(params.get("audit_only", True)),
         "detected_external_artifact_count": len(external_artifacts),
         "no_artifact_docs_consistent": bool(local.get("available") and not external_artifacts),
@@ -1589,8 +1725,9 @@ def evaluate_artifact_check(check: dict[str, Any], params: dict[str, Any], local
         if check_id == "common.real_deliverable_classification":
             return [finding(check_id, "PASS", "Artifact surfaces classified.", actual=sorted(artifacts))]
         if check_id == "common.no_artifact_consistency":
-            if "no_artifact" in artifacts and releases:
-                return [finding(check_id, "FAIL", "No-artifact posture conflicts with release assets or release metadata.", actual=releases)]
+            release_assets = release_asset_names(releases)
+            if "no_artifact" in artifacts and release_assets:
+                return [finding(check_id, "FAIL", "No-artifact posture conflicts with uploaded release assets.", actual=release_assets)]
             return [finding(check_id, "PASS", "No-artifact posture has no deterministic conflict.")]
         if check_id in {"common.live_registry_verification", "common.local_build_package_consume"}:
             return [finding(check_id, "MANUAL", "Local build or consumer checks are intentionally not run by the bundled audit; use recorded commands when publishing.", actual=registries)]
@@ -1761,8 +1898,8 @@ def evaluate_artifact_check(check: dict[str, Any], params: dict[str, Any], local
         return [finding(check_id, "PASS", "Docker/OCI deterministic file or workflow evidence recorded.")]
 
     if check_id == "github_release_assets.attestation_verification":
-        if not releases:
-            return [finding(check_id, "SKIP", "No GitHub release metadata fetched.")]
+        if not release_asset_names(releases):
+            return [finding(check_id, "SKIP", "No uploaded GitHub release assets detected.")]
         text = workflow_text(local) + "\n" + "\n".join(local.get("texts", {}).get(path, "") for path in local.get("texts", {}) if path.lower().endswith((".md", ".yml", ".yaml")))
         if re.search(r"(?i)(actions/attest|attestations:\s*write|cosign|provenance)", text) and not re.search(r"(?i)(gh attestation verify|cosign verify|cosign verify-attestation)", text):
             return [finding(check_id, "WARN", "Release artifact attestation/signature evidence exists but no verification command is recorded.", expected="gh attestation verify or cosign verify")]
@@ -1835,7 +1972,26 @@ def remediate_repo(check_ids: set[str], repo_contract: dict[str, Any], params: d
     repo = repo_slug(params["owner"], params["repo"])
     checks = {check["id"]: check for check in repo_contract.get("checks", [])}
     if "repo.merge_settings" in check_ids:
-        body = {k: v for k, v in checks["repo.merge_settings"].get("expected", {}).items() if isinstance(v, bool)}
+        repo_res = run_gh_api("GET", f"/repos/{repo}")
+        repo_info = repo_res.data if repo_res.ok and isinstance(repo_res.data, dict) else {}
+        owner_res = run_gh_api("GET", f"/orgs/{params['owner']}")
+        owner_info = owner_res.data if owner_res.ok and isinstance(owner_res.data, dict) else {}
+        owner_plan = owner_info.get("plan") if isinstance(owner_info.get("plan"), dict) else {}
+        rule_context = {
+            "repo.visibility": repo_info.get("visibility"),
+            "repo.fork": bool(repo_info.get("fork")),
+            "repo.archived": bool(repo_info.get("archived")),
+            "owner.plan.name": owner_plan.get("name"),
+        }
+        body = {}
+        for key, raw_spec in checks["repo.merge_settings"].get("expected", {}).items():
+            spec = raw_spec if isinstance(raw_spec, dict) else {"value": raw_spec}
+            field_applies = spec.get("applies_when")
+            if field_applies and not condition_matches(str(field_applies), rule_context):
+                continue
+            value = spec.get("value")
+            if isinstance(value, bool):
+                body[key] = value
         res = run_gh_api("PATCH", f"/repos/{repo}", body)
         applied.append({"check_id": "repo.merge_settings", "ok": res.ok, "status": res.status, "message": res.message})
     if "repo.topics_required" in check_ids:
@@ -1921,6 +2077,8 @@ def print_human(report: dict[str, Any]) -> None:
 
 
 def main() -> int:
+    """Parse CLI arguments, collect evidence, compare contracts, and report."""
+
     parser = argparse.ArgumentParser(
         description="Check GitHub repo, repo-code, and artifact health contracts.",
         formatter_class=argparse.RawDescriptionHelpFormatter,

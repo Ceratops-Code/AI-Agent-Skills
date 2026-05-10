@@ -3,7 +3,7 @@ name: ceratops-gh-codex-skill-ship
 description: Ship the active staged Ceratops skills repo branch through GitHub, merge the PR after CI and PR readiness pass, then restore the skills repo checkout to main and rebuild installed skills from main.
 ---
 
-# Ceratops GH Codex Skill Ship
+# Ceratops GH Skill Ship
 
 ## Goal
 
@@ -14,7 +14,7 @@ Ship an already-staged Ceratops skill batch from the skills repo checkout's acti
 ### Defaults
 
 - Default release branch: `release/local`
-- Skill install/update entrypoint: `powershell -ExecutionPolicy Bypass -File .\\scripts\\install-skills.ps1`
+- (D) Skill install/update entrypoint: `powershell -ExecutionPolicy Bypass -File .\\scripts\\install-skills.ps1`
 - Installed Ceratops skill path: `$CODEX_HOME/skills/<skill-name>`
 
 ### Inputs To Capture
@@ -61,7 +61,7 @@ Infer missing inputs from the skills repo checkout and live GitHub state before 
 #### 4. Restore skills repo main and rebuild installed skills
 
 - Run `git fetch --prune origin`, `git switch main`, and `git merge --ff-only origin/main` from the skills repo checkout.
-- Run `powershell -ExecutionPolicy Bypass -File .\\scripts\\install-skills.ps1` from `main` so `$CODEX_HOME/skills` is rebuilt from the merged main snapshot.
+- (D) Run `powershell -ExecutionPolicy Bypass -File .\\scripts\\install-skills.ps1` from `main` so `$CODEX_HOME/skills` is rebuilt from the merged main snapshot.
 - Verify the skills repo checkout is clean on `main` and expected installed skill folders have current `.ceratops-runtime-manifest.json` files.
 
 ## Done When

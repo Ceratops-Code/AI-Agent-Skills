@@ -12,15 +12,22 @@ Reusable Ceratops skills for Codex and other `SKILL.md`-compatible agents.
 | `ceratops-gh-repo-health-audit` | Audit and repair GitHub repo health, security posture, stale state, and publication gaps. |
 | `ceratops-gh-merge-pr` | Safely merge a GitHub PR, verify checks and protection with live scripted readiness checks, clean up branches, and sync local state. |
 | `ceratops-contract-review` | Review the GitHub, code, PR readiness, and artifact health contracts against current standards, then report proposed updates for explicit approval. |
-| `ceratops-skill-create` | Create a new Ceratops skill, integrate it into the shared section system, and stage it into the local skills repo release branch by default. |
-| `ceratops-skill-update` | Update existing Ceratops skills, shared sections, runtime generation, validation flow, and related helper or doc alignment while keeping source skills delta-only. |
+| `ceratops-produce-rule-update` | Produce durable rule or instruction updates from concrete failures or instruction gaps. |
+| `ceratops-rule-optimizer` | Optimize durable rule text after a concrete failure, gap, or weak candidate. |
+| `ceratops-fixloop-breaker` | Break repeated failed fix loops by requiring a run-by-run failure analysis before more code changes. |
+| `ceratops-rework-analysis` | Analyze recent Codex runs for deterministic rework causes and recommend low-maintenance producer controls. |
+| `ceratops-prompt-optimizer` | Rewrite rough prompts into clearer structured prompts without changing intent. |
+| `ceratops-skill-optimize` | Propose targeted skill updates without applying edits. |
+| `ceratops-skill-create` | Create a new Ceratops or compatible skill, using templates, validation, metadata, and runtime preview only when the repo provides them. |
+| `ceratops-skill-update` | Update existing Ceratops or compatible skills, using shared sections, generation, validation, helper claims, and docs only when present. |
+| `ceratops-skill-fast-change` | Apply a simple known-safe skill change directly on a release branch and update only the affected runtime skill. |
 | `ceratops-automation-run` | Run recurring automations with shared Ceratops alert, memory, and completion policy. |
 | `ceratops-task-execute-in-stages` | Drive substantial tasks stage by stage, preferring the simplest standard fix and asking before complex paths. |
 | `ceratops-code-consistency-audit` | Audit merged refactors for contradictions, docs drift, comment sufficiency, stale follow-through, and merged-only edge cases. |
 | `ceratops-thread-resume-manual-stop` | Resume a same-thread task from current local state after a stop, restart, or crash without rebuilding everything from scratch. |
 | `ceratops-thread-full-handoff` | Create a copy-paste prompt for moving a whole task into a new thread without re-auditing the whole task. |
 | `ceratops-thread-side-task-handoff` | Create a minimal copy-paste prompt for spinning a newly discovered side task into a new thread. |
-| `ceratops-codex-skill-stage-release` | Merge ready skill branches into the skills repo `release/*` branch, switch the skills repo checkout there, and validate the staged batch locally. |
+| `ceratops-codex-skill-stage-release` | Merge ready skill branches into a skill repo `release/*` branch and run only the install or validation steps the repo provides. |
 | `ceratops-gh-codex-skill-ship` | Ship a staged skills repo batch through GitHub, then restore the skills repo checkout and installed skills to clean `main`. |
 
 ## Layout
@@ -39,7 +46,7 @@ skills/
 templates/
   skill-sections.json
   sections/
-    minimal.md
+    core.md
     gh-current-state.md
     gh-repo-health-contract.md
     gh-artifact-contract.md
@@ -73,7 +80,7 @@ GitHub helper logic lives in copied scripts under `scripts/`, not in an installe
 | Script | Caller And Timing |
 | --- | --- |
 | `scripts/install-skills.ps1` | Single public entrypoint for installing/updating managed skill copies and optionally running section or full skill consistency validation. |
-| `scripts/build-runtime-skills.py` | Internal implementation called by the installer to render runtime `SKILL.md` files and copy declared payloads. |
+| `scripts/render-runtime-skills.py` | Internal implementation called by the installer to render runtime `SKILL.md` files and copy declared payloads. |
 | `scripts/validation/github-validate-pr-readiness-contract.py` | Called before PR merge decisions to validate the live PR readiness contract. |
 | `scripts/validation/validate-skills-consistency.py` | Internal implementation called by CI or `install-skills.ps1 -Validate ...` for section/full consistency checks. |
 | `scripts/validation/github-validate-org-contract.py` | Called by org setup, org health, and standards review work when org settings need a bundled deterministic audit. |
@@ -214,9 +221,9 @@ $runtimeRoot = Join-Path ([System.IO.Path]::GetTempPath()) "ceratops-runtime-ski
 powershell -ExecutionPolicy Bypass -File .\scripts\install-skills.ps1 -RuntimeRoot $runtimeRoot -Validate full
 ```
 
-Run `powershell -ExecutionPolicy Bypass -File .\scripts\install-skills.ps1 -SkipInstall -Validate sections` only when shared section source files or `templates/skill-sections.json` assignments changed. The section mode validates that source skills are delta-only; `scripts/build-runtime-skills.py` performs runtime shared-section expansion during install.
-`templates/skill-sections.json` records the minimal same-surface maintenance-check policy for regular work and a separate full-validation command set for governance automation.
-The builder composes each runtime skill's shared block from `templates/skill-sections.json` and `templates/sections/`, and each generated runtime `SKILL.md` block includes section-source comments so the origin of every shared section stays visible in the installed skill copy. The validator checks skill frontmatter, folder/name consistency, section assignments, runtime-renderability, Codex metadata, placeholder leftovers, real README skill rows, cross-skill references, maintenance-workflow targets, contract presence, and high-confidence secret patterns.
+Run `powershell -ExecutionPolicy Bypass -File .\scripts\install-skills.ps1 -SkipInstall -Validate sections` only when shared section source files or `templates/skill-sections.json` assignments changed. The section mode validates that source skills are delta-only; `scripts/render-runtime-skills.py` performs runtime shared-section expansion during install.
+`templates/skill-sections.json` records the core same-surface maintenance-check policy for regular work and a separate full-validation command set for governance automation.
+The renderer composes each runtime skill's shared block from `templates/skill-sections.json` and `templates/sections/`, and each generated runtime `SKILL.md` block includes section-source comments so the origin of every shared section stays visible in the installed skill copy. The validator checks skill frontmatter, folder/name consistency, section assignments, runtime-renderability, Codex metadata, placeholder leftovers, real README skill rows, cross-skill references, maintenance-workflow targets, contract presence, and high-confidence secret patterns.
 Run helper `--help` smoke checks only for touched helper scripts or touched helper claims. Full validation is intended for governance automation or explicit broad verification, not every regular skill update. With working GitHub auth, use `scripts/validation/github-validate-org-contract.py` and `scripts/validation/github-validate-repo-artifact-contract.py` for deterministic GitHub, code, and artifact contract checks.
 
 ## Releases

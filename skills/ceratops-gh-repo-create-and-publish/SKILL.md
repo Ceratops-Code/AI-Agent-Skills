@@ -13,8 +13,8 @@ Turn a local project into a real public GitHub repository and the right publishe
 
 ### Script Bundle
 
-- GitHub, code, and artifact setup check: `python scripts/validation/github-validate-repo-artifact-contract.py --repo OWNER/REPO --surface all --subset create --local-repo-path PATH`
-- Optional org posture check: `python scripts/validation/github-validate-org-contract.py --org ORG`
+- (D) GitHub, code, and artifact setup check: `python scripts/validation/github-validate-repo-artifact-contract.py --repo OWNER/REPO --surface all --subset create --local-repo-path PATH`
+- (D) Optional org posture check: `python scripts/validation/github-validate-org-contract.py --org ORG`
 
 ### Inputs To Capture
 

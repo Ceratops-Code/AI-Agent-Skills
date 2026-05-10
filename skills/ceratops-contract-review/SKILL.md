@@ -13,9 +13,9 @@ Review the Ceratops GitHub, code, PR readiness, and artifact health contracts de
 
 ### Script Bundle
 
-- Org contract checker: `python scripts/validation/github-validate-org-contract.py --help`
-- GitHub, code, and artifact contract checker: `python scripts/validation/github-validate-repo-artifact-contract.py --help`
-- PR readiness contract checker: `python scripts/validation/github-validate-pr-readiness-contract.py --help`
+- (D) Org contract checker: `python scripts/validation/github-validate-org-contract.py --help`
+- (D) GitHub, code, and artifact contract checker: `python scripts/validation/github-validate-repo-artifact-contract.py --help`
+- (D) PR readiness contract checker: `python scripts/validation/github-validate-pr-readiness-contract.py --help`
 
 ### References
 
@@ -58,7 +58,7 @@ Infer missing inputs from local repo state, live GitHub evidence, and the active
 
 #### 1. Inspect local contract state
 
-- (D) Inspect current repo branch, worktree state, `contracts/`, the contract checker scripts, repo docs that describe contract structure, and the installed automation prompt when this run came from automation.
+- Inspect current repo branch, worktree state, `contracts/`, the contract checker scripts, repo docs that describe contract structure, and the installed automation prompt when this run came from automation.
 - Check GitHub auth, local git auth, and installed tooling before asking for credentials.
 - Classify current differences as stale local dirt, proposed in-scope change, approval-required change, or not applicable.
 
@@ -86,7 +86,7 @@ Infer missing inputs from local repo state, live GitHub evidence, and the active
 #### 5. Align touched references
 
 - If explicitly approved changes alter `contracts/`, contract checker scripts, `contracts/source-docs.json`, or repo docs that describe contract structure, use targeted readback, stale-reference search, and diff review for the touched scope.
-- (D) If explicitly approved changes alter copied helper scripts or helper-runtime claims, run only the touched helper's own smoke command when that helper supports one.
+- If explicitly approved changes alter copied helper scripts or helper-runtime claims, run only the touched helper's own smoke command when that helper supports one.
 - Verify changed contracts, contract checker scripts, `contracts/source-docs.json`, and repo docs that describe contract structure point at the current source of truth.
 
 #### 6. Report approved local changes

@@ -697,6 +697,12 @@
           "/Users/",
           "/home/[^/]+/"
         ],
+        "ignore_paths": [
+          "contracts/code/code-repo-deterministic-contract.json",
+          "scripts/validation/github-collect-nd-evidence.py",
+          "scripts/validation/github-validate-repo-artifact-contract.py",
+          "scripts/validation/validate-skills-consistency.py"
+        ],
         "allow_when": "external_runtime_requires_absolute_path_and_documented"
       }
     },

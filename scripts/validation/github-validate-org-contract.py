@@ -72,6 +72,8 @@ class ApiResult:
 
 
 def load_json(path: str) -> Any:
+    """Load an org contract, fetch bundle, or JSON API payload."""
+
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
 
@@ -151,6 +153,8 @@ def apply_explicit_check_ids(contract: dict[str, Any], requested: list[str] | No
 
 
 def canonical(value: Any) -> str:
+    """Return stable JSON for equality checks and compact diagnostics."""
+
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
 
 
@@ -169,6 +173,8 @@ def substitute(value: Any, params: dict[str, Any]) -> Any:
 
 
 def endpoint_for(endpoint: str, params: dict[str, Any]) -> str:
+    """Resolve an endpoint template using the active org parameters."""
+
     return substitute(endpoint, params)
 
 
@@ -274,6 +280,8 @@ def object_subset(actual: Any, expected: Any) -> Any:
 
 
 def _expected_for_key(expected_list: list[Any], key: str) -> Any:
+    """Find the expected object from a contract list by stable key/name."""
+
     for item in expected_list:
         if isinstance(item, dict) and key in item:
             return item[key]
@@ -281,6 +289,8 @@ def _expected_for_key(expected_list: list[Any], key: str) -> Any:
 
 
 def normalize_for_compare(value: Any) -> Any:
+    """Normalize nested JSON before comparing expected and actual values."""
+
     if isinstance(value, list):
         return sorted((normalize_for_compare(item) for item in value), key=canonical)
     if isinstance(value, dict):
@@ -303,6 +313,8 @@ def diff_values(actual: Any, expected: Any, path: str = "$") -> list[dict[str, A
 
 
 def error_matches(result: ApiResult, expected: dict[str, Any]) -> bool:
+    """Check whether a failed endpoint matches a contract-declared error."""
+
     expected_status = expected.get("status")
     if expected_status is not None and result.status != expected_status:
         return False
@@ -439,6 +451,8 @@ def png_unique_rgba_colors(data: bytes) -> int:
 
 
 def paeth(a: int, b: int, c: int) -> int:
+    """Return the PNG Paeth predictor used while decoding logo pixels."""
+
     p = a + b - c
     pa = abs(p - a)
     pb = abs(p - b)
@@ -493,6 +507,8 @@ def verify_logo(check: dict[str, Any], org_data: dict[str, Any]) -> tuple[bool, 
 
 
 def check_matches_exclusion(rule: dict[str, Any], check_id: str, org: str) -> bool:
+    """Return whether an approved drift rule applies to one org check."""
+
     ids = rule.get("check_id", rule.get("check_ids", "*"))
     if ids != "*" and check_id not in (ids if isinstance(ids, list) else [ids]):
         return False
@@ -800,6 +816,8 @@ def build_params(args: argparse.Namespace, contract: dict[str, Any]) -> dict[str
 
 
 def main() -> int:
+    """Parse CLI arguments, fetch org evidence, compare, and report drift."""
+
     parser = argparse.ArgumentParser(description="Check and optionally remediate a GitHub org contract.")
     parser.add_argument("--contract", default=default_contract_path("github-org-deterministic-contract.json"))
     parser.add_argument("--org", required=True)
