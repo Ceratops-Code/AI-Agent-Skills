@@ -64,6 +64,10 @@
       "scripts/validation/github-validate-pr-readiness-contract.py",
       "contracts"
     ],
+    "ceratops-gh-ship-change": [
+      "scripts/validation/github-validate-repo-artifact-contract.py",
+      "contracts"
+    ],
     "ceratops-contract-review": [
       "scripts/validation/github-collect-nd-evidence.py",
       "scripts/validation/github-validate-org-contract.py",
@@ -148,7 +152,8 @@
     "ceratops-gh-repo-dependencies-maintenance": [
       "core",
       "gh-current-state",
-      "gh-repo-health-contract"
+      "gh-repo-health-contract",
+      "gh-artifact-contract"
     ],
     "ceratops-gh-repo-health-audit": [
       "core",
@@ -157,7 +162,8 @@
       "gh-artifact-contract"
     ],
     "ceratops-gh-ship-change": [
-      "core"
+      "core",
+      "gh-artifact-contract"
     ],
     "ceratops-contract-review": [
       "core"
