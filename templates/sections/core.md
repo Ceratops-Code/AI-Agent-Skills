@@ -10,8 +10,6 @@
 - The `(D)` label marks a deterministic script or executable-helper contract; it does not change the mandatory status of labeled or unlabeled rules.
 
 ## Core Rules
-- Everything in this section is part of the skill contract unless explicitly inapplicable to the current task.
-- Use `(D)` only for a rule whose primary obligation describes the command, inputs/options, files, machine-readable output, or authoritative output facts of a deterministic script or executable helper.
 - When this skill is invoked, follow this `SKILL.md` as the workflow contract for the task; if a higher-precedence instruction conflicts with a required skill step, report the conflict instead of silently skipping the step.
 - Do not claim completion unless this skill's completion gate is satisfied, intentionally inapplicable, or reported as a blocker.
 - Scope completion, current-state, root-cause, no-fix, unsupported, and durable-resolution claims to evidence actually checked, or to fresh same-task evidence that still applies.

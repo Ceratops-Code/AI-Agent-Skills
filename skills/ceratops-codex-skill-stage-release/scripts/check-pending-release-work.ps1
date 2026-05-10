@@ -107,6 +107,18 @@ function Test-IsProtectedBranch {
     return $BranchName -eq $MainBranch -or $BranchName -eq $ReleaseBranch
 }
 
+function Remove-MergedBranch {
+    param([string]$BranchName)
+
+    if (Test-IsProtectedBranch $BranchName) {
+        throw "refusing to remove protected branch $BranchName"
+    }
+    if (-not (Test-GitSuccess @("merge-base", "--is-ancestor", $BranchName, $ReleaseBranch))) {
+        throw "refusing to remove branch $BranchName because it is not merged into $ReleaseBranch"
+    }
+    Invoke-Git @("branch", "-D", $BranchName)
+}
+
 function Test-IsExcludedBranch {
     param([string]$BranchName)
 
@@ -195,7 +207,7 @@ if ($CleanMerged) {
             }
 
             Invoke-Git @("worktree", "remove", $worktreePath)
-            Invoke-Git @("branch", "-d", $branchName)
+            Remove-MergedBranch $branchName
             $removed += [pscustomobject]@{
                 Kind = "merged_worktree_branch"
                 Branch = $branchName
@@ -210,7 +222,7 @@ if ($CleanMerged) {
             continue
         }
         if (Test-GitSuccess @("merge-base", "--is-ancestor", $branchName, $ReleaseBranch)) {
-            Invoke-Git @("branch", "-d", $branchName)
+            Remove-MergedBranch $branchName
             $removed += [pscustomobject]@{
                 Kind = "merged_branch"
                 Branch = $branchName
