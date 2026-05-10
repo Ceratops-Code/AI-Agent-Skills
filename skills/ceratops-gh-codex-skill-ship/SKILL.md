@@ -3,7 +3,7 @@ name: ceratops-gh-codex-skill-ship
 description: Ship the active staged Ceratops skills repo branch through GitHub, merge the PR after CI and PR readiness pass, then restore the skills repo checkout to main and rebuild installed skills from main.
 ---
 
-# Ceratops GH Codex Skill Ship
+# Ceratops GH Skill Ship
 
 ## Goal
 

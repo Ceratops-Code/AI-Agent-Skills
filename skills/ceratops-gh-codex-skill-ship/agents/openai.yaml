@@ -1,5 +1,5 @@
 interface:
-  display_name: "Ceratops GH Codex Skill Ship"
+  display_name: "Ceratops GH Skill Ship"
   short_description: "Ship staged skill batches through GitHub"
   icon_small: "./assets/ceratops-logo-500.png"
   icon_large: "./assets/ceratops-logo-500.png"

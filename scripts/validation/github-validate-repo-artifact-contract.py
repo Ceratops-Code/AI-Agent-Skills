@@ -1538,6 +1538,8 @@ def clause_matches(clause: str, rule_context: dict[str, Any]) -> bool:
         key, raw_expected = ne_match.groups()
         actual = rule_context.get(key)
         expected = parse_condition_value(raw_expected)
+        if actual is None:
+            return False
         if isinstance(actual, (list, set, tuple)):
             return expected not in actual
         return actual != expected
@@ -1554,6 +1556,8 @@ def clause_matches(clause: str, rule_context: dict[str, Any]) -> bool:
     key, raw_expected = eq_match.groups()
     actual = rule_context.get(key)
     expected = parse_condition_value(raw_expected)
+    if actual is None:
+        return False
     return actual == expected
 
 
