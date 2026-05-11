@@ -1026,10 +1026,13 @@ def evaluate_repo_check(
     topics = [str(t).lower() for t in (topics_res.data or {}).get("names", [])] if topics_res.ok and isinstance(topics_res.data, dict) else []
     open_dependabot_prs: ApiResult | None = None
     open_dependabot_prs_count = 0
+    open_dependabot_prs_fetch_failed = False
     if check_id == "security.open_dependabot_pr_queue":
         open_dependabot_prs = search_open_dependabot_prs(params)
         if open_dependabot_prs.ok and isinstance(open_dependabot_prs.data, list):
             open_dependabot_prs_count = len(open_dependabot_prs.data)
+        else:
+            open_dependabot_prs_fetch_failed = True
     rule_context = {
         "repo.visibility": repo_info.get("visibility"),
         "repo.fork": bool(repo_info.get("fork")),
@@ -1040,6 +1043,7 @@ def evaluate_repo_check(
         "owner_is_org": (repo_info.get("owner") or {}).get("type") == "Organization",
         "expected_maintainer_bypass_actors": params.get("expected_maintainer_bypass_actors", []),
         "open_dependabot_prs_count": open_dependabot_prs_count,
+        "open_dependabot_prs_fetch_failed": open_dependabot_prs_fetch_failed,
         "file:.github/dependabot.yml": local.get("texts", {}).get(".github/dependabot.yml", ""),
     }
     applies_when = check.get("applies_when")
