@@ -16,10 +16,12 @@ Stage committed skill branches into the skill repo checkout's local release bran
 - Source repo: active skill repo checkout root
 - Installed Ceratops skill path: `$CODEX_HOME/skills/<skill-name>`
 - Default release branch: `release/local`
+- Default remote: `origin`
 - (D) Skill install/update entrypoint: `powershell -ExecutionPolicy Bypass -File .\\scripts\\install-skills.ps1`
 
 ### Script Bundle
 
+- (D) Skill-local release branch preparation: `scripts/prepare-release-branch.ps1 -SkillsRepoRoot <repo> -MainBranch main -ReleaseBranch release/local -RemoteName origin` from the installed skill folder, or `skills/ceratops-codex-skill-stage-release/scripts/prepare-release-branch.ps1` from a source checkout, owns fetch, clean-worktree guard, main fast-forward, local release branch switch/create, release fast-forward, and final branch verification.
 - (D) Skill-local merged-work cleanup and pending local work check: `scripts/check-pending-release-work.ps1 -CleanMerged` from the installed skill folder, or `skills/ceratops-codex-skill-stage-release/scripts/check-pending-release-work.ps1 -CleanMerged` from a source checkout, when that helper exists.
 
 ### Inputs To Capture
@@ -65,9 +67,7 @@ Infer missing inputs from local repo state before asking.
 
 #### 2. Stage the skills repo release branch
 
-- From the skill repo checkout, refresh and fast-forward the default base branch when it exists locally; in this repo use `main`: `git fetch --prune origin`, `git switch main`, `git merge --ff-only origin/main`.
-- Switch to the local release branch if it already exists; otherwise create it from `main`.
-- Fast-forward the existing release branch to `main` before merging new task branches.
+- (D) Prepare and switch to the local release branch with the skill-local `scripts/prepare-release-branch.ps1` helper; any helper failure blocks staging.
 - Before merging each requested committed task branch into the active local `release/*` branch, run a blocking local code review against the current release branch state; any finding blocks staging until fixed and re-reviewed clean.
 - (D) Before each branch merge, run `git diff --check (git merge-base HEAD BRANCH) BRANCH` and then `git diff (git merge-base HEAD BRANCH) BRANCH`; any `diff --check` failure blocks the merge.
 - Merge each reviewed committed task branch into the local `release/*` branch with `git merge --no-edit BRANCH`.
@@ -76,15 +76,7 @@ Infer missing inputs from local repo state before asking.
 Exact PowerShell command sequence for the default `release/local` branch:
 
 ```powershell
-git fetch --prune origin
-git switch main
-git merge --ff-only origin/main
-if (git show-ref --verify --quiet refs/heads/release/local) {
-    git switch release/local
-    git merge --ff-only main
-} else {
-    git switch -c release/local main
-}
+powershell -ExecutionPolicy Bypass -File .\skills\ceratops-codex-skill-stage-release\scripts\prepare-release-branch.ps1 -SkillsRepoRoot . -MainBranch main -ReleaseBranch release/local -RemoteName origin
 git diff --check (git merge-base HEAD BRANCH) BRANCH
 if ($LASTEXITCODE -ne 0) { throw "git diff --check failed for BRANCH" }
 git diff (git merge-base HEAD BRANCH) BRANCH

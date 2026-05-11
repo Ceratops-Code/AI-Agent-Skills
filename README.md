@@ -87,10 +87,10 @@ GitHub helper logic lives in copied scripts under `scripts/`, not in an installe
 | `scripts/validation/github-validate-repo-artifact-contract.py` | Called by repo create, repo health, dependency, and standards review work when repo settings, code, or artifact posture needs a deterministic audit. |
 | `scripts/validation/github-collect-nd-evidence.py` | Called when non-deterministic org, repo, code, or artifact checks need one bundled evidence payload for human review. |
 
-Common release-branch moves use plain Git commands in the relevant skill text.
-This repo keeps scripts only where they add reusable safety logic or bundle
-nontrivial evidence collection.
-Stage-release-only helpers live inside `skills/ceratops-codex-skill-stage-release/scripts/`.
+Release-branch preparation and pending-work cleanup use stage-release-only helpers
+inside `skills/ceratops-codex-skill-stage-release/scripts/`. This repo keeps
+scripts only where they add reusable safety logic or bundle nontrivial evidence
+collection.
 
 ## Health Contracts
 
