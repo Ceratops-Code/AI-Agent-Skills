@@ -51,7 +51,6 @@
     "default": "report_only",
     "apply_flag": "--apply",
     "auto_apply_check_ids": [
-      "org.settings",
       "actions.permissions",
       "actions.workflow_permissions",
       "organization.immutable_releases"
