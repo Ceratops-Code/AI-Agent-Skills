@@ -1129,7 +1129,7 @@
       "kind": "cli",
       "command": "gh search prs --repo ${owner}/${repo} --state open --app dependabot --limit 1000 --json author,createdAt,id,isDraft,labels,number,repository,state,title,updatedAt,url",
       "comparison": "dependabot_pr_queue_policy",
-      "applies_when": "repo.archived == false || open_dependabot_prs_count > 0",
+      "applies_when": "repo.archived == false || open_dependabot_prs_count > 0 || open_dependabot_prs_fetch_failed == true",
       "expected": {
         "report_open_dependabot_prs": true,
         "classify_security_linked_prs": true,
