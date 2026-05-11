@@ -208,6 +208,31 @@ def run_json_command(args: list[str], label: str) -> ApiResult:
     return ApiResult(False, "CLI", label, status=status, message=message, raw_stdout=proc.stdout, raw_stderr=proc.stderr)
 
 
+def search_open_dependabot_prs(params: dict[str, Any]) -> ApiResult:
+    """Fetch open Dependabot PRs for checks that gate on the live queue count."""
+
+    repo = f"{params['owner']}/{params['repo']}"
+    label = f"gh search prs --repo {repo} --state open --app dependabot"
+    return run_json_command(
+        [
+            "gh",
+            "search",
+            "prs",
+            "--repo",
+            repo,
+            "--state",
+            "open",
+            "--app",
+            "dependabot",
+            "--limit",
+            "1000",
+            "--json",
+            "author,createdAt,id,isDraft,labels,number,repository,state,title,updatedAt,url",
+        ],
+        label,
+    )
+
+
 def http_json(url: str) -> dict[str, Any]:
     """Fetch public registry metadata that is exposed as JSON over HTTPS."""
 
@@ -999,6 +1024,12 @@ def evaluate_repo_check(
     paths = local.get("files") or tree_paths(tree_res.data)
     topics_res = result(fetched, "/repos/${owner}/${repo}/topics", params)
     topics = [str(t).lower() for t in (topics_res.data or {}).get("names", [])] if topics_res.ok and isinstance(topics_res.data, dict) else []
+    open_dependabot_prs: ApiResult | None = None
+    open_dependabot_prs_count = 0
+    if check_id == "security.open_dependabot_pr_queue":
+        open_dependabot_prs = search_open_dependabot_prs(params)
+        if open_dependabot_prs.ok and isinstance(open_dependabot_prs.data, list):
+            open_dependabot_prs_count = len(open_dependabot_prs.data)
     rule_context = {
         "repo.visibility": repo_info.get("visibility"),
         "repo.fork": bool(repo_info.get("fork")),
@@ -1008,7 +1039,7 @@ def evaluate_repo_check(
         "artifact_surface": types.get("artifact_surface", []),
         "owner_is_org": (repo_info.get("owner") or {}).get("type") == "Organization",
         "expected_maintainer_bypass_actors": params.get("expected_maintainer_bypass_actors", []),
-        "open_dependabot_prs_count": 0,
+        "open_dependabot_prs_count": open_dependabot_prs_count,
         "file:.github/dependabot.yml": local.get("texts", {}).get(".github/dependabot.yml", ""),
     }
     applies_when = check.get("applies_when")
@@ -1273,25 +1304,7 @@ def evaluate_repo_check(
         return [finding(check_id, "PASS", "No open critical/high alerts found.", actual={"open_count": len(alerts)})]
 
     if check_id == "security.open_dependabot_pr_queue":
-        label = f"gh search prs --repo {params['owner']}/{params['repo']} --state open --app dependabot"
-        prs = run_json_command(
-            [
-                "gh",
-                "search",
-                "prs",
-                "--repo",
-                f"{params['owner']}/{params['repo']}",
-                "--state",
-                "open",
-                "--app",
-                "dependabot",
-                "--limit",
-                "1000",
-                "--json",
-                "author,createdAt,id,isDraft,labels,number,repository,state,title,updatedAt,url",
-            ],
-            label,
-        )
+        prs = open_dependabot_prs or search_open_dependabot_prs(params)
         if not prs.ok:
             return [finding(check_id, "WARN", "Open Dependabot PR queue could not be fetched.", actual={"status": prs.status, "message": prs.message})]
         items = prs.data if isinstance(prs.data, list) else []
