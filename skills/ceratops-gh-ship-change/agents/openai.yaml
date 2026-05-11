@@ -1,6 +1,6 @@
 interface:
-  display_name: "Ceratops GH Ship Change"
+  display_name: "Ceratops GH Ship Repo Changes"
   short_description: "Ship repo changes through GitHub"
   icon_small: "./assets/ceratops-logo-500.png"
   icon_large: "./assets/ceratops-logo-500.png"
-  default_prompt: "Use $ceratops-gh-ship-change to ship these local changes through GitHub, use PR readiness for the merge, publish any relevant artifacts, verify them locally, and clean up state."
+  default_prompt: "Use $ceratops-gh-ship-change to ship these repo changes through GitHub, use PR readiness for the merge, publish any relevant artifacts, verify them locally, and clean up state."

@@ -1,6 +1,6 @@
 interface:
-  display_name: "Ceratops GH Skill Ship"
-  short_description: "Ship staged skill batches through GitHub"
+  display_name: "Ceratops GH Ship Skills Changes"
+  short_description: "Ship staged skills repo changes through GitHub"
   icon_small: "./assets/ceratops-logo-500.png"
   icon_large: "./assets/ceratops-logo-500.png"
-  default_prompt: "Use $ceratops-gh-codex-skill-ship to push the staged skills repo release branch, merge the GitHub PR after CI and PR readiness pass, then fetch main and rebuild installed skills from main."
+  default_prompt: "Use $ceratops-gh-codex-skill-ship to ship the staged skills repo changes through GitHub, merge the GitHub PR after CI and PR readiness pass, then fetch main and rebuild installed skills from main."
