@@ -763,9 +763,6 @@
     {
       "id": "type.visibility_origin_lifecycle",
       "source_lines": [
-        "source-docs.json:repo-and-artifact-standards",
-        "gh-repo-health-contract.md:3-8",
-        "gh-repo-health-contract.md:3-8",
         "gh-repo-health-contract.md:3-8"
       ],
       "kind": "classification",
@@ -782,7 +779,7 @@
     {
       "id": "type.topic_signals",
       "source_lines": [
-        "source-docs.json:repo-and-artifact-standards"
+        "gh-repo-health-contract.md:3-8"
       ],
       "kind": "classification",
       "comparison": "derive_types_from_topics",
@@ -794,7 +791,6 @@
     {
       "id": "repo.identity_public_contract",
       "source_lines": [
-        "source-docs.json:repo-and-artifact-standards",
         "gh-repo-health-contract.md:3-8"
       ],
       "kind": "api",
@@ -820,7 +816,6 @@
     {
       "id": "repo.topics_required",
       "source_lines": [
-        "source-docs.json:repo-and-artifact-standards",
         "gh-repo-health-contract.md:3-8"
       ],
       "kind": "api",
@@ -835,8 +830,7 @@
     {
       "id": "repo.unused_feature_flags",
       "source_lines": [
-        "ceratops-gh-repo-create-and-publish/SKILL.md:151",
-        "source-docs.json:repo-and-artifact-standards"
+        "ceratops-gh-repo-create-and-publish/SKILL.md:151"
       ],
       "kind": "api",
       "endpoint": "/repos/${owner}/${repo}",
@@ -852,7 +846,6 @@
     {
       "id": "repo.merge_settings",
       "source_lines": [
-        "source-docs.json:repo-and-artifact-standards",
         "gh-repo-health-contract.md:3-8"
       ],
       "kind": "api",
@@ -879,7 +872,6 @@
     {
       "id": "process.default_branch_name_and_protection_indicator",
       "source_lines": [
-        "source-docs.json:repo-and-artifact-standards",
         "gh-repo-health-contract.md:3-8"
       ],
       "kind": "api",
@@ -896,7 +888,6 @@
     {
       "id": "process.default_branch_enforcement_present",
       "source_lines": [
-        "source-docs.json:repo-and-artifact-standards",
         "gh-repo-health-contract.md:3-8"
       ],
       "kind": "api_composite",
@@ -917,7 +908,6 @@
     {
       "id": "process.branch_protection_or_ruleset_posture",
       "source_lines": [
-        "source-docs.json:repo-and-artifact-standards",
         "gh-repo-health-contract.md:3-8"
       ],
       "kind": "api_composite",
@@ -965,7 +955,6 @@
     {
       "id": "actions.permissions_policy",
       "source_lines": [
-        "source-docs.json:repo-and-artifact-standards",
         "gh-repo-health-contract.md:3-8"
       ],
       "kind": "api",
@@ -984,7 +973,6 @@
     {
       "id": "actions.workflow_token_permissions",
       "source_lines": [
-        "source-docs.json:repo-and-artifact-standards",
         "gh-repo-health-contract.md:3-8"
       ],
       "kind": "api_and_tree",
@@ -1002,7 +990,6 @@
     {
       "id": "actions.artifact_log_retention",
       "source_lines": [
-        "source-docs.json:repo-and-artifact-standards",
         "gh-repo-health-contract.md:3-8"
       ],
       "kind": "api",
@@ -1016,7 +1003,6 @@
     {
       "id": "actions.fork_pr_contributor_approval",
       "source_lines": [
-        "source-docs.json:repo-and-artifact-standards",
         "gh-repo-health-contract.md:3-8"
       ],
       "kind": "api",
@@ -1034,7 +1020,6 @@
     {
       "id": "actions.private_fork_pr_workflows",
       "source_lines": [
-        "source-docs.json:repo-and-artifact-standards",
         "gh-repo-health-contract.md:3-8"
       ],
       "kind": "api",
@@ -1067,7 +1052,6 @@
     {
       "id": "security.security_and_analysis_status",
       "source_lines": [
-        "source-docs.json:repo-and-artifact-standards",
         "gh-repo-health-contract.md:3-8"
       ],
       "kind": "api",
@@ -1079,15 +1063,18 @@
         "dependabot_alerts.status": "enabled_when_available_no_extra_cost",
         "secret_scanning.status": "enabled_for_public_or_paid_private",
         "secret_scanning_push_protection.status": "enabled_for_public_or_paid_private",
+        "secret_scanning_ai_detection.status": "optional_paid_or_churn_prone",
         "secret_scanning_non_provider_patterns.status": "optional_paid_or_churn_prone",
         "secret_scanning_validity_checks.status": "optional_paid_or_churn_prone",
-        "advanced_security.status": "classify_paid_requirement_for_private_without_code_security"
+        "secret_scanning_delegated_alert_dismissal.status": "optional_paid_or_churn_prone",
+        "secret_scanning_delegated_bypass.status": "optional_paid_or_churn_prone",
+        "advanced_security.status": "classify_paid_requirement_for_private_without_code_security",
+        "code_security.status": "classify_paid_requirement_for_private_or_standalone_code_security"
       }
     },
     {
       "id": "security.vulnerability_alerts_enabled",
       "source_lines": [
-        "source-docs.json:repo-and-artifact-standards",
         "gh-repo-health-contract.md:3-8"
       ],
       "kind": "api_status",
@@ -1102,7 +1089,6 @@
     {
       "id": "security.dependabot_security_updates_enabled",
       "source_lines": [
-        "source-docs.json:repo-and-artifact-standards",
         "gh-repo-health-contract.md:3-8"
       ],
       "kind": "api_status",
@@ -1117,8 +1103,6 @@
     {
       "id": "security.open_dependabot_alert_queue",
       "source_lines": [
-        "source-docs.json:repo-and-artifact-standards",
-        "gh-repo-health-contract.md:3-8",
         "gh-repo-health-contract.md:3-8"
       ],
       "kind": "api",
@@ -1158,7 +1142,6 @@
     {
       "id": "security.code_security_configuration_attached",
       "source_lines": [
-        "source-docs.json:repo-and-artifact-standards",
         "gh-repo-health-contract.md:3-8"
       ],
       "kind": "api",
@@ -1174,7 +1157,6 @@
     {
       "id": "security.code_scanning_default_setup_or_custom",
       "source_lines": [
-        "source-docs.json:repo-and-artifact-standards",
         "gh-repo-health-contract.md:3-8"
       ],
       "kind": "api_and_tree",
@@ -1193,8 +1175,6 @@
     {
       "id": "security.open_code_scanning_alert_queue",
       "source_lines": [
-        "source-docs.json:repo-and-artifact-standards",
-        "gh-repo-health-contract.md:3-8",
         "gh-repo-health-contract.md:3-8"
       ],
       "kind": "api",
@@ -1211,8 +1191,6 @@
     {
       "id": "security.open_secret_scanning_alert_queue",
       "source_lines": [
-        "source-docs.json:repo-and-artifact-standards",
-        "gh-repo-health-contract.md:3-8",
         "gh-repo-health-contract.md:3-8"
       ],
       "kind": "api",
@@ -1227,7 +1205,6 @@
     {
       "id": "security.private_vulnerability_reporting_public",
       "source_lines": [
-        "source-docs.json:repo-and-artifact-standards",
         "gh-repo-health-contract.md:3-8"
       ],
       "kind": "api_status",
@@ -1242,7 +1219,6 @@
     {
       "id": "security.dependency_review_availability",
       "source_lines": [
-        "source-docs.json:repo-and-artifact-standards",
         "gh-repo-health-contract.md:3-8"
       ],
       "kind": "api_status",
@@ -1259,8 +1235,6 @@
     {
       "id": "content.community_profile_public",
       "source_lines": [
-        "source-docs.json:repo-and-artifact-standards",
-        "gh-repo-health-contract.md:3-8",
         "gh-repo-health-contract.md:3-8"
       ],
       "kind": "api",

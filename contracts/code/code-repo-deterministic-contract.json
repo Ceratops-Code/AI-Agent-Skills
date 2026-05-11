@@ -558,7 +558,6 @@
     {
       "id": "type.path_signals",
       "source_lines": [
-        "source-docs.json:repo-and-artifact-standards",
         "gh-repo-health-contract.md:3-8"
       ],
       "kind": "classification",
@@ -571,7 +570,7 @@
     {
       "id": "type.language_signals",
       "source_lines": [
-        "source-docs.json:repo-and-artifact-standards"
+        "gh-repo-health-contract.md:3-8"
       ],
       "kind": "classification",
       "comparison": "derive_types_from_languages",
@@ -583,7 +582,6 @@
     {
       "id": "actions.workflow_sha_pinning",
       "source_lines": [
-        "source-docs.json:repo-and-artifact-standards",
         "gh-repo-health-contract.md:3-8"
       ],
       "kind": "tree_scan",
@@ -599,8 +597,6 @@
     {
       "id": "security.dependabot_config_file",
       "source_lines": [
-        "source-docs.json:repo-and-artifact-standards",
-        "gh-repo-health-contract.md:3-8",
         "gh-repo-health-contract.md:3-8"
       ],
       "kind": "tree_scan",
@@ -619,7 +615,6 @@
     {
       "id": "content.required_files_presence",
       "source_lines": [
-        "source-docs.json:repo-and-artifact-standards",
         "gh-repo-health-contract.md:3-8"
       ],
       "kind": "api_and_tree",
@@ -656,7 +651,6 @@
     {
       "id": "content.codeowners_valid",
       "source_lines": [
-        "source-docs.json:repo-and-artifact-standards",
         "gh-repo-health-contract.md:3-8"
       ],
       "kind": "api",

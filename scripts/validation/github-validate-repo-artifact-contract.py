@@ -1205,13 +1205,28 @@ def evaluate_repo_check(
     if check_id == "security.security_and_analysis_status":
         security = repo_info.get("security_and_analysis") or {}
         drifts = []
+        expected = check.get("expected", {})
+        classified = {}
         if not repo_info.get("archived") and (security.get("dependency_graph") or {}).get("status") not in {"enabled", None}:
             drifts.append(finding(check_id, "FAIL", "Dependency graph is disabled.", actual=security.get("dependency_graph"), expected="enabled"))
         if repo_info.get("visibility") == "public":
             for key in ("secret_scanning", "secret_scanning_push_protection"):
                 if (security.get(key) or {}).get("status") != "enabled":
                     drifts.append(finding(check_id, "FAIL", f"{key} is not enabled for a public repo.", actual=security.get(key), expected="enabled", path=f"$.{key}"))
-        return drifts or [finding(check_id, "PASS", "Security and analysis settings have no deterministic drift.", actual=security)]
+        for dotted_key, policy in expected.items():
+            if not dotted_key.endswith(".status"):
+                continue
+            key = dotted_key.removesuffix(".status")
+            if key in {"dependency_graph", "dependabot_alerts", "secret_scanning", "secret_scanning_push_protection"}:
+                continue
+            state = security.get(key)
+            classified[key] = {
+                "status": (state or {}).get("status"),
+                "available": key in security,
+                "policy": policy,
+            }
+        actual = {"security_and_analysis": security, "classified_paid_or_optional_fields": classified}
+        return drifts or [finding(check_id, "PASS", "Security and analysis settings have no deterministic drift.", actual=actual)]
 
     if check_id in {"security.vulnerability_alerts_enabled", "security.dependabot_security_updates_enabled"}:
         endpoint = check["endpoint"]

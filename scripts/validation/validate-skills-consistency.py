@@ -292,6 +292,43 @@ def check_retired_baseline_absent() -> list[str]:
     return errors
 
 
+def check_contract_source_lines() -> list[str]:
+    """Validate deterministic contract source reference metadata."""
+
+    errors: list[str] = []
+    for rel_path in REQUIRED_CONTRACT_FILES:
+        if rel_path.suffix != ".json":
+            continue
+        path = ROOT / rel_path
+        if not path.is_file():
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            errors.append(f"{rel_path}: invalid JSON: {exc}")
+            continue
+        checks = data.get("checks", [])
+        if not isinstance(checks, list):
+            continue
+        for index, check in enumerate(checks):
+            check_id = check.get("id", f"checks[{index}]") if isinstance(check, dict) else f"checks[{index}]"
+            source_lines = check.get("source_lines") if isinstance(check, dict) else None
+            if source_lines is None:
+                continue
+            if not isinstance(source_lines, list) or not all(isinstance(item, str) for item in source_lines):
+                errors.append(f"{rel_path}: {check_id}: source_lines must be a list of strings")
+                continue
+            seen: set[str] = set()
+            duplicates: list[str] = []
+            for source_line in source_lines:
+                if source_line in seen and source_line not in duplicates:
+                    duplicates.append(source_line)
+                seen.add(source_line)
+            if duplicates:
+                errors.append(f"{rel_path}: {check_id}: duplicate source_lines: {', '.join(duplicates)}")
+    return errors
+
+
 def check_section_sources(manifest: dict[str, object], skill_dirs: list[pathlib.Path]) -> list[str]:
     """Run only shared-section checks needed after template or manifest edits."""
 
@@ -535,6 +572,7 @@ def main() -> int:
             errors.append(f"{skill_dir.name}: missing section assignment in manifest")
             continue
         errors.extend(check_skill(skill_dir, readme_rows, manifest, skill_names))
+    errors.extend(check_contract_source_lines())
     errors.extend(check_secrets())
     errors.extend(check_retired_baseline_absent())
 
