@@ -122,7 +122,7 @@
         "repo",
         "org"
       ],
-      "url": "https://docs.github.com/en/code-security/dependabot"
+      "url": "https://docs.github.com/en/code-security/how-tos/secure-your-supply-chain"
     },
     {
       "id": "github.rest.dependency_graph.dependency_review",
@@ -218,14 +218,6 @@
       "url": "https://docs.github.com/en/actions/how-tos/secure-your-work/use-artifact-attestations/use-artifact-attestations"
     },
     {
-      "id": "github.actions.artifact_attestations.provenance_legacy_url",
-      "scope": [
-        "repo",
-        "artifact"
-      ],
-      "url": "https://docs.github.com/en/actions/security-guides/using-artifact-attestations-to-establish-provenance-for-builds"
-    },
-    {
       "id": "github.rest.artifact_metadata",
       "scope": [
         "artifact"
@@ -258,7 +250,7 @@
       "scope": [
         "artifact"
       ],
-      "url": "https://docs.docker.com/develop/develop-images/dockerfile_best-practices/"
+      "url": "https://docs.docker.com/build/building/best-practices/"
     },
     {
       "id": "docker.build_best_practices",
@@ -433,7 +425,7 @@
       "scope": [
         "artifact"
       ],
-      "url": "https://learn.microsoft.com/nuget/create-packages/publish-a-package"
+      "url": "https://learn.microsoft.com/en-us/nuget/nuget-org/publish-a-package"
     },
     {
       "id": "nuget.nuspec",
