@@ -7,7 +7,7 @@ Reusable Ceratops skills for Codex and other `SKILL.md`-compatible agents.
 | Skill | Purpose |
 | --- | --- |
 | `ceratops-gh-repo-create-and-publish` | Create or production-harden a public GitHub repo and publish the right artifact target when relevant. |
-| `ceratops-gh-ship-change` | Ship local repo changes through PR, CI, merge, artifact publishing when relevant, and cleanup. |
+| `ceratops-gh-ship-change` | Ship repo changes through PR, CI, merge, artifact publishing when relevant, and cleanup. |
 | `ceratops-gh-repo-dependencies-maintenance` | Maintain Dependabot, Renovate, security, and manual dependency work recursively. |
 | `ceratops-gh-repo-health-audit` | Audit and repair GitHub repo health, security posture, stale state, and publication gaps. |
 | `ceratops-gh-merge-pr` | Safely merge a GitHub PR, verify checks and protection with live scripted readiness checks, clean up branches, and sync local state. |
@@ -28,7 +28,7 @@ Reusable Ceratops skills for Codex and other `SKILL.md`-compatible agents.
 | `ceratops-thread-full-handoff` | Create a copy-paste prompt for moving a whole task into a new thread without re-auditing the whole task. |
 | `ceratops-thread-side-task-handoff` | Create a minimal copy-paste prompt for spinning a newly discovered side task into a new thread. |
 | `ceratops-codex-skill-stage-release` | Merge ready skill branches into a skill repo `release/*` branch and run only the install or validation steps the repo provides. |
-| `ceratops-gh-codex-skill-ship` | Ship a staged skills repo batch through GitHub, then restore the skills repo checkout and installed skills to clean `main`. |
+| `ceratops-gh-codex-skill-ship` | Ship staged skills repo changes through GitHub, then restore the skills repo checkout and installed skills to clean `main`. |
 
 ## Layout
 

@@ -1,9 +1,9 @@
 ---
 name: ceratops-gh-ship-change
-description: Ship local repository changes through GitHub and any relevant artifact registry with Ceratops defaults, using PR readiness checks before merge decisions.
+description: Ship repository changes through GitHub and any relevant artifact registry with Ceratops defaults, using PR readiness checks before merge decisions.
 ---
 
-# Ceratops GH Ship Change
+# Ceratops GH Ship Repo Changes
 
 ## Goal
 
@@ -93,4 +93,4 @@ Report only:
 
 ### Example Invocation
 
-`Use $ceratops-gh-ship-change to ship these local changes through GitHub, publish any relevant artifacts, verify them locally, and clean up state.`
+`Use $ceratops-gh-ship-change to ship these repo changes through GitHub, publish any relevant artifacts, verify them locally, and clean up state.`
