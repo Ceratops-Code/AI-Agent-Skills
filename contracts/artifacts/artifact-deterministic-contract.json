@@ -706,7 +706,6 @@
     {
       "id": "common.real_deliverable_classification",
       "source_lines": [
-        "gh-artifact-contract.md:3-6",
         "gh-artifact-contract.md:3-6"
       ],
       "category": "common",
@@ -763,9 +762,6 @@
     {
       "id": "common.local_build_package_consume",
       "source_lines": [
-        "gh-artifact-contract.md:3-6",
-        "gh-artifact-contract.md:3-6",
-        "gh-artifact-contract.md:3-6",
         "gh-artifact-contract.md:3-6"
       ],
       "category": "common",
@@ -811,9 +807,6 @@
     {
       "id": "common.live_registry_verification",
       "source_lines": [
-        "gh-artifact-contract.md:3-6",
-        "gh-artifact-contract.md:3-6",
-        "gh-artifact-contract.md:3-6",
         "gh-artifact-contract.md:3-6"
       ],
       "category": "common",
@@ -830,8 +823,6 @@
     {
       "id": "common.short_lived_identity_policy",
       "source_lines": [
-        "gh-artifact-contract.md:3-6",
-        "gh-artifact-contract.md:3-6",
         "gh-artifact-contract.md:3-6"
       ],
       "category": "common",
@@ -848,7 +839,6 @@
     {
       "id": "common.attestation_permissions",
       "source_lines": [
-        "gh-artifact-contract.md:3-6",
         "gh-artifact-contract.md:3-6"
       ],
       "category": "common",
@@ -880,7 +870,6 @@
     {
       "id": "common.no_artifact_consistency",
       "source_lines": [
-        "gh-artifact-contract.md:3-6",
         "gh-artifact-contract.md:3-6"
       ],
       "category": "common",
@@ -921,8 +910,6 @@
     {
       "id": "pypi.trusted_publishing_and_attestations",
       "source_lines": [
-        "gh-artifact-contract.md:3-6",
-        "gh-artifact-contract.md:3-6",
         "gh-artifact-contract.md:3-6"
       ],
       "category": "pypi_python_package",
@@ -943,8 +930,6 @@
     {
       "id": "pypi.live_version_install_smoke",
       "source_lines": [
-        "gh-artifact-contract.md:3-6",
-        "gh-artifact-contract.md:3-6",
         "gh-artifact-contract.md:3-6"
       ],
       "category": "pypi_python_package",
@@ -986,7 +971,6 @@
     {
       "id": "npm.trusted_publishing_and_provenance",
       "source_lines": [
-        "gh-artifact-contract.md:3-6",
         "gh-artifact-contract.md:3-6"
       ],
       "category": "npm_package",
@@ -1006,7 +990,6 @@
     {
       "id": "npm.live_package_version_smoke",
       "source_lines": [
-        "gh-artifact-contract.md:3-6",
         "gh-artifact-contract.md:3-6"
       ],
       "category": "npm_package",
@@ -1047,7 +1030,6 @@
     {
       "id": "docker_oci.build_publish_and_pull",
       "source_lines": [
-        "gh-artifact-contract.md:3-6",
         "gh-artifact-contract.md:3-6"
       ],
       "category": "docker_oci_image",
@@ -1067,7 +1049,6 @@
     {
       "id": "docker_oci.provenance_and_sbom",
       "source_lines": [
-        "gh-artifact-contract.md:3-6",
         "gh-artifact-contract.md:3-6"
       ],
       "category": "docker_oci_image",
@@ -1086,9 +1067,6 @@
     {
       "id": "maven.metadata_publish_and_verify",
       "source_lines": [
-        "gh-artifact-contract.md:3-6",
-        "gh-artifact-contract.md:3-6",
-        "gh-artifact-contract.md:3-6",
         "gh-artifact-contract.md:3-6"
       ],
       "category": "maven_package",
@@ -1113,9 +1091,6 @@
     {
       "id": "nuget.metadata_pack_publish_and_verify",
       "source_lines": [
-        "gh-artifact-contract.md:3-6",
-        "gh-artifact-contract.md:3-6",
-        "gh-artifact-contract.md:3-6",
         "gh-artifact-contract.md:3-6"
       ],
       "category": "nuget_package",
@@ -1138,9 +1113,6 @@
     {
       "id": "crates.metadata_package_publish_and_verify",
       "source_lines": [
-        "gh-artifact-contract.md:3-6",
-        "gh-artifact-contract.md:3-6",
-        "gh-artifact-contract.md:3-6",
         "gh-artifact-contract.md:3-6"
       ],
       "category": "crates_package",
@@ -1163,9 +1135,6 @@
     {
       "id": "rubygems.metadata_build_publish_and_verify",
       "source_lines": [
-        "gh-artifact-contract.md:3-6",
-        "gh-artifact-contract.md:3-6",
-        "gh-artifact-contract.md:3-6",
         "gh-artifact-contract.md:3-6"
       ],
       "category": "rubygems_package",
@@ -1188,9 +1157,6 @@
     {
       "id": "powershell_gallery.metadata_publish_and_verify",
       "source_lines": [
-        "gh-artifact-contract.md:3-6",
-        "gh-artifact-contract.md:3-6",
-        "gh-artifact-contract.md:3-6",
         "gh-artifact-contract.md:3-6"
       ],
       "category": "powershell_gallery_module",
@@ -1213,7 +1179,6 @@
     {
       "id": "github_packages.live_package_metadata",
       "source_lines": [
-        "gh-artifact-contract.md:3-6",
         "gh-artifact-contract.md:3-6"
       ],
       "category": "github_packages",
@@ -1233,8 +1198,6 @@
     {
       "id": "github_packages.publish_guard",
       "source_lines": [
-        "gh-artifact-contract.md:3-6",
-        "gh-artifact-contract.md:3-6",
         "gh-artifact-contract.md:3-6"
       ],
       "category": "github_packages",
@@ -1252,9 +1215,6 @@
     {
       "id": "github_release_assets.assets_and_tags",
       "source_lines": [
-        "gh-artifact-contract.md:3-6",
-        "gh-artifact-contract.md:3-6",
-        "gh-artifact-contract.md:3-6",
         "gh-artifact-contract.md:3-6"
       ],
       "category": "github_release_binary",
@@ -1273,7 +1233,6 @@
     {
       "id": "github_release_assets.attestation_verification",
       "source_lines": [
-        "gh-artifact-contract.md:3-6",
         "gh-artifact-contract.md:3-6"
       ],
       "category": "github_release_binary",
@@ -1289,8 +1248,6 @@
     {
       "id": "docs_site.publish_and_live_check",
       "source_lines": [
-        "gh-artifact-contract.md:3-6",
-        "gh-artifact-contract.md:3-6",
         "gh-artifact-contract.md:3-6"
       ],
       "category": "documentation_and_sites",
@@ -1308,9 +1265,6 @@
     {
       "id": "iac_modules.publish_and_verify",
       "source_lines": [
-        "gh-artifact-contract.md:3-6",
-        "gh-artifact-contract.md:3-6",
-        "gh-artifact-contract.md:3-6",
         "gh-artifact-contract.md:3-6"
       ],
       "category": "iac_and_modules",
