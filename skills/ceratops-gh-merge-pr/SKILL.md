@@ -49,7 +49,7 @@ Infer missing inputs from `gh`, git remotes, the current branch, and live repo d
 
 - (D) Run `python scripts/validation/github-validate-pr-readiness-contract.py` before merge or auto-merge decisions.
 - (D) Treat the script output as the first source of truth for draft state, mergeability, blocking review decisions, visible status-check failures, and pending status checks.
-- (D) Before merge or auto-merge, run the Codex review gate; it polls every 10 seconds until PR age 180 seconds, exits early on active Codex threads, and must return zero active threads before merge.
+- (D) Before merge or auto-merge, run `python scripts/validation/github-codex-review-gate.py wait --pr NUMBER_OR_URL --wait-seconds 180 --interval-seconds 10 --json`; it exits early on active Codex threads and must return zero active threads before merge.
 - If active Codex threads appear, fix only narrow authorized issues, push, resolve fixed thread IDs, then rerun the Codex gate and PR readiness check.
 - Stop instead of merging on ambiguous, risky, out-of-scope, stale, or unverified Codex threads.
 - Re-run the script after an action that could change readiness when the successful command result does not already prove the exact state, or when CI, merge queue, review, or conversation state is asynchronous.
