@@ -878,6 +878,26 @@ def result(fetched: dict[tuple[str, str], ApiResult], endpoint: str, params: dic
     return fetched[key]
 
 
+def active_branch_ruleset_details(fetched: dict[tuple[str, str], ApiResult], params: dict[str, Any]) -> list[dict[str, Any]]:
+    """Fetch active branch ruleset detail records when list evidence is too shallow."""
+
+    rulesets = result(fetched, "/repos/${owner}/${repo}/rulesets", params)
+    details: list[dict[str, Any]] = []
+    for item in as_list(rulesets.data):
+        if not isinstance(item, dict) or item.get("target") != "branch" or item.get("enforcement") != "active":
+            continue
+        ruleset_id = item.get("id")
+        if ruleset_id is None:
+            details.append(item)
+            continue
+        detail = result(fetched, f"/repos/${{owner}}/${{repo}}/rulesets/{ruleset_id}", params)
+        if detail.ok and isinstance(detail.data, dict):
+            details.append(detail.data)
+        else:
+            details.append(item)
+    return details
+
+
 def finding(check_id: str, level: str, message: str, actual: Any = None, expected: Any = None, path: str = "$") -> dict[str, Any]:
     """Create a consistent machine-readable finding record."""
     item = {"check_id": check_id, "level": level, "path": path, "message": message}
@@ -1064,9 +1084,9 @@ def evaluate_repo_check(
             "description": repo_info.get("description"),
             "homepage": repo_info.get("homepage"),
         }
-        if actual["owner"] != params["owner"]:
+        if str(actual["owner"] or "").casefold() != str(params["owner"]).casefold():
             drifts.append(finding(check_id, "FAIL", "Owner mismatch.", actual["owner"], params["owner"], "$.owner"))
-        if actual["name"] != params["repo"]:
+        if str(actual["name"] or "").casefold() != str(params["repo"]).casefold():
             drifts.append(finding(check_id, "FAIL", "Repo name mismatch.", actual["name"], params["repo"], "$.name"))
         if actual["default_branch"] != default_branch:
             drifts.append(finding(check_id, "FAIL", "Default branch mismatch.", actual["default_branch"], default_branch, "$.default_branch"))
@@ -1154,18 +1174,20 @@ def evaluate_repo_check(
         expected_actors = params.get("expected_maintainer_bypass_actors") or []
         if not expected_actors:
             return [finding(check_id, "SKIP", "No expected maintainer bypass actors configured.")]
+        ruleset_details = active_branch_ruleset_details(fetched, params)
         rulesets = result(fetched, "/repos/${owner}/${repo}/rulesets", params)
-        text = canonical(rulesets.data)
+        ruleset_evidence = ruleset_details or as_list(rulesets.data)
+        text = canonical(ruleset_evidence)
         missing = [actor for actor in expected_actors if str(actor) not in text]
         drifts = []
         if missing:
-            drifts.append(finding(check_id, "FAIL", "Expected maintainer bypass actor missing from rulesets.", actual=rulesets.data, expected=expected_actors))
+            drifts.append(finding(check_id, "FAIL", "Expected maintainer bypass actor missing from rulesets.", actual=ruleset_evidence, expected=expected_actors))
         if not re.search(r"pull[_-]?request", text, re.IGNORECASE):
-            drifts.append(finding(check_id, "WARN", "Ruleset bypass mode is not visibly pull-request-only.", actual=rulesets.data, expected="pull_request bypass mode", path="$.bypass_actors"))
+            drifts.append(finding(check_id, "WARN", "Ruleset bypass mode is not visibly pull-request-only.", actual=ruleset_evidence, expected="pull_request bypass mode", path="$.bypass_actors"))
         if not re.search(r"(~DEFAULT_BRANCH|refs/heads/|ref_name|" + re.escape(default_branch) + r")", text, re.IGNORECASE):
-            drifts.append(finding(check_id, "WARN", "Ruleset does not visibly target the default branch.", actual=rulesets.data, expected=default_branch, path="$.conditions.ref_name"))
+            drifts.append(finding(check_id, "WARN", "Ruleset does not visibly target the default branch.", actual=ruleset_evidence, expected=default_branch, path="$.conditions.ref_name"))
         if not re.search(r"(required_status_checks|pull_request|required_deployments)", text, re.IGNORECASE):
-            drifts.append(finding(check_id, "WARN", "Ruleset enforcement rules are not visible in the list response.", actual=rulesets.data, expected="pull request or required status check rule", path="$.rules"))
+            drifts.append(finding(check_id, "WARN", "Ruleset enforcement rules are not visible in ruleset detail.", actual=ruleset_evidence, expected="pull request or required status check rule", path="$.rules"))
         return drifts or [finding(check_id, "PASS", "Expected maintainer bypass ruleset evidence is present.", actual=expected_actors)]
 
     if check_id == "actions.permissions_policy":
@@ -1630,6 +1652,186 @@ def approved_drift_context(params: dict[str, Any], repo_context: dict[str, Any],
     }
 
 
+def split_condition_groups(expression: str, operator: str) -> list[str]:
+    """Split a condition expression on a top-level boolean operator."""
+
+    groups: list[str] = []
+    depth = 0
+    start = 0
+    i = 0
+    while i < len(expression):
+        char = expression[i]
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth = max(0, depth - 1)
+        elif depth == 0 and expression.startswith(operator, i):
+            groups.append(expression[start:i].strip())
+            i += len(operator)
+            start = i
+            continue
+        i += 1
+    groups.append(expression[start:].strip())
+    return groups
+
+
+def strip_outer_parens(expression: str) -> str:
+    """Remove one or more expression-wide parenthesis pairs."""
+
+    expression = expression.strip()
+    changed = True
+    while changed and expression.startswith("(") and expression.endswith(")"):
+        changed = False
+        depth = 0
+        for index, char in enumerate(expression):
+            if char == "(":
+                depth += 1
+            elif char == ")":
+                depth -= 1
+                if depth == 0 and index != len(expression) - 1:
+                    return expression
+        if depth == 0:
+            expression = expression[1:-1].strip()
+            changed = True
+    return expression
+
+
+def artifact_registry_hosts(params: dict[str, Any]) -> set[str]:
+    """Collect declared registry hosts from artifact identity contracts."""
+
+    artifacts = params.get("artifact_contracts") or []
+    if isinstance(artifacts, str):
+        try:
+            artifacts = json.loads(artifacts)
+        except json.JSONDecodeError:
+            artifacts = []
+    hosts: set[str] = set()
+    for artifact in artifacts if isinstance(artifacts, list) else []:
+        if not isinstance(artifact, dict):
+            continue
+        registry = str(artifact.get("registry") or "").strip().lower()
+        if not registry:
+            continue
+        parsed = urllib.parse.urlparse(registry if "://" in registry else f"https://{registry}")
+        hosts.add(parsed.hostname or registry)
+    return hosts
+
+
+def artifact_categories(artifacts: set[str]) -> set[str]:
+    """Map artifact type labels onto contract category names."""
+
+    categories: set[str] = set()
+    if artifacts & {
+        "github_packages_container",
+        "github_packages_npm",
+        "github_packages_maven",
+        "github_packages_gradle",
+        "github_packages_nuget",
+        "github_packages_rubygems",
+    }:
+        categories.add("github_packages")
+    return categories
+
+
+def artifact_condition_context(
+    params: dict[str, Any],
+    local: dict[str, Any],
+    types: dict[str, Any],
+    registries: dict[str, Any],
+    releases: Any,
+) -> dict[str, Any]:
+    """Build the condition context for artifact-check `applies_when` clauses."""
+
+    artifacts = set(types.get("artifact_surface", []))
+    external_artifacts = [item for item in artifacts if item != "no_artifact"]
+    workflow = workflow_text(local)
+    publish_workflow_detected = bool(
+        re.search(
+            r"(gh release|npm publish|twine upload|pypa/gh-action-pypi-publish|docker/build-push-action|docker push|cargo publish|gem push|nuget push|mvn deploy)",
+            workflow,
+            re.IGNORECASE,
+        )
+    )
+    workflow_emits_attestation = bool(re.search(r"(actions/attest|attestations:\s*write|provenance|sbom|cosign)", workflow, re.IGNORECASE))
+    registry_hosts = artifact_registry_hosts(params)
+    if registries.get("dockerhub"):
+        registry_hosts.add("docker.io")
+    if release_asset_names(releases):
+        registry_hosts.add("github.com")
+    return {
+        "artifact_type": artifacts,
+        "artifact_type_system": artifacts,
+        "artifact_type category": artifact_categories(artifacts),
+        "registry host": registry_hosts,
+        "detected_external_artifact_count": len(external_artifacts),
+        "audit_only": bool(params.get("audit_only", True)),
+        "current_change_affects_artifact": bool(params.get("current_change_affects_artifact", False)),
+        "final_answer_makes_artifact_claim": bool(params.get("final_answer_makes_artifact_claim", False)),
+        "final_answer_makes_no_artifact_claim": bool(params.get("final_answer_makes_no_artifact_claim", False)),
+        "merged_change_requires_release": bool(params.get("merged_change_requires_release", False)),
+        "artifact_was_published": bool(params.get("artifact_was_published", False)),
+        "publish_workflow_detected": publish_workflow_detected,
+        "workflow_emits_attestation_or_provenance": workflow_emits_attestation,
+        "workflow_contains_artifact_metadata_write": bool(workflows_with_write_permission(local, "artifact-metadata")),
+        "linked_artifacts_claimed": bool(params.get("linked_artifacts_claimed", False)),
+        "common.artifact_scope_trigger": bool(
+            "no_artifact" not in artifacts
+            or params.get("current_change_affects_artifact")
+            or params.get("final_answer_makes_artifact_claim")
+            or params.get("final_answer_makes_no_artifact_claim")
+            or params.get("merged_change_requires_release")
+        ),
+    }
+
+
+def artifact_condition_matches(expression: str, context: dict[str, Any]) -> bool:
+    """Evaluate the artifact contract's small `applies_when` expression language."""
+
+    expression = strip_outer_parens(expression.strip())
+    if not expression or expression in {"always", "true"}:
+        return True
+    or_groups = split_condition_groups(expression, "||")
+    if len(or_groups) > 1:
+        return any(artifact_condition_matches(group, context) for group in or_groups)
+    and_groups = split_condition_groups(expression, "&&")
+    if len(and_groups) > 1:
+        return all(artifact_condition_matches(group, context) for group in and_groups)
+    return artifact_clause_matches(expression, context)
+
+
+def artifact_clause_matches(clause: str, context: dict[str, Any]) -> bool:
+    """Return whether one artifact `applies_when` clause is true."""
+
+    clause = strip_outer_parens(clause.strip())
+    if clause in context:
+        return bool(context[clause])
+    membership = re.fullmatch(r"([A-Za-z0-9_. ]+)\s+(has|includes)\s+([A-Za-z0-9_-]+)", clause)
+    if membership:
+        key, _, member = membership.groups()
+        actual = context.get(key.strip())
+        return isinstance(actual, (list, set, tuple)) and member in actual
+    intersects = re.fullmatch(r"([A-Za-z0-9_. ]+)\s+intersects\s+([A-Za-z0-9_, -]+)", clause)
+    if intersects:
+        key, raw_members = intersects.groups()
+        actual = context.get(key.strip())
+        members = {item.strip() for item in raw_members.split(",") if item.strip()}
+        return isinstance(actual, (list, set, tuple)) and bool(set(actual) & members)
+    compare = re.fullmatch(r"([A-Za-z0-9_. ]+)\s*(==|!=|>)\s*(true|false|null|-?\d+|'[^']*'|\"[^\"]*\"|[A-Za-z0-9_.-]+)", clause)
+    if not compare:
+        return False
+    key, operator, raw_expected = compare.groups()
+    actual = context.get(key.strip())
+    expected = parse_condition_value(raw_expected)
+    if operator == ">":
+        return isinstance(actual, (int, float)) and isinstance(expected, int) and actual > expected
+    if isinstance(actual, (list, set, tuple)):
+        contains = expected in actual
+        return contains if operator == "==" else not contains
+    if actual is None:
+        return False
+    return actual == expected if operator == "==" else actual != expected
+
+
 def registry_metadata(params: dict[str, Any], artifact_contract: dict[str, Any], local: dict[str, Any]) -> dict[str, Any]:
     """Fetch live registry metadata for declared or locally inferred artifacts."""
     metadata: dict[str, Any] = {"pypi": {}, "npm": {}, "dockerhub": {}, "errors": []}
@@ -1750,9 +1952,13 @@ def evaluate_artifact_check(check: dict[str, Any], params: dict[str, Any], local
     """Evaluate one deterministic artifact check from local and registry data."""
     check_id = check["id"]
     artifacts = set(types.get("artifact_surface", []))
+    context = artifact_condition_context(params, local, types, registries, releases)
+    applies_when = check.get("applies_when")
+    if applies_when and not artifact_condition_matches(str(applies_when), context):
+        return [finding(check_id, "SKIP", "Check does not apply to this artifact context.", actual={"artifact_surface": sorted(artifacts), "applies_when": applies_when})]
     if check_id.startswith("common."):
         if check_id == "common.artifact_scope_trigger":
-            triggered = "no_artifact" not in artifacts or params.get("current_change_affects_artifact") or params.get("final_answer_makes_artifact_claim")
+            triggered = bool(context["common.artifact_scope_trigger"])
             return [finding(check_id, "PASS" if triggered else "SKIP", "Artifact contract scope evaluated.", actual={"triggered": triggered, "artifact_surface": sorted(artifacts)})]
         if check_id == "common.real_deliverable_classification":
             return [finding(check_id, "PASS", "Artifact surfaces classified.", actual=sorted(artifacts))]

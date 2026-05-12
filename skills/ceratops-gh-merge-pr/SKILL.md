@@ -7,13 +7,15 @@ description: Merge a GitHub pull request safely with Ceratops defaults, starting
 
 ## Goal
 
-Merge one GitHub PR only after proving the PR-specific merge gates are satisfied. This is the narrow finalization workflow for PR completion; it does not take ownership of code changes, dependency campaigns, artifact publishing, first-time publication, or broad repo health. Start with the bundled live PR check instead of relying on prose summaries or stale screenshots.
+Merge one GitHub PR only after proving the PR-specific merge gates are satisfied. This is the narrow finalization workflow for PR completion; it does not take ownership of dependency campaigns, artifact publishing, first-time publication, or broad repo health, and it takes ownership of code changes only for narrow active Codex review-thread fixes that this workflow detects before merge. Start with the bundled live PR checks instead of relying on prose summaries or stale screenshots.
 
 ## Context
 
 ### Script Bundle
 
 - (D) PR readiness contract check: `python scripts/validation/github-validate-pr-readiness-contract.py --pr NUMBER_OR_URL`
+- (D) Codex review gate: `python scripts/validation/github-codex-review-gate.py wait --pr NUMBER_OR_URL --wait-seconds 180 --interval-seconds 10 --json`
+- (D) Codex thread resolver: `python scripts/validation/github-codex-review-gate.py resolve --thread-id THREAD_ID --json`
 - Direct merge command: `gh pr merge --admin NUMBER_OR_URL_OR_BRANCH [--merge|--squash|--rebase] [--delete-branch]`
 
 ### Inputs To Capture
@@ -22,6 +24,7 @@ Merge one GitHub PR only after proving the PR-specific merge gates are satisfied
 - Repo owner and name, default branch, merge method preference, and whether auto-merge or immediate merge is expected.
 - Release policy, artifact-publish expectation, and whether merging this PR creates an immediate publish obligation.
 - Required checks, review policy, conversation-resolution policy, merge queue, admin enforcement, branch deletion policy, and whether the branch is from a fork.
+- Codex review policy, active Codex review threads, and whether any detected Codex issue is narrow enough to fix inside this merge workflow.
 - Whether the PR changes workflow refs or GitHub Actions permissions.
 - Local branch and worktree state that might be affected by syncing or cleanup.
 
@@ -33,7 +36,7 @@ Infer missing inputs from `gh`, git remotes, the current branch, and live repo d
 
 - Use this skill when the PR content is already ready and the remaining work is to verify gates, merge, and clean up.
 - If the PR queue is part of a broader dependency-maintenance campaign, stop and use `$ceratops-gh-repo-dependencies-maintenance`.
-- If the PR needs code, docs, CI, packaging, artifact publishing, repo creation, or first-time hardening work first, stop because that work is outside this skill's scope.
+- If the PR needs code, docs, CI, packaging, artifact publishing, repo creation, or first-time hardening work first, stop because that work is outside this skill's scope, except for narrow active Codex review-thread fixes detected and handled by this workflow before merge.
 
 ### Workflow
 
@@ -46,6 +49,9 @@ Infer missing inputs from `gh`, git remotes, the current branch, and live repo d
 
 - (D) Run `python scripts/validation/github-validate-pr-readiness-contract.py` before merge or auto-merge decisions.
 - (D) Treat the script output as the first source of truth for draft state, mergeability, blocking review decisions, visible status-check failures, and pending status checks.
+- (D) Before merge or auto-merge, run `python scripts/validation/github-codex-review-gate.py wait --pr NUMBER_OR_URL --wait-seconds 180 --interval-seconds 10 --json`; it exits early on active Codex threads and must return zero active threads before merge.
+- If active Codex threads appear, fix only narrow authorized issues, push, resolve fixed thread IDs, then rerun the Codex gate and PR readiness check.
+- Stop instead of merging on ambiguous, risky, out-of-scope, stale, or unverified Codex threads.
 - Re-run the script after an action that could change readiness when the successful command result does not already prove the exact state, or when CI, merge queue, review, or conversation state is asynchronous.
 
 #### 3. Inspect only merge-decision exceptions
@@ -64,6 +70,7 @@ Infer missing inputs from `gh`, git remotes, the current branch, and live repo d
 - Confirm required checks are green or pending in a state suitable for auto-merge.
 - Confirm required reviews are satisfied and no blocking review remains.
 - Confirm required conversations are resolved.
+- Confirm the Codex review gate reports zero active Codex threads after any detected issues are fixed and resolved.
 - Confirm the PR is up to date when strict status checks require it.
 - Confirm the PR can be completed by merge and cleanup alone. If completion also requires release, artifact publishing, or further repo changes, stop because that work is outside this skill's scope.
 - If the PR changes workflow refs or GitHub Actions permissions, confirm it does not introduce mutable external action refs that violate the repo's SHA-pinning policy. If it does, stop because content repair is outside this skill's scope.
@@ -90,6 +97,7 @@ Infer missing inputs from `gh`, git remotes, the current branch, and live repo d
 ### Completion Gate
 
 - Verify the final merge decision was backed by a fresh pre-merge `python scripts/validation/github-validate-pr-readiness-contract.py` run, then verify the post-merge PR state separately from the live PR endpoint.
+- Verify a fresh Codex review gate result found zero active Codex threads.
 - Verify live PR state, checks, reviews, conversations, and branch protection before merge decisions; after a successful merge or branch command, reread only asynchronous queue state or broader claims not proven by that command.
 - Verify local repo state, branch, remotes, refs, worktree cleanliness, and retained safety branches.
 

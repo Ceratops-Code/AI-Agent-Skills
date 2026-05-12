@@ -246,13 +246,6 @@
       "url": "https://docs.github.com/en/enterprise-cloud@latest/rest/announcement-banners/organizations"
     },
     {
-      "id": "docker.dockerfile_best_practices",
-      "scope": [
-        "artifact"
-      ],
-      "url": "https://docs.docker.com/build/building/best-practices/"
-    },
-    {
       "id": "docker.build_best_practices",
       "scope": [
         "artifact"
@@ -345,13 +338,6 @@
     },
     {
       "id": "npm.trusted_publishers",
-      "scope": [
-        "artifact"
-      ],
-      "url": "https://docs.npmjs.com/trusted-publishers/"
-    },
-    {
-      "id": "npm.trusted_publishing",
       "scope": [
         "artifact"
       ],
