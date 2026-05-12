@@ -223,7 +223,7 @@ def wait(args: argparse.Namespace) -> int:
         "active_codex_threads": threads,
     }
     print(json.dumps(output, indent=2 if args.pretty else None, ensure_ascii=True))
-    return 0
+    return 1 if threads else 0
 
 
 def resolve(args: argparse.Namespace) -> int:
