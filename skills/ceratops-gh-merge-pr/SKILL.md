@@ -14,8 +14,8 @@ Merge one GitHub PR only after proving the PR-specific merge gates are satisfied
 ### Script Bundle
 
 - (D) PR readiness contract check: `python scripts/validation/github-validate-pr-readiness-contract.py --pr NUMBER_OR_URL`
-- (D) Codex review discussion gate: `python scripts/validation/github-codex-review-gate.py wait --pr NUMBER_OR_URL --wait-seconds 180 --interval-seconds 10 --json`
-- (D) Codex review thread resolver after verified fixes: `python scripts/validation/github-codex-review-gate.py resolve --thread-id THREAD_ID --json`
+- (D) Codex review gate: `python scripts/validation/github-codex-review-gate.py wait --pr NUMBER_OR_URL --wait-seconds 180 --interval-seconds 10 --json`
+- (D) Codex thread resolver: `python scripts/validation/github-codex-review-gate.py resolve --thread-id THREAD_ID --json`
 - Direct merge command: `gh pr merge --admin NUMBER_OR_URL_OR_BRANCH [--merge|--squash|--rebase] [--delete-branch]`
 
 ### Inputs To Capture
@@ -49,9 +49,9 @@ Infer missing inputs from `gh`, git remotes, the current branch, and live repo d
 
 - (D) Run `python scripts/validation/github-validate-pr-readiness-contract.py` before merge or auto-merge decisions.
 - (D) Treat the script output as the first source of truth for draft state, mergeability, blocking review decisions, visible status-check failures, and pending status checks.
-- (D) After resolving the PR and before merge or auto-merge decisions, run `python scripts/validation/github-codex-review-gate.py wait --pr NUMBER_OR_URL --wait-seconds 180 --interval-seconds 10 --json`; the helper waits only until the PR is at least 180 seconds old, polls every 10 seconds, and reports active unresolved, non-outdated Codex review threads.
-- If active Codex review threads are reported, stop the merge wait, do not merge, fix the reported issues when they are narrow and authorized, push the fix, resolve each fixed thread with `python scripts/validation/github-codex-review-gate.py resolve --thread-id THREAD_ID --json`, then rerun the Codex review discussion gate and PR readiness check before continuing.
-- If an active Codex review thread is ambiguous, risky, stale, out of scope, or cannot be verified as fixed, stop and report the blocker instead of merging.
+- (D) Before merge or auto-merge, run the Codex review gate; it polls every 10 seconds until PR age 180 seconds, exits early on active Codex threads, and must return zero active threads before merge.
+- If active Codex threads appear, fix only narrow authorized issues, push, resolve fixed thread IDs, then rerun the Codex gate and PR readiness check.
+- Stop instead of merging on ambiguous, risky, out-of-scope, stale, or unverified Codex threads.
 - Re-run the script after an action that could change readiness when the successful command result does not already prove the exact state, or when CI, merge queue, review, or conversation state is asynchronous.
 
 #### 3. Inspect only merge-decision exceptions
@@ -70,7 +70,7 @@ Infer missing inputs from `gh`, git remotes, the current branch, and live repo d
 - Confirm required checks are green or pending in a state suitable for auto-merge.
 - Confirm required reviews are satisfied and no blocking review remains.
 - Confirm required conversations are resolved.
-- Confirm the Codex review discussion gate reports no active unresolved, non-outdated Codex review threads after any detected Codex issues are fixed and resolved.
+- Confirm the Codex review gate reports zero active Codex threads after any detected issues are fixed and resolved.
 - Confirm the PR is up to date when strict status checks require it.
 - Confirm the PR can be completed by merge and cleanup alone. If completion also requires release, artifact publishing, or further repo changes, stop because that work is outside this skill's scope.
 - If the PR changes workflow refs or GitHub Actions permissions, confirm it does not introduce mutable external action refs that violate the repo's SHA-pinning policy. If it does, stop because content repair is outside this skill's scope.
@@ -97,7 +97,7 @@ Infer missing inputs from `gh`, git remotes, the current branch, and live repo d
 ### Completion Gate
 
 - Verify the final merge decision was backed by a fresh pre-merge `python scripts/validation/github-validate-pr-readiness-contract.py` run, then verify the post-merge PR state separately from the live PR endpoint.
-- Verify the final merge decision was backed by a fresh Codex review discussion gate result that found no active unresolved, non-outdated Codex review threads.
+- Verify a fresh Codex review gate result found zero active Codex threads.
 - Verify live PR state, checks, reviews, conversations, and branch protection before merge decisions; after a successful merge or branch command, reread only asynchronous queue state or broader claims not proven by that command.
 - Verify local repo state, branch, remotes, refs, worktree cleanliness, and retained safety branches.
 
