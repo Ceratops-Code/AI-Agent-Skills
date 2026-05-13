@@ -35,7 +35,7 @@ Ask for the missing raw prompt only when none was provided.
 ### Boundaries
 
 - Use this skill for prompt rewrites, prompt templates, and prompt-clarity improvements.
-- If the requested change is to a durable rule or instruction file, use `$ceratops-produce-rules-update`.
+- If the requested change is to a durable rule or instruction file, use `$ceratops-propose-rules-update`.
 - If the requested change is to a skill workflow, use `$ceratops-skill-optimize`.
 
 ### Workflow

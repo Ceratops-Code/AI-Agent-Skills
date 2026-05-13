@@ -1,13 +1,13 @@
 ---
-name: ceratops-produce-rules-update
-description: Produce focused rule-update recommendations after a concrete agent failure or miss caused or allowed by existing or missing instructions. Use when the user invokes $Ceratops-Produce-Rules-Update or $ceratops-produce-rules-update to diagnose instruction causes and propose exact updates to AGENTS.md rules, SKILL.md rules, automation prompts, helper contracts, policy lines, or prompt rules.
+name: ceratops-propose-rules-update
+description: Propose focused rule-update recommendations after a concrete agent failure or miss caused or allowed by existing or missing instructions. Use when the user invokes $Ceratops-Propose-Rules-Update or $ceratops-propose-rules-update to diagnose instruction causes and propose exact updates to AGENTS.md rules, SKILL.md rules, automation prompts, helper contracts, policy lines, or prompt rules.
 ---
 
-# Ceratops Produce Rules Update
+# Ceratops Propose Rules Update
 
 ## Goal
 
-Act as a skill and instruction engineer. Produce exact update recommendations for rules, instructions, prompts, skills, automations, and helper contracts after a concrete failure, miss, or user request to govern behavior.
+Act as a skill and instruction engineer. Propose exact update recommendations for rules, instructions, prompts, skills, automations, and helper contracts after a concrete failure, miss, or user request to govern behavior.
 
 ## Context
 
