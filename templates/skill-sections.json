@@ -20,20 +20,20 @@
       "powershell -ExecutionPolicy Bypass -File scripts/install-skills.ps1 -SkipInstall -Validate full"
     ],
     "new_skill_local_availability": [
-      "$ceratops-codex-skill-stage-release"
+      "$ceratops-skill-stage-release"
     ]
   },
   "runtime_payloads": {
     "*": [
       "assets/ceratops-logo-500.png"
     ],
-    "ceratops-codex-skill-stage-release": [
+    "ceratops-skill-stage-release": [
       "scripts/render-runtime-skills.py",
       "scripts/install-skills.ps1",
       "scripts/validation/validate-skills-consistency.py",
       "templates"
     ],
-    "ceratops-gh-codex-skill-ship": [
+    "ceratops-gh-skill-ship": [
       "scripts/render-runtime-skills.py",
       "scripts/install-skills.ps1",
       "scripts/validation/validate-skills-consistency.py",
@@ -123,7 +123,7 @@
     "ceratops-code-consistency-audit": [
       "core"
     ],
-    "ceratops-codex-skill-stage-release": [
+    "ceratops-skill-stage-release": [
       "core",
       "release-branch-runtime"
     ],
@@ -133,7 +133,7 @@
     "ceratops-skill-update": [
       "core"
     ],
-    "ceratops-gh-codex-skill-ship": [
+    "ceratops-gh-skill-ship": [
       "core",
       "release-branch-runtime"
     ],

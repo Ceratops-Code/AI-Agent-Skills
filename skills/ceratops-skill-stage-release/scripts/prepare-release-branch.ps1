@@ -6,7 +6,7 @@ param(
     [string]$RemoteName = "origin"
 )
 
-# Skill-local helper called by ceratops-codex-skill-stage-release before branch
+# Skill-local helper called by ceratops-skill-stage-release before branch
 # merges. It centralizes PowerShell-safe git exit-code handling for the branch
 # preparation sequence that was previously documented as inline commands.
 

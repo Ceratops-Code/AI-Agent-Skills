@@ -39,7 +39,7 @@ Infer missing inputs from the current repo state before asking.
 
 - Use this skill when the task is to update existing Ceratops skills, compatible skills in another repo, or the shared skill-maintenance layer itself.
 - If the task is creating a brand-new Ceratops skill, stop because new-skill creation is outside this skill's scope.
-- If the task is only staging already-prepared skill changes, stop and use `$ceratops-codex-skill-stage-release`.
+- If the task is only staging already-prepared skill changes, stop and use `$ceratops-skill-stage-release`.
 
 ### Workflow
 
@@ -76,7 +76,7 @@ Infer missing inputs from the current repo state before asking.
 #### 5. Report or hand off
 
 - Stop at validated local repo changes unless the user explicitly asked for local preview staging.
-- If local preview staging was requested, continue with `$ceratops-codex-skill-stage-release`.
+- If local preview staging was requested, continue with `$ceratops-skill-stage-release`.
 
 ## Done When
 

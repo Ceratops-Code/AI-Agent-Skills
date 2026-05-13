@@ -26,8 +26,8 @@ Reusable Ceratops skills for Codex and other `SKILL.md`-compatible agents.
 | `ceratops-thread-resume-manual-stop` | Resume a same-thread task from current local state after a stop, restart, or crash without rebuilding everything from scratch. |
 | `ceratops-thread-full-handoff` | Create a copy-paste prompt for moving a whole task into a new thread without re-auditing the whole task. |
 | `ceratops-thread-side-task-handoff` | Create a minimal copy-paste prompt for spinning a newly discovered side task into a new thread. |
-| `ceratops-codex-skill-stage-release` | Merge ready skill branches into a skill repo `release/*` branch and run only the install or validation steps the repo provides. |
-| `ceratops-gh-codex-skill-ship` | Ship staged skills repo changes through GitHub, then restore the skills repo checkout and installed skills to clean `main`. |
+| `ceratops-skill-stage-release` | Merge ready skill branches into a skill repo `release/*` branch and run only the install or validation steps the repo provides. |
+| `ceratops-gh-skill-ship` | Ship staged skills repo changes through GitHub, then restore the skills repo checkout and installed skills to clean `main`. |
 
 ## Layout
 
@@ -90,7 +90,7 @@ GitHub helper logic lives in copied scripts under `scripts/`, not in an installe
 | `scripts/validation/github-collect-nd-evidence.py` | Called when non-deterministic org, repo, code, or artifact checks need one bundled evidence payload for human review. |
 
 Release-branch preparation and pending-work cleanup use stage-release-only helpers
-inside `skills/ceratops-codex-skill-stage-release/scripts/`. This repo keeps
+inside `skills/ceratops-skill-stage-release/scripts/`. This repo keeps
 scripts only where they add reusable safety logic or bundle nontrivial evidence
 collection.
 
@@ -180,7 +180,7 @@ Common intended combinations:
 | `artifact` | `artifact` | `$ceratops-gh-repo-health-audit`, `$ceratops-gh-repo-create-and-publish`, and `$ceratops-contract-review` when a published artifact is part of the task. |
 | `all` | `create` | `$ceratops-gh-repo-create-and-publish`. |
 | `all` | `health` | `$ceratops-gh-repo-health-audit`; `$ceratops-contract-review` only for broad contract governance. |
-| PR validator, implicit PR surface | none | `$ceratops-gh-merge-pr`, `$ceratops-gh-repo-dependencies-maintenance`, and `$ceratops-gh-codex-skill-ship` before merge or auto-merge decisions. |
+| PR validator, implicit PR surface | none | `$ceratops-gh-merge-pr`, `$ceratops-gh-repo-dependencies-maintenance`, and `$ceratops-gh-skill-ship` before merge or auto-merge decisions. |
 
 A successful mutation command is enough evidence for that exact mutation. Re-run a validator only for drift/audit work, uncertain state, broader closure claims, or checks not already proven by the successful command.
 
