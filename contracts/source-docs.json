@@ -1,15 +1,17 @@
 {
   "source_docs_version": 1,
-  "name": "github_health_contract_source_docs",
-  "captured_on": "2026-05-02",
+  "name": "ceratops_contract_source_docs",
+  "captured_on": "2026-05-13",
   "policy": {
     "use_order": [
       "official_docs",
       "official_api_or_registry_endpoint",
       "official_cli_help",
       "authoritative_registry_metadata",
+      "installed_openai_skill_reference",
       "reference_repository_example"
     ],
+    "installed_openai_skill_references": "Use only for local skill-design pattern comparison. Prefer examples that match the target skill's artifact, workflow, safety, or verification surface.",
     "reference_repository_examples": "Use only for pattern comparison when official docs and live product state do not settle the question."
   },
   "docs": [
@@ -482,6 +484,59 @@
         "artifact"
       ],
       "url": "https://learn.microsoft.com/en-us/powershell/gallery/faqs?view=powershellget-2.x"
+    }
+  ],
+  "reference_skills": [
+    {
+      "id": "ref.openai.documents",
+      "path": "$CODEX_HOME/plugins/cache/openai-primary-runtime/*/*/skills/documents/SKILL.md",
+      "scope": [
+        "skill"
+      ],
+      "focus": [
+        "artifact-specific tool contract",
+        "render-and-inspect verification gate",
+        "final deliverable discipline"
+      ]
+    },
+    {
+      "id": "ref.openai.presentations",
+      "path": "$CODEX_HOME/plugins/cache/openai-primary-runtime/*/*/skills/presentations/SKILL.md",
+      "scope": [
+        "skill"
+      ],
+      "focus": [
+        "request classification",
+        "audience and content-maturity gates",
+        "reference-loading boundaries",
+        "artifact QA requirements"
+      ]
+    },
+    {
+      "id": "ref.openai.spreadsheets",
+      "path": "$CODEX_HOME/plugins/cache/openai-primary-runtime/*/*/skills/spreadsheets/SKILL.md",
+      "scope": [
+        "skill"
+      ],
+      "focus": [
+        "tooling contract",
+        "error recovery",
+        "formula and render verification",
+        "concise final-output discipline"
+      ]
+    },
+    {
+      "id": "ref.openai.github_yeet",
+      "path": "$CODEX_HOME/plugins/cache/openai-curated/*/*/skills/yeet/SKILL.md",
+      "scope": [
+        "skill"
+      ],
+      "focus": [
+        "publish-flow scope confirmation",
+        "credential prerequisites",
+        "git and PR sequencing",
+        "write-safety boundaries"
+      ]
     }
   ],
   "reference_repos": [

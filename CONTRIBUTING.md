@@ -8,9 +8,9 @@ Contributions should keep skills practical, current, and safe.
 - Keep source `SKILL.md` files as portable delta-only skill definitions; runtime `SKILL.md` files are generated during install.
 - Keep `agents/openai.yaml` aligned with the skill when changing trigger behavior.
 - Keep reusable automation-run policy in `skills/ceratops-automation-run/` instead of duplicating the same alert, memory, and completion rules across automation prompts.
-- Keep shared Ceratops rules in `templates/sections/` plus `templates/skill-sections.json`, keep the universal `core` section focused, keep GH-only wording in GH-only sections, and keep routine contract review in `skills/ceratops-contract-review/` instead of normal GH task skills.
+- Keep shared Ceratops rules in `templates/sections/` plus `templates/skill-sections.json`, keep the universal `core` section focused, keep GH-only wording in GH-only sections, and keep routine contract review in `skills/ceratops-contract-review/` instead of normal GH or skill-maintenance task skills.
 - Do not add secrets, private endpoints, local machine paths, or org-internal procedures.
-- Prefer current official docs over memory when changing GitHub, registry, or agent behavior.
+- Prefer current official docs over memory when changing GitHub, registry, or agent behavior, and use installed OpenAI skills only as local pattern examples for skill-design review.
 - Add checklist items only when they are durable and broadly useful.
 - Do not add boilerplate that is not relevant to these workflows.
 
