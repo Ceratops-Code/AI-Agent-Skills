@@ -593,6 +593,109 @@ def workflow_text(local: dict[str, Any]) -> str:
     return "\n".join(workflow_files(local).values())
 
 
+def publish_ci_files(local: dict[str, Any]) -> dict[str, str]:
+    """Return CI files that can contain publish workflows."""
+
+    extra_paths = {".circleci/config.yml", ".circleci/config.yaml", ".gitlab-ci.yml", ".gitlab-ci.yaml"}
+    files: dict[str, str] = {}
+    for path, text in local.get("texts", {}).items():
+        normalized = path.replace("\\", "/")
+        if normalized.startswith(".github/workflows/") or normalized in extra_paths:
+            files[normalized] = text
+    return files
+
+
+def publish_ci_text(local: dict[str, Any]) -> str:
+    """Concatenate CI files that can contain package or artifact publication."""
+
+    return "\n".join(publish_ci_files(local).values())
+
+
+def parse_version_tuple(raw: str) -> tuple[int, int, int] | None:
+    """Parse a loose semver-like version into a comparable tuple."""
+
+    match = re.search(r"(\d+)(?:\.(\d+))?(?:\.(\d+))?", raw)
+    if not match:
+        return None
+    return tuple(int(part or 0) for part in match.groups())
+
+
+def version_is_at_least(raw: str, minimum: str) -> bool | None:
+    """Return whether a loose version is at least the required minimum."""
+
+    actual = parse_version_tuple(raw)
+    expected = parse_version_tuple(minimum)
+    if actual is None or expected is None:
+        return None
+    return actual >= expected
+
+
+def visible_node_versions(text: str) -> list[str]:
+    """Extract visible Node runtime versions from common CI syntax."""
+
+    patterns = [
+        r"(?im)\bnode-version\s*:\s*['\"]?([0-9]+(?:\.[0-9]+){0,2})",
+        r"(?im)\bNODE_VERSION\s*[:=]\s*['\"]?([0-9]+(?:\.[0-9]+){0,2})",
+        r"(?im)\b(?:node|cimg/node):([0-9]+(?:\.[0-9]+){0,2})",
+    ]
+    versions: list[str] = []
+    for pattern in patterns:
+        versions.extend(re.findall(pattern, text))
+    return sorted(set(versions))
+
+
+def visible_npm_versions(text: str) -> list[str]:
+    """Extract visible npm CLI versions from publish workflow text."""
+
+    versions = re.findall(r"(?i)\bnpm@([0-9]+(?:\.[0-9]+){0,2}|latest|next)", text)
+    versions.extend(re.findall(r"(?i)\bnpm\s+(?:install|i)\s+-g\s+npm@([0-9]+(?:\.[0-9]+){0,2}|latest|next)", text))
+    return sorted(set(versions))
+
+
+def docker_build_push_action_default_provenance_steps(local: dict[str, Any]) -> list[dict[str, Any]]:
+    """Classify docker/build-push-action steps whose default provenance matters."""
+
+    steps: list[dict[str, Any]] = []
+    for path, text in workflow_files(local).items():
+        lines = text.splitlines()
+        for index, line in enumerate(lines):
+            match = re.search(r"uses:\s*docker/build-push-action@([^\s#]+)", line)
+            if not match:
+                continue
+            ref = match.group(1)
+            major_match = re.fullmatch(r"v?(\d+)(?:\..*)?", ref)
+            major = int(major_match.group(1)) if major_match else None
+            window = "\n".join(lines[index : min(len(lines), index + 40)])
+            push = bool(re.search(r"(?im)^\s*push:\s*true\b", window))
+            disabled = bool(re.search(r"(?im)^\s*provenance:\s*(?:false|0|disabled)\b", window))
+            load = bool(re.search(r"(?im)^\s*load:\s*true\b", window))
+            docker_exporter = bool(re.search(r"(?im)^\s*(?:outputs?|output):\s*.*type=docker\b", window))
+            applies = bool(major is not None and major >= 4 and push and not disabled and not load and not docker_exporter)
+            steps.append(
+                {
+                    "path": path,
+                    "ref": ref,
+                    "major": major,
+                    "push": push,
+                    "provenance_disabled": disabled,
+                    "load": load,
+                    "docker_exporter": docker_exporter,
+                    "default_provenance_applies": applies,
+                }
+            )
+    return steps
+
+
+def workflow_emits_attestation_or_provenance(local: dict[str, Any]) -> bool:
+    """Return whether workflows visibly emit attestations, SBOMs, or provenance."""
+
+    text = workflow_text(local)
+    explicit = bool(re.search(r"(?i)(actions/attest|attestations:\s*write|--provenance\b|sbom|cosign)", text))
+    positive_provenance = bool(re.search(r"(?im)^\s*provenance:\s*(?!false\b|0\b|disabled\b).+", text))
+    docker_default = any(step.get("default_provenance_applies") for step in docker_build_push_action_default_provenance_steps(local))
+    return explicit or positive_provenance or docker_default
+
+
 def workflows_with_permissions_write_all(local: dict[str, Any]) -> list[dict[str, str]]:
     """Find workflows using the broad GitHub Actions `permissions: write-all` setting."""
 
@@ -916,13 +1019,12 @@ def classify(repo_info: dict[str, Any], paths: list[str], topics: list[str], loc
     at the same time; every applicable check should then run or be explicitly
     skipped by the contract.
     """
-    texts = local.get("texts", {})
-    all_text = "\n".join(texts.values())
+    ci_text = publish_ci_text(local)
     artifacts: set[str] = set()
     languages: set[str] = set()
     project: set[str] = set()
     workflows = path_matches(paths, [".github/workflows/*.yml", ".github/workflows/*.yaml"])
-    release_workflow = bool(re.search(r"(gh release|npm publish|twine upload|pypa/gh-action-pypi-publish|docker/build-push-action|docker push|cargo publish|gem push|nuget push|mvn deploy)", all_text))
+    release_workflow = bool(re.search(r"(gh release|npm publish|twine upload|pypa/gh-action-pypi-publish|docker/build-push-action|docker push|cargo publish|gem push|nuget push|mvn deploy)", ci_text))
 
     if path_matches(paths, ["Dockerfile", "**/Dockerfile"]) or any(t in topics for t in ("docker", "oci", "container", "ghcr")):
         artifacts.add("docker_oci_image")
@@ -972,7 +1074,7 @@ def classify(repo_info: dict[str, Any], paths: list[str], topics: list[str], loc
         "workflow_surface": {
             "has_workflows": workflows,
             "has_release_workflow": release_workflow,
-            "has_attestation_workflow": bool(re.search(r"(actions/attest|attestations:\s*write|artifact-metadata:\s*write)", all_text)),
+            "has_attestation_workflow": workflow_emits_attestation_or_provenance(local) or bool(workflows_with_write_permission(local, "artifact-metadata")),
         },
         "artifact_surface": sorted(artifacts),
         "language_or_iac": sorted(languages),
@@ -1744,7 +1846,8 @@ def artifact_condition_context(
 
     artifacts = set(types.get("artifact_surface", []))
     external_artifacts = [item for item in artifacts if item != "no_artifact"]
-    workflow = workflow_text(local)
+    workflow = publish_ci_text(local)
+    docker_default_provenance = docker_build_push_action_default_provenance_steps(local)
     publish_workflow_detected = bool(
         re.search(
             r"(gh release|npm publish|twine upload|pypa/gh-action-pypi-publish|docker/build-push-action|docker push|cargo publish|gem push|nuget push|mvn deploy)",
@@ -1752,7 +1855,7 @@ def artifact_condition_context(
             re.IGNORECASE,
         )
     )
-    workflow_emits_attestation = bool(re.search(r"(actions/attest|attestations:\s*write|provenance|sbom|cosign)", workflow, re.IGNORECASE))
+    workflow_emits_attestation = workflow_emits_attestation_or_provenance(local)
     registry_hosts = artifact_registry_hosts(params)
     if registries.get("dockerhub"):
         registry_hosts.add("docker.io")
@@ -1772,6 +1875,7 @@ def artifact_condition_context(
         "artifact_was_published": bool(params.get("artifact_was_published", False)),
         "publish_workflow_detected": publish_workflow_detected,
         "workflow_emits_attestation_or_provenance": workflow_emits_attestation,
+        "docker_build_push_action_default_provenance_applies": any(step.get("default_provenance_applies") for step in docker_default_provenance),
         "workflow_contains_artifact_metadata_write": bool(workflows_with_write_permission(local, "artifact-metadata")),
         "linked_artifacts_claimed": bool(params.get("linked_artifacts_claimed", False)),
         "common.artifact_scope_trigger": bool(
@@ -1805,18 +1909,18 @@ def artifact_clause_matches(clause: str, context: dict[str, Any]) -> bool:
     clause = strip_outer_parens(clause.strip())
     if clause in context:
         return bool(context[clause])
-    membership = re.fullmatch(r"([A-Za-z0-9_. ]+)\s+(has|includes)\s+([A-Za-z0-9_-]+)", clause)
+    membership = re.fullmatch(r"([A-Za-z0-9_. _]+)\s+(has|includes)\s+([A-Za-z0-9_-]+)", clause)
     if membership:
         key, _, member = membership.groups()
         actual = context.get(key.strip())
         return isinstance(actual, (list, set, tuple)) and member in actual
-    intersects = re.fullmatch(r"([A-Za-z0-9_. ]+)\s+intersects\s+([A-Za-z0-9_, -]+)", clause)
+    intersects = re.fullmatch(r"([A-Za-z0-9_. _]+)\s+intersects\s+([A-Za-z0-9_, -]+)", clause)
     if intersects:
         key, raw_members = intersects.groups()
         actual = context.get(key.strip())
         members = {item.strip() for item in raw_members.split(",") if item.strip()}
         return isinstance(actual, (list, set, tuple)) and bool(set(actual) & members)
-    compare = re.fullmatch(r"([A-Za-z0-9_. ]+)\s*(==|!=|>)\s*(true|false|null|-?\d+|'[^']*'|\"[^\"]*\"|[A-Za-z0-9_.-]+)", clause)
+    compare = re.fullmatch(r"([A-Za-z0-9_. _]+)\s*(==|!=|>)\s*(true|false|null|-?\d+|'[^']*'|\"[^\"]*\"|[A-Za-z0-9_.-]+)", clause)
     if not compare:
         return False
     key, operator, raw_expected = compare.groups()
@@ -1973,9 +2077,13 @@ def evaluate_artifact_check(check: dict[str, Any], params: dict[str, Any], local
             return [finding(check_id, "MANUAL", "Publishing identity needs workflow and registry-specific review.", actual={"workflow_files": [p for p in local.get("files", []) if p.startswith(".github/workflows/")]})]
         if check_id == "common.attestation_permissions":
             text = workflow_text(local)
-            if not re.search(r"(?i)(actions/attest|attestations:\s*write|provenance|sbom|cosign)", text):
+            docker_default_provenance = docker_build_push_action_default_provenance_steps(local)
+            explicit_attestation = re.search(r"(?i)(actions/attest|attestations:\s*write|--provenance\b|provenance:\s*(?!false\b|0\b|disabled\b)|sbom|cosign)", text)
+            if not explicit_attestation and not any(step.get("default_provenance_applies") for step in docker_default_provenance):
                 return [finding(check_id, "SKIP", "No attestation, provenance, SBOM, or signing workflow evidence detected.")]
             drifts = []
+            if docker_default_provenance:
+                drifts.append(finding(check_id, "INFO", "Docker build-push default provenance posture classified.", actual=docker_default_provenance))
             top_level_attestations = workflows_with_top_level_write_permission(local, "attestations")
             if top_level_attestations:
                 drifts.append(finding(check_id, "FAIL", "Workflow-root attestations: write grants are not job scoped.", actual=top_level_attestations, expected="job-level attestations: write"))
@@ -2069,18 +2177,81 @@ def evaluate_artifact_check(check: dict[str, Any], params: dict[str, Any], local
                 drifts.append(finding(check_id, "WARN", "npm package contents are not constrained by files or .npmignore.", expected="files or .npmignore", path="package.json"))
             return drifts or [finding(check_id, "PASS", "npm package metadata and reproducibility fields are present.")]
         if check_id == "npm.trusted_publishing_and_provenance":
-            text = workflow_text(local)
+            files = publish_ci_files(local)
+            text = "\n".join(files.values())
             if "npm publish" not in text:
                 return [finding(check_id, "SKIP", "No npm publish workflow detected.")]
             drifts = []
-            if "id-token: write" not in text:
+            github_publish_text = "\n".join(content for path, content in files.items() if path.startswith(".github/workflows/") and "npm publish" in content)
+            gitlab_publish_text = "\n".join(content for path, content in files.items() if path.startswith(".gitlab-ci.") and "npm publish" in content)
+            circleci_publish_text = "\n".join(content for path, content in files.items() if path.startswith(".circleci/") and "npm publish" in content)
+            provider_detected = bool(github_publish_text or gitlab_publish_text or circleci_publish_text)
+            if not provider_detected:
+                drifts.append(finding(check_id, "WARN", "npm publish workflow is not in a supported trusted-publishing provider file.", actual=list(files), expected="GitHub Actions, GitLab CI/CD, or CircleCI cloud"))
+            node_versions = visible_node_versions(text)
+            ambiguous_node_versions = [
+                version
+                for version in node_versions
+                if version_is_at_least(version, "22.14.0") is False and parse_version_tuple(version) == (22, 0, 0)
+            ]
+            bad_node_versions = [
+                version
+                for version in node_versions
+                if version_is_at_least(version, "22.14.0") is False and version not in ambiguous_node_versions
+            ]
+            if bad_node_versions:
+                drifts.append(finding(check_id, "FAIL", "npm trusted publishing workflow uses a Node version below the documented minimum.", actual=bad_node_versions, expected=">= 22.14.0"))
+            elif ambiguous_node_versions:
+                drifts.append(finding(check_id, "WARN", "npm trusted publishing workflow uses a coarse Node 22 version; minimum patch level is not visible.", actual=ambiguous_node_versions, expected=">= 22.14.0"))
+            elif not node_versions:
+                drifts.append(finding(check_id, "WARN", "npm trusted publishing workflow does not visibly pin a Node version.", expected="Node >= 22.14.0"))
+            npm_versions = visible_npm_versions(text)
+            exact_npm_versions = [version for version in npm_versions if version not in {"latest", "next"}]
+            ambiguous_npm_versions = [
+                version
+                for version in exact_npm_versions
+                if version_is_at_least(version, "11.5.1") is False and parse_version_tuple(version) == (11, 0, 0)
+            ]
+            bad_npm_versions = [
+                version
+                for version in exact_npm_versions
+                if version_is_at_least(version, "11.5.1") is False and version not in ambiguous_npm_versions
+            ]
+            if bad_npm_versions:
+                drifts.append(finding(check_id, "FAIL", "npm trusted publishing workflow uses an npm CLI version below the documented minimum.", actual=bad_npm_versions, expected=">= 11.5.1"))
+            elif ambiguous_npm_versions:
+                drifts.append(finding(check_id, "WARN", "npm trusted publishing workflow uses a coarse npm 11 version; minimum patch level is not visible.", actual=ambiguous_npm_versions, expected=">= 11.5.1"))
+            elif not npm_versions:
+                drifts.append(finding(check_id, "WARN", "npm trusted publishing workflow does not visibly pin or update npm CLI.", expected="npm >= 11.5.1"))
+            if github_publish_text and "id-token: write" not in github_publish_text:
                 drifts.append(finding(check_id, "FAIL", "npm trusted publishing/provenance workflow lacks id-token: write.", expected="job-scoped id-token: write"))
-            if not re.search(r"(?i)(--provenance|provenance|trusted publishing|id-token:\s*write)", text):
+            if github_publish_text and re.search(r"(?im)runs-on:\s*(?:\[.*)?self-hosted\b", github_publish_text):
+                drifts.append(finding(check_id, "FAIL", "npm trusted publishing does not support self-hosted GitHub runners.", expected="GitHub-hosted runner or scoped token fallback"))
+            if github_publish_text and not re.search(r"(?im)^\s*runs-on\s*:", github_publish_text):
+                drifts.append(finding(check_id, "WARN", "npm trusted publishing workflow does not visibly declare a GitHub-hosted runner.", expected="runs-on cloud runner"))
+            if gitlab_publish_text and not re.search(r"(?i)(id_tokens:|NPM_ID_TOKEN|aud:\s*[\"']?npm:registry\.npmjs\.org)", gitlab_publish_text):
+                drifts.append(finding(check_id, "WARN", "GitLab npm trusted publishing workflow lacks visible npm OIDC token configuration.", expected="id_tokens audience npm:registry.npmjs.org"))
+            if circleci_publish_text:
+                if not re.search(r"(?i)(NPM_ID_TOKEN|circleci\s+run\s+oidc\s+get)", circleci_publish_text):
+                    drifts.append(finding(check_id, "WARN", "CircleCI npm trusted publishing workflow lacks visible npm OIDC token retrieval.", expected="NPM_ID_TOKEN from circleci run oidc get"))
+                drifts.append(finding(check_id, "INFO", "CircleCI trusted publishing is classified as no npm provenance attestation.", actual="CircleCI trusted publishing"))
+            if re.search(r"(?i)workflow_call", github_publish_text):
+                drifts.append(finding(check_id, "WARN", "Reusable npm publish workflows need caller and called workflow id-token evidence.", expected="id-token permission visible in workflow_call path"))
+            if not re.search(r"(?i)(--provenance|provenance|trusted publishing|id-token:\s*write|id_tokens:|NPM_ID_TOKEN)", text):
                 drifts.append(finding(check_id, "WARN", "npm publish workflow does not visibly enable provenance or trusted publishing.", expected="trusted publishing or provenance"))
             if not re.search(r"(?i)(tags:|release:|workflow_dispatch)", text):
                 drifts.append(finding(check_id, "WARN", "npm publish workflow trigger is not visibly tag, release, or explicit manual release.", expected="tag/release/manual trigger"))
             if not re.search(r"(?i)(npm ci|pnpm install|yarn install)", text):
                 drifts.append(finding(check_id, "WARN", "npm publish workflow does not visibly install from a lockfile.", expected="npm ci, pnpm install, or yarn install"))
+            try:
+                package_data = json.loads(local.get("texts", {}).get("package.json", "{}"))
+            except json.JSONDecodeError:
+                package_data = {}
+            package_name = str(package_data.get("name") or "")
+            if package_name.startswith("@") and "--access" not in text:
+                drifts.append(finding(check_id, "WARN", "Scoped npm publish workflow does not visibly set package access.", actual=package_name, expected="npm publish --access public or approved restricted access"))
+            if not re.search(r"(?i)(--tag\s+\S+|npm\s+dist-tag)", text):
+                drifts.append(finding(check_id, "INFO", "npm publish workflow does not visibly set or update a dist-tag.", expected="explicit dist-tag policy"))
             return drifts or [finding(check_id, "PASS", "npm publish workflow has trusted publishing/provenance evidence.")]
         if check_id == "npm.live_package_version_smoke":
             bad = {name: data for name, data in registries["npm"].items() if not data.get("ok")}
@@ -2123,15 +2294,25 @@ def evaluate_artifact_check(check: dict[str, Any], params: dict[str, Any], local
             return [finding(check_id, "MANUAL", "No Docker Hub image name was provided; GHCR or other registry needs registry-specific verification.")]
         if check_id == "docker_oci.provenance_and_sbom":
             text = workflow_text(local) + "\n" + "\n".join(local.get("texts", {}).get(path, "") for path in local.get("texts", {}) if path.lower().endswith((".md", ".yml", ".yaml")))
-            if not re.search(r"(?i)(attest|provenance|sbom|cosign)", text):
+            default_provenance_steps = docker_build_push_action_default_provenance_steps(local)
+            explicit_attestation = re.search(r"(?i)(attest|--provenance\b|provenance:\s*(?!false\b|0\b|disabled\b)|sbom|cosign)", text)
+            if not explicit_attestation and not any(step.get("default_provenance_applies") for step in default_provenance_steps):
                 return [finding(check_id, "SKIP", "No container attestation, provenance, SBOM, or cosign workflow evidence detected.")]
             drifts = []
+            if default_provenance_steps:
+                drifts.append(finding(check_id, "INFO", "docker/build-push-action default provenance posture classified.", actual=default_provenance_steps))
             if not re.search(r"(?i)(gh attestation verify|cosign verify|cosign verify-attestation)", text):
                 drifts.append(finding(check_id, "WARN", "No recorded attestation/signature verification command found.", expected="gh attestation verify or cosign verify"))
-            if "id-token: write" not in text and "attestations: write" not in text:
+            if explicit_attestation and "id-token: write" not in text and "attestations: write" not in text:
                 drifts.append(finding(check_id, "WARN", "Attestation/provenance workflow permissions are not visible.", expected="job-scoped id-token or attestations permission"))
             if "cosign verify" in text and not re.search(r"(?i)(certificate-identity|certificate-oidc-issuer|rekor|bundle)", text):
                 drifts.append(finding(check_id, "WARN", "cosign verification does not visibly constrain identity/issuer or log/bundle evidence.", expected="identity/issuer plus Rekor or bundle verification"))
+            secret_like_dockerfiles = []
+            for path in matching_paths(local.get("files", []), ["Dockerfile", "**/Dockerfile"]):
+                if SECRET_NAME_RE.search(local.get("texts", {}).get(path, "")):
+                    secret_like_dockerfiles.append(path)
+            if any(step.get("default_provenance_applies") for step in default_provenance_steps) and secret_like_dockerfiles:
+                drifts.append(finding(check_id, "FAIL", "Default Docker max provenance can expose secret-like build args or env names.", actual=secret_like_dockerfiles, expected="secret mounts or CI secrets"))
             return drifts or [finding(check_id, "PASS", "Container attestation/provenance verification evidence is present.")]
         return [finding(check_id, "PASS", "Docker/OCI deterministic file or workflow evidence recorded.")]
 
