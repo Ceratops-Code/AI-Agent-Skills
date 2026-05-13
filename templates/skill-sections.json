@@ -13,11 +13,11 @@
     "skill_local_or_metadata_changes": [],
     "helper_runtime_changes": [],
     "runtime_generation_changes": [
-      "powershell -ExecutionPolicy Bypass -File scripts/install-skills.ps1 -RuntimeRoot <temp-runtime-root> -Validate sections"
+      "powershell -ExecutionPolicy Bypass -File scripts/install-skills.ps1 -SkipInstall -Validate sections"
     ],
     "contract_checker_changes": [],
     "governance_full_validation": [
-      "powershell -ExecutionPolicy Bypass -File scripts/install-skills.ps1 -RuntimeRoot <temp-runtime-root> -Validate full"
+      "powershell -ExecutionPolicy Bypass -File scripts/install-skills.ps1 -SkipInstall -Validate full"
     ],
     "new_skill_local_availability": [
       "$ceratops-codex-skill-stage-release"

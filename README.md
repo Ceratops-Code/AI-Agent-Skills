@@ -214,11 +214,10 @@ Invoke skills directly with `/skill-name` in Claude Code. In Codex, invoke them 
 
 ## Validate
 
-Run full validation through the public entrypoint and render generated runtime skills into a disposable output folder:
+Run full validation through the public entrypoint without installing runtime copies:
 
 ```powershell
-$runtimeRoot = Join-Path ([System.IO.Path]::GetTempPath()) "ceratops-runtime-skills"
-powershell -ExecutionPolicy Bypass -File .\scripts\install-skills.ps1 -RuntimeRoot $runtimeRoot -Validate full
+powershell -ExecutionPolicy Bypass -File .\scripts\install-skills.ps1 -SkipInstall -Validate full
 ```
 
 Run `powershell -ExecutionPolicy Bypass -File .\scripts\install-skills.ps1 -SkipInstall -Validate sections` only when shared section source files or `templates/skill-sections.json` assignments changed. The section mode validates that source skills are delta-only; `scripts/render-runtime-skills.py` performs runtime shared-section expansion during install.
