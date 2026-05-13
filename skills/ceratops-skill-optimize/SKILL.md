@@ -42,7 +42,7 @@ Ask one concise question and stop if no skill text, file path, or concrete targe
 - Use this skill for advisory skill optimization and exact proposed skill text changes.
 - If the user asks to apply changes to Ceratops skills, use `$ceratops-skill-update`.
 - If the user asks to create a new skill, use `$ceratops-skill-create`.
-- If the requested change is one durable rule, use `$ceratops-produce-rules-fix`.
+- If the requested change is one durable rule, use `$ceratops-produce-rules-update`.
 
 ### Workflow
 

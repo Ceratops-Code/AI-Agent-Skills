@@ -1,6 +1,0 @@
-interface:
-  display_name: "Ceratops Produce Rules Fix"
-  short_description: "Diagnose instruction failures and propose rule updates"
-  icon_small: "./assets/ceratops-logo-500.png"
-  icon_large: "./assets/ceratops-logo-500.png"
-  default_prompt: "Use $ceratops-produce-rules-fix to diagnose this instruction failure and propose the smallest exact rule update."

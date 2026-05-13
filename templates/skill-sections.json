@@ -102,13 +102,13 @@
     "ceratops-automation-run": [
       "core"
     ],
-    "ceratops-produce-rules-fix": [
+    "ceratops-produce-rules-update": [
       "core"
     ],
     "ceratops-fixloop-breaker": [
       "core"
     ],
-    "ceratops-rework-analysis": [
+    "ceratops-credit-savings-analysis": [
       "core"
     ],
     "ceratops-prompt-optimizer": [

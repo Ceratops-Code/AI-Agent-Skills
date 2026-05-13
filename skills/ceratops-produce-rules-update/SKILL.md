@@ -1,9 +1,9 @@
 ---
-name: ceratops-produce-rules-fix
-description: Produce focused rule-update recommendations after a concrete agent failure or miss caused or allowed by existing or missing instructions. Use when the user invokes $Ceratops-Produce-Rules-Fix or $ceratops-produce-rules-fix to diagnose instruction causes and propose exact updates to AGENTS.md rules, SKILL.md rules, automation prompts, helper contracts, policy lines, or prompt rules.
+name: ceratops-produce-rules-update
+description: Produce focused rule-update recommendations after a concrete agent failure or miss caused or allowed by existing or missing instructions. Use when the user invokes $Ceratops-Produce-Rules-Update or $ceratops-produce-rules-update to diagnose instruction causes and propose exact updates to AGENTS.md rules, SKILL.md rules, automation prompts, helper contracts, policy lines, or prompt rules.
 ---
 
-# Ceratops Produce Rules Fix
+# Ceratops Produce Rules Update
 
 ## Goal
 
