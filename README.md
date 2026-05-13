@@ -12,8 +12,7 @@ Reusable Ceratops skills for Codex and other `SKILL.md`-compatible agents.
 | `ceratops-gh-repo-health-audit` | Audit and repair GitHub repo health, security posture, stale state, and publication gaps. |
 | `ceratops-gh-merge-pr` | Safely merge a GitHub PR, verify checks and protection with live scripted readiness checks, clean up branches, and sync local state. |
 | `ceratops-contract-review` | Review the GitHub, code, PR readiness, and artifact health contracts against current standards, then report proposed updates for explicit approval. |
-| `ceratops-produce-rule-update` | Produce durable rule or instruction updates from concrete failures or instruction gaps. |
-| `ceratops-rule-optimizer` | Optimize durable rule text after a concrete failure, gap, or weak candidate. |
+| `ceratops-produce-rules-fix` | Produce focused rule-update recommendations after a concrete instruction failure, miss, or missing-rule gap. |
 | `ceratops-fixloop-breaker` | Break repeated failed fix loops by requiring a run-by-run failure analysis before more code changes. |
 | `ceratops-rework-analysis` | Analyze recent Codex runs for deterministic rework causes and recommend low-maintenance producer controls. |
 | `ceratops-prompt-optimizer` | Rewrite rough prompts into clearer structured prompts without changing intent. |
@@ -214,11 +213,10 @@ Invoke skills directly with `/skill-name` in Claude Code. In Codex, invoke them 
 
 ## Validate
 
-Run full validation through the public entrypoint and render generated runtime skills into a disposable output folder:
+Run full validation through the public entrypoint without installing skill copies:
 
 ```powershell
-$runtimeRoot = Join-Path ([System.IO.Path]::GetTempPath()) "ceratops-runtime-skills"
-powershell -ExecutionPolicy Bypass -File .\scripts\install-skills.ps1 -RuntimeRoot $runtimeRoot -Validate full
+powershell -ExecutionPolicy Bypass -File .\scripts\install-skills.ps1 -SkipInstall -Validate full
 ```
 
 Run `powershell -ExecutionPolicy Bypass -File .\scripts\install-skills.ps1 -SkipInstall -Validate sections` only when shared section source files or `templates/skill-sections.json` assignments changed. The section mode validates that source skills are delta-only; `scripts/render-runtime-skills.py` performs runtime shared-section expansion during install.

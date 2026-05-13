@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [string]$RepoRoot,
-    [string]$RuntimeRoot,
+    [string]$InstallRoot,
     [string]$PythonCommand,
     [string[]]$Skill,
     [ValidateSet("none", "sections", "full")]
@@ -29,9 +29,9 @@ if ([string]::IsNullOrWhiteSpace($RepoRoot)) {
     $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 }
 
-# RuntimeRoot is needed only for an install. Validation-only runs can skip it so
-# CI and maintenance checks do not touch the user's live `$CODEX_HOME/skills`.
-if (-not $SkipInstall -and [string]::IsNullOrWhiteSpace($RuntimeRoot)) {
+# An install destination is needed only when copying skills. Validation-only
+# runs can skip it so CI and maintenance checks do not touch live skills.
+if (-not $SkipInstall -and [string]::IsNullOrWhiteSpace($InstallRoot)) {
     $codexHome = $env:CODEX_HOME
     if ([string]::IsNullOrWhiteSpace($codexHome)) {
         $homeRoot = $env:USERPROFILE
@@ -39,11 +39,11 @@ if (-not $SkipInstall -and [string]::IsNullOrWhiteSpace($RuntimeRoot)) {
             $homeRoot = $env:HOME
         }
         if ([string]::IsNullOrWhiteSpace($homeRoot)) {
-            throw "Could not resolve a home directory. Set CODEX_HOME or pass -RuntimeRoot."
+            throw "Could not resolve a home directory. Set CODEX_HOME or pass -InstallRoot."
         }
         $codexHome = Join-Path $homeRoot ".codex"
     }
-    $RuntimeRoot = Join-Path $codexHome "skills"
+    $InstallRoot = Join-Path $codexHome "skills"
 }
 
 function Resolve-PythonCommand {
@@ -123,11 +123,11 @@ if (-not $SkipInstall) {
     # Render selected skills through Python so shared-section rendering, payload
     # copying, managed-folder replacement, and stale cleanup share one source of
     # truth across direct CLI use and skill-invoked runtime refreshes.
-    if (-not (Test-Path -LiteralPath $RuntimeRoot)) {
-        New-Item -ItemType Directory -Path $RuntimeRoot | Out-Null
+    if (-not (Test-Path -LiteralPath $InstallRoot)) {
+        New-Item -ItemType Directory -Path $InstallRoot | Out-Null
     }
 
-    $rendererArgs = @($renderer, "--runtime-root", $RuntimeRoot)
+    $rendererArgs = @($renderer, "--install-root", $InstallRoot)
     foreach ($skillName in $buildSkillNames) {
         $rendererArgs += @("--skill", $skillName)
     }
