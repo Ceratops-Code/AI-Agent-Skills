@@ -19,8 +19,7 @@ Contributions should keep skills practical, current, and safe.
 Run before opening a pull request:
 
 ```powershell
-$runtimeRoot = Join-Path ([System.IO.Path]::GetTempPath()) "ceratops-runtime-skills"
-powershell -ExecutionPolicy Bypass -File .\scripts\install-skills.ps1 -RuntimeRoot $runtimeRoot -Validate full
+powershell -ExecutionPolicy Bypass -File .\scripts\install-skills.ps1 -SkipInstall -Validate full
 ```
 
 If the change affects workflow behavior, include a short test note in the PR explaining how the skill was exercised or reviewed.

@@ -35,7 +35,7 @@ Ask for the missing title, id, or session file only when the target thread canno
 
 - Use this skill for avoidable rework, repeated artifact iterations, failed output loops, stale cleanup, and producer-failure analysis.
 - If the active issue is one unresolved bug, use `$ceratops-fixloop-breaker` or `$ceratops-task-execute-in-stages` first.
-- If the user already knows the specific rule to change, use `$ceratops-produce-rule-update`.
+- If the user already knows the specific rule to change, use `$ceratops-produce-rules-fix`.
 
 ### Workflow
 

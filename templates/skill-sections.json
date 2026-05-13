@@ -102,10 +102,7 @@
     "ceratops-automation-run": [
       "core"
     ],
-    "ceratops-produce-rule-update": [
-      "core"
-    ],
-    "ceratops-rule-optimizer": [
+    "ceratops-produce-rules-fix": [
       "core"
     ],
     "ceratops-fixloop-breaker": [

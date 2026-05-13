@@ -16,7 +16,7 @@ Apply one clearly understood Ceratops skill change without creating a task workt
 - The exact skill, rule, metadata field, or small file change to apply.
 - The source checkout that is already on the intended `release/*` branch.
 - Whether the same change should also be copied and committed into any active task worktrees or branches.
-- The target runtime root. Use `$CODEX_HOME/skills` unless the user provides another runtime root.
+- The target installed skills directory. Use `$CODEX_HOME/skills` unless the user provides another install target.
 
 If the change is not exact, low-risk, and dependency-free, stop and use `$ceratops-skill-update` instead.
 
