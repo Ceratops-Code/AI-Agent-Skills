@@ -979,9 +979,16 @@
       "applies_when": "artifact_type has npm_package && publish_workflow_detected == true",
       "expected": {
         "prefer_npm_trusted_publishing_when_prerequisites_met": true,
+        "npm_cli_version_minimum": "11.5.1",
+        "node_version_minimum": "22.14.0",
+        "trusted_publishing_provider_must_be_supported_cloud_runner": true,
+        "self_hosted_runner_token_fallback_or_blocker_classified": true,
         "repository_url_exact_match_for_trusted_publishing": true,
         "id_token_write_only_in_publish_job": true,
+        "workflow_call_parent_and_child_id_token_when_used": true,
         "npm_publish_uses_provenance_or_trusted_publishing_when_supported": true,
+        "provenance_auto_generated_only_for_public_github_or_gitlab_public_package": true,
+        "circleci_trusted_publishing_has_no_provenance_attestation": true,
         "publish_trigger_is_tag_release_or_explicit_manual_release": true,
         "access_and_dist_tag_explicit_when_publishing": true,
         "provenance_verified_when_npm_generated_it": true
@@ -1054,14 +1061,17 @@
       "category": "docker_oci_image",
       "kind": "workflow_and_registry_scan",
       "comparison": "container_attestation_policy",
-      "applies_when": "artifact_type intersects docker_oci_image,github_container_registry_image,generic_oci_registry_image && workflow_emits_attestation_or_provenance == true",
+      "applies_when": "artifact_type intersects docker_oci_image,github_container_registry_image,generic_oci_registry_image && (workflow_emits_attestation_or_provenance == true || docker_build_push_action_default_provenance_applies == true)",
       "expected": {
         "provenance_or_sbom_attestation_verified_when_emitted": true,
         "verification_command_recorded": true,
         "sigstore_certificate_identity_or_oidc_subject_verified_when_used": true,
         "transparency_log_or_bundle_verification_classified_when_used": true,
         "build_args_do_not_expose_secrets_in_provenance": true,
-        "attestation_generation_permissions_are_job_scoped": true
+        "attestation_generation_permissions_are_job_scoped": true,
+        "docker_build_push_action_v4_or_later_default_provenance_classified": true,
+        "load_or_docker_exporter_no_attestation_classified": true,
+        "default_public_repo_max_provenance_secret_exposure_classified": true
       }
     },
     {

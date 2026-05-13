@@ -11,11 +11,10 @@ Reusable Ceratops skills for Codex and other `SKILL.md`-compatible agents.
 | `ceratops-gh-repo-dependencies-maintenance` | Maintain Dependabot, Renovate, security, and manual dependency work recursively. |
 | `ceratops-gh-repo-health-audit` | Audit and repair GitHub repo health, security posture, stale state, and publication gaps. |
 | `ceratops-gh-merge-pr` | Safely merge a GitHub PR, verify checks and protection with live scripted readiness checks, clean up branches, and sync local state. |
-| `ceratops-contract-review` | Review the GitHub, code, PR readiness, and artifact health contracts against current standards, then report proposed updates for explicit approval. |
-| `ceratops-produce-rule-update` | Produce durable rule or instruction updates from concrete failures or instruction gaps. |
-| `ceratops-rule-optimizer` | Optimize durable rule text after a concrete failure, gap, or weak candidate. |
+| `ceratops-contract-review` | Review the GitHub, code, PR readiness, artifact, and skill-design contracts against current standards, then report proposed updates for explicit approval. |
+| `ceratops-produce-rules-update` | Produce focused rule-update recommendations after a concrete instruction failure, miss, or missing-rule gap. |
 | `ceratops-fixloop-breaker` | Break repeated failed fix loops by requiring a run-by-run failure analysis before more code changes. |
-| `ceratops-rework-analysis` | Analyze recent Codex runs for deterministic rework causes and recommend low-maintenance producer controls. |
+| `ceratops-credit-savings-analysis` | Analyze recent Codex runs for avoidable credit spend and recommend low-maintenance controls. |
 | `ceratops-prompt-optimizer` | Rewrite rough prompts into clearer structured prompts without changing intent. |
 | `ceratops-skill-optimize` | Propose targeted skill updates without applying edits. |
 | `ceratops-skill-create` | Create a new Ceratops or compatible skill, using templates, validation, metadata, and runtime preview only when the repo provides them. |
@@ -60,6 +59,9 @@ contracts/
   artifacts/
     artifact-deterministic-contract.json
     artifact-nondeterministic-contract.md
+  skills/
+    skill-deterministic-contract.json
+    skill-nondeterministic-contract.md
   github/
     github-org-deterministic-contract.json
     github-pr-readiness-deterministic-contract.json
@@ -73,7 +75,7 @@ Source `SKILL.md` files are portable, delta-only skill definitions. Runtime `SKI
 `agents/openai.yaml` is Codex UI metadata and may be ignored by other agents.
 Each Ceratops skill declares the runtime-local icon path `./assets/ceratops-logo-500.png`. The repo-root `assets/ceratops-logo-500.png` is the source copied into each skill by `scripts/install-skills.ps1`.
 GitHub helper logic lives in copied scripts under `scripts/`, not in an installed Python package.
-`contracts/` is the source of truth for deterministic GitHub org/repo checks, repo-content checks, PR readiness checks, external artifact registry checks, non-deterministic review prompts, source-doc tracking, and the local code-comment review rubric. `skills/ceratops-contract-review/` reviews and updates the GitHub, code, PR readiness, and registry contracts when official standards change.
+`contracts/` is the source of truth for deterministic GitHub org/repo checks, repo-content checks, PR readiness checks, external artifact registry checks, skill-design checks, non-deterministic review prompts, source-doc tracking, and the local code-comment review rubric. `skills/ceratops-contract-review/` reviews and updates the GitHub, code, PR readiness, registry, and skill-design contracts when official standards or local reference skill patterns change.
 
 ## Scripts
 
@@ -92,16 +94,17 @@ inside `skills/ceratops-codex-skill-stage-release/scripts/`. This repo keeps
 scripts only where they add reusable safety logic or bundle nontrivial evidence
 collection.
 
-## Health Contracts
+## Contracts
 
-The health contract structure is split by the surface being checked:
+The contract structure is split by the surface being checked:
 
-- `contracts/source-docs.json` records official source documents and reference repositories used by the GitHub, repo, and registry contracts.
+- `contracts/source-docs.json` records official source documents, installed OpenAI skill references, and reference repositories used by the GitHub, repo, registry, and skill-design contracts.
 - `contracts/github/github-org-deterministic-contract.json` defines deterministic organization settings, policy, identity, security, Dependabot, and default-logo/custom-logo checks.
 - `contracts/github/github-repo-deterministic-contract.json` defines deterministic live GitHub repository settings, security, branch/ruleset, Actions policy, queues, releases, and stale GitHub state checks.
 - `contracts/github/github-pr-readiness-deterministic-contract.json` defines deterministic live PR readiness checks used before merge and auto-merge decisions.
 - `contracts/code/code-repo-deterministic-contract.json` defines deterministic repository-content checks for files, workflow text, Dependabot config, CODEOWNERS, local git state, local path references, and secret-pattern scans.
 - `contracts/artifacts/artifact-deterministic-contract.json` defines external artifact checks for PyPI, npm, DockerHub or OCI registries, GitHub Container Registry, GitHub releases, docs sites, and other package registries.
+- `contracts/skills/skill-deterministic-contract.json` defines deterministic Ceratops skill checks for source structure, metadata, shared-section generation, runtime payloads, public docs, portability, and contract presence.
 - `contracts/*/*-nondeterministic-contract.md` files capture checks that need intent judgment, prose review, manual browser confirmation, or current-doc interpretation after bundled evidence is collected.
 
 Run deterministic checks with bundled selections instead of one command per setting:
@@ -113,6 +116,7 @@ python .\scripts\validation\github-validate-repo-artifact-contract.py --repo OWN
 python .\scripts\validation\github-validate-repo-artifact-contract.py --repo OWNER/REPO --select repo:dependency --select code:dependency --local-repo-path .
 python .\scripts\validation\github-validate-repo-artifact-contract.py --repo OWNER/REPO --surface artifact --subset artifact --local-repo-path .
 python .\scripts\validation\github-validate-pr-readiness-contract.py --pr NUMBER_OR_URL
+python .\scripts\validation\validate-skills-consistency.py --mode full
 ```
 
 Collect review evidence for non-deterministic checks with:
@@ -125,10 +129,13 @@ python .\scripts\validation\github-collect-nd-evidence.py --surface artifact --r
 python .\scripts\validation\github-collect-nd-evidence.py --surface pr --pr NUMBER_OR_URL --local-repo-path . --json
 ```
 
-Contract surfaces select the area being checked. They are read by
-`github-validate-repo-artifact-contract.py` and
-`github-collect-nd-evidence.py`; skills pass a surface only when they are doing an
-explicit audit, drift check, uncertain-state check, or broad closeout claim.
+Contract surfaces select the area being checked. GitHub, code, artifact, and PR
+surfaces are read by `github-validate-repo-artifact-contract.py`,
+`github-validate-pr-readiness-contract.py`, and `github-collect-nd-evidence.py`.
+The skill surface is represented by `contracts/skills/` and
+`validate-skills-consistency.py`. Skills pass or choose a surface only when they
+are doing an explicit audit, drift check, uncertain-state check, or broad
+closeout claim.
 
 | Surface | Runs When |
 | --- | --- |
@@ -136,6 +143,7 @@ explicit audit, drift check, uncertain-state check, or broad closeout claim.
 | `repo` | Live GitHub repository settings, Actions policy, security toggles, rulesets, labels, releases, queues, and other GitHub-hosted repo state need an audit. |
 | `code` | Repository contents, workflows, Dependabot config, CODEOWNERS, local git state, local path references, or local secret-pattern posture need an audit. |
 | `artifact` | External deliverables or registry state such as PyPI, npm, DockerHub, GHCR, release assets, or docs publishing need an audit. |
+| `skill` | Ceratops skill source, metadata, shared-section, runtime payload, source-doc, installed-reference, or high-quality skill-design expectations need an audit. |
 | `pr` | A live PR merge or auto-merge decision needs fresh readiness evidence. |
 | `all` | Full repo health, repo creation, or explicitly broad governance review is in scope. |
 
@@ -177,6 +185,7 @@ Common intended combinations:
 A successful mutation command is enough evidence for that exact mutation. Re-run a validator only for drift/audit work, uncertain state, broader closure claims, or checks not already proven by the successful command.
 
 `contracts/code/code-comment-nondeterministic-contract.md` is a non-deterministic local review rubric for comment sufficiency. It avoids repeated live research during code-consistency audits and is not part of routine ongoing-work validation.
+`contracts/skills/skill-nondeterministic-contract.md` is the local review rubric for high-quality skill design. It uses installed OpenAI skills from `$CODEX_HOME/plugins/cache/` as pattern examples only and keeps durable Ceratops obligations in the deterministic skill contract, shared sections, validator, or skill-local source.
 
 ## Install For Codex
 
@@ -214,11 +223,10 @@ Invoke skills directly with `/skill-name` in Claude Code. In Codex, invoke them 
 
 ## Validate
 
-Run full validation through the public entrypoint and render generated runtime skills into a disposable output folder:
+Run full validation through the public entrypoint without installing skill copies:
 
 ```powershell
-$runtimeRoot = Join-Path ([System.IO.Path]::GetTempPath()) "ceratops-runtime-skills"
-powershell -ExecutionPolicy Bypass -File .\scripts\install-skills.ps1 -RuntimeRoot $runtimeRoot -Validate full
+powershell -ExecutionPolicy Bypass -File .\scripts\install-skills.ps1 -SkipInstall -Validate full
 ```
 
 Run `powershell -ExecutionPolicy Bypass -File .\scripts\install-skills.ps1 -SkipInstall -Validate sections` only when shared section source files or `templates/skill-sections.json` assignments changed. The section mode validates that source skills are delta-only; `scripts/render-runtime-skills.py` performs runtime shared-section expansion during install.
