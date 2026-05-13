@@ -22,8 +22,11 @@ Use it during `ceratops-code-consistency-audit` when scripts, public APIs, autom
 
 - Line-by-line restatement of simple code.
 - Stale implementation history.
-- TODO without an owner or next decision.
 - Commented-out code.
+
+## Prohibited Comment Roles
+
+- TODO comments.
 
 ## Language Defaults
 
