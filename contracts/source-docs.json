@@ -548,8 +548,8 @@
       ],
       "focus": [
         "pyproject.toml metadata",
-        "PyPI release workflow",
-        "Trusted Publishing pattern"
+        "basic PyPI Trusted Publishing workflow mechanics",
+        "example-only PyPI publish action usage; not release-trigger authority"
       ],
       "files": [
         "https://github.com/pypa/sampleproject/blob/main/pyproject.toml",
