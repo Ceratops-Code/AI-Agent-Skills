@@ -17,6 +17,7 @@ Merge one GitHub PR only after proving the PR-specific merge gates are satisfied
 - (D) Codex review gate: `python scripts/validation/github-codex-review-gate.py wait --pr NUMBER_OR_URL --wait-seconds 180 --interval-seconds 10 --json`
 - (D) Codex thread resolver: `python scripts/validation/github-codex-review-gate.py resolve --thread-id THREAD_ID --json`
 - Direct merge command: `gh pr merge --admin NUMBER_OR_URL_OR_BRANCH [--merge|--squash|--rebase] [--delete-branch]`
+- (D) Branch deletion policy check for reusable release or integration head branches: `gh repo view OWNER/REPO --json deleteBranchOnMerge`
 
 ### Inputs To Capture
 
@@ -86,7 +87,7 @@ Infer missing inputs from `gh`, git remotes, the current branch, and live repo d
 
 #### 7. Clean up and verify
 
-- After a PR is merged, delete the remote head branch only for disposable branches; keep `release/local` and any other reusable release or integration branch.
+- After a PR is merged, delete the remote head branch only for disposable branches; for `release/local` and any other reusable release or integration branch, verify the local and remote head refs still exist at the expected post-merge commit, and restore the remote branch and upstream tracking if GitHub auto-deleted the remote head.
 - After the merge, verify the live PR endpoint shows the PR as merged instead of reusing the pre-merge readiness script on a now-closed PR.
 - Sync the local default branch to the remote default branch without destructive resets.
 - Prune stale refs safely.
