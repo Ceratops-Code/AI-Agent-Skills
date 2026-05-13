@@ -1,6 +1,6 @@
 # Skill Design Non-Deterministic Checks
 
-This file complements `skill-deterministic-contract.json`. The JSON contains machine-checkable skill source, metadata, shared-section, runtime-payload, public-doc, portability, and contract-presence checks. This file contains skill-design quality checks that need reviewer judgment.
+This file complements `skill-deterministic-contract.json`. The JSON contains machine-checkable skill source, metadata, shared-section, runtime-payload, public-doc, portability, and contract-reference-alignment checks. This file contains skill-design quality checks that need reviewer judgment.
 
 ## Good Skill Definition
 
