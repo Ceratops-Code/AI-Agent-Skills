@@ -54,7 +54,7 @@ Ask one concise question and stop only when the failure class, involved sources,
 3. Identify the problematic, missing, vague, contradictory, or drifting rules that caused or allowed the failure.
 4. Answer the diagnostic questions and choose the smallest owner artifact and operation for the fix.
 5. Draft exact before-and-after rule text, including any deterministic helper contract when prompt text is not the right control.
-6. Before completion, verify the proposal against the involved sources and reject duplicate, contradictory, protection-dropping, or overbroad changes.
+6. Before completion, verify the proposal against the involved sources and reject duplicate, contradictory, protection-dropping, overbroad, or non-minimal wording.
 
 ## Done When
 
