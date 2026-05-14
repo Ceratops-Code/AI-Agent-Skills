@@ -1,6 +1,0 @@
-interface:
-  display_name: "Ceratops GH Repo Create And Publish"
-  short_description: "Create or first-publish repos with live GitHub checks"
-  icon_small: "./assets/ceratops-logo-500.png"
-  icon_large: "./assets/ceratops-logo-500.png"
-  default_prompt: "Use $ceratops-gh-repo-create-and-publish for this project. Create or harden the GitHub repo, then publish the right public artifact and prove GitHub, code, and artifact health with the bundled checks before closing."

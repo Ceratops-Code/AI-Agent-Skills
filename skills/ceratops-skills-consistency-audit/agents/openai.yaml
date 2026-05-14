@@ -1,6 +1,6 @@
 interface:
   display_name: "Ceratops Skills Consistency Audit"
-  short_description: "Audit Ceratops skills consistency"
+  short_description: "Audit skill routers, payloads, sections, and drift"
   icon_small: "./assets/ceratops-logo-500.png"
   icon_large: "./assets/ceratops-logo-500.png"
-  default_prompt: "Use $ceratops-skills-consistency-audit to run governance skill consistency validation, review justified candidate skill-drift areas, and report the smallest repairs."
+  default_prompt: "Use $ceratops-skills-consistency-audit to run governance skill consistency validation, then review router/action references, retired-name drift, runtime payload mapping, metadata alignment, and shared-section cleanup residue before reporting the smallest repairs."

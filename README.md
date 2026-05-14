@@ -6,29 +6,21 @@ Reusable Ceratops skills for Codex and other `SKILL.md`-compatible agents.
 
 | Skill | Purpose |
 | --- | --- |
-| `ceratops-gh-repo-create-and-publish` | Create or production-harden a public GitHub repo and publish the right artifact target when relevant. |
-| `ceratops-gh-ship-change` | Ship repo changes through PR, CI, merge, artifact publishing when relevant, and cleanup. |
-| `ceratops-gh-repo-dependencies-maintenance` | Maintain Dependabot, Renovate, security, and manual dependency work recursively. |
-| `ceratops-gh-repo-health-audit` | Audit and repair GitHub repo health, security posture, stale state, and publication gaps. |
-| `ceratops-gh-merge-pr` | Safely merge a GitHub PR, verify checks and protection with live scripted readiness checks, clean up branches, and sync local state. |
-| `ceratops-contract-review` | Review the GitHub, code, PR readiness, artifact, and skill-design contracts against current standards, then report proposed updates for explicit approval. |
+| `ceratops-gh-repo-lifecycle` | Route GitHub repo lifecycle work across create-or-publish, health-audit, dependency-maintenance, ship-change, and merge-pr actions. |
+| `ceratops-contract-review` | Review GitHub, code, PR readiness, artifact, and skill-design contracts against standards, source docs, validators, and lifecycle action claims. |
 | `ceratops-propose-rules-update` | Propose focused rule-update recommendations after a concrete instruction failure, miss, or missing-rule gap. |
 | `ceratops-fixloop-breaker` | Break repeated failed fix loops by requiring a run-by-run failure analysis before more code changes. |
 | `ceratops-credit-savings-analysis` | Analyze recent Codex runs for avoidable credit spend and recommend low-maintenance controls. |
 | `ceratops-prompt-optimizer` | Rewrite rough prompts into clearer structured prompts without changing intent. |
-| `ceratops-skill-optimize` | Propose targeted skill updates without applying edits. |
-| `ceratops-skill-create` | Create a new Ceratops or compatible skill, using templates, validation, metadata, and runtime preview only when the repo provides them. |
-| `ceratops-skill-update` | Update existing Ceratops or compatible skills, using shared sections, generation, validation, helper claims, and docs only when present. |
-| `ceratops-skills-consistency-audit` | Audit Ceratops skill-source consistency, governance-only skill drift, and deterministic validation surfaces. |
-| `ceratops-skill-fast-change` | Apply a simple known-safe skill change directly on a release branch and update only the affected runtime skill. |
+| `ceratops-skill-optimize` | Propose advisory-only improvements across skill text, action references, metadata, payloads, validators, and docs. |
+| `ceratops-skill-lifecycle` | Route skill lifecycle work across create, update, fast-change, change-promotion, and ship-to-remote actions. |
+| `ceratops-skills-consistency-audit` | Audit skill-source consistency, router/action references, retired-name drift, payloads, metadata, and section cleanup. |
 | `ceratops-automation-run` | Run recurring automations with shared Ceratops alert, memory, and completion policy. |
 | `ceratops-task-execute-in-stages` | Drive substantial tasks stage by stage, preferring the simplest standard fix and asking before complex paths. |
 | `ceratops-code-consistency-audit` | Audit merged refactors for contradictions, docs drift, comment sufficiency, stale follow-through, and merged-only edge cases. |
 | `ceratops-thread-resume-manual-stop` | Resume a same-thread task from current local state after a stop, restart, or crash without rebuilding everything from scratch. |
 | `ceratops-thread-full-handoff` | Create a copy-paste prompt for moving a whole task into a new thread without re-auditing the whole task. |
 | `ceratops-thread-side-task-handoff` | Create a minimal copy-paste prompt for spinning a newly discovered side task into a new thread. |
-| `ceratops-skill-change-promotion` | Promote ready skill branches into a skill repo `release/*` branch and run only the install or validation steps the repo provides. |
-| `ceratops-gh-skill-ship` | Ship staged skills repo changes through GitHub, then restore the skills repo checkout and installed skills to clean `main`. |
 
 ## Layout
 
@@ -40,17 +32,15 @@ backlog/
 skills/
   <skill-name>/
     SKILL.md
+    references/
     agents/openai.yaml
     assets/
       ceratops-logo-500.png
+    scripts/
 templates/
   skill-sections.json
   sections/
     core.md
-    gh-current-state.md
-    gh-repo-health-contract.md
-    gh-artifact-contract.md
-    release-branch-runtime.md
 contracts/
   source-docs.json
   code/
@@ -90,8 +80,8 @@ GitHub helper logic lives in copied scripts under `scripts/`, not in an installe
 | `scripts/validation/github-validate-repo-artifact-contract.py` | Called by repo create, repo health, dependency, and standards review work when repo settings, code, or artifact posture needs a deterministic audit. |
 | `scripts/validation/github-collect-nd-evidence.py` | Called when non-deterministic org, repo, code, or artifact checks need one bundled evidence payload for human review. |
 
-Release-branch preparation and pending-work cleanup use change-promotion-only helpers
-inside `skills/ceratops-skill-change-promotion/scripts/`. This repo keeps
+Release-branch preparation and pending-work cleanup use skill lifecycle helpers
+inside `skills/ceratops-skill-lifecycle/scripts/`. This repo keeps
 scripts only where they add reusable safety logic or bundle nontrivial evidence
 collection.
 
@@ -171,18 +161,18 @@ Common intended combinations:
 
 | Command Surface | Command Subset | Who Runs It |
 | --- | --- | --- |
-| org validator, implicit org surface | `settings` | `$ceratops-contract-review`; `$ceratops-gh-repo-health-audit` only when org posture is part of the audit. |
-| org validator, implicit org surface | `actions` | `$ceratops-contract-review`; `$ceratops-gh-repo-health-audit` only when org Actions posture is part of the audit. |
-| org validator, implicit org surface | `dependabot` | `$ceratops-contract-review`; `$ceratops-gh-repo-health-audit` only when org Dependabot posture is part of the audit. |
-| org validator, implicit org surface | `security` | `$ceratops-contract-review`; `$ceratops-gh-repo-health-audit` only when org security posture is part of the audit. |
-| org validator, implicit org surface | `all` | `$ceratops-contract-review` for governance review; `$ceratops-gh-repo-health-audit` only for explicit broad org health. |
-| `repo` | `settings` | `$ceratops-gh-repo-health-audit` and `$ceratops-contract-review` when live repo state is part of the task. |
-| `repo` + `code` via `--select repo:dependency --select code:dependency` | `dependency` | `$ceratops-gh-repo-dependencies-maintenance` when both live GitHub dependency/security posture and repo-content dependency posture are in scope; `$ceratops-gh-repo-health-audit` for dependency posture audits. |
-| `code` | `content` | `$ceratops-gh-repo-health-audit`, `$ceratops-gh-repo-create-and-publish`, and `$ceratops-contract-review` when repo contents are part of the task. |
-| `artifact` | `artifact` | `$ceratops-gh-repo-health-audit`, `$ceratops-gh-repo-create-and-publish`, and `$ceratops-contract-review` when a published artifact is part of the task. |
-| `all` | `create` | `$ceratops-gh-repo-create-and-publish`. |
-| `all` | `health` | `$ceratops-gh-repo-health-audit`; `$ceratops-contract-review` only for broad contract governance. |
-| PR validator, implicit PR surface | none | `$ceratops-gh-merge-pr`, `$ceratops-gh-repo-dependencies-maintenance`, and `$ceratops-gh-skill-ship` before merge or auto-merge decisions. |
+| org validator, implicit org surface | `settings` | `$ceratops-contract-review`; `$ceratops-gh-repo-lifecycle` health-audit action only when org posture is part of the audit. |
+| org validator, implicit org surface | `actions` | `$ceratops-contract-review`; `$ceratops-gh-repo-lifecycle` health-audit action only when org Actions posture is part of the audit. |
+| org validator, implicit org surface | `dependabot` | `$ceratops-contract-review`; `$ceratops-gh-repo-lifecycle` health-audit action only when org Dependabot posture is part of the audit. |
+| org validator, implicit org surface | `security` | `$ceratops-contract-review`; `$ceratops-gh-repo-lifecycle` health-audit action only when org security posture is part of the audit. |
+| org validator, implicit org surface | `all` | `$ceratops-contract-review` for governance review; `$ceratops-gh-repo-lifecycle` health-audit action only for explicit broad org health. |
+| `repo` | `settings` | `$ceratops-gh-repo-lifecycle` health-audit action and `$ceratops-contract-review` when live repo state is part of the task. |
+| `repo` + `code` via `--select repo:dependency --select code:dependency` | `dependency` | `$ceratops-gh-repo-lifecycle` dependency-maintenance action when both live GitHub dependency/security posture and repo-content dependency posture are in scope; health-audit action for dependency posture audits. |
+| `code` | `content` | `$ceratops-gh-repo-lifecycle` health-audit or create-or-publish action, and `$ceratops-contract-review` when repo contents are part of the task. |
+| `artifact` | `artifact` | `$ceratops-gh-repo-lifecycle` health-audit or create-or-publish action, and `$ceratops-contract-review` when a published artifact is part of the task. |
+| `all` | `create` | `$ceratops-gh-repo-lifecycle` create-or-publish action. |
+| `all` | `health` | `$ceratops-gh-repo-lifecycle` health-audit action; `$ceratops-contract-review` only for broad contract governance. |
+| PR validator, implicit PR surface | none | `$ceratops-gh-repo-lifecycle` merge-pr or dependency-maintenance action, and `$ceratops-skill-lifecycle` ship-to-remote action before merge or auto-merge decisions. |
 
 A successful mutation command is enough evidence for that exact mutation. Re-run a validator only for drift/audit work, uncertain state, broader closure claims, or checks not already proven by the successful command.
 

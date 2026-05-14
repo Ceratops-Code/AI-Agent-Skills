@@ -9,7 +9,7 @@
       "lines": "source-doc registry"
     },
     {
-      "path": "$AI_AGENT_SKILLS_ROOT/templates/sections/gh-repo-health-contract.md",
+      "path": "$AI_AGENT_SKILLS_ROOT/skills/ceratops-gh-repo-lifecycle/references/health-audit.md",
       "lines": "contract owner"
     }
   ],
@@ -763,7 +763,7 @@
     {
       "id": "type.visibility_origin_lifecycle",
       "source_lines": [
-        "gh-repo-health-contract.md:3-8"
+        "skills/ceratops-gh-repo-lifecycle/references/health-audit.md"
       ],
       "kind": "classification",
       "comparison": "derive_types",
@@ -779,7 +779,7 @@
     {
       "id": "type.topic_signals",
       "source_lines": [
-        "gh-repo-health-contract.md:3-8"
+        "skills/ceratops-gh-repo-lifecycle/references/health-audit.md"
       ],
       "kind": "classification",
       "comparison": "derive_types_from_topics",
@@ -791,7 +791,7 @@
     {
       "id": "repo.identity_public_contract",
       "source_lines": [
-        "gh-repo-health-contract.md:3-8"
+        "skills/ceratops-gh-repo-lifecycle/references/health-audit.md"
       ],
       "kind": "api",
       "endpoint": "/repos/${owner}/${repo}",
@@ -816,7 +816,7 @@
     {
       "id": "repo.topics_required",
       "source_lines": [
-        "gh-repo-health-contract.md:3-8"
+        "skills/ceratops-gh-repo-lifecycle/references/health-audit.md"
       ],
       "kind": "api",
       "endpoint": "/repos/${owner}/${repo}/topics",
@@ -830,7 +830,7 @@
     {
       "id": "repo.unused_feature_flags",
       "source_lines": [
-        "ceratops-gh-repo-create-and-publish/SKILL.md:151"
+        "skills/ceratops-gh-repo-lifecycle/references/create-or-publish.md"
       ],
       "kind": "api",
       "endpoint": "/repos/${owner}/${repo}",
@@ -846,7 +846,7 @@
     {
       "id": "repo.merge_settings",
       "source_lines": [
-        "gh-repo-health-contract.md:3-8"
+        "skills/ceratops-gh-repo-lifecycle/references/health-audit.md"
       ],
       "kind": "api",
       "endpoint": "/repos/${owner}/${repo}",
@@ -872,7 +872,7 @@
     {
       "id": "process.default_branch_name_and_protection_indicator",
       "source_lines": [
-        "gh-repo-health-contract.md:3-8"
+        "skills/ceratops-gh-repo-lifecycle/references/health-audit.md"
       ],
       "kind": "api",
       "endpoint": "/repos/${owner}/${repo}/branches/${default_branch}",
@@ -888,7 +888,7 @@
     {
       "id": "process.default_branch_enforcement_present",
       "source_lines": [
-        "gh-repo-health-contract.md:3-8"
+        "skills/ceratops-gh-repo-lifecycle/references/health-audit.md"
       ],
       "kind": "api_composite",
       "endpoints": [
@@ -908,7 +908,7 @@
     {
       "id": "process.branch_protection_or_ruleset_posture",
       "source_lines": [
-        "gh-repo-health-contract.md:3-8"
+        "skills/ceratops-gh-repo-lifecycle/references/health-audit.md"
       ],
       "kind": "api_composite",
       "comparison": "policy",
@@ -931,9 +931,7 @@
     {
       "id": "process.maintainer_bypass_ruleset",
       "source_lines": [
-        "ceratops-gh-repo-create-and-publish/SKILL.md:113",
-        "ceratops-gh-repo-create-and-publish/SKILL.md:152",
-        "ceratops-gh-repo-create-and-publish/SKILL.md:167-168"
+        "skills/ceratops-gh-repo-lifecycle/references/create-or-publish.md"
       ],
       "kind": "api_composite",
       "endpoints": [
@@ -955,7 +953,7 @@
     {
       "id": "actions.permissions_policy",
       "source_lines": [
-        "gh-repo-health-contract.md:3-8"
+        "skills/ceratops-gh-repo-lifecycle/references/health-audit.md"
       ],
       "kind": "api",
       "endpoint": "/repos/${owner}/${repo}/actions/permissions",
@@ -973,7 +971,7 @@
     {
       "id": "actions.workflow_token_permissions",
       "source_lines": [
-        "gh-repo-health-contract.md:3-8"
+        "skills/ceratops-gh-repo-lifecycle/references/health-audit.md"
       ],
       "kind": "api_and_tree",
       "endpoint": "/repos/${owner}/${repo}/actions/permissions/workflow",
@@ -990,7 +988,7 @@
     {
       "id": "actions.artifact_log_retention",
       "source_lines": [
-        "gh-repo-health-contract.md:3-8"
+        "skills/ceratops-gh-repo-lifecycle/references/health-audit.md"
       ],
       "kind": "api",
       "endpoint": "/repos/${owner}/${repo}/actions/permissions/artifact-and-log-retention",
@@ -1003,7 +1001,7 @@
     {
       "id": "actions.fork_pr_contributor_approval",
       "source_lines": [
-        "gh-repo-health-contract.md:3-8"
+        "skills/ceratops-gh-repo-lifecycle/references/health-audit.md"
       ],
       "kind": "api",
       "endpoint": "/repos/${owner}/${repo}/actions/permissions/fork-pr-contributor-approval",
@@ -1020,7 +1018,7 @@
     {
       "id": "actions.private_fork_pr_workflows",
       "source_lines": [
-        "gh-repo-health-contract.md:3-8"
+        "skills/ceratops-gh-repo-lifecycle/references/health-audit.md"
       ],
       "kind": "api",
       "endpoint": "/repos/${owner}/${repo}/actions/permissions/fork-pr-workflows-private-repos",
@@ -1036,8 +1034,7 @@
     {
       "id": "actions.latest_default_branch_runs",
       "source_lines": [
-        "ceratops-gh-repo-create-and-publish/SKILL.md:157",
-        "ceratops-gh-repo-create-and-publish/SKILL.md:169"
+        "skills/ceratops-gh-repo-lifecycle/references/create-or-publish.md"
       ],
       "kind": "api",
       "endpoint": "/repos/${owner}/${repo}/actions/runs?branch=${default_branch}&per_page=20",
@@ -1052,7 +1049,7 @@
     {
       "id": "security.security_and_analysis_status",
       "source_lines": [
-        "gh-repo-health-contract.md:3-8"
+        "skills/ceratops-gh-repo-lifecycle/references/health-audit.md"
       ],
       "kind": "api",
       "endpoint": "/repos/${owner}/${repo}",
@@ -1075,7 +1072,7 @@
     {
       "id": "security.vulnerability_alerts_enabled",
       "source_lines": [
-        "gh-repo-health-contract.md:3-8"
+        "skills/ceratops-gh-repo-lifecycle/references/health-audit.md"
       ],
       "kind": "api_status",
       "endpoint": "/repos/${owner}/${repo}/vulnerability-alerts",
@@ -1089,7 +1086,7 @@
     {
       "id": "security.dependabot_security_updates_enabled",
       "source_lines": [
-        "gh-repo-health-contract.md:3-8"
+        "skills/ceratops-gh-repo-lifecycle/references/health-audit.md"
       ],
       "kind": "api_status",
       "endpoint": "/repos/${owner}/${repo}/automated-security-fixes",
@@ -1103,7 +1100,7 @@
     {
       "id": "security.open_dependabot_alert_queue",
       "source_lines": [
-        "gh-repo-health-contract.md:3-8"
+        "skills/ceratops-gh-repo-lifecycle/references/health-audit.md"
       ],
       "kind": "api",
       "endpoint": "/repos/${owner}/${repo}/dependabot/alerts?state=open&per_page=100",
@@ -1142,7 +1139,7 @@
     {
       "id": "security.code_security_configuration_attached",
       "source_lines": [
-        "gh-repo-health-contract.md:3-8"
+        "skills/ceratops-gh-repo-lifecycle/references/health-audit.md"
       ],
       "kind": "api",
       "endpoint": "/repos/${owner}/${repo}/code-security-configuration",
@@ -1157,7 +1154,7 @@
     {
       "id": "security.code_scanning_default_setup_or_custom",
       "source_lines": [
-        "gh-repo-health-contract.md:3-8"
+        "skills/ceratops-gh-repo-lifecycle/references/health-audit.md"
       ],
       "kind": "api_and_tree",
       "endpoint": "/repos/${owner}/${repo}/code-scanning/default-setup",
@@ -1175,7 +1172,7 @@
     {
       "id": "security.open_code_scanning_alert_queue",
       "source_lines": [
-        "gh-repo-health-contract.md:3-8"
+        "skills/ceratops-gh-repo-lifecycle/references/health-audit.md"
       ],
       "kind": "api",
       "endpoint": "/repos/${owner}/${repo}/code-scanning/alerts?state=open&per_page=100",
@@ -1191,7 +1188,7 @@
     {
       "id": "security.open_secret_scanning_alert_queue",
       "source_lines": [
-        "gh-repo-health-contract.md:3-8"
+        "skills/ceratops-gh-repo-lifecycle/references/health-audit.md"
       ],
       "kind": "api",
       "endpoint": "/repos/${owner}/${repo}/secret-scanning/alerts?state=open&per_page=100",
@@ -1205,7 +1202,7 @@
     {
       "id": "security.private_vulnerability_reporting_public",
       "source_lines": [
-        "gh-repo-health-contract.md:3-8"
+        "skills/ceratops-gh-repo-lifecycle/references/health-audit.md"
       ],
       "kind": "api_status",
       "endpoint": "/repos/${owner}/${repo}/private-vulnerability-reporting",
@@ -1219,7 +1216,7 @@
     {
       "id": "security.dependency_review_availability",
       "source_lines": [
-        "gh-repo-health-contract.md:3-8"
+        "skills/ceratops-gh-repo-lifecycle/references/health-audit.md"
       ],
       "kind": "api_status",
       "endpoint": "/repos/${owner}/${repo}/dependency-graph/compare/${default_branch}...${default_branch}",
@@ -1235,7 +1232,7 @@
     {
       "id": "content.community_profile_public",
       "source_lines": [
-        "gh-repo-health-contract.md:3-8"
+        "skills/ceratops-gh-repo-lifecycle/references/health-audit.md"
       ],
       "kind": "api",
       "endpoint": "/repos/${owner}/${repo}/community/profile",
@@ -1257,7 +1254,7 @@
     {
       "id": "content.dependencies_label_when_dependabot_uses_it",
       "source_lines": [
-        "gh-repo-health-contract.md:3-8"
+        "skills/ceratops-gh-repo-lifecycle/references/health-audit.md"
       ],
       "kind": "tree_and_api",
       "comparison": "label_exists_when_referenced",
@@ -1269,7 +1266,7 @@
     {
       "id": "stale_state.pull_requests",
       "source_lines": [
-        "gh-repo-health-contract.md:3-8"
+        "skills/ceratops-gh-repo-lifecycle/references/health-audit.md"
       ],
       "kind": "api",
       "endpoint": "/repos/${owner}/${repo}/pulls?state=open&per_page=100",
@@ -1283,7 +1280,7 @@
     {
       "id": "stale_state.branches",
       "source_lines": [
-        "gh-repo-health-contract.md:3-8"
+        "skills/ceratops-gh-repo-lifecycle/references/health-audit.md"
       ],
       "kind": "api",
       "endpoint": "/repos/${owner}/${repo}/branches?per_page=100",
@@ -1300,7 +1297,7 @@
     {
       "id": "stale_state.tags",
       "source_lines": [
-        "gh-repo-health-contract.md:3-8"
+        "skills/ceratops-gh-repo-lifecycle/references/health-audit.md"
       ],
       "kind": "api",
       "endpoint": "/repos/${owner}/${repo}/tags?per_page=100",
@@ -1314,7 +1311,7 @@
     {
       "id": "stale_state.releases",
       "source_lines": [
-        "gh-repo-health-contract.md:3-8"
+        "skills/ceratops-gh-repo-lifecycle/references/health-audit.md"
       ],
       "kind": "api",
       "endpoint": "/repos/${owner}/${repo}/releases?per_page=100",

@@ -1,6 +1,0 @@
-interface:
-  display_name: "Ceratops GH Repo Health Audit"
-  short_description: "Audit repo health with contract checks"
-  icon_small: "./assets/ceratops-logo-500.png"
-  icon_large: "./assets/ceratops-logo-500.png"
-  default_prompt: "Use $ceratops-gh-repo-health-audit to validate this GitHub repo with the GitHub, code, and artifact contract checks first, fix safe repo-health gaps, and report real blockers."

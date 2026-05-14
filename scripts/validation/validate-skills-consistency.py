@@ -110,6 +110,20 @@ CONTRACT_ID_RE = re.compile(
     r"\b(?:type|repo|process|actions|security|content|local|stale_state|common|pypi|npm|docker|maven|nuget|crates|rubygems|powershell|github-packages|release-assets|docs-site|iac)\.[A-Za-z0-9_.-]+\b"
 )
 ND_ID_RE = re.compile(r"`(ND\.[^`]+)`")
+GH_LIFECYCLE_ACTIONS = {
+    "create-or-publish.md": "--surface all --subset create",
+    "dependency-maintenance.md": "--select repo:dependency --select code:dependency",
+    "health-audit.md": "--surface all --subset health",
+    "merge-pr.md": "github-validate-pr-readiness-contract.py",
+    "ship-change.md": "merge-pr",
+}
+SKILL_LIFECYCLE_ACTIONS = {
+    "create.md": "templates/skill-sections.json",
+    "update.md": "runtime payloads",
+    "fast-change.md": "release/*",
+    "change-promotion.md": "skills/ceratops-skill-lifecycle/scripts/prepare-release-branch.ps1",
+    "ship-to-remote.md": "$ceratops-gh-repo-lifecycle",
+}
 
 
 def default_install_root() -> pathlib.Path:
@@ -622,26 +636,36 @@ def check_nd_evidence_coverage() -> list[str]:
 
 
 def check_skill_scope_validator() -> list[str]:
-    """Check objective GH skill routing rules without judging prose quality."""
+    """Check objective lifecycle router rules without judging prose quality."""
 
     errors: list[str] = []
-    expected_snippets = {
-        "ceratops-gh-repo-dependencies-maintenance": "--select repo:dependency --select code:dependency",
-        "ceratops-gh-repo-create-and-publish": "--surface all --subset create",
-        "ceratops-gh-repo-health-audit": "--surface all --subset health",
-        "ceratops-gh-merge-pr": "github-validate-pr-readiness-contract.py",
+    router_specs = {
+        "ceratops-gh-repo-lifecycle": GH_LIFECYCLE_ACTIONS,
+        "ceratops-skill-lifecycle": SKILL_LIFECYCLE_ACTIONS,
     }
-    for skill_name, snippet in expected_snippets.items():
-        path = SKILLS_DIR / skill_name / "SKILL.md"
-        if not path.is_file():
-            errors.append(f"{skill_name}: missing source skill for scope validation")
+    for skill_name, expected_actions in router_specs.items():
+        skill_dir = SKILLS_DIR / skill_name
+        router_path = skill_dir / "SKILL.md"
+        if not router_path.is_file():
+            errors.append(f"{skill_name}: missing router SKILL.md")
             continue
-        text = path.read_text(encoding="utf-8")
-        if snippet not in text:
-            errors.append(f"{skill_name}: missing expected scope command {snippet}")
-    merge_text = (SKILLS_DIR / "ceratops-gh-merge-pr" / "SKILL.md").read_text(encoding="utf-8")
+        router_text = router_path.read_text(encoding="utf-8")
+        for action_file, snippet in expected_actions.items():
+            action_rel = f"references/{action_file}"
+            action_path = skill_dir / action_rel
+            if action_rel not in router_text:
+                errors.append(f"{skill_name}: router does not list {action_rel}")
+            if not action_path.is_file():
+                errors.append(f"{skill_name}: missing action reference {action_rel}")
+                continue
+            action_text = action_path.read_text(encoding="utf-8")
+            if action_text.startswith("---"):
+                errors.append(f"{skill_name}: {action_rel} still looks like a standalone skill")
+            if snippet not in action_text:
+                errors.append(f"{skill_name}: {action_rel} missing expected scope command {snippet}")
+    merge_text = (SKILLS_DIR / "ceratops-gh-repo-lifecycle" / "references" / "merge-pr.md").read_text(encoding="utf-8")
     if "github-validate-repo-artifact-contract.py" in merge_text:
-        errors.append("ceratops-gh-merge-pr: merge-only workflow must not run repo/artifact contract validation")
+        errors.append("ceratops-gh-repo-lifecycle: merge-pr action must not run repo/artifact contract validation")
     return errors
 
 
