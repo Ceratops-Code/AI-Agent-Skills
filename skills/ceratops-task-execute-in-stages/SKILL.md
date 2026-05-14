@@ -82,6 +82,16 @@ Choose only the stages the task actually justifies:
 - Verify the task reached the furthest justified clean stage or an explicit blocker.
 - Verify the final answer reports only unresolved blockers, unresolved non-blocking debt, intentionally retained items, and anything important not verified.
 
+### Output Contract
+
+Report only:
+
+- furthest justified clean stage reached, when useful for closure
+- unresolved blockers or non-blocking debt
+- intentionally retained items
+- anything important not verified
+- complex-path approval still needed, if blocked before execution
+
 ### Example Invocation
 
 `Use $ceratops-task-execute-in-stages to handle this substantial task end to end, trying the simplest standard fix first and asking before any complex path.`

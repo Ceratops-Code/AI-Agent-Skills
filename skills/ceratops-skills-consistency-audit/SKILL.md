@@ -55,6 +55,8 @@ Infer missing inputs from the repo state before asking.
 - Review duplicate contract text that may belong in `templates/sections/`.
 - Review shared-section fit for missing, duplicated, over-broad, too narrow, or skill-specific shared text.
 - Review GH skill boundary prose, artifact-scope wording, Dependabot/admin-merge guidance, and skill-rule shape only when the task asks for those areas or the deterministic check points there.
+- When changed files include `contracts/skills/*`, `contracts/source-docs.json`, `scripts/validation/validate-skills-consistency.py`, or source skills, review changed-surface alignment between source docs, deterministic contracts, non-deterministic contracts, validator behavior, README contract docs, and actual source-skill structure.
+- For any new deterministic skill-structure requirement, inventory all source skills for that required section, subsection, resource, or metadata field before reporting the structure clean.
 
 #### 3. Apply fixes only when approved
 

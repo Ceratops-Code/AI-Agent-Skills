@@ -31,6 +31,7 @@ VALIDATOR = ROOT / "scripts" / "validation" / "validate-skills-consistency.py"
 WORKFLOW = ROOT / ".github" / "workflows" / "validate.yml"
 ND_EVIDENCE_HELPER = ROOT / "scripts" / "validation" / "github-collect-nd-evidence.py"
 REPO_ARTIFACT_VALIDATOR = ROOT / "scripts" / "validation" / "github-validate-repo-artifact-contract.py"
+SKILL_DETERMINISTIC_CONTRACT = pathlib.Path("contracts/skills/skill-deterministic-contract.json")
 REQUIRED_CONTRACT_FILES = [
     pathlib.Path("contracts/source-docs.json"),
     pathlib.Path("contracts/code/code-comment-nondeterministic-contract.md"),
@@ -475,6 +476,21 @@ def contract_check_ids(path: pathlib.Path) -> set[str]:
     return {str(check.get("id")) for check in checks if isinstance(check, dict) and check.get("id")}
 
 
+def contract_remediation_ids(path: pathlib.Path) -> set[str]:
+    """Return check IDs classified by a contract remediation policy."""
+
+    data = read_json(ROOT / path)
+    policy = data.get("remediation_policy", {})
+    if not isinstance(policy, dict):
+        return set()
+    classified: set[str] = set()
+    for key in ("auto_apply_check_ids", "manual_check_ids"):
+        values = policy.get(key, [])
+        if isinstance(values, list):
+            classified.update(str(value) for value in values if isinstance(value, str) and value)
+    return classified
+
+
 def checker_contract_id_literals(path: pathlib.Path) -> set[str]:
     """Return check IDs used in `check_id` comparisons by the validator."""
 
@@ -508,6 +524,7 @@ def check_contract_ownership() -> list[str]:
             ids_by_file[rel_path] = contract_check_ids(rel_path)
         except json.JSONDecodeError as exc:
             errors.append(f"{rel_path}: invalid JSON: {exc}")
+            continue
 
     seen: dict[str, pathlib.Path] = {}
     for rel_path, ids in ids_by_file.items():
@@ -521,6 +538,22 @@ def check_contract_ownership() -> list[str]:
         for check_id in sorted(checker_contract_id_literals(REPO_ARTIFACT_VALIDATOR)):
             if check_id not in known_ids:
                 errors.append(f"{REPO_ARTIFACT_VALIDATOR.relative_to(ROOT)}: checker references unknown contract ID {check_id}")
+    return errors
+
+
+def check_skill_contract_remediation_policy() -> list[str]:
+    """Ensure the skill deterministic contract classifies each deterministic check."""
+
+    errors: list[str] = []
+    try:
+        check_ids = contract_check_ids(SKILL_DETERMINISTIC_CONTRACT)
+        classified_ids = contract_remediation_ids(SKILL_DETERMINISTIC_CONTRACT)
+    except json.JSONDecodeError as exc:
+        return [f"{SKILL_DETERMINISTIC_CONTRACT}: invalid JSON: {exc}"]
+    for check_id in sorted(check_ids - classified_ids):
+        errors.append(f"{SKILL_DETERMINISTIC_CONTRACT}: deterministic check {check_id} is not classified in remediation_policy")
+    for check_id in sorted(classified_ids - check_ids):
+        errors.append(f"{SKILL_DETERMINISTIC_CONTRACT}: remediation_policy references unknown check {check_id}")
     return errors
 
 
@@ -671,6 +704,7 @@ def check_governance_consistency(
     errors.extend(check_installed_runtime_identity(manifest, skill_names))
     errors.extend(check_validation_command_surface())
     errors.extend(check_contract_ownership())
+    errors.extend(check_skill_contract_remediation_policy())
     errors.extend(check_skill_scope_validator())
     errors.extend(check_nd_evidence_coverage())
     errors.extend(check_validator_output_budget())
@@ -798,10 +832,12 @@ def check_skill(skill_dir: pathlib.Path, readme_rows: set[str], manifest: dict[s
         errors.append(f"{name}: missing README skill table row")
     core_text = skill_md.read_text(encoding="utf-8")
     h2_headings = re.findall(r"^## (.+)$", core_text, flags=re.MULTILINE)
-    if h2_headings != ["Goal", "Context", "Constraints", "Done When"]:
-        errors.append(f"{name}: H2 sections must be Goal, Context, Constraints, Done When")
+    if not h2_headings:
+        errors.append(f"{name}: must contain Markdown H2 sections")
     if "### Boundaries" not in core_text:
         errors.append(f"{name}: missing Boundaries section")
+    if "### Output Contract" not in core_text:
+        errors.append(f"{name}: missing Output Contract section")
     if SECTIONS_START in core_text or SECTIONS_END in core_text:
         errors.append(f"{name}: source SKILL.md must be delta-only; shared sections are generated at install time")
     else:

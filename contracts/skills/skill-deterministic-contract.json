@@ -2,7 +2,7 @@
   "contract_format_version": 1,
   "kind": "skill_design_contract",
   "name": "ceratops_skill_deterministic_contract",
-  "captured_on": "2026-05-13",
+  "captured_on": "2026-05-14",
   "source_files": [
     {
       "path": "$AI_AGENT_SKILLS_ROOT/contracts/source-docs.json",
@@ -61,7 +61,8 @@
       "skill.resource_layout",
       "skill.public_doc_alignment",
       "skill.private_path_and_secret_absence",
-      "skill.contract_reference_alignment"
+      "skill.contract_reference_alignment",
+      "skill.governance_consistency_audit"
     ],
     "destructive_or_irreversible": "always_report_only"
   },
@@ -79,9 +80,9 @@
       "deterministic_evidence": [
         "skill directory name",
         "source SKILL.md frontmatter",
-        "source SKILL.md H2 section sequence"
+        "source SKILL.md section and subsection structure"
       ],
-      "pass_condition": "Source skill frontmatter contains only name and description, frontmatter name matches the directory, description is present, body is nonempty, and H2 sections are exactly Goal, Context, Constraints, Done When.",
+      "pass_condition": "Source skill frontmatter contains only name and description, frontmatter name matches the directory, description is present, body is nonempty, the body contains a Markdown H2 section structure, and Boundaries and Output Contract subsections are present.",
       "source_lines": [
         "scripts/validation/validate-skills-consistency.py:parse_frontmatter",
         "scripts/validation/validate-skills-consistency.py:check_skill"
@@ -194,9 +195,10 @@
         "deterministic and nondeterministic contract mappings",
         "GH skill validator command snippets"
       ],
-      "pass_condition": "Explicit governance validation checks active skill identity drift, rename completeness, current-source skill references, generated runtime shared-section integrity, validation command-surface alignment, contract ownership drift, GH skill scope command drift, ND evidence coverage, and compact validator success output without adding one-time stale-term detectors.",
+      "pass_condition": "Explicit governance validation checks active skill identity drift, rename completeness, current-source skill references, generated runtime shared-section integrity, validation command-surface alignment, contract ownership drift, skill deterministic remediation-policy classification, GH skill scope command drift, ND evidence coverage, and compact validator success output without adding one-time stale-term detectors.",
       "source_lines": [
         "scripts/validation/validate-skills-consistency.py:check_governance_consistency",
+        "scripts/validation/validate-skills-consistency.py:check_skill_contract_remediation_policy",
         "skills/ceratops-skills-consistency-audit/SKILL.md:Goal",
         "README.md:Validate"
       ]
