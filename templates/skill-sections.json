@@ -1,10 +1,6 @@
 {
   "sections": {
-    "core": "templates/sections/core.md",
-    "gh-current-state": "templates/sections/gh-current-state.md",
-    "gh-repo-health-contract": "templates/sections/gh-repo-health-contract.md",
-    "gh-artifact-contract": "templates/sections/gh-artifact-contract.md",
-    "release-branch-runtime": "templates/sections/release-branch-runtime.md"
+    "core": "templates/sections/core.md"
   },
   "maintenance_workflows": {
     "shared_source_changes": [
@@ -20,53 +16,26 @@
       "powershell -ExecutionPolicy Bypass -File scripts/install-skills.ps1 -SkipInstall -Validate governance"
     ],
     "new_skill_local_availability": [
-      "$ceratops-skill-change-promotion"
+      "$ceratops-skill-lifecycle"
     ]
   },
   "runtime_payloads": {
     "*": [
       "assets/ceratops-logo-500.png"
     ],
-    "ceratops-skill-change-promotion": [
-      "scripts/render-runtime-skills.py",
-      "scripts/install-skills.ps1",
-      "scripts/validation/validate-skills-consistency.py",
-      "templates"
-    ],
-    "ceratops-gh-skill-ship": [
-      "scripts/render-runtime-skills.py",
-      "scripts/install-skills.ps1",
-      "scripts/validation/validate-skills-consistency.py",
-      "templates"
-    ],
-    "ceratops-gh-merge-pr": [
+    "ceratops-gh-repo-lifecycle": [
+      "scripts/validation/github-collect-nd-evidence.py",
+      "scripts/validation/github-validate-org-contract.py",
+      "scripts/validation/github-validate-repo-artifact-contract.py",
+      "scripts/validation/github-validate-pr-readiness-contract.py",
       "scripts/validation/github-codex-review-gate.py",
-      "scripts/validation/github-validate-pr-readiness-contract.py",
-      "contracts/github/github-pr-readiness-deterministic-contract.json",
-      "contracts/github/github-pr-readiness-nondeterministic-contract.md"
-    ],
-    "ceratops-gh-repo-create-and-publish": [
-      "scripts/validation/github-collect-nd-evidence.py",
-      "scripts/validation/github-validate-org-contract.py",
-      "scripts/validation/github-validate-repo-artifact-contract.py",
-      "scripts/validation/github-validate-pr-readiness-contract.py",
       "contracts"
     ],
-    "ceratops-gh-repo-dependencies-maintenance": [
-      "scripts/validation/github-collect-nd-evidence.py",
-      "scripts/validation/github-validate-repo-artifact-contract.py",
-      "scripts/validation/github-validate-pr-readiness-contract.py",
-      "contracts"
-    ],
-    "ceratops-gh-repo-health-audit": [
-      "scripts/validation/github-collect-nd-evidence.py",
-      "scripts/validation/github-validate-org-contract.py",
-      "scripts/validation/github-validate-repo-artifact-contract.py",
-      "scripts/validation/github-validate-pr-readiness-contract.py",
-      "contracts"
-    ],
-    "ceratops-gh-ship-change": [
-      "scripts/validation/github-validate-repo-artifact-contract.py",
+    "ceratops-skill-lifecycle": [
+      "scripts/render-runtime-skills.py",
+      "scripts/install-skills.ps1",
+      "scripts/validation/validate-skills-consistency.py",
+      "templates",
       "contracts"
     ],
     "ceratops-contract-review": [
@@ -76,30 +45,12 @@
       "scripts/validation/github-validate-pr-readiness-contract.py",
       "contracts"
     ],
-    "ceratops-skill-create": [
-      "scripts/render-runtime-skills.py",
-      "scripts/install-skills.ps1",
-      "scripts/validation/validate-skills-consistency.py",
-      "templates"
-    ],
-    "ceratops-skill-update": [
-      "scripts/render-runtime-skills.py",
-      "scripts/install-skills.ps1",
-      "scripts/validation/validate-skills-consistency.py",
-      "templates",
-      "contracts"
-    ],
     "ceratops-skills-consistency-audit": [
       "scripts/render-runtime-skills.py",
       "scripts/install-skills.ps1",
       "scripts/validation/validate-skills-consistency.py",
       "templates",
       "contracts"
-    ],
-    "ceratops-skill-fast-change": [
-      "scripts/render-runtime-skills.py",
-      "scripts/install-skills.ps1",
-      "templates"
     ],
     "ceratops-code-consistency-audit": [
       "contracts/code/code-comment-nondeterministic-contract.md"
@@ -124,54 +75,17 @@
     "ceratops-skill-optimize": [
       "core"
     ],
-    "ceratops-skill-fast-change": [
-      "core"
-    ],
     "ceratops-code-consistency-audit": [
       "core"
     ],
-    "ceratops-skill-change-promotion": [
-      "core",
-      "release-branch-runtime"
-    ],
-    "ceratops-skill-create": [
-      "core"
-    ],
-    "ceratops-skill-update": [
+    "ceratops-skill-lifecycle": [
       "core"
     ],
     "ceratops-skills-consistency-audit": [
       "core"
     ],
-    "ceratops-gh-skill-ship": [
-      "core",
-      "release-branch-runtime"
-    ],
-    "ceratops-gh-merge-pr": [
-      "core",
-      "gh-current-state"
-    ],
-    "ceratops-gh-repo-create-and-publish": [
-      "core",
-      "gh-current-state",
-      "gh-repo-health-contract",
-      "gh-artifact-contract"
-    ],
-    "ceratops-gh-repo-dependencies-maintenance": [
-      "core",
-      "gh-current-state",
-      "gh-repo-health-contract",
-      "gh-artifact-contract"
-    ],
-    "ceratops-gh-repo-health-audit": [
-      "core",
-      "gh-current-state",
-      "gh-repo-health-contract",
-      "gh-artifact-contract"
-    ],
-    "ceratops-gh-ship-change": [
-      "core",
-      "gh-artifact-contract"
+    "ceratops-gh-repo-lifecycle": [
+      "core"
     ],
     "ceratops-contract-review": [
       "core"

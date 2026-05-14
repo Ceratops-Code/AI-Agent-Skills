@@ -1,6 +1,6 @@
 # Skills Refactor Backlog
 
-Status: proposed, not implemented.
+Status: partially implemented; retained for future governance candidates.
 
 Goal: keep routine skill updates cheap and scoped, while moving broad consistency validation into scheduled governance automation or explicitly requested full validation.
 
@@ -45,23 +45,23 @@ Implement as a selective governance scan, not a mandatory per-edit check.
 
 Inputs:
 
-- `skills/ceratops-gh-*/SKILL.md`
-- `templates/sections/gh-repo-health-contract.md`
-- `templates/sections/gh-artifact-contract.md`
+- `skills/ceratops-gh-repo-lifecycle/SKILL.md`
+- `skills/ceratops-gh-repo-lifecycle/references/*.md`
+- `templates/skill-sections.json`
 
 Checks:
 
-- Merge PR workflow does not use full repo or artifact contract checks for normal merge-only work.
-- Dependency workflow uses dependency-scoped repo and code selections and does not run artifact checks unless a release or publish is actually in scope.
-- Ship workflow keeps narrow GitHub, code, and artifact contract selections instead of defaulting to full health checks.
-- Create and health workflows may use full checks because their purpose is broad setup or broad audit.
+- `merge-pr` action does not use full repo or artifact contract checks for normal merge-only work.
+- `dependency-maintenance` action uses dependency-scoped repo and code selections and does not run artifact checks unless a release or publish is actually in scope.
+- `ship-change` action keeps narrow GitHub, code, and artifact contract selections instead of defaulting to full health checks.
+- `create-or-publish` and `health-audit` actions may use full checks because their purpose is broad setup or broad audit.
 - Contract-review workflow reviews contracts and source docs, but does not run per-repo health as if it were auditing a target repo.
 
 Run when:
 
 - weekly governance automation runs
-- a GH skill command example or completion gate changes
-- a shared contract-routing section changes
+- a GH lifecycle router command example, action reference, or completion gate changes
+- lifecycle routing rules change
 
 ### 2.3. ND Evidence Coverage Validator
 
@@ -127,5 +127,5 @@ Current action is enough:
 Use this prompt if the governance validators should be implemented later:
 
 ```text
-Implement selective Ceratops skill governance validation in the skills repo. Keep routine skill updates minimal. Add governance-only or change-triggered checks for contract ownership, GH skill scope usage, nondeterministic evidence coverage, and runtime payload consistency. Do not add a handoff-section regression validator or deterministic code-comment checker. Treat contracts/code/code-comment-nondeterministic-contract.md as a nondeterministic rubric used by ceratops-code-consistency-audit only. Start from backlog/skills-refactor-backlog.md and update scripts, templates/skill-sections.json, README.md, and relevant skills only where the backlog says a validator should exist.
+Implement the remaining selective Ceratops skill governance validation in the skills repo. Keep routine skill updates minimal. Add or refine governance-only or change-triggered checks for contract ownership, lifecycle router action scope usage, nondeterministic evidence coverage, and runtime payload consistency. Do not add a handoff-section regression validator or deterministic code-comment checker. Treat contracts/code/code-comment-nondeterministic-contract.md as a nondeterministic rubric used by ceratops-code-consistency-audit only. Start from backlog/skills-refactor-backlog.md and update scripts, templates/skill-sections.json, README.md, and relevant skills only where the backlog says a validator should exist.
 ```

@@ -1,6 +1,0 @@
-interface:
-  display_name: "Ceratops Skill Change Promotion"
-  short_description: "Promote skill changes"
-  icon_small: "./assets/ceratops-logo-500.png"
-  icon_large: "./assets/ceratops-logo-500.png"
-  default_prompt: "Use $ceratops-skill-change-promotion to promote ready skill branches into a local skill repo release branch and run only the install or validation steps the repo provides."

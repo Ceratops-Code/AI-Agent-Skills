@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Moved Ceratops skills to a copy-based runtime install model: source skills stay delta-only, `scripts/render-runtime-skills.py` renders shared sections, and `scripts/install-skills.ps1` copies managed runtime skill folders plus declared payloads.
+- Consolidated GitHub repo lifecycle work into `ceratops-gh-repo-lifecycle` and skill creation, mutation, promotion, and shipping work into `ceratops-skill-lifecycle`.
 - Split health policy into deterministic and non-deterministic contracts for GitHub org settings, live GitHub repo settings, repo contents, code comments, and external artifact registries.
 - Renamed contract checker scripts under `scripts/validation/` and renamed the skill standards workflow to `ceratops-contract-review`.
 - Retired the separate standards baseline file; durable source tracking now lives in `contracts/source-docs.json`, deterministic JSON contracts, and non-deterministic contract review prompts.
@@ -11,7 +12,7 @@
 - Clarified that successful mutation commands are enough evidence for the exact setting or file they changed; contract validators are for drift, audit, uncertain state, and broad current-health claims.
 - Updated `AGENTS.md`, README, contributing guidance, shared sections, runtime payload declarations, and skill metadata to match the new install, contract, and validation behavior.
 - Expanded no-extra-cost GitHub, Dependabot, artifact-registry, trusted publishing, provenance, and paid-feature classification coverage across the contracts.
-- Added `ceratops-automation-run`, split handoff skills, `ceratops-code-consistency-audit`, `ceratops-skill-create`, `ceratops-skill-update`, local runtime staging, and GitHub skill shipping workflows for recurring Codex operations.
+- Added `ceratops-automation-run`, split handoff skills, `ceratops-code-consistency-audit`, consolidated skill lifecycle actions, local runtime staging, and skill remote shipping workflows for recurring Codex operations.
 
 ## 0.1.2 - 2026-04-19
 

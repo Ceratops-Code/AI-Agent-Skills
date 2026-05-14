@@ -1,6 +1,6 @@
 ---
 name: ceratops-contract-review
-description: Review the Ceratops org, repo, code, PR readiness, artifact, and skill-design contracts against current standards and installed OpenAI skill examples, then report proposed contract or checker updates for explicit approval.
+description: Review Ceratops org, repo, code, PR readiness, artifact, and skill-design contracts against the source-doc registry, current standards, lifecycle action claims, validators, and installed or upstream OpenAI skill examples, then report proposed contract or checker updates for explicit approval.
 ---
 
 # Ceratops Contract Review
@@ -34,7 +34,7 @@ Review the Ceratops GitHub, code, PR readiness, artifact, and skill-design contr
 
 - Whether the run is routine automation upkeep or an explicit user-requested contract refresh.
 - Current target scope inside the skills repo: `contracts/`, `scripts/validation/github-validate-org-contract.py`, `scripts/validation/github-validate-repo-artifact-contract.py`, `scripts/validation/github-validate-pr-readiness-contract.py`, `scripts/validation/github-collect-nd-evidence.py`, `scripts/validation/validate-skills-consistency.py`, `templates/skill-sections.json`, and repo docs that describe the contract structure.
-- Which contract surfaces are actually in scope: GitHub org settings, live GitHub repo state, repo-content expectations, workflow hardening, release posture, artifact types supported by `ceratops-gh-repo-create-and-publish` or `ceratops-gh-ship-change`, a documented no-artifact posture, or Ceratops skill-design expectations.
+- Which contract surfaces are actually in scope: GitHub org settings, live GitHub repo state, repo-content expectations, workflow hardening, release posture, artifact types supported by `$ceratops-gh-repo-lifecycle` action references, a documented no-artifact posture, or Ceratops skill-design expectations.
 - The reference repositories or installed OpenAI skill examples used for standards comparison and which specific standards question each one informed.
 - Which proposed changes require explicit approval and which findings require no repo change.
 - Whether the current task should only stage updates into the active local `release/*` batch or also ship them through GitHub now.
@@ -48,8 +48,8 @@ Infer missing inputs from local repo state, live GitHub evidence, and the active
 - Routine runs must perform a bounded contract review across GitHub org, GitHub repo state, repo-content, workflow, security, artifact-publishing, and skill-design surfaces already represented in `contracts/`.
 - Do not use this skill to audit or repair the health of a specific repository. Use live GitHub, registry, official-doc, or reference-repo evidence here only when needed to decide whether a contract claim is current.
 - Review current official docs, live product behavior, official API or registry metadata, and at most 2-3 current public third-party GitHub reference repositories only for a concrete standards question surfaced by local contract, checker, source-registry, live API, or approval-relevant ambiguity evidence. Use reference repositories only as pattern examples, not as health-audit targets, and separate no-extra-cost defaults from paid GitHub Code Security or Secret Protection features.
-- Treat artifact surfaces as in scope only when `contracts/artifacts/artifact-deterministic-contract.json`, `ceratops-gh-repo-create-and-publish`, or `ceratops-gh-ship-change` claims to cover them.
-- Treat skill-design surfaces as in scope only when `contracts/skills/skill-deterministic-contract.json`, `contracts/skills/skill-nondeterministic-contract.md`, `ceratops-skill-create`, or `ceratops-skill-update` claims to cover them.
+- Treat artifact surfaces as in scope only when `contracts/artifacts/artifact-deterministic-contract.json` or `$ceratops-gh-repo-lifecycle` action references claim to cover them.
+- Treat skill-design surfaces as in scope only when `contracts/skills/skill-deterministic-contract.json`, `contracts/skills/skill-nondeterministic-contract.md`, or `$ceratops-skill-lifecycle` action references claim to cover them.
 - Use installed OpenAI skill examples listed in `contracts/source-docs.json` only as local pattern examples for skill-design review. Compare at most 2-3 examples that match the current standards question, and record the concrete pattern each example informed.
 - Keep durable standards in the contracts and `contracts/source-docs.json`; do not recreate a separate standards checklist file.
 
@@ -123,4 +123,4 @@ For routine automation runs with no repo change and no recommendation, do not op
 
 ### Example Invocation
 
-`Use $ceratops-contract-review to review the GitHub, code, PR readiness, artifact, and skill-design contracts against current standards and installed OpenAI skill examples, then report proposed contract or checker updates for explicit approval.`
+`Use $ceratops-contract-review to review the GitHub, code, PR readiness, artifact, and skill-design contracts against the source-doc registry, current standards, lifecycle action claims, validators, and installed or upstream OpenAI skill examples, then report proposed contract or checker updates for explicit approval.`
