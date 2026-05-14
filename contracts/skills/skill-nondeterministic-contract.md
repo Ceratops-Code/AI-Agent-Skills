@@ -14,10 +14,10 @@ Use local evidence first:
 - skill metadata: `skills/<skill-name>/agents/openai.yaml`
 - shared-section assignments and runtime payloads: `templates/skill-sections.json`
 - deterministic skill contract: `contracts/skills/skill-deterministic-contract.json`
-- source registry and example references: `contracts/source-docs.json`
+- skill-standard source registry and example references: `contracts/source-docs.json`
 - installed OpenAI skill examples, when present: `$CODEX_HOME/plugins/cache/openai-primary-runtime/*/*/skills/*/SKILL.md` and `$CODEX_HOME/plugins/cache/openai-curated/*/*/skills/*/SKILL.md`
 
-Use installed OpenAI skills as pattern examples only. Compare at most 2-3 examples that match the current skill type or standards question, and record which specific design pattern each example informed.
+Use upstream skill-standard sources listed in `contracts/source-docs.json` as standards evidence for skill format, folder structure, metadata, progressive disclosure, and resource roles. Use installed OpenAI skills as pattern examples only. Compare at most 2-3 examples that match the current skill type or standards question, and record which specific design pattern each example informed.
 
 Useful installed examples:
 
@@ -42,7 +42,7 @@ Useful installed examples:
 | `ND.skill.scope-boundary` | Every skill source review | Confirm Goal, Inputs To Capture, Skill-Specific Rules, Boundaries, Done When, and Output Contract agree on one workflow surface and do not mix unrelated owners, artifacts, or lifecycle phases. |
 | `ND.skill.workflow-contract` | Skills that tell the agent how to execute work | Confirm workflow steps are ordered by dependency, name the evidence needed for each decision, route blockers explicitly, and avoid ceremonial steps that do not change action or verification. |
 | `ND.skill.deterministic-placement` | Skills with commands, scripts, generated artifacts, validators, or repeatable cleanup | Confirm deterministic behavior lives in scripts/helpers or exact command contracts when practical, and prompt text retains only high-level intent, routing, exceptions, and result-handling obligations. |
-| `ND.skill.reference-discipline` | Skills that reference docs, examples, templates, assets, or installed OpenAI skills | Confirm references are loaded progressively, only the relevant files are named, examples are used as design patterns rather than authority, and any public/shared file uses portable paths such as `$CODEX_HOME` instead of user-local absolutes. |
+| `ND.skill.reference-discipline` | Skills that reference docs, examples, templates, assets, or installed OpenAI skills | Confirm references are loaded progressively, only the relevant files are named, variant-specific patterns, examples, configuration, and deep procedural detail live in skill-local `references/<topic>.md` files with clear `SKILL.md` routing, examples are used as design patterns rather than authority, and any public/shared file uses portable paths such as `$CODEX_HOME` instead of user-local absolutes. |
 | `ND.skill.context-economy` | Every skill source review | Confirm the skill minimizes routine reads, broad scans, repeated validation, and final-output verbosity while still preserving required evidence gates and blocker reporting. |
 | `ND.skill.safety-and-state-boundaries` | Skills that mutate files, git state, external services, credentials, automations, or runtime installs | Confirm the skill names the safe default scope, asks before risky or destructive steps, classifies retained/stale state when needed, and does not silently widen from one sibling scope to another. |
 | `ND.skill.output-and-closure` | Every skill source review | Confirm the output contract tells the agent what to report, what to omit, what unresolved blockers or retained state must remain visible, and what completion claim the checked evidence can actually support. |

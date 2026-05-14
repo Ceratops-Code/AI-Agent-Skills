@@ -1,13 +1,13 @@
 ---
-name: ceratops-skill-stage-release
-description: Stage committed Ceratops or compatible skill changes into a skill repo checkout's local `release/*` branch, using install and validation steps only when the repo provides them.
+name: ceratops-skill-change-promotion
+description: Promote committed Ceratops or compatible skill changes into a skill repo checkout's local `release/*` branch, update the installed skill runtime from that release snapshot, and run available validation.
 ---
 
-# Ceratops Skill Stage to Release
+# Ceratops Skill Change Promotion
 
 ## Goal
 
-Stage committed skill branches into the skill repo checkout's local release branch so Codex can use one coherent unpublished repo snapshot. In this repo, update the installed runtime and run validation. In another skill repo, merge and run only the install, validation, cleanup, or runtime steps that repo actually provides.
+Promote committed skill branches into the skill repo checkout's local release branch so Codex can use one coherent unpublished repo snapshot. In this repo, update the installed runtime and run validation. In another skill repo, merge and run only the install, validation, cleanup, or runtime steps that repo actually provides.
 
 ## Context
 
@@ -21,8 +21,8 @@ Stage committed skill branches into the skill repo checkout's local release bran
 
 ### Script Bundle
 
-- (D) Skill-local release branch preparation: `scripts/prepare-release-branch.ps1 -SkillsRepoRoot <repo> -MainBranch main -ReleaseBranch release/local -RemoteName origin` from the installed skill folder, or `skills/ceratops-skill-stage-release/scripts/prepare-release-branch.ps1` from a source checkout, owns fetch, clean-worktree guard, main fast-forward, local release branch switch/create, release fast-forward, and final branch verification.
-- (D) Skill-local merged-work cleanup and pending local work check: `scripts/check-pending-release-work.ps1 -CleanMerged` from the installed skill folder, or `skills/ceratops-skill-stage-release/scripts/check-pending-release-work.ps1 -CleanMerged` from a source checkout, when that helper exists.
+- (D) Skill-local release branch preparation: `scripts/prepare-release-branch.ps1 -SkillsRepoRoot <repo> -MainBranch main -ReleaseBranch release/local -RemoteName origin` from the installed skill folder, or `skills/ceratops-skill-change-promotion/scripts/prepare-release-branch.ps1` from a source checkout, owns fetch, clean-worktree guard, main fast-forward, local release branch switch/create, release fast-forward, and final branch verification.
+- (D) Skill-local merged-work cleanup and pending local work check: `scripts/check-pending-release-work.ps1 -CleanMerged` from the installed skill folder, or `skills/ceratops-skill-change-promotion/scripts/check-pending-release-work.ps1 -CleanMerged` from a source checkout, when that helper exists.
 
 ### Inputs To Capture
 
@@ -76,14 +76,14 @@ Infer missing inputs from local repo state before asking.
 Exact PowerShell command sequence for the default `release/local` branch:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\skills\ceratops-skill-stage-release\scripts\prepare-release-branch.ps1 -SkillsRepoRoot . -MainBranch main -ReleaseBranch release/local -RemoteName origin
+powershell -ExecutionPolicy Bypass -File .\skills\ceratops-skill-change-promotion\scripts\prepare-release-branch.ps1 -SkillsRepoRoot . -MainBranch main -ReleaseBranch release/local -RemoteName origin
 git diff --check (git merge-base HEAD BRANCH) BRANCH
 if ($LASTEXITCODE -ne 0) { throw "git diff --check failed for BRANCH" }
 git diff (git merge-base HEAD BRANCH) BRANCH
 # Run the blocking local code review on this diff and fix every finding before continuing.
 git merge --no-edit BRANCH
-if (Test-Path -LiteralPath .\skills\ceratops-skill-stage-release\scripts\check-pending-release-work.ps1) {
-    powershell -ExecutionPolicy Bypass -File .\skills\ceratops-skill-stage-release\scripts\check-pending-release-work.ps1 -SkillsRepoRoot . -CleanMerged
+if (Test-Path -LiteralPath .\skills\ceratops-skill-change-promotion\scripts\check-pending-release-work.ps1) {
+    powershell -ExecutionPolicy Bypass -File .\skills\ceratops-skill-change-promotion\scripts\check-pending-release-work.ps1 -SkillsRepoRoot . -CleanMerged
 } else {
     # Remove clean merged task worktrees and branches with safe scoped git cleanup.
 }
@@ -127,4 +127,4 @@ Report only:
 
 ### Example Invocation
 
-`Use $ceratops-skill-stage-release to merge the ready skill branches into the local skill repo release branch, switch the skill repo checkout there, and run the staged batch checks the repo provides.`
+`Use $ceratops-skill-change-promotion to promote the ready skill branches into the local skill repo release branch, switch the skill repo checkout there, and run the staged batch checks the repo provides.`
