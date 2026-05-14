@@ -42,6 +42,7 @@ Infer missing inputs from current repo state before asking.
 #### 3. Apply updates at the real source
 
 - Update skills, shared sections, manifest, runtime payloads, runtime generation or validation scripts, helper-runtime files or claims, contracts, and repo docs only where ownership requires it.
+- When addressing review feedback, patch the referenced artifact first. Touch adjacent skills, action references, contracts, or docs only when targeted evidence proves the same source-of-truth defect applies there; otherwise report them as separate candidates requiring approval.
 - Before renaming a skill or named skill surface, build one old-to-new reference map and update folder name, frontmatter `name`, README rows, manifest assignments, runtime payload keys, cross-skill references, `agents/openai.yaml`, helper comments and prompts, validators, and docs.
 - Do not leave alias folders, old-name shims, or pointer artifacts.
 - When removing, merging, or narrowing sections, update every affected assignment and keep runtime generated section source comments readable.
