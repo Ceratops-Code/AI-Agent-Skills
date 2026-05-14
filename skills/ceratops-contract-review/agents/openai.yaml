@@ -1,6 +1,6 @@
 interface:
   display_name: "Ceratops Contract Review"
-  short_description: "Review contracts and skill standards"
+  short_description: "Review contracts against standards and action claims"
   icon_small: "./assets/ceratops-logo-500.png"
   icon_large: "./assets/ceratops-logo-500.png"
-  default_prompt: "Use $ceratops-contract-review to review the GitHub, code, PR readiness, artifact, and skill-design contracts against current standards and installed OpenAI skill examples, then report proposed contract or checker updates for explicit approval."
+  default_prompt: "Use $ceratops-contract-review to review the GitHub, code, PR readiness, artifact, and skill-design contracts against the source-doc registry, current standards, lifecycle action claims, validators, and installed or upstream OpenAI skill examples, then report proposed contract or checker updates for explicit approval."
