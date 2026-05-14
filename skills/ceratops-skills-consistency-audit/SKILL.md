@@ -40,7 +40,7 @@ Infer missing inputs from the repo state before asking.
 
 - Use `$ceratops-skill-update` for ordinary skill edits.
 - Use `$ceratops-skill-create` for creating a new skill.
-- Use `$ceratops-skill-stage-release` when committed skill changes need local preview staging.
+- Use `$ceratops-skill-change-promotion` when committed skill changes need local preview staging.
 - Use the broader governance automation for cross-scope AGENTS, automation, model, credit, worktree, inbox, memory, and prompt/helper consistency.
 
 ### Workflow
@@ -65,7 +65,7 @@ Infer missing inputs from the repo state before asking.
 #### 4. Close with scoped evidence
 
 - Re-run `--mode governance` after any in-scope repair.
-- If source skills changed and local runtime availability is required, stage through `$ceratops-skill-stage-release`.
+- If source skills changed and local runtime availability is required, stage through `$ceratops-skill-change-promotion`.
 
 ## Done When
 
