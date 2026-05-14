@@ -42,9 +42,10 @@ Ask for the missing title, id, or session file only when the target thread canno
 
 1. Build a compact timeline for each inspected run: goal, touched artifacts, checks, corrections, retries, and final state.
 2. Mark each avoidable spend episode and the earliest point it could have been prevented or detected.
-3. Identify the producer or workflow choice that allowed the spend: prompt, rule, skill, automation, helper, validation, tool choice, workflow habit, or external dependency.
-4. Choose the lowest-maintenance control that would have prevented or sharply reduced the spend.
-5. Separate confirmed findings from plausible but unverified risks.
+3. Review visible command and tool calls for avoidable output volume, repeated polling, and oversized validation; count only when a narrower command, selector, or existing evidence would have been sufficient.
+4. Identify the producer or workflow choice that allowed the spend: prompt, rule, skill, automation, helper, validation, tool choice, workflow habit, or external dependency.
+5. Choose the lowest-maintenance control that would have prevented or sharply reduced the spend.
+6. Separate confirmed findings from plausible but unverified risks.
 
 ## Done When
 

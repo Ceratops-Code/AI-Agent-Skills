@@ -52,7 +52,7 @@ Infer missing inputs from local repo state before asking.
 
 - (D) Prepare and switch to the local release branch with the skill-local `prepare-release-branch.ps1` helper; helper failure blocks staging.
 - Before merging each requested task branch, run a blocking local code review against current release branch state.
-- (D) Before each merge, run `git diff --check (git merge-base HEAD BRANCH) BRANCH` and then inspect `git diff (git merge-base HEAD BRANCH) BRANCH`; any whitespace failure blocks the merge.
+- (D) Before each merge, run `git diff --check (git merge-base HEAD BRANCH) BRANCH`, inspect `git diff --name-status` and `git diff --stat`, and read only targeted hunks needed for the blocking review; any whitespace failure blocks the merge.
 - Merge each reviewed committed task branch into the local `release/*` branch with `git merge --no-edit BRANCH`.
 - If the skills repo checkout is dirty before staging, stop instead of merging into it blindly.
 - After merging, remove clean task worktrees and local branches already merged into the staged release branch. Use the cleanup helper with `-CleanMerged` when available.
