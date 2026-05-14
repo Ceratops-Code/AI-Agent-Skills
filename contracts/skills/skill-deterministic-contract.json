@@ -2,11 +2,11 @@
   "contract_format_version": 1,
   "kind": "skill_design_contract",
   "name": "ceratops_skill_deterministic_contract",
-  "captured_on": "2026-05-13",
+  "captured_on": "2026-05-14",
   "source_files": [
     {
       "path": "$AI_AGENT_SKILLS_ROOT/contracts/source-docs.json",
-      "lines": "source-doc registry and installed skill references"
+      "lines": "source-doc registry, skill standards, and installed skill references"
     },
     {
       "path": "$AI_AGENT_SKILLS_ROOT/scripts/validation/validate-skills-consistency.py",
@@ -37,7 +37,8 @@
       "default": "full",
       "allowed": [
         "sections",
-        "full"
+        "full",
+        "governance"
       ]
     }
   },
@@ -57,15 +58,18 @@
       "skill.metadata_alignment",
       "skill.runtime_payload_portability",
       "skill.shared_section_generation",
+      "skill.resource_layout",
       "skill.public_doc_alignment",
       "skill.private_path_and_secret_absence",
-      "skill.contract_reference_alignment"
+      "skill.contract_reference_alignment",
+      "skill.governance_consistency_audit"
     ],
     "destructive_or_irreversible": "always_report_only"
   },
   "execution": {
     "deterministic_helper": "scripts/validation/validate-skills-consistency.py",
     "full_validation_command": "python scripts/validation/validate-skills-consistency.py --mode full",
+    "governance_validation_command": "python scripts/validation/validate-skills-consistency.py --mode governance",
     "section_validation_command": "python scripts/validation/validate-skills-consistency.py --mode sections",
     "result_contract": "Exit 0 with an ok line when selected deterministic checks pass; nonzero with line-specific errors when they fail."
   },
@@ -76,9 +80,9 @@
       "deterministic_evidence": [
         "skill directory name",
         "source SKILL.md frontmatter",
-        "source SKILL.md H2 section sequence"
+        "source SKILL.md section and subsection structure"
       ],
-      "pass_condition": "Source skill frontmatter contains only name and description, frontmatter name matches the directory, description is present, body is nonempty, and H2 sections are exactly Goal, Context, Constraints, Done When.",
+      "pass_condition": "Source skill frontmatter contains only name and description, frontmatter name matches the directory, description is present, body is nonempty, the body contains a Markdown H2 section structure, and Boundaries and Output Contract subsections are present.",
       "source_lines": [
         "scripts/validation/validate-skills-consistency.py:parse_frontmatter",
         "scripts/validation/validate-skills-consistency.py:check_skill"
@@ -112,6 +116,18 @@
         "scripts/validation/validate-skills-consistency.py:rendered_sections_block",
         "scripts/validation/validate-skills-consistency.py:check_section_sources",
         "scripts/validation/validate-skills-consistency.py:check_skill"
+      ]
+    },
+    {
+      "id": "skill.resource_layout",
+      "category": "source",
+      "deterministic_evidence": [
+        "skill top-level files and directories",
+        "skills/<skill-name>/references/"
+      ],
+      "pass_condition": "Each skill folder contains `SKILL.md` as the only top-level file, uses only supported top-level resource directories (`agents/`, `assets/`, `scripts/`, `references/`), and keeps `references/` files one level deep.",
+      "source_lines": [
+        "scripts/validation/validate-skills-consistency.py:check_resource_layout"
       ]
     },
     {
@@ -163,9 +179,28 @@
       ],
       "pass_condition": "The skill deterministic contract, non-deterministic contract, source-doc registry, contract-review skill, and contract-structure docs reference the same skill-design review surface without making routine skill validation run the non-deterministic best-practice review.",
       "source_lines": [
+        "contracts/source-docs.json:docs scope skill",
         "contracts/source-docs.json:reference_skills",
         "skills/ceratops-contract-review/SKILL.md:References",
         "README.md:Contracts"
+      ]
+    },
+    {
+      "id": "skill.governance_consistency_audit",
+      "category": "governance",
+      "deterministic_evidence": [
+        "source skill identities",
+        "installed managed runtime manifests",
+        "validation command surfaces",
+        "deterministic and nondeterministic contract mappings",
+        "GH skill validator command snippets"
+      ],
+      "pass_condition": "Explicit governance validation checks active skill identity drift, rename completeness, current-source skill references, generated runtime shared-section integrity, validation command-surface alignment, contract ownership drift, skill deterministic remediation-policy classification, GH skill scope command drift, ND evidence coverage, and compact validator success output without adding one-time stale-term detectors.",
+      "source_lines": [
+        "scripts/validation/validate-skills-consistency.py:check_governance_consistency",
+        "scripts/validation/validate-skills-consistency.py:check_skill_contract_remediation_policy",
+        "skills/ceratops-skills-consistency-audit/SKILL.md:Goal",
+        "README.md:Validate"
       ]
     }
   ]

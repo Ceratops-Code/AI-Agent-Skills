@@ -32,7 +32,7 @@ Infer missing inputs from the repo's current structure and the user request befo
 - In this repo, copy the repo-root Ceratops icon from `assets/ceratops-logo-500.png` into the new skill at `assets/ceratops-logo-500.png`, and set both `interface.icon_small` and `interface.icon_large` in `agents/openai.yaml` to `./assets/ceratops-logo-500.png`.
 - In this repo, use `contracts/skills/skill-deterministic-contract.json` and `contracts/skills/skill-nondeterministic-contract.md` as the skill-design rubric for new skills. Apply the deterministic contract through the repo's available validation and targeted readback, and apply the non-deterministic contract through reviewer judgment before commit or staging.
 - In repos with `templates/skill-sections.json`, use the recorded same-surface maintenance-check policy instead of making the user specify commands; when the manifest is absent, skip that path and rely on targeted readback and diff review.
-- Local runtime availability is part of completion by default only when the target repo provides an installer or runtime update path. In this repo, after the new skill validates, make an intentional commit on the worktree branch and continue with `$ceratops-codex-skill-stage-release` unless the user explicitly opts out.
+- Local runtime availability is part of completion by default only when the target repo provides an installer or runtime update path. In this repo, after the new skill validates, make an intentional commit on the worktree branch and continue with `$ceratops-skill-change-promotion` unless the user explicitly opts out.
 - Do not publish to GitHub unless the user explicitly asked for shipping.
 
 ### Boundaries
@@ -69,7 +69,7 @@ Infer missing inputs from the repo's current structure and the user request befo
 #### 4. Make it available locally
 
 - Make an intentional commit on the worktree branch for the new skill once the local repo state is ready.
-- In this repo, continue with `$ceratops-codex-skill-stage-release` so the new skill becomes available through the skills repo `release/*` branch and generated local skill copy, unless the user explicitly opted out.
+- In this repo, continue with `$ceratops-skill-change-promotion` so the new skill becomes available through the skills repo `release/*` branch and generated local skill copy, unless the user explicitly opted out.
 - In another repo, run only that repo's available install, merge, ship, or runtime update path; if none exists, skip local runtime availability and report it as not provided by the repo.
 - If staging is blocked, report the blocker instead of presenting the new skill as locally available.
 

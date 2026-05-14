@@ -73,7 +73,7 @@ Infer missing inputs from local repo state, live GitHub evidence, and the active
 - Use local files, `gh`, GitHub API, `gh` help, package metadata, release metadata, and registry endpoints as the first-pass evidence for the GitHub or artifact behavior that the contracts encode.
 - Check current official GitHub docs for repository-management settings, workflow policy, rulesets, actions, security, release behavior, and repository-content expectations wherever the next contract decision depends on them.
 - Check current official Docker, GHCR, PyPI, or Python packaging docs only for artifact surfaces that are actually in scope.
-- For skill-design decisions, use local Ceratops skill sources, `templates/skill-sections.json`, `validate-skills-consistency.py`, and at most 2-3 installed OpenAI skill examples listed in `contracts/source-docs.json` before considering external references.
+- For skill-design decisions, use local Ceratops skill sources, `templates/skill-sections.json`, `validate-skills-consistency.py`, skill-standard docs listed in `contracts/source-docs.json`, and at most 2-3 installed OpenAI skill examples listed in `contracts/source-docs.json`.
 #### 3. Audit the contracts
 
 - Review `contracts/` and the checker scripts only where a contract claim depends on them.

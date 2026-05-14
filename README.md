@@ -12,13 +12,14 @@ Reusable Ceratops skills for Codex and other `SKILL.md`-compatible agents.
 | `ceratops-gh-repo-health-audit` | Audit and repair GitHub repo health, security posture, stale state, and publication gaps. |
 | `ceratops-gh-merge-pr` | Safely merge a GitHub PR, verify checks and protection with live scripted readiness checks, clean up branches, and sync local state. |
 | `ceratops-contract-review` | Review the GitHub, code, PR readiness, artifact, and skill-design contracts against current standards, then report proposed updates for explicit approval. |
-| `ceratops-produce-rules-update` | Produce focused rule-update recommendations after a concrete instruction failure, miss, or missing-rule gap. |
+| `ceratops-propose-rules-update` | Propose focused rule-update recommendations after a concrete instruction failure, miss, or missing-rule gap. |
 | `ceratops-fixloop-breaker` | Break repeated failed fix loops by requiring a run-by-run failure analysis before more code changes. |
 | `ceratops-credit-savings-analysis` | Analyze recent Codex runs for avoidable credit spend and recommend low-maintenance controls. |
 | `ceratops-prompt-optimizer` | Rewrite rough prompts into clearer structured prompts without changing intent. |
 | `ceratops-skill-optimize` | Propose targeted skill updates without applying edits. |
 | `ceratops-skill-create` | Create a new Ceratops or compatible skill, using templates, validation, metadata, and runtime preview only when the repo provides them. |
 | `ceratops-skill-update` | Update existing Ceratops or compatible skills, using shared sections, generation, validation, helper claims, and docs only when present. |
+| `ceratops-skills-consistency-audit` | Audit Ceratops skill-source consistency, governance-only skill drift, and deterministic validation surfaces. |
 | `ceratops-skill-fast-change` | Apply a simple known-safe skill change directly on a release branch and update only the affected runtime skill. |
 | `ceratops-automation-run` | Run recurring automations with shared Ceratops alert, memory, and completion policy. |
 | `ceratops-task-execute-in-stages` | Drive substantial tasks stage by stage, preferring the simplest standard fix and asking before complex paths. |
@@ -26,8 +27,8 @@ Reusable Ceratops skills for Codex and other `SKILL.md`-compatible agents.
 | `ceratops-thread-resume-manual-stop` | Resume a same-thread task from current local state after a stop, restart, or crash without rebuilding everything from scratch. |
 | `ceratops-thread-full-handoff` | Create a copy-paste prompt for moving a whole task into a new thread without re-auditing the whole task. |
 | `ceratops-thread-side-task-handoff` | Create a minimal copy-paste prompt for spinning a newly discovered side task into a new thread. |
-| `ceratops-codex-skill-stage-release` | Merge ready skill branches into a skill repo `release/*` branch and run only the install or validation steps the repo provides. |
-| `ceratops-gh-codex-skill-ship` | Ship staged skills repo changes through GitHub, then restore the skills repo checkout and installed skills to clean `main`. |
+| `ceratops-skill-change-promotion` | Promote ready skill branches into a skill repo `release/*` branch and run only the install or validation steps the repo provides. |
+| `ceratops-gh-skill-ship` | Ship staged skills repo changes through GitHub, then restore the skills repo checkout and installed skills to clean `main`. |
 
 ## Layout
 
@@ -81,16 +82,16 @@ GitHub helper logic lives in copied scripts under `scripts/`, not in an installe
 
 | Script | Caller And Timing |
 | --- | --- |
-| `scripts/install-skills.ps1` | Single public entrypoint for installing/updating managed skill copies and optionally running section or full skill consistency validation. |
+| `scripts/install-skills.ps1` | Single public entrypoint for installing/updating managed skill copies and optionally running section, full, or governance skill consistency validation. |
 | `scripts/render-runtime-skills.py` | Internal implementation called by the installer to render runtime `SKILL.md` files and copy declared payloads. |
 | `scripts/validation/github-validate-pr-readiness-contract.py` | Called before PR merge decisions to validate the live PR readiness contract. |
-| `scripts/validation/validate-skills-consistency.py` | Internal implementation called by CI or `install-skills.ps1 -Validate ...` for section/full consistency checks. |
+| `scripts/validation/validate-skills-consistency.py` | Internal implementation called by CI, `$ceratops-skills-consistency-audit`, or `install-skills.ps1 -Validate ...` for section, full, and governance consistency checks. |
 | `scripts/validation/github-validate-org-contract.py` | Called by org setup, org health, and standards review work when org settings need a bundled deterministic audit. |
 | `scripts/validation/github-validate-repo-artifact-contract.py` | Called by repo create, repo health, dependency, and standards review work when repo settings, code, or artifact posture needs a deterministic audit. |
 | `scripts/validation/github-collect-nd-evidence.py` | Called when non-deterministic org, repo, code, or artifact checks need one bundled evidence payload for human review. |
 
-Release-branch preparation and pending-work cleanup use stage-release-only helpers
-inside `skills/ceratops-codex-skill-stage-release/scripts/`. This repo keeps
+Release-branch preparation and pending-work cleanup use change-promotion-only helpers
+inside `skills/ceratops-skill-change-promotion/scripts/`. This repo keeps
 scripts only where they add reusable safety logic or bundle nontrivial evidence
 collection.
 
@@ -98,13 +99,13 @@ collection.
 
 The contract structure is split by the surface being checked:
 
-- `contracts/source-docs.json` records official source documents, installed OpenAI skill references, and reference repositories used by the GitHub, repo, registry, and skill-design contracts.
+- `contracts/source-docs.json` records official source documents, skill-standard documents, installed OpenAI skill references, and reference repositories used by the GitHub, repo, registry, and skill-design contracts.
 - `contracts/github/github-org-deterministic-contract.json` defines deterministic organization settings, policy, identity, security, Dependabot, and default-logo/custom-logo checks.
 - `contracts/github/github-repo-deterministic-contract.json` defines deterministic live GitHub repository settings, security, branch/ruleset, Actions policy, queues, releases, and stale GitHub state checks.
 - `contracts/github/github-pr-readiness-deterministic-contract.json` defines deterministic live PR readiness checks used before merge and auto-merge decisions.
 - `contracts/code/code-repo-deterministic-contract.json` defines deterministic repository-content checks for files, workflow text, Dependabot config, CODEOWNERS, local git state, local path references, and secret-pattern scans.
 - `contracts/artifacts/artifact-deterministic-contract.json` defines external artifact checks for PyPI, npm, DockerHub or OCI registries, GitHub Container Registry, GitHub releases, docs sites, and other package registries.
-- `contracts/skills/skill-deterministic-contract.json` defines deterministic Ceratops skill checks for source structure, metadata, shared-section generation, runtime payloads, public docs, portability, and contract presence.
+- `contracts/skills/skill-deterministic-contract.json` defines deterministic Ceratops skill checks for source structure, resource layout, metadata, shared-section generation, runtime payloads, public docs, portability, and contract presence.
 - `contracts/*/*-nondeterministic-contract.md` files capture checks that need intent judgment, prose review, manual browser confirmation, or current-doc interpretation after bundled evidence is collected.
 
 Run deterministic checks with bundled selections instead of one command per setting:
@@ -117,6 +118,7 @@ python .\scripts\validation\github-validate-repo-artifact-contract.py --repo OWN
 python .\scripts\validation\github-validate-repo-artifact-contract.py --repo OWNER/REPO --surface artifact --subset artifact --local-repo-path .
 python .\scripts\validation\github-validate-pr-readiness-contract.py --pr NUMBER_OR_URL
 python .\scripts\validation\validate-skills-consistency.py --mode full
+python .\scripts\validation\validate-skills-consistency.py --mode governance
 ```
 
 Collect review evidence for non-deterministic checks with:
@@ -180,7 +182,7 @@ Common intended combinations:
 | `artifact` | `artifact` | `$ceratops-gh-repo-health-audit`, `$ceratops-gh-repo-create-and-publish`, and `$ceratops-contract-review` when a published artifact is part of the task. |
 | `all` | `create` | `$ceratops-gh-repo-create-and-publish`. |
 | `all` | `health` | `$ceratops-gh-repo-health-audit`; `$ceratops-contract-review` only for broad contract governance. |
-| PR validator, implicit PR surface | none | `$ceratops-gh-merge-pr`, `$ceratops-gh-repo-dependencies-maintenance`, and `$ceratops-gh-codex-skill-ship` before merge or auto-merge decisions. |
+| PR validator, implicit PR surface | none | `$ceratops-gh-merge-pr`, `$ceratops-gh-repo-dependencies-maintenance`, and `$ceratops-gh-skill-ship` before merge or auto-merge decisions. |
 
 A successful mutation command is enough evidence for that exact mutation. Re-run a validator only for drift/audit work, uncertain state, broader closure claims, or checks not already proven by the successful command.
 
@@ -230,9 +232,15 @@ powershell -ExecutionPolicy Bypass -File .\scripts\install-skills.ps1 -SkipInsta
 ```
 
 Run `powershell -ExecutionPolicy Bypass -File .\scripts\install-skills.ps1 -SkipInstall -Validate sections` only when shared section source files or `templates/skill-sections.json` assignments changed. The section mode validates that source skills are delta-only; `scripts/render-runtime-skills.py` performs runtime shared-section expansion during install.
-`templates/skill-sections.json` records the core same-surface maintenance-check policy for regular work and a separate full-validation command set for governance automation.
-The renderer composes each runtime skill's shared block from `templates/skill-sections.json` and `templates/sections/`, and each generated runtime `SKILL.md` block includes section-source comments so the origin of every shared section stays visible in the installed skill copy. The validator checks skill frontmatter, folder/name consistency, section assignments, runtime-renderability, Codex metadata, placeholder leftovers, real README skill rows, cross-skill references, maintenance-workflow targets, contract presence, and high-confidence secret patterns.
-Run helper `--help` smoke checks only for touched helper scripts or touched helper claims. Full validation is intended for governance automation or explicit broad verification, not every regular skill update. With working GitHub auth, use `scripts/validation/github-validate-org-contract.py` and `scripts/validation/github-validate-repo-artifact-contract.py` for deterministic GitHub, code, and artifact contract checks.
+`templates/skill-sections.json` records the core same-surface maintenance-check policy for regular work and a separate governance-validation command set for explicit skill consistency audits.
+The renderer composes each runtime skill's shared block from `templates/skill-sections.json` and `templates/sections/`, and each generated runtime `SKILL.md` block includes section-source comments so the origin of every shared section stays visible in the installed skill copy. The validator checks skill frontmatter, folder/name consistency, section and required-subsection structure, section assignments, runtime-renderability, Codex metadata, placeholder leftovers, real README skill rows, cross-skill references, maintenance-workflow targets, contract presence, skill deterministic remediation-policy classification, and high-confidence secret patterns.
+Use governance validation for explicit skills consistency audits:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\install-skills.ps1 -SkipInstall -Validate governance
+```
+
+Run helper `--help` smoke checks only for touched helper scripts or touched helper claims. Full and governance validation are for explicit broad verification, not every regular skill update. With working GitHub auth, use `scripts/validation/github-validate-org-contract.py` and `scripts/validation/github-validate-repo-artifact-contract.py` for deterministic GitHub, code, and artifact contract checks.
 
 ## Releases
 

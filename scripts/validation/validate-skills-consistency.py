@@ -11,7 +11,9 @@ running unrelated README, metadata, secret, or contract checks.
 from __future__ import annotations
 
 import argparse
+import ast
 import json
+import os
 import pathlib
 import re
 import sys
@@ -22,6 +24,14 @@ SKILLS_DIR = ROOT / "skills"
 README = ROOT / "README.md"
 SECTION_MANIFEST = ROOT / "templates" / "skill-sections.json"
 CONTRACTS_DIR = pathlib.Path("contracts")
+REPO_NAME = ROOT.name
+MANIFEST_NAME = ".ceratops-runtime-manifest.json"
+INSTALLER = ROOT / "scripts" / "install-skills.ps1"
+VALIDATOR = ROOT / "scripts" / "validation" / "validate-skills-consistency.py"
+WORKFLOW = ROOT / ".github" / "workflows" / "validate.yml"
+ND_EVIDENCE_HELPER = ROOT / "scripts" / "validation" / "github-collect-nd-evidence.py"
+REPO_ARTIFACT_VALIDATOR = ROOT / "scripts" / "validation" / "github-validate-repo-artifact-contract.py"
+SKILL_DETERMINISTIC_CONTRACT = pathlib.Path("contracts/skills/skill-deterministic-contract.json")
 REQUIRED_CONTRACT_FILES = [
     pathlib.Path("contracts/source-docs.json"),
     pathlib.Path("contracts/code/code-comment-nondeterministic-contract.md"),
@@ -36,19 +46,32 @@ REQUIRED_CONTRACT_FILES = [
     pathlib.Path("contracts/artifacts/artifact-deterministic-contract.json"),
     pathlib.Path("contracts/artifacts/artifact-nondeterministic-contract.md"),
 ]
+ND_EVIDENCE_CONTRACT_FILES = [
+    pathlib.Path("contracts/github/github-org-nondeterministic-contract.md"),
+    pathlib.Path("contracts/github/github-repo-nondeterministic-contract.md"),
+    pathlib.Path("contracts/github/github-pr-readiness-nondeterministic-contract.md"),
+    pathlib.Path("contracts/code/code-repo-nondeterministic-contract.md"),
+    pathlib.Path("contracts/artifacts/artifact-nondeterministic-contract.md"),
+]
+CONTRACT_OWNERSHIP_FILES = [
+    pathlib.Path("contracts/github/github-repo-deterministic-contract.json"),
+    pathlib.Path("contracts/code/code-repo-deterministic-contract.json"),
+    pathlib.Path("contracts/artifacts/artifact-deterministic-contract.json"),
+]
 SECTIONS_START = "<!-- CERATOPS_SHARED_SECTIONS_START -->"
 SECTIONS_END = "<!-- CERATOPS_SHARED_SECTIONS_END -->"
 
 NAME_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$")
 SKILL_REF_RE = re.compile(r"\$([a-z0-9]+(?:-[a-z0-9]+)+)(?![A-Za-z0-9_-])")
 README_SKILL_ROW_RE = re.compile(r"^\|\s*`(?P<name>ceratops-[a-z0-9-]+)`\s*\|", re.MULTILINE)
-ALLOWED_EXTERNAL_SKILL_REFS = {"skill-creator"}
+ALLOWED_EXTERNAL_SKILL_REFS = {"skill-creator", "skill-name"}
 INTERFACE_FIELD_RE = re.compile(
     r"^\s*(display_name|short_description|icon_small|icon_large|default_prompt):\s*(.+?)\s*$",
     re.MULTILINE,
 )
 CERATOPS_ICON_REL = "./assets/ceratops-logo-500.png"
 CERATOPS_ICON_SOURCE = ROOT / "assets" / "ceratops-logo-500.png"
+ALLOWED_SKILL_RESOURCE_DIRS = {"agents", "assets", "scripts", "references"}
 SHORT_DESC_STOPWORDS = {
     "a",
     "an",
@@ -82,6 +105,26 @@ SECRET_PATTERNS = [
     re.compile(r"BEGIN (?:RSA |OPENSSH |EC |DSA )?PRIVATE KEY"),
     re.compile(r"C:\\Users\\roman", re.IGNORECASE),
 ]
+TEXT_SUFFIXES = {".md", ".py", ".ps1", ".json", ".yml", ".yaml", ".toml", ".txt"}
+CONTRACT_ID_RE = re.compile(
+    r"\b(?:type|repo|process|actions|security|content|local|stale_state|common|pypi|npm|docker|maven|nuget|crates|rubygems|powershell|github-packages|release-assets|docs-site|iac)\.[A-Za-z0-9_.-]+\b"
+)
+ND_ID_RE = re.compile(r"`(ND\.[^`]+)`")
+
+
+def default_install_root() -> pathlib.Path:
+    """Resolve the installed skill root without requiring callers to pass it."""
+
+    codex_home = os.environ.get("CODEX_HOME")
+    if codex_home:
+        return pathlib.Path(codex_home) / "skills"
+    return pathlib.Path.home() / ".codex" / "skills"
+
+
+def read_json(path: pathlib.Path) -> dict[str, object]:
+    """Read one JSON object for cross-file governance checks."""
+
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def parse_frontmatter(path: pathlib.Path) -> tuple[dict[str, str], str]:
@@ -329,6 +372,359 @@ def check_contract_source_lines() -> list[str]:
     return errors
 
 
+def iter_repo_text_files() -> list[pathlib.Path]:
+    """Return repo text files that can carry skill references or commands."""
+
+    files: list[pathlib.Path] = []
+    for path in ROOT.rglob("*"):
+        if not path.is_file() or ".git" in path.parts:
+            continue
+        if path.suffix.lower() in TEXT_SUFFIXES:
+            files.append(path)
+    return sorted(files)
+
+
+def check_repo_skill_refs(skill_names: set[str]) -> list[str]:
+    """Reject stale `$ceratops-*` references anywhere in portable repo text."""
+
+    errors: list[str] = []
+    for path in iter_repo_text_files():
+        text = path.read_text(encoding="utf-8", errors="replace")
+        for ref in sorted(set(SKILL_REF_RE.findall(text))):
+            if ref in ALLOWED_EXTERNAL_SKILL_REFS:
+                continue
+            if ref not in skill_names:
+                errors.append(f"{path.relative_to(ROOT)}: unknown skill reference ${ref}")
+    return errors
+
+
+def generated_block(text: str) -> str | None:
+    """Extract the generated shared-section block from one runtime skill."""
+
+    start = text.find(SECTIONS_START)
+    if start < 0:
+        return None
+    end = text.find(SECTIONS_END, start)
+    if end < 0:
+        return None
+    return text[start : end + len(SECTIONS_END)]
+
+
+def check_installed_runtime_identity(manifest: dict[str, object], skill_names: set[str]) -> list[str]:
+    """Check managed installed Ceratops runtime folders when they are present.
+
+    Missing runtime copies are allowed in task worktrees because local preview
+    installation happens from the staged release checkout. Existing managed
+    runtime folders are still useful evidence for stale rename leftovers.
+    """
+
+    errors: list[str] = []
+    install_root = default_install_root()
+    if not install_root.is_dir():
+        return errors
+
+    for skill_dir in sorted(path for path in install_root.iterdir() if path.is_dir() and path.name.startswith("ceratops-")):
+        runtime_manifest_path = skill_dir / MANIFEST_NAME
+        if not runtime_manifest_path.is_file():
+            continue
+        try:
+            runtime_manifest = read_json(runtime_manifest_path)
+        except json.JSONDecodeError as exc:
+            errors.append(f"{skill_dir.name}: invalid runtime manifest: {exc}")
+            continue
+        if runtime_manifest.get("source_repo") != REPO_NAME:
+            continue
+
+        skill_name = str(runtime_manifest.get("skill", ""))
+        expected_source_path = f"skills/{skill_name}" if skill_name else ""
+        if skill_dir.name != skill_name:
+            errors.append(f"{skill_dir.name}: runtime manifest skill is {skill_name!r}")
+        if runtime_manifest.get("source_path") != expected_source_path:
+            errors.append(f"{skill_dir.name}: runtime manifest source_path does not match {expected_source_path}")
+        if skill_name not in skill_names:
+            errors.append(f"{skill_dir.name}: managed runtime folder has no matching source skill")
+            continue
+
+        skill_md = skill_dir / "SKILL.md"
+        if not skill_md.is_file():
+            errors.append(f"{skill_dir.name}: installed runtime SKILL.md is missing")
+            continue
+        try:
+            frontmatter, _body = parse_frontmatter(skill_md)
+        except ValueError as exc:
+            errors.append(f"{skill_dir.name}: installed runtime {exc}")
+            continue
+        if frontmatter.get("name") != skill_name:
+            errors.append(f"{skill_dir.name}: installed runtime frontmatter name does not match")
+        if b"\r\n" in skill_md.read_bytes():
+            errors.append(f"{skill_dir.name}: installed runtime SKILL.md uses CRLF line endings")
+        runtime_block = generated_block(skill_md.read_text(encoding="utf-8"))
+        if runtime_block is None:
+            errors.append(f"{skill_dir.name}: installed runtime shared-section block is missing")
+        elif runtime_block != rendered_sections_block(skill_name, manifest):
+            errors.append(f"{skill_dir.name}: installed runtime shared-section block is stale")
+    return errors
+
+
+def contract_check_ids(path: pathlib.Path) -> set[str]:
+    """Return deterministic check IDs from one JSON contract."""
+
+    data = read_json(ROOT / path)
+    checks = data.get("checks", [])
+    if not isinstance(checks, list):
+        return set()
+    return {str(check.get("id")) for check in checks if isinstance(check, dict) and check.get("id")}
+
+
+def contract_remediation_ids(path: pathlib.Path) -> set[str]:
+    """Return check IDs classified by a contract remediation policy."""
+
+    data = read_json(ROOT / path)
+    policy = data.get("remediation_policy", {})
+    if not isinstance(policy, dict):
+        return set()
+    classified: set[str] = set()
+    for key in ("auto_apply_check_ids", "manual_check_ids"):
+        values = policy.get(key, [])
+        if isinstance(values, list):
+            classified.update(str(value) for value in values if isinstance(value, str) and value)
+    return classified
+
+
+def checker_contract_id_literals(path: pathlib.Path) -> set[str]:
+    """Return check IDs used in `check_id` comparisons by the validator."""
+
+    ids: set[str] = set()
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Compare):
+            continue
+        sides = [node.left, *node.comparators]
+        if not any(isinstance(side, ast.Name) and side.id == "check_id" for side in sides):
+            continue
+        for side in sides:
+            candidates = side.elts if isinstance(side, (ast.Set, ast.List, ast.Tuple)) else [side]
+            for candidate in candidates:
+                if isinstance(candidate, ast.Constant) and isinstance(candidate.value, str) and CONTRACT_ID_RE.fullmatch(candidate.value):
+                    ids.add(candidate.value)
+    return ids
+
+
+def check_contract_ownership() -> list[str]:
+    """Detect contract/checker drift that is objective from local files."""
+
+    errors: list[str] = []
+    ids_by_file: dict[pathlib.Path, set[str]] = {}
+    for rel_path in CONTRACT_OWNERSHIP_FILES:
+        path = ROOT / rel_path
+        if not path.is_file():
+            errors.append(f"missing contract ownership file: {rel_path}")
+            continue
+        try:
+            ids_by_file[rel_path] = contract_check_ids(rel_path)
+        except json.JSONDecodeError as exc:
+            errors.append(f"{rel_path}: invalid JSON: {exc}")
+            continue
+
+    seen: dict[str, pathlib.Path] = {}
+    for rel_path, ids in ids_by_file.items():
+        for check_id in ids:
+            if check_id in seen:
+                errors.append(f"{check_id}: duplicate deterministic check ID in {seen[check_id]} and {rel_path}")
+            seen[check_id] = rel_path
+
+    if REPO_ARTIFACT_VALIDATOR.is_file():
+        known_ids = set().union(*ids_by_file.values()) if ids_by_file else set()
+        for check_id in sorted(checker_contract_id_literals(REPO_ARTIFACT_VALIDATOR)):
+            if check_id not in known_ids:
+                errors.append(f"{REPO_ARTIFACT_VALIDATOR.relative_to(ROOT)}: checker references unknown contract ID {check_id}")
+    return errors
+
+
+def check_skill_contract_remediation_policy() -> list[str]:
+    """Ensure the skill deterministic contract classifies each deterministic check."""
+
+    errors: list[str] = []
+    try:
+        check_ids = contract_check_ids(SKILL_DETERMINISTIC_CONTRACT)
+        classified_ids = contract_remediation_ids(SKILL_DETERMINISTIC_CONTRACT)
+    except json.JSONDecodeError as exc:
+        return [f"{SKILL_DETERMINISTIC_CONTRACT}: invalid JSON: {exc}"]
+    for check_id in sorted(check_ids - classified_ids):
+        errors.append(f"{SKILL_DETERMINISTIC_CONTRACT}: deterministic check {check_id} is not classified in remediation_policy")
+    for check_id in sorted(classified_ids - check_ids):
+        errors.append(f"{SKILL_DETERMINISTIC_CONTRACT}: remediation_policy references unknown check {check_id}")
+    return errors
+
+
+def evidence_key_list(node: ast.AST) -> list[str] | None:
+    """Return literal or dynamic evidence keys from a list AST node."""
+
+    if not isinstance(node, ast.List):
+        return None
+    keys: list[str] = []
+    for item in node.elts:
+        if isinstance(item, ast.Constant) and isinstance(item.value, str) and item.value:
+            keys.append(item.value)
+        elif isinstance(item, ast.JoinedStr):
+            keys.append(ast.unparse(item))
+        else:
+            return None
+    return keys
+
+
+def parse_nd_evidence_mappings(path: pathlib.Path) -> dict[str, list[str]]:
+    """Extract ND evidence mappings from literal dictionaries in the helper."""
+
+    mappings: dict[str, list[str]] = {}
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Dict):
+            continue
+        for key_node, value_node in zip(node.keys, node.values):
+            if not isinstance(key_node, ast.Constant) or not isinstance(key_node.value, str):
+                continue
+            if not key_node.value.startswith("ND."):
+                continue
+            value = evidence_key_list(value_node)
+            if value is None:
+                mappings[key_node.value] = []
+            else:
+                mappings[key_node.value] = value
+    return mappings
+
+
+def check_nd_evidence_coverage() -> list[str]:
+    """Ensure ND contract IDs are mapped to evidence keys in the collector."""
+
+    errors: list[str] = []
+    required_ids: set[str] = set()
+    for rel_path in ND_EVIDENCE_CONTRACT_FILES:
+        path = ROOT / rel_path
+        if not path.is_file():
+            errors.append(f"missing ND contract file: {rel_path}")
+            continue
+        required_ids.update(ND_ID_RE.findall(path.read_text(encoding="utf-8")))
+
+    if not ND_EVIDENCE_HELPER.is_file():
+        errors.append(f"missing ND evidence helper: {ND_EVIDENCE_HELPER.relative_to(ROOT)}")
+        return errors
+    mappings = parse_nd_evidence_mappings(ND_EVIDENCE_HELPER)
+    mapped_ids = set(mappings)
+    for check_id in sorted(required_ids - mapped_ids):
+        errors.append(f"{check_id}: no ND evidence mapping")
+    for check_id in sorted(mapped_ids - required_ids):
+        errors.append(f"{ND_EVIDENCE_HELPER.relative_to(ROOT)}: obsolete ND evidence mapping {check_id}")
+    for check_id, keys in sorted(mappings.items()):
+        if check_id in required_ids and not keys:
+            errors.append(f"{check_id}: ND evidence mapping must list evidence keys")
+    return errors
+
+
+def check_skill_scope_validator() -> list[str]:
+    """Check objective GH skill routing rules without judging prose quality."""
+
+    errors: list[str] = []
+    expected_snippets = {
+        "ceratops-gh-repo-dependencies-maintenance": "--select repo:dependency --select code:dependency",
+        "ceratops-gh-repo-create-and-publish": "--surface all --subset create",
+        "ceratops-gh-repo-health-audit": "--surface all --subset health",
+        "ceratops-gh-merge-pr": "github-validate-pr-readiness-contract.py",
+    }
+    for skill_name, snippet in expected_snippets.items():
+        path = SKILLS_DIR / skill_name / "SKILL.md"
+        if not path.is_file():
+            errors.append(f"{skill_name}: missing source skill for scope validation")
+            continue
+        text = path.read_text(encoding="utf-8")
+        if snippet not in text:
+            errors.append(f"{skill_name}: missing expected scope command {snippet}")
+    merge_text = (SKILLS_DIR / "ceratops-gh-merge-pr" / "SKILL.md").read_text(encoding="utf-8")
+    if "github-validate-repo-artifact-contract.py" in merge_text:
+        errors.append("ceratops-gh-merge-pr: merge-only workflow must not run repo/artifact contract validation")
+    return errors
+
+
+def check_validation_command_surface() -> list[str]:
+    """Keep validator modes, installer flags, docs, CI, and automation aligned."""
+
+    errors: list[str] = []
+    validator_text = VALIDATOR.read_text(encoding="utf-8") if VALIDATOR.is_file() else ""
+    installer_text = INSTALLER.read_text(encoding="utf-8") if INSTALLER.is_file() else ""
+    readme_text = README.read_text(encoding="utf-8") if README.is_file() else ""
+    workflow_text = WORKFLOW.read_text(encoding="utf-8") if WORKFLOW.is_file() else ""
+
+    for mode in ("sections", "full", "governance"):
+        if f'"{mode}"' not in validator_text:
+            errors.append(f"validator does not declare --mode {mode}")
+        if f'"{mode}"' not in installer_text:
+            errors.append(f"installer does not accept -Validate {mode}")
+    if '"none"' not in installer_text:
+        errors.append("installer does not accept -Validate none")
+    for snippet in ("--mode governance", "-Validate governance", "-Validate full", "-Validate sections"):
+        if snippet not in readme_text:
+            errors.append(f"README is missing validation command snippet {snippet}")
+    if "-Validate full" not in workflow_text:
+        errors.append("CI workflow no longer runs full skill validation")
+
+    governance_prompt = default_install_root().parent / "automations" / "governance-consistency-audit" / "automation.toml"
+    if governance_prompt.is_file():
+        prompt_text = governance_prompt.read_text(encoding="utf-8", errors="replace")
+        stale_terms = ("--run-skill-validation", "skill_repo.validation", "validate-skills-consistency.py")
+        for term in stale_terms:
+            if term in prompt_text:
+                errors.append(f"governance automation still owns skill validation term {term}")
+    return errors
+
+
+def check_validator_output_budget() -> list[str]:
+    """Keep success output small enough for routine automation use."""
+
+    errors: list[str] = []
+    text = VALIDATOR.read_text(encoding="utf-8") if VALIDATOR.is_file() else ""
+    success_lines = [line.strip() for line in text.splitlines() if line.strip().startswith("print(") and '"ok:' in line]
+    if len(success_lines) != 3:
+        errors.append("validator should have exactly one compact ok print per mode")
+    for line in success_lines:
+        if len(line) > 80:
+            errors.append(f"validator success output is too long: {line}")
+    return errors
+
+
+def check_governance_consistency(
+    manifest: dict[str, object],
+    skill_dirs: list[pathlib.Path],
+    readme_rows: set[str],
+    skill_names: set[str],
+) -> list[str]:
+    """Run explicit governance-only Ceratops skill consistency checks."""
+
+    errors: list[str] = []
+    errors.extend(check_repo_skill_refs(skill_names))
+    errors.extend(check_installed_runtime_identity(manifest, skill_names))
+    errors.extend(check_validation_command_surface())
+    errors.extend(check_contract_ownership())
+    errors.extend(check_skill_contract_remediation_policy())
+    errors.extend(check_skill_scope_validator())
+    errors.extend(check_nd_evidence_coverage())
+    errors.extend(check_validator_output_budget())
+
+    assignments = manifest.get("skills", {})
+    payloads = manifest.get("runtime_payloads", {})
+    if isinstance(assignments, dict):
+        for skill_name in skill_names:
+            if skill_name not in assignments:
+                errors.append(f"{skill_name}: missing section assignment in manifest")
+    if isinstance(payloads, dict):
+        for skill_name in payloads:
+            if skill_name != "*" and skill_name not in skill_names:
+                errors.append(f"runtime_payloads points to unknown skill {skill_name}")
+    for row_name in readme_rows:
+        if row_name not in skill_names:
+            errors.append(f"{row_name}: stale README skill table row")
+    return errors
+
+
 def check_section_sources(manifest: dict[str, object], skill_dirs: list[pathlib.Path]) -> list[str]:
     """Run only shared-section checks needed after template or manifest edits."""
 
@@ -381,6 +777,25 @@ def check_section_sources(manifest: dict[str, object], skill_dirs: list[pathlib.
     return errors
 
 
+def check_resource_layout(skill_dir: pathlib.Path) -> list[str]:
+    """Validate the skill package layout that should remain portable across agents."""
+
+    errors: list[str] = []
+    for child in skill_dir.iterdir():
+        if child.is_file() and child.name != "SKILL.md":
+            errors.append(f"{skill_dir.name}: unsupported top-level file {child.name}")
+        if child.is_dir() and child.name not in ALLOWED_SKILL_RESOURCE_DIRS:
+            errors.append(f"{skill_dir.name}: unsupported top-level directory {child.name}")
+
+    references_dir = skill_dir / "references"
+    if references_dir.is_dir():
+        for path in references_dir.rglob("*"):
+            if path.is_file() and path.parent != references_dir:
+                rel_path = path.relative_to(skill_dir)
+                errors.append(f"{skill_dir.name}: references file must be one level deep: {rel_path}")
+    return errors
+
+
 def check_skill(skill_dir: pathlib.Path, readme_rows: set[str], manifest: dict[str, object], skill_names: set[str]) -> list[str]:
     """Validate one source skill, metadata file, icon, README row, and refs."""
 
@@ -417,10 +832,12 @@ def check_skill(skill_dir: pathlib.Path, readme_rows: set[str], manifest: dict[s
         errors.append(f"{name}: missing README skill table row")
     core_text = skill_md.read_text(encoding="utf-8")
     h2_headings = re.findall(r"^## (.+)$", core_text, flags=re.MULTILINE)
-    if h2_headings != ["Goal", "Context", "Constraints", "Done When"]:
-        errors.append(f"{name}: H2 sections must be Goal, Context, Constraints, Done When")
+    if not h2_headings:
+        errors.append(f"{name}: must contain Markdown H2 sections")
     if "### Boundaries" not in core_text:
         errors.append(f"{name}: missing Boundaries section")
+    if "### Output Contract" not in core_text:
+        errors.append(f"{name}: missing Output Contract section")
     if SECTIONS_START in core_text or SECTIONS_END in core_text:
         errors.append(f"{name}: source SKILL.md must be delta-only; shared sections are generated at install time")
     else:
@@ -428,6 +845,7 @@ def check_skill(skill_dir: pathlib.Path, readme_rows: set[str], manifest: dict[s
             rendered_sections_block(name, manifest)
         except Exception as exc:
             errors.append(f"{name}: could not render runtime shared sections: {exc}")
+    errors.extend(check_resource_layout(skill_dir))
 
     if not openai_yaml.is_file():
         errors.append(f"{name}: missing agents/openai.yaml")
@@ -481,10 +899,10 @@ def check_secrets() -> list[str]:
 
 
 def main() -> int:
-    """Run either section-only or full source consistency validation."""
+    """Run section, full, or governance skill consistency validation."""
 
     parser = argparse.ArgumentParser(description="Validate Ceratops skill source and runtime-generation inputs.")
-    parser.add_argument("--mode", choices=["full", "sections"], default="full", help="Use sections for the lightweight shared-section check.")
+    parser.add_argument("--mode", choices=["full", "sections", "governance"], default="full", help="Use sections for the lightweight shared-section check or governance for explicit audit checks.")
     args = parser.parse_args()
 
     errors: list[str] = []
@@ -575,6 +993,8 @@ def main() -> int:
     errors.extend(check_contract_source_lines())
     errors.extend(check_secrets())
     errors.extend(check_retired_baseline_absent())
+    if args.mode == "governance":
+        errors.extend(check_governance_consistency(manifest, skill_dirs, readme_rows, skill_names))
 
     if errors:
         print(f"errors: {len(errors)}", file=sys.stderr)
@@ -582,7 +1002,10 @@ def main() -> int:
             print(error, file=sys.stderr)
         return 1
 
-    print(f"ok: {len(skill_dirs)}")
+    if args.mode == "governance":
+        print(f"ok: governance {len(skill_dirs)}")
+    else:
+        print(f"ok: {len(skill_dirs)}")
     return 0
 
 

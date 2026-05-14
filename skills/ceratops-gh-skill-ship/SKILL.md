@@ -1,5 +1,5 @@
 ---
-name: ceratops-gh-codex-skill-ship
+name: ceratops-gh-skill-ship
 description: Ship staged Ceratops skills repo changes through GitHub, merge the PR after CI and PR readiness pass, then restore the skills repo checkout to main and rebuild installed skills from main.
 ---
 
@@ -85,4 +85,4 @@ Report only:
 
 ### Example Invocation
 
-`Use $ceratops-gh-codex-skill-ship to ship the staged skills repo changes through GitHub, merge the GitHub PR after CI and PR readiness pass, then fetch main and rebuild installed skills from main.`
+`Use $ceratops-gh-skill-ship to ship the staged skills repo changes through GitHub, merge the GitHub PR after CI and PR readiness pass, then fetch main and rebuild installed skills from main.`

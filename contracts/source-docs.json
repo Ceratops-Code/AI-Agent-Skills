@@ -1,7 +1,7 @@
 {
   "source_docs_version": 1,
   "name": "ceratops_contract_source_docs",
-  "captured_on": "2026-05-13",
+  "captured_on": "2026-05-14",
   "policy": {
     "use_order": [
       "official_docs",
@@ -484,6 +484,48 @@
         "artifact"
       ],
       "url": "https://learn.microsoft.com/en-us/powershell/gallery/faqs?view=powershellget-2.x"
+    },
+    {
+      "id": "agent_skills.specification",
+      "scope": [
+        "skill"
+      ],
+      "url": "https://agentskills.io/specification"
+    },
+    {
+      "id": "agent_skills.best_practices",
+      "scope": [
+        "skill"
+      ],
+      "url": "https://agentskills.io/skill-creation/best-practices"
+    },
+    {
+      "id": "open_agent_skills.specification",
+      "scope": [
+        "skill"
+      ],
+      "url": "https://openagentskills.dev/docs/specification"
+    },
+    {
+      "id": "open_agent_skills.writing_skill_md",
+      "scope": [
+        "skill"
+      ],
+      "url": "https://openagentskills.dev/docs/writing-skill-md"
+    },
+    {
+      "id": "openai.skills.skill_creator",
+      "scope": [
+        "skill"
+      ],
+      "url": "https://github.com/openai/skills/blob/main/skills/.system/skill-creator/SKILL.md"
+    },
+    {
+      "id": "openai.skills.openai_yaml",
+      "scope": [
+        "skill"
+      ],
+      "url": "https://github.com/openai/skills/blob/main/skills/.system/skill-creator/references/openai_yaml.md"
     }
   ],
   "reference_skills": [

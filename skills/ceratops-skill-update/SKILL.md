@@ -39,7 +39,7 @@ Infer missing inputs from the current repo state before asking.
 
 - Use this skill when the task is to update existing Ceratops skills, compatible skills in another repo, or the shared skill-maintenance layer itself.
 - If the task is creating a brand-new Ceratops skill, stop because new-skill creation is outside this skill's scope.
-- If the task is only staging already-prepared skill changes, stop and use `$ceratops-codex-skill-stage-release`.
+- If the task is only promoting already-prepared skill changes, stop and use `$ceratops-skill-change-promotion`.
 
 ### Workflow
 
@@ -60,7 +60,17 @@ Infer missing inputs from the current repo state before asking.
 #### 3. Apply the updates at the real source of truth
 
 - Update existing skills, shared sections, the section manifest, runtime payloads, runtime generation or validation scripts, helper-runtime files or claims, contracts, and repo docs only where the chosen ownership requires it and the target repo provides that surface.
-- Before renaming or moving shared contracts, scripts, templates, or payload folders, build one old-to-new reference map and update docs, skills, manifests, validators, and checkers from that map before running validation.
+- Before renaming a skill or named skill surface, build one old-to-new reference map before editing. Update every current surface from that map:
+  - folder name
+  - `SKILL.md` frontmatter `name`
+  - README rows
+  - `templates/skill-sections.json` assignments and runtime payload keys
+  - cross-skill `$skill` references
+  - `agents/openai.yaml`
+  - helper comments and prompts
+  - validators and docs
+  - installed runtime copies through the repo's install or staging flow
+  Do not leave alias folders, old-name shims, or pointer artifacts.
 - When removing, merging, or narrowing sections, update every affected assignment and keep runtime generated section source comments readable in installed `SKILL.md` files.
 - If the repo's current runtime generation or validation flow exists but no longer matches the section model, fix the scripts instead of working around them in skill text.
 
@@ -76,7 +86,7 @@ Infer missing inputs from the current repo state before asking.
 #### 5. Report or hand off
 
 - Stop at validated local repo changes unless the user explicitly asked for local preview staging.
-- If local preview staging was requested, continue with `$ceratops-codex-skill-stage-release`.
+- If local preview staging was requested, continue with `$ceratops-skill-change-promotion`.
 
 ## Done When
 
