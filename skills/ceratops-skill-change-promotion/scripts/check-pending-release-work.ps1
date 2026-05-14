@@ -6,7 +6,7 @@ param(
     [switch]$CleanMerged
 )
 
-# Skill-local helper called only by ceratops-skill-stage-release before a
+# Skill-local helper called only by ceratops-skill-change-promotion before a
 # staged skills repo release is treated as ready to ship. By default it reports
 # dirty worktrees or local branches that have commits not reachable from the
 # release branch. With -CleanMerged, it first removes clean task worktrees and

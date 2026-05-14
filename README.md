@@ -27,7 +27,7 @@ Reusable Ceratops skills for Codex and other `SKILL.md`-compatible agents.
 | `ceratops-thread-resume-manual-stop` | Resume a same-thread task from current local state after a stop, restart, or crash without rebuilding everything from scratch. |
 | `ceratops-thread-full-handoff` | Create a copy-paste prompt for moving a whole task into a new thread without re-auditing the whole task. |
 | `ceratops-thread-side-task-handoff` | Create a minimal copy-paste prompt for spinning a newly discovered side task into a new thread. |
-| `ceratops-skill-stage-release` | Merge ready skill branches into a skill repo `release/*` branch and run only the install or validation steps the repo provides. |
+| `ceratops-skill-change-promotion` | Promote ready skill branches into a skill repo `release/*` branch and run only the install or validation steps the repo provides. |
 | `ceratops-gh-skill-ship` | Ship staged skills repo changes through GitHub, then restore the skills repo checkout and installed skills to clean `main`. |
 
 ## Layout
@@ -90,8 +90,8 @@ GitHub helper logic lives in copied scripts under `scripts/`, not in an installe
 | `scripts/validation/github-validate-repo-artifact-contract.py` | Called by repo create, repo health, dependency, and standards review work when repo settings, code, or artifact posture needs a deterministic audit. |
 | `scripts/validation/github-collect-nd-evidence.py` | Called when non-deterministic org, repo, code, or artifact checks need one bundled evidence payload for human review. |
 
-Release-branch preparation and pending-work cleanup use stage-release-only helpers
-inside `skills/ceratops-skill-stage-release/scripts/`. This repo keeps
+Release-branch preparation and pending-work cleanup use change-promotion-only helpers
+inside `skills/ceratops-skill-change-promotion/scripts/`. This repo keeps
 scripts only where they add reusable safety logic or bundle nontrivial evidence
 collection.
 
@@ -99,13 +99,13 @@ collection.
 
 The contract structure is split by the surface being checked:
 
-- `contracts/source-docs.json` records official source documents, installed OpenAI skill references, and reference repositories used by the GitHub, repo, registry, and skill-design contracts.
+- `contracts/source-docs.json` records official source documents, skill-standard documents, installed OpenAI skill references, and reference repositories used by the GitHub, repo, registry, and skill-design contracts.
 - `contracts/github/github-org-deterministic-contract.json` defines deterministic organization settings, policy, identity, security, Dependabot, and default-logo/custom-logo checks.
 - `contracts/github/github-repo-deterministic-contract.json` defines deterministic live GitHub repository settings, security, branch/ruleset, Actions policy, queues, releases, and stale GitHub state checks.
 - `contracts/github/github-pr-readiness-deterministic-contract.json` defines deterministic live PR readiness checks used before merge and auto-merge decisions.
 - `contracts/code/code-repo-deterministic-contract.json` defines deterministic repository-content checks for files, workflow text, Dependabot config, CODEOWNERS, local git state, local path references, and secret-pattern scans.
 - `contracts/artifacts/artifact-deterministic-contract.json` defines external artifact checks for PyPI, npm, DockerHub or OCI registries, GitHub Container Registry, GitHub releases, docs sites, and other package registries.
-- `contracts/skills/skill-deterministic-contract.json` defines deterministic Ceratops skill checks for source structure, metadata, shared-section generation, runtime payloads, public docs, portability, and contract presence.
+- `contracts/skills/skill-deterministic-contract.json` defines deterministic Ceratops skill checks for source structure, resource layout, metadata, shared-section generation, runtime payloads, public docs, portability, and contract presence.
 - `contracts/*/*-nondeterministic-contract.md` files capture checks that need intent judgment, prose review, manual browser confirmation, or current-doc interpretation after bundled evidence is collected.
 
 Run deterministic checks with bundled selections instead of one command per setting:

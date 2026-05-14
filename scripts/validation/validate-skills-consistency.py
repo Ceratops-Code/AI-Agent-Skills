@@ -70,6 +70,7 @@ INTERFACE_FIELD_RE = re.compile(
 )
 CERATOPS_ICON_REL = "./assets/ceratops-logo-500.png"
 CERATOPS_ICON_SOURCE = ROOT / "assets" / "ceratops-logo-500.png"
+ALLOWED_SKILL_RESOURCE_DIRS = {"agents", "assets", "scripts", "references"}
 SHORT_DESC_STOPWORDS = {
     "a",
     "an",
@@ -742,6 +743,25 @@ def check_section_sources(manifest: dict[str, object], skill_dirs: list[pathlib.
     return errors
 
 
+def check_resource_layout(skill_dir: pathlib.Path) -> list[str]:
+    """Validate the skill package layout that should remain portable across agents."""
+
+    errors: list[str] = []
+    for child in skill_dir.iterdir():
+        if child.is_file() and child.name != "SKILL.md":
+            errors.append(f"{skill_dir.name}: unsupported top-level file {child.name}")
+        if child.is_dir() and child.name not in ALLOWED_SKILL_RESOURCE_DIRS:
+            errors.append(f"{skill_dir.name}: unsupported top-level directory {child.name}")
+
+    references_dir = skill_dir / "references"
+    if references_dir.is_dir():
+        for path in references_dir.rglob("*"):
+            if path.is_file() and path.parent != references_dir:
+                rel_path = path.relative_to(skill_dir)
+                errors.append(f"{skill_dir.name}: references file must be one level deep: {rel_path}")
+    return errors
+
+
 def check_skill(skill_dir: pathlib.Path, readme_rows: set[str], manifest: dict[str, object], skill_names: set[str]) -> list[str]:
     """Validate one source skill, metadata file, icon, README row, and refs."""
 
@@ -789,6 +809,7 @@ def check_skill(skill_dir: pathlib.Path, readme_rows: set[str], manifest: dict[s
             rendered_sections_block(name, manifest)
         except Exception as exc:
             errors.append(f"{name}: could not render runtime shared sections: {exc}")
+    errors.extend(check_resource_layout(skill_dir))
 
     if not openai_yaml.is_file():
         errors.append(f"{name}: missing agents/openai.yaml")
