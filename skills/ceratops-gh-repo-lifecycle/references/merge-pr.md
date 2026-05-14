@@ -9,7 +9,7 @@ Merge one GitHub PR only after proving PR-specific merge gates are satisfied. Th
 ### Script Bundle
 
 - (D) PR readiness contract check: `python scripts/validation/github-validate-pr-readiness-contract.py --pr NUMBER_OR_URL`
-- (D) Codex review gate: `python scripts/validation/github-codex-review-gate.py wait --pr NUMBER_OR_URL --wait-seconds 210 --interval-seconds 10 --json`
+- (D) Codex review gate: `python scripts/validation/github-codex-review-gate.py wait --pr NUMBER_OR_URL --wait-seconds 260 --interval-seconds 10 --json`
 - (D) Codex thread resolver: `python scripts/validation/github-codex-review-gate.py resolve --thread-id THREAD_ID --json`
 - Direct merge command: `gh pr merge --admin NUMBER_OR_URL_OR_BRANCH [--merge|--squash|--rebase] [--delete-branch]`
 - (D) Branch deletion policy check for reusable release or integration head branches: `gh repo view OWNER/REPO --json deleteBranchOnMerge`
@@ -41,7 +41,7 @@ Infer missing inputs from `gh`, git remotes, current branch, and live repo data 
 #### 2. Run live PR checks first
 
 - (D) Run `python scripts/validation/github-validate-pr-readiness-contract.py` before merge or auto-merge decisions.
-- (D) Run `python scripts/validation/github-codex-review-gate.py wait --pr NUMBER_OR_URL --wait-seconds 210 --interval-seconds 10 --json`; it must return zero active threads before merge.
+- (D) Run `python scripts/validation/github-codex-review-gate.py wait --pr NUMBER_OR_URL --wait-seconds 260 --interval-seconds 10 --json`; it must return zero active threads before merge.
 - If active Codex threads appear, fix only narrow authorized issues, push, resolve fixed thread IDs, then rerun the Codex gate and PR readiness check.
 - Stop instead of merging on ambiguous, risky, out-of-scope, stale, or unverified Codex threads.
 - Re-run checks after any action that could change readiness unless the successful command result proves the exact state.

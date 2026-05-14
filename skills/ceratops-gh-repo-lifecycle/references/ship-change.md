@@ -10,7 +10,7 @@ Take an existing published repo from local changes to a verified merged result. 
 
 - Intended change scope, issue or PR reference, target branch, repo owner and name, and merge preference.
 - Required local checks, CI checks, security gates, branch protection, release workflow, and package verification commands.
-- Whether the run touches GitHub Actions workflows or repo Actions permissions, and whether the repo already enforces SHA pinning.
+- Whether the run touches GitHub Actions workflows or repo Actions permissions, and the repo's current SHA-pinning posture.
 - Topics, CODEOWNERS, SECURITY instructions, README examples, and local consumer paths affected by the change.
 
 Infer missing inputs from local files and live repo state before asking.
@@ -45,7 +45,7 @@ Infer missing inputs from local files and live repo state before asking.
 #### 3. Complete the change
 
 - Finish in-scope code, docs, tests, generated files, and packaging metadata.
-- If the run touches workflow files or GitHub Actions settings, pin every non-local action in changed workflows to a verified full SHA with a same-line version comment when the repo enforces SHA pinning.
+- If the run touches workflow files or GitHub Actions settings, pin every non-local action in changed workflows to a verified full SHA with a same-line version comment.
 - Add regression tests or checks for meaningful behavior fixes or behavior changes.
 - Update README, examples, install or run commands, SECURITY, CONTRIBUTING, changelog, release notes, package metadata, topics, CODEOWNERS, CI, and artifact metadata only when stale.
 
@@ -68,7 +68,7 @@ Infer missing inputs from local files and live repo state before asking.
 ### Completion Gate
 
 - PR readiness and merge were handled through `merge-pr`.
-- Changed workflow files still use intended full-SHA action refs when the run touched GitHub Actions workflows or settings.
+- Changed workflow files use full-SHA action refs when the run touched GitHub Actions workflows or settings.
 - Local state is verified: default branch, worktree, remotes, refs, generated files, artifacts, temp paths, caches, credential changes, and local consumer paths.
 - Any temporary branch or worktree created or used for the run was removed unless intentionally retained with an active-workflow reason.
 

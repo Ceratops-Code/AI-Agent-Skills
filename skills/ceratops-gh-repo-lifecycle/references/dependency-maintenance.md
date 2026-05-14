@@ -55,7 +55,7 @@ Infer missing inputs from local files and live GitHub state before asking.
 - Process already-open routine dependency PRs when in scope and low-risk; classify routine PRs as retained when the task is security-only.
 - Inspect the diff, manifest changes, lockfile changes, transitive changes, CI impact, and release impact for each update.
 - Refresh lockfiles or generated dependency metadata using the project package manager unless the ecosystem expects manual edits.
-- For `github-actions` updates, keep action refs on full commit SHAs with same-line version comments when the repo enforces SHA pinning.
+- For `github-actions` updates, keep external action refs on full commit SHAs with same-line version comments when the repo enforces or already uses SHA pinning.
 - Run targeted tests first, then full required checks before merge.
 - If merging directly, use `gh pr merge --admin` with the allowed merge-method flag and `--delete-branch` when cleanup is intended and allowed.
 - After each merge, sync the default branch, re-check open dependency-bot PRs and dependency alerts, and continue until no actionable update remains or a real blocker is reached.
