@@ -37,7 +37,8 @@
       "default": "full",
       "allowed": [
         "sections",
-        "full"
+        "full",
+        "governance"
       ]
     }
   },
@@ -66,6 +67,7 @@
   "execution": {
     "deterministic_helper": "scripts/validation/validate-skills-consistency.py",
     "full_validation_command": "python scripts/validation/validate-skills-consistency.py --mode full",
+    "governance_validation_command": "python scripts/validation/validate-skills-consistency.py --mode governance",
     "section_validation_command": "python scripts/validation/validate-skills-consistency.py --mode sections",
     "result_contract": "Exit 0 with an ok line when selected deterministic checks pass; nonzero with line-specific errors when they fail."
   },
@@ -166,6 +168,23 @@
         "contracts/source-docs.json:reference_skills",
         "skills/ceratops-contract-review/SKILL.md:References",
         "README.md:Contracts"
+      ]
+    },
+    {
+      "id": "skill.governance_consistency_audit",
+      "category": "governance",
+      "deterministic_evidence": [
+        "source skill identities",
+        "installed managed runtime manifests",
+        "validation command surfaces",
+        "deterministic and nondeterministic contract mappings",
+        "GH skill validator command snippets"
+      ],
+      "pass_condition": "Explicit governance validation checks active skill identity drift, rename completeness, current-source skill references, generated runtime shared-section integrity, validation command-surface alignment, contract ownership drift, GH skill scope command drift, ND evidence coverage, and compact validator success output without adding one-time stale-term detectors.",
+      "source_lines": [
+        "scripts/validation/validate-skills-consistency.py:check_governance_consistency",
+        "skills/ceratops-skills-consistency-audit/SKILL.md:Goal",
+        "README.md:Validate"
       ]
     }
   ]

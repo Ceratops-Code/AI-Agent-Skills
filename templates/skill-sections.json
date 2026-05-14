@@ -17,7 +17,7 @@
     ],
     "contract_checker_changes": [],
     "governance_full_validation": [
-      "powershell -ExecutionPolicy Bypass -File scripts/install-skills.ps1 -SkipInstall -Validate full"
+      "powershell -ExecutionPolicy Bypass -File scripts/install-skills.ps1 -SkipInstall -Validate governance"
     ],
     "new_skill_local_availability": [
       "$ceratops-skill-stage-release"
@@ -89,6 +89,13 @@
       "templates",
       "contracts"
     ],
+    "ceratops-skills-consistency-audit": [
+      "scripts/render-runtime-skills.py",
+      "scripts/install-skills.ps1",
+      "scripts/validation/validate-skills-consistency.py",
+      "templates",
+      "contracts"
+    ],
     "ceratops-skill-fast-change": [
       "scripts/render-runtime-skills.py",
       "scripts/install-skills.ps1",
@@ -131,6 +138,9 @@
       "core"
     ],
     "ceratops-skill-update": [
+      "core"
+    ],
+    "ceratops-skills-consistency-audit": [
       "core"
     ],
     "ceratops-gh-skill-ship": [

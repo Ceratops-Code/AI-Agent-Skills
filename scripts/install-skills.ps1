@@ -4,7 +4,7 @@ param(
     [string]$InstallRoot,
     [string]$PythonCommand,
     [string[]]$Skill,
-    [ValidateSet("none", "sections", "full")]
+    [ValidateSet("none", "sections", "full", "governance")]
     [string]$Validate = "none",
     [switch]$SkipInstall
 )
@@ -151,10 +151,7 @@ if (-not $SkipInstall) {
 if ($Validate -ne "none") {
     # Validation is opt-in. Regular targeted runtime refreshes do not pay the
     # cost of repository-wide consistency checks unless the caller asks.
-    $validatorArgs = @($validator)
-    if ($Validate -eq "sections") {
-        $validatorArgs += @("--mode", "sections")
-    }
+    $validatorArgs = @($validator, "--mode", $Validate)
 
     $validationOutput = & $python @validatorArgs 2>&1
     if ($LASTEXITCODE -ne 0) {
