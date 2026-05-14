@@ -35,7 +35,7 @@ Infer missing inputs from the current repo state before asking.
 - Use the action references as the source of truth for source edits, staging, runtime update, cleanup, validation, and output contracts.
 - Keep skill creation, update, fast change, change promotion, and remote shipping inside this router and its `references/` files; do not introduce alias skills or old-name shims.
 - For skill-source mutation in this repo, treat source skill text, metadata, shared sections, `templates/skill-sections.json`, runtime payloads, validators, contracts, helper scripts, and docs as one coupled maintenance surface when they exist.
-- Stop in the task worktree by default for create and update actions. Continue to local promotion, installed runtime update, or remote shipping only when the user explicitly requested that action.
+- Stop in the task worktree by default for update actions and for create actions outside this repo. In this repo, new Ceratops skill creation continues through change-promotion and install verification unless the user opts out.
 - Treat `ship-to-remote` as an action identity, not a separate skill folder.
 
 ### Boundaries

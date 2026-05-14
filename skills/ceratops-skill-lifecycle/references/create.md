@@ -2,7 +2,7 @@
 
 ## Goal
 
-Create a brand-new skill as a complete repo-integrated addition instead of leaving it as an isolated scaffold. In this repo, integrate the new skill with shared sections, runtime payloads, docs, metadata, validation, and local runtime preview only when that preview action is explicitly requested.
+Create a brand-new skill as a complete repo-integrated addition instead of leaving it as an isolated scaffold. In this repo, integrate the new skill with shared sections, runtime payloads, docs, metadata, validation, and local runtime preview unless the user explicitly opts out.
 
 ## Context
 
@@ -47,10 +47,10 @@ Infer missing inputs from the current repo structure and the user request before
 - Re-open changed files and confirm source skill, runtime-generation inputs, manifest assignment, metadata, and docs all align.
 - Confirm applicable skill-design contract checks were satisfied, approved as drift, blocked, or not applicable.
 
-#### 4. Make locally available only when requested
+#### 4. Make locally available
 
 - Make an intentional commit on the task-worktree branch once the local repo state is ready.
-- In this repo, use `change-promotion` only when local runtime preview or release-branch promotion was requested.
+- In this repo, use `change-promotion` and verify the install unless the user explicitly opted out.
 - In another repo, run only that repo's available install, merge, ship, or runtime update path; if none exists, report it as not provided.
 
 ## Done When
@@ -60,7 +60,7 @@ Infer missing inputs from the current repo structure and the user request before
 - The new skill folder, available manifest assignment, runtime-generation inputs, metadata, and repo docs align.
 - Applicable skill-design contract checks were used and their result is reflected in the design or reported.
 - Required generation or validation path ran successfully when the target repo provides one.
-- Local promotion or runtime preview was completed only when requested, otherwise task-worktree source changes are the closure scope.
+- In this repo, local promotion and install verification completed unless the user explicitly opted out; otherwise task-worktree source changes are the closure scope.
 
 ### Output Contract
 
