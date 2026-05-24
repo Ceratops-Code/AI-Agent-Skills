@@ -50,6 +50,12 @@ PARAM_RE = re.compile(r"\$\{([^}]+)\}")
 USES_RE = re.compile(r"^\s*uses:\s*([^@\s]+)@([^\s#]+)", re.MULTILINE)
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 SECRET_NAME_RE = re.compile(r"\b(ARG|ENV)\s+[A-Za-z0-9_]*(TOKEN|SECRET|PASSWORD|KEY)[A-Za-z0-9_]*\b", re.IGNORECASE)
+NPM_PUBLISH_RE = re.compile(r"\bnpm\s+(?:stage\s+)?publish\b", re.IGNORECASE)
+NPM_STAGE_PUBLISH_RE = re.compile(r"\bnpm\s+stage\s+publish\b", re.IGNORECASE)
+PUBLISH_SIGNAL_RE = re.compile(
+    r"(gh release|npm\s+(?:stage\s+)?publish|twine upload|pypa/gh-action-pypi-publish|docker/build-push-action|docker push|cargo publish|gem push|nuget push|mvn deploy)",
+    re.IGNORECASE,
+)
 FORK_PR_APPROVAL_RANK = {
     "first_time_contributors_new_to_github": 0,
     "first_time_contributors": 1,
@@ -1024,7 +1030,7 @@ def classify(repo_info: dict[str, Any], paths: list[str], topics: list[str], loc
     languages: set[str] = set()
     project: set[str] = set()
     workflows = path_matches(paths, [".github/workflows/*.yml", ".github/workflows/*.yaml"])
-    release_workflow = bool(re.search(r"(gh release|npm publish|twine upload|pypa/gh-action-pypi-publish|docker/build-push-action|docker push|cargo publish|gem push|nuget push|mvn deploy)", ci_text))
+    release_workflow = bool(PUBLISH_SIGNAL_RE.search(ci_text))
 
     if path_matches(paths, ["Dockerfile", "**/Dockerfile"]) or any(t in topics for t in ("docker", "oci", "container", "ghcr")):
         artifacts.add("docker_oci_image")
@@ -1849,11 +1855,7 @@ def artifact_condition_context(
     workflow = publish_ci_text(local)
     docker_default_provenance = docker_build_push_action_default_provenance_steps(local)
     publish_workflow_detected = bool(
-        re.search(
-            r"(gh release|npm publish|twine upload|pypa/gh-action-pypi-publish|docker/build-push-action|docker push|cargo publish|gem push|nuget push|mvn deploy)",
-            workflow,
-            re.IGNORECASE,
-        )
+        PUBLISH_SIGNAL_RE.search(workflow)
     )
     workflow_emits_attestation = workflow_emits_attestation_or_provenance(local)
     registry_hosts = artifact_registry_hosts(params)
@@ -2105,7 +2107,7 @@ def evaluate_artifact_check(check: dict[str, Any], params: dict[str, Any], local
             if top_level_artifact_metadata:
                 drifts.append(finding(check_id, "FAIL", "Workflow-root artifact-metadata: write grants are not job scoped.", actual=top_level_artifact_metadata, expected="job-level artifact-metadata: write"))
             publish_text = workflow_text(local)
-            if artifact_metadata_grants and not re.search(r"(?i)(gh release|npm publish|pypi|docker|ghcr|mvn deploy|nuget push|cargo publish|gem push)", publish_text):
+            if artifact_metadata_grants and not re.search(r"(?i)(gh release|npm\s+(?:stage\s+)?publish|pypi|docker|ghcr|mvn deploy|nuget push|cargo publish|gem push)", publish_text):
                 drifts.append(finding(check_id, "WARN", "Linked artifact metadata permission is present without visible registry or release publication evidence.", actual=artifact_metadata_grants, expected="registry or release artifact publication evidence"))
             return drifts or [finding(check_id, "PASS", "Linked artifact metadata workflow evidence is intentional and scoped.", actual=artifact_metadata_grants)]
         return [finding(check_id, "PASS", "Common artifact check recorded.", actual={"artifact_surface": sorted(artifacts)})]
@@ -2179,15 +2181,16 @@ def evaluate_artifact_check(check: dict[str, Any], params: dict[str, Any], local
         if check_id == "npm.trusted_publishing_and_provenance":
             files = publish_ci_files(local)
             text = "\n".join(files.values())
-            if "npm publish" not in text:
-                return [finding(check_id, "SKIP", "No npm publish workflow detected.")]
+            if not NPM_PUBLISH_RE.search(text):
+                return [finding(check_id, "SKIP", "No npm publish or staged publish workflow detected.")]
             drifts = []
-            github_publish_text = "\n".join(content for path, content in files.items() if path.startswith(".github/workflows/") and "npm publish" in content)
-            gitlab_publish_text = "\n".join(content for path, content in files.items() if path.startswith(".gitlab-ci.") and "npm publish" in content)
-            circleci_publish_text = "\n".join(content for path, content in files.items() if path.startswith(".circleci/") and "npm publish" in content)
+            github_publish_text = "\n".join(content for path, content in files.items() if path.startswith(".github/workflows/") and NPM_PUBLISH_RE.search(content))
+            gitlab_publish_text = "\n".join(content for path, content in files.items() if path.startswith(".gitlab-ci.") and NPM_PUBLISH_RE.search(content))
+            circleci_publish_text = "\n".join(content for path, content in files.items() if path.startswith(".circleci/") and NPM_PUBLISH_RE.search(content))
+            stage_publish_detected = bool(NPM_STAGE_PUBLISH_RE.search(text))
             provider_detected = bool(github_publish_text or gitlab_publish_text or circleci_publish_text)
             if not provider_detected:
-                drifts.append(finding(check_id, "WARN", "npm publish workflow is not in a supported trusted-publishing provider file.", actual=list(files), expected="GitHub Actions, GitLab CI/CD, or CircleCI cloud"))
+                drifts.append(finding(check_id, "WARN", "npm publish or staged publish workflow is not in a supported trusted-publishing provider file.", actual=list(files), expected="GitHub Actions, GitLab CI/CD, or CircleCI cloud"))
             node_versions = visible_node_versions(text)
             ambiguous_node_versions = [
                 version
@@ -2236,23 +2239,27 @@ def evaluate_artifact_check(check: dict[str, Any], params: dict[str, Any], local
                     drifts.append(finding(check_id, "WARN", "CircleCI npm trusted publishing workflow lacks visible npm OIDC token retrieval.", expected="NPM_ID_TOKEN from circleci run oidc get"))
                 drifts.append(finding(check_id, "INFO", "CircleCI trusted publishing is classified as no npm provenance attestation.", actual="CircleCI trusted publishing"))
             if re.search(r"(?i)workflow_call", github_publish_text):
-                drifts.append(finding(check_id, "WARN", "Reusable npm publish workflows need caller and called workflow id-token evidence.", expected="id-token permission visible in workflow_call path"))
+                drifts.append(finding(check_id, "WARN", "Reusable npm publish or staged publish workflows need caller and called workflow id-token evidence.", expected="id-token permission visible in workflow_call path"))
             if not re.search(r"(?i)(--provenance|provenance|trusted publishing|id-token:\s*write|id_tokens:|NPM_ID_TOKEN)", text):
-                drifts.append(finding(check_id, "WARN", "npm publish workflow does not visibly enable provenance or trusted publishing.", expected="trusted publishing or provenance"))
+                drifts.append(finding(check_id, "WARN", "npm publish or staged publish workflow does not visibly enable provenance or trusted publishing.", expected="trusted publishing or provenance"))
             if not re.search(r"(?i)(tags:|release:|workflow_dispatch)", text):
-                drifts.append(finding(check_id, "WARN", "npm publish workflow trigger is not visibly tag, release, or explicit manual release.", expected="tag/release/manual trigger"))
+                drifts.append(finding(check_id, "WARN", "npm publish or staged publish workflow trigger is not visibly tag, release, or explicit manual release.", expected="tag/release/manual trigger"))
             if not re.search(r"(?i)(npm ci|pnpm install|yarn install)", text):
-                drifts.append(finding(check_id, "WARN", "npm publish workflow does not visibly install from a lockfile.", expected="npm ci, pnpm install, or yarn install"))
+                drifts.append(finding(check_id, "WARN", "npm publish or staged publish workflow does not visibly install from a lockfile.", expected="npm ci, pnpm install, or yarn install"))
             try:
                 package_data = json.loads(local.get("texts", {}).get("package.json", "{}"))
             except json.JSONDecodeError:
                 package_data = {}
             package_name = str(package_data.get("name") or "")
             if package_name.startswith("@") and "--access" not in text:
-                drifts.append(finding(check_id, "WARN", "Scoped npm publish workflow does not visibly set package access.", actual=package_name, expected="npm publish --access public or approved restricted access"))
+                drifts.append(finding(check_id, "WARN", "Scoped npm publish or staged publish workflow does not visibly set package access.", actual=package_name, expected="npm publish --access public, npm stage publish with approved access policy, or approved restricted access"))
+            if stage_publish_detected and not re.search(r"(?i)(npm\s+stage\s+approve|staged publishing|staged package|stage approval|proof-of-presence|2FA|manual approval)", text):
+                drifts.append(finding(check_id, "WARN", "npm staged publishing needs an explicit approval path before public release.", expected="documented npm stage approve or equivalent manual approval path"))
+            if re.search(r"(?i)trusted publishing", text) and not re.search(r"(?i)(allow(?:ed)?[- ]actions?|allow[- ]publish|allow[- ]stage[- ]publish|npm\s+trust)", text):
+                drifts.append(finding(check_id, "MANUAL", "npm trusted publisher allowed actions are not visible in workflow text.", expected="allowed npm publish or npm stage publish action matches release policy"))
             if not re.search(r"(?i)(--tag\s+\S+|npm\s+dist-tag)", text):
-                drifts.append(finding(check_id, "INFO", "npm publish workflow does not visibly set or update a dist-tag.", expected="explicit dist-tag policy"))
-            return drifts or [finding(check_id, "PASS", "npm publish workflow has trusted publishing/provenance evidence.")]
+                drifts.append(finding(check_id, "INFO", "npm publish or staged publish workflow does not visibly set or update a dist-tag.", expected="explicit dist-tag policy"))
+            return drifts or [finding(check_id, "PASS", "npm publish or staged publish workflow has trusted publishing/provenance evidence.")]
         if check_id == "npm.live_package_version_smoke":
             bad = {name: data for name, data in registries["npm"].items() if not data.get("ok")}
             return [finding(check_id, "FAIL", "npm live metadata lookup failed.", actual=bad)] if bad else [finding(check_id, "PASS", "npm package and latest dist-tag metadata resolved.", actual=registries["npm"])]
