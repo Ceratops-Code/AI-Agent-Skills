@@ -77,7 +77,7 @@ Infer missing inputs from the repo state before asking.
 ### Completion Gate
 
 - Deterministic governance validation either passes or every finding is reported with the owning file and smallest credible repair.
-- Candidate-only review items are marked reviewed, not applicable, intentionally deferred, or blocked.
+- Every non-deterministic check category listed in Workflow step 2 is reviewed, not applicable, intentionally deferred, or blocked before reporting a clean pass.
 - Any approved source, runtime, or automation repair was verified by the narrowest relevant command.
 
 ### Output Contract
@@ -86,7 +86,7 @@ Report only:
 
 - governance validation outcome
 - deterministic findings and smallest repairs
-- non-deterministic check results when checked
+- non-deterministic check results for every Workflow step 2 category, including not applicable, deferred, or blocked categories
 - source, runtime, or automation changes made
 - unresolved blockers, intentionally deferred candidates, and important unverified items
 
