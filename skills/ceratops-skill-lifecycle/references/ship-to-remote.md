@@ -12,6 +12,11 @@ Ship an already-staged Ceratops skill batch from the skills repo checkout's acti
 - (D) Skill install/update entrypoint: `powershell -ExecutionPolicy Bypass -File .\scripts\install-skills.ps1`
 - Installed Ceratops skill path: `$CODEX_HOME/skills/<skill-name>`
 
+### Script Bundle
+
+- (D) Push and PR helper: `skills/ceratops-skill-lifecycle/scripts/push-release-branch-and-ensure-pr.ps1 -SkillsRepoRoot <repo> -ReleaseBranch release/local -BaseBranch main -RemoteName origin` from a source checkout, or `scripts/push-release-branch-and-ensure-pr.ps1` from the installed skill folder.
+- (D) Post-merge sync helper: `skills/ceratops-gh-repo-lifecycle/scripts/sync-main-after-pr.ps1 -RepoRoot <repo> -MainBranch main -RemoteName origin -AlignBranch release/local` from a source checkout, or `scripts/sync-main-after-pr.ps1` from the installed GH lifecycle skill folder.
+
 ### Inputs To Capture
 
 - Skills repo checkout path, active release branch, target `main` branch, PR title/body expectation, and merge method.
@@ -39,9 +44,7 @@ Infer missing inputs from the skills repo checkout and live GitHub state before 
 
 #### 2. Push and open or update PR
 
-- Push the local release branch to the same-named remote branch unless the user explicitly chose a different branch name.
-- Create or update the GitHub PR from the release branch into `main`.
-- Keep the PR body concise and let CI provide the required check result.
+- (D) Run `push-release-branch-and-ensure-pr.ps1`; it owns clean release-branch verification, ahead-of-main verification, same-named remote push, PR create-or-reuse behavior, and compact PR summary output.
 
 #### 3. Merge PR
 
@@ -50,7 +53,7 @@ Infer missing inputs from the skills repo checkout and live GitHub state before 
 
 #### 4. Restore main and rebuild installed skills
 
-- Run `git fetch --prune origin`, `git switch main`, and `git merge --ff-only origin/main` from the skills repo checkout.
+- (D) Run `sync-main-after-pr.ps1 -AlignBranch release/local` to fetch/prune, switch to `main`, fast-forward from `origin/main`, align the reusable local release branch, and emit compact sync output.
 - (D) Run `powershell -ExecutionPolicy Bypass -File .\scripts\install-skills.ps1` from `main` so `$CODEX_HOME/skills` is rebuilt from the merged main snapshot.
 - Verify the skills repo checkout is clean on `main` and expected installed skill folders have current `.ceratops-runtime-manifest.json` files.
 

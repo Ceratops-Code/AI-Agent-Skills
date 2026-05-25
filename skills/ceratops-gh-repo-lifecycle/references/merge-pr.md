@@ -8,6 +8,8 @@ Merge one GitHub PR only after proving PR-specific merge gates are satisfied. Th
 
 ### Script Bundle
 
+- (D) Validate and merge helper: `skills/ceratops-gh-repo-lifecycle/scripts/validate-and-merge-pr.ps1 -Pr NUMBER_OR_URL [-Admin] [-DeleteBranch] [-MergeMethod merge|squash|rebase]` from a source checkout, or `scripts/validate-and-merge-pr.ps1` from the installed skill folder.
+- (D) Post-merge sync helper: `skills/ceratops-gh-repo-lifecycle/scripts/sync-main-after-pr.ps1 -RepoRoot PATH -MainBranch main -RemoteName origin [-AlignBranch BRANCH]` from a source checkout, or `scripts/sync-main-after-pr.ps1` from the installed skill folder.
 - (D) PR readiness contract check: `python scripts/validation/github-validate-pr-readiness-contract.py --pr NUMBER_OR_URL --allow-admin-review-bypass` for direct admin merges.
 - (D) Codex review gate: `python scripts/validation/github-codex-review-gate.py wait --pr NUMBER_OR_URL --wait-seconds 260 --interval-seconds 10 --json`
 - (D) Codex thread resolver: `python scripts/validation/github-codex-review-gate.py resolve --thread-id THREAD_ID --json`
@@ -40,8 +42,8 @@ Infer missing inputs from `gh`, git remotes, current branch, and live repo data 
 
 #### 2. Run live PR checks first
 
-- (D) Run `python scripts/validation/github-validate-pr-readiness-contract.py` before merge or auto-merge decisions.
-- (D) Run `python scripts/validation/github-codex-review-gate.py wait --pr NUMBER_OR_URL --wait-seconds 260 --interval-seconds 10 --json`; it must return zero active threads before merge.
+- (D) Prefer `validate-and-merge-pr.ps1` for ready direct merges; it runs `github-validate-pr-readiness-contract.py`, waits on `github-codex-review-gate.py`, merges with `gh`, verifies the live PR state, and emits compact JSON.
+- (D) When not using the helper, run `python scripts/validation/github-validate-pr-readiness-contract.py` before merge or auto-merge decisions and run `python scripts/validation/github-codex-review-gate.py wait --pr NUMBER_OR_URL --wait-seconds 260 --interval-seconds 10 --json`; it must return zero active threads before merge.
 - If active Codex threads appear, fix only narrow authorized issues, push, resolve fixed thread IDs, then rerun the Codex gate and PR readiness check.
 - Stop instead of merging on ambiguous, risky, out-of-scope, stale, or unverified Codex threads.
 - Re-run checks after any action that could change readiness unless the successful command result proves the exact state.
@@ -56,7 +58,7 @@ Infer missing inputs from `gh`, git remotes, current branch, and live repo data 
 - Confirm the PR is not draft unless the user wants it kept draft.
 - Confirm required checks, conversations, Codex review gate, and strict status-check freshness are satisfied; `REVIEW_REQUIRED` does not block explicitly requested direct admin merges, but requested changes still block.
 - If workflow refs or Actions permissions changed, confirm no mutable external action refs violate the repo policy.
-- Use `gh pr merge --admin` for direct merges, adding the PR selector, allowed merge-method flag, and `--delete-branch` when cleanup is intended and allowed.
+- Use `validate-and-merge-pr.ps1` for the deterministic direct merge path when available; otherwise use `gh pr merge --admin` for direct merges, adding the PR selector, allowed merge-method flag, and `--delete-branch` when cleanup is intended and allowed.
 - For remote-only PR merges, run `gh pr merge <number> --repo OWNER/REPO` from an existing non-repo directory such as `$CODEX_HOME`.
 - Use `gh pr merge --auto` only when the user explicitly wants GitHub to defer final merge until remaining requirements finish.
 - Verify merge or queued auto-merge from the live PR endpoint rather than trusting only command exit code.
@@ -65,7 +67,7 @@ Infer missing inputs from `gh`, git remotes, current branch, and live repo data 
 
 - Delete the remote head branch only for disposable branches.
 - For reusable release or integration branches, verify local and remote head refs still exist at the expected post-merge commit and restore them if GitHub auto-deleted the remote head.
-- Sync the local default branch to the remote default branch without destructive resets.
+- (D) Use `sync-main-after-pr.ps1` for local default-branch sync when a local checkout is in scope; pass `-AlignBranch` only for reusable local branches that should move to the synced main commit.
 - Prune stale refs safely and keep a clearly named safety branch only when needed.
 
 ## Done When

@@ -114,15 +114,15 @@ GH_LIFECYCLE_ACTIONS = {
     "create-or-publish.md": "--surface all --subset create",
     "dependency-maintenance.md": "--select repo:dependency --select code:dependency",
     "health-audit.md": "--surface all --subset health",
-    "merge-pr.md": "github-validate-pr-readiness-contract.py",
+    "merge-pr.md": "validate-and-merge-pr.ps1",
     "ship-change.md": "merge-pr",
 }
 SKILL_LIFECYCLE_ACTIONS = {
     "create.md": "templates/skill-sections.json",
     "update.md": "runtime payloads",
     "fast-change.md": "release/*",
-    "change-promotion.md": "skills/ceratops-skill-lifecycle/scripts/prepare-release-branch.ps1",
-    "ship-to-remote.md": "$ceratops-gh-repo-lifecycle",
+    "change-promotion.md": "stage-skill-release-branch.ps1",
+    "ship-to-remote.md": "push-release-branch-and-ensure-pr.ps1",
 }
 
 
