@@ -164,7 +164,7 @@ def status_rollup_findings(pr_data: dict[str, Any], findings: list[Finding]) -> 
         add(findings, "PASS", "pr.status_checks", "All visible status checks are passing.", actual=passed)
 
 
-def pr_readiness(selector: str | None, cwd: pathlib.Path) -> tuple[dict[str, object], list[Finding]]:
+def pr_readiness(selector: str | None, cwd: pathlib.Path, *, allow_admin_review_bypass: bool = False) -> tuple[dict[str, object], list[Finding]]:
     """Evaluate the live PR state needed before merge or auto-merge."""
 
     pr_data = gh_pr_view(selector, cwd)
@@ -191,6 +191,8 @@ def pr_readiness(selector: str | None, cwd: pathlib.Path) -> tuple[dict[str, obj
     review_decision = pr_data.get("reviewDecision")
     if review_decision in {"APPROVED", None, ""}:
         add(findings, "PASS", "pr.review_decision", "No blocking review decision is present.", actual=review_decision)
+    elif review_decision == "REVIEW_REQUIRED" and allow_admin_review_bypass:
+        add(findings, "WARN", "pr.review_decision", "Required review is bypassable by explicitly authorized admin direct merge.", actual=review_decision, expected="APPROVED or admin bypass")
     elif review_decision == "REVIEW_REQUIRED":
         add(findings, "FAIL", "pr.review_decision", "PR still requires review before merge.", actual=review_decision, expected="APPROVED")
     else:
@@ -246,6 +248,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--contract", type=pathlib.Path, default=default_contract_path(), help="PR readiness deterministic contract JSON.")
     parser.add_argument("--cwd", type=pathlib.Path, default=pathlib.Path.cwd(), help="Repo working directory used for git and gh context.")
     parser.add_argument("--pr", help="PR number, URL, or branch. Defaults to the PR attached to the current branch.")
+    parser.add_argument("--allow-admin-review-bypass", action="store_true", help="Warn instead of fail when REVIEW_REQUIRED is the only review blocker for an explicitly authorized admin direct merge.")
     parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON.")
     return parser
 
@@ -262,7 +265,7 @@ def main() -> int:
         selector = args.pr
         if selector is None:
             selector = current_branch(cwd)
-        summary, findings = pr_readiness(selector, cwd)
+        summary, findings = pr_readiness(selector, cwd, allow_admin_review_bypass=args.allow_admin_review_bypass)
         unknown = sorted({finding.check for finding in findings} - contract_check_ids(contract))
         if unknown:
             add(findings, "FAIL", "contract.unknown_check_ids", "Validator emitted checks missing from the PR readiness contract.", actual=unknown)
