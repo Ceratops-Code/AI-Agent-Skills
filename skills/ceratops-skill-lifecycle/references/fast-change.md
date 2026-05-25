@@ -17,7 +17,7 @@ If the change is not exact, low-risk, and dependency-free, return to the router 
 
 ### Script Bundle
 
-- (D) Fast-change preflight: `skills/ceratops-skill-lifecycle/scripts/fast-change-preflight.ps1 -SkillsRepoRoot <repo> -ReleaseBranch release/local -SkillName <skill-name> -TargetPath <target-file>` from a source checkout, or `scripts/fast-change-preflight.ps1` from the installed skill folder.
+- (D) Fast-change preflight: `skills/ceratops-skill-lifecycle/scripts/fast-change-preflight.ps1 -SkillsRepoRoot <repo> -ReleaseBranch release/local -SkillName <skill-name> -TargetPath <target-file>` from a source checkout, or `scripts/fast-change-preflight.ps1 -SkillsRepoRoot <repo> -ReleaseBranch release/local -SkillName <skill-name> -TargetPath <target-file>` from the installed skill folder.
 
 ## Constraints
 

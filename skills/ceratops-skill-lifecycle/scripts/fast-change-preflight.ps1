@@ -38,6 +38,9 @@ function Get-GitLines {
     if ($LASTEXITCODE -ne 0) {
         throw "git failed: $($Arguments -join ' ')"
     }
+    if ($null -eq $output) {
+        return @()
+    }
     return @($output)
 }
 
