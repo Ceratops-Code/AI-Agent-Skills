@@ -26,9 +26,11 @@ Ask for the missing title, id, or session file only when the target thread canno
 
 - Count spend as avoidable only when it was preventable or reducible from available instructions, local evidence, stable contracts, tool output, or a cheap targeted check.
 - Exclude ordinary model mistakes unless a concise durable producer control would sharply reduce the same class recurring.
-- Treat rework and other avoidable spend as candidate credit waste, including repeated artifact creation, duplicated investigation, overbroad evidence gathering, stale freshness checks, non-minimal tool or script output, oversized validation, inefficient tool choice, avoidable waits, excessive context loading, stale cleanup, reversions, user correction, and unnecessary spend.
+- Treat preventable rework, duplicate investigation, broad reads, noisy output, oversized validation, stale checks, waits, reversions, and user corrections as candidate credit waste.
 - Use credit-waste signals as prompts for analysis, not mandatory checks; inspect only categories visible in the selected evidence window.
-- Prefer controls in this order: narrow prompt/rule/skill/automation wording, deterministic helper check, preflight guard, validation gate, then docs or examples.
+- Prefer the smallest durable control: wording, deterministic helper, preflight, validation gate, then docs.
+- For repeated stage commands, propose a narrow helper that runs the sequence and emits only the decision payload.
+- For unnecessary file reads, propose targeted paths, sections, selectors, or evidence reuse.
 - Do not propose broad best-practice refreshes, large instruction rewrites, or high-maintenance controls unless smaller controls are demonstrably inadequate.
 - When the recommendation would edit instructions, skills, automations, or helpers, provide the exact proposed change and wait for explicit approval unless the user already asked to apply it.
 - Before reporting recommendations, classify candidate controls against inspected evidence as implemented or still unimplemented; omit implemented controls unless needed to justify that no still-unimplemented proposal remains.
@@ -43,7 +45,7 @@ Ask for the missing title, id, or session file only when the target thread canno
 
 1. Build a compact timeline for each inspected run: goal, touched artifacts, checks, corrections, retries, and final state.
 2. Mark each avoidable spend episode and the earliest point it could have been prevented or detected.
-3. Review visible command and tool calls for avoidable output volume, repeated polling, and oversized validation; count only when a narrower command, selector, or existing evidence would have been sufficient.
+3. Review visible command, tool, and file-read choices for avoidable output volume, unnecessary file reads, repeated polling, and oversized validation; count only when a narrower command, selector, path, section, or existing evidence would have been sufficient.
 4. Identify the producer or workflow choice that allowed the spend: prompt, rule, skill, automation, helper, validation, tool choice, workflow habit, or external dependency.
 5. Choose the lowest-maintenance control that would have prevented or sharply reduced the spend.
 6. Separate confirmed findings from plausible but unverified risks.
