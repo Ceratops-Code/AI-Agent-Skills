@@ -10,7 +10,7 @@
   "free_only": true,
   "mutates": false,
   "evidence": {
-    "command": "python scripts/validation/github-validate-pr-readiness-contract.py --pr NUMBER_OR_URL --json",
+    "command": "python scripts/validation/github-validate-pr-readiness-contract.py --pr NUMBER_OR_URL --json [--allow-admin-review-bypass]",
     "fields": [
       "number",
       "url",
@@ -42,8 +42,8 @@
     },
     {
       "id": "pr.review_decision",
-      "level_on_drift": "FAIL",
-      "expectation": "No blocking review decision is present. Required review gaps or requested changes block direct merge."
+      "level_on_drift": "FAIL_OR_ADMIN_BYPASS",
+      "expectation": "No blocking review decision is present unless direct admin merge is explicitly authorized and the only review blocker is REVIEW_REQUIRED. Requested changes always block direct merge."
     },
     {
       "id": "pr.status_checks",

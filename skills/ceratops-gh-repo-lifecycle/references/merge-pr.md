@@ -8,7 +8,7 @@ Merge one GitHub PR only after proving PR-specific merge gates are satisfied. Th
 
 ### Script Bundle
 
-- (D) PR readiness contract check: `python scripts/validation/github-validate-pr-readiness-contract.py --pr NUMBER_OR_URL`
+- (D) PR readiness contract check: `python scripts/validation/github-validate-pr-readiness-contract.py --pr NUMBER_OR_URL --allow-admin-review-bypass` for direct admin merges.
 - (D) Codex review gate: `python scripts/validation/github-codex-review-gate.py wait --pr NUMBER_OR_URL --wait-seconds 260 --interval-seconds 10 --json`
 - (D) Codex thread resolver: `python scripts/validation/github-codex-review-gate.py resolve --thread-id THREAD_ID --json`
 - Direct merge command: `gh pr merge --admin NUMBER_OR_URL_OR_BRANCH [--merge|--squash|--rebase] [--delete-branch]`
@@ -54,7 +54,7 @@ Infer missing inputs from `gh`, git remotes, current branch, and live repo data 
 #### 4. Prepare, merge, and verify
 
 - Confirm the PR is not draft unless the user wants it kept draft.
-- Confirm required checks, reviews, conversations, Codex review gate, and strict status-check freshness are satisfied.
+- Confirm required checks, conversations, Codex review gate, and strict status-check freshness are satisfied; `REVIEW_REQUIRED` does not block explicitly requested direct admin merges, but requested changes still block.
 - If workflow refs or Actions permissions changed, confirm no mutable external action refs violate the repo policy.
 - Use `gh pr merge --admin` for direct merges, adding the PR selector, allowed merge-method flag, and `--delete-branch` when cleanup is intended and allowed.
 - Use `gh pr merge --auto` only when the user explicitly wants GitHub to defer final merge until remaining requirements finish.
