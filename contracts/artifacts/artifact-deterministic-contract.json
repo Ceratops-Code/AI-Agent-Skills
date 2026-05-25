@@ -327,6 +327,7 @@
           "\"name\"",
           "\"version\"",
           "npm publish",
+          "npm stage publish",
           "registry.npmjs.org"
         ]
       },
@@ -987,6 +988,8 @@
         "id_token_write_only_in_publish_job": true,
         "workflow_call_parent_and_child_id_token_when_used": true,
         "npm_publish_uses_provenance_or_trusted_publishing_when_supported": true,
+        "trusted_publisher_allowed_actions_match_release_policy": true,
+        "stage_publish_requires_staged_release_approval_path": true,
         "provenance_auto_generated_only_for_public_github_or_gitlab_public_package": true,
         "circleci_trusted_publishing_has_no_provenance_attestation": true,
         "publish_trigger_is_tag_release_or_explicit_manual_release": true,
