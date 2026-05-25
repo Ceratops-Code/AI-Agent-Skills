@@ -31,6 +31,7 @@ Ask for the missing title, id, or session file only when the target thread canno
 - Prefer controls in this order: narrow prompt/rule/skill/automation wording, deterministic helper check, preflight guard, validation gate, then docs or examples.
 - Do not propose broad best-practice refreshes, large instruction rewrites, or high-maintenance controls unless smaller controls are demonstrably inadequate.
 - When the recommendation would edit instructions, skills, automations, or helpers, provide the exact proposed change and wait for explicit approval unless the user already asked to apply it.
+- Before reporting recommendations, classify candidate controls against inspected evidence as implemented or still unimplemented; omit implemented controls unless needed to justify that no still-unimplemented proposal remains.
 
 ### Boundaries
 
@@ -61,7 +62,8 @@ Ask for the missing title, id, or session file only when the target thread canno
 Start with one of:
 
 - `No avoidable credit spend found in the inspected runs.`
-- `Found avoidable or reducible credit spend.`
+- `No still-unimplemented credit-savings proposals found in the inspected runs.`
+- `Found still-unimplemented credit-savings proposals.`
 - `Blocked: <specific missing evidence or target>.`
 
-Then report only findings, recommendations, excluded ordinary failures, and important evidence limits.
+Then report only findings with still-unimplemented recommendations, excluded ordinary failures, and important evidence limits.
