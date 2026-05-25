@@ -11,6 +11,7 @@ Validate that an existing GitHub repo is clean, current, secure, documented, pub
 - (D) Full GitHub, code, and artifact contract check: `python scripts/validation/github-validate-repo-artifact-contract.py --repo OWNER/REPO --surface all --subset health --local-repo-path PATH`
 - (D) Optional org contract check when org posture is in scope: `python scripts/validation/github-validate-org-contract.py --org ORG`
 - (D) Add `--json`, `--check-id`, or a narrower `--subset` when another step needs structured or scoped findings.
+- (D) Do not use `--json` for agent-readable repo-health output unless a parser needs the full report.
 
 ### Inputs To Capture
 
