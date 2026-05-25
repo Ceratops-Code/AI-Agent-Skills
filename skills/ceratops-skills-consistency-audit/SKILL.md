@@ -7,7 +7,7 @@ description: Audit Ceratops skill-source consistency, governance-only validation
 
 ## Goal
 
-Run an explicit Ceratops skills consistency audit for the skills repo. Use the governance validation mode for deterministic drift, then review only the remaining candidate issues that need judgment.
+Run an explicit Ceratops skills consistency audit for the skills repo. Use the governance validation mode for deterministic drift, then review the remaining non-deterministic checks that need judgment.
 
 ## Context
 
@@ -32,7 +32,7 @@ Infer missing inputs from the repo state before asking.
 - Use this skill only for explicit Ceratops skills consistency audits, governance validation, or follow-up repair of skill-source drift.
 - Do not run this during routine skill text edits unless the user asked for broad validation, governance checks, or rename/source-of-truth drift investigation.
 - Treat `--mode governance` as the deterministic owner for machine-checkable skill consistency drift.
-- Keep duplicate contract text, shared-section fit, router/action-reference fit, retired-name drift, broad GH action boundary prose, artifact-scope prose, Dependabot/admin-merge prose, and rule-shape quality as reviewer candidates unless the validator reports an objective finding.
+- Keep duplicate contract text, shared-section fit, router/action-reference fit, retired-name drift, broad GH action boundary prose, artifact-scope prose, Dependabot/admin-merge prose, and rule-shape quality as non-deterministic checks unless the validator reports an objective finding.
 - Do not add backward-compatibility aliases, old-name shims, pointer artifacts, one-time migration detectors, or stale-term audit checks.
 - Do not mutate installed skills during report-only audits. If runtime repair is approved, use the repo installer from the skills repo checkout.
 
@@ -50,7 +50,7 @@ Infer missing inputs from the repo state before asking.
 - Run the governance validation command from the skills repo checkout.
 - If it fails, report the exact findings first and do not continue into broad manual review until those deterministic failures are understood.
 
-#### 2. Review candidate-only checks when justified
+#### 2. Review non-deterministic checks when justified
 
 - Review duplicate contract text that may belong in `templates/sections/`.
 - Review shared-section fit for missing, duplicated, over-broad, too narrow, or skill-specific shared text.
@@ -86,10 +86,10 @@ Report only:
 
 - governance validation outcome
 - deterministic findings and smallest repairs
-- candidate-only review results when checked
+- non-deterministic check results when checked
 - source, runtime, or automation changes made
 - unresolved blockers, intentionally deferred candidates, and important unverified items
 
 ### Example Invocation
 
-`Use $ceratops-skills-consistency-audit to run governance skill consistency validation, review only the candidate skill-drift areas that remain, and report the smallest repairs.`
+`Use $ceratops-skills-consistency-audit to run governance skill consistency validation, review the remaining non-deterministic skill-drift checks, and report the smallest repairs.`
