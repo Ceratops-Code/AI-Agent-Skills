@@ -9,11 +9,7 @@ body:
     attributes:
       label: Skill
       options:
-        - ceratops-gh-repo-create-and-publish
-        - ceratops-gh-ship-change
-        - ceratops-gh-repo-dependencies-maintenance
-        - ceratops-gh-repo-health-audit
-        - ceratops-gh-merge-pr
+        - ceratops-gh-repo-lifecycle
         - ceratops-contract-review
         - other
     validations:

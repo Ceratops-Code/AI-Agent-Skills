@@ -37,7 +37,6 @@ import os
 import pathlib
 import re
 import subprocess
-import sys
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -195,6 +194,28 @@ def run_gh_api(method: str, endpoint: str, body: Any | None = None, paginate: bo
         return ApiResult(True, method.upper(), endpoint, data=data, raw_stdout=proc.stdout, raw_stderr=proc.stderr)
     status, message = parse_error(proc.stdout, proc.stderr)
     return ApiResult(False, method.upper(), endpoint, status=status, message=message, raw_stdout=proc.stdout, raw_stderr=proc.stderr)
+
+
+def run_gh_graphql(query: str, variables: dict[str, Any], label: str) -> ApiResult:
+    """Run a GitHub GraphQL query for evidence that has no REST equivalent.
+
+    GitHub Projects v2 is GraphQL-only and requires the caller token to include
+    `read:project`. Returning the scope failure as ApiResult evidence lets the
+    repo-health check report a precise blocker instead of falling back to stale
+    classic Projects endpoints.
+    """
+
+    proc = subprocess.run(
+        ["gh", "api", "graphql", "--input", "-"],
+        input=json.dumps({"query": query, "variables": variables}),
+        text=True,
+        capture_output=True,
+    )
+    if proc.returncode == 0:
+        text = proc.stdout.strip()
+        return ApiResult(True, "GRAPHQL", label, data=json.loads(text) if text else None, raw_stdout=proc.stdout, raw_stderr=proc.stderr)
+    status, message = parse_error(proc.stdout, proc.stderr)
+    return ApiResult(False, "GRAPHQL", label, status=status, message=message, raw_stdout=proc.stdout, raw_stderr=proc.stderr)
 
 
 def run_json_command(args: list[str], label: str) -> ApiResult:
@@ -987,6 +1008,30 @@ def result(fetched: dict[tuple[str, str], ApiResult], endpoint: str, params: dic
     return fetched[key]
 
 
+def repository_projects_v2(fetched: dict[tuple[str, str], ApiResult], params: dict[str, Any]) -> ApiResult:
+    """Return cached Projects v2 evidence for a repository."""
+
+    key = ("GRAPHQL", "repository.projectsV2")
+    if key not in fetched:
+        query = """
+        query($owner: String!, $name: String!) {
+          repository(owner: $owner, name: $name) {
+            projectsV2(first: 20) {
+              totalCount
+              nodes {
+                title
+                closed
+                updatedAt
+                url
+              }
+            }
+          }
+        }
+        """
+        fetched[key] = run_gh_graphql(query, {"owner": params["owner"], "name": params["repo"]}, key[1])
+    return fetched[key]
+
+
 def active_branch_ruleset_details(fetched: dict[tuple[str, str], ApiResult], params: dict[str, Any]) -> list[dict[str, Any]]:
     """Fetch active branch ruleset detail records when list evidence is too shallow."""
 
@@ -1211,9 +1256,34 @@ def evaluate_repo_check(
 
     if check_id == "repo.unused_feature_flags":
         drifts = []
-        for field in ("has_wiki", "has_projects", "has_discussions"):
+        for field in ("has_wiki", "has_discussions"):
             if repo_info.get(field) is True:
                 drifts.append(finding(check_id, "WARN", f"{field} is enabled; verify it is intentionally used.", actual=True, expected="false unless used", path=f"$.{field}"))
+        if repo_info.get("has_projects") is True:
+            projects = repository_projects_v2(fetched, params)
+            if projects.ok and isinstance(projects.data, dict):
+                project_data = (((projects.data.get("data") or {}).get("repository") or {}).get("projectsV2") or {})
+                nodes = [node for node in as_list(project_data.get("nodes")) if isinstance(node, dict)]
+                open_nodes = [node for node in nodes if node.get("closed") is not True]
+                actual = {"total_count": project_data.get("totalCount", len(nodes)), "open_projects": open_nodes}
+                if not open_nodes:
+                    drifts.append(finding(check_id, "WARN", "has_projects is enabled, but no open Projects v2 boards were found.", actual=actual, expected="disabled or at least one open Projects v2 board", path="$.has_projects"))
+            else:
+                scope_message = (
+                    "has_projects is enabled, but Projects v2 usage could not be verified because the GitHub token lacks read:project."
+                    if projects.message and "read:project" in projects.message
+                    else "has_projects is enabled, but Projects v2 usage could not be verified."
+                )
+                drifts.append(
+                    finding(
+                        check_id,
+                        "WARN",
+                        scope_message,
+                        actual={"status": projects.status, "message": projects.message},
+                        expected="GitHub token with read:project scope or disabled projects",
+                        path="$.has_projects",
+                    )
+                )
         return drifts or [finding(check_id, "PASS", "Unused feature flags are not enabled.", actual={k: repo_info.get(k) for k in ("has_wiki", "has_projects", "has_discussions", "has_pages")})]
 
     if check_id == "repo.merge_settings":
