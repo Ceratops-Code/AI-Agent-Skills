@@ -11,7 +11,8 @@ Skills repo checkout and worktrees:
 - The primary skills repo checkout used to generate installed Ceratops skill copies must stay either on local `main` tracking `origin/main` or on a local `release/*` branch created from `main` for an active unpublished batch.
 - Do not develop or patch Ceratops skill source directly in the skills repo checkout during create, update, audit, or repair work; for any task that modifies skills, work in one thread-owned git worktree, name that worktree after the thread rather than a subtask, reuse it for follow-on skill changes in the same thread unless conflicting branch histories or explicit user direction require a new one, and do not place it inside the skills repo checkout.
 - Keep installed Ceratops skill folders generated from the skills repo checkout path, not from task worktrees. For local preview of unpublished batches, refresh remote refs with `git fetch --prune origin`, then merge ready worktree branches into the skills repo checkout's local `release/*` branch and rerun `scripts/install-skills.ps1` instead of generating installed skills from task worktrees.
-- Do not stage or merge skill-source changes into a local `release/*` batch unless the task explicitly requests staging, shipping, or local preview sync.
+- Do not stage skill-source changes into a local `release/*` batch unless the task explicitly requests staging, shipping, or local preview sync.
+- Skills-repo changes must ship from `release/*`, never directly from task or feature branches.
 - New Ceratops skill creation is the only default-staging exception: `$ceratops-skill-lifecycle` create must finish with change-promotion and install verification unless the user opts out.
 - For staging or shipping, use `$ceratops-skill-lifecycle` change-promotion or ship-to-remote. After shipping, restore the checkout from `origin/main`, reinstall managed skills from `main`, and report retained worktrees or release branches.
 
