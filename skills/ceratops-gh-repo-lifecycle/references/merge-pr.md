@@ -57,6 +57,7 @@ Infer missing inputs from `gh`, git remotes, current branch, and live repo data 
 - Confirm required checks, conversations, Codex review gate, and strict status-check freshness are satisfied; `REVIEW_REQUIRED` does not block explicitly requested direct admin merges, but requested changes still block.
 - If workflow refs or Actions permissions changed, confirm no mutable external action refs violate the repo policy.
 - Use `gh pr merge --admin` for direct merges, adding the PR selector, allowed merge-method flag, and `--delete-branch` when cleanup is intended and allowed.
+- For remote-only PR merges, run `gh pr merge <number> --repo OWNER/REPO` from an existing non-repo directory such as `$CODEX_HOME`.
 - Use `gh pr merge --auto` only when the user explicitly wants GitHub to defer final merge until remaining requirements finish.
 - Verify merge or queued auto-merge from the live PR endpoint rather than trusting only command exit code.
 
