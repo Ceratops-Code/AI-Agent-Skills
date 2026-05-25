@@ -102,11 +102,40 @@ function Get-CheckSummary {
     return [pscustomobject]$summary
 }
 
+function Get-OpenPrForBranch {
+    # Use pr list instead of pr view so reusable branch names do not resolve to
+    # old merged PRs from previous release/local batches.
+    $json = Invoke-QuietNative -FilePath "gh" -Arguments @(
+        "pr",
+        "list",
+        "--head",
+        $ReleaseBranch,
+        "--base",
+        $BaseBranch,
+        "--state",
+        "open",
+        "--limit",
+        "1",
+        "--json",
+        "number,url,headRefOid,changedFiles,state,isDraft,statusCheckRollup"
+    ) -ReturnOutput | Out-String
+
+    if ([string]::IsNullOrWhiteSpace($json)) {
+        return $null
+    }
+    $items = @($json | ConvertFrom-Json)
+    if ($items.Count -eq 0) {
+        return $null
+    }
+    return $items[0]
+}
+
 $currentBranch = (Get-GitLines @("branch", "--show-current") | Select-Object -First 1).Trim()
 if ($currentBranch -ne $ReleaseBranch) {
     throw "Expected active branch '$ReleaseBranch', got '$currentBranch'."
 }
 Assert-CleanWorktree
+$localHead = (Get-GitLines @("rev-parse", "HEAD") | Select-Object -First 1).Trim()
 
 $aheadCount = [int]((Get-GitLines @("rev-list", "--count", "$BaseBranch..HEAD") | Select-Object -First 1).Trim())
 if ($aheadCount -le 0) {
@@ -115,15 +144,8 @@ if ($aheadCount -le 0) {
 
 Invoke-QuietNative -FilePath "git" -Arguments @("-C", $resolvedSkillsRepoRoot, "push", "-u", $RemoteName, "$ReleaseBranch`:$ReleaseBranch")
 
-$viewArgs = @(
-    "pr",
-    "view",
-    $ReleaseBranch,
-    "--json",
-    "number,url,headRefOid,changedFiles,state,isDraft,statusCheckRollup"
-)
-$viewResult = Invoke-QuietNative -FilePath "gh" -Arguments $viewArgs -ReturnOutput -AllowFailure
-if ($viewResult.ExitCode -ne 0) {
+$pr = Get-OpenPrForBranch
+if ($null -eq $pr) {
     if ([string]::IsNullOrWhiteSpace($Title)) {
         $Title = "Ship staged skill release"
     }
@@ -142,8 +164,12 @@ if ($viewResult.ExitCode -ne 0) {
         "--body",
         $Body
     )
+    $pr = Get-OpenPrForBranch
+    if ($null -eq $pr) {
+        throw "Created PR was not found as an open PR for '$ReleaseBranch'."
+    }
 } elseif (-not [string]::IsNullOrWhiteSpace($Title) -or -not [string]::IsNullOrWhiteSpace($Body)) {
-    $editArgs = @("pr", "edit", $ReleaseBranch)
+    $editArgs = @("pr", "edit", [string]$pr.number)
     if (-not [string]::IsNullOrWhiteSpace($Title)) {
         $editArgs += @("--title", $Title)
     }
@@ -151,9 +177,13 @@ if ($viewResult.ExitCode -ne 0) {
         $editArgs += @("--body", $Body)
     }
     Invoke-QuietNative -FilePath "gh" -Arguments $editArgs
+    $pr = Get-OpenPrForBranch
 }
 
-$pr = (Invoke-QuietNative -FilePath "gh" -Arguments $viewArgs -ReturnOutput | Out-String | ConvertFrom-Json)
+if ($pr.headRefOid -ne $localHead) {
+    throw "Open PR head '$($pr.headRefOid)' does not match local head '$localHead'."
+}
+
 [pscustomobject]@{
     status = "pr_ready"
     pr = $pr.number
