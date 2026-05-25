@@ -60,7 +60,7 @@ Infer missing inputs from local files and live repo state before asking.
 - Push the branch and create or update a PR with concise change and validation evidence.
 - Wait for required CI, code scanning, and branch protection checks, and fix in-scope failures.
 - When only PR finalization remains, continue with `merge-pr`.
-- After merge, sync the local default branch, prune stale refs, remove temporary worktrees as soon as their branches are no longer needed, and keep a safety branch or worktree only with an explicit reason.
+- After merge, use `sync-main-after-pr.ps1` when available to sync the local default branch, then prune stale refs, remove temporary worktrees as soon as their branches are no longer needed, and keep a safety branch or worktree only with an explicit reason.
 - Publish and verify touched artifacts through the package manager, registry CLI, or registry API that owns the artifact surface.
 
 ## Done When

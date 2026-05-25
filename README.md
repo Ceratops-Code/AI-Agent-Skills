@@ -65,7 +65,7 @@ contracts/
 Source `SKILL.md` files are portable, delta-only skill definitions. Runtime `SKILL.md` files are generated during install by expanding the shared section assignments from `templates/skill-sections.json`.
 `agents/openai.yaml` is Codex UI metadata and may be ignored by other agents.
 Each Ceratops skill declares the runtime-local icon path `./assets/ceratops-logo-500.png`. The repo-root `assets/ceratops-logo-500.png` is the source copied into each skill by `scripts/install-skills.ps1`.
-GitHub helper logic lives in copied scripts under `scripts/`, not in an installed Python package.
+GitHub helper logic lives in copied root scripts under `scripts/` and skill-local lifecycle scripts under `skills/*/scripts/`, not in an installed Python package.
 `contracts/` is the source of truth for deterministic GitHub org/repo checks, repo-content checks, PR readiness checks, external artifact registry checks, skill-design checks, non-deterministic review prompts, source-doc tracking, and the local code-comment review rubric. `skills/ceratops-contract-review/` reviews and updates the GitHub, code, PR readiness, registry, and skill-design contracts when official standards or local reference skill patterns change.
 
 ## Scripts
@@ -75,15 +75,19 @@ GitHub helper logic lives in copied scripts under `scripts/`, not in an installe
 | `scripts/install-skills.ps1` | Single public entrypoint for installing/updating managed skill copies and optionally running section, full, or governance skill consistency validation. |
 | `scripts/render-runtime-skills.py` | Internal implementation called by the installer to render runtime `SKILL.md` files and copy declared payloads. |
 | `scripts/validation/github-validate-pr-readiness-contract.py` | Called before PR merge decisions to validate the live PR readiness contract. |
+| `scripts/validation/github-codex-review-gate.py` | Called before PR merge decisions to wait for or resolve active Codex review threads. |
 | `scripts/validation/validate-skills-consistency.py` | Internal implementation called by CI, `$ceratops-skills-consistency-audit`, or `install-skills.ps1 -Validate ...` for section, full, and governance consistency checks. |
 | `scripts/validation/github-validate-org-contract.py` | Called by org setup, org health, and standards review work when org settings need a bundled deterministic audit. |
 | `scripts/validation/github-validate-repo-artifact-contract.py` | Called by repo create, repo health, dependency, and standards review work when repo settings, code, or artifact posture needs a deterministic audit. |
 | `scripts/validation/github-collect-nd-evidence.py` | Called when non-deterministic org, repo, code, or artifact checks need one bundled evidence payload for human review. |
+| `skills/ceratops-skill-lifecycle/scripts/stage-skill-release-branch.ps1` | Called by skill change-promotion to prepare `release/local`, merge reviewed branches, validate, clean merged work, and emit compact ready/not-ready JSON. |
+| `skills/ceratops-skill-lifecycle/scripts/push-release-branch-and-ensure-pr.ps1` | Called by skill ship-to-remote to push `release/local`, create or reuse its PR, and emit compact PR JSON. |
+| `skills/ceratops-gh-repo-lifecycle/scripts/validate-and-merge-pr.ps1` | Called by GH merge-pr to run PR readiness, Codex review gate, merge, live merge verification, and compact merge JSON. |
+| `skills/ceratops-gh-repo-lifecycle/scripts/sync-main-after-pr.ps1` | Called after PR merge to fast-forward local `main`, optionally align reusable local branches, and emit compact sync JSON. |
 
-Release-branch preparation and pending-work cleanup use skill lifecycle helpers
-inside `skills/ceratops-skill-lifecycle/scripts/`. This repo keeps
-scripts only where they add reusable safety logic or bundle nontrivial evidence
-collection.
+Lifecycle helpers suppress successful subcommand output and print only compact
+JSON on success. This repo keeps scripts only where they add reusable safety
+logic or bundle nontrivial evidence collection.
 
 ## Contracts
 
@@ -199,7 +203,7 @@ That bootstrap does two things explicitly:
 - builds managed runtime skill copies under `$CODEX_HOME/skills/`
 
 Installed Ceratops skills should be generated from the skills repo checkout: the local skills repo checkout used as the input path for `scripts/install-skills.ps1`. The active branch only selects which repo snapshot is installed: synced `main` for normal use, or a local `release/*` branch for an active unpublished preview. After changing the installed source snapshot, rerun `scripts/install-skills.ps1` so new, renamed, or deleted managed skill folders match that snapshot.
-When shipping a staged batch, reuse the same `release/local` branch name locally and remotely by default. GitHub may delete the remote `release/local` after merge; the next batch simply recreates that same remote branch from the current local `release/local`.
+When shipping a staged batch, reuse the same `release/local` branch name locally and remotely by default. Use `stage-skill-release-branch.ps1` for reviewed local branch staging, `push-release-branch-and-ensure-pr.ps1` for PR publication, `$ceratops-gh-repo-lifecycle` merge-pr for merge gates, `sync-main-after-pr.ps1 -AlignBranch release/local` after merge, and `scripts/install-skills.ps1` for the final runtime rebuild from `main`. GitHub may delete the remote `release/local` after merge; the next batch simply recreates that same remote branch from the current local `release/local`.
 
 Restart Codex after adding new skill folders if the app does not pick them up automatically.
 
