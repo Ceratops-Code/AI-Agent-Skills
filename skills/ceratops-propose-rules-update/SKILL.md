@@ -34,7 +34,7 @@ Ask one concise question and stop only when the failure class, involved sources,
 - Propose only the smallest reusable change that fixes the identified failure class: delete, narrow, add, split, unite, retire, or replace rules only when that is the least broad correct fix.
 - When no existing rule governs the failure class, identify the missing rule and propose the narrowest new rule in the owning artifact instead of forcing a replacement.
 - Draft each added or changed bullet with one primary obligation and an explicit phase when practical.
-- Keep proposed rule text as short as possible while preserving enforceability and required protections.
+- Keep proposed rule text as short as possible while preserving enforceability and required protections; state the positive invariant, and add prohibitions only for plausible failure modes or preserved protections.
 - Use machine-oriented wording and avoid example lists unless needed to disambiguate behavior.
 - Reject wording that is vague, duplicative, contradictory, too broad, too narrow, too long, example-driven, or likely to increase routine rework.
 - If deterministic, testable behavior can prevent or detect the failure class more reliably than prompt text, recommend the narrowest script or executable-helper contract instead of, or alongside, rule text.
