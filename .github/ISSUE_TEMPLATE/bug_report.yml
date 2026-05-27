@@ -10,7 +10,7 @@ body:
       label: Skill
       options:
         - ceratops-gh-repo-lifecycle
-        - ceratops-contract-review
+        - ceratops-skill-lifecycle
         - other
     validations:
       required: true

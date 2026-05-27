@@ -1,0 +1,14 @@
+extends: default
+
+ignore: |
+  .git/
+  .mypy_cache/
+  .ruff_cache/
+  node_modules/
+
+rules:
+  comments:
+    min-spaces-from-content: 1
+  document-start: disable
+  line-length: disable
+  truthy: disable

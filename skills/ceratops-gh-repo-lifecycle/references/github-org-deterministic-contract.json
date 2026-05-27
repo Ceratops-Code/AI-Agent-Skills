@@ -1,0 +1,1055 @@
+{
+  "contract_format_version": 2,
+  "kind": "github_organization_contract",
+  "name": "ceratops_github_org_deterministic_contract",
+  "captured_from": "Ceratops-Code",
+  "captured_on": "2026-05-01",
+  "parameters": {
+    "org_login": {
+      "type": "string",
+      "required": true
+    },
+    "billing_email": {
+      "type": "string",
+      "required": true
+    },
+    "owner_login": {
+      "type": "string",
+      "required": true
+    }
+  },
+  "required_scopes": [
+    "admin:org",
+    "admin:org_hook",
+    "repo",
+    "workflow"
+  ],
+  "source_docs_ref": "contract-source-docs.json",
+  "source_doc_scopes": [
+    "org"
+  ],
+  "excluded_surfaces": [
+    {
+      "surface": "github_app_installations",
+      "reason": "excluded_by_user_request"
+    },
+    {
+      "surface": "repositories",
+      "reason": "repository inventory and content are not organization settings"
+    },
+    {
+      "surface": "derived_inventory",
+      "reason": "ids, timestamps, disk usage, repository counts, collaborator counts, Actions cache usage, packages, and repository inventory are derived state rather than organization settings"
+    }
+  ],
+  "approved_drift": {
+    "exclusions": [],
+    "allowances": []
+  },
+  "non_deterministic_review_file": "github-org-nondeterministic-contract.md",
+  "remediation_policy": {
+    "default": "report_only",
+    "apply_flag": "--apply",
+    "auto_apply_check_ids": [
+      "actions.permissions",
+      "actions.workflow_permissions",
+      "organization.immutable_releases"
+    ],
+    "manual_check_ids": [
+      "org.logo_custom_avatar",
+      "organization.announcement_banner",
+      "organization.interaction_limits",
+      "organization.members",
+      "organization.teams",
+      "organization.webhooks",
+      "organization.outside_collaborators",
+      "organization.invitations",
+      "organization.failed_invitations",
+      "actions.secrets",
+      "actions.variables",
+      "dependabot.secrets",
+      "private_registries.configurations"
+    ]
+  },
+  "fetch_bundles": [
+    {
+      "id": "core_org_bundle",
+      "purpose": "Fetch profile, member privilege, repository policy, billing-plan, and legacy security-default fields in one response.",
+      "requests": [
+        {
+          "method": "GET",
+          "endpoint": "/orgs/${org_login}",
+          "covers_checks": [
+            "org.settings",
+            "org.plan",
+            "org.logo_custom_avatar"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "actions_bundle",
+      "purpose": "Fetch organization Actions settings in a small group.",
+      "requests": [
+        {
+          "method": "GET",
+          "endpoint": "/orgs/${org_login}/actions/permissions",
+          "covers_checks": [
+            "actions.permissions",
+            "actions.selected_actions"
+          ]
+        },
+        {
+          "method": "GET",
+          "endpoint": "/orgs/${org_login}/actions/permissions/workflow",
+          "covers_checks": [
+            "actions.workflow_permissions"
+          ]
+        },
+        {
+          "method": "GET",
+          "endpoint": "/orgs/${org_login}/actions/permissions/artifact-and-log-retention",
+          "covers_checks": [
+            "actions.artifact_log_retention"
+          ]
+        },
+        {
+          "method": "GET",
+          "endpoint": "/orgs/${org_login}/actions/permissions/fork-pr-contributor-approval",
+          "covers_checks": [
+            "actions.fork_pr_contributor_approval"
+          ]
+        },
+        {
+          "method": "GET",
+          "endpoint": "/orgs/${org_login}/actions/oidc/customization/sub",
+          "covers_checks": [
+            "actions.oidc_subject_claim_template"
+          ]
+        },
+        {
+          "method": "GET",
+          "endpoint": "/orgs/${org_login}/actions/runner-groups",
+          "covers_checks": [
+            "actions.runner_groups"
+          ]
+        },
+        {
+          "method": "GET",
+          "endpoint": "/orgs/${org_login}/actions/runners",
+          "covers_checks": [
+            "actions.runners"
+          ]
+        },
+        {
+          "method": "GET",
+          "endpoint": "/orgs/${org_login}/actions/secrets",
+          "covers_checks": [
+            "actions.secrets"
+          ]
+        },
+        {
+          "method": "GET",
+          "endpoint": "/orgs/${org_login}/actions/variables",
+          "covers_checks": [
+            "actions.variables"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "security_dependabot_bundle",
+      "purpose": "Fetch no-extra-cost security, Dependabot, and private registry policy surfaces.",
+      "requests": [
+        {
+          "method": "GET",
+          "endpoint": "/orgs/${org_login}/code-security/configurations",
+          "covers_checks": [
+            "code_security.configurations"
+          ]
+        },
+        {
+          "method": "GET",
+          "endpoint": "/orgs/${org_login}/code-security/configurations/defaults",
+          "covers_checks": [
+            "code_security.configuration_defaults"
+          ]
+        },
+        {
+          "method": "GET",
+          "endpoint": "/orgs/${org_login}/dependabot/repository-access",
+          "covers_checks": [
+            "dependabot.repository_access"
+          ]
+        },
+        {
+          "method": "GET",
+          "endpoint": "/orgs/${org_login}/dependabot/secrets",
+          "covers_checks": [
+            "dependabot.secrets"
+          ]
+        },
+        {
+          "method": "GET",
+          "endpoint": "/orgs/${org_login}/dependabot/alerts?state=open&per_page=100",
+          "paginate": true,
+          "covers_checks": [
+            "dependabot.open_alert_queue"
+          ]
+        },
+        {
+          "method": "GET",
+          "endpoint": "/search/issues?q=org:${org_login}+is:pr+is:open+author:app/dependabot&per_page=100",
+          "covers_checks": [
+            "dependabot.open_pr_queue"
+          ]
+        },
+        {
+          "method": "GET",
+          "endpoint": "/orgs/${org_login}/private-registries",
+          "covers_checks": [
+            "private_registries.configurations"
+          ]
+        },
+        {
+          "method": "GET",
+          "endpoint": "/orgs/${org_login}/security-managers",
+          "covers_checks": [
+            "organization.security_managers"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "governance_bundle",
+      "purpose": "Fetch people, teams, moderation, release, issue metadata, custom properties, and plan-limited governance surfaces.",
+      "requests": [
+        {
+          "method": "GET",
+          "endpoint": "/orgs/${org_login}/properties/schema",
+          "covers_checks": [
+            "custom_properties.schema"
+          ]
+        },
+        {
+          "method": "GET",
+          "endpoint": "/orgs/${org_login}/organization-roles",
+          "covers_checks": [
+            "organization.roles"
+          ]
+        },
+        {
+          "method": "GET",
+          "endpoint": "/orgs/${org_login}/custom-repository-roles",
+          "covers_checks": [
+            "organization.custom_repository_roles"
+          ]
+        },
+        {
+          "method": "GET",
+          "endpoint": "/orgs/${org_login}/hooks",
+          "covers_checks": [
+            "organization.webhooks"
+          ]
+        },
+        {
+          "method": "GET",
+          "endpoint": "/orgs/${org_login}/teams",
+          "covers_checks": [
+            "organization.teams"
+          ]
+        },
+        {
+          "method": "GET",
+          "endpoint": "/orgs/${org_login}/members",
+          "covers_checks": [
+            "organization.members"
+          ]
+        },
+        {
+          "method": "GET",
+          "endpoint": "/orgs/${org_login}/outside_collaborators",
+          "covers_checks": [
+            "organization.outside_collaborators"
+          ]
+        },
+        {
+          "method": "GET",
+          "endpoint": "/orgs/${org_login}/invitations",
+          "covers_checks": [
+            "organization.invitations"
+          ]
+        },
+        {
+          "method": "GET",
+          "endpoint": "/orgs/${org_login}/failed_invitations",
+          "covers_checks": [
+            "organization.failed_invitations"
+          ]
+        },
+        {
+          "method": "GET",
+          "endpoint": "/orgs/${org_login}/blocks",
+          "covers_checks": [
+            "organization.blocked_users"
+          ]
+        },
+        {
+          "method": "GET",
+          "endpoint": "/orgs/${org_login}/interaction-limits",
+          "covers_checks": [
+            "organization.interaction_limits"
+          ]
+        },
+        {
+          "method": "GET",
+          "endpoint": "/orgs/${org_login}/issue-types",
+          "covers_checks": [
+            "organization.issue_types"
+          ]
+        },
+        {
+          "method": "GET",
+          "endpoint": "/orgs/${org_login}/issue-fields",
+          "covers_checks": [
+            "organization.issue_fields"
+          ]
+        },
+        {
+          "method": "GET",
+          "endpoint": "/orgs/${org_login}/settings/immutable-releases",
+          "covers_checks": [
+            "organization.immutable_releases"
+          ]
+        },
+        {
+          "method": "GET",
+          "endpoint": "/orgs/${org_login}/settings/immutable-releases/repositories",
+          "covers_checks": [
+            "organization.immutable_releases_selected_repositories"
+          ]
+        },
+        {
+          "method": "GET",
+          "endpoint": "/orgs/${org_login}/announcement",
+          "covers_checks": [
+            "organization.announcement_banner"
+          ]
+        },
+        {
+          "method": "GET",
+          "endpoint": "/orgs/${org_login}/rulesets",
+          "covers_checks": [
+            "organization.rulesets"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "unavailable_or_plan_limited_bundle",
+      "purpose": "Confirm same no-feature or no-scope state for currently unavailable settings surfaces.",
+      "requests": [
+        {
+          "method": "GET",
+          "endpoint": "/orgs/${org_login}/personal-access-token-requests",
+          "covers_checks": [
+            "organization.personal_access_token_requests"
+          ]
+        },
+        {
+          "method": "GET",
+          "endpoint": "/orgs/${org_login}/codespaces/secrets",
+          "covers_checks": [
+            "codespaces.secrets"
+          ]
+        },
+        {
+          "method": "GET",
+          "endpoint": "/orgs/${org_login}/settings/network-configurations",
+          "covers_checks": [
+            "hosted_compute.network_configurations"
+          ]
+        }
+      ]
+    }
+  ],
+  "checks": [
+    {
+      "id": "org.settings",
+      "endpoint": "/orgs/${org_login}",
+      "method": "GET",
+      "comparison": "selected_fields_equal",
+      "settable": true,
+      "expected": {
+        "advanced_security_enabled_for_new_repositories": false,
+        "billing_email": "${billing_email}",
+        "blog": null,
+        "company": null,
+        "default_repository_branch": "main",
+        "default_repository_permission": "read",
+        "dependabot_alerts_enabled_for_new_repositories": true,
+        "dependabot_security_updates_enabled_for_new_repositories": true,
+        "dependency_graph_enabled_for_new_repositories": true,
+        "deploy_keys_enabled_for_repositories": false,
+        "description": "",
+        "display_commenter_full_name_setting_enabled": false,
+        "email": null,
+        "has_organization_projects": true,
+        "has_repository_projects": true,
+        "location": null,
+        "members_allowed_repository_creation_type": "all",
+        "members_can_change_repo_visibility": true,
+        "members_can_create_internal_repositories": false,
+        "members_can_create_pages": true,
+        "members_can_create_private_pages": true,
+        "members_can_create_private_repositories": true,
+        "members_can_create_public_pages": true,
+        "members_can_create_public_repositories": true,
+        "members_can_create_repositories": true,
+        "members_can_create_teams": true,
+        "members_can_delete_issues": false,
+        "members_can_delete_repositories": true,
+        "members_can_fork_private_repositories": false,
+        "members_can_invite_outside_collaborators": true,
+        "members_can_view_dependency_insights": true,
+        "name": null,
+        "readers_can_create_discussions": true,
+        "secret_scanning_enabled_for_new_repositories": true,
+        "secret_scanning_push_protection_custom_link": null,
+        "secret_scanning_push_protection_custom_link_enabled": null,
+        "secret_scanning_push_protection_enabled_for_new_repositories": true,
+        "secret_scanning_validity_checks_enabled": false,
+        "twitter_username": null,
+        "two_factor_requirement_enabled": false,
+        "web_commit_signoff_required": false
+      }
+    },
+    {
+      "id": "org.plan",
+      "endpoint": "/orgs/${org_login}",
+      "method": "GET",
+      "comparison": "selected_fields_equal",
+      "settable": false,
+      "expected": {
+        "is_verified": false,
+        "plan": {
+          "name": "free",
+          "private_repos": 10000,
+          "space": 976562499
+        }
+      }
+    },
+    {
+      "id": "org.logo_custom_avatar",
+      "endpoint": "/orgs/${org_login}",
+      "method": "GET",
+      "comparison": "custom_verifier",
+      "settable": false,
+      "expected": {
+        "custom_logo_required": true,
+        "same_as_reference_org_required": true,
+        "reference_org": "Ceratops-Code",
+        "content_type": "image/png",
+        "bytes": 251208,
+        "sha256": "B770E8E753B59F9315A2247729F5F17F17E925DF40C8106726C05073177A8C6D"
+      },
+      "verifier": {
+        "name": "github_custom_avatar_sha256",
+        "api_field": "avatar_url",
+        "deterministic_api_flag_available": true,
+        "pass_condition": "The organization avatar image downloaded from avatar_url must match the Ceratops-Code custom logo hash captured in this contract.",
+        "manual_remediation": "GitHub's Update an organization REST endpoint does not expose an avatar/image body parameter, so logo drift is reported for browser/API-specific manual correction rather than auto-applied by this script.",
+        "checked_state": {
+          "checked_on": "2026-05-01",
+          "Ceratops-Code": {
+            "custom_logo": true,
+            "sha256": "B770E8E753B59F9315A2247729F5F17F17E925DF40C8106726C05073177A8C6D",
+            "bytes": 251208
+          },
+          "Ceratops-AI-Coding-Agents": {
+            "custom_logo": false,
+            "sha256": "4640B00D2EA18924C4041EDDF27EC77C3C0D8EF333A9E63F3DF66E359C059355",
+            "bytes": 1563
+          }
+        }
+      }
+    },
+    {
+      "id": "actions.permissions",
+      "endpoint": "/orgs/${org_login}/actions/permissions",
+      "method": "GET",
+      "comparison": "object_equal",
+      "settable": true,
+      "expected": {
+        "allowed_actions": "all",
+        "enabled_repositories": "all",
+        "sha_pinning_required": false
+      }
+    },
+    {
+      "id": "actions.workflow_permissions",
+      "endpoint": "/orgs/${org_login}/actions/permissions/workflow",
+      "method": "GET",
+      "comparison": "object_equal",
+      "settable": true,
+      "expected": {
+        "can_approve_pull_request_reviews": false,
+        "default_workflow_permissions": "read"
+      }
+    },
+    {
+      "id": "actions.artifact_log_retention",
+      "endpoint": "/orgs/${org_login}/actions/permissions/artifact-and-log-retention",
+      "method": "GET",
+      "comparison": "retention_days_policy",
+      "settable": true,
+      "expected": {
+        "max_days": 90
+      }
+    },
+    {
+      "id": "actions.fork_pr_contributor_approval",
+      "endpoint": "/orgs/${org_login}/actions/permissions/fork-pr-contributor-approval",
+      "method": "GET",
+      "comparison": "fork_pr_contributor_approval_policy",
+      "settable": true,
+      "expected": {
+        "minimum_approval_policy": "first_time_contributors",
+        "allowed_policies": [
+          "first_time_contributors",
+          "all_external_contributors"
+        ]
+      }
+    },
+    {
+      "id": "actions.selected_actions",
+      "endpoint": "/orgs/${org_login}/actions/permissions/selected-actions",
+      "method": "GET",
+      "comparison": "expected_error",
+      "settable": false,
+      "expected": {
+        "status": 409,
+        "message_contains": "All actions and workflows are allowed on this organization"
+      }
+    },
+    {
+      "id": "actions.oidc_subject_claim_template",
+      "endpoint": "/orgs/${org_login}/actions/oidc/customization/sub",
+      "method": "GET",
+      "comparison": "expected_error",
+      "settable": true,
+      "expected": {
+        "status": 404,
+        "message_contains": "No Actions OIDC custom sub claim template found"
+      }
+    },
+    {
+      "id": "actions.runner_groups",
+      "endpoint": "/orgs/${org_login}/actions/runner-groups",
+      "method": "GET",
+      "comparison": "selected_fields_equal",
+      "settable": true,
+      "expected": {
+        "total_count": 1,
+        "runner_groups": [
+          {
+            "allows_public_repositories": false,
+            "default": true,
+            "name": "Default",
+            "restricted_to_workflows": false,
+            "selected_workflows": [],
+            "visibility": "all"
+          }
+        ]
+      },
+      "ignored_fields": [
+        "runner_groups[].id"
+      ]
+    },
+    {
+      "id": "actions.runners",
+      "endpoint": "/orgs/${org_login}/actions/runners",
+      "method": "GET",
+      "comparison": "selected_fields_equal",
+      "settable": false,
+      "expected": {
+        "total_count": 0,
+        "runners": []
+      }
+    },
+    {
+      "id": "actions.secrets",
+      "endpoint": "/orgs/${org_login}/actions/secrets",
+      "method": "GET",
+      "comparison": "selected_fields_equal",
+      "settable": true,
+      "expected": {
+        "total_count": 0,
+        "secrets": []
+      }
+    },
+    {
+      "id": "actions.variables",
+      "endpoint": "/orgs/${org_login}/actions/variables",
+      "method": "GET",
+      "comparison": "selected_fields_equal",
+      "settable": true,
+      "expected": {
+        "total_count": 0,
+        "variables": []
+      }
+    },
+    {
+      "id": "dependabot.secrets",
+      "endpoint": "/orgs/${org_login}/dependabot/secrets",
+      "method": "GET",
+      "comparison": "selected_fields_equal",
+      "settable": true,
+      "expected": {
+        "total_count": 0,
+        "secrets": []
+      }
+    },
+    {
+      "id": "dependabot.repository_access",
+      "endpoint": "/orgs/${org_login}/dependabot/repository-access",
+      "method": "GET",
+      "comparison": "selected_fields_equal_or_expected_error_when_uninitialized",
+      "settable": true,
+      "no_paid_plan_required": true,
+      "expected": {
+        "default_level": null,
+        "accessible_repositories": []
+      },
+      "allowed_uninitialized_error": {
+        "status": 404,
+        "only_when_public_repos_count": 0,
+        "message_contains": "Not Found"
+      }
+    },
+    {
+      "id": "dependabot.open_alert_queue",
+      "endpoint": "/orgs/${org_login}/dependabot/alerts?state=open&per_page=100",
+      "method": "GET",
+      "comparison": "dependabot_org_alert_queue_policy",
+      "settable": false,
+      "no_paid_plan_required": true,
+      "source_lines": [
+        "$CODEX_HOME/automations/daily-dependabot-alert-review/automation.toml:task-specific Dependabot queue contract",
+        "$CODEX_HOME/automations/daily-dependabot-alert-review/dependabot-org-queue-snapshot.py:snapshot schema and alert fields"
+      ],
+      "expected": {
+        "max_open_alerts": 0,
+        "include_public_private_fork_and_archived_repositories": true,
+        "archived_repository_alerts_are_report_only": true,
+        "severity_dependency_manifest_patched_versions_and_url_recorded": true,
+        "dismissal_requires_fresh_duplicate_superseded_fixed_unreachable_or_false_positive_evidence": true
+      }
+    },
+    {
+      "id": "dependabot.open_pr_queue",
+      "endpoint": "/search/issues?q=org:${org_login}+is:pr+is:open+author:app/dependabot&per_page=100",
+      "method": "GET",
+      "comparison": "dependabot_org_pr_queue_policy",
+      "settable": false,
+      "no_paid_plan_required": true,
+      "source_lines": [
+        "$CODEX_HOME/automations/daily-dependabot-alert-review/automation.toml:task-specific Dependabot queue contract",
+        "$CODEX_HOME/automations/daily-dependabot-alert-review/dependabot-org-queue-snapshot.py:snapshot schema and PR fields"
+      ],
+      "expected": {
+        "max_open_dependabot_prs": 0,
+        "include_public_private_fork_and_archived_repositories": true,
+        "archived_repository_prs_are_report_only": true,
+        "draft_state_labels_title_repo_url_and_updated_at_recorded": true,
+        "result_limit_must_not_be_saturated": true,
+        "do_not_auto_merge_without_live_policy_and_readiness": true
+      }
+    },
+    {
+      "id": "code_security.configurations",
+      "endpoint": "/orgs/${org_login}/code-security/configurations",
+      "method": "GET",
+      "comparison": "contains_matching_object",
+      "settable": true,
+      "expected": {
+        "advanced_security": "enabled",
+        "code_scanning_default_setup": "enabled",
+        "code_scanning_default_setup_options": null,
+        "code_scanning_delegated_alert_dismissal": "not_set",
+        "dependabot_alerts": "enabled",
+        "dependabot_delegated_alert_dismissal": null,
+        "dependabot_security_updates": "not_set",
+        "dependency_graph": "enabled",
+        "dependency_graph_autosubmit_action": "not_set",
+        "dependency_graph_autosubmit_action_options": {
+          "labeled_runners": false
+        },
+        "description": "Suggested settings for Dependabot, secret scanning, and code scanning.",
+        "enforcement": "unenforced",
+        "name": "GitHub recommended",
+        "private_vulnerability_reporting": "enabled",
+        "secret_scanning": "enabled",
+        "secret_scanning_delegated_alert_dismissal": "not_set",
+        "secret_scanning_delegated_bypass": "not_set",
+        "secret_scanning_extended_metadata": "enabled",
+        "secret_scanning_generic_secrets": "not_set",
+        "secret_scanning_non_provider_patterns": "enabled",
+        "secret_scanning_push_protection": "enabled",
+        "secret_scanning_validity_checks": "enabled",
+        "target_type": "global"
+      },
+      "ignored_fields": [
+        "id",
+        "url",
+        "created_at",
+        "updated_at"
+      ]
+    },
+    {
+      "id": "code_security.configuration_defaults",
+      "endpoint": "/orgs/${org_login}/code-security/configurations/defaults",
+      "method": "GET",
+      "comparison": "array_equal",
+      "settable": true,
+      "expected": []
+    },
+    {
+      "id": "private_registries.configurations",
+      "endpoint": "/orgs/${org_login}/private-registries",
+      "method": "GET",
+      "comparison": "selected_fields_equal",
+      "settable": true,
+      "expected": {
+        "total_count": 0,
+        "configurations": []
+      }
+    },
+    {
+      "id": "custom_properties.schema",
+      "endpoint": "/orgs/${org_login}/properties/schema",
+      "method": "GET",
+      "comparison": "array_equal",
+      "settable": true,
+      "expected": []
+    },
+    {
+      "id": "organization.roles",
+      "endpoint": "/orgs/${org_login}/organization-roles",
+      "method": "GET",
+      "comparison": "selected_fields_equal",
+      "settable": false,
+      "expected": {
+        "total_count": 8,
+        "roles": [
+          {
+            "base_role": "admin",
+            "description": "Grants admin access to all repositories in the organization.",
+            "name": "all_repo_admin",
+            "permissions": []
+          },
+          {
+            "base_role": "maintain",
+            "description": "Grants maintenance access to all repositories in the organization.",
+            "name": "all_repo_maintain",
+            "permissions": []
+          },
+          {
+            "base_role": "read",
+            "description": "Grants read access to all repositories in the organization.",
+            "name": "all_repo_read",
+            "permissions": []
+          },
+          {
+            "base_role": "triage",
+            "description": "Grants triage access to all repositories in the organization.",
+            "name": "all_repo_triage",
+            "permissions": []
+          },
+          {
+            "base_role": "write",
+            "description": "Grants write access to all repositories in the organization.",
+            "name": "all_repo_write",
+            "permissions": []
+          },
+          {
+            "base_role": null,
+            "description": "Grants the ability to manage all GitHub Apps owned by an organization.",
+            "name": "app_manager",
+            "permissions": []
+          },
+          {
+            "base_role": null,
+            "description": "Grants admin access to manage Actions policies, runners, runner groups, network configurations, secrets, variables, and usage metrics for an organization.",
+            "name": "ci_cd_admin",
+            "permissions": [
+              "read_organization_actions_usage_metrics",
+              "write_organization_actions_secrets",
+              "write_organization_actions_settings",
+              "write_organization_actions_variables",
+              "write_organization_network_configurations",
+              "write_organization_runner_custom_images",
+              "write_organization_runners_and_runner_groups"
+            ]
+          },
+          {
+            "base_role": "read",
+            "description": "Grants the ability to manage security policies, security alerts, and security configurations for an organization and all its repositories.",
+            "name": "security_manager",
+            "permissions": [
+              "delete_alerts_code_scanning",
+              "org_bypass_code_scanning_dismissal_requests",
+              "org_bypass_dependabot_alert_dismissal_requests",
+              "org_bypass_secret_scanning_closure_requests",
+              "org_review_and_manage_secret_scanning_bypass_requests",
+              "org_review_and_manage_secret_scanning_closure_requests",
+              "read_code_quality",
+              "read_code_scanning",
+              "resolve_dependabot_alerts",
+              "resolve_secret_scanning_alerts",
+              "review_org_code_scanning_dismissal_requests",
+              "review_org_dependabot_alert_dismissal_requests",
+              "view_dependabot_alerts",
+              "view_org_code_scanning_dismissal_requests",
+              "view_org_dependabot_alert_dismissal_requests",
+              "view_secret_scanning_alerts",
+              "write_code_quality",
+              "write_code_scanning"
+            ]
+          }
+        ]
+      },
+      "ignored_fields": [
+        "roles[].id"
+      ]
+    },
+    {
+      "id": "organization.custom_repository_roles",
+      "endpoint": "/orgs/${org_login}/custom-repository-roles",
+      "method": "GET",
+      "comparison": "expected_error",
+      "settable": false,
+      "expected": {
+        "status": 404,
+        "message_contains": "Feature not available"
+      }
+    },
+    {
+      "id": "organization.security_managers",
+      "endpoint": "/orgs/${org_login}/security-managers",
+      "method": "GET",
+      "comparison": "array_equal",
+      "settable": true,
+      "expected": []
+    },
+    {
+      "id": "organization.blocked_users",
+      "endpoint": "/orgs/${org_login}/blocks",
+      "method": "GET",
+      "comparison": "array_equal",
+      "settable": true,
+      "expected": []
+    },
+    {
+      "id": "organization.interaction_limits",
+      "endpoint": "/orgs/${org_login}/interaction-limits",
+      "method": "GET",
+      "comparison": "selected_fields_equal",
+      "settable": true,
+      "expected": {
+        "expires_at": null,
+        "limit": null,
+        "origin": null
+      }
+    },
+    {
+      "id": "organization.issue_types",
+      "endpoint": "/orgs/${org_login}/issue-types",
+      "method": "GET",
+      "comparison": "selected_fields_equal",
+      "settable": true,
+      "expected": [
+        {
+          "color": "yellow",
+          "description": "A specific piece of work",
+          "is_enabled": true,
+          "name": "Task"
+        },
+        {
+          "color": "red",
+          "description": "An unexpected problem or behavior",
+          "is_enabled": true,
+          "name": "Bug"
+        },
+        {
+          "color": "blue",
+          "description": "A request, idea, or new functionality",
+          "is_enabled": true,
+          "name": "Feature"
+        }
+      ],
+      "ignored_fields": [
+        "[].id"
+      ]
+    },
+    {
+      "id": "organization.issue_fields",
+      "endpoint": "/orgs/${org_login}/issue-fields",
+      "method": "GET",
+      "comparison": "selected_fields_equal",
+      "settable": true,
+      "expected": [
+        {
+          "data_type": "single_select",
+          "description": "Relative level of effort for completing this issue",
+          "name": "Effort",
+          "visibility": "organization_members_only"
+        },
+        {
+          "data_type": "single_select",
+          "description": "Current importance level assigned to this issue",
+          "name": "Priority",
+          "visibility": "organization_members_only"
+        },
+        {
+          "data_type": "date",
+          "description": "Date when work on issue will begin",
+          "name": "Start date",
+          "visibility": "organization_members_only"
+        },
+        {
+          "data_type": "date",
+          "description": "Expected completion date for this issue",
+          "name": "Target date",
+          "visibility": "organization_members_only"
+        }
+      ]
+    },
+    {
+      "id": "organization.immutable_releases",
+      "endpoint": "/orgs/${org_login}/settings/immutable-releases",
+      "method": "GET",
+      "comparison": "object_equal",
+      "settable": true,
+      "expected": {
+        "enforced_repositories": "none"
+      }
+    },
+    {
+      "id": "organization.immutable_releases_selected_repositories",
+      "endpoint": "/orgs/${org_login}/settings/immutable-releases/repositories",
+      "method": "GET",
+      "comparison": "expected_error",
+      "settable": true,
+      "expected": {
+        "status": 409,
+        "message_contains": "Immutable releases not enforced for any repositories"
+      }
+    },
+    {
+      "id": "organization.announcement_banner",
+      "endpoint": "/orgs/${org_login}/announcement",
+      "method": "GET",
+      "comparison": "expected_error",
+      "settable": true,
+      "expected": {
+        "status": 404
+      }
+    },
+    {
+      "id": "organization.webhooks",
+      "endpoint": "/orgs/${org_login}/hooks",
+      "method": "GET",
+      "comparison": "array_equal",
+      "settable": true,
+      "expected": []
+    },
+    {
+      "id": "organization.teams",
+      "endpoint": "/orgs/${org_login}/teams",
+      "method": "GET",
+      "comparison": "array_equal",
+      "settable": true,
+      "expected": []
+    },
+    {
+      "id": "organization.members",
+      "endpoint": "/orgs/${org_login}/members",
+      "method": "GET",
+      "comparison": "selected_fields_equal",
+      "settable": true,
+      "expected": [
+        {
+          "login": "${owner_login}",
+          "site_admin": false,
+          "type": "User"
+        }
+      ]
+    },
+    {
+      "id": "organization.outside_collaborators",
+      "endpoint": "/orgs/${org_login}/outside_collaborators",
+      "method": "GET",
+      "comparison": "array_equal",
+      "settable": true,
+      "expected": []
+    },
+    {
+      "id": "organization.invitations",
+      "endpoint": "/orgs/${org_login}/invitations",
+      "method": "GET",
+      "comparison": "array_equal",
+      "settable": true,
+      "expected": []
+    },
+    {
+      "id": "organization.failed_invitations",
+      "endpoint": "/orgs/${org_login}/failed_invitations",
+      "method": "GET",
+      "comparison": "array_equal",
+      "settable": true,
+      "expected": []
+    },
+    {
+      "id": "organization.rulesets",
+      "endpoint": "/orgs/${org_login}/rulesets",
+      "method": "GET",
+      "comparison": "expected_error",
+      "settable": false,
+      "expected": {
+        "status": 403,
+        "message_contains": "Upgrade to GitHub Team to enable this feature."
+      }
+    },
+    {
+      "id": "organization.personal_access_token_requests",
+      "endpoint": "/orgs/${org_login}/personal-access-token-requests",
+      "method": "GET",
+      "comparison": "expected_error",
+      "settable": false,
+      "expected": {
+        "status": 404
+      }
+    },
+    {
+      "id": "codespaces.secrets",
+      "endpoint": "/orgs/${org_login}/codespaces/secrets",
+      "method": "GET",
+      "comparison": "expected_error",
+      "settable": true,
+      "expected": {
+        "status": 404
+      }
+    },
+    {
+      "id": "hosted_compute.network_configurations",
+      "endpoint": "/orgs/${org_login}/settings/network-configurations",
+      "method": "GET",
+      "comparison": "expected_error",
+      "settable": false,
+      "expected": {
+        "status": 404
+      }
+    }
+  ]
+}

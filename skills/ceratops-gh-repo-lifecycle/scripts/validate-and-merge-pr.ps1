@@ -28,13 +28,9 @@ $resolvedRepoRoot = (Resolve-Path -LiteralPath $RepoRoot).Path
 function Resolve-ValidationScript {
     param([string]$Name)
 
-    $repoPath = Join-Path $resolvedRepoRoot "scripts\validation\$Name"
-    if (Test-Path -LiteralPath $repoPath) {
-        return $repoPath
-    }
-    $runtimePath = Join-Path $PSScriptRoot "validation\$Name"
-    if (Test-Path -LiteralPath $runtimePath) {
-        return $runtimePath
+    $scriptPath = Join-Path $PSScriptRoot $Name
+    if (Test-Path -LiteralPath $scriptPath) {
+        return $scriptPath
     }
     throw "Missing validation script: $Name"
 }

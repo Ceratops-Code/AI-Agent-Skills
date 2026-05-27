@@ -7,15 +7,19 @@ description: Transform raw, simple, vague, or under-specified prompts into clear
 
 ## Goal
 
-Rewrite the user's raw prompt into a concise, structured prompt that is easier for an AI system to execute while preserving the original intent.
+Rewrite the user's raw prompt into a concise, structured prompt that is easier
+for an AI system to execute while preserving the original intent.
 
 ## Context
 
 ### Inputs To Capture
 
-- The raw prompt, target audience, expected deliverable, and explicit constraints.
-- Terminology, placeholders, variables, examples, and strict requirements that must be preserved.
-- Missing context that can be filled with a safe default without narrowing the user's intent.
+- The raw prompt, target audience, expected deliverable, and explicit
+  constraints.
+- Terminology, placeholders, variables, examples, and strict requirements that
+  must be preserved.
+- Missing context that can be filled with a safe default without narrowing the
+  user's intent.
 
 Ask for the missing raw prompt only when none was provided.
 
@@ -24,26 +28,35 @@ Ask for the missing raw prompt only when none was provided.
 ### Skill-Specific Rules
 
 - Do not answer the raw prompt; rewrite it.
-- Do not change the target task, intent, audience, output target, terminology, placeholders, variables, examples, or strict constraints.
+- Do not change the target task, intent, audience, output target, terminology,
+  placeholders, variables, examples, or strict constraints.
 - Add only assumptions or defaults that reduce execution ambiguity.
-- Convert emotional emphasis, repeated wording, and vague pressure into observable behavior.
-- Prefer concrete actions, evidence, checks, triggers, format requirements, and exclusions over adjectives such as "carefully", "thoroughly", or "properly".
+- Convert emotional emphasis, repeated wording, and vague pressure into
+  observable behavior.
+- Prefer concrete actions, evidence, checks, triggers, format requirements, and
+  exclusions over adjectives such as "carefully", "thoroughly", or "properly".
 - Do not weaken safety, review, testing, security, or `do not` requirements.
-- Add a creativity section only when it improves the task; omit it when creativity would distract.
+- Add a creativity section only when it improves the task; omit it when
+  creativity would distract.
 - If the raw prompt is already strong, make only a light improvement.
 
 ### Boundaries
 
-- Use this skill for prompt rewrites, prompt templates, and prompt-clarity improvements.
-- If the requested change is to a durable rule or instruction file, use `$ceratops-propose-rules-update`.
-- If the requested change is to a skill workflow, use `$ceratops-skill-optimize`.
+- Use this skill for prompt rewrites, prompt templates, and prompt-clarity
+  improvements.
+- If the requested change is to a durable rule or instruction file, use
+  `$ceratops-propose-rules-update`.
+- If the requested change is to a skill workflow, use
+  `$ceratops-skill-optimize`.
 
 ### Workflow
 
-1. Identify the real objective, audience, deliverable, constraints, and exclusions.
+1. Identify the real objective, audience, deliverable, constraints, and
+   exclusions.
 2. Preserve strict wording where changing it would alter intent.
 3. Add small missing pieces only when they reduce ambiguity.
-4. Structure the prompt with role, goal, constraints, and output format when that helps.
+4. Structure the prompt with role, goal, constraints, and output format when
+   that helps.
 5. Remove filler, duplication, motivational wording, and unnecessary verbosity.
 
 ## Done When
