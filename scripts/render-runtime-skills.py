@@ -226,7 +226,7 @@ def is_windows_reparse_point(path: pathlib.Path) -> bool:
     if os.name != "nt":
         return False
     try:
-        attributes = path.stat(follow_symlinks=False).st_file_attributes
+        attributes = getattr(path.stat(follow_symlinks=False), "st_file_attributes", 0)
     except (AttributeError, FileNotFoundError, OSError):
         return False
     return bool(attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
