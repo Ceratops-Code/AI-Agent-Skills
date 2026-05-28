@@ -28,6 +28,11 @@ before asking.
   that exact action.
 - Scope the check from the beginning of the thread across the current thread's
   authorized work and every directly touched artifact.
+- When closure follows a mutating or multi-entity task, classify touched,
+  discovered, or plausibly affected artifacts, external entities, and side
+  effects as active, intentionally retained, stale-in-scope, stale-out-of-scope,
+  blocker, or unverified; do not fix stale-in-scope items during closure-check
+  unless explicitly asked.
 - Use same-thread context and existing action evidence first; inspect files or
   run commands only when needed to support or limit the closure claim.
 - Do not claim no required work remains unless required work, blockers,
@@ -63,13 +68,17 @@ before asking.
 - From same-thread context, identify touched or claimed state relevant to
   closure, including local, external, generated, runtime, warning, and follow-up
   state only when present.
+- Use the selected or recently completed action's Done When and Output Contract
+  as closure evidence targets; do not re-run full action validation unless those
+  gates were not checked, became stale, or are needed for the closure claim.
 
 #### 3. Gather Targeted Evidence
 
 - Reuse fresh same-thread evidence first.
 - Run only targeted checks needed to classify required work, blockers,
-  uncommitted or unpushed changes, retained state, stale state, warnings, and
-  unverified claims.
+  retained state, stale state, warnings, unverified claims, and touched git
+  repos' branch, cleanliness, staged/unstaged/untracked state, and unpushed
+  commits.
 
 #### 4. Scan Relevant Thread Follow-Ups
 
@@ -110,6 +119,7 @@ First line must be exactly one of:
 
 Then include only relevant concise items:
 
+- checked scope, only when it limits the answer
 - required next actions
 - blockers
 - uncommitted or unpushed changes

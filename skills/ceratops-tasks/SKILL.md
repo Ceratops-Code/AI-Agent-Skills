@@ -1,6 +1,6 @@
 ---
 name: ceratops-tasks
-description: Route Ceratops task execution, same-thread resume, new-thread handoff, and closure-check work to action references for execute-in-stages, manual-resume, full-handoff, side-task-handoff, and closure-check.
+description: Route Ceratops task execution, same-thread resume, new-thread handoff, and closure checks. Use closure-check when the user asks whether anything remains, whether we are done, or what remains.
 ---
 
 # Ceratops Tasks
