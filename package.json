@@ -1,0 +1,11 @@
+{
+  "name": "ceratops-codex-skills",
+  "private": true,
+  "description": "Development validation tooling for Ceratops Codex skills.",
+  "scripts": {
+    "lint:markdown": "markdownlint \"**/*.md\" --ignore node_modules"
+  },
+  "devDependencies": {
+    "markdownlint-cli": "0.48.0"
+  }
+}

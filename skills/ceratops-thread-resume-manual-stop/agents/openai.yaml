@@ -1,6 +1,0 @@
-interface:
-  display_name: "Ceratops Thread Resume Current State"
-  short_description: "Resume same thread from current local state"
-  icon_small: "./assets/ceratops-logo-500.png"
-  icon_large: "./assets/ceratops-logo-500.png"
-  default_prompt: "Use $ceratops-thread-resume-manual-stop to resume this interrupted task in the current thread from current local state after a stop, restart, or crash, then continue from the next justified stage."

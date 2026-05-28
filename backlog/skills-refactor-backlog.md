@@ -2,15 +2,21 @@
 
 Status: partially implemented; retained for future governance candidates.
 
-Goal: keep routine skill updates cheap and scoped, while moving broad consistency validation into scheduled governance automation or explicitly requested full validation.
+Goal: keep routine skill updates cheap and scoped, while moving broad
+consistency validation into scheduled governance automation or explicitly
+requested full validation.
 
 ## 1. Routine Skill-Update Policy
 
-- Regular skill-local text, metadata, and docs edits should use targeted readback, stale-reference search, and diff review.
+- Regular skill-local text, metadata, and docs edits should use targeted
+  readback, stale-reference search, and diff review.
 - Shared section or manifest edits should run only the shared-source check path.
 - Helper changes should run only the touched helper smoke check.
-- Runtime-generation changes should run only the runtime-generation smoke check unless a generated runtime preview is explicitly requested.
-- Full validation should be reserved for governance automation, validation-script changes, explicit broad verification, or a concrete cross-surface uncertainty.
+- Runtime-generation changes should run only the runtime-generation smoke check
+  unless a generated runtime preview is explicitly requested.
+- Full validation should be reserved for governance automation,
+  validation-script changes, explicit broad verification, or a concrete
+  cross-surface uncertainty.
 
 ## 2. Weekly Governance Candidates
 
@@ -27,10 +33,15 @@ Inputs:
 
 Checks:
 
-- GitHub repo contract IDs stay on live GitHub settings, security, Actions, rulesets, queues, labels, and stale GitHub state.
-- Code repo contract IDs stay on repo contents, local files, workflows, Dependabot config, CODEOWNERS, local git state, local path references, and local secret-pattern scans.
-- Artifact contract IDs stay on external packages, images, registry metadata, provenance, trusted publishing, release assets, and consumer verification.
-- Checker implementation has no dead comparison branches for IDs no contract owns.
+- GitHub repo contract IDs stay on live GitHub settings, security, Actions,
+  rulesets, queues, labels, and stale GitHub state.
+- Code repo contract IDs stay on repo contents, local files, workflows,
+  Dependabot config, CODEOWNERS, local git state, local path references, and
+  local secret-pattern scans.
+- Artifact contract IDs stay on external packages, images, registry metadata,
+  provenance, trusted publishing, release assets, and consumer verification.
+- Checker implementation has no dead comparison branches for IDs no contract
+  owns.
 
 Run when:
 
@@ -51,16 +62,23 @@ Inputs:
 
 Checks:
 
-- `merge-pr` action does not use full repo or artifact contract checks for normal merge-only work.
-- `dependency-maintenance` action uses dependency-scoped repo and code selections and does not run artifact checks unless a release or publish is actually in scope.
-- `ship-change` action keeps narrow GitHub, code, and artifact contract selections instead of defaulting to full health checks.
-- `create-or-publish` and `health-audit` actions may use full checks because their purpose is broad setup or broad audit.
-- Contract-review workflow reviews contracts and source docs, but does not run per-repo health as if it were auditing a target repo.
+- `merge-pr` action does not use full repo or artifact contract checks for
+  normal merge-only work.
+- `dependency-maintenance` action uses dependency-scoped repo and code
+  selections and does not run artifact checks unless a release or publish is
+  actually in scope.
+- `ship-change` action keeps narrow GitHub, code, and artifact contract
+  selections instead of defaulting to full health checks.
+- `create-or-publish` and `health-audit` actions may use full checks because
+  their purpose is broad setup or broad audit.
+- Contract-review workflow reviews contracts and source docs, but does not run
+  per-repo health as if it were auditing a target repo.
 
 Run when:
 
 - weekly governance automation runs
-- a GH lifecycle router command example, action reference, or completion gate changes
+- a GH lifecycle router command example, action reference, or completion gate
+  changes
 - lifecycle routing rules change
 
 ### 2.3. ND Evidence Coverage Validator
@@ -76,8 +94,10 @@ Inputs:
 
 Checks:
 
-- Every `ND.*` ID in a nondeterministic check file has a matching evidence mapping.
-- Every evidence mapping points to an existing evidence key or documented external/manual source.
+- Every `ND.*` ID in a nondeterministic check file has a matching evidence
+  mapping.
+- Every evidence mapping points to an existing evidence key or documented
+  external/manual source.
 - Obsolete mappings without a corresponding nondeterministic check are reported.
 
 Run when:
@@ -92,9 +112,11 @@ Prefer prevention through deterministic copy rules over frequent validation.
 
 Implementation direction:
 
-- Keep GH skills that can need contract evidence carrying `contracts/` and the relevant helper scripts as manifest payloads.
+- Keep GH skills that can need contract evidence carrying `contracts/` and the
+  relevant helper scripts as manifest payloads.
 - Keep code-consistency audit carrying only the code comment rubric it needs.
-- If a validator is added, run it in weekly governance or when `templates/skill-sections.json` changes, not for every skill text edit.
+- If a validator is added, run it in weekly governance or when
+  `templates/skill-sections.json` changes, not for every skill text edit.
 
 Run when:
 
@@ -108,9 +130,12 @@ Do not implement as a deterministic checker now.
 
 Implementation direction:
 
-- Treat `contracts/code/code-comment-nondeterministic-contract.md` as a nondeterministic review rubric.
+- Treat `contracts/code/code-comment-nondeterministic-contract.md` as a
+  nondeterministic review rubric.
 - Use it during `ceratops-code-consistency-audit`.
-- Do not run it during ordinary implementation, shipping, or skill update work unless the task is explicitly a consistency audit or comment sufficiency review.
+- Do not run it during ordinary implementation, shipping, or skill update work
+  unless the task is explicitly a consistency audit or comment sufficiency
+  review.
 
 ### 2.6. Handoff Section Regression
 

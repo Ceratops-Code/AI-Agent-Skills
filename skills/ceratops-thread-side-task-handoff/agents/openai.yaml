@@ -1,6 +1,0 @@
-interface:
-  display_name: "Ceratops Thread Side-Task Handoff"
-  short_description: "Create a side-task handoff prompt"
-  icon_small: "./assets/ceratops-logo-500.png"
-  icon_large: "./assets/ceratops-logo-500.png"
-  default_prompt: "Use $ceratops-thread-side-task-handoff to create a copy-paste prompt for spinning this side task into a new thread. Keep only the minimum main-task context, keep refs first-step-critical, and carry any included questions into the prompt."

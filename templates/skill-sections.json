@@ -23,37 +23,11 @@
     "*": [
       "assets/ceratops-logo-500.png"
     ],
-    "ceratops-gh-repo-lifecycle": [
-      "scripts/validation/github-collect-nd-evidence.py",
-      "scripts/validation/github-validate-org-contract.py",
-      "scripts/validation/github-validate-repo-artifact-contract.py",
-      "scripts/validation/github-validate-pr-readiness-contract.py",
-      "scripts/validation/github-codex-review-gate.py",
-      "contracts"
-    ],
+    "ceratops-gh-repo-lifecycle": [],
     "ceratops-skill-lifecycle": [
       "scripts/render-runtime-skills.py",
       "scripts/install-skills.ps1",
-      "scripts/validation/validate-skills-consistency.py",
-      "templates",
-      "contracts"
-    ],
-    "ceratops-contract-review": [
-      "scripts/validation/github-collect-nd-evidence.py",
-      "scripts/validation/github-validate-org-contract.py",
-      "scripts/validation/github-validate-repo-artifact-contract.py",
-      "scripts/validation/github-validate-pr-readiness-contract.py",
-      "contracts"
-    ],
-    "ceratops-skills-consistency-audit": [
-      "scripts/render-runtime-skills.py",
-      "scripts/install-skills.ps1",
-      "scripts/validation/validate-skills-consistency.py",
-      "templates",
-      "contracts"
-    ],
-    "ceratops-code-consistency-audit": [
-      "contracts/code/code-comment-nondeterministic-contract.md"
+      "templates"
     ]
   },
   "skills": {
@@ -81,25 +55,10 @@
     "ceratops-skill-lifecycle": [
       "core"
     ],
-    "ceratops-skills-consistency-audit": [
-      "core"
-    ],
     "ceratops-gh-repo-lifecycle": [
       "core"
     ],
-    "ceratops-contract-review": [
-      "core"
-    ],
-    "ceratops-task-execute-in-stages": [
-      "core"
-    ],
-    "ceratops-thread-full-handoff": [
-      "core"
-    ],
-    "ceratops-thread-resume-manual-stop": [
-      "core"
-    ],
-    "ceratops-thread-side-task-handoff": [
+    "ceratops-tasks": [
       "core"
     ]
   }

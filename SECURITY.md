@@ -2,7 +2,8 @@
 
 ## Reporting A Vulnerability
 
-Use GitHub private vulnerability reporting for this repository. Do not open a public issue for vulnerabilities, leaked credentials, or bypass techniques.
+Use GitHub private vulnerability reporting for this repository. Do not open a
+public issue for vulnerabilities, leaked credentials, or bypass techniques.
 
 When reporting, include:
 
@@ -26,4 +27,5 @@ Out of scope:
 
 - requests for new features
 - disagreements about workflow preferences
-- vulnerabilities in third-party services that these skills mention but do not ship
+- vulnerabilities in third-party services that these skills mention but do not
+  ship

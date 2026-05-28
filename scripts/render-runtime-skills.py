@@ -25,6 +25,7 @@ import stat
 import sys
 import tempfile
 from collections.abc import Mapping, Sequence
+from typing import cast
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -35,7 +36,7 @@ END = "<!-- CERATOPS_SHARED_SECTIONS_END -->"
 SOURCE_PREFIX = "<!-- SECTION SOURCE: "
 SOURCE_SUFFIX = " -->"
 MANIFEST_NAME = ".ceratops-runtime-manifest.json"
-IGNORE_NAMES = {".git", "__pycache__", ".mypy_cache", ".pytest_cache"}
+IGNORE_NAMES = {".git", "__pycache__", ".mypy_cache", ".pytest_cache", ".ruff_cache", "node_modules"}
 
 
 def load_manifest() -> dict[str, object]:
@@ -101,8 +102,8 @@ def section_text(rel_path: str) -> str:
 def rendered_sections_block(skill_name: str, manifest: Mapping[str, object]) -> str:
     """Render the generated shared-section block for one runtime skill."""
 
-    sections = manifest["sections"]
-    assignments = manifest["skills"]
+    sections = cast(Mapping[str, str], manifest["sections"])
+    assignments = cast(Mapping[str, Sequence[str]], manifest["skills"])
     rendered: list[str] = []
     for name in assignments[skill_name]:
         rel_path = sections[name]
@@ -225,7 +226,7 @@ def is_windows_reparse_point(path: pathlib.Path) -> bool:
     if os.name != "nt":
         return False
     try:
-        attributes = path.stat(follow_symlinks=False).st_file_attributes
+        attributes = getattr(path.stat(follow_symlinks=False), "st_file_attributes", 0)
     except (AttributeError, FileNotFoundError, OSError):
         return False
     return bool(attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))

@@ -15,7 +15,7 @@ param(
 # repo, choosing Python, validating requested skill names, optionally rebuilding
 # installed skill copies, and optionally running consistency validation. The
 # Python files remain narrow implementation modules: render-runtime-skills.py
-# renders/copies runtime skills, and validate-skills-consistency.py checks the
+# renders/copies runtime skills, and the skill-lifecycle validator checks the
 # source model. Keeping those modules separate avoids one large script while
 # preserving one command for humans and skills.
 
@@ -78,7 +78,7 @@ function Resolve-PythonCommand {
 $resolvedRepoRoot = (Resolve-Path -LiteralPath $RepoRoot).Path
 $skillsRoot = Join-Path $resolvedRepoRoot "skills"
 $renderer = Join-Path $resolvedRepoRoot "scripts\render-runtime-skills.py"
-$validator = Join-Path $resolvedRepoRoot "scripts\validation\validate-skills-consistency.py"
+$validator = Join-Path $resolvedRepoRoot "skills\ceratops-skill-lifecycle\scripts\validate-skills-consistency.py"
 # Fail early on missing repo components. The create/update skills may skip this
 # wrapper for non-Ceratops repos, but once this script is invoked it owns a
 # complete Ceratops runtime build or validation path.

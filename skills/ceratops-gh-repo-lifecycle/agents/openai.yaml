@@ -1,6 +1,6 @@
 interface:
   display_name: "Ceratops GH Repo Lifecycle"
-  short_description: "Create, audit, maintain, ship, and merge repos"
+  short_description: "Create, review contracts, audit, maintain, ship, and merge repos"
   icon_small: "./assets/ceratops-logo-500.png"
   icon_large: "./assets/ceratops-logo-500.png"
-  default_prompt: "Use $ceratops-gh-repo-lifecycle for this GitHub repository task. Select create-or-publish, health-audit, dependency-maintenance, ship-change, or merge-pr as the narrowest action, then follow that reference workflow and verify only the state it owns."
+  default_prompt: "Use $ceratops-gh-repo-lifecycle for this GitHub repository task. Select create-or-publish, contracts-review, health-audit, dependency-maintenance, ship-change, or merge-pr as the narrowest action, then follow that reference workflow and verify only the state it owns."

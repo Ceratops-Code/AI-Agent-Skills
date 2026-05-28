@@ -1,6 +1,0 @@
-interface:
-  display_name: "Ceratops Thread Full Handoff"
-  short_description: "Create a whole-task handoff prompt"
-  icon_small: "./assets/ceratops-logo-500.png"
-  icon_large: "./assets/ceratops-logo-500.png"
-  default_prompt: "Use $ceratops-thread-full-handoff to create a copy-paste prompt for moving this whole task into a new thread. Reuse fresh state, refresh only first-step-critical facts, and carry any included questions into the prompt."
