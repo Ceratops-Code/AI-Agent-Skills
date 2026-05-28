@@ -1,9 +1,4 @@
----
-name: ceratops-fixloop-breaker
-description: Break repeated failed fix loops by requiring full failure analysis before more code changes when repeated fixes have not solved the same symptom.
----
-
-# Ceratops FixLoop Breaker
+# FixLoop Break Action
 
 ## Goal
 
@@ -47,10 +42,10 @@ Infer the loop ledger from the current thread and local state before asking.
 
 ### Boundaries
 
-- Use this skill when repeated attempts have failed or the user explicitly
+- Use this action when repeated attempts have failed or the user explicitly
   invokes a fix-loop break.
-- If this is the first diagnostic pass for a new problem, use `$ceratops-task-lifecycle`
-  with the `execute-in-stages` action instead.
+- If this is the first diagnostic pass for a new problem, use
+  `execute-in-stages` instead.
 - If the loop is caused by avoidable workflow rework rather than one current
   bug, consider `$ceratops-credit-savings-analysis` after the immediate blocker
   is understood.
@@ -84,3 +79,8 @@ Report only:
 - previous-fix ledger
 - confirmed missed root-cause class or blocker
 - proposed all-location fix and verification, if justified
+
+### Example Invocation
+
+`Use $ceratops-task-lifecycle fixloop-break to stop the repeated fix loop before
+making another code change.`

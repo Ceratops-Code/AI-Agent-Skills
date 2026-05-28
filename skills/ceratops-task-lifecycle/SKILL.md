@@ -1,22 +1,24 @@
 ---
 name: ceratops-task-lifecycle
-description: Route Ceratops task execution, same-thread resume, new-thread handoff, and closure checks. Use closure-check when the user asks whether anything remains, whether we are done, or what remains.
+description: Route Ceratops task execution, failed-fix-loop breaks, same-thread resume, new-thread handoff, and closure checks. Use closure-check when the user asks whether anything remains, whether we are done, or what remains.
 ---
 
 # Ceratops Task Lifecycle
 
 ## Goal
 
-Route task execution, interrupted-thread resume, thread handoff, and closure
-check work to the narrowest action reference. Keep one task-workflow skill
-instead of separate skill identities for staged execution, same-thread resume,
-whole-task handoff, side-task handoff, and closure assessment.
+Route task execution, repeated-fix-loop breaks, interrupted-thread resume,
+thread handoff, and closure check work to the narrowest action reference. Keep
+one task-workflow skill instead of separate skill identities for staged
+execution, fix-loop break, same-thread resume, whole-task handoff, side-task
+handoff, and closure assessment.
 
 ## Context
 
 ### Action References
 
 - Execute a substantial task in stages: `references/execute-in-stages.md`
+- Break a repeated failed fix loop: `references/fixloop-break.md`
 - Resume an interrupted current-thread task: `references/manual-resume.md`
 - Create a whole-task new-thread handoff: `references/full-handoff.md`
 - Create a side-task new-thread handoff: `references/side-task-handoff.md`
@@ -26,8 +28,8 @@ whole-task handoff, side-task handoff, and closure assessment.
 
 - Target task, current thread state, desired completion state, and any
   user-stated action.
-- Whether the work is staged execution, same-thread resume, whole-task handoff,
-  side-task handoff, or closure check.
+- Whether the work is staged execution, fix-loop break, same-thread resume,
+  whole-task handoff, side-task handoff, or closure check.
 - Current local or external entities that constrain the selected action.
 
 Infer missing inputs from recent thread context and local state before asking.
@@ -40,9 +42,9 @@ Infer missing inputs from recent thread context and local state before asking.
   hands off to another action.
 - Use the selected action reference as the source of truth for workflow,
   evidence refresh, completion gate, and output contract.
-- Keep staged task execution, same-thread resume, whole-task handoff, side-task
-  handoff, and closure check inside this router and its `references/` files; do
-  not introduce alias skills or old-name shims.
+- Keep staged task execution, fix-loop break, same-thread resume, whole-task
+  handoff, side-task handoff, and closure check inside this router and its
+  `references/` files; do not introduce alias skills or old-name shims.
 - If action identity is ambiguous, choose the action that matches the user's
   immediate requested output or next state.
 
@@ -50,6 +52,8 @@ Infer missing inputs from recent thread context and local state before asking.
 
 - Use `execute-in-stages` for substantial tasks with multiple justified stages
   or multiple plausible solution paths.
+- Use `fixloop-break` when repeated attempts have failed or the user explicitly
+  invokes a fix-loop break.
 - Use `manual-resume` only when the work stays in the current thread and should
   resume from current local state after a manual stop, pause, restart, or crash.
 - Use `full-handoff` only when the user wants to move the whole task into a
@@ -65,6 +69,8 @@ Infer missing inputs from recent thread context and local state before asking.
 
 - Select `execute-in-stages` when the task should be handled end to end with
   diagnosis, simplest credible fix, justified stage progression, and closure.
+- Select `fixloop-break` when repeated fixes have not solved the same symptom
+  and another code change would be unjustified without failure-loop analysis.
 - Select `manual-resume` when the task was interrupted in this thread and should
   continue from current state without replaying completed work.
 - Select `full-handoff` when the output should be one paste-ready prompt for
@@ -114,5 +120,8 @@ Report only:
 
 ### Example Invocation
 
-`Use $ceratops-task-lifecycle execute-in-stages to handle this substantial task end to
-end, trying the simplest standard fix first and asking before any complex path.`
+```text
+Use $ceratops-task-lifecycle execute-in-stages to handle this substantial task
+end to end, trying the simplest standard fix first and asking before any complex
+path.
+```

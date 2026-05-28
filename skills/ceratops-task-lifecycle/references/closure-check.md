@@ -133,6 +133,8 @@ Omit routine command logs and process narration.
 
 ### Example Invocation
 
-`Use $ceratops-task-lifecycle closure-check to answer whether anything is left to do from
-the beginning of this thread, scoped to the work already authorized and touched
-here.`
+```text
+Use $ceratops-task-lifecycle closure-check to answer whether anything is left to
+do from the beginning of this thread, scoped to the work already authorized and
+touched here.
+```
