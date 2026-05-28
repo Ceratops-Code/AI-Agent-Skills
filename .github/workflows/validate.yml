@@ -35,9 +35,12 @@ jobs:
       - name: Type-check Python
         run: python -m mypy
 
-      - name: Validate skills
+      - name: Render managed skills
         shell: pwsh
-        run: ./scripts/install-skills.ps1 -InstallRoot (Join-Path $env:RUNNER_TEMP "ceratops-skills") -Validate full
+        run: ./skills/ceratops-skill-lifecycle/scripts/runtime/install-managed-skills.ps1 -InstallRoot (Join-Path $env:RUNNER_TEMP "ceratops-skills")
+
+      - name: Validate skills
+        run: python skills/ceratops-skill-lifecycle/scripts/validation/validate-skills-consistency.py --mode full
 
       - name: Smoke-test PR readiness helper script
         run: python skills/ceratops-gh-repo-lifecycle/scripts/github-validate-pr-readiness-contract.py --help

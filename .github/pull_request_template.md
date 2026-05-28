@@ -9,8 +9,7 @@
 - [ ] `python -m pip install -r requirements-dev.txt`
 - [ ] `python -m yamllint .`
 - [ ] `python -m mypy`
-- [ ] `powershell -ExecutionPolicy Bypass -File .\scripts\install-skills.ps1
-  -SkipInstall -Validate full`
+- [ ] `python skills/ceratops-skill-lifecycle/scripts/validation/validate-skills-consistency.py --mode full`
 
 ## Release impact
 
