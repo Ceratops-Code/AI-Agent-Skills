@@ -312,7 +312,7 @@
         ],
         "and_when_any_file_contains_any": [
           "[project]",
-          "[build-system]",
+          "[metadata]",
           "pypa/gh-action-pypi-publish",
           "twine upload"
         ]
@@ -326,9 +326,14 @@
         "and_when_any_file_contains_any": [
           "\"name\"",
           "\"version\"",
+          "\"publishConfig\"",
+          "\"workspaces\"",
           "npm publish",
           "npm stage publish",
           "registry.npmjs.org"
+        ],
+        "except_when_root_manifest_contains_any": [
+          "\"private\": true"
         ]
       },
       {

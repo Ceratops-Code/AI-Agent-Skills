@@ -861,6 +861,38 @@ def toml_key_present(text: str, key: str) -> bool:
     return bool(dynamic and re.search(rf"['\"]{escaped}['\"]", dynamic.group(1)))
 
 
+def pyproject_declares_package(local: dict[str, Any]) -> bool:
+    """Return whether local Python metadata describes a publishable package."""
+
+    text = local.get("texts", {}).get("pyproject.toml", "")
+    if "[project]" in text:
+        return True
+    files = local.get("files", [])
+    setup_cfg = local.get("texts", {}).get("setup.cfg", "")
+    return "setup.py" in files or "[metadata]" in setup_cfg
+
+
+def package_json_data(local: dict[str, Any]) -> dict[str, Any]:
+    """Parse the root package manifest when it is present and valid JSON."""
+
+    try:
+        data = json.loads(local.get("texts", {}).get("package.json", "{}"))
+    except json.JSONDecodeError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def package_json_declares_publishable_package(local: dict[str, Any]) -> bool:
+    """Return whether root package.json represents an npm artifact surface."""
+
+    data = package_json_data(local)
+    if not data:
+        return False
+    if data.get("private") is True:
+        return False
+    return True
+
+
 def scan_local(path: str | None) -> dict[str, Any]:
     """Scan one local checkout for file paths and small text file contents.
 
@@ -1134,13 +1166,15 @@ def classify(repo_info: dict[str, Any], paths: list[str], topics: list[str], loc
     if path_matches(paths, ["Dockerfile", "**/Dockerfile"]) or any(t in topics for t in ("docker", "oci", "container", "ghcr")):
         artifacts.add("docker_oci_image")
         project.add("service_or_app")
-    if path_matches(paths, ["pyproject.toml", "setup.cfg", "setup.py"]):
-        artifacts.add("pypi_python_package")
+    if path_matches(paths, ["pyproject.toml", "setup.cfg", "setup.py", "requirements*.txt", "**/*.py"]):
         languages.add("python")
+    if pyproject_declares_package(local):
+        artifacts.add("pypi_python_package")
         project.add("library_or_sdk")
     if path_matches(paths, ["package.json"]):
-        artifacts.add("npm_package")
         languages.add("javascript_or_typescript")
+    if package_json_declares_publishable_package(local):
+        artifacts.add("npm_package")
         project.add("library_or_sdk")
     if path_matches(paths, ["pom.xml", "build.gradle", "build.gradle.kts"]):
         artifacts.add("maven_package")
@@ -2136,8 +2170,6 @@ def artifact_condition_context(
     registry_hosts = artifact_registry_hosts(params)
     if registries.get("dockerhub"):
         registry_hosts.add("docker.io")
-    if release_asset_names(releases):
-        registry_hosts.add("github.com")
     return {
         "artifact_type": artifacts,
         "artifact_type_system": artifacts,
@@ -2351,6 +2383,12 @@ def evaluate_artifact_check(check: dict[str, Any], params: dict[str, Any], local
         if check_id in {"common.live_registry_verification", "common.local_build_package_consume"}:
             return [finding(check_id, "NEEDS_REVIEW", "Local build or consumer checks are intentionally not run by the bundled audit; use recorded commands when publishing.", actual=registries)]
         if check_id == "common.short_lived_identity_policy":
+            id_token_grants = workflows_with_write_permission(local, "id-token")
+            top_level_id_token = workflows_with_top_level_write_permission(local, "id-token")
+            if top_level_id_token:
+                return [finding(check_id, "WARN", "Workflow-root id-token: write should be scoped to publishing jobs.", actual=top_level_id_token, expected="job-level id-token: write")]
+            if id_token_grants:
+                return [finding(check_id, "PASS", "Publishing identity uses job-scoped short-lived credentials.", actual=id_token_grants)]
             return [finding(check_id, "NEEDS_REVIEW", "Publishing identity needs workflow and registry-specific review.", actual={"workflow_files": [p for p in local.get("files", []) if p.startswith(".github/workflows/")]})]
         if check_id == "common.attestation_permissions":
             text = workflow_text(local)
