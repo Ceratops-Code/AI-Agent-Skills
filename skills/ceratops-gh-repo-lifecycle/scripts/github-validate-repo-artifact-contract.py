@@ -865,11 +865,13 @@ def pyproject_declares_package(local: dict[str, Any]) -> bool:
     """Return whether local Python metadata describes a publishable package."""
 
     text = local.get("texts", {}).get("pyproject.toml", "")
-    if "[project]" in text:
+    if re.search(r"(?m)^\s*\[(project|tool\.poetry|tool\.flit\.metadata)\]\s*$", text):
         return True
     files = local.get("files", [])
     setup_cfg = local.get("texts", {}).get("setup.cfg", "")
-    return "setup.py" in files or "[metadata]" in setup_cfg
+    if "setup.py" in files or "[metadata]" in setup_cfg:
+        return True
+    return bool(re.search(r"(pypa/gh-action-pypi-publish|twine upload|pypi)", publish_ci_text(local), re.IGNORECASE))
 
 
 def package_json_data(local: dict[str, Any]) -> dict[str, Any]:
@@ -885,12 +887,14 @@ def package_json_data(local: dict[str, Any]) -> dict[str, Any]:
 def package_json_declares_publishable_package(local: dict[str, Any]) -> bool:
     """Return whether root package.json represents an npm artifact surface."""
 
+    if NPM_PUBLISH_RE.search(publish_ci_text(local)):
+        return True
     data = package_json_data(local)
     if not data:
         return False
-    if data.get("private") is True:
-        return False
-    return True
+    if data.get("workspaces") or data.get("publishConfig"):
+        return True
+    return data.get("private") is not True
 
 
 def scan_local(path: str | None) -> dict[str, Any]:
@@ -2270,18 +2274,15 @@ def registry_metadata(params: dict[str, Any], artifact_contract: dict[str, Any],
                 metadata["dockerhub"][f"{namespace}/{repo_name}"] = fetch_dockerhub(namespace, repo_name)
 
     pyproject = local.get("texts", {}).get("pyproject.toml")
-    if pyproject and not metadata["pypi"]:
+    if pyproject and pyproject_declares_package(local) and not metadata["pypi"]:
         match = re.search(r"(?m)^name\s*=\s*[\"']([^\"']+)[\"']", pyproject)
         if match:
             metadata["pypi"][match.group(1)] = fetch_pypi(match.group(1))
-    package_json = local.get("texts", {}).get("package.json")
-    if package_json and not metadata["npm"]:
-        try:
-            name = json.loads(package_json).get("name")
-            if name:
-                metadata["npm"][name] = fetch_npm(str(name))
-        except json.JSONDecodeError:
-            pass
+    package_data = package_json_data(local)
+    if package_data and package_json_declares_publishable_package(local) and not metadata["npm"]:
+        name = package_data.get("name")
+        if name:
+            metadata["npm"][str(name)] = fetch_npm(str(name))
     return metadata
 
 

@@ -154,6 +154,31 @@ class GHValidatorSummaryTests(unittest.TestCase):
         self.assertIn("python", types["language_or_iac"])
         self.assertIn("javascript_or_typescript", types["language_or_iac"])
 
+    def test_classify_keeps_publishable_package_manifests(self):
+        local = {
+            "files": ["pyproject.toml", "package.json"],
+            "texts": {
+                "pyproject.toml": "[project]\nname = \"demo\"\nversion = \"1.0.0\"\n",
+                "package.json": json.dumps({"name": "demo", "version": "1.0.0", "license": "MIT"}),
+            },
+        }
+
+        types = repo_validator.classify({}, local["files"], [], local)
+
+        self.assertEqual(types["artifact_surface"], ["npm_package", "pypi_python_package"])
+
+    def test_classify_keeps_private_workspace_publish_surface(self):
+        local = {
+            "files": ["package.json"],
+            "texts": {
+                "package.json": json.dumps({"name": "root", "private": True, "workspaces": ["packages/*"]}),
+            },
+        }
+
+        types = repo_validator.classify({}, local["files"], [], local)
+
+        self.assertEqual(types["artifact_surface"], ["npm_package"])
+
     def test_github_package_metadata_skips_pypi_release_assets(self):
         check = {
             "id": "github_packages.live_package_metadata",
