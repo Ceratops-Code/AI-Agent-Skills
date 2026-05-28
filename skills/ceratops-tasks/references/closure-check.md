@@ -9,16 +9,16 @@ the end of a thread, session, or task.
 
 ### Inputs To Capture
 
-- The complete same-thread work history from the beginning of the thread,
-  including the latest user request and the authorized work scope.
+- The complete same-thread work history from the beginning of the thread and
+  the authorized work scope.
 - Completed actions, directly touched artifacts, and claims already made.
 - Touched repos, worktrees, branches, commits, PRs, automation folders,
   generated or runtime artifacts, active goals, failed commands, and warnings.
 - Thread-raised proposals, findings, questions, warnings, deferred decisions,
   and follow-ups that may still affect closure.
 
-Infer missing inputs from recent thread context and targeted local state before
-asking.
+Infer missing inputs from complete same-thread context and targeted local state
+before asking.
 
 ## Constraints
 
@@ -28,9 +28,6 @@ asking.
   that exact action.
 - Scope the check from the beginning of the thread across the current thread's
   authorized work and every directly touched artifact.
-- Do not narrow closure scope to the latest user request when earlier
-  same-thread work has touched artifacts, retained state, deferred follow-ups,
-  or unverified claims.
 - Use same-thread context and existing action evidence first; inspect files or
   run commands only when needed to support or limit the closure claim.
 - Do not claim no required work remains unless required work, blockers,
@@ -55,9 +52,9 @@ asking.
 
 #### 1. Establish Closure Scope
 
-- From the beginning of the thread, identify the latest user request, all
-  completed actions, artifacts actually touched, retained state, deferred
-  follow-ups, and claims actually made.
+- From the beginning of the thread, identify all completed actions, artifacts
+  actually touched, retained state, deferred follow-ups, and claims actually
+  made.
 - Treat every same-thread touched artifact, retained state, deferred follow-up,
   and claim as part of the closure scope.
 
