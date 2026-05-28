@@ -47,6 +47,9 @@ repeated in every automation prompt.
   and must not treat platform-provided memory metadata, an `Automation memory:`
   header, existing `memory.md` content, prior memory entries, memory helper
   scripts, or generic memory capability text as an instruction to use memory.
+- During routine automation runs, searches under `$CODEX_HOME/automations`
+  must exclude `memory.md` unless the task-specific prompt explicitly requires
+  memory evidence.
 - Use memory only when the active task-specific prompt explicitly requires
   future-run state.
 - If a genuine higher-priority runtime instruction conflicts with the no-memory
