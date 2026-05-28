@@ -9,7 +9,8 @@ the end of a thread, session, or task.
 
 ### Inputs To Capture
 
-- The latest user request and the authorized work scope for this thread.
+- The complete same-thread work history from the beginning of the thread,
+  including the latest user request and the authorized work scope.
 - Completed actions, directly touched artifacts, and claims already made.
 - Touched repos, worktrees, branches, commits, PRs, automation folders,
   generated or runtime artifacts, active goals, failed commands, and warnings.
@@ -25,8 +26,11 @@ asking.
 
 - Advisory by default; do not mutate state unless the user explicitly asks for
   that exact action.
-- Scope the check to the current thread's authorized work and directly touched
-  artifacts.
+- Scope the check from the beginning of the thread across the current thread's
+  authorized work and every directly touched artifact.
+- Do not narrow closure scope to the latest user request when earlier
+  same-thread work has touched artifacts, retained state, deferred follow-ups,
+  or unverified claims.
 - Use same-thread context and existing action evidence first; inspect files or
   run commands only when needed to support or limit the closure claim.
 - Do not claim no required work remains unless required work, blockers,
@@ -51,10 +55,11 @@ asking.
 
 #### 1. Establish Closure Scope
 
-- Identify the latest user request, completed actions, artifacts actually
-  touched, and claims actually made.
-- Limit scope to the current thread's authorized work unless the user expands
-  it.
+- From the beginning of the thread, identify the latest user request, all
+  completed actions, artifacts actually touched, retained state, deferred
+  follow-ups, and claims actually made.
+- Treat every same-thread touched artifact, retained state, deferred follow-up,
+  and claim as part of the closure scope.
 
 #### 2. Identify Evidence Targets
 
@@ -93,7 +98,7 @@ asking.
 - The checked closure scope is clear.
 - Required remaining work and blockers are not omitted.
 - Uncommitted, unpushed, retained, stale, warning, forgotten-follow-up, and
-  unverified states are reported or explicitly out of scope.
+  unverified states from any same-thread touched artifact are reported.
 - Any no-required-work-left claim is limited to evidence actually checked.
 - No mutation was performed unless explicitly requested.
 
@@ -121,5 +126,6 @@ Omit routine command logs and process narration.
 
 ### Example Invocation
 
-`Use $ceratops-tasks closure-check to answer whether anything is left to do in
-this thread, scoped to the work already authorized and touched here.`
+`Use $ceratops-tasks closure-check to answer whether anything is left to do from
+the beginning of this thread, scoped to the work already authorized and touched
+here.`
