@@ -4,16 +4,16 @@
   },
   "maintenance_workflows": {
     "shared_source_changes": [
-      "powershell -ExecutionPolicy Bypass -File scripts/install-skills.ps1 -SkipInstall -Validate sections"
+      "python skills/ceratops-skill-lifecycle/scripts/validation/validate-skills-consistency.py --mode sections"
     ],
     "skill_local_or_metadata_changes": [],
     "helper_runtime_changes": [],
     "runtime_generation_changes": [
-      "powershell -ExecutionPolicy Bypass -File scripts/install-skills.ps1 -SkipInstall -Validate sections"
+      "python skills/ceratops-skill-lifecycle/scripts/validation/validate-skills-consistency.py --mode sections"
     ],
     "contract_checker_changes": [],
     "governance_full_validation": [
-      "powershell -ExecutionPolicy Bypass -File scripts/install-skills.ps1 -SkipInstall -Validate governance"
+      "python skills/ceratops-skill-lifecycle/scripts/validation/validate-skills-consistency.py --mode governance"
     ],
     "new_skill_local_availability": [
       "$ceratops-skill-lifecycle"
@@ -24,11 +24,7 @@
       "assets/ceratops-logo-500.png"
     ],
     "ceratops-gh-repo-lifecycle": [],
-    "ceratops-skill-lifecycle": [
-      "scripts/render-runtime-skills.py",
-      "scripts/install-skills.ps1",
-      "templates"
-    ]
+    "ceratops-skill-lifecycle": []
   },
   "skills": {
     "ceratops-automation-run": [

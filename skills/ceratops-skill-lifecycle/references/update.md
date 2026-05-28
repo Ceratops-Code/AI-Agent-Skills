@@ -13,8 +13,9 @@ repo docs, then update the narrowest correct source that exists.
 ### Inputs To Capture
 
 - Existing skills or shared files in scope: `skills/*`, `templates/sections/`,
-  `templates/skill-sections.json`, `scripts/render-runtime-skills.py`,
-  `skills/ceratops-skill-lifecycle/scripts/validate-skills-consistency.py`,
+  `templates/skill-sections.json`,
+  `skills/ceratops-skill-lifecycle/scripts/runtime/render-runtime-skills.py`,
+  `skills/ceratops-skill-lifecycle/scripts/validation/validate-skills-consistency.py`,
   skill-local `references/`, helper-runtime files, and repo docs.
 - Whether the change belongs in skill-local text, shared sections, manifests,
   runtime generation, validation, helper-runtime code or claims, contracts, or

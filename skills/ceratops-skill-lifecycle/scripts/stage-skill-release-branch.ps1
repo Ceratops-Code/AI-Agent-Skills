@@ -6,14 +6,14 @@ param(
     [string]$ReleaseBranch = "release/local",
     [string]$RemoteName = "origin",
     [ValidateSet("none", "full")]
-    [string]$Validate = "full",
-    [switch]$SkipCleanMerged
+    [string]$Validate = "full"
 )
 
 # Skill-local helper for deterministic change-promotion work. It prepares the
 # reusable release branch, merges branches the agent has already reviewed and
-# approved, runs the repo installer validation when available, checks pending
-# local work, and emits one compact JSON summary on success.
+# approved, runs skill-local runtime installation and validation helpers when
+# available, checks pending local work, and emits one compact JSON summary on
+# success.
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
@@ -135,23 +135,35 @@ foreach ($branch in $ApprovedBranch) {
     $mergedBranches += $branch
 }
 
-$installValidation = "skipped"
+$validation = "skipped"
 if ($Validate -ne "none") {
-    $installScript = Join-Path $resolvedSkillsRepoRoot "scripts\install-skills.ps1"
-    if (Test-Path -LiteralPath $installScript) {
-        Invoke-QuietNative -FilePath "powershell" -Arguments @(
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-            $installScript,
-            "-Validate",
-            $Validate
-        )
-        $installValidation = $Validate
-    } else {
-        $installValidation = "skipped_missing_installer"
+    $validator = Join-Path $scriptRoot "validation\validate-skills-consistency.py"
+    if (-not (Test-Path -LiteralPath $validator -PathType Leaf)) {
+        throw "Missing skill consistency validator: $validator"
     }
+    Invoke-QuietNative -FilePath "python" -Arguments @(
+        $validator,
+        "--repo-root",
+        $resolvedSkillsRepoRoot,
+        "--mode",
+        $Validate
+    )
+    $validation = $Validate
+}
+
+$runtimeInstall = "skipped_missing_installer"
+$installScript = Join-Path $scriptRoot "runtime\install-managed-skills.ps1"
+if (Test-Path -LiteralPath $installScript) {
+    Invoke-QuietNative -FilePath "powershell" -Arguments @(
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        $installScript,
+        "-RepoRoot",
+        $resolvedSkillsRepoRoot
+    )
+    $runtimeInstall = "managed"
 }
 
 $pendingArgs = @(
@@ -167,9 +179,7 @@ $pendingArgs = @(
     "-ReleaseBranch",
     $ReleaseBranch
 )
-if (-not $SkipCleanMerged) {
-    $pendingArgs += "-CleanMerged"
-}
+$pendingArgs += "-CleanMergedBranches"
 Invoke-QuietNative -FilePath "powershell" -Arguments $pendingArgs
 
 $currentBranch = (Get-GitLines @("branch", "--show-current") | Select-Object -First 1).Trim()
@@ -181,6 +191,7 @@ Assert-CleanWorktree "before reporting ready state"
     release_branch = $currentBranch
     requested_release_branch = $ReleaseBranch
     merged_branches = $mergedBranches
-    validation = $installValidation
+    install = $runtimeInstall
+    validation = $validation
     head = $headSha
 } | ConvertTo-Json -Compress

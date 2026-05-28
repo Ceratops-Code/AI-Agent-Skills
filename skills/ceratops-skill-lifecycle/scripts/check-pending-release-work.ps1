@@ -3,15 +3,15 @@ param(
     [string]$SkillsRepoRoot,
     [string]$MainBranch = "main",
     [string]$ReleaseBranch = "release/local",
-    [switch]$CleanMerged
+    [switch]$CleanMergedBranches
 )
 
 # Skill-local helper called by the ceratops-skill-lifecycle change-promotion
 # action before a staged skills repo release is treated as ready to ship. By
 # default it reports dirty worktrees or local branches that have commits not
-# reachable from the release branch. With -CleanMerged, it first removes clean
-# task worktrees and local branches whose commits are already reachable from the
-# release branch.
+# reachable from the release branch. With -CleanMergedBranches, it first removes
+# clean task worktrees and local branches whose commits are already reachable
+# from the release branch.
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
@@ -166,7 +166,7 @@ $removed = @()
 $skillsRepoPath = $resolvedSkillsRepoRoot.TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
 $expectedWorktreeRoot = Get-ExpectedWorktreeRoot
 
-if ($CleanMerged) {
+if ($CleanMergedBranches) {
     Invoke-Git @("rev-parse", "--verify", $ReleaseBranch)
     if (Test-Path -LiteralPath $expectedWorktreeRoot) {
         foreach ($record in Get-WorktreeRecords) {

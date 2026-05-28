@@ -9,7 +9,7 @@
       "lines": "source-doc registry, skill standards, and installed skill references"
     },
     {
-      "path": "$AI_AGENT_SKILLS_ROOT/skills/ceratops-skill-lifecycle/scripts/validate-skills-consistency.py",
+      "path": "$AI_AGENT_SKILLS_ROOT/skills/ceratops-skill-lifecycle/scripts/validation/validate-skills-consistency.py",
       "lines": "deterministic skill source, metadata, runtime, contract, and portability checks"
     },
     {
@@ -67,10 +67,10 @@
     "destructive_or_irreversible": "always_report_only"
   },
   "execution": {
-    "deterministic_helper": "skills/ceratops-skill-lifecycle/scripts/validate-skills-consistency.py",
-    "full_validation_command": "python skills/ceratops-skill-lifecycle/scripts/validate-skills-consistency.py --mode full",
-    "governance_validation_command": "python skills/ceratops-skill-lifecycle/scripts/validate-skills-consistency.py --mode governance",
-    "section_validation_command": "python skills/ceratops-skill-lifecycle/scripts/validate-skills-consistency.py --mode sections",
+    "deterministic_helper": "skills/ceratops-skill-lifecycle/scripts/validation/validate-skills-consistency.py",
+    "full_validation_command": "python skills/ceratops-skill-lifecycle/scripts/validation/validate-skills-consistency.py --mode full",
+    "governance_validation_command": "python skills/ceratops-skill-lifecycle/scripts/validation/validate-skills-consistency.py --mode governance",
+    "section_validation_command": "python skills/ceratops-skill-lifecycle/scripts/validation/validate-skills-consistency.py --mode sections",
     "result_contract": "Exit 0 with an ok line when selected deterministic checks pass; nonzero with line-specific errors when they fail."
   },
   "checks": [
@@ -84,8 +84,8 @@
       ],
       "pass_condition": "Source skill frontmatter contains only name and description, frontmatter name matches the directory, description is present, body is nonempty, the body contains a Markdown H2 section structure, and Boundaries and Output Contract subsections are present.",
       "source_lines": [
-        "skills/ceratops-skill-lifecycle/scripts/validate-skills-consistency.py:parse_frontmatter",
-        "skills/ceratops-skill-lifecycle/scripts/validate-skills-consistency.py:check_skill"
+        "skills/ceratops-skill-lifecycle/scripts/validation/validate-skills-consistency.py:parse_frontmatter",
+        "skills/ceratops-skill-lifecycle/scripts/validation/validate-skills-consistency.py:check_skill"
       ]
     },
     {
@@ -97,10 +97,10 @@
       ],
       "pass_condition": "OpenAI interface metadata exists, default_prompt names the skill, display name resembles the skill identity, short description overlaps the trigger description, and icon fields use the runtime-local shared Ceratops icon path.",
       "source_lines": [
-        "skills/ceratops-skill-lifecycle/scripts/validate-skills-consistency.py:parse_openai_interface",
-        "skills/ceratops-skill-lifecycle/scripts/validate-skills-consistency.py:display_name_sane",
-        "skills/ceratops-skill-lifecycle/scripts/validate-skills-consistency.py:short_description_relevant",
-        "skills/ceratops-skill-lifecycle/scripts/validate-skills-consistency.py:check_skill"
+        "skills/ceratops-skill-lifecycle/scripts/validation/validate-skills-consistency.py:parse_openai_interface",
+        "skills/ceratops-skill-lifecycle/scripts/validation/validate-skills-consistency.py:display_name_sane",
+        "skills/ceratops-skill-lifecycle/scripts/validation/validate-skills-consistency.py:short_description_relevant",
+        "skills/ceratops-skill-lifecycle/scripts/validation/validate-skills-consistency.py:check_skill"
       ]
     },
     {
@@ -113,9 +113,9 @@
       ],
       "pass_condition": "Every Ceratops skill has a manifest assignment including core, source SKILL.md files remain delta-only, assigned shared sections render, and source files do not contain generated runtime shared-section blocks.",
       "source_lines": [
-        "skills/ceratops-skill-lifecycle/scripts/validate-skills-consistency.py:rendered_sections_block",
-        "skills/ceratops-skill-lifecycle/scripts/validate-skills-consistency.py:check_section_sources",
-        "skills/ceratops-skill-lifecycle/scripts/validate-skills-consistency.py:check_skill"
+        "skills/ceratops-skill-lifecycle/scripts/validation/validate-skills-consistency.py:rendered_sections_block",
+        "skills/ceratops-skill-lifecycle/scripts/validation/validate-skills-consistency.py:check_section_sources",
+        "skills/ceratops-skill-lifecycle/scripts/validation/validate-skills-consistency.py:check_skill"
       ]
     },
     {
@@ -127,7 +127,7 @@
       ],
       "pass_condition": "Each skill folder contains `SKILL.md` as the only top-level file, uses only supported top-level resource directories (`agents/`, `assets/`, `scripts/`, `references/`), and keeps `references/` files one level deep.",
       "source_lines": [
-        "skills/ceratops-skill-lifecycle/scripts/validate-skills-consistency.py:check_resource_layout"
+        "skills/ceratops-skill-lifecycle/scripts/validation/validate-skills-consistency.py:check_resource_layout"
       ]
     },
     {
@@ -139,7 +139,7 @@
       ],
       "pass_condition": "Runtime payload declarations point only to existing repo-relative paths or matching globs and do not use absolute paths or parent-directory traversal.",
       "source_lines": [
-        "skills/ceratops-skill-lifecycle/scripts/validate-skills-consistency.py:check_runtime_payloads"
+        "skills/ceratops-skill-lifecycle/scripts/validation/validate-skills-consistency.py:check_runtime_payloads"
       ]
     },
     {
@@ -151,8 +151,8 @@
       ],
       "pass_condition": "Every source skill has a README skill table row and every README Ceratops skill row points to an existing source skill directory.",
       "source_lines": [
-        "skills/ceratops-skill-lifecycle/scripts/validate-skills-consistency.py:readme_skill_rows",
-        "skills/ceratops-skill-lifecycle/scripts/validate-skills-consistency.py:check_skill"
+        "skills/ceratops-skill-lifecycle/scripts/validation/validate-skills-consistency.py:readme_skill_rows",
+        "skills/ceratops-skill-lifecycle/scripts/validation/validate-skills-consistency.py:check_skill"
       ]
     },
     {
@@ -163,8 +163,8 @@
       ],
       "pass_condition": "Repo-tracked text files do not contain high-confidence secret patterns or user-local absolute filesystem paths.",
       "source_lines": [
-        "skills/ceratops-skill-lifecycle/scripts/validate-skills-consistency.py:SECRET_PATTERNS",
-        "skills/ceratops-skill-lifecycle/scripts/validate-skills-consistency.py:check_secrets"
+        "skills/ceratops-skill-lifecycle/scripts/validation/validate-skills-consistency.py:SECRET_PATTERNS",
+        "skills/ceratops-skill-lifecycle/scripts/validation/validate-skills-consistency.py:check_secrets"
       ]
     },
     {
@@ -197,8 +197,8 @@
       ],
       "pass_condition": "Explicit governance validation checks active skill identity drift, rename completeness, current-source skill references, generated runtime shared-section integrity, validation command-surface alignment, skill deterministic remediation-policy classification, skill lifecycle action scope command drift, and compact validator success output without adding one-time stale-term detectors.",
       "source_lines": [
-        "skills/ceratops-skill-lifecycle/scripts/validate-skills-consistency.py:check_governance_consistency",
-        "skills/ceratops-skill-lifecycle/scripts/validate-skills-consistency.py:check_skill_contract_remediation_policy",
+        "skills/ceratops-skill-lifecycle/scripts/validation/validate-skills-consistency.py:check_governance_consistency",
+        "skills/ceratops-skill-lifecycle/scripts/validation/validate-skills-consistency.py:check_skill_contract_remediation_policy",
         "skills/ceratops-skill-lifecycle/references/skills-consistency-and-contract-review.md:Goal",
         "README.md:Validate"
       ]
