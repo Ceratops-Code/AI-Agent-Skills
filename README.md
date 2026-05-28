@@ -14,7 +14,7 @@ Reusable Ceratops skills for Codex and other `SKILL.md`-compatible agents.
 | `ceratops-skill-optimize` | Propose advisory-only improvements across skill text, action references, metadata, payloads, validators, and docs. |
 | `ceratops-skill-lifecycle` | Route skill lifecycle work across create, update, skills-consistency-and-contract-review, fast-change, change-promotion, and ship-to-remote actions. |
 | `ceratops-automation-run` | Run recurring automations with shared Ceratops alert, memory, and completion policy. |
-| `ceratops-tasks` | Route task execution, same-thread resume, handoff, and closure-check work across action references. |
+| `ceratops-task-lifecycle` | Route task execution, same-thread resume, handoff, and closure-check work across action references. |
 | `ceratops-code-consistency-audit` | Audit merged refactors for contradictions, docs drift, comment sufficiency, stale follow-through, and merged-only edge cases. |
 
 ## Layout

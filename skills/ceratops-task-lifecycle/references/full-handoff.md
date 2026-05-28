@@ -87,5 +87,5 @@ Emit one copy-paste prompt for a new thread and nothing extra.
 
 ### Example Invocation
 
-`Use $ceratops-tasks full-handoff to create a copy-paste prompt for moving this
+`Use $ceratops-task-lifecycle full-handoff to create a copy-paste prompt for moving this
 whole task into a new thread.`

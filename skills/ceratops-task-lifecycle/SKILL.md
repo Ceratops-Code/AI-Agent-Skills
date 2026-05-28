@@ -1,9 +1,9 @@
 ---
-name: ceratops-tasks
+name: ceratops-task-lifecycle
 description: Route Ceratops task execution, same-thread resume, new-thread handoff, and closure checks. Use closure-check when the user asks whether anything remains, whether we are done, or what remains.
 ---
 
-# Ceratops Tasks
+# Ceratops Task Lifecycle
 
 ## Goal
 
@@ -114,5 +114,5 @@ Report only:
 
 ### Example Invocation
 
-`Use $ceratops-tasks execute-in-stages to handle this substantial task end to
+`Use $ceratops-task-lifecycle execute-in-stages to handle this substantial task end to
 end, trying the simplest standard fix first and asking before any complex path.`

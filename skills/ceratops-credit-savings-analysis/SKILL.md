@@ -63,7 +63,7 @@ cannot be identified.
   iterations, failed output loops, stale cleanup, oversized validation,
   inefficient evidence gathering, and producer-failure analysis.
 - If the active issue is one unresolved bug, use `$ceratops-fixloop-breaker` or
-  `$ceratops-tasks` with the `execute-in-stages` action first.
+  `$ceratops-task-lifecycle` with the `execute-in-stages` action first.
 - If the user already knows the specific rule to change, use
   `$ceratops-propose-rules-update`.
 

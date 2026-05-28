@@ -58,7 +58,7 @@
     "ceratops-gh-repo-lifecycle": [
       "core"
     ],
-    "ceratops-tasks": [
+    "ceratops-task-lifecycle": [
       "core"
     ]
   }

@@ -49,7 +49,7 @@ Infer the loop ledger from the current thread and local state before asking.
 
 - Use this skill when repeated attempts have failed or the user explicitly
   invokes a fix-loop break.
-- If this is the first diagnostic pass for a new problem, use `$ceratops-tasks`
+- If this is the first diagnostic pass for a new problem, use `$ceratops-task-lifecycle`
   with the `execute-in-stages` action instead.
 - If the loop is caused by avoidable workflow rework rather than one current
   bug, consider `$ceratops-credit-savings-analysis` after the immediate blocker

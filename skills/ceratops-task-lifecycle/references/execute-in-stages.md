@@ -107,5 +107,5 @@ Report only:
 
 ### Example Invocation
 
-`Use $ceratops-tasks execute-in-stages to handle this substantial task end to
+`Use $ceratops-task-lifecycle execute-in-stages to handle this substantial task end to
 end, trying the simplest standard fix first and asking before any complex path.`
