@@ -40,13 +40,14 @@ python -m mypy
 ```
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\install-skills.ps1 -SkipInstall -Validate full
+python .\skills\ceratops-skill-lifecycle\scripts\validation\validate-skills-consistency.py --mode full
 ```
 
 If the change affects workflow behavior, include a short test note in the PR
 explaining how the skill was exercised or reviewed.
-Run `powershell -ExecutionPolicy Bypass -File .\scripts\install-skills.ps1
--SkipInstall -Validate sections` only when shared section source files or
+Run `python
+.\skills\ceratops-skill-lifecycle\scripts\validation\validate-skills-consistency.py
+--mode sections` only when shared section source files or
 `templates/skill-sections.json` changed. Run `python
 .\skills\ceratops-gh-repo-lifecycle\scripts\github-validate-pr-readiness-contract.py
 --help` only when PR-readiness validator code or related skill claims changed.
