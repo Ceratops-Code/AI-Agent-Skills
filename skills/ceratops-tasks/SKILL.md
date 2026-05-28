@@ -1,16 +1,16 @@
 ---
 name: ceratops-tasks
-description: Route Ceratops task execution, same-thread resume, and new-thread handoff work to action references for execute-in-stages, manual-resume, full-handoff, and side-task-handoff.
+description: Route Ceratops task execution, same-thread resume, new-thread handoff, and closure-check work to action references for execute-in-stages, manual-resume, full-handoff, side-task-handoff, and closure-check.
 ---
 
 # Ceratops Tasks
 
 ## Goal
 
-Route task execution, interrupted-thread resume, and thread handoff work to the
-narrowest action reference. Keep one task-workflow skill instead of separate
-skill identities for staged execution, same-thread resume, whole-task handoff,
-and side-task handoff.
+Route task execution, interrupted-thread resume, thread handoff, and closure
+check work to the narrowest action reference. Keep one task-workflow skill
+instead of separate skill identities for staged execution, same-thread resume,
+whole-task handoff, side-task handoff, and closure assessment.
 
 ## Context
 
@@ -20,13 +20,14 @@ and side-task handoff.
 - Resume an interrupted current-thread task: `references/manual-resume.md`
 - Create a whole-task new-thread handoff: `references/full-handoff.md`
 - Create a side-task new-thread handoff: `references/side-task-handoff.md`
+- Check whether required work remains: `references/closure-check.md`
 
 ### Inputs To Capture
 
 - Target task, current thread state, desired completion state, and any
   user-stated action.
 - Whether the work is staged execution, same-thread resume, whole-task handoff,
-  or side-task handoff.
+  side-task handoff, or closure check.
 - Current local or external entities that constrain the selected action.
 
 Infer missing inputs from recent thread context and local state before asking.
@@ -39,9 +40,9 @@ Infer missing inputs from recent thread context and local state before asking.
   hands off to another action.
 - Use the selected action reference as the source of truth for workflow,
   evidence refresh, completion gate, and output contract.
-- Keep staged task execution, same-thread resume, whole-task handoff, and
-  side-task handoff inside this router and its `references/` files; do not
-  introduce alias skills or old-name shims.
+- Keep staged task execution, same-thread resume, whole-task handoff, side-task
+  handoff, and closure check inside this router and its `references/` files; do
+  not introduce alias skills or old-name shims.
 - If action identity is ambiguous, choose the action that matches the user's
   immediate requested output or next state.
 
@@ -55,6 +56,8 @@ Infer missing inputs from recent thread context and local state before asking.
   different thread.
 - Use `side-task-handoff` only when the user wants to spin off a newly
   discovered sub-issue into a different thread.
+- Use `closure-check` when the user asks whether anything is left to do at the
+  end of a thread, session, or task.
 
 ### Workflow
 
@@ -68,6 +71,9 @@ Infer missing inputs from recent thread context and local state before asking.
   moving the entire task into a new thread.
 - Select `side-task-handoff` when the output should be one paste-ready prompt
   for a side task while the main task stays separate.
+- Select `closure-check` when the output should be a concise evidence-based
+  answer about required work, blockers, retained state, unverified claims, and
+  reasonable next actions.
 
 #### 2. Execute The Selected Action
 
@@ -93,8 +99,8 @@ Infer missing inputs from recent thread context and local state before asking.
   before action execution.
 - Any cross-action handoff used another reference in this router rather than a
   standalone skill identity.
-- Completion, resume, and handoff claims are limited to evidence actually
-  checked or fresh same-task evidence that still applies.
+- Completion, resume, handoff, and closure claims are limited to evidence
+  actually checked or fresh same-task evidence that still applies.
 
 ### Output Contract
 
