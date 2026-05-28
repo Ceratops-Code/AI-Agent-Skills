@@ -71,9 +71,6 @@ repeated in every automation prompt.
 
 #### 1. Inspect the automation contract
 
-- Read the automation prompt, current workspace, relevant local `AGENTS.md` if
-  any, `$CODEX_HOME/AGENTS.md`, and each helper script or contract the
-  automation relies on.
 - Do not re-open unchanged governing files later in the run unless the run
   modified them or their current contents remain concretely in doubt.
 - Identify which rules are reusable automation policy versus task-specific
