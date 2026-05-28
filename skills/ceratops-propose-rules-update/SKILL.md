@@ -56,6 +56,9 @@ evidence.
   prohibitions only for plausible failure modes or preserved protections.
 - Use machine-oriented wording and avoid example lists unless needed to
   disambiguate behavior.
+- Before output, reject any proposed rule change that adds examples, category
+  lists, mechanisms, or explanatory clauses unless they are required to prevent
+  the identified failure class without changing unrelated behavior.
 - Reject wording that is vague, duplicative, contradictory, too broad, too
   narrow, too long, example-driven, or likely to increase routine rework.
 - If deterministic, testable behavior can prevent or detect the failure class
