@@ -27,8 +27,8 @@ asking.
   that exact action.
 - Scope the check to the current thread's authorized work and directly touched
   artifacts.
-- Use fresh same-thread evidence first; run only targeted checks needed to
-  answer accurately.
+- Use same-thread context and existing action evidence first; inspect files or
+  run commands only when needed to support or limit the closure claim.
 - Do not claim no required work remains unless required work, blockers,
   retained state, stale state, warnings, uncommitted or unpushed changes, and
   unverified claims were checked or explicitly classified.
@@ -58,9 +58,9 @@ asking.
 
 #### 2. Identify Evidence Targets
 
-- Identify touched repos, worktrees, branches, commits, PRs, automation folders,
-  generated or runtime artifacts, active goals, failed commands, warnings, and
-  direct side effects relevant to closure.
+- From same-thread context, identify touched or claimed state relevant to
+  closure, including local, external, generated, runtime, warning, and follow-up
+  state only when present.
 
 #### 3. Gather Targeted Evidence
 
