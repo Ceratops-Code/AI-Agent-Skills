@@ -30,7 +30,7 @@ for a defined target behavior.
 - All governing sources involved in the update, including global `AGENTS.md`,
   local `AGENTS.md`, invoked skills, automations, prompts, helper
   contracts, and control files.
-- The likely owner artifact for each proposed update.
+- The likely owner artifact and section for each proposed update.
 - Whether the user wants only proposed text or also wants the named change
   applied.
 
@@ -110,8 +110,8 @@ evidence.
 ### Completion Gate
 
 - The response identifies the target behavior, trigger, reusable target behavior
-  class, involved sources, and target artifact, or states the missing evidence
-  blocking that identification.
+  class, involved sources, target artifact, and target section, or states the
+  missing evidence blocking that identification.
 - The proposal includes every full current rule or contract line it changes or
   removes, and every full resulting rule or contract line it adds or keeps after
   the change.
@@ -131,7 +131,7 @@ Report only:
 - changed files, or `none` when proposing only
 - target behavior and trigger
 - reusable target behavior class
-- involved sources and target artifact
+- involved sources, target artifact, and target section
 - full current rules or contract lines changed or removed
 - full resulting rules or contract lines added or kept
 - retained behavior from prior rules or retired rule-update workflow
