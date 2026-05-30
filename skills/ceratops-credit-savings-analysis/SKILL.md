@@ -49,9 +49,10 @@ cannot be identified.
   evidence reuse.
 - Do not propose broad best-practice refreshes, large instruction rewrites, or
   high-maintenance controls unless smaller controls are demonstrably inadequate.
-- When the recommendation would edit instructions, skills, automations, or
-  helpers, provide the exact proposed change and wait for explicit approval
-  unless the user already asked to apply it.
+- When the user asks to apply or draft a recommendation that would edit
+  instructions, skills, automations, or helpers, provide the exact proposed
+  change before mutating; otherwise name the target artifact and target
+  behavior.
 - Before reporting recommendations, classify candidate controls against
   inspected evidence as implemented or still unimplemented; omit implemented
   controls unless needed to justify that no still-unimplemented proposal
