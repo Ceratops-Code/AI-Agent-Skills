@@ -52,5 +52,6 @@ Run `python
 .\skills\ceratops-gh-repo-lifecycle\scripts\github-validate-pr-readiness-contract.py
 --help` only when PR-readiness validator code or related skill claims changed.
 The section mode validates section assignments and rejects stale source files
-that still contain generated runtime blocks. `scripts/render-runtime-skills.py`
+that still contain generated runtime blocks.
+`skills/ceratops-skill-lifecycle/scripts/runtime/render-runtime-skills.py`
 composes runtime `SKILL.md` files and copies declared payloads during install.

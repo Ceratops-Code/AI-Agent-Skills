@@ -21,8 +21,6 @@ Reusable Ceratops skills for Codex and other `SKILL.md`-compatible agents.
 ```text
 assets/
   ceratops-logo-500.png
-backlog/
-  skills-refactor-backlog.md
 skills/
   <skill-name>/
     SKILL.md
