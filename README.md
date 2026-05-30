@@ -26,7 +26,6 @@ backlog/
 skills/
   <skill-name>/
     SKILL.md
-    references/
     agents/openai.yaml
     assets/
       ceratops-logo-500.png
