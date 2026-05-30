@@ -65,7 +65,7 @@ Infer missing inputs from repo state before asking.
 - If the user wants only a code review for bugs or regressions inside a bounded
   patch, use normal review flow instead of this whole-repo audit.
 - If the task is only diagnosing and fixing one current breakage, stop and use
-  `$ceratops-tasks` with the `execute-in-stages` action.
+  `$ceratops-task-lifecycle` with the `execute-in-stages` action.
 - If the task is only documentation maintenance without broader repository
   coherence concerns, narrow the work to documentation drift rather than running
   the full audit.

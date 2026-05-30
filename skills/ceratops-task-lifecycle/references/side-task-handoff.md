@@ -100,6 +100,6 @@ Emit one copy-paste prompt for a new thread and nothing extra.
 
 ### Example Invocation
 
-`Use $ceratops-tasks side-task-handoff to create a copy-paste prompt for
+`Use $ceratops-task-lifecycle side-task-handoff to create a copy-paste prompt for
 spinning this side issue into a new thread and keep the main task out unless it
 directly matters.`

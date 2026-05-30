@@ -42,11 +42,12 @@ target is available.
   already triggered.
 - Include a role only when it changes how Codex should judge tradeoffs, inspect
   inputs, choose tools, or decide completion.
-- Inspect `agents/openai.yaml`, assets, bundled resources, and helper references
-  for every target skill.
-- For router skills, inspect the router `SKILL.md`, action reference files,
-  metadata, runtime payload declarations, validators, and docs that describe the
-  action surface.
+- Inspect companion artifacts only when they exist and govern trigger behavior,
+  runtime packaging, helper usage, validation, docs, or user-visible output for
+  the target skill.
+- For router skills, inspect the router `SKILL.md` and action reference files;
+  inspect metadata, runtime payload declarations, validators, and docs only when
+  they govern the action surface.
 - When companion artifacts govern the same behavior, include the aligned
   companion update or state why it is intentionally retained.
 - Remove or merge duplicate responsibilities and avoid overlong, brittle, vague,

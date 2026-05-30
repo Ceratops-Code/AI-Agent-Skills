@@ -62,8 +62,8 @@ cannot be identified.
 - Use this skill for avoidable credit spend, including rework, repeated artifact
   iterations, failed output loops, stale cleanup, oversized validation,
   inefficient evidence gathering, and producer-failure analysis.
-- If the active issue is one unresolved bug, use `$ceratops-fixloop-breaker` or
-  `$ceratops-tasks` with the `execute-in-stages` action first.
+- If the active issue is one unresolved bug, use `$ceratops-task-lifecycle` with
+  the `fixloop-break` or `execute-in-stages` action first.
 - If the user already knows the specific rule to change, use
   `$ceratops-propose-rules-update`.
 

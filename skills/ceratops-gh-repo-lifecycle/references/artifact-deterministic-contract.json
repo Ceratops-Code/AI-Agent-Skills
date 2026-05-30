@@ -312,7 +312,9 @@
         ],
         "and_when_any_file_contains_any": [
           "[project]",
-          "[build-system]",
+          "[tool.poetry]",
+          "[tool.flit.metadata]",
+          "[metadata]",
           "pypa/gh-action-pypi-publish",
           "twine upload"
         ]
@@ -326,10 +328,13 @@
         "and_when_any_file_contains_any": [
           "\"name\"",
           "\"version\"",
+          "\"publishConfig\"",
+          "\"workspaces\"",
           "npm publish",
           "npm stage publish",
           "registry.npmjs.org"
-        ]
+        ],
+        "except_when_root_manifest_is_private_without_publish_surface": true
       },
       {
         "artifact_type": "maven_package",
@@ -714,7 +719,7 @@
       "comparison": "artifact_type_system",
       "applies_when": "common.artifact_scope_trigger",
       "expected": {
-        "must_classify_all_detected_artifacts": true,
+        "must_classify_real_deliverables_not_tooling_manifests": true,
         "must_not_force_default_registry": true,
         "must_record_evidence_per_artifact": true
       }

@@ -138,6 +138,89 @@ class GHValidatorSummaryTests(unittest.TestCase):
         self.assertEqual(len(candidates), 1)
         self.assertIn("prerelease older than 30 days", candidates[0]["stale_reason"])
 
+    def test_classifier_does_not_treat_tool_manifests_as_publish_artifacts(self):
+        local = {
+            "files": ["pyproject.toml", "package.json", "scripts/check.py", ".github/workflows/validate.yml"],
+            "texts": {
+                "pyproject.toml": "[tool.mypy]\npython_version = \"3.11\"\n",
+                "package.json": "{\"name\":\"dev-tools\",\"private\":true}",
+                ".github/workflows/validate.yml": "name: Validate\n",
+            },
+        }
+
+        types = repo_validator.classify({"visibility": "public"}, local["files"], [], local)
+
+        self.assertEqual(types["artifact_surface"], ["no_artifact"])
+        self.assertIn("python", types["language_or_iac"])
+        self.assertIn("javascript_or_typescript", types["language_or_iac"])
+
+    def test_classify_keeps_publishable_package_manifests(self):
+        local = {
+            "files": ["pyproject.toml", "package.json"],
+            "texts": {
+                "pyproject.toml": "[project]\nname = \"demo\"\nversion = \"1.0.0\"\n",
+                "package.json": json.dumps({"name": "demo", "version": "1.0.0", "license": "MIT"}),
+            },
+        }
+
+        types = repo_validator.classify({}, local["files"], [], local)
+
+        self.assertEqual(types["artifact_surface"], ["npm_package", "pypi_python_package"])
+
+    def test_classify_keeps_private_workspace_publish_surface(self):
+        local = {
+            "files": ["package.json"],
+            "texts": {
+                "package.json": json.dumps({"name": "root", "private": True, "workspaces": ["packages/*"]}),
+            },
+        }
+
+        types = repo_validator.classify({}, local["files"], [], local)
+
+        self.assertEqual(types["artifact_surface"], ["npm_package"])
+
+    def test_github_package_metadata_skips_pypi_release_assets(self):
+        check = {
+            "id": "github_packages.live_package_metadata",
+            "applies_when": "artifact_type category == github_packages || registry host == github.com || registry host == ghcr.io",
+        }
+        releases = [{"assets": [{"name": "pdf_form_tools-2.1.0.tar.gz"}]}]
+
+        findings = repo_validator.evaluate_artifact_check(
+            check,
+            {},
+            {"files": [], "texts": {}},
+            {"artifact_surface": ["pypi_python_package"]},
+            {},
+            releases,
+        )
+
+        self.assertEqual(findings[0]["level"], "SKIP")
+
+    def test_short_lived_identity_passes_job_scoped_oidc(self):
+        workflow = """
+name: Publish
+jobs:
+  publish:
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b
+"""
+        check = {"id": "common.short_lived_identity_policy"}
+
+        findings = repo_validator.evaluate_artifact_check(
+            check,
+            {},
+            {"files": [".github/workflows/publish-pypi.yml"], "texts": {".github/workflows/publish-pypi.yml": workflow}},
+            {"artifact_surface": ["pypi_python_package"]},
+            {},
+            [],
+        )
+
+        self.assertEqual(findings[0]["level"], "PASS")
+
     def test_pr_readiness_emit_errors_on_error_level(self):
         finding = pr_validator.Finding(level="ERROR", check="pr.state_open", message="PR is not open.")
         stream = io.StringIO()

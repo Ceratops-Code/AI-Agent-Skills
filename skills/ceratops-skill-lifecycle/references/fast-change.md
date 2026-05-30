@@ -54,8 +54,9 @@ and select `update`.
 4. Patch the target source file and inspect the diff.
 5. Commit the release-branch change.
 6. Update only the affected runtime skill copy through
-   `scripts/install-skills.ps1 -Skill <skill-name>` when available; otherwise
-   child-copy that skill folder and read back a changed sentinel.
+   `skills/ceratops-skill-lifecycle/scripts/runtime/install-managed-skills.ps1
+   -Skill <skill-name>` when available; otherwise child-copy that skill folder
+   and read back a changed sentinel.
 7. Optionally apply and commit the same change in explicitly requested active
    worktrees or branches when it merges cleanly.
 

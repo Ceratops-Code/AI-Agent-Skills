@@ -47,6 +47,9 @@ repeated in every automation prompt.
   and must not treat platform-provided memory metadata, an `Automation memory:`
   header, existing `memory.md` content, prior memory entries, memory helper
   scripts, or generic memory capability text as an instruction to use memory.
+- During routine automation runs, searches under `$CODEX_HOME/automations`
+  must exclude `memory.md` unless the task-specific prompt explicitly requires
+  memory evidence.
 - Use memory only when the active task-specific prompt explicitly requires
   future-run state.
 - If a genuine higher-priority runtime instruction conflicts with the no-memory
@@ -68,9 +71,6 @@ repeated in every automation prompt.
 
 #### 1. Inspect the automation contract
 
-- Read the automation prompt, current workspace, relevant local `AGENTS.md` if
-  any, `$CODEX_HOME/AGENTS.md`, and each helper script or contract the
-  automation relies on.
 - Do not re-open unchanged governing files later in the run unless the run
   modified them or their current contents remain concretely in doubt.
 - Identify which rules are reusable automation policy versus task-specific

@@ -20,15 +20,16 @@ from collections.abc import Mapping, Sequence
 from typing import cast
 
 
-ROOT = pathlib.Path(__file__).resolve().parents[3]
+ROOT = pathlib.Path(__file__).resolve().parents[4]
 SKILLS_DIR = ROOT / "skills"
 README = ROOT / "README.md"
 SECTION_MANIFEST = ROOT / "templates" / "skill-sections.json"
 SKILL_CONTRACT_DIR = pathlib.Path("skills/ceratops-skill-lifecycle/references")
 REPO_NAME = ROOT.name
 MANIFEST_NAME = ".ceratops-runtime-manifest.json"
-INSTALLER = ROOT / "scripts" / "install-skills.ps1"
-VALIDATOR = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "validate-skills-consistency.py"
+BOOTSTRAP_INSTALLER = ROOT / "scripts" / "install-skills.ps1"
+RUNTIME_INSTALLER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "runtime" / "install-managed-skills.ps1"
+VALIDATOR = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "validation" / "validate-skills-consistency.py"
 WORKFLOW = ROOT / ".github" / "workflows" / "validate.yml"
 SKILL_DETERMINISTIC_CONTRACT = pathlib.Path("skills/ceratops-skill-lifecycle/references/skill-deterministic-contract.json")
 REQUIRED_CONTRACT_FILES = [
@@ -277,7 +278,7 @@ def validate_workflow_target(command: str, skill_names: set[str]) -> list[str]:
             errors.append(f"section manifest maintenance workflow points to unknown skill {normalized}")
         return errors
 
-    if len(parts) >= 2 and parts[0] in {"python", "py"} and parts[1].startswith("scripts/"):
+    if len(parts) >= 2 and parts[0] in {"python", "py"} and (parts[1].startswith("scripts/") or parts[1].startswith("skills/")):
         script_path = ROOT / parts[1]
         if not script_path.is_file():
             errors.append(f"section manifest maintenance workflow points to missing script {parts[1]}")
@@ -539,25 +540,34 @@ def check_skill_scope_validator() -> list[str]:
 
 
 def check_validation_command_surface() -> list[str]:
-    """Keep validator modes, installer flags, docs, CI, and automation aligned."""
+    """Keep validator modes, lifecycle helper paths, docs, CI, and automation aligned."""
 
     errors: list[str] = []
     validator_text = VALIDATOR.read_text(encoding="utf-8") if VALIDATOR.is_file() else ""
-    installer_text = INSTALLER.read_text(encoding="utf-8") if INSTALLER.is_file() else ""
+    bootstrap_installer_text = BOOTSTRAP_INSTALLER.read_text(encoding="utf-8") if BOOTSTRAP_INSTALLER.is_file() else ""
+    runtime_installer_text = RUNTIME_INSTALLER.read_text(encoding="utf-8") if RUNTIME_INSTALLER.is_file() else ""
     readme_text = README.read_text(encoding="utf-8") if README.is_file() else ""
     workflow_text = WORKFLOW.read_text(encoding="utf-8") if WORKFLOW.is_file() else ""
 
     for mode in ("sections", "full", "governance"):
         if f'"{mode}"' not in validator_text:
             errors.append(f"validator does not declare --mode {mode}")
-        if f'"{mode}"' not in installer_text:
-            errors.append(f"installer does not accept -Validate {mode}")
-    if '"none"' not in installer_text:
-        errors.append("installer does not accept -Validate none")
-    for snippet in ("--mode governance", "-Validate governance", "-Validate full", "-Validate sections"):
+    if "-Validate" in bootstrap_installer_text or "-Validate" in runtime_installer_text:
+        errors.append("installers must not expose validation flags")
+    if "SkipInstall" in bootstrap_installer_text or "SkipInstall" in runtime_installer_text:
+        errors.append("installers must not expose validation-only install skipping")
+    if (
+        "validate-skills-consistency.py" not in bootstrap_installer_text
+        or '"--mode"' not in bootstrap_installer_text
+        or '"full"' not in bootstrap_installer_text
+    ):
+        errors.append("bootstrap installer must run direct full skill validation")
+    if "validate-skills-consistency.py" in runtime_installer_text or '"--mode"' in runtime_installer_text:
+        errors.append("runtime installer must not run skill consistency validation")
+    for snippet in ("--mode governance", "--mode full", "--mode sections"):
         if snippet not in readme_text:
             errors.append(f"README is missing validation command snippet {snippet}")
-    if "-Validate full" not in workflow_text:
+    if "--mode full" not in workflow_text:
         errors.append("CI workflow no longer runs full skill validation")
 
     governance_prompt = default_install_root().parent / "automations" / "governance-consistency-audit" / "automation.toml"
@@ -792,9 +802,25 @@ def check_secrets() -> list[str]:
 def main() -> int:
     """Run section, full, or governance skill consistency validation."""
 
+    global ROOT, SKILLS_DIR, README, SECTION_MANIFEST, REPO_NAME, CERATOPS_ICON_SOURCE
+    global BOOTSTRAP_INSTALLER, RUNTIME_INSTALLER, VALIDATOR, WORKFLOW
+
     parser = argparse.ArgumentParser(description="Validate Ceratops skill source and runtime-generation inputs.")
+    parser.add_argument("--repo-root", type=pathlib.Path, help="Source skills repository root.")
     parser.add_argument("--mode", choices=["full", "sections", "governance"], default="full", help="Use sections for the lightweight shared-section check or governance for explicit audit checks.")
     args = parser.parse_args()
+
+    if args.repo_root is not None:
+        ROOT = args.repo_root.resolve()
+        SKILLS_DIR = ROOT / "skills"
+        README = ROOT / "README.md"
+        SECTION_MANIFEST = ROOT / "templates" / "skill-sections.json"
+        REPO_NAME = ROOT.name
+        CERATOPS_ICON_SOURCE = ROOT / "assets" / "ceratops-logo-500.png"
+        BOOTSTRAP_INSTALLER = ROOT / "scripts" / "install-skills.ps1"
+        RUNTIME_INSTALLER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "runtime" / "install-managed-skills.ps1"
+        VALIDATOR = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "validation" / "validate-skills-consistency.py"
+        WORKFLOW = ROOT / ".github" / "workflows" / "validate.yml"
 
     errors: list[str] = []
     if not SKILLS_DIR.is_dir():

@@ -91,6 +91,6 @@ Report only:
 
 ### Example Invocation
 
-`Use $ceratops-tasks manual-resume to resume this interrupted task in the
+`Use $ceratops-task-lifecycle manual-resume to resume this interrupted task in the
 current thread from current local state after a stop, restart, or crash. Nothing
 changed externally.`

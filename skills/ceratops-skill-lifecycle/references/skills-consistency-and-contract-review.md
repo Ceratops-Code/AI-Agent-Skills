@@ -12,10 +12,8 @@ docs, and the skill consistency validator owned by `ceratops-skill-lifecycle`.
 ### Script Bundle
 
 - (D) Skill consistency validator: `python
-  skills/ceratops-skill-lifecycle/scripts/validate-skills-consistency.py --mode
-  governance`
-- (D) Installer validation wrapper: `powershell -ExecutionPolicy Bypass -File
-  .\scripts\install-skills.ps1 -SkipInstall -Validate governance`
+  skills/ceratops-skill-lifecycle/scripts/validation/validate-skills-consistency.py
+  --mode governance`
 - (D) Markdown lint when source skill Markdown is in scope: `npm run
   lint:markdown`
 - (D) Python type check when skill helper or validator scripts are in scope:
@@ -28,7 +26,8 @@ docs, and the skill consistency validator owned by `ceratops-skill-lifecycle`.
 - Skill non-deterministic contract:
   `references/skill-nondeterministic-contract.md`
 - Shared-section manifest: `templates/skill-sections.json`
-- Skill consistency validator: `scripts/validate-skills-consistency.py`
+- Skill consistency validator:
+  `scripts/validation/validate-skills-consistency.py`
 
 ### Inputs To Capture
 
@@ -55,8 +54,8 @@ Infer missing inputs from the repo state before asking.
   registry, or release contracts here; those belong to
   `$ceratops-gh-repo-lifecycle` `contracts-review`.
 - Do not mutate installed skills during report-only audits. If runtime repair is
-  approved, regenerate through `scripts/install-skills.ps1` from the skills repo
-  checkout.
+  approved, regenerate through the skill-lifecycle runtime installer from the
+  skills repo checkout.
 
 ### Skill-Specific Rules
 
@@ -96,7 +95,7 @@ Infer missing inputs from the repo state before asking.
 - Review shared-section cleanup: only `core` should remain shared unless another
   section has more than one real consuming skill after consolidation.
 - When changed files include `references/skill-*`,
-  `references/skill-source-docs.json`, `scripts/validate-skills-consistency.py`,
+  `references/skill-source-docs.json`, `scripts/validation/validate-skills-consistency.py`,
   `templates/skill-sections.json`, or source skills, review changed-surface
   alignment between source docs, deterministic contracts, non-deterministic
   contracts, validator behavior, README contract docs, and actual source-skill
@@ -109,9 +108,9 @@ Infer missing inputs from the repo state before asking.
 
 - For source fixes, use the narrowest skill-maintenance workflow that matches
   the change.
-- For installed runtime fixes, regenerate through `scripts/install-skills.ps1`
-  from the skills repo checkout only when runtime mutation is explicitly in
-  scope.
+- For installed runtime fixes, regenerate through the skill-lifecycle runtime
+  installer from the skills repo checkout only when runtime mutation is
+  explicitly in scope.
 - For automation cleanup, use `$ceratops-propose-rules-update` before editing
   automation prompt text or helpers.
 
