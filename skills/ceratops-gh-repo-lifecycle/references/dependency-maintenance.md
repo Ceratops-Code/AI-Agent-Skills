@@ -69,10 +69,11 @@ Infer missing inputs from local files and live GitHub state before asking.
   patterns are unclear and comparison will reduce risk.
 - Do not infer that an update is safe from version number alone.
 
-#### 3. Re-check candidates with scripts
+#### 3. Re-check dependency posture
 
-- (D) Run the bundled PR-readiness script before enabling auto-merge or merging
-  a dependency PR.
+- Route ready dependency PR merge or auto-merge finalization through the
+  `merge-pr` action; it owns PR readiness, Codex review gate, merge, and
+  post-merge cleanup.
 - Include live repo dependency selection only when the queue changes or
   explicitly verifies GitHub dependency/security posture.
 - Include code dependency selection only when explicitly verifying Dependabot
@@ -95,9 +96,7 @@ Infer missing inputs from local files and live GitHub state before asking.
 - For `github-actions` updates, keep external action refs on full commit SHAs
   with same-line version comments when the repo enforces or already uses SHA
   pinning.
-- Run targeted tests first, then full required checks before merge.
-- If merging directly, use `gh pr merge --admin` with the allowed merge-method
-  flag and `--delete-branch` when cleanup is intended and allowed.
+- Run targeted tests first, then full required checks before merge finalization.
 - After each merge, sync the default branch, re-check open dependency-bot PRs
   and dependency alerts, and continue until no actionable update remains or a
   real blocker is reached.
