@@ -44,6 +44,12 @@ from typing import Any
 
 
 API_VERSION = "2026-03-10"
+LOCAL_PARAM_FILE_ENV = "CERATOPS_GH_CONTRACT_PARAMS"
+DEFAULT_LOCAL_PARAM_FILE = "gh-contract-params.json"
+ENV_PARAM_NAMES = {
+    "billing_email": "CERATOPS_GH_CONTRACT_BILLING_EMAIL",
+    "owner_login": "CERATOPS_GH_CONTRACT_OWNER_LOGIN",
+}
 PARAM_RE = re.compile(r"\$\{([^}]+)\}")
 FORK_PR_APPROVAL_RANK = {
     "first_time_contributors_new_to_github": 0,
@@ -799,6 +805,57 @@ def remediation_summary(drifts: list[dict[str, Any]], contract: dict[str, Any]) 
     return summary
 
 
+def local_param_path() -> pathlib.Path:
+    """Return the nontracked org-parameter file used by routine local audits."""
+
+    configured = os.environ.get(LOCAL_PARAM_FILE_ENV)
+    if configured:
+        return pathlib.Path(configured).expanduser()
+    codex_home = os.environ.get("CODEX_HOME")
+    root = pathlib.Path(codex_home).expanduser() if codex_home else pathlib.Path.home() / ".codex"
+    return root / DEFAULT_LOCAL_PARAM_FILE
+
+
+def load_local_params(org_login: str) -> dict[str, Any]:
+    """Load private per-org contract parameters without storing them in source."""
+
+    path = local_param_path()
+    if not path.exists():
+        return {}
+    try:
+        data = load_json(str(path))
+    except Exception as exc:
+        raise SystemExit(f"Could not read local org contract params from {path}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise SystemExit(f"Local org contract params must be a JSON object: {path}")
+    orgs = data.get("orgs", data)
+    if not isinstance(orgs, dict):
+        raise SystemExit(f"Local org contract params 'orgs' must be a JSON object: {path}")
+    values = orgs.get(org_login, {})
+    if values is None:
+        return {}
+    if not isinstance(values, dict):
+        raise SystemExit(f"Local org contract params for {org_login!r} must be a JSON object: {path}")
+    return {str(key): value for key, value in values.items()}
+
+
+def env_params() -> dict[str, str]:
+    """Collect private contract parameters from environment variables."""
+
+    return {key: value for key, env_name in ENV_PARAM_NAMES.items() if (value := os.environ.get(env_name))}
+
+
+def missing_param_message(missing: list[str]) -> str:
+    """Explain private parameter sources without printing sensitive values."""
+
+    env_names = ", ".join(ENV_PARAM_NAMES.get(key, key) for key in missing)
+    return (
+        f"Missing required parameter(s): {', '.join(missing)}. "
+        f"Provide CLI flags, --param entries, environment variable(s) {env_names}, "
+        f"or local JSON at {local_param_path()}."
+    )
+
+
 def build_params(args: argparse.Namespace, contract: dict[str, Any]) -> dict[str, Any]:
     """Merge CLI parameters with contract defaults and validate requirements."""
     params: dict[str, Any] = {}
@@ -806,6 +863,8 @@ def build_params(args: argparse.Namespace, contract: dict[str, Any]) -> dict[str
         if "default" in spec:
             params[key] = spec["default"]
     params["org_login"] = args.org
+    params.update(load_local_params(args.org))
+    params.update(env_params())
     if args.billing_email:
         params["billing_email"] = args.billing_email
     if args.owner_login:
@@ -820,14 +879,20 @@ def build_params(args: argparse.Namespace, contract: dict[str, Any]) -> dict[str
             params[key] = raw
     missing = [key for key, spec in contract.get("parameters", {}).items() if spec.get("required") and key not in params]
     if missing:
-        raise SystemExit(f"Missing required parameter(s): {', '.join(missing)}")
+        raise SystemExit(missing_param_message(missing))
     return params
 
 
 def main() -> int:
     """Parse CLI arguments, fetch org evidence, compare, and report drift."""
 
-    parser = argparse.ArgumentParser(description="Check and optionally remediate a GitHub org contract.")
+    parser = argparse.ArgumentParser(
+        description="Check and optionally remediate a GitHub org contract.",
+        epilog=(
+            "Private parameters may also come from "
+            f"{', '.join(ENV_PARAM_NAMES.values())} or local JSON at {local_param_path()}."
+        ),
+    )
     parser.add_argument("--contract", default=default_contract_path("github-org-deterministic-contract.json"))
     parser.add_argument("--org", required=True)
     parser.add_argument("--billing-email")

@@ -27,6 +27,9 @@ applied.
 - (D) Non-deterministic evidence collector: `python
   skills/ceratops-gh-repo-lifecycle/scripts/github-collect-nd-evidence.py
   --help`
+- (D) Source-doc registry checker: `python
+  skills/ceratops-gh-repo-lifecycle/scripts/github-check-source-docs.py
+  --help`
 
 ### References
 
@@ -122,6 +125,8 @@ request before asking.
 - Read `references/contract-source-docs.json` and the affected contract files at
   the start of the audit and use them as the bounded checklist for the next
   evidence-gathering steps.
+- Run `github-check-source-docs.py --json` before ad hoc source-doc URL checks;
+  treat fallback-only transport failures as execution-context evidence.
 - Use local files, `gh`, GitHub API, `gh` help, package metadata, release
   metadata, and registry endpoints as the first-pass evidence for the GitHub or
   artifact behavior that the contracts encode.
