@@ -121,27 +121,77 @@ def python_check(url: str, timeout: int) -> dict[str, Any]:
         }
 
 
-def curl_check(url: str, timeout: int) -> dict[str, Any]:
-    """Use the platform curl as a second transport after Python context failure."""
+def run_curl(command: list[str], timeout: int) -> subprocess.CompletedProcess[str] | dict[str, Any]:
+    """Run curl with bounded output and normalize missing-tool failures."""
 
-    executable = "curl.exe" if os.name == "nt" else "curl"
-    command = [executable, "-I", "-L", "--max-time", str(timeout), "-A", USER_AGENT, url]
     try:
-        completed = subprocess.run(command, text=True, capture_output=True, timeout=timeout + 5, check=False)
+        return subprocess.run(command, text=True, capture_output=True, timeout=timeout + 5, check=False)
     except FileNotFoundError:
-        return {"ok": False, "via": "curl", "classification": "curl_missing", "message": f"{executable} not found"}
+        return {"ok": False, "via": "curl", "classification": "curl_missing", "message": f"{command[0]} not found"}
     except subprocess.TimeoutExpired:
         return {"ok": False, "via": "curl", "classification": "timeout", "message": "curl timed out"}
 
+
+def curl_head_check(url: str, timeout: int) -> dict[str, Any]:
+    """Use curl HEAD as the first fallback transport."""
+
+    executable = "curl.exe" if os.name == "nt" else "curl"
+    completed = run_curl([executable, "-I", "-L", "--max-time", str(timeout), "-A", USER_AGENT, url], timeout)
+    if isinstance(completed, dict):
+        return completed
     statuses = [int(match.group(1)) for match in re.finditer(r"^HTTP/\S+\s+(\d+)", completed.stdout, re.MULTILINE)]
     status = statuses[-1] if statuses else None
     return {
         "ok": completed.returncode == 0 and status is not None and 200 <= status < 400,
-        "via": "curl",
+        "via": "curl-head",
         "status": status,
         "classification": "http" if status is not None else "transport",
         "message": (completed.stderr or completed.stdout).strip()[:220],
     }
+
+
+def curl_get_check(url: str, timeout: int) -> dict[str, Any]:
+    """Retry curl fallback with GET when HEAD is rejected."""
+
+    executable = "curl.exe" if os.name == "nt" else "curl"
+    completed = run_curl(
+        [
+            executable,
+            "-L",
+            "--max-time",
+            str(timeout),
+            "-A",
+            USER_AGENT,
+            "-o",
+            os.devnull,
+            "-w",
+            "CURL_STATUS:%{http_code}\nCURL_FINAL:%{url_effective}\n",
+            url,
+        ],
+        timeout,
+    )
+    if isinstance(completed, dict):
+        return completed
+    status_match = re.search(r"CURL_STATUS:(\d+)", completed.stdout)
+    final_match = re.search(r"CURL_FINAL:(.+)", completed.stdout)
+    status = int(status_match.group(1)) if status_match else None
+    return {
+        "ok": completed.returncode == 0 and status is not None and 200 <= status < 400,
+        "via": "curl-get",
+        "status": status,
+        "final_url": final_match.group(1).strip() if final_match else None,
+        "classification": "http" if status is not None else "transport",
+        "message": (completed.stderr or completed.stdout).strip()[:220],
+    }
+
+
+def curl_check(url: str, timeout: int) -> dict[str, Any]:
+    """Use curl as a second transport after Python context failure."""
+
+    result = curl_head_check(url, timeout)
+    if not result["ok"] and result.get("status") in {403, 405}:
+        return curl_get_check(url, timeout)
+    return result
 
 
 def check_doc(doc: dict[str, Any], timeout: int) -> dict[str, Any]:
