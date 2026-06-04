@@ -47,7 +47,15 @@ class Finding:
 def run_command(args: list[str], cwd: pathlib.Path) -> subprocess.CompletedProcess[str]:
     """Run a command without shell expansion and keep stdout/stderr separate."""
 
-    return subprocess.run(args, cwd=cwd, capture_output=True, text=True, check=False)
+    return subprocess.run(
+        args,
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
 
 
 def require_command(args: list[str], cwd: pathlib.Path) -> str:

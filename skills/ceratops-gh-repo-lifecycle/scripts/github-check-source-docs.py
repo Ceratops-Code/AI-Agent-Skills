@@ -125,7 +125,15 @@ def run_curl(command: list[str], timeout: int) -> subprocess.CompletedProcess[st
     """Run curl with bounded output and normalize missing-tool failures."""
 
     try:
-        return subprocess.run(command, text=True, capture_output=True, timeout=timeout + 5, check=False)
+        return subprocess.run(
+            command,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            capture_output=True,
+            timeout=timeout + 5,
+            check=False,
+        )
     except FileNotFoundError:
         return {"ok": False, "via": "curl", "classification": "curl_missing", "message": f"{command[0]} not found"}
     except subprocess.TimeoutExpired:
