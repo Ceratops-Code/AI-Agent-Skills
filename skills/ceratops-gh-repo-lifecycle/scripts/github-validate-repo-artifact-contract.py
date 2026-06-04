@@ -181,6 +181,8 @@ def run_gh_api(method: str, endpoint: str, body: Any | None = None, paginate: bo
         cmd,
         input=json.dumps(body) if body is not None else None,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         capture_output=True,
     )
     if proc.returncode == 0:
@@ -211,6 +213,8 @@ def run_gh_graphql(query: str, variables: dict[str, Any], label: str) -> ApiResu
         ["gh", "api", "graphql", "--input", "-"],
         input=json.dumps({"query": query, "variables": variables}),
         text=True,
+        encoding="utf-8",
+        errors="replace",
         capture_output=True,
     )
     if proc.returncode == 0:
@@ -228,7 +232,13 @@ def run_json_command(args: list[str], label: str) -> ApiResult:
     API query. Wrapping it in ApiResult keeps downstream check code uniform.
     """
 
-    proc = subprocess.run(args, text=True, capture_output=True)
+    proc = subprocess.run(
+        args,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        capture_output=True,
+    )
     if proc.returncode == 0:
         text = proc.stdout.strip()
         data = json.loads(text) if text else None
@@ -938,7 +948,14 @@ def git_state(local: dict[str, Any], default_branch: str) -> dict[str, Any]:
     def git(*args: str) -> tuple[int, str]:
         """Run a local git command and return status plus compact output."""
 
-        proc = subprocess.run(["git", *args], cwd=root, text=True, capture_output=True)
+        proc = subprocess.run(
+            ["git", *args],
+            cwd=root,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            capture_output=True,
+        )
         return proc.returncode, (proc.stdout + proc.stderr).strip()
 
     status_code, status = git("status", "--short")

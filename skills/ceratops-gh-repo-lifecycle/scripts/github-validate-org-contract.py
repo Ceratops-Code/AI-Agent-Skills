@@ -241,6 +241,8 @@ def run_gh_api(
         cmd,
         input=json.dumps(body) if body is not None else None,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         capture_output=True,
     )
     if proc.returncode == 0:

@@ -276,7 +276,13 @@ def pr_evidence(args: argparse.Namespace) -> dict[str, Any]:
         command.extend(["--pr", args.pr])
     if args.local_repo_path:
         command.extend(["--cwd", args.local_repo_path])
-    proc = subprocess.run(command, text=True, capture_output=True)
+    proc = subprocess.run(
+        command,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        capture_output=True,
+    )
     try:
         validator_report = json.loads(proc.stdout) if proc.stdout.strip() else None
     except json.JSONDecodeError:
