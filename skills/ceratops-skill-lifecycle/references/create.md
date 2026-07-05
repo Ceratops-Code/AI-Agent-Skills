@@ -52,6 +52,11 @@ asking.
 - In another repo, detect whether shared sections, manifests, validators,
   installers, metadata files, docs, or runtime payload declarations exist before
   treating them as required.
+- When a Ceratops skills source checkout is locally present and no explicit
+  other source repo was named, scaffold and edit the new skill only in that
+  checkout's thread-owned worktree; after validation, promote through the
+  checkout's release path and install the managed runtime copy into
+  `$CODEX_HOME/skills` unless the user explicitly opts out of install.
 - Decide whether raw scaffolding through the system skill creator is necessary
   or direct creation is cheaper and clearer.
 
@@ -85,8 +90,9 @@ asking.
 
 - Make an intentional commit on the task-worktree branch once the local repo
   state is ready.
-- In this repo, use `change-promotion` and verify the install unless the user
-  explicitly opted out.
+- For a Ceratops skills source checkout, use `change-promotion` and verify the
+  managed install into `$CODEX_HOME/skills` unless the user explicitly opted
+  out.
 - In another repo, run only that repo's available install, merge, ship, or
   runtime update path; if none exists, report it as not provided.
 
@@ -100,9 +106,9 @@ asking.
   reflected in the design or reported.
 - Required generation or validation path ran successfully when the target repo
   provides one.
-- In this repo, local promotion and install verification completed unless the
-  user explicitly opted out; otherwise task-worktree source changes are the
-  closure scope.
+- For a Ceratops skills source checkout, local promotion and managed install
+  verification completed unless the user explicitly opted out; otherwise
+  task-worktree source changes are the closure scope.
 
 ### Output Contract
 
