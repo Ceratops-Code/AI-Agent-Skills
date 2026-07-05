@@ -1,6 +1,6 @@
 interface:
   display_name: "Ceratops Task Lifecycle"
-  short_description: "Route task execution, fix-loop breaks, resume, handoffs, and closure checks"
+  short_description: "Route task work, imports, handoffs, and closure checks"
   icon_small: "./assets/ceratops-logo-500.png"
   icon_large: "./assets/ceratops-logo-500.png"
-  default_prompt: "Use $ceratops-task-lifecycle and select the right action: execute-in-stages, fixloop-break, manual-resume, full-handoff, side-task-handoff, or closure-check."
+  default_prompt: "Use $ceratops-task-lifecycle and select the right action: execute-in-stages, fixloop-break, manual-resume, full-handoff, side-task-handoff, closure-check, or import-from-chatgpt."
