@@ -67,7 +67,7 @@ export const EXTRACT_CONVERSATION_SCRIPT = `(() => {
       });
 
   const messages = [];
-  const seen = new Set();
+  const seenIds = new Set();
 
   for (const item of messageRoots) {
     const clone = item.node.cloneNode(true);
@@ -81,13 +81,16 @@ export const EXTRACT_CONVERSATION_SCRIPT = `(() => {
       || root.getAttribute("data-testid")
       || root.id
       || "";
-    const key = item.role + "\\n" + text;
-    if (seen.has(key)) continue;
-    seen.add(key);
+    if (id) {
+      const key = item.role + "\\n" + id;
+      if (seenIds.has(key)) continue;
+      seenIds.add(key);
+    }
 
     messages.push({
       role: clean(item.role || "unknown").toLowerCase(),
       id,
+      ordinal: messages.length,
       text
     });
   }
@@ -112,22 +115,54 @@ export const EXTRACT_CONVERSATION_SCRIPT = `(() => {
 
 export function mergeMessages(chunks) {
   const messages = [];
-  const seen = new Set();
+  const seenIds = new Set();
 
   for (const chunk of chunks || []) {
+    const chunkMessages = [];
     for (const message of chunk?.messages || []) {
       const role = normalizeRole(message.role);
       const text = String(message.text || "").trim();
       if (!text) continue;
-
-      const key = `${role}\n${text.replace(/\s+/g, " ")}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      messages.push({ ...message, role, text });
+      chunkMessages.push({ ...message, role, text });
     }
+
+    const hasStableIds = chunkMessages.some((message) => message.id);
+    if (hasStableIds) {
+      for (const message of chunkMessages) {
+        if (message.id) {
+          const key = `${message.role}\n${message.id}`;
+          if (seenIds.has(key)) continue;
+          seenIds.add(key);
+        }
+        messages.push(message);
+      }
+      continue;
+    }
+
+    const overlap = boundaryOverlap(messages, chunkMessages);
+    messages.push(...chunkMessages.slice(overlap));
   }
 
   return messages;
+}
+
+function boundaryOverlap(existing, next) {
+  const max = Math.min(existing.length, next.length);
+  for (let size = max; size > 0; size -= 1) {
+    let matches = true;
+    for (let index = 0; index < size; index += 1) {
+      if (messageSignature(existing[existing.length - size + index]) !== messageSignature(next[index])) {
+        matches = false;
+        break;
+      }
+    }
+    if (matches) return size;
+  }
+  return 0;
+}
+
+function messageSignature(message) {
+  return `${normalizeRole(message.role)}\n${String(message.text || "").replace(/\s+/g, " ").trim()}`;
 }
 
 export function formatTranscript(payload) {
