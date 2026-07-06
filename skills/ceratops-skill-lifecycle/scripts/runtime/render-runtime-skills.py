@@ -23,6 +23,7 @@ import os
 import pathlib
 import shutil
 import stat
+import subprocess
 import sys
 import tempfile
 from collections.abc import Mapping, Sequence
@@ -249,6 +250,25 @@ def remove_existing_runtime_target(path: pathlib.Path) -> None:
     shutil.rmtree(path)
 
 
+def enable_windows_acl_inheritance(path: pathlib.Path) -> None:
+    """Make generated runtime folders inherit the install root's Windows ACLs."""
+
+    if os.name != "nt":
+        return
+    result = subprocess.run(
+        ["icacls", str(path), "/inheritance:e", "/T", "/C"],
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()
+        message = f"could not enable ACL inheritance on generated runtime skill folder: {path}"
+        if detail:
+            message = f"{message}: {detail}"
+        raise RuntimeError(message)
+
+
 def build_skill(skill_name: str, install_root: pathlib.Path, manifest: Mapping[str, object]) -> pathlib.Path:
     """Build one skill atomically in a temporary folder, then move it in place."""
 
@@ -284,6 +304,7 @@ def build_skill(skill_name: str, install_root: pathlib.Path, manifest: Mapping[s
 
         remove_existing_runtime_target(target_skill)
         temp_skill.replace(target_skill)
+        enable_windows_acl_inheritance(target_skill)
         return target_skill
     finally:
         shutil.rmtree(temp_parent, ignore_errors=True)
