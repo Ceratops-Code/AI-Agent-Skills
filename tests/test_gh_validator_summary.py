@@ -280,6 +280,23 @@ jobs:
         self.assertEqual(findings[0]["level"], "NEEDS_REVIEW")
         self.assertEqual(findings[0]["expected"], "external_runtime_requires_absolute_path_and_documented")
 
+    def test_regex_scan_keeps_secret_matches_blocking(self):
+        check = {
+            "id": "content.local_secret_pattern_scan",
+            "expected": {
+                "forbidden_patterns": [r"ghp_[A-Za-z0-9]+"],
+                "allow_when": "fixture_or_documentation_context_only",
+            },
+        }
+        local = {
+            "available": True,
+            "texts": {"config.txt": "token=ghp_exampletoken"},
+        }
+
+        findings = repo_validator.regex_scan_check(check, local)
+
+        self.assertEqual(findings[0]["level"], "ERROR")
+
     def test_pr_readiness_emit_errors_on_error_level(self):
         finding = pr_validator.Finding(level="ERROR", check="pr.state_open", message="PR is not open.")
         stream = io.StringIO()

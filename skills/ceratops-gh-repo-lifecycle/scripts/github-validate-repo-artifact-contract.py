@@ -1926,7 +1926,7 @@ def regex_scan_check(check: dict[str, Any], local: dict[str, Any]) -> list[dict[
                 matches.append({"path": path, "pattern": pattern})
     if matches:
         allow_when = check.get("expected", {}).get("allow_when")
-        if allow_when:
+        if allow_when and check_id == "stale_state.local_path_references":
             return [finding(check_id, "NEEDS_REVIEW", "Local pattern matches require documented-exception review.", actual=matches, expected=allow_when)]
         return [finding(check_id, "ERROR", "Forbidden local pattern found.", actual=matches, expected="no matches")]
     if check_id == "stale_state.local_path_references":
