@@ -861,6 +861,22 @@ def fork_pr_approval_finding(check_id: str, res: ApiResult, expected: dict[str, 
     return [finding(check_id, "ERROR", "Fork PR contributor approval policy is weaker than required.", actual=actual, expected=minimum, path="$.approval_policy")]
 
 
+def private_fork_pr_workflow_findings(check_id: str, data: dict[str, Any]) -> list[dict[str, Any]]:
+    """Evaluate private-fork workflow controls without requiring an inapplicable approval flag."""
+
+    drifts = []
+    workflows_enabled = data.get("run_workflows_from_fork_pull_requests") is True
+    if workflows_enabled:
+        drifts.append(finding(check_id, "WARN", "Private fork PR workflows run without an explicit approved drift record.", actual=True, expected="false unless approved", path="$.run_workflows_from_fork_pull_requests"))
+    if data.get("send_write_tokens_to_workflows") is not False:
+        drifts.append(finding(check_id, "ERROR", "Private fork PR workflows can receive write tokens.", actual=data.get("send_write_tokens_to_workflows"), expected=False, path="$.send_write_tokens_to_workflows"))
+    if data.get("send_secrets_and_variables") is not False:
+        drifts.append(finding(check_id, "ERROR", "Private fork PR workflows can receive secrets or variables.", actual=data.get("send_secrets_and_variables"), expected=False, path="$.send_secrets_and_variables"))
+    if workflows_enabled and data.get("require_approval_for_fork_pr_workflows") is not True:
+        drifts.append(finding(check_id, "ERROR", "Enabled private fork PR workflows do not require approval.", actual=data.get("require_approval_for_fork_pr_workflows"), expected=True, path="$.require_approval_for_fork_pr_workflows"))
+    return drifts or [finding(check_id, "PASS", "Private fork PR workflow settings match contract.", actual=data)]
+
+
 def toml_key_present(text: str, key: str) -> bool:
     """Detect static or dynamic keys in TOML-like local configuration text."""
 
@@ -1615,16 +1631,7 @@ def evaluate_repo_check(
         data = res.data if res.ok else None
         if not isinstance(data, dict):
             return [finding(check_id, "SKIP", "Private fork PR workflow settings unavailable or not applicable.")]
-        drifts = []
-        if data.get("run_workflows_from_fork_pull_requests") is True:
-            drifts.append(finding(check_id, "WARN", "Private fork PR workflows run without an explicit approved drift record.", actual=True, expected="false unless approved", path="$.run_workflows_from_fork_pull_requests"))
-        if data.get("send_write_tokens_to_workflows") is not False:
-            drifts.append(finding(check_id, "ERROR", "Private fork PR workflows can receive write tokens.", actual=data.get("send_write_tokens_to_workflows"), expected=False, path="$.send_write_tokens_to_workflows"))
-        if data.get("send_secrets_and_variables") is not False:
-            drifts.append(finding(check_id, "ERROR", "Private fork PR workflows can receive secrets or variables.", actual=data.get("send_secrets_and_variables"), expected=False, path="$.send_secrets_and_variables"))
-        if data.get("require_approval_for_fork_pr_workflows") is not True:
-            drifts.append(finding(check_id, "ERROR", "Private fork PR workflows do not require approval.", actual=data.get("require_approval_for_fork_pr_workflows"), expected=True, path="$.require_approval_for_fork_pr_workflows"))
-        return drifts or [finding(check_id, "PASS", "Private fork PR workflow settings match contract.", actual=data)]
+        return private_fork_pr_workflow_findings(check_id, data)
 
     if check_id == "actions.workflow_sha_pinning":
         unpinned = workflows_with_unpinned_refs(local)
@@ -1918,6 +1925,9 @@ def regex_scan_check(check: dict[str, Any], local: dict[str, Any]) -> list[dict[
             if regex.search(text):
                 matches.append({"path": path, "pattern": pattern})
     if matches:
+        allow_when = check.get("expected", {}).get("allow_when")
+        if allow_when and check_id == "stale_state.local_path_references":
+            return [finding(check_id, "NEEDS_REVIEW", "Local pattern matches require documented-exception review.", actual=matches, expected=allow_when)]
         return [finding(check_id, "ERROR", "Forbidden local pattern found.", actual=matches, expected="no matches")]
     if check_id == "stale_state.local_path_references":
         return [finding(check_id, "PASS", "No forbidden local patterns found.", actual=[], inventory=[])]
