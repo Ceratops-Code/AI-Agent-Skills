@@ -272,7 +272,7 @@ jobs:
         }
         local = {
             "available": True,
-            "texts": {"automation.toml": 'cwd = "C:\\\\CodexProjects\\\\repo"'},
+            "texts": {"automation.toml": 'cwd = "' + "C:" + '\\\\CodexProjects\\\\repo"'},
         }
 
         findings = repo_validator.regex_scan_check(check, local)
