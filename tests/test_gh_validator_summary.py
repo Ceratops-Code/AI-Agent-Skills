@@ -221,6 +221,65 @@ jobs:
 
         self.assertEqual(findings[0]["level"], "PASS")
 
+    def test_private_fork_workflows_do_not_require_approval_when_disabled(self):
+        findings = repo_validator.private_fork_pr_workflow_findings(
+            "actions.private_fork_pr_workflows",
+            {
+                "run_workflows_from_fork_pull_requests": False,
+                "send_write_tokens_to_workflows": False,
+                "send_secrets_and_variables": False,
+                "require_approval_for_fork_pr_workflows": False,
+            },
+        )
+
+        self.assertEqual(findings[0]["level"], "PASS")
+
+    def test_contributor_approval_policy_does_not_apply_to_private_repos(self):
+        context = {
+            "repo.visibility": "private",
+            "repo.archived": False,
+            "type.workflow_surface": {"has_workflows": True},
+        }
+
+        applies = repo_validator.condition_matches(
+            "repo.visibility != private && repo.archived == false && type.workflow_surface has has_workflows",
+            context,
+        )
+
+        self.assertFalse(applies)
+
+    def test_private_fork_workflows_require_approval_when_enabled(self):
+        findings = repo_validator.private_fork_pr_workflow_findings(
+            "actions.private_fork_pr_workflows",
+            {
+                "run_workflows_from_fork_pull_requests": True,
+                "send_write_tokens_to_workflows": False,
+                "send_secrets_and_variables": False,
+                "require_approval_for_fork_pr_workflows": False,
+            },
+        )
+
+        self.assertEqual([item["level"] for item in findings], ["WARN", "ERROR"])
+        self.assertEqual(findings[1]["path"], "$.require_approval_for_fork_pr_workflows")
+
+    def test_regex_scan_defers_documented_exceptions_for_review(self):
+        check = {
+            "id": "stale_state.local_path_references",
+            "expected": {
+                "forbidden_patterns": [r"[A-Za-z]:\\\\"],
+                "allow_when": "external_runtime_requires_absolute_path_and_documented",
+            },
+        }
+        local = {
+            "available": True,
+            "texts": {"automation.toml": 'cwd = "C:\\\\CodexProjects\\\\repo"'},
+        }
+
+        findings = repo_validator.regex_scan_check(check, local)
+
+        self.assertEqual(findings[0]["level"], "NEEDS_REVIEW")
+        self.assertEqual(findings[0]["expected"], "external_runtime_requires_absolute_path_and_documented")
+
     def test_pr_readiness_emit_errors_on_error_level(self):
         finding = pr_validator.Finding(level="ERROR", check="pr.state_open", message="PR is not open.")
         stream = io.StringIO()

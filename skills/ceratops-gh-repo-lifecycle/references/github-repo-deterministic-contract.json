@@ -1007,7 +1007,7 @@
       "kind": "api",
       "endpoint": "/repos/${owner}/${repo}/actions/permissions/fork-pr-contributor-approval",
       "comparison": "fork_pr_contributor_approval_policy",
-      "applies_when": "repo.archived == false && type.workflow_surface has has_workflows",
+      "applies_when": "repo.visibility != private && repo.archived == false && type.workflow_surface has has_workflows",
       "expected": {
         "minimum_approval_policy": "first_time_contributors",
         "allowed_policies": [
@@ -1029,7 +1029,7 @@
         "run_workflows_from_fork_pull_requests": "false_unless_approved",
         "send_write_tokens_to_workflows": false,
         "send_secrets_and_variables": false,
-        "require_approval_for_fork_pr_workflows": true
+        "require_approval_for_fork_pr_workflows": "true_when_run_workflows_from_fork_pull_requests"
       }
     },
     {
