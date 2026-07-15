@@ -740,7 +740,7 @@
       "comparison": "selected_fields_equal",
       "settable": false,
       "expected": {
-        "total_count": 8,
+        "total_count": 9,
         "roles": [
           {
             "base_role": "admin",
@@ -759,6 +759,16 @@
             "description": "Grants read access to all repositories in the organization.",
             "name": "all_repo_read",
             "permissions": []
+          },
+          {
+            "base_role": "read",
+            "description": "Grants the ability to review open-source license compliance closure requests and update repository license policies.",
+            "name": "open_source_license_manager",
+            "permissions": [
+              "review_license_compliance_closure_requests",
+              "view_license_compliance_closure_requests",
+              "view_repository_license_policy"
+            ]
           },
           {
             "base_role": "triage",

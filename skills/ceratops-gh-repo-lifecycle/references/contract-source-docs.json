@@ -1,7 +1,7 @@
 {
   "source_docs_version": 1,
   "name": "ceratops_gh_repo_contract_source_docs",
-  "captured_on": "2026-05-30",
+  "captured_on": "2026-07-12",
   "policy": {
     "use_order": [
       "official_docs",
@@ -21,6 +21,13 @@
         "org"
       ],
       "url": "https://docs.github.com/en/rest/orgs/orgs"
+    },
+    {
+      "id": "github.rest.orgs.organization_roles",
+      "scope": [
+        "org"
+      ],
+      "url": "https://docs.github.com/en/rest/orgs/organization-roles?apiVersion=2026-03-10"
     },
     {
       "id": "github.rest.repos",
@@ -109,6 +116,22 @@
         "org"
       ],
       "url": "https://docs.github.com/en/rest/code-security/configurations"
+    },
+    {
+      "id": "github.code_security.license_compliance",
+      "scope": [
+        "repo",
+        "org"
+      ],
+      "url": "https://docs.github.com/en/code-security/concepts/supply-chain-security/open-source-license-compliance"
+    },
+    {
+      "id": "github.code_security.license_policies",
+      "scope": [
+        "repo",
+        "org"
+      ],
+      "url": "https://docs.github.com/en/code-security/how-tos/secure-your-supply-chain/manage-your-dependency-security/configure-license-policies"
     },
     {
       "id": "github.rest.dependabot.alerts",
