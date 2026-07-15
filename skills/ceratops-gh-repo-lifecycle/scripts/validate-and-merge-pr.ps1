@@ -90,6 +90,10 @@ Invoke-QuietNative -FilePath "python" -Arguments @(
     "--json"
 )
 
+# The PR head or checks can change while the review gate waits. Revalidate the
+# live head immediately before issuing the merge mutation.
+Invoke-QuietNative -FilePath "python" -Arguments $readinessArgs
+
 $ghArgs = @("pr", "merge", $Pr, "--$MergeMethod")
 if ($Admin) {
     $ghArgs += "--admin"
