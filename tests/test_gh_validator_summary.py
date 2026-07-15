@@ -307,6 +307,18 @@ jobs:
         self.assertEqual(status, 1)
         self.assertEqual(payload["counts"]["ERROR"], 1)
 
+    def test_merge_helper_revalidates_after_review_wait(self):
+        text = (SCRIPTS / "validate-and-merge-pr.ps1").read_text(encoding="utf-8")
+        readiness_call = 'Invoke-QuietNative -FilePath "python" -Arguments $readinessArgs'
+        positions = [index for index in range(len(text)) if text.startswith(readiness_call, index)]
+
+        self.assertEqual(len(positions), 2)
+        review_wait = text.index('$reviewGateScript,')
+        merge_args = text.index('$ghArgs = @("pr", "merge"')
+        self.assertLess(positions[0], review_wait)
+        self.assertLess(review_wait, positions[1])
+        self.assertLess(positions[1], merge_args)
+
     def test_org_remediation_summary_uses_needs_review_bucket(self):
         summary = org_validator.remediation_summary(
             [{"check_id": "org.identity", "path": "$.login"}],
