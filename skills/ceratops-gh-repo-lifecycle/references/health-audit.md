@@ -17,7 +17,7 @@ credential-bound fixes precisely.
 - (D) Optional org contract check when org posture is in scope: `python
   skills/ceratops-gh-repo-lifecycle/scripts/github-validate-org-contract.py
   --org ORG`
-- (D) Add `--summary-json --levels ERROR,WARN,NEEDS_REVIEW`, `--json`,
+- (D) Add `--summary-json --levels ERROR,WARN,NEEDS_AI_AGENT_REVIEW`, `--json`,
   `--check-id`, or a narrower `--subset` when another step needs structured or
   scoped findings.
 - (D) Prefer `--summary-json` for agent-readable repo-health output; use
@@ -69,10 +69,10 @@ Infer missing inputs from live repo state and local files before asking.
   settings, repo-content posture, stale queues, local checks, and artifact
   registry evidence.
 - Treat stale-state inventory counts as evidence, not findings; only
-  policy-matching stale candidates should produce `NEEDS_REVIEW`.
-- If the checker reports `WARN`, `NEEDS_REVIEW`, or a blind spot, classify it
-  from available repo evidence first; escalate only intent that cannot be
-  inferred from repo evidence, and do not close while review items remain
+  policy-matching stale candidates should produce `NEEDS_AI_AGENT_REVIEW`.
+- If the checker reports `WARN`, `NEEDS_AI_AGENT_REVIEW`, or a blind spot,
+  classify it from available repo evidence first; escalate only intent that
+  cannot be inferred from repo evidence, and do not close while review items remain
   unclassified.
 
 #### 3. Research only where needed

@@ -1,5 +1,5 @@
 {
-  "contract_format_version": 1,
+  "contract_format_version": 2,
   "kind": "artifact_registry_contract",
   "name": "ceratops_artifact_deterministic_contract",
   "captured_on": "2026-05-02",
@@ -132,18 +132,6 @@
   "source_doc_scopes": [
     "artifact"
   ],
-  "scope_policy": {
-    "applies_when_any": [
-      "detected_external_artifact_count > 0",
-      "current_change_affects_artifact == true",
-      "final_answer_makes_artifact_claim == true"
-    ],
-    "no_artifact_claim_requires": [
-      "common.artifact_scope_trigger",
-      "common.real_deliverable_classification",
-      "common.no_artifact_consistency"
-    ]
-  },
   "remediation_policy": {
     "default_mode": "report_only",
     "publish_or_registry_mutation": "never_apply_from_audit_only_flow",
@@ -310,7 +298,7 @@
           "setup.cfg",
           "setup.py"
         ],
-        "and_when_any_file_contains_any": [
+        "and_when_matching_path_contains_any": [
           "[project]",
           "[tool.poetry]",
           "[tool.flit.metadata]",
@@ -325,7 +313,7 @@
         "when_any_path_matches": [
           "package.json"
         ],
-        "and_when_any_file_contains_any": [
+        "and_when_matching_path_contains_any": [
           "\"name\"",
           "\"version\"",
           "\"publishConfig\"",
@@ -352,7 +340,7 @@
           "settings.gradle",
           "settings.gradle.kts"
         ],
-        "and_when_any_file_contains_any": [
+        "and_when_matching_path_contains_any": [
           "maven-publish",
           "publishing {",
           "central.sonatype.com",
@@ -368,7 +356,7 @@
           "*.vbproj",
           "*.nuspec"
         ],
-        "and_when_any_file_contains_any": [
+        "and_when_matching_path_contains_any": [
           "PackageId",
           "GeneratePackageOnBuild",
           "dotnet pack",
@@ -382,7 +370,7 @@
         "when_any_path_matches": [
           "Cargo.toml"
         ],
-        "and_when_any_file_contains_any": [
+        "and_when_matching_path_contains_any": [
           "[package]",
           "cargo publish",
           "crates.io"
@@ -394,7 +382,7 @@
         "when_any_path_matches": [
           "*.gemspec"
         ],
-        "and_when_any_file_contains_any": [
+        "and_when_matching_path_contains_any": [
           "Gem::Specification",
           "gem push",
           "rubygems.org"
@@ -406,7 +394,7 @@
         "when_any_path_matches": [
           "*.psd1"
         ],
-        "and_when_any_file_contains_any": [
+        "and_when_matching_path_contains_any": [
           "RootModule",
           "ModuleVersion",
           "Publish-Module",
@@ -426,7 +414,7 @@
           "build/**",
           "artifacts/**"
         ],
-        "and_when_any_file_contains_any": [
+        "and_when_workflow_contains_any": [
           "gh release upload",
           "upload-release-asset",
           "softprops/action-gh-release"
@@ -435,7 +423,15 @@
       {
         "artifact_type": "installer_or_cli_binary",
         "confidence": "medium",
-        "when_any_file_contains_any": [
+        "when_any_path_matches": [
+          ".goreleaser.yml",
+          ".goreleaser.yaml",
+          "goreleaser*.yml",
+          "goreleaser*.yaml",
+          ".github/workflows/*.yml",
+          ".github/workflows/*.yaml"
+        ],
+        "and_when_matching_path_contains_any": [
           "goreleaser",
           "cargo install",
           "winget",
@@ -462,7 +458,7 @@
           ".gitlab-ci.yml",
           ".gitlab-ci.yaml"
         ],
-        "and_when_any_file_contains_any": [
+        "and_when_matching_path_contains_any": [
           "actions/deploy-pages@",
           "actions/upload-pages-artifact@",
           "peaceiris/actions-gh-pages@",
@@ -479,7 +475,7 @@
           "*.tf",
           "modules/**"
         ],
-        "and_when_any_file_contains_any": [
+        "and_when_matching_path_contains_any": [
           "terraform registry",
           "registry.terraform.io"
         ]
@@ -573,8 +569,16 @@
     "github_release_bundle": {
       "description": "GitHub release, tag, and release-asset metadata for release artifacts and version verification.",
       "endpoints": [
-        "GET /repos/${owner}/${repo}/releases?per_page=100",
-        "GET /repos/${owner}/${repo}/tags?per_page=100"
+        {
+          "method": "GET",
+          "endpoint": "/repos/${owner}/${repo}/releases?per_page=100",
+          "paginate": true
+        },
+        {
+          "method": "GET",
+          "endpoint": "/repos/${owner}/${repo}/tags?per_page=100",
+          "paginate": true
+        }
       ],
       "feeds_checks": [
         "common.version_source",
@@ -605,13 +609,15 @@
       "description": "Registry-specific live metadata. The checker calls only the endpoints for detected artifact types.",
       "endpoints_by_type": {
         "pypi_python_package": [
-          "GET https://pypi.org/pypi/${package}/json",
-          "GET https://pypi.org/simple/${package}/"
+          "GET https://pypi.org/pypi/${package}/json"
         ],
         "npm_package": [
           "GET https://registry.npmjs.org/${package}"
         ],
         "maven_package": [
+          "GET https://search.maven.org/solrsearch/select?q=g:${groupId}+AND+a:${artifactId}"
+        ],
+        "gradle_maven_package": [
           "GET https://search.maven.org/solrsearch/select?q=g:${groupId}+AND+a:${artifactId}"
         ],
         "nuget_package": [
@@ -627,24 +633,20 @@
           "GET https://www.powershellgallery.com/api/v2/Packages?$filter=Id eq '${module}'"
         ],
         "docker_oci_image": [
-          "registry_manifest_inspect:${image}:${tag_or_digest}",
           "GET https://hub.docker.com/v2/namespaces/${docker_namespace}/repositories/${docker_repository}/",
           "GET https://hub.docker.com/v2/namespaces/${docker_namespace}/repositories/${docker_repository}/tags?page_size=25&ordering=last_updated"
-        ],
-        "helm_chart": [
-          "helm_repo_index:${chart_repository}"
         ]
       },
       "feeds_checks": [
         "common.live_registry_verification",
         "pypi.live_version_install_smoke",
         "npm.live_package_version_smoke",
-        "maven.live_component_verification",
-        "nuget.live_package_verification",
-        "crates.live_crate_verification",
-        "rubygems.live_gem_verification",
-        "powershell_gallery.live_module_verification",
-        "docker_oci.live_image_verification"
+        "maven.metadata_publish_and_verify",
+        "nuget.metadata_pack_publish_and_verify",
+        "crates.metadata_package_publish_and_verify",
+        "rubygems.metadata_build_publish_and_verify",
+        "powershell_gallery.metadata_publish_and_verify",
+        "docker_oci.build_publish_and_pull"
       ]
     },
     "post_publish_consumer_bundle": {
@@ -705,12 +707,13 @@
       ],
       "category": "common",
       "kind": "classification",
-      "comparison": "scope_policy",
-      "applies_when": "always",
-      "expected": {
-        "run_contract_when_any_scope_policy_trigger_matches": true,
-        "otherwise_result": "not_applicable"
-      }
+      "applies_when": "detected_external_artifact_count > 0 || current_change_affects_artifact == true || final_answer_makes_artifact_claim == true",
+      "assertions": [
+        {
+          "path": "/artifact/types",
+          "operator": "not_empty"
+        }
+      ]
     },
     {
       "id": "common.real_deliverable_classification",
@@ -719,13 +722,13 @@
       ],
       "category": "common",
       "kind": "tree_workflow_release_registry_scan",
-      "comparison": "artifact_type_system",
-      "applies_when": "common.artifact_scope_trigger",
-      "expected": {
-        "must_classify_real_deliverables_not_tooling_manifests": true,
-        "must_not_force_default_registry": true,
-        "must_record_evidence_per_artifact": true
-      }
+      "applies_when": "detected_external_artifact_count > 0 || current_change_affects_artifact == true || final_answer_makes_artifact_claim == true",
+      "assertions": [
+        {
+          "path": "/artifact/types",
+          "operator": "not_empty"
+        }
+      ]
     },
     {
       "id": "common.identity_contract",
@@ -734,9 +737,8 @@
       ],
       "category": "common",
       "kind": "contract_and_metadata",
-      "comparison": "required_fields_present",
       "applies_when": "detected_external_artifact_count > 0",
-      "expected": {
+      "desired": {
         "required_per_artifact_fields": [
           "artifact_type",
           "registry",
@@ -746,10 +748,15 @@
           "tag_style",
           "changelog_source",
           "post_publish_consumer_check"
-        ],
-        "registry_target_must_match_workflow_and_docs": true,
-        "package_name_must_match_manifest_and_registry": true
-      }
+        ]
+      },
+      "assertions": [
+        {
+          "path": "/artifact/contracts",
+          "operator": "all_objects_have",
+          "desired_path": "/desired/required_per_artifact_fields"
+        }
+      ]
     },
     {
       "id": "common.audit_only_no_publish",
@@ -758,15 +765,14 @@
       ],
       "category": "common",
       "kind": "mode_guard",
-      "comparison": "publish_mutation_absent",
       "applies_when": "audit_only == true",
-      "expected": {
-        "no_registry_publish": true,
-        "no_release_creation": true,
-        "no_tag_creation": true,
-        "no_package_delete": true,
-        "classify_artifact_state_only": true
-      }
+      "assertions": [
+        {
+          "path": "/artifact/publish_requested",
+          "operator": "equal",
+          "expected": false
+        }
+      ]
     },
     {
       "id": "common.local_build_package_consume",
@@ -775,13 +781,19 @@
       ],
       "category": "common",
       "kind": "local_command_evidence",
-      "comparison": "type_specific_smoke_policy",
       "applies_when": "current_change_affects_artifact == true || final_answer_makes_artifact_claim == true || merged_change_requires_release == true",
-      "expected": {
-        "build_or_package_command_succeeds": true,
-        "artifact_can_be_installed_pulled_run_or_consumed": true,
-        "published_artifact_smoke_uses_registry_artifact_not_editable_checkout": true
-      }
+      "assertions": [
+        {
+          "path": "/artifact/recorded_checks/local_build",
+          "operator": "equal",
+          "expected": true
+        },
+        {
+          "path": "/artifact/recorded_checks/consumer_smoke",
+          "operator": "equal",
+          "expected": true
+        }
+      ]
     },
     {
       "id": "common.publish_guard",
@@ -790,12 +802,14 @@
       ],
       "category": "common",
       "kind": "policy_guard",
-      "comparison": "release_required_before_publish",
       "applies_when": "audit_only == false",
-      "expected": {
-        "publish_only_when_repo_policy_and_merged_change_require_artifact": true,
-        "manual_approval_required_for_registry_mutation": true
-      }
+      "assertions": [
+        {
+          "path": "/artifact/recorded_checks/publish_authorized",
+          "operator": "equal",
+          "expected": true
+        }
+      ]
     },
     {
       "id": "common.version_source",
@@ -804,14 +818,16 @@
       ],
       "category": "common",
       "kind": "metadata_and_tag_scan",
-      "comparison": "trustworthy_version_source",
       "applies_when": "detected_external_artifact_count > 0",
-      "expected": {
-        "version_from_manifest_tag_or_approved_source": true,
-        "version_matches_release_tag_when_tag_driven": true,
-        "version_not_invented_by_checker": true,
-        "dirty_tree_or_uncommitted_version_change_blocks_publish": true
-      }
+      "assertions": [
+        {
+          "path": "/artifact/contracts",
+          "operator": "all_objects_have",
+          "expected": [
+            "version_source"
+          ]
+        }
+      ]
     },
     {
       "id": "common.live_registry_verification",
@@ -820,14 +836,14 @@
       ],
       "category": "common",
       "kind": "registry_api_or_cli",
-      "comparison": "published_artifact_exists",
       "applies_when": "detected_external_artifact_count > 0 && (artifact_was_published == true || final_answer_makes_artifact_claim == true || audit_only == false)",
-      "expected": {
-        "tag_digest_or_version_resolves": true,
-        "package_or_release_page_resolves": true,
-        "published_metadata_matches_contract": true,
-        "published_artifact_can_be_downloaded_or_pulled_when_relevant": true
-      }
+      "assertions": [
+        {
+          "path": "/artifact/live_metadata/all_resolved",
+          "operator": "equal",
+          "expected": true
+        }
+      ]
     },
     {
       "id": "common.short_lived_identity_policy",
@@ -836,14 +852,19 @@
       ],
       "category": "common",
       "kind": "workflow_scan",
-      "comparison": "publishing_identity_policy",
       "applies_when": "detected_external_artifact_count > 0 && publish_workflow_detected == true",
-      "expected": {
-        "prefer_registry_supported_trusted_publishing_or_oidc": true,
-        "long_lived_publish_token_fallback_explicit_and_scoped": true,
-        "id_token_write_only_in_publish_job_when_oidc_used": true,
-        "token_not_stored_in_repo_files": true
-      }
+      "assertions": [
+        {
+          "path": "/local/workflows/top_level_write/id-token",
+          "operator": "empty",
+          "level": "WARN"
+        },
+        {
+          "path": "/local/workflows/any_write/id-token",
+          "operator": "not_empty",
+          "level": "NEEDS_AI_AGENT_REVIEW"
+        }
+      ]
     },
     {
       "id": "common.attestation_permissions",
@@ -852,14 +873,28 @@
       ],
       "category": "common",
       "kind": "workflow_scan",
-      "comparison": "least_privilege_attestation_permissions",
       "applies_when": "workflow_emits_attestation_or_provenance == true",
-      "expected": {
-        "attestations_write_only_in_attestation_job": true,
-        "id_token_write_only_when_required": true,
-        "artifact_metadata_write_only_when_linked_metadata_intended": true,
-        "contents_read_present": true
-      }
+      "assertions": [
+        {
+          "path": "/local/workflows/top_level_write/attestations",
+          "operator": "empty"
+        },
+        {
+          "path": "/local/workflows/top_level_write/id-token",
+          "operator": "empty",
+          "level": "WARN"
+        },
+        {
+          "path": "/local/workflows/top_level_write/artifact-metadata",
+          "operator": "empty"
+        },
+        {
+          "path": "/local/workflows/contents_read_present",
+          "operator": "equal",
+          "expected": true,
+          "level": "WARN"
+        }
+      ]
     },
     {
       "id": "common.linked_artifact_metadata",
@@ -869,12 +904,13 @@
       ],
       "category": "common",
       "kind": "workflow_and_github_packages_scan",
-      "comparison": "linked_artifact_metadata_policy",
       "applies_when": "workflow_contains_artifact_metadata_write || linked_artifacts_claimed == true",
-      "expected": {
-        "linked_metadata_is_intentional": true,
-        "registry_or_release_artifact_is_still_source_of_files": true
-      }
+      "assertions": [
+        {
+          "path": "/local/workflows/top_level_write/artifact-metadata",
+          "operator": "empty"
+        }
+      ]
     },
     {
       "id": "common.no_artifact_consistency",
@@ -883,14 +919,13 @@
       ],
       "category": "common",
       "kind": "tree_workflow_release_scan",
-      "comparison": "no_artifact_posture",
       "applies_when": "artifact_type_system includes no_artifact || final_answer_makes_no_artifact_claim == true",
-      "expected": {
-        "no_publish_workflows": true,
-        "no_release_assets": true,
-        "docs_do_not_claim_external_artifact": true,
-        "package_manifests_not_marked_publishable_without_approved_reason": true
-      }
+      "assertions": [
+        {
+          "path": "/artifact/release_assets",
+          "operator": "empty"
+        }
+      ]
     },
     {
       "id": "pypi.metadata_and_build",
@@ -899,22 +934,72 @@
       ],
       "category": "pypi_python_package",
       "kind": "manifest_and_build_scan",
-      "comparison": "python_package_policy",
       "applies_when": "artifact_type has pypi_python_package",
-      "expected": {
-        "pyproject_toml_present": true,
-        "build_system_present": true,
-        "project_name_present": true,
-        "version_or_dynamic_version_present": true,
-        "readme_or_description_present": true,
-        "project_description_present": true,
-        "authors_or_maintainers_present_when_public": true,
-        "project_urls_present_when_public": true,
-        "classifiers_present_when_public": "recommended_or_approved_absent",
-        "license_or_license_files_present": true,
-        "requires_python_present": true,
-        "sdist_and_wheel_build_path_present": true
-      }
+      "assertions": [
+        {
+          "path": "/local/manifests/pypi/pyproject_present",
+          "operator": "equal",
+          "expected": true
+        },
+        {
+          "path": "/local/manifests/pypi/build_system_present",
+          "operator": "equal",
+          "expected": true
+        },
+        {
+          "path": "/local/manifests/pypi/project_table_present",
+          "operator": "equal",
+          "expected": true
+        },
+        {
+          "path": "/local/manifests/pypi/name_present",
+          "operator": "equal",
+          "expected": true
+        },
+        {
+          "path": "/local/manifests/pypi/version_present",
+          "operator": "equal",
+          "expected": true
+        },
+        {
+          "path": "/local/manifests/pypi/description_present",
+          "operator": "equal",
+          "expected": true
+        },
+        {
+          "path": "/local/manifests/pypi/readme_present",
+          "operator": "equal",
+          "expected": true
+        },
+        {
+          "path": "/local/manifests/pypi/license_present",
+          "operator": "equal",
+          "expected": true
+        },
+        {
+          "path": "/local/manifests/pypi/requires_python_present",
+          "operator": "equal",
+          "expected": true
+        },
+        {
+          "path": "/local/manifests/pypi/maintainer_present",
+          "operator": "equal",
+          "expected": true,
+          "level": "WARN"
+        },
+        {
+          "path": "/local/manifests/pypi/urls_present",
+          "operator": "equal",
+          "expected": true,
+          "level": "WARN"
+        },
+        {
+          "path": "/local/manifests/pypi/classifiers_present",
+          "operator": "equal",
+          "expected": true,
+          "level": "WARN"
+        }
+      ]
     },
     {
       "id": "pypi.trusted_publishing_and_attestations",
@@ -923,18 +1008,24 @@
       ],
       "category": "pypi_python_package",
       "kind": "workflow_and_registry_scan",
-      "comparison": "pypi_publish_identity_policy",
       "applies_when": "artifact_type has pypi_python_package && publish_workflow_detected == true",
-      "expected": {
-        "prefer_pypi_trusted_publishing": true,
-        "pypa_gh_action_pypi_publish_or_equivalent_short_lived_identity": true,
-        "id_token_write_only_in_publish_job": true,
-        "publish_workflow_uses_release_or_tag_trigger": true,
-        "build_sdist_and_wheel_before_publish": true,
-        "trusted_publisher_claims_match_pypi_project": true,
-        "long_lived_token_fallback_explicit_and_scoped": true,
-        "attestation_or_provenance_verified_when_emitted": true
-      }
+      "assertions": [
+        {
+          "path": "/local/workflows/any_write/id-token",
+          "operator": "not_empty"
+        },
+        {
+          "path": "/local/workflows/text",
+          "operator": "matches",
+          "expected": "pypa/gh-action-pypi-publish|twine upload"
+        },
+        {
+          "path": "/local/workflows/text",
+          "operator": "contains",
+          "expected": "python -m build",
+          "level": "WARN"
+        }
+      ]
     },
     {
       "id": "pypi.live_version_install_smoke",
@@ -943,17 +1034,19 @@
       ],
       "category": "pypi_python_package",
       "kind": "registry_api_and_local_command",
-      "comparison": "pypi_version_verification",
       "applies_when": "artifact_type has pypi_python_package && (artifact_was_published == true || final_answer_makes_artifact_claim == true)",
-      "expected": {
-        "pypi_json_version_matches_contract": true,
-        "pypi_project_page_resolves": true,
-        "latest_version_checked_when_expected_version_is_missing": true,
-        "sdist_and_wheel_present_when_expected": true,
-        "install_exact_version_from_pypi": true,
-        "consumer_smoke_check_passes": true,
-        "pypi_attestations_verified_when_present": true
-      }
+      "assertions": [
+        {
+          "path": "/registries/pypi/all_resolved",
+          "operator": "equal",
+          "expected": true
+        },
+        {
+          "path": "/artifact/recorded_checks/consumer_smoke",
+          "operator": "equal",
+          "expected": true
+        }
+      ]
     },
     {
       "id": "npm.metadata_and_package_contents",
@@ -962,20 +1055,47 @@
       ],
       "category": "npm_package",
       "kind": "manifest_and_pack_scan",
-      "comparison": "npm_package_policy",
       "applies_when": "artifact_type has npm_package",
-      "expected": {
-        "package_json_present": true,
-        "name_present": true,
-        "version_present": true,
-        "repository_url_matches_github_repo_when_trusted_publishing": true,
-        "license_present": true,
-        "files_or_npmignore_policy_present": true,
-        "package_manager_or_lockfile_present_for_reproducible_publish": true,
-        "workspace_publish_surface_classified": true,
-        "package_contents_reviewed_with_npm_pack": true,
-        "build_and_test_commands_present_when_package_surface_requires_them": true
-      }
+      "assertions": [
+        {
+          "path": "/local/manifests/npm/valid_json",
+          "operator": "equal",
+          "expected": true
+        },
+        {
+          "path": "/local/manifests/npm/name_present",
+          "operator": "equal",
+          "expected": true
+        },
+        {
+          "path": "/local/manifests/npm/version_present",
+          "operator": "equal",
+          "expected": true
+        },
+        {
+          "path": "/local/manifests/npm/license_present",
+          "operator": "equal",
+          "expected": true
+        },
+        {
+          "path": "/local/manifests/npm/repository_present",
+          "operator": "equal",
+          "expected": true,
+          "level": "WARN"
+        },
+        {
+          "path": "/local/manifests/npm/contents_constrained",
+          "operator": "equal",
+          "expected": true,
+          "level": "WARN"
+        },
+        {
+          "path": "/local/manifests/npm/reproducible_install",
+          "operator": "equal",
+          "expected": true,
+          "level": "WARN"
+        }
+      ]
     },
     {
       "id": "npm.trusted_publishing_and_provenance",
@@ -984,26 +1104,38 @@
       ],
       "category": "npm_package",
       "kind": "workflow_and_registry_scan",
-      "comparison": "npm_publish_identity_policy",
       "applies_when": "artifact_type has npm_package && publish_workflow_detected == true",
-      "expected": {
-        "prefer_npm_trusted_publishing_when_prerequisites_met": true,
-        "npm_cli_version_minimum": "11.5.1",
+      "desired": {
         "node_version_minimum": "22.14.0",
-        "trusted_publishing_provider_must_be_supported_cloud_runner": true,
-        "self_hosted_runner_token_fallback_or_blocker_classified": true,
-        "repository_url_exact_match_for_trusted_publishing": true,
-        "id_token_write_only_in_publish_job": true,
-        "workflow_call_parent_and_child_id_token_when_used": true,
-        "npm_publish_uses_provenance_or_trusted_publishing_when_supported": true,
-        "trusted_publisher_allowed_actions_match_release_policy": true,
-        "stage_publish_requires_staged_release_approval_path": true,
-        "provenance_auto_generated_only_for_public_github_or_gitlab_public_package": true,
-        "circleci_trusted_publishing_has_no_provenance_attestation": true,
-        "publish_trigger_is_tag_release_or_explicit_manual_release": true,
-        "access_and_dist_tag_explicit_when_publishing": true,
-        "provenance_verified_when_npm_generated_it": true
-      }
+        "npm_cli_version_minimum": "11.5.1"
+      },
+      "assertions": [
+        {
+          "path": "/local/workflows/any_write/id-token",
+          "operator": "not_empty"
+        },
+        {
+          "path": "/local/workflows/text",
+          "operator": "matches",
+          "expected": "npm\\s+(?:stage\\s+)?publish"
+        },
+        {
+          "path": "/local/workflows/text",
+          "operator": "matches",
+          "expected": "npm ci|pnpm install|yarn install",
+          "level": "WARN"
+        },
+        {
+          "path": "/local/workflows/node_versions",
+          "operator": "all_versions_gte",
+          "desired_path": "/desired/node_version_minimum"
+        },
+        {
+          "path": "/local/workflows/npm_versions",
+          "operator": "all_versions_gte",
+          "desired_path": "/desired/npm_cli_version_minimum"
+        }
+      ]
     },
     {
       "id": "npm.live_package_version_smoke",
@@ -1012,16 +1144,19 @@
       ],
       "category": "npm_package",
       "kind": "registry_api_and_local_command",
-      "comparison": "npm_version_verification",
       "applies_when": "artifact_type has npm_package && (artifact_was_published == true || final_answer_makes_artifact_claim == true)",
-      "expected": {
-        "npm_registry_version_matches_contract": true,
-        "npm_package_page_resolves": true,
-        "latest_dist_tag_checked_when_expected_version_is_missing": true,
-        "dist_tag_matches_release_policy": true,
-        "consumer_smoke_install_or_view_passes": true,
-        "provenance_badge_or_attestation_verified_when_present": true
-      }
+      "assertions": [
+        {
+          "path": "/registries/npm/all_resolved",
+          "operator": "equal",
+          "expected": true
+        },
+        {
+          "path": "/artifact/recorded_checks/consumer_smoke",
+          "operator": "equal",
+          "expected": true
+        }
+      ]
     },
     {
       "id": "docker_oci.dockerfile_and_context",
@@ -1030,20 +1165,37 @@
       ],
       "category": "docker_oci_image",
       "kind": "tree_scan",
-      "comparison": "dockerfile_policy",
       "applies_when": "artifact_type intersects docker_oci_image,github_container_registry_image,generic_oci_registry_image",
-      "expected": {
-        "dockerfile_present": true,
-        "dockerignore_present": true,
-        "base_image_reference_present": true,
-        "base_image_pin_strategy_documented": true,
-        "avoid_latest_tag_for_base_image_unless_approved": true,
-        "multi_stage_build_used_when_build_toolchain_needed": true,
-        "dependency_lockfiles_copied_before_install_when_present": true,
-        "build_context_scope_explicit": true,
-        "runtime_image_uses_non_root_when_practical": true,
-        "no_plaintext_secret_build_args_or_env": true
-      }
+      "assertions": [
+        {
+          "path": "/local/manifests/docker/dockerfiles",
+          "operator": "not_empty"
+        },
+        {
+          "path": "/local/manifests/docker/dockerignore_present",
+          "operator": "equal",
+          "expected": true
+        },
+        {
+          "path": "/local/manifests/docker/all_readable",
+          "operator": "equal",
+          "expected": true
+        },
+        {
+          "path": "/local/manifests/docker/all_have_from",
+          "operator": "equal",
+          "expected": true
+        },
+        {
+          "path": "/local/manifests/docker/latest_base_images",
+          "operator": "empty",
+          "level": "WARN"
+        },
+        {
+          "path": "/local/manifests/docker/secret_like_arguments",
+          "operator": "empty"
+        }
+      ]
     },
     {
       "id": "docker_oci.build_publish_and_pull",
@@ -1052,17 +1204,19 @@
       ],
       "category": "docker_oci_image",
       "kind": "local_command_and_registry",
-      "comparison": "container_publish_policy",
       "applies_when": "artifact_type intersects docker_oci_image,github_container_registry_image,generic_oci_registry_image",
-      "expected": {
-        "local_build_succeeds": true,
-        "runtime_smoke_check_passes": true,
-        "destination_namespace_or_repository_page_resolves": true,
-        "most_recent_relevant_tag_or_digest_checked_when_expected_tag_is_missing": true,
-        "published_tag_or_digest_resolves": true,
-        "pull_or_consume_published_image_when_relevant": true,
-        "documented_tags_match_release_policy": true
-      }
+      "assertions": [
+        {
+          "path": "/registries/dockerhub/all_resolved",
+          "operator": "equal",
+          "expected": true
+        },
+        {
+          "path": "/artifact/recorded_checks/consumer_smoke",
+          "operator": "equal",
+          "expected": true
+        }
+      ]
     },
     {
       "id": "docker_oci.provenance_and_sbom",
@@ -1071,19 +1225,19 @@
       ],
       "category": "docker_oci_image",
       "kind": "workflow_and_registry_scan",
-      "comparison": "container_attestation_policy",
       "applies_when": "artifact_type intersects docker_oci_image,github_container_registry_image,generic_oci_registry_image && (workflow_emits_attestation_or_provenance == true || docker_build_push_action_default_provenance_applies == true)",
-      "expected": {
-        "provenance_or_sbom_attestation_verified_when_emitted": true,
-        "verification_command_recorded": true,
-        "sigstore_certificate_identity_or_oidc_subject_verified_when_used": true,
-        "transparency_log_or_bundle_verification_classified_when_used": true,
-        "build_args_do_not_expose_secrets_in_provenance": true,
-        "attestation_generation_permissions_are_job_scoped": true,
-        "docker_build_push_action_v4_or_later_default_provenance_classified": true,
-        "load_or_docker_exporter_no_attestation_classified": true,
-        "default_public_repo_max_provenance_secret_exposure_classified": true
-      }
+      "assertions": [
+        {
+          "path": "/local/workflows/verification_command_detected",
+          "operator": "equal",
+          "expected": true,
+          "level": "WARN"
+        },
+        {
+          "path": "/local/manifests/docker/secret_like_arguments",
+          "operator": "empty"
+        }
+      ]
     },
     {
       "id": "maven.metadata_publish_and_verify",
@@ -1092,22 +1246,46 @@
       ],
       "category": "maven_package",
       "kind": "manifest_build_registry",
-      "comparison": "maven_artifact_policy",
       "applies_when": "artifact_type intersects maven_package,gradle_maven_package",
-      "expected": {
-        "coordinates_present": [
-          "groupId",
-          "artifactId",
-          "version"
-        ],
-        "license_and_project_urls_present_when_public": true,
-        "source_or_javadoc_artifacts_present_when_required_by_registry": true,
-        "publish_namespace_verified": true,
-        "maven_or_gradle_publish_command_documented": true,
-        "live_component_version_resolves": true,
-        "consumer_dependency_resolution_check_passes": true,
-        "short_lived_identity_preferred_when_supported_else_token_fallback_scoped": true
-      }
+      "assertions": [
+        {
+          "path": "/local/manifests/maven/pom_present",
+          "operator": "equal",
+          "expected": true
+        },
+        {
+          "path": "/local/manifests/maven/group_present",
+          "operator": "equal",
+          "expected": true
+        },
+        {
+          "path": "/local/manifests/maven/artifact_present",
+          "operator": "equal",
+          "expected": true
+        },
+        {
+          "path": "/local/manifests/maven/version_present",
+          "operator": "equal",
+          "expected": true
+        },
+        {
+          "path": "/local/manifests/maven/license_present",
+          "operator": "equal",
+          "expected": true,
+          "level": "WARN"
+        },
+        {
+          "path": "/local/manifests/maven/url_present",
+          "operator": "equal",
+          "expected": true,
+          "level": "WARN"
+        },
+        {
+          "path": "/registries/maven/all_resolved",
+          "operator": "equal",
+          "expected": true
+        }
+      ]
     },
     {
       "id": "nuget.metadata_pack_publish_and_verify",
@@ -1116,20 +1294,18 @@
       ],
       "category": "nuget_package",
       "kind": "manifest_build_registry",
-      "comparison": "nuget_package_policy",
       "applies_when": "artifact_type has nuget_package",
-      "expected": {
-        "package_id_present": true,
-        "version_present": true,
-        "authors_or_company_present": true,
-        "license_present": true,
-        "readme_or_description_present": true,
-        "repository_url_present_when_public": true,
-        "dotnet_pack_or_nuget_pack_succeeds": true,
-        "trusted_publishing_preferred_when_available": true,
-        "live_package_version_resolves": true,
-        "consumer_install_check_passes": true
-      }
+      "assertions": [
+        {
+          "path": "/local/manifests/nuget/project_files",
+          "operator": "not_empty"
+        },
+        {
+          "path": "/registries/nuget/all_resolved",
+          "operator": "equal",
+          "expected": true
+        }
+      ]
     },
     {
       "id": "crates.metadata_package_publish_and_verify",
@@ -1138,20 +1314,50 @@
       ],
       "category": "crates_package",
       "kind": "manifest_build_registry",
-      "comparison": "cargo_crate_policy",
       "applies_when": "artifact_type has crates_package",
-      "expected": {
-        "cargo_toml_package_name_present": true,
-        "version_present": true,
-        "license_or_license_file_present": true,
-        "description_present": true,
-        "readme_present_or_default_readme_exists": true,
-        "repository_or_homepage_present_when_public": true,
-        "publish_restriction_intentional": true,
-        "cargo_package_or_publish_dry_run_succeeds": true,
-        "live_crate_version_resolves": true,
-        "consumer_install_or_dependency_check_passes": true
-      }
+      "assertions": [
+        {
+          "path": "/local/manifests/crates/cargo_toml_present",
+          "operator": "equal",
+          "expected": true
+        },
+        {
+          "path": "/local/manifests/crates/name_present",
+          "operator": "equal",
+          "expected": true
+        },
+        {
+          "path": "/local/manifests/crates/version_present",
+          "operator": "equal",
+          "expected": true
+        },
+        {
+          "path": "/local/manifests/crates/license_present",
+          "operator": "equal",
+          "expected": true
+        },
+        {
+          "path": "/local/manifests/crates/description_present",
+          "operator": "equal",
+          "expected": true
+        },
+        {
+          "path": "/local/manifests/crates/readme_present",
+          "operator": "equal",
+          "expected": true
+        },
+        {
+          "path": "/local/manifests/crates/source_link_present",
+          "operator": "equal",
+          "expected": true,
+          "level": "WARN"
+        },
+        {
+          "path": "/registries/crates/all_resolved",
+          "operator": "equal",
+          "expected": true
+        }
+      ]
     },
     {
       "id": "rubygems.metadata_build_publish_and_verify",
@@ -1160,20 +1366,44 @@
       ],
       "category": "rubygems_package",
       "kind": "manifest_build_registry",
-      "comparison": "rubygems_policy",
       "applies_when": "artifact_type has rubygems_package",
-      "expected": {
-        "gemspec_present": true,
-        "name_present": true,
-        "version_present": true,
-        "summary_or_description_present": true,
-        "license_present": true,
-        "homepage_or_source_code_uri_present_when_public": true,
-        "gem_build_succeeds": true,
-        "trusted_publishing_preferred_when_available": true,
-        "live_gem_version_resolves": true,
-        "consumer_install_check_passes": true
-      }
+      "assertions": [
+        {
+          "path": "/local/manifests/rubygems/gemspec_files",
+          "operator": "not_empty"
+        },
+        {
+          "path": "/local/manifests/rubygems/name_present",
+          "operator": "equal",
+          "expected": true
+        },
+        {
+          "path": "/local/manifests/rubygems/version_present",
+          "operator": "equal",
+          "expected": true
+        },
+        {
+          "path": "/local/manifests/rubygems/description_present",
+          "operator": "equal",
+          "expected": true
+        },
+        {
+          "path": "/local/manifests/rubygems/license_present",
+          "operator": "equal",
+          "expected": true
+        },
+        {
+          "path": "/local/manifests/rubygems/source_link_present",
+          "operator": "equal",
+          "expected": true,
+          "level": "WARN"
+        },
+        {
+          "path": "/registries/rubygems/all_resolved",
+          "operator": "equal",
+          "expected": true
+        }
+      ]
     },
     {
       "id": "powershell_gallery.metadata_publish_and_verify",
@@ -1182,20 +1412,50 @@
       ],
       "category": "powershell_gallery_module",
       "kind": "manifest_build_registry",
-      "comparison": "powershell_gallery_policy",
       "applies_when": "artifact_type has powershell_gallery_module",
-      "expected": {
-        "module_manifest_present": true,
-        "module_version_present": true,
-        "root_module_or_nested_modules_present": true,
-        "description_present": true,
-        "license_uri_or_license_file_present_when_public": true,
-        "project_uri_present_when_public": true,
-        "tags_present_when_public": true,
-        "test_module_manifest_passes": true,
-        "live_module_version_resolves": true,
-        "consumer_install_check_passes": true
-      }
+      "assertions": [
+        {
+          "path": "/local/manifests/powershell_gallery/manifest_files",
+          "operator": "not_empty"
+        },
+        {
+          "path": "/local/manifests/powershell_gallery/version_present",
+          "operator": "equal",
+          "expected": true
+        },
+        {
+          "path": "/local/manifests/powershell_gallery/module_present",
+          "operator": "equal",
+          "expected": true
+        },
+        {
+          "path": "/local/manifests/powershell_gallery/description_present",
+          "operator": "equal",
+          "expected": true
+        },
+        {
+          "path": "/local/manifests/powershell_gallery/license_present",
+          "operator": "equal",
+          "expected": true
+        },
+        {
+          "path": "/local/manifests/powershell_gallery/project_uri_present",
+          "operator": "equal",
+          "expected": true,
+          "level": "WARN"
+        },
+        {
+          "path": "/local/manifests/powershell_gallery/tags_present",
+          "operator": "equal",
+          "expected": true,
+          "level": "WARN"
+        },
+        {
+          "path": "/registries/powershell_gallery/all_resolved",
+          "operator": "equal",
+          "expected": true
+        }
+      ]
     },
     {
       "id": "github_packages.live_package_metadata",
@@ -1204,17 +1464,18 @@
       ],
       "category": "github_packages",
       "kind": "github_api",
-      "comparison": "github_packages_policy",
-      "applies_when": "artifact_type category == github_packages || registry host == github.com || registry host == ghcr.io",
-      "expected": {
-        "package_linked_to_repo_when_expected": true,
-        "ghcr_package_linked_to_repo_when_container": true,
-        "container_package_visibility_matches_contract": true,
-        "visibility_matches_artifact_contract": true,
-        "latest_version_or_digest_matches_contract": true,
-        "public_package_has_no_payment_requirement": true,
-        "private_package_quota_or_payment_limit_reported_not_autofixed": true
-      }
+      "applies_when": "artifact_category contains github_packages || registry_hosts contains github.com || registry_hosts contains ghcr.io",
+      "assertions": [
+        {
+          "path": "/artifact/contracts",
+          "operator": "not_empty"
+        },
+        {
+          "path": "/registries/github_packages/all_resolved",
+          "operator": "equal",
+          "expected": true
+        }
+      ]
     },
     {
       "id": "github_packages.publish_guard",
@@ -1223,15 +1484,19 @@
       ],
       "category": "github_packages",
       "kind": "workflow_scan",
-      "comparison": "github_packages_publish_identity_policy",
-      "applies_when": "artifact_type category == github_packages && publish_workflow_detected == true",
-      "expected": {
-        "packages_write_only_in_publish_job": true,
-        "id_token_write_only_when_trusted_publishing_or_attestation_requires_it": true,
-        "github_token_used_only_for_repository_associated_package": true,
-        "pat_fallback_explicit_and_minimally_scoped": true,
-        "publish_not_attempted_in_audit_only_mode": true
-      }
+      "applies_when": "artifact_category contains github_packages && publish_workflow_detected == true",
+      "assertions": [
+        {
+          "path": "/local/workflows/top_level_write/packages",
+          "operator": "empty"
+        },
+        {
+          "path": "/artifact/publish_requested",
+          "operator": "equal",
+          "expected": false,
+          "when": "audit_only == true"
+        }
+      ]
     },
     {
       "id": "github_release_assets.assets_and_tags",
@@ -1240,16 +1505,13 @@
       ],
       "category": "github_release_binary",
       "kind": "github_api_and_tree",
-      "comparison": "release_asset_policy",
       "applies_when": "artifact_type intersects github_release_binary,generic_binary_archive,installer_or_cli_binary",
-      "expected": {
-        "release_tag_matches_version_source": true,
-        "release_assets_match_expected_names": true,
-        "asset_checksums_present_when_binary_or_archive": true,
-        "release_notes_or_changelog_source_present": true,
-        "draft_or_prerelease_status_matches_policy": true,
-        "download_or_smoke_check_passes_when_claiming_artifact_health": true
-      }
+      "assertions": [
+        {
+          "path": "/artifact/release_assets",
+          "operator": "not_empty"
+        }
+      ]
     },
     {
       "id": "github_release_assets.attestation_verification",
@@ -1258,13 +1520,15 @@
       ],
       "category": "github_release_binary",
       "kind": "github_api_and_cli",
-      "comparison": "release_attestation_policy",
       "applies_when": "artifact_type intersects github_release_binary,generic_binary_archive,installer_or_cli_binary && workflow_emits_attestation_or_provenance == true",
-      "expected": {
-        "attestation_verifies_against_repo_and_subject": true,
-        "attestation_subject_matches_release_asset_digest": true,
-        "verification_command_recorded": true
-      }
+      "assertions": [
+        {
+          "path": "/local/workflows/verification_command_detected",
+          "operator": "equal",
+          "expected": true,
+          "level": "WARN"
+        }
+      ]
     },
     {
       "id": "docs_site.publish_and_live_check",
@@ -1273,15 +1537,19 @@
       ],
       "category": "documentation_and_sites",
       "kind": "workflow_and_http",
-      "comparison": "docs_site_policy",
       "applies_when": "artifact_type intersects github_pages_site,static_docs_site",
-      "expected": {
-        "site_publish_workflow_or_pages_source_present": true,
-        "site_build_succeeds_when_local_source_available": true,
-        "live_site_resolves_when_published": true,
-        "canonical_url_or_homepage_matches_repo_metadata_when_public": true,
-        "consumer_check_is_http_or_docs_navigation_smoke": true
-      }
+      "assertions": [
+        {
+          "path": "/local/workflows/text",
+          "operator": "matches",
+          "expected": "deploy-pages|upload-pages-artifact|gh-pages"
+        },
+        {
+          "path": "/artifact/recorded_checks/consumer_smoke",
+          "operator": "equal",
+          "expected": true
+        }
+      ]
     },
     {
       "id": "iac_modules.publish_and_verify",
@@ -1290,17 +1558,33 @@
       ],
       "category": "iac_and_modules",
       "kind": "manifest_build_registry",
-      "comparison": "module_artifact_policy",
       "applies_when": "artifact_type intersects terraform_module,helm_chart",
-      "expected": {
-        "module_or_chart_name_present": true,
-        "version_source_present": true,
-        "registry_target_present": true,
-        "package_or_lint_check_passes": true,
-        "live_registry_version_resolves_when_published": true,
-        "consumer_install_or_pull_check_passes": true,
-        "short_lived_identity_preferred_when_supported_else_token_fallback_scoped": true
-      }
+      "assertions": [
+        {
+          "path": "/local/manifests/iac/chart_present",
+          "operator": "equal",
+          "expected": true,
+          "when": "artifact_type contains helm_chart"
+        },
+        {
+          "path": "/local/manifests/iac/terraform_files",
+          "operator": "not_empty",
+          "when": "artifact_type contains terraform_module"
+        },
+        {
+          "path": "/artifact/contracts",
+          "operator": "all_objects_have",
+          "expected": [
+            "version_source",
+            "registry"
+          ]
+        },
+        {
+          "path": "/artifact/recorded_checks/consumer_smoke",
+          "operator": "equal",
+          "expected": true
+        }
+      ]
     }
   ],
   "non_deterministic_review_file": "artifact-nondeterministic-contract.md"

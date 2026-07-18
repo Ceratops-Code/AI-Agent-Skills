@@ -3,15 +3,43 @@ import importlib.util
 import io
 import json
 import pathlib
+import subprocess
 import sys
 import unittest
+from unittest import mock
+from typing import Any
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "skills" / "ceratops-gh-repo-lifecycle" / "scripts"
+REFERENCES = SCRIPTS.parent / "references"
 sys.path.insert(0, str(SCRIPTS))
 
 import validator_levels  # noqa: E402
+from github_contract import github_api  # noqa: E402
+from github_contract.collectors import registries  # noqa: E402
+from github_contract.collectors.local_repository import classify_repository  # noqa: E402
+from github_contract.collectors.repository import (  # noqa: E402
+    stale_branch_candidates,
+    stale_pull_request_candidates,
+    stale_release_candidates,
+)
+from github_contract.collect_observed_states import state_producer  # noqa: E402
+from github_contract.compare_states import (  # noqa: E402
+    OPERATORS,
+    compare_states,
+    condition_matches,
+    pointer_get,
+)
+from github_contract.compose_desired_state import compose_desired_state, repo_subset_ids  # noqa: E402
+from github_contract.format_report import (  # noqa: E402
+    build_report,
+    build_summary_report,
+    sanitize_for_output,
+    write_json,
+)
+from github_contract.github_api import ApiResult, load_json  # noqa: E402
+from github_contract.remediations import HANDLERS  # noqa: E402
 
 
 def load_script_module(name: str, filename: str):
@@ -23,356 +51,500 @@ def load_script_module(name: str, filename: str):
     return module
 
 
-repo_validator = load_script_module("repo_validator", "github-validate-repo-artifact-contract.py")
-pr_validator = load_script_module("pr_validator", "github-validate-pr-readiness-contract.py")
-org_validator = load_script_module("org_validator", "github-validate-org-contract.py")
-REPO_CONTRACT = json.loads(
-    (ROOT / "skills/ceratops-gh-repo-lifecycle/references/github-repo-deterministic-contract.json").read_text(
-        encoding="utf-8"
-    )
+pr_validator = load_script_module(
+    "pr_validator", "github-validate-pr-readiness-contract.py"
 )
-REPO_CHECKS = {check["id"]: check for check in REPO_CONTRACT["checks"]}
 
 
-class GHValidatorSummaryTests(unittest.TestCase):
-    def test_parse_levels_rejects_retired_names(self):
+class GHContractStateEngineTests(unittest.TestCase):
+    paths: dict[str, str]
+    contracts: dict[str, dict[str, Any]]
+
+    @classmethod
+    def setUpClass(cls):
+        cls.paths = {
+            "repo": str(REFERENCES / "github-repo-deterministic-contract.json"),
+            "code": str(REFERENCES / "code-repo-deterministic-contract.json"),
+            "artifact": str(REFERENCES / "artifact-deterministic-contract.json"),
+        }
+        cls.contracts = {
+            surface: load_json(path) for surface, path in cls.paths.items()
+        }
+
+    def test_levels_use_explicit_agent_review_name(self):
+        levels = validator_levels.parse_levels("ERROR,WARN,NEEDS_AI_AGENT_REVIEW")
+        self.assertEqual(levels, ["ERROR", "WARN", "NEEDS_AI_AGENT_REVIEW"])
+        with self.assertRaises(ValueError):
+            validator_levels.parse_levels("NEEDS_" + "REVIEW")
+
+    def test_contracts_compose_to_one_desired_state(self):
+        desired_state = compose_desired_state(
+            self.paths,
+            {"owner": "owner", "repo": "repo", "default_branch": "main"},
+            repo_subset_ids(self.contracts, "all"),
+        )
+        self.assertEqual(len(desired_state["rules"]), 74)
+        self.assertTrue(all(rule["assertions"] for rule in desired_state["rules"]))
+        self.assertTrue(
+            any(
+                request.get("paginate")
+                and "/releases?per_page=100" in request["endpoint"]
+                for request in desired_state["requests"]
+            )
+        )
+
+    def test_every_assertion_has_an_operator_and_producer(self):
+        for contract in self.contracts.values():
+            for rule in contract["checks"]:
+                for assertion in rule["assertions"]:
+                    self.assertIn(assertion["operator"], OPERATORS)
+                    self.assertIsNotNone(state_producer(assertion["path"]))
+
+    def test_compare_states_is_generic_and_path_addressed(self):
+        desired_state = {
+            "contracts": [],
+            "rules": [
+                {
+                    "id": "example.setting",
+                    "desired": {"enabled": True},
+                    "assertions": [
+                        {
+                            "path": "/repository/enabled",
+                            "operator": "equal",
+                            "desired_path": "/desired/enabled",
+                        }
+                    ],
+                }
+            ],
+        }
+        result = compare_states({"repository": {"enabled": False}}, desired_state)
+        self.assertEqual(result["findings"][0]["check_id"], "example.setting")
+        self.assertEqual(result["findings"][0]["actual"], False)
+        self.assertEqual(result["findings"][0]["expected"], True)
+
+    def test_missing_observation_is_collection_error_not_review(self):
+        desired_state = {
+            "contracts": [],
+            "rules": [
+                {
+                    "id": "example.missing",
+                    "assertions": [
+                        {
+                            "path": "/repository/missing",
+                            "operator": "equal",
+                            "expected": True,
+                        }
+                    ],
+                }
+            ],
+        }
+        finding = compare_states({"repository": {}}, desired_state)["findings"][0]
+        self.assertEqual(finding["level"], "ERROR")
+        self.assertEqual(finding["kind"], "collection_error")
+
+    def test_failed_api_source_is_collection_error_not_policy_mismatch(self):
+        desired_state = {
+            "contracts": [],
+            "rules": [
+                {
+                    "id": "example.api",
+                    "endpoint": "/repos/owner/repo/settings",
+                    "assertions": [
+                        {
+                            "path": "/repository/enabled",
+                            "operator": "equal",
+                            "expected": True,
+                        }
+                    ],
+                }
+            ],
+        }
+        observed = {
+            "api": {
+                "example.api": {
+                    "ok": False,
+                    "endpoint": "/repos/owner/repo/settings",
+                    "status": 403,
+                    "message": "forbidden",
+                }
+            },
+            "repository": {"enabled": False},
+        }
+        finding = compare_states(observed, desired_state)["findings"][0]
+        self.assertEqual(finding["kind"], "collection_error")
+        self.assertEqual(finding["source_error"]["status"], 403)
+
+    def test_agent_review_is_only_contract_declared_judgment_routing(self):
+        desired_state = {
+            "contracts": [],
+            "rules": [
+                {
+                    "id": "stale.candidates",
+                    "assertions": [
+                        {
+                            "path": "/repository/candidates",
+                            "operator": "empty",
+                            "level": "NEEDS_AI_AGENT_REVIEW",
+                        }
+                    ],
+                }
+            ],
+        }
+        finding = compare_states(
+            {"repository": {"candidates": [{"id": 1}]}}, desired_state
+        )["findings"][0]
+        self.assertEqual(finding["level"], "NEEDS_AI_AGENT_REVIEW")
+
+    def test_json_pointer_preserves_dotted_keys(self):
         self.assertEqual(
-            validator_levels.parse_levels("ERROR,WARN,NEEDS_REVIEW"),
-            ["ERROR", "WARN", "NEEDS_REVIEW"],
+            pointer_get(
+                {"api": {"org.settings": {"ok": True}}}, "/api/org.settings/ok"
+            ),
+            True,
         )
-        with self.assertRaises(ValueError):
-            validator_levels.parse_levels("FA" + "IL")
-        with self.assertRaises(ValueError):
-            validator_levels.parse_levels("MAN" + "UAL")
 
-    def test_count_by_level_uses_canonical_levels(self):
-        counts = validator_levels.count_by_level(
-            [
-                {"level": "ERROR"},
-                {"level": "WARN"},
-                {"level": "NEEDS_REVIEW"},
-                {"level": "PASS"},
-            ]
-        )
-        self.assertEqual(counts["ERROR"], 1)
-        self.assertEqual(counts["WARN"], 1)
-        self.assertEqual(counts["NEEDS_REVIEW"], 1)
-        self.assertEqual(counts["PASS"], 1)
-
-    def test_summary_filters_findings_and_keeps_inventory_separate(self):
-        releases = [
-            {"tag_name": f"v1.{index}", "name": f"v1.{index}", "draft": False, "prerelease": False, "assets": []}
-            for index in range(6)
-        ]
-        findings = [
-            {
-                "level": "ERROR",
-                "check_id": "stale_state.local_path_references",
-                "path": "$",
-                "message": "Forbidden local pattern found.",
-                "actual": [
-                    {"path": "a.md", "pattern": "Users"},
-                    {"path": "b.md", "pattern": "Users"},
-                ],
-            },
-            {
-                "level": "PASS",
-                "check_id": "stale_state.pull_requests",
-                "path": "$",
-                "message": "No stale open PR candidates found.",
-                "actual": [],
-                "inventory": [],
-            },
-            {
-                "level": "PASS",
-                "check_id": "stale_state.releases",
-                "path": "$",
-                "message": "No stale release candidates found; published release history is retained.",
-                "actual": releases,
-                "inventory": releases,
-            },
-            {
-                "level": "NEEDS_REVIEW",
-                "check_id": "stale_state.tags",
-                "path": "$",
-                "message": "Tags without matching releases need review-owner classification.",
-                "actual": [{"name": "v0.0.1", "stale_reason": "tag has no matching GitHub release"}],
-                "inventory": [{"name": "v0.0.1"}, {"name": "v1.0.0"}],
-            },
-            {"level": "PASS", "check_id": "repo.identity", "path": "$", "message": "ok"},
-        ]
-        report = {
-            "repo": "owner/repo",
-            "selection_mode": "single",
-            "surface": "all",
-            "subset": "health",
-            "selections": None,
-            "result_counts": validator_levels.count_by_level(findings),
-            "github_check_count": 2,
-            "code_check_count": 1,
-            "artifact_check_count": 0,
-            "fetched_endpoints": 3,
-            "types": {"artifact_surface": ["no_artifact"]},
-            "findings": findings,
-            "approved_drift": [],
-            "local_scan": {"available": True, "root": ".", "errors": []},
+    def test_conditions_use_observed_facts(self):
+        states = {
+            "repo": {"visibility": "public", "archived": False},
+            "type": {"workflow_surface": {"has_workflows": True}},
+            "artifact_type": ["npm_package"],
         }
+        self.assertTrue(
+            condition_matches(
+                "repo.visibility == public && repo.archived == false", states
+            )
+        )
+        self.assertTrue(
+            condition_matches("type.workflow_surface has has_workflows", states)
+        )
+        self.assertTrue(condition_matches("artifact_type contains npm_package", states))
 
-        summary = repo_validator.build_summary_report(report, ["ERROR", "WARN", "NEEDS_REVIEW"])
-
-        self.assertEqual([item["check_id"] for item in summary["findings"]], ["stale_state.local_path_references", "stale_state.tags"])
-        self.assertNotIn("stale_state.releases", [item["check_id"] for item in summary["findings"]])
-        self.assertEqual(summary["stale_state_inventory"]["pull_requests"]["count"], 0)
-        self.assertEqual(summary["stale_state_inventory"]["local_path_references"]["count"], 2)
-        self.assertEqual(summary["stale_state_inventory"]["releases"]["count"], 6)
-        self.assertEqual(len(summary["stale_state_inventory"]["releases"]["sample"]), 5)
-        self.assertEqual(summary["findings"][1]["actual"]["sample"][0]["stale_reason"], "tag has no matching GitHub release")
-
-    def test_stale_candidate_helpers_do_not_flag_empty_or_retained_history(self):
-        self.assertEqual(repo_validator.stale_pull_request_candidates([], {"report_open_prs_older_than_days": 30}), [])
-
-        retained_releases = [
-            {"tag_name": "v1.0.0", "name": "v1.0.0", "draft": False, "prerelease": False, "published_at": "2026-01-01T00:00:00Z"}
-        ]
-        tags = [{"name": "v1.0.0"}]
-        self.assertEqual(repo_validator.stale_release_candidates(retained_releases, tags, {}), [])
-
-        stale_releases = [
-            {"tag_name": "v2.0.0-rc1", "name": "v2.0.0-rc1", "draft": False, "prerelease": True, "published_at": "2000-01-01T00:00:00Z"}
-        ]
-        candidates = repo_validator.stale_release_candidates(stale_releases, [{"name": "v2.0.0-rc1"}], {})
-        self.assertEqual(len(candidates), 1)
-        self.assertIn("prerelease older than 30 days", candidates[0]["stale_reason"])
-
-    def test_classifier_does_not_treat_tool_manifests_as_publish_artifacts(self):
+    def test_classifier_ignores_tool_only_manifests(self):
         local = {
-            "files": ["pyproject.toml", "package.json", "scripts/check.py", ".github/workflows/validate.yml"],
+            "files": [
+                "pyproject.toml",
+                "package.json",
+                "references/contracts.md",
+                "scripts/check.py",
+            ],
             "texts": {
-                "pyproject.toml": "[tool.mypy]\npython_version = \"3.11\"\n",
-                "package.json": "{\"name\":\"dev-tools\",\"private\":true}",
-                ".github/workflows/validate.yml": "name: Validate\n",
+                "pyproject.toml": '[tool.mypy]\npython_version = "3.11"\n',
+                "package.json": '{"name":"dev-tools","private":true}',
+                "references/contracts.md": (
+                    "Examples: [project], actions/deploy-pages@, and scoop."
+                ),
             },
         }
-
-        types = repo_validator.classify({"visibility": "public"}, local["files"], [], local)
-
+        types = classify_repository(
+            {"visibility": "public"},
+            local,
+            [],
+            self.contracts["artifact"]["artifact_type_system"],
+        )
         self.assertEqual(types["artifact_surface"], ["no_artifact"])
         self.assertIn("python", types["language_or_iac"])
-        self.assertIn("javascript_or_typescript", types["language_or_iac"])
 
-    def test_classify_keeps_publishable_package_manifests(self):
+    def test_classifier_keeps_publishable_manifests(self):
         local = {
             "files": ["pyproject.toml", "package.json"],
             "texts": {
-                "pyproject.toml": "[project]\nname = \"demo\"\nversion = \"1.0.0\"\n",
-                "package.json": json.dumps({"name": "demo", "version": "1.0.0", "license": "MIT"}),
+                "pyproject.toml": '[project]\nname = "demo"\nversion = "1.0.0"\n',
+                "package.json": json.dumps(
+                    {"name": "demo", "version": "1.0.0", "license": "MIT"}
+                ),
             },
         }
-
-        types = repo_validator.classify({}, local["files"], [], local)
-
-        self.assertEqual(types["artifact_surface"], ["npm_package", "pypi_python_package"])
-
-    def test_classify_keeps_private_workspace_publish_surface(self):
-        local = {
-            "files": ["package.json"],
-            "texts": {
-                "package.json": json.dumps({"name": "root", "private": True, "workspaces": ["packages/*"]}),
-            },
-        }
-
-        types = repo_validator.classify({}, local["files"], [], local)
-
-        self.assertEqual(types["artifact_surface"], ["npm_package"])
-
-    def test_classify_does_not_treat_documentation_directories_as_sites(self):
-        local = {
-            "files": ["docs/guide.md", "site/notes.md", "public/logo.svg"],
-            "texts": {
-                "docs/guide.md": "# Guide\n",
-                "site/notes.md": "# Notes\n",
-            },
-        }
-
-        types = repo_validator.classify({"has_pages": False}, local["files"], [], local)
-
-        self.assertEqual(types["artifact_surface"], ["no_artifact"])
-        self.assertNotIn("website", types["project_surface"])
-
-    def test_classify_keeps_enabled_github_pages_site(self):
-        local = {"files": ["docs/index.md"], "texts": {"docs/index.md": "# Docs\n"}}
-
-        types = repo_validator.classify({"has_pages": True}, local["files"], [], local)
-
-        self.assertEqual(types["artifact_surface"], ["github_pages_site"])
-        self.assertIn("website", types["project_surface"])
-
-    def test_classify_detects_static_site_publish_workflow(self):
-        workflow = "steps:\n  - uses: actions/deploy-pages@0123456789012345678901234567890123456789\n"
-        local = {
-            "files": ["docs/index.md", ".github/workflows/pages.yml"],
-            "texts": {"docs/index.md": "# Docs\n", ".github/workflows/pages.yml": workflow},
-        }
-
-        types = repo_validator.classify({"has_pages": False}, local["files"], [], local)
-
-        self.assertEqual(types["artifact_surface"], ["static_docs_site"])
-        self.assertIn("website", types["project_surface"])
-
-    def test_github_package_metadata_skips_pypi_release_assets(self):
-        check = {
-            "id": "github_packages.live_package_metadata",
-            "applies_when": "artifact_type category == github_packages || registry host == github.com || registry host == ghcr.io",
-        }
-        releases = [{"assets": [{"name": "pdf_form_tools-2.1.0.tar.gz"}]}]
-
-        findings = repo_validator.evaluate_artifact_check(
-            check,
-            {},
-            {"files": [], "texts": {}},
-            {"artifact_surface": ["pypi_python_package"]},
-            {},
-            releases,
+        types = classify_repository(
+            {}, local, [], self.contracts["artifact"]["artifact_type_system"]
+        )
+        self.assertEqual(
+            types["artifact_surface"], ["npm_package", "pypi_python_package"]
         )
 
-        self.assertEqual(findings[0]["level"], "SKIP")
+    def test_aggregate_live_metadata_activates_registry_collectors(self):
+        rules = [{"assertions": [{"path": "/artifact/live_metadata/all_resolved"}]}]
+        local = {
+            "manifests": {"pypi": {"name_present": True}},
+            "texts": {"pyproject.toml": '[project]\nname = "demo"\n'},
+        }
 
-    def test_short_lived_identity_passes_job_scoped_oidc(self):
-        workflow = """
-name: Publish
-jobs:
-  publish:
-    permissions:
-      id-token: write
-      contents: read
-    steps:
-      - uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b
-"""
-        check = {"id": "common.short_lived_identity_policy"}
+        def fake_pypi(name: str) -> dict[str, object]:
+            return {"ok": True, "name": name}
 
-        findings = repo_validator.evaluate_artifact_check(
-            check,
+        with mock.patch.dict(
+            registries.FETCHERS,
+            {"pypi_python_package": ("pypi", fake_pypi)},
+            clear=True,
+        ):
+            state = registries.collect_registries(
+                {}, local, ["pypi_python_package"], rules
+            )
+        self.assertTrue(state["pypi"]["all_resolved"])
+        self.assertEqual(state["pypi"]["packages"]["demo"]["name"], "demo")
+
+    def test_ghcr_metadata_verifies_the_named_package(self):
+        parameters = {
+            "owner": "owner",
+            "artifact_contracts": [
+                {
+                    "artifact_type": "docker_oci_image",
+                    "registry": "ghcr.io",
+                    "package_or_image_name": "ghcr.io/owner/image:latest",
+                }
+            ],
+        }
+        rules = [{"assertions": [{"path": "/artifact/live_metadata/all_resolved"}]}]
+        response = ApiResult(
+            True,
+            "GET",
+            "/orgs/owner/packages?package_type=container",
+            data=[{"name": "image"}],
+        )
+        with mock.patch.object(registries, "run_gh_api", return_value=response):
+            state = registries.collect_registries(
+                parameters,
+                {},
+                ["docker_oci_image", "github_container_registry_image"],
+                rules,
+                {"repo": {"owner": {"type": "Organization"}}},
+            )
+        self.assertEqual(state["dockerhub"]["packages"], {})
+        self.assertTrue(state["github_packages"]["all_resolved"])
+        self.assertTrue(state["github_packages"]["packages"]["container"]["ok"])
+
+    def test_paginated_object_responses_merge_item_arrays(self):
+        process = mock.Mock(
+            returncode=0,
+            stdout=json.dumps(
+                [
+                    {"total_count": 2, "items": [{"id": 1}]},
+                    {"total_count": 2, "items": [{"id": 2}]},
+                ]
+            ),
+            stderr="",
+        )
+        with mock.patch.object(github_api.subprocess, "run", return_value=process):
+            result = github_api.run_gh_api(
+                "GET", "/search/issues?q=test&per_page=100", paginate=True
+            )
+        self.assertTrue(result.ok)
+        self.assertEqual(result.data["items"], [{"id": 1}, {"id": 2}])
+
+    def test_stale_helpers_preserve_history_and_classify_candidates(self):
+        self.assertEqual(
+            stale_pull_request_candidates([], {"report_open_prs_older_than_days": 30}),
+            [],
+        )
+        releases = [
+            {
+                "tag_name": "v1.0.0",
+                "draft": False,
+                "prerelease": False,
+                "published_at": "2026-01-01T00:00:00Z",
+            }
+        ]
+        self.assertEqual(
+            stale_release_candidates(releases, [{"name": "v1.0.0"}], {}), []
+        )
+        candidates = stale_release_candidates(
+            [
+                {
+                    "tag_name": "v2.0.0-rc1",
+                    "draft": False,
+                    "prerelease": True,
+                    "published_at": "2000-01-01T00:00:00Z",
+                }
+            ],
+            [{"name": "v2.0.0-rc1"}],
             {},
-            {"files": [".github/workflows/publish-pypi.yml"], "texts": {".github/workflows/publish-pypi.yml": workflow}},
-            {"artifact_surface": ["pypi_python_package"]},
-            {},
+        )
+        self.assertIn("prerelease older than 30 days", candidates[0]["stale_reason"])
+
+    def test_stale_helpers_honor_contract_collection_inputs(self):
+        branches = [{"name": "release/1.x", "protected": False}]
+        self.assertEqual(
+            stale_branch_candidates(
+                branches,
+                [],
+                "main",
+                {"retained_branch_name_patterns": ["^release/"]},
+            ),
+            [],
+        )
+        self.assertEqual(
+            stale_release_candidates(
+                [
+                    {
+                        "tag_name": "v1",
+                        "draft": True,
+                        "created_at": "2999-01-01T00:00:00Z",
+                    }
+                ],
+                [{"name": "v1"}],
+                {"draft_review_after_days": 7},
+            ),
             [],
         )
 
-        self.assertEqual(findings[0]["level"], "PASS")
-
-    def test_private_fork_workflows_do_not_require_approval_when_disabled(self):
-        findings = repo_validator.private_fork_pr_workflow_findings(
-            "actions.private_fork_pr_workflows",
-            {
-                "run_workflows_from_fork_pull_requests": False,
-                "send_write_tokens_to_workflows": False,
-                "send_secrets_and_variables": False,
-                "require_approval_for_fork_pr_workflows": False,
-            },
-        )
-
-        self.assertEqual(findings[0]["level"], "PASS")
-
-    def test_contributor_approval_policy_applies_only_to_public_repos(self):
-        expression = REPO_CHECKS["actions.fork_pr_contributor_approval"]["applies_when"]
-
-        for visibility, expected in (("public", True), ("private", False), ("internal", False)):
-            with self.subTest(visibility=visibility):
-                context = {
-                    "repo.visibility": visibility,
-                    "repo.archived": False,
-                    "type.workflow_surface": {"has_workflows": True},
+    def test_summary_filters_levels_and_keeps_stale_inventory(self):
+        desired_state = {
+            "parameters": {"owner": "owner", "repo": "repo"},
+            "contract_paths": {},
+            "selected_ids": {"repo": ["stale_state.tags"]},
+            "rules": [{"id": "stale_state.tags"}],
+        }
+        observed = {
+            "repository": {
+                "stale": {
+                    "tags": {
+                        "inventory": [{"name": "v1"}],
+                        "candidates": [{"name": "v1"}],
+                    },
+                    "releases": {
+                        "inventory": [
+                            {
+                                "tag_name": "v1",
+                                "body": "large release body",
+                                "assets": [{"name": "bundle.zip"}],
+                            }
+                        ],
+                        "candidates": [],
+                    },
                 }
-                self.assertEqual(repo_validator.condition_matches(expression, context), expected)
-
-    def test_private_fork_workflow_policy_applies_to_private_and_internal_repos(self):
-        expression = REPO_CHECKS["actions.private_fork_pr_workflows"]["applies_when"]
-
-        for visibility, expected in (("public", False), ("private", True), ("internal", True)):
-            with self.subTest(visibility=visibility):
-                context = {"repo.visibility": visibility, "repo.archived": False}
-                self.assertEqual(repo_validator.condition_matches(expression, context), expected)
-
-    def test_private_fork_workflows_require_approval_when_enabled(self):
-        findings = repo_validator.private_fork_pr_workflow_findings(
-            "actions.private_fork_pr_workflows",
-            {
-                "run_workflows_from_fork_pull_requests": True,
-                "send_write_tokens_to_workflows": False,
-                "send_secrets_and_variables": False,
-                "require_approval_for_fork_pr_workflows": False,
             },
+            "local": {"available": True, "root": ".", "errors": []},
+        }
+        comparison = {
+            "findings": [
+                {
+                    "level": "NEEDS_AI_AGENT_REVIEW",
+                    "check_id": "stale_state.tags",
+                    "path": "/repository/stale/tags/candidates",
+                    "message": "review",
+                    "actual": [{"name": "v1"}],
+                }
+            ],
+            "approved_drift": [],
+        }
+        report = build_report(desired_state, observed, comparison)
+        summary = build_summary_report(
+            report, ["ERROR", "WARN", "NEEDS_AI_AGENT_REVIEW"]
         )
+        self.assertEqual(summary["stale_state_inventory"]["tags"]["count"], 1)
+        release = summary["stale_state_inventory"]["releases"]["sample"][0]
+        self.assertEqual(release["asset_names"], ["bundle.zip"])
+        self.assertNotIn("body", release)
+        self.assertEqual(summary["findings"][0]["level"], "NEEDS_AI_AGENT_REVIEW")
 
-        self.assertEqual([item["level"] for item in findings], ["WARN", "ERROR"])
-        self.assertEqual(findings[1]["path"], "$.require_approval_for_fork_pr_workflows")
-
-    def test_regex_scan_defers_documented_exceptions_for_review(self):
-        check = {
-            "id": "stale_state.local_path_references",
-            "expected": {
-                "forbidden_patterns": [r"[A-Za-z]:\\\\"],
-                "allow_when": "external_runtime_requires_absolute_path_and_documented",
+    def test_machine_output_removes_sensitive_and_raw_collected_content(self):
+        report = {
+            "private": True,
+            "token": "secret-value",
+            "observed_states": {
+                "local": {
+                    "texts": {"config.json": "password=secret-value"},
+                    "workflows": {"text": "token: secret-value"},
+                },
+                "api": {
+                    "repo.settings": {
+                        "raw_stdout": "secret-value",
+                        "raw_stderr": "secret-value",
+                    },
+                    "secret_scanning": {"enabled": True},
+                },
             },
+            "findings": [
+                {
+                    "path": "/organization/billing_email",
+                    "actual": "private@example.com",
+                    "expected": "owner@example.com",
+                }
+            ],
         }
-        local = {
-            "available": True,
-            "texts": {"automation.toml": 'cwd = "' + "C:" + '\\\\CodexProjects\\\\repo"'},
-        }
-
-        findings = repo_validator.regex_scan_check(check, local)
-
-        self.assertEqual(findings[0]["level"], "NEEDS_REVIEW")
-        self.assertEqual(findings[0]["expected"], "external_runtime_requires_absolute_path_and_documented")
-
-    def test_regex_scan_keeps_secret_matches_blocking(self):
-        check = {
-            "id": "content.local_secret_pattern_scan",
-            "expected": {
-                "forbidden_patterns": [r"ghp_[A-Za-z0-9]+"],
-                "allow_when": "fixture_or_documentation_context_only",
-            },
-        }
-        local = {
-            "available": True,
-            "texts": {"config.txt": "token=ghp_exampletoken"},
-        }
-
-        findings = repo_validator.regex_scan_check(check, local)
-
-        self.assertEqual(findings[0]["level"], "ERROR")
-
-    def test_pr_readiness_emit_errors_on_error_level(self):
-        finding = pr_validator.Finding(level="ERROR", check="pr.state_open", message="PR is not open.")
+        safe = sanitize_for_output(report)
+        self.assertTrue(safe["private"])
+        self.assertEqual(safe["token"], "<redacted>")
+        self.assertEqual(
+            safe["observed_states"]["local"]["texts"],
+            {"count": 1, "content": "<omitted>"},
+        )
+        self.assertEqual(
+            safe["observed_states"]["api"]["repo.settings"]["raw_stdout"],
+            "<omitted>",
+        )
+        self.assertTrue(
+            safe["observed_states"]["api"]["secret_scanning"]["enabled"]
+        )
+        self.assertEqual(safe["findings"][0]["actual"], "<redacted>")
         stream = io.StringIO()
         with contextlib.redirect_stdout(stream):
-            status = pr_validator.emit({}, [finding], as_json=True, contract_path=pathlib.Path("contract.json"))
+            write_json(report)
+        output = stream.getvalue()
+        self.assertNotIn("secret-value", output)
+        self.assertNotIn("private@example.com", output)
+        self.assertEqual(json.loads(output), safe)
 
-        payload = json.loads(stream.getvalue())
+    def test_contract_entrypoints_use_sanitized_json_writer(self):
+        entrypoints = (
+            "github-collect-nd-evidence.py",
+            "github-validate-org-contract.py",
+            "github-validate-repo-artifact-contract.py",
+        )
+        for name in entrypoints:
+            text = (SCRIPTS / name).read_text(encoding="utf-8")
+            self.assertIn("write_json(", text)
+            self.assertNotIn("print(json.dumps(", text)
+
+    def test_remediation_registry_covers_contract_actions(self):
+        actions = {
+            check["remediation_action"]
+            for contract in self.contracts.values()
+            for check in contract["checks"]
+            if check.get("remediation_action")
+        }
+        org = load_json(REFERENCES / "github-org-deterministic-contract.json")
+        actions.update(
+            check["remediation_action"]
+            for check in org["checks"]
+            if check.get("remediation_action")
+        )
+        self.assertEqual(actions, set(HANDLERS))
+
+    def test_consistency_validator_passes(self):
+        process = subprocess.run(
+            [sys.executable, str(SCRIPTS / "validate-gh-contracts-consistency.py")],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+        )
+        self.assertEqual(process.returncode, 0, process.stdout + process.stderr)
+
+    def test_pr_readiness_emit_errors_on_error_level(self):
+        finding = pr_validator.Finding(
+            level="ERROR", check="pr.state_open", message="PR is not open."
+        )
+        stream = io.StringIO()
+        with contextlib.redirect_stdout(stream):
+            status = pr_validator.emit(
+                {}, [finding], as_json=True, contract_path=pathlib.Path("contract.json")
+            )
         self.assertEqual(status, 1)
-        self.assertEqual(payload["counts"]["ERROR"], 1)
+        self.assertEqual(json.loads(stream.getvalue())["counts"]["ERROR"], 1)
 
     def test_merge_helper_revalidates_after_review_wait(self):
         text = (SCRIPTS / "validate-and-merge-pr.ps1").read_text(encoding="utf-8")
-        readiness_call = 'Invoke-QuietNative -FilePath "python" -Arguments $readinessArgs'
-        positions = [index for index in range(len(text)) if text.startswith(readiness_call, index)]
-
-        self.assertEqual(len(positions), 2)
-        review_wait = text.index('$reviewGateScript,')
-        merge_args = text.index('$ghArgs = @("pr", "merge"')
-        self.assertLess(positions[0], review_wait)
-        self.assertLess(review_wait, positions[1])
-        self.assertLess(positions[1], merge_args)
-
-    def test_org_remediation_summary_uses_needs_review_bucket(self):
-        summary = org_validator.remediation_summary(
-            [{"check_id": "org.identity", "path": "$.login"}],
-            {"remediation_policy": {"auto_apply_check_ids": []}},
+        readiness_call = (
+            'Invoke-QuietNative -FilePath "python" -Arguments $readinessArgs'
         )
-
-        self.assertEqual(summary["needs_review_or_report_only"], [{"check_id": "org.identity", "path": "$.login"}])
-        self.assertNotIn("manual" + "_or_report_only", summary)
+        positions = [
+            index
+            for index in range(len(text))
+            if text.startswith(readiness_call, index)
+        ]
+        self.assertEqual(len(positions), 2)
+        self.assertLess(positions[0], text.index("$reviewGateScript,"))
+        self.assertLess(text.index("$reviewGateScript,"), positions[1])
+        self.assertLess(positions[1], text.index('$ghArgs = @("pr", "merge"'))
 
 
 if __name__ == "__main__":

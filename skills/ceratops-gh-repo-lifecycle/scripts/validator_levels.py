@@ -1,7 +1,7 @@
 """Shared severity vocabulary for GH lifecycle validators.
 
-The helper keeps user-facing validator levels consistent across scripts while
-preserving each validator's own check logic and output shape.
+The helper keeps user-facing validator levels consistent across the shared
+state engine and the separate PR-readiness validator.
 """
 
 from __future__ import annotations
@@ -12,15 +12,15 @@ from typing import Any
 
 ERROR = "ERROR"
 WARN = "WARN"
-NEEDS_REVIEW = "NEEDS_REVIEW"
+NEEDS_AI_AGENT_REVIEW = "NEEDS_AI_AGENT_REVIEW"
 INFO = "INFO"
 PASS = "PASS"
 SKIP = "SKIP"
 
-CANONICAL_LEVELS = (ERROR, WARN, NEEDS_REVIEW, INFO, PASS, SKIP)
-DEFAULT_SUMMARY_LEVELS = (ERROR, WARN, NEEDS_REVIEW)
+CANONICAL_LEVELS = (ERROR, WARN, NEEDS_AI_AGENT_REVIEW, INFO, PASS, SKIP)
+DEFAULT_SUMMARY_LEVELS = (ERROR, WARN, NEEDS_AI_AGENT_REVIEW)
 BLOCKING_LEVELS = frozenset((ERROR, WARN))
-ACTIONABLE_LEVELS = frozenset((ERROR, WARN, NEEDS_REVIEW))
+ACTIONABLE_LEVELS = frozenset((ERROR, WARN, NEEDS_AI_AGENT_REVIEW))
 
 
 def item_level(item: Any) -> str:
@@ -50,7 +50,9 @@ def parse_levels(raw: str | None) -> list[str]:
     invalid = [level for level in levels if level not in CANONICAL_LEVELS]
     if invalid:
         expected = ", ".join(CANONICAL_LEVELS)
-        raise ValueError(f"unknown level(s): {', '.join(invalid)}; expected one or more of {expected}")
+        raise ValueError(
+            f"unknown level(s): {', '.join(invalid)}; expected one or more of {expected}"
+        )
     return levels
 
 
