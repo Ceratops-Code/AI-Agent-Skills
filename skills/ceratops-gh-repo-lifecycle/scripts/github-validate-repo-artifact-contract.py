@@ -57,6 +57,10 @@ PUBLISH_SIGNAL_RE = re.compile(
     r"(gh release|npm\s+(?:stage\s+)?publish|twine upload|pypa/gh-action-pypi-publish|docker/build-push-action|docker push|cargo publish|gem push|nuget push|mvn deploy)",
     re.IGNORECASE,
 )
+STATIC_SITE_PUBLISH_RE = re.compile(
+    r"(actions/(?:deploy-pages|upload-pages-artifact)@|peaceiris/actions-gh-pages@|JamesIves/github-pages-deploy-action@|mkdocs\s+gh-deploy\b|\bgh-pages\s+(?:-d|--dist)\b)",
+    re.IGNORECASE,
+)
 FORK_PR_APPROVAL_RANK = {
     "first_time_contributors_new_to_github": 0,
     "first_time_contributors": 1,
@@ -1234,8 +1238,11 @@ def classify(repo_info: dict[str, Any], paths: list[str], topics: list[str], loc
     if path_matches(paths, ["Chart.yaml", "charts/**/Chart.yaml"]):
         artifacts.add("helm_chart")
         project.add("iac")
-    if repo_info.get("has_pages") or path_matches(paths, ["docs/**", "site/**", "public/**"]):
+    if repo_info.get("has_pages"):
         artifacts.add("github_pages_site")
+        project.add("website")
+    elif STATIC_SITE_PUBLISH_RE.search(ci_text):
+        artifacts.add("static_docs_site")
         project.add("website")
     if not artifacts:
         artifacts.add("no_artifact")

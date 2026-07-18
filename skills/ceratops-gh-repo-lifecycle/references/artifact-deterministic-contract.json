@@ -455,18 +455,21 @@
         "artifact_type": "static_docs_site",
         "confidence": "medium",
         "when_any_path_matches": [
-          "docs/**",
-          "site/**",
-          "public/**",
-          "mkdocs.yml",
-          "docusaurus.config.*",
-          "next.config.*"
+          ".github/workflows/*.yml",
+          ".github/workflows/*.yaml",
+          ".circleci/config.yml",
+          ".circleci/config.yaml",
+          ".gitlab-ci.yml",
+          ".gitlab-ci.yaml"
         ],
         "and_when_any_file_contains_any": [
-          "pages",
-          "deploy-pages",
+          "actions/deploy-pages@",
+          "actions/upload-pages-artifact@",
+          "peaceiris/actions-gh-pages@",
+          "JamesIves/github-pages-deploy-action@",
           "mkdocs gh-deploy",
-          "github-pages"
+          "gh-pages -d",
+          "gh-pages --dist"
         ]
       },
       {

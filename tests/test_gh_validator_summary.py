@@ -185,6 +185,40 @@ class GHValidatorSummaryTests(unittest.TestCase):
 
         self.assertEqual(types["artifact_surface"], ["npm_package"])
 
+    def test_classify_does_not_treat_documentation_directories_as_sites(self):
+        local = {
+            "files": ["docs/guide.md", "site/notes.md", "public/logo.svg"],
+            "texts": {
+                "docs/guide.md": "# Guide\n",
+                "site/notes.md": "# Notes\n",
+            },
+        }
+
+        types = repo_validator.classify({"has_pages": False}, local["files"], [], local)
+
+        self.assertEqual(types["artifact_surface"], ["no_artifact"])
+        self.assertNotIn("website", types["project_surface"])
+
+    def test_classify_keeps_enabled_github_pages_site(self):
+        local = {"files": ["docs/index.md"], "texts": {"docs/index.md": "# Docs\n"}}
+
+        types = repo_validator.classify({"has_pages": True}, local["files"], [], local)
+
+        self.assertEqual(types["artifact_surface"], ["github_pages_site"])
+        self.assertIn("website", types["project_surface"])
+
+    def test_classify_detects_static_site_publish_workflow(self):
+        workflow = "steps:\n  - uses: actions/deploy-pages@0123456789012345678901234567890123456789\n"
+        local = {
+            "files": ["docs/index.md", ".github/workflows/pages.yml"],
+            "texts": {"docs/index.md": "# Docs\n", ".github/workflows/pages.yml": workflow},
+        }
+
+        types = repo_validator.classify({"has_pages": False}, local["files"], [], local)
+
+        self.assertEqual(types["artifact_surface"], ["static_docs_site"])
+        self.assertIn("website", types["project_surface"])
+
     def test_github_package_metadata_skips_pypi_release_assets(self):
         check = {
             "id": "github_packages.live_package_metadata",
