@@ -1,5 +1,5 @@
 {
-  "contract_format_version": 1,
+  "contract_format_version": 2,
   "kind": "github_repository_contract",
   "name": "ceratops_github_repo_deterministic_contract",
   "captured_on": "2026-05-02",
@@ -102,7 +102,6 @@
     "apply_flag": "--apply",
     "auto_apply_check_ids": [
       "repo.merge_settings",
-      "repo.topics_required",
       "security.dependabot_security_updates_enabled",
       "security.vulnerability_alerts_enabled",
       "security.private_vulnerability_reporting_public",
@@ -116,409 +115,6 @@
       "stale_state.*"
     ],
     "destructive_or_irreversible": "always_report_only"
-  },
-  "type_system": {
-    "dimensions": [
-      {
-        "id": "visibility",
-        "values": [
-          "public",
-          "private",
-          "internal"
-        ],
-        "detector": "repo.visibility"
-      },
-      {
-        "id": "origin",
-        "values": [
-          "source",
-          "fork",
-          "template"
-        ],
-        "detectors": [
-          {
-            "value": "fork",
-            "when": "repo.fork == true"
-          },
-          {
-            "value": "template",
-            "when": "repo.is_template == true"
-          },
-          {
-            "value": "source",
-            "when": "repo.fork == false && repo.is_template == false"
-          }
-        ]
-      },
-      {
-        "id": "lifecycle",
-        "values": [
-          "active",
-          "archived",
-          "disabled"
-        ],
-        "detectors": [
-          {
-            "value": "archived",
-            "when": "repo.archived == true"
-          },
-          {
-            "value": "disabled",
-            "when": "repo.disabled == true"
-          },
-          {
-            "value": "active",
-            "when": "repo.archived == false && repo.disabled == false"
-          }
-        ]
-      },
-      {
-        "id": "project_surface",
-        "values": [
-          "software",
-          "documentation_only",
-          "iac",
-          "automation",
-          "website",
-          "library_or_sdk",
-          "service_or_app",
-          "unknown"
-        ],
-        "detectors": [
-          {
-            "value": "software",
-            "when_any_path_matches": [
-              "src/**",
-              "app/**",
-              "lib/**",
-              "pyproject.toml",
-              "package.json",
-              "go.mod",
-              "Cargo.toml",
-              "pom.xml",
-              "*.csproj",
-              "*.sln"
-            ]
-          },
-          {
-            "value": "library_or_sdk",
-            "when_any_path_matches": [
-              "pyproject.toml",
-              "package.json",
-              "go.mod",
-              "Cargo.toml",
-              "pom.xml",
-              "*.csproj",
-              "*.nuspec",
-              "*.gemspec"
-            ]
-          },
-          {
-            "value": "iac",
-            "when_any_path_matches": [
-              "*.tf",
-              "Chart.yaml",
-              "charts/**/Chart.yaml",
-              "k8s/**",
-              "kubernetes/**",
-              "manifests/**"
-            ]
-          },
-          {
-            "value": "automation",
-            "when_any_path_matches": [
-              ".github/workflows/*.yml",
-              ".github/workflows/*.yaml",
-              "action.yml",
-              "action.yaml",
-              "scripts/**"
-            ]
-          },
-          {
-            "value": "website",
-            "when_any_path_matches": [
-              "docs/**",
-              "public/**",
-              "site/**",
-              "mkdocs.yml",
-              "docusaurus.config.*",
-              "next.config.*"
-            ],
-            "or_when": "repo.has_pages == true"
-          },
-          {
-            "value": "service_or_app",
-            "when_any_path_matches": [
-              "Dockerfile",
-              "**/Dockerfile",
-              "Procfile",
-              "docker-compose.yml",
-              "compose.yml",
-              "compose.yaml",
-              "app/**"
-            ]
-          },
-          {
-            "value": "documentation_only",
-            "when": "tree_has_readme_or_docs == true && no_software_artifact_iac_or_workflow_signals == true"
-          }
-        ]
-      },
-      {
-        "id": "workflow_surface",
-        "values": [
-          "no_workflows",
-          "has_workflows",
-          "has_release_workflow",
-          "has_attestation_workflow"
-        ],
-        "detectors": [
-          {
-            "value": "has_workflows",
-            "when_any_path_matches": [
-              ".github/workflows/*.yml",
-              ".github/workflows/*.yaml"
-            ]
-          },
-          {
-            "value": "has_release_workflow",
-            "when_workflow_contains_any": [
-              "gh release",
-              "softprops/action-gh-release",
-              "pypa/gh-action-pypi-publish",
-              "npm publish",
-              "npm stage publish",
-              "docker/build-push-action",
-              "docker/login-action",
-              "crates.io",
-              "rubygems",
-              "nuget push",
-              "mvn deploy"
-            ]
-          },
-          {
-            "value": "has_attestation_workflow",
-            "when_workflow_contains_any": [
-              "actions/attest",
-              "attestations: write",
-              "artifact-metadata: write"
-            ]
-          }
-        ]
-      },
-      {
-        "id": "artifact_surface",
-        "values": [
-          "no_artifact",
-          "docker_oci_image",
-          "pypi_python_package",
-          "npm_package",
-          "maven_package",
-          "nuget_package",
-          "crates_package",
-          "rubygems_package",
-          "powershell_gallery_module",
-          "github_release_binary",
-          "github_pages_site",
-          "github_packages_other"
-        ],
-        "detectors": [
-          {
-            "value": "docker_oci_image",
-            "confidence": "high",
-            "when_any_path_matches": [
-              "Dockerfile",
-              "docker/Dockerfile",
-              "**/Dockerfile"
-            ]
-          },
-          {
-            "value": "docker_oci_image",
-            "confidence": "high",
-            "when_any_topic_matches": [
-              "docker",
-              "oci",
-              "container",
-              "ghcr"
-            ]
-          },
-          {
-            "value": "pypi_python_package",
-            "confidence": "high",
-            "when_any_path_matches": [
-              "pyproject.toml",
-              "setup.cfg",
-              "setup.py"
-            ],
-            "and_when_file_contains_any": {
-              "pyproject.toml": [
-                "[project]",
-                "[tool.poetry]",
-                "[build-system]"
-              ]
-            }
-          },
-          {
-            "value": "npm_package",
-            "confidence": "high",
-            "when_any_path_matches": [
-              "package.json"
-            ]
-          },
-          {
-            "value": "maven_package",
-            "confidence": "high",
-            "when_any_path_matches": [
-              "pom.xml"
-            ]
-          },
-          {
-            "value": "nuget_package",
-            "confidence": "high",
-            "when_any_path_matches": [
-              "*.csproj",
-              "*.nuspec"
-            ]
-          },
-          {
-            "value": "crates_package",
-            "confidence": "high",
-            "when_any_path_matches": [
-              "Cargo.toml"
-            ]
-          },
-          {
-            "value": "rubygems_package",
-            "confidence": "high",
-            "when_any_path_matches": [
-              "*.gemspec",
-              "Gemfile"
-            ]
-          },
-          {
-            "value": "powershell_gallery_module",
-            "confidence": "high",
-            "when_any_path_matches": [
-              "*.psd1"
-            ]
-          },
-          {
-            "value": "github_release_binary",
-            "confidence": "medium",
-            "when_release_assets_count_gt": 0
-          },
-          {
-            "value": "github_pages_site",
-            "confidence": "high",
-            "when": "repo.has_pages == true"
-          }
-        ]
-      },
-      {
-        "id": "language_or_iac",
-        "values": [
-          "python",
-          "javascript_or_typescript",
-          "go",
-          "rust",
-          "dotnet",
-          "java",
-          "terraform",
-          "kubernetes",
-          "helm",
-          "github_actions"
-        ],
-        "detectors": [
-          {
-            "value": "python",
-            "when_any_path_matches": [
-              "pyproject.toml",
-              "requirements*.txt",
-              "*.py"
-            ]
-          },
-          {
-            "value": "javascript_or_typescript",
-            "when_any_path_matches": [
-              "package.json",
-              "*.js",
-              "*.ts",
-              "*.tsx"
-            ]
-          },
-          {
-            "value": "go",
-            "when_any_path_matches": [
-              "go.mod"
-            ]
-          },
-          {
-            "value": "rust",
-            "when_any_path_matches": [
-              "Cargo.toml"
-            ]
-          },
-          {
-            "value": "dotnet",
-            "when_any_path_matches": [
-              "*.csproj",
-              "*.sln"
-            ]
-          },
-          {
-            "value": "java",
-            "when_any_path_matches": [
-              "pom.xml",
-              "build.gradle",
-              "build.gradle.kts"
-            ]
-          },
-          {
-            "value": "terraform",
-            "when_any_path_matches": [
-              "*.tf"
-            ]
-          },
-          {
-            "value": "kubernetes",
-            "when_any_file_contains_any": [
-              "apiVersion:",
-              "kind: Deployment",
-              "kind: Service",
-              "kind: Ingress"
-            ]
-          },
-          {
-            "value": "helm",
-            "when_any_path_matches": [
-              "Chart.yaml",
-              "charts/**/Chart.yaml"
-            ]
-          },
-          {
-            "value": "github_actions",
-            "when_any_path_matches": [
-              ".github/workflows/*.yml",
-              ".github/workflows/*.yaml"
-            ]
-          }
-        ]
-      }
-    ],
-    "type_resolution_rules": [
-      {
-        "id": "topics_are_secondary",
-        "rule": "Repository topics can add types, but path, manifest, workflow, release, and API signals are stronger than topics alone."
-      },
-      {
-        "id": "multi_type_repos_are_allowed",
-        "rule": "A repo may have multiple artifact, language, and IaC types; all matching conditional checks apply unless approved drift excludes them."
-      },
-      {
-        "id": "archived_repos_are_inventory",
-        "rule": "Archived repos are classified, but mutating repair checks become report-only."
-      }
-    ]
   },
   "fetch_bundles": [
     {
@@ -732,6 +328,7 @@
         {
           "method": "GET",
           "endpoint": "/repos/${owner}/${repo}/releases?per_page=100",
+          "paginate": true,
           "covers_checks": [
             "stale_state.releases"
           ]
@@ -739,6 +336,7 @@
         {
           "method": "GET",
           "endpoint": "/repos/${owner}/${repo}/tags?per_page=100",
+          "paginate": true,
           "covers_checks": [
             "stale_state.tags"
           ]
@@ -746,6 +344,7 @@
         {
           "method": "GET",
           "endpoint": "/repos/${owner}/${repo}/branches?per_page=100",
+          "paginate": true,
           "covers_checks": [
             "stale_state.branches"
           ]
@@ -753,6 +352,7 @@
         {
           "method": "GET",
           "endpoint": "/repos/${owner}/${repo}/pulls?state=open&per_page=100",
+          "paginate": true,
           "covers_checks": [
             "stale_state.pull_requests"
           ]
@@ -767,15 +367,21 @@
         "skills/ceratops-gh-repo-lifecycle/references/health-audit.md"
       ],
       "kind": "classification",
-      "comparison": "derive_types",
       "applies_when": "always",
-      "expected": {
-        "must_classify_dimensions": [
-          "visibility",
-          "origin",
-          "lifecycle"
-        ]
-      }
+      "assertions": [
+        {
+          "path": "/repository/types/visibility",
+          "operator": "not_empty"
+        },
+        {
+          "path": "/repository/types/origin",
+          "operator": "not_empty"
+        },
+        {
+          "path": "/repository/types/lifecycle",
+          "operator": "not_empty"
+        }
+      ]
     },
     {
       "id": "type.topic_signals",
@@ -783,11 +389,13 @@
         "skills/ceratops-gh-repo-lifecycle/references/health-audit.md"
       ],
       "kind": "classification",
-      "comparison": "derive_types_from_topics",
       "applies_when": "always",
-      "expected": {
-        "topics_are_secondary": true
-      }
+      "assertions": [
+        {
+          "path": "/repository/types",
+          "operator": "truthy"
+        }
+      ]
     },
     {
       "id": "repo.identity_public_contract",
@@ -796,23 +404,39 @@
       ],
       "kind": "api",
       "endpoint": "/repos/${owner}/${repo}",
-      "comparison": "selected_fields_policy",
       "applies_when": "repo.archived == false",
-      "expected": {
-        "owner.login": "${owner}",
-        "name": "${repo}",
-        "default_branch": "${default_branch}",
-        "visibility": "one_of:public,private,internal",
-        "description": {
-          "required_when": "repo.visibility == public",
-          "non_empty": true,
-          "allow_approved_empty": true
+      "assertions": [
+        {
+          "path": "/repository/repo/owner/login",
+          "operator": "equal_ci",
+          "expected": "${owner}"
         },
-        "homepage": {
-          "required_when": "repo.has_pages == true || repo.topics includes website",
-          "allow_null": true
+        {
+          "path": "/repository/repo/name",
+          "operator": "equal_ci",
+          "expected": "${repo}"
+        },
+        {
+          "path": "/repository/repo/default_branch",
+          "operator": "equal",
+          "expected": "${default_branch}"
+        },
+        {
+          "path": "/repository/repo/visibility",
+          "operator": "in",
+          "expected": [
+            "public",
+            "private",
+            "internal"
+          ]
+        },
+        {
+          "path": "/repository/repo/description",
+          "operator": "not_empty",
+          "level": "ERROR",
+          "when": "repo.visibility == public"
         }
-      }
+      ]
     },
     {
       "id": "repo.topics_required",
@@ -821,12 +445,15 @@
       ],
       "kind": "api",
       "endpoint": "/repos/${owner}/${repo}/topics",
-      "comparison": "policy",
       "applies_when": "repo.archived == false",
-      "expected": {
-        "names.min_count": 1,
-        "names.must_reflect_detected_artifact_types": true
-      }
+      "assertions": [
+        {
+          "path": "/repository/topics",
+          "operator": "not_empty",
+          "when": "repo.visibility == public"
+        }
+      ],
+      "remediation": "Set repository topics from the repository's actual purpose; the validator cannot infer semantic topic names safely."
     },
     {
       "id": "repo.unused_feature_flags",
@@ -835,14 +462,27 @@
       ],
       "kind": "api",
       "endpoint": "/repos/${owner}/${repo}",
-      "comparison": "unused_feature_policy",
       "applies_when": "repo.archived == false",
-      "expected": {
-        "has_wiki": "false_unless_docs_or_support_route_uses_wiki",
-        "has_projects": "false_unless_project_boards_are_used",
-        "has_discussions": "false_unless_support_or_community_route_uses_discussions",
-        "has_pages": "true_only_when_pages_site_artifact_or_homepage_expected"
-      }
+      "assertions": [
+        {
+          "path": "/repository/repo/has_wiki",
+          "operator": "equal",
+          "expected": false,
+          "level": "WARN"
+        },
+        {
+          "path": "/repository/repo/has_projects",
+          "operator": "equal",
+          "expected": false,
+          "level": "WARN"
+        },
+        {
+          "path": "/repository/repo/has_discussions",
+          "operator": "equal",
+          "expected": false,
+          "level": "WARN"
+        }
+      ]
     },
     {
       "id": "repo.merge_settings",
@@ -851,24 +491,36 @@
       ],
       "kind": "api",
       "endpoint": "/repos/${owner}/${repo}",
-      "comparison": "selected_fields_equal",
       "applies_when": "repo.archived == false && repo.fork == false",
-      "expected": {
-        "allow_auto_merge": {
-          "value": true,
-          "applies_when": "repo.visibility != private || owner.plan.name != free",
-          "skip_reason": "Auto-merge for private repositories is plan-gated on GitHub Free."
-        },
-        "delete_branch_on_merge": true,
-        "allow_update_branch": true
-      },
       "profile_defaults": {
         "merge_methods": {
           "allow_squash_merge": true,
           "allow_merge_commit": "allowed_if_approved",
           "allow_rebase_merge": "allowed_if_approved"
         }
-      }
+      },
+      "assertions": [
+        {
+          "path": "/repository/repo/allow_auto_merge",
+          "operator": "equal",
+          "expected": true,
+          "level": "WARN",
+          "when": "repo.visibility != private || owner.plan.name != free"
+        },
+        {
+          "path": "/repository/repo/delete_branch_on_merge",
+          "operator": "equal",
+          "expected": true,
+          "level": "WARN"
+        },
+        {
+          "path": "/repository/repo/allow_update_branch",
+          "operator": "equal",
+          "expected": true,
+          "level": "WARN"
+        }
+      ],
+      "remediation_action": "repository.update_settings"
     },
     {
       "id": "process.default_branch_name_and_protection_indicator",
@@ -877,14 +529,18 @@
       ],
       "kind": "api",
       "endpoint": "/repos/${owner}/${repo}/branches/${default_branch}",
-      "comparison": "selected_fields_policy",
       "applies_when": "repo.visibility == public && repo.archived == false && repo.fork == false",
-      "expected": {
-        "name": "${default_branch}",
-        "protected": {
-          "must_be_true_unless_ruleset_enforces_default_branch": true
+      "assertions": [
+        {
+          "path": "/repository/repo/default_branch",
+          "operator": "equal",
+          "expected": "${default_branch}"
+        },
+        {
+          "path": "/repository/enforcement",
+          "operator": "any_true"
         }
-      }
+      ]
     },
     {
       "id": "process.default_branch_enforcement_present",
@@ -896,15 +552,13 @@
         "/repos/${owner}/${repo}/rulesets",
         "/repos/${owner}/${repo}/branches/${default_branch}/protection"
       ],
-      "comparison": "any_enforcement_layer",
       "applies_when": "repo.visibility == public && repo.archived == false && repo.fork == false",
-      "expected": {
-        "one_of": [
-          "ruleset_targets_default_branch_with_active_enforcement",
-          "classic_branch_protection_exists"
-        ],
-        "classify_plan_limited_response": true
-      }
+      "assertions": [
+        {
+          "path": "/repository/enforcement",
+          "operator": "any_true"
+        }
+      ]
     },
     {
       "id": "process.branch_protection_or_ruleset_posture",
@@ -912,22 +566,56 @@
         "skills/ceratops-gh-repo-lifecycle/references/health-audit.md"
       ],
       "kind": "api_composite",
-      "comparison": "policy",
       "applies_when": "repo.visibility == public && repo.archived == false && repo.fork == false",
-      "expected": {
-        "required_status_checks.strict": true,
-        "required_status_checks.contexts": "${expected_required_checks}",
-        "required_pull_request_reviews.required_approving_review_count": {
-          "minimum": 1
+      "assertions": [
+        {
+          "path": "/repository/protection_facts/strict",
+          "operator": "equal",
+          "expected": true
         },
-        "required_pull_request_reviews.dismiss_stale_reviews": true,
-        "required_pull_request_reviews.require_code_owner_reviews": "true_when_codeowners_file_present",
-        "required_conversation_resolution": true,
-        "enforce_admins": true,
-        "allow_force_pushes": false,
-        "allow_deletions": false,
-        "bypass_scope": "none_or_explicitly_approved"
-      }
+        {
+          "path": "/repository/protection_facts/required_checks",
+          "operator": "not_empty"
+        },
+        {
+          "path": "/repository/protection_facts/approving_reviews",
+          "operator": "gte",
+          "expected": 1,
+          "level": "WARN"
+        },
+        {
+          "path": "/repository/protection_facts/dismiss_stale_reviews",
+          "operator": "equal",
+          "expected": true
+        },
+        {
+          "path": "/repository/protection_facts/code_owner_reviews",
+          "operator": "equal",
+          "expected": true,
+          "level": "WARN",
+          "when": "repository.codeowners_present"
+        },
+        {
+          "path": "/repository/protection_facts/conversation_resolution",
+          "operator": "equal",
+          "expected": true
+        },
+        {
+          "path": "/repository/protection_facts/enforce_admins",
+          "operator": "equal",
+          "expected": true
+        },
+        {
+          "path": "/repository/protection_facts/allow_force_pushes",
+          "operator": "equal",
+          "expected": false
+        },
+        {
+          "path": "/repository/protection_facts/allow_deletions",
+          "operator": "equal",
+          "expected": false
+        }
+      ]
     },
     {
       "id": "process.maintainer_bypass_ruleset",
@@ -939,17 +627,32 @@
         "/repos/${owner}/${repo}/rulesets",
         "/repos/${owner}/${repo}/branches/${default_branch}/protection"
       ],
-      "comparison": "maintainer_bypass_policy",
       "applies_when": "expected_maintainer_bypass_actors is not empty && repo.archived == false && repo.fork == false",
-      "expected": {
-        "prefer_ruleset_bypass_over_classic_bypass": true,
-        "bypass_scope": "pull_request_only",
-        "bypass_actors": "${expected_maintainer_bypass_actors}",
-        "ruleset_targets_default_branch": true,
-        "ruleset_rules_include_pull_request_or_required_status_checks": true,
-        "bypass_actor_mode": "pull_request",
-        "steady_state_review_count_minimum": 1
-      }
+      "assertions": [
+        {
+          "path": "/repository/rulesets/expected_actors_present",
+          "operator": "equal",
+          "expected": true
+        },
+        {
+          "path": "/repository/rulesets/pull_request_only_visible",
+          "operator": "equal",
+          "expected": true,
+          "level": "WARN"
+        },
+        {
+          "path": "/repository/rulesets/default_branch_target_visible",
+          "operator": "equal",
+          "expected": true,
+          "level": "WARN"
+        },
+        {
+          "path": "/repository/rulesets/enforcement_rule_visible",
+          "operator": "equal",
+          "expected": true,
+          "level": "WARN"
+        }
+      ]
     },
     {
       "id": "actions.permissions_policy",
@@ -958,16 +661,21 @@
       ],
       "kind": "api",
       "endpoint": "/repos/${owner}/${repo}/actions/permissions",
-      "comparison": "selected_fields_policy",
       "applies_when": "repo.archived == false && type.workflow_surface has has_workflows",
-      "expected": {
-        "enabled": true,
-        "allowed_actions": "all_or_org_restricted",
-        "sha_pinning_required": {
-          "must_be_true_when_all_workflows_sha_pinned": true,
-          "otherwise_report_drift_not_apply": true
+      "assertions": [
+        {
+          "path": "/repository/actions/permissions/enabled",
+          "operator": "equal",
+          "expected": true
+        },
+        {
+          "path": "/repository/actions/permissions/sha_pinning_required",
+          "operator": "equal",
+          "expected": true,
+          "level": "WARN",
+          "when": "local.workflows.unpinned_external_refs is empty"
         }
-      }
+      ]
     },
     {
       "id": "actions.workflow_token_permissions",
@@ -976,15 +684,31 @@
       ],
       "kind": "api_and_tree",
       "endpoint": "/repos/${owner}/${repo}/actions/permissions/workflow",
-      "comparison": "selected_fields_policy",
       "applies_when": "repo.archived == false && type.workflow_surface has has_workflows",
-      "expected": {
-        "default_workflow_permissions": "read",
-        "can_approve_pull_request_reviews": false,
-        "workflow_files_must_not_use_permissions_write_all": true,
-        "attestations_write_only_in_attestation_jobs": true,
-        "artifact_metadata_write_only_when_linked_artifact_metadata_intended": true
-      }
+      "assertions": [
+        {
+          "path": "/repository/actions/workflow_permissions/default_workflow_permissions",
+          "operator": "equal",
+          "expected": "read"
+        },
+        {
+          "path": "/repository/actions/workflow_permissions/can_approve_pull_request_reviews",
+          "operator": "equal",
+          "expected": false
+        },
+        {
+          "path": "/local/workflows/permissions_write_all",
+          "operator": "empty"
+        },
+        {
+          "path": "/local/workflows/top_level_write/attestations",
+          "operator": "empty"
+        },
+        {
+          "path": "/local/workflows/top_level_write/artifact-metadata",
+          "operator": "empty"
+        }
+      ]
     },
     {
       "id": "actions.artifact_log_retention",
@@ -993,11 +717,14 @@
       ],
       "kind": "api",
       "endpoint": "/repos/${owner}/${repo}/actions/permissions/artifact-and-log-retention",
-      "comparison": "retention_days_policy",
       "applies_when": "repo.archived == false && type.workflow_surface has has_workflows",
-      "expected": {
-        "max_days": 90
-      }
+      "assertions": [
+        {
+          "path": "/repository/actions/retention/days",
+          "operator": "lte",
+          "expected": 90
+        }
+      ]
     },
     {
       "id": "actions.fork_pr_contributor_approval",
@@ -1006,15 +733,17 @@
       ],
       "kind": "api",
       "endpoint": "/repos/${owner}/${repo}/actions/permissions/fork-pr-contributor-approval",
-      "comparison": "fork_pr_contributor_approval_policy",
       "applies_when": "repo.visibility == public && repo.archived == false && type.workflow_surface has has_workflows",
-      "expected": {
-        "minimum_approval_policy": "first_time_contributors",
-        "allowed_policies": [
-          "first_time_contributors",
-          "all_external_contributors"
-        ]
-      }
+      "assertions": [
+        {
+          "path": "/repository/actions/fork_approval/approval_policy",
+          "operator": "in",
+          "expected": [
+            "first_time_contributors",
+            "all_external_contributors"
+          ]
+        }
+      ]
     },
     {
       "id": "actions.private_fork_pr_workflows",
@@ -1023,14 +752,25 @@
       ],
       "kind": "api",
       "endpoint": "/repos/${owner}/${repo}/actions/permissions/fork-pr-workflows-private-repos",
-      "comparison": "classify_or_policy",
       "applies_when": "repo.visibility in [private,internal] && repo.archived == false",
-      "expected": {
-        "run_workflows_from_fork_pull_requests": "false_unless_approved",
-        "send_write_tokens_to_workflows": false,
-        "send_secrets_and_variables": false,
-        "require_approval_for_fork_pr_workflows": "true_when_run_workflows_from_fork_pull_requests"
-      }
+      "assertions": [
+        {
+          "path": "/repository/actions/private_fork/send_write_tokens_to_workflows",
+          "operator": "equal",
+          "expected": false
+        },
+        {
+          "path": "/repository/actions/private_fork/send_secrets_and_variables",
+          "operator": "equal",
+          "expected": false
+        },
+        {
+          "path": "/repository/actions/private_fork/require_approval_for_fork_pr_workflows",
+          "operator": "equal",
+          "expected": true,
+          "when": "repository.private_fork_enabled"
+        }
+      ]
     },
     {
       "id": "actions.latest_default_branch_runs",
@@ -1039,13 +779,25 @@
       ],
       "kind": "api",
       "endpoint": "/repos/${owner}/${repo}/actions/runs?branch=${default_branch}&per_page=20",
-      "comparison": "latest_relevant_runs_policy",
       "applies_when": "repo.archived == false && type.workflow_surface has has_workflows",
-      "expected": {
-        "latest_completed_ci_or_release_runs_must_be_success": true,
-        "ignore_skipped_or_manual_unrelated_workflows": true,
-        "classify_no_runs_as_warning": true
-      }
+      "assertions": [
+        {
+          "path": "/repository/actions/runs/available",
+          "operator": "equal",
+          "expected": true,
+          "level": "WARN"
+        },
+        {
+          "path": "/repository/actions/runs/count",
+          "operator": "gt",
+          "expected": 0,
+          "level": "WARN"
+        },
+        {
+          "path": "/repository/actions/runs/failed",
+          "operator": "empty"
+        }
+      ]
     },
     {
       "id": "security.security_and_analysis_status",
@@ -1054,21 +806,28 @@
       ],
       "kind": "api",
       "endpoint": "/repos/${owner}/${repo}",
-      "comparison": "security_and_analysis_policy",
       "applies_when": "repo.archived == false",
-      "expected": {
-        "dependency_graph.status": "enabled_when_available_no_extra_cost",
-        "dependabot_alerts.status": "enabled_when_available_no_extra_cost",
-        "secret_scanning.status": "enabled_for_public_or_paid_private",
-        "secret_scanning_push_protection.status": "enabled_for_public_or_paid_private",
-        "secret_scanning_ai_detection.status": "optional_paid_or_churn_prone",
-        "secret_scanning_non_provider_patterns.status": "optional_paid_or_churn_prone",
-        "secret_scanning_validity_checks.status": "optional_paid_or_churn_prone",
-        "secret_scanning_delegated_alert_dismissal.status": "optional_paid_or_churn_prone",
-        "secret_scanning_delegated_bypass.status": "optional_paid_or_churn_prone",
-        "advanced_security.status": "classify_paid_requirement_for_private_without_code_security",
-        "code_security.status": "classify_paid_requirement_for_private_or_standalone_code_security"
-      }
+      "assertions": [
+        {
+          "path": "/repository/security/settings/dependency_graph/status",
+          "operator": "not_in",
+          "expected": [
+            "disabled"
+          ]
+        },
+        {
+          "path": "/repository/security/settings/secret_scanning/status",
+          "operator": "equal",
+          "expected": "enabled",
+          "when": "repo.visibility == public"
+        },
+        {
+          "path": "/repository/security/settings/secret_scanning_push_protection/status",
+          "operator": "equal",
+          "expected": "enabled",
+          "when": "repo.visibility == public"
+        }
+      ]
     },
     {
       "id": "security.vulnerability_alerts_enabled",
@@ -1077,12 +836,15 @@
       ],
       "kind": "api_status",
       "endpoint": "/repos/${owner}/${repo}/vulnerability-alerts",
-      "comparison": "expected_status",
       "applies_when": "repo.archived == false",
-      "expected": {
-        "enabled_status": 204,
-        "classify_404_or_403": "not_available_or_permission_gap"
-      }
+      "assertions": [
+        {
+          "path": "/repository/security/vulnerability_alerts_enabled",
+          "operator": "equal",
+          "expected": true
+        }
+      ],
+      "remediation_action": "repository.enable_endpoint"
     },
     {
       "id": "security.dependabot_security_updates_enabled",
@@ -1091,12 +853,15 @@
       ],
       "kind": "api_status",
       "endpoint": "/repos/${owner}/${repo}/automated-security-fixes",
-      "comparison": "expected_status",
       "applies_when": "repo.archived == false && repo.fork == false",
-      "expected": {
-        "enabled_status": 204,
-        "classify_404_or_403": "not_available_or_permission_gap"
-      }
+      "assertions": [
+        {
+          "path": "/repository/security/dependabot_security_updates_enabled",
+          "operator": "equal",
+          "expected": true
+        }
+      ],
+      "remediation_action": "repository.enable_endpoint"
     },
     {
       "id": "security.open_dependabot_alert_queue",
@@ -1105,18 +870,13 @@
       ],
       "kind": "api",
       "endpoint": "/repos/${owner}/${repo}/dependabot/alerts?state=open&per_page=100",
-      "comparison": "alert_queue_policy",
       "applies_when": "repo.archived == false",
-      "expected": {
-        "max_open_critical": 0,
-        "max_open_high": 0,
-        "report_medium_low_counts": true,
-        "affected_dependency_manifest_and_patched_versions_recorded": true,
-        "linked_dependabot_prs_classified": true,
-        "reachability_classified_when_relevant": true,
-        "dismissal_requires_fresh_evidence": true,
-        "classify_403": "permission_or_feature_gap"
-      }
+      "assertions": [
+        {
+          "path": "/repository/security/dependabot_alerts/high",
+          "operator": "empty"
+        }
+      ]
     },
     {
       "id": "security.open_dependabot_pr_queue",
@@ -1126,16 +886,25 @@
       ],
       "kind": "cli",
       "command": "gh search prs --repo ${owner}/${repo} --state open --app dependabot --limit 1000 --json author,createdAt,id,isDraft,labels,number,repository,state,title,updatedAt,url",
-      "comparison": "dependabot_pr_queue_policy",
-      "applies_when": "repo.archived == false || open_dependabot_prs_count > 0 || open_dependabot_prs_fetch_failed == true",
-      "expected": {
-        "report_open_dependabot_prs": true,
-        "classify_security_linked_prs": true,
-        "classify_archived_repo_prs_report_only": true,
-        "inspect_update_type_and_ci_status_before_merge": true,
-        "do_not_auto_merge_without_live_policy_and_readiness": true,
-        "result_limit_must_not_be_saturated": true
-      }
+      "applies_when": "repo.archived == false || repository.security.dependabot_prs.items is not empty || repository.security.dependabot_prs.available == false",
+      "assertions": [
+        {
+          "path": "/repository/security/dependabot_prs/available",
+          "operator": "equal",
+          "expected": true,
+          "level": "WARN"
+        },
+        {
+          "path": "/repository/security/dependabot_prs/saturated",
+          "operator": "equal",
+          "expected": false
+        },
+        {
+          "path": "/repository/security/dependabot_prs/items",
+          "operator": "empty",
+          "level": "WARN"
+        }
+      ]
     },
     {
       "id": "security.code_security_configuration_attached",
@@ -1144,13 +913,15 @@
       ],
       "kind": "api",
       "endpoint": "/repos/${owner}/${repo}/code-security-configuration",
-      "comparison": "classify",
-      "applies_when": "repo.archived == false && owner_is_org == true",
-      "expected": {
-        "prefer_org_code_security_configuration": true,
-        "classify_missing_admin_org_or_security_manager": true,
-        "classify_paid_product_blocker": true
-      }
+      "applies_when": "repo.archived == false && repo.owner.type == Organization",
+      "assertions": [
+        {
+          "path": "/repository/security/code_security_configuration_available",
+          "operator": "equal",
+          "expected": true,
+          "level": "WARN"
+        }
+      ]
     },
     {
       "id": "security.code_scanning_default_setup_or_custom",
@@ -1159,16 +930,14 @@
       ],
       "kind": "api_and_tree",
       "endpoint": "/repos/${owner}/${repo}/code-scanning/default-setup",
-      "comparison": "code_scanning_policy",
       "applies_when": "repo.visibility == public && repo.archived == false",
-      "expected": {
-        "default_setup_state": "configured_or_custom_workflow_present",
-        "custom_workflow_paths": [
-          ".github/workflows/codeql*.yml",
-          ".github/workflows/codeql*.yaml"
-        ],
-        "classify_no_supported_languages": true
-      }
+      "assertions": [
+        {
+          "path": "/repository/security/code_scanning",
+          "operator": "any_true",
+          "level": "WARN"
+        }
+      ]
     },
     {
       "id": "security.open_code_scanning_alert_queue",
@@ -1177,14 +946,13 @@
       ],
       "kind": "api",
       "endpoint": "/repos/${owner}/${repo}/code-scanning/alerts?state=open&per_page=100",
-      "comparison": "alert_queue_policy",
       "applies_when": "repo.visibility == public && repo.archived == false",
-      "expected": {
-        "max_open_critical": 0,
-        "max_open_high": 0,
-        "report_medium_low_counts": true,
-        "classify_404": "not_configured_or_no_code_scanning"
-      }
+      "assertions": [
+        {
+          "path": "/repository/security/code_scanning_alerts/high",
+          "operator": "empty"
+        }
+      ]
     },
     {
       "id": "security.open_secret_scanning_alert_queue",
@@ -1193,12 +961,13 @@
       ],
       "kind": "api",
       "endpoint": "/repos/${owner}/${repo}/secret-scanning/alerts?state=open&per_page=100",
-      "comparison": "alert_queue_policy",
       "applies_when": "repo.visibility == public && repo.archived == false",
-      "expected": {
-        "max_open_alerts": 0,
-        "classify_404_or_403": "not_available_permission_or_paid_gap"
-      }
+      "assertions": [
+        {
+          "path": "/repository/security/secret_scanning_alerts",
+          "operator": "empty"
+        }
+      ]
     },
     {
       "id": "security.private_vulnerability_reporting_public",
@@ -1207,12 +976,15 @@
       ],
       "kind": "api_status",
       "endpoint": "/repos/${owner}/${repo}/private-vulnerability-reporting",
-      "comparison": "expected_status_or_explicit_path",
       "applies_when": "repo.visibility == public && repo.archived == false",
-      "expected": {
-        "enabled_status": 204,
-        "or_file_present": "SECURITY.md"
-      }
+      "assertions": [
+        {
+          "path": "/repository/security/private_vulnerability_reporting",
+          "operator": "any_true",
+          "level": "WARN"
+        }
+      ],
+      "remediation_action": "repository.enable_endpoint"
     },
     {
       "id": "security.dependency_review_availability",
@@ -1221,14 +993,15 @@
       ],
       "kind": "api_status",
       "endpoint": "/repos/${owner}/${repo}/dependency-graph/compare/${default_branch}...${default_branch}",
-      "comparison": "classify",
       "applies_when": "repo.archived == false",
-      "expected": {
-        "public_or_eligible_status": 200,
-        "private_without_code_security_status": 403,
-        "fork_status": 403,
-        "not_required_by_default": true
-      }
+      "assertions": [
+        {
+          "path": "/repository/security/dependency_review_available",
+          "operator": "equal",
+          "expected": true,
+          "level": "INFO"
+        }
+      ]
     },
     {
       "id": "content.community_profile_public",
@@ -1237,20 +1010,26 @@
       ],
       "kind": "api",
       "endpoint": "/repos/${owner}/${repo}/community/profile",
-      "comparison": "community_profile_policy",
       "applies_when": "repo.archived == false",
-      "expected": {
-        "health_percentage": {
-          "minimum": 70
+      "assertions": [
+        {
+          "path": "/repository/content/community_profile_available",
+          "operator": "equal",
+          "expected": true,
+          "level": "WARN"
         },
-        "files.readme": "present",
-        "files.license": "present_for_public_source_repos",
-        "files.code_of_conduct": "present_for_public_source_repos",
-        "files.contributing": "present_for_public_source_repos",
-        "files.issue_template": "present_when_issues_enabled",
-        "files.pull_request_template": "present_when_prs_expected",
-        "content_reports_enabled": "true_for_org_owned_public_nonfork_repos"
-      }
+        {
+          "path": "/repository/content/community_profile/health_percentage",
+          "operator": "gte",
+          "expected": 70
+        },
+        {
+          "path": "/repository/content/community_profile/content_reports_enabled",
+          "operator": "equal",
+          "expected": true,
+          "when": "repo.visibility == public && repo.owner.type == Organization && repo.fork == false"
+        }
+      ]
     },
     {
       "id": "content.dependencies_label_when_dependabot_uses_it",
@@ -1258,11 +1037,16 @@
         "skills/ceratops-gh-repo-lifecycle/references/health-audit.md"
       ],
       "kind": "tree_and_api",
-      "comparison": "label_exists_when_referenced",
-      "applies_when": "file .github/dependabot.yml contains labels: dependencies",
-      "expected": {
-        "label": "dependencies"
-      }
+      "applies_when": "repository.content.dependabot_label_referenced",
+      "assertions": [
+        {
+          "path": "/repository/content/dependabot_label_exists",
+          "operator": "equal",
+          "expected": true,
+          "when": "repository.content.dependabot_label_referenced"
+        }
+      ],
+      "remediation_action": "repository.ensure_dependencies_label"
     },
     {
       "id": "stale_state.pull_requests",
@@ -1271,12 +1055,16 @@
       ],
       "kind": "api",
       "endpoint": "/repos/${owner}/${repo}/pulls?state=open&per_page=100",
-      "comparison": "stale_queue_policy",
       "applies_when": "repo.archived == false",
-      "expected": {
-        "report_open_prs_older_than_days": 30,
-        "empty_inventory_is_pass": true,
-        "do_not_close_automatically": true
+      "assertions": [
+        {
+          "path": "/repository/stale/pull_requests/candidates",
+          "operator": "empty",
+          "level": "NEEDS_AI_AGENT_REVIEW"
+        }
+      ],
+      "collection": {
+        "report_open_prs_older_than_days": 30
       }
     },
     {
@@ -1286,20 +1074,22 @@
       ],
       "kind": "api",
       "endpoint": "/repos/${owner}/${repo}/branches?per_page=100",
-      "comparison": "stale_branch_policy",
       "applies_when": "repo.archived == false",
-      "expected": {
-        "report_non_default_unprotected_branches": true,
-        "stale_candidate_requires_no_open_pr": true,
+      "assertions": [
+        {
+          "path": "/repository/stale/branches/candidates",
+          "operator": "empty",
+          "level": "NEEDS_AI_AGENT_REVIEW"
+        }
+      ],
+      "collection": {
         "retained_branch_name_patterns": [
           "^release/",
           "^runtime/"
         ],
         "ignored_branch_names": [
           "release/local"
-        ],
-        "empty_inventory_is_pass": true,
-        "do_not_delete_automatically": true
+        ]
       }
     },
     {
@@ -1309,15 +1099,14 @@
       ],
       "kind": "api",
       "endpoint": "/repos/${owner}/${repo}/tags?per_page=100",
-      "comparison": "release_tag_consistency_policy",
-      "applies_when": "artifact_surface != no_artifact",
-      "expected": {
-        "release_tags_match_release_policy": true,
-        "report_tags_without_matching_release": true,
-        "matching_release_tags_are_retained_history": true,
-        "empty_inventory_is_pass": true,
-        "do_not_delete_automatically": true
-      }
+      "applies_when": "detected_external_artifact_count > 0",
+      "assertions": [
+        {
+          "path": "/repository/stale/tags/candidates",
+          "operator": "empty",
+          "level": "NEEDS_AI_AGENT_REVIEW"
+        }
+      ]
     },
     {
       "id": "stale_state.releases",
@@ -1326,16 +1115,18 @@
       ],
       "kind": "api",
       "endpoint": "/repos/${owner}/${repo}/releases?per_page=100",
-      "comparison": "release_state_policy",
       "applies_when": "repo.archived == false",
-      "expected": {
+      "assertions": [
+        {
+          "path": "/repository/stale/releases/candidates",
+          "operator": "empty",
+          "level": "NEEDS_AI_AGENT_REVIEW"
+        }
+      ],
+      "collection": {
         "draft_review_after_days": 7,
         "prerelease_review_after_days": 30,
-        "missing_matching_tag_is_stale_candidate": true,
-        "required_asset_name_patterns": [],
-        "published_non_draft_non_prerelease_releases_are_retained_history": true,
-        "empty_inventory_is_pass": true,
-        "do_not_delete_automatically": true
+        "required_asset_name_patterns": []
       }
     }
   ],

@@ -59,7 +59,7 @@ skill-design contracts, skill source-doc tracking, and the
 | `scripts/install-skills.ps1` | Bootstrap entrypoint for initial managed skill installation with direct full source validation. |
 | `skills/ceratops-skill-lifecycle/scripts/runtime/install-managed-skills.ps1` | Skill-lifecycle runtime installer for refreshing managed skill copies during local preview, fast change, and ship flows. |
 | `skills/ceratops-skill-lifecycle/scripts/runtime/render-runtime-skills.py` | Internal implementation called by the runtime installer to render runtime `SKILL.md` files and copy declared payloads. |
-| `skills/ceratops-gh-repo-lifecycle/scripts/validate-gh-contracts-consistency.py` | Validates GH lifecycle contract file placement, source-doc references, deterministic check IDs, validator references, and non-deterministic evidence mappings. |
+| `skills/ceratops-gh-repo-lifecycle/scripts/validate-gh-contracts-consistency.py` | Validates GH contract schema, assertion operators, observed-state producers, fetch coverage, remediation handlers, subsets, and non-deterministic evidence mappings. |
 | `skills/ceratops-gh-repo-lifecycle/scripts/github-validate-pr-readiness-contract.py` | Called before PR merge decisions to validate the live PR readiness contract. |
 | `skills/ceratops-gh-repo-lifecycle/scripts/github-codex-review-gate.py` | Called before PR merge decisions to wait for or resolve active Codex review threads. |
 | `skills/ceratops-skill-lifecycle/scripts/validation/validate-skills-consistency.py` | Skill-lifecycle validator for section, full, and governance consistency checks. |
@@ -123,17 +123,28 @@ python .\skills\ceratops-gh-repo-lifecycle\scripts\github-validate-repo-artifact
 python .\skills\ceratops-gh-repo-lifecycle\scripts\github-validate-repo-artifact-contract.py --repo OWNER/REPO --surface code --subset content --local-repo-path .
 python .\skills\ceratops-gh-repo-lifecycle\scripts\github-validate-repo-artifact-contract.py --repo OWNER/REPO --select repo:dependency --select code:dependency --local-repo-path .
 python .\skills\ceratops-gh-repo-lifecycle\scripts\github-validate-repo-artifact-contract.py --repo OWNER/REPO --surface artifact --subset artifact --local-repo-path .
-python .\skills\ceratops-gh-repo-lifecycle\scripts\github-validate-repo-artifact-contract.py --repo OWNER/REPO --surface all --subset health --local-repo-path . --summary-json --levels ERROR,WARN,NEEDS_REVIEW
+python .\skills\ceratops-gh-repo-lifecycle\scripts\github-validate-repo-artifact-contract.py --repo OWNER/REPO --surface all --subset health --local-repo-path . --summary-json --levels ERROR,WARN,NEEDS_AI_AGENT_REVIEW
 python .\skills\ceratops-gh-repo-lifecycle\scripts\github-validate-pr-readiness-contract.py --pr NUMBER_OR_URL
 python .\skills\ceratops-gh-repo-lifecycle\scripts\validate-gh-contracts-consistency.py
 python .\skills\ceratops-skill-lifecycle\scripts\validation\validate-skills-consistency.py --mode full
 python .\skills\ceratops-skill-lifecycle\scripts\validation\validate-skills-consistency.py --mode governance
 ```
 
-GH lifecycle validators use `ERROR`, `WARN`, and `NEEDS_REVIEW` for actionable
-findings. `ERROR` and `WARN` are blocking; `NEEDS_REVIEW` is judgment-required
-evidence that the review owner must classify before closure. Repo-health summary
-JSON includes compact stale-state inventory counts and samples for PRs,
+The organization and repository/artifact commands are thin entrypoints over the
+shared `scripts/github_contract/` state engine. `compose_desired_state.py`
+selects and parameterizes the JSON contract assertions;
+`collect_observed_states.py` calls reusable collectors once and composes one
+observed-states JSON document; `compare_states.py` applies generic operators;
+and `format_report.py` renders the result. Collectors produce facts rather than
+per-check verdicts. GitHub remediations are separately registered under
+`remediations/`; Docker Hub, PyPI, npm, Maven Central, NuGet, crates.io,
+RubyGems, and PowerShell Gallery collectors are read-only.
+
+GH lifecycle validators use `ERROR`, `WARN`, and `NEEDS_AI_AGENT_REVIEW` for
+actionable findings. `ERROR` and `WARN` are blocking;
+`NEEDS_AI_AGENT_REVIEW` is judgment-required evidence that the review owner must
+classify before closure. Repo-health summary JSON includes compact stale-state
+inventory counts and samples for PRs,
 branches, tags, releases, and local path references when present; inventory
 alone is not a finding.
 

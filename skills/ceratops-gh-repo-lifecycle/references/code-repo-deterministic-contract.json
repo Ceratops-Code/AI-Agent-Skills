@@ -1,5 +1,5 @@
 {
-  "contract_format_version": 1,
+  "contract_format_version": 2,
   "kind": "repo_code_contract",
   "name": "ceratops_code_repo_deterministic_contract",
   "captured_on": "2026-05-02",
@@ -69,16 +69,6 @@
     "exclusions": [],
     "allowances": [
       {
-        "id": "forks_may_defer_enforcement_to_upstream",
-        "when": "repo.fork == true",
-        "check_ids": [
-          "process.default_branch_enforcement_present",
-          "process.branch_protection_or_ruleset_posture",
-          "security.dependency_review_availability"
-        ],
-        "reason": "Forks can have unavailable or upstream-owned enforcement surfaces; classify rather than mutate."
-      },
-      {
         "id": "archived_repos_report_only",
         "when": "repo.archived == true",
         "check_ids": [
@@ -104,408 +94,6 @@
       "type.path_signals"
     ],
     "destructive_or_irreversible": "always_report_only"
-  },
-  "type_system": {
-    "dimensions": [
-      {
-        "id": "visibility",
-        "values": [
-          "public",
-          "private",
-          "internal"
-        ],
-        "detector": "repo.visibility"
-      },
-      {
-        "id": "origin",
-        "values": [
-          "source",
-          "fork",
-          "template"
-        ],
-        "detectors": [
-          {
-            "value": "fork",
-            "when": "repo.fork == true"
-          },
-          {
-            "value": "template",
-            "when": "repo.is_template == true"
-          },
-          {
-            "value": "source",
-            "when": "repo.fork == false && repo.is_template == false"
-          }
-        ]
-      },
-      {
-        "id": "lifecycle",
-        "values": [
-          "active",
-          "archived",
-          "disabled"
-        ],
-        "detectors": [
-          {
-            "value": "archived",
-            "when": "repo.archived == true"
-          },
-          {
-            "value": "disabled",
-            "when": "repo.disabled == true"
-          },
-          {
-            "value": "active",
-            "when": "repo.archived == false && repo.disabled == false"
-          }
-        ]
-      },
-      {
-        "id": "project_surface",
-        "values": [
-          "software",
-          "documentation_only",
-          "iac",
-          "automation",
-          "website",
-          "library_or_sdk",
-          "service_or_app",
-          "unknown"
-        ],
-        "detectors": [
-          {
-            "value": "software",
-            "when_any_path_matches": [
-              "src/**",
-              "app/**",
-              "lib/**",
-              "pyproject.toml",
-              "package.json",
-              "go.mod",
-              "Cargo.toml",
-              "pom.xml",
-              "*.csproj",
-              "*.sln"
-            ]
-          },
-          {
-            "value": "library_or_sdk",
-            "when_any_path_matches": [
-              "pyproject.toml",
-              "package.json",
-              "go.mod",
-              "Cargo.toml",
-              "pom.xml",
-              "*.csproj",
-              "*.nuspec",
-              "*.gemspec"
-            ]
-          },
-          {
-            "value": "iac",
-            "when_any_path_matches": [
-              "*.tf",
-              "Chart.yaml",
-              "charts/**/Chart.yaml",
-              "k8s/**",
-              "kubernetes/**",
-              "manifests/**"
-            ]
-          },
-          {
-            "value": "automation",
-            "when_any_path_matches": [
-              ".github/workflows/*.yml",
-              ".github/workflows/*.yaml",
-              "action.yml",
-              "action.yaml",
-              "scripts/**"
-            ]
-          },
-          {
-            "value": "website",
-            "when_any_path_matches": [
-              "docs/**",
-              "public/**",
-              "site/**",
-              "mkdocs.yml",
-              "docusaurus.config.*",
-              "next.config.*"
-            ],
-            "or_when": "repo.has_pages == true"
-          },
-          {
-            "value": "service_or_app",
-            "when_any_path_matches": [
-              "Dockerfile",
-              "**/Dockerfile",
-              "Procfile",
-              "docker-compose.yml",
-              "compose.yml",
-              "compose.yaml",
-              "app/**"
-            ]
-          },
-          {
-            "value": "documentation_only",
-            "when": "tree_has_readme_or_docs == true && no_software_artifact_iac_or_workflow_signals == true"
-          }
-        ]
-      },
-      {
-        "id": "workflow_surface",
-        "values": [
-          "no_workflows",
-          "has_workflows",
-          "has_release_workflow",
-          "has_attestation_workflow"
-        ],
-        "detectors": [
-          {
-            "value": "has_workflows",
-            "when_any_path_matches": [
-              ".github/workflows/*.yml",
-              ".github/workflows/*.yaml"
-            ]
-          },
-          {
-            "value": "has_release_workflow",
-            "when_workflow_contains_any": [
-              "gh release",
-              "softprops/action-gh-release",
-              "pypa/gh-action-pypi-publish",
-              "npm publish",
-              "docker/build-push-action",
-              "docker/login-action",
-              "crates.io",
-              "rubygems",
-              "nuget push",
-              "mvn deploy"
-            ]
-          },
-          {
-            "value": "has_attestation_workflow",
-            "when_workflow_contains_any": [
-              "actions/attest",
-              "attestations: write",
-              "artifact-metadata: write"
-            ]
-          }
-        ]
-      },
-      {
-        "id": "artifact_surface",
-        "values": [
-          "no_artifact",
-          "docker_oci_image",
-          "pypi_python_package",
-          "npm_package",
-          "maven_package",
-          "nuget_package",
-          "crates_package",
-          "rubygems_package",
-          "powershell_gallery_module",
-          "github_release_binary",
-          "github_pages_site",
-          "github_packages_other"
-        ],
-        "detectors": [
-          {
-            "value": "docker_oci_image",
-            "confidence": "high",
-            "when_any_path_matches": [
-              "Dockerfile",
-              "docker/Dockerfile",
-              "**/Dockerfile"
-            ]
-          },
-          {
-            "value": "docker_oci_image",
-            "confidence": "high",
-            "when_any_topic_matches": [
-              "docker",
-              "oci",
-              "container",
-              "ghcr"
-            ]
-          },
-          {
-            "value": "pypi_python_package",
-            "confidence": "high",
-            "when_any_path_matches": [
-              "pyproject.toml",
-              "setup.cfg",
-              "setup.py"
-            ],
-            "and_when_file_contains_any": {
-              "pyproject.toml": [
-                "[project]",
-                "[tool.poetry]",
-                "[build-system]"
-              ]
-            }
-          },
-          {
-            "value": "npm_package",
-            "confidence": "high",
-            "when_any_path_matches": [
-              "package.json"
-            ]
-          },
-          {
-            "value": "maven_package",
-            "confidence": "high",
-            "when_any_path_matches": [
-              "pom.xml"
-            ]
-          },
-          {
-            "value": "nuget_package",
-            "confidence": "high",
-            "when_any_path_matches": [
-              "*.csproj",
-              "*.nuspec"
-            ]
-          },
-          {
-            "value": "crates_package",
-            "confidence": "high",
-            "when_any_path_matches": [
-              "Cargo.toml"
-            ]
-          },
-          {
-            "value": "rubygems_package",
-            "confidence": "high",
-            "when_any_path_matches": [
-              "*.gemspec",
-              "Gemfile"
-            ]
-          },
-          {
-            "value": "powershell_gallery_module",
-            "confidence": "high",
-            "when_any_path_matches": [
-              "*.psd1"
-            ]
-          },
-          {
-            "value": "github_release_binary",
-            "confidence": "medium",
-            "when_release_assets_count_gt": 0
-          },
-          {
-            "value": "github_pages_site",
-            "confidence": "high",
-            "when": "repo.has_pages == true"
-          }
-        ]
-      },
-      {
-        "id": "language_or_iac",
-        "values": [
-          "python",
-          "javascript_or_typescript",
-          "go",
-          "rust",
-          "dotnet",
-          "java",
-          "terraform",
-          "kubernetes",
-          "helm",
-          "github_actions"
-        ],
-        "detectors": [
-          {
-            "value": "python",
-            "when_any_path_matches": [
-              "pyproject.toml",
-              "requirements*.txt",
-              "*.py"
-            ]
-          },
-          {
-            "value": "javascript_or_typescript",
-            "when_any_path_matches": [
-              "package.json",
-              "*.js",
-              "*.ts",
-              "*.tsx"
-            ]
-          },
-          {
-            "value": "go",
-            "when_any_path_matches": [
-              "go.mod"
-            ]
-          },
-          {
-            "value": "rust",
-            "when_any_path_matches": [
-              "Cargo.toml"
-            ]
-          },
-          {
-            "value": "dotnet",
-            "when_any_path_matches": [
-              "*.csproj",
-              "*.sln"
-            ]
-          },
-          {
-            "value": "java",
-            "when_any_path_matches": [
-              "pom.xml",
-              "build.gradle",
-              "build.gradle.kts"
-            ]
-          },
-          {
-            "value": "terraform",
-            "when_any_path_matches": [
-              "*.tf"
-            ]
-          },
-          {
-            "value": "kubernetes",
-            "when_any_file_contains_any": [
-              "apiVersion:",
-              "kind: Deployment",
-              "kind: Service",
-              "kind: Ingress"
-            ]
-          },
-          {
-            "value": "helm",
-            "when_any_path_matches": [
-              "Chart.yaml",
-              "charts/**/Chart.yaml"
-            ]
-          },
-          {
-            "value": "github_actions",
-            "when_any_path_matches": [
-              ".github/workflows/*.yml",
-              ".github/workflows/*.yaml"
-            ]
-          }
-        ]
-      }
-    ],
-    "type_resolution_rules": [
-      {
-        "id": "topics_are_secondary",
-        "rule": "Repository topics can add types, but path, manifest, workflow, release, and API signals are stronger than topics alone."
-      },
-      {
-        "id": "multi_type_repos_are_allowed",
-        "rule": "A repo may have multiple artifact, language, and IaC types; all matching conditional checks apply unless approved drift excludes them."
-      },
-      {
-        "id": "archived_repos_are_inventory",
-        "rule": "Archived repos are classified, but mutating repair checks become report-only."
-      }
-    ]
   },
   "fetch_bundles": [
     {
@@ -561,11 +149,13 @@
         "skills/ceratops-gh-repo-lifecycle/references/health-audit.md"
       ],
       "kind": "classification",
-      "comparison": "derive_types_from_tree",
       "applies_when": "always",
-      "expected": {
-        "must_record_matching_type_rules": true
-      }
+      "assertions": [
+        {
+          "path": "/repository/types",
+          "operator": "truthy"
+        }
+      ]
     },
     {
       "id": "type.language_signals",
@@ -573,11 +163,13 @@
         "skills/ceratops-gh-repo-lifecycle/references/health-audit.md"
       ],
       "kind": "classification",
-      "comparison": "derive_types_from_languages",
       "applies_when": "always",
-      "expected": {
-        "must_not_override_manifest_signals": true
-      }
+      "assertions": [
+        {
+          "path": "/repository/types/language_or_iac",
+          "operator": "not_empty"
+        }
+      ]
     },
     {
       "id": "actions.workflow_sha_pinning",
@@ -585,14 +177,18 @@
         "skills/ceratops-gh-repo-lifecycle/references/health-audit.md"
       ],
       "kind": "tree_scan",
-      "comparison": "workflow_uses_policy",
       "applies_when": "type.workflow_surface has has_workflows",
-      "expected": {
-        "local_actions_allowed_unpinned": true,
-        "external_actions_ref_pattern": "^[0-9a-f]{40}$",
-        "same_line_release_comment_required": true,
-        "reusable_workflow_tag_refs": "classify_deliberately"
-      }
+      "assertions": [
+        {
+          "path": "/local/available",
+          "operator": "equal",
+          "expected": true
+        },
+        {
+          "path": "/local/workflows/unpinned_external_refs",
+          "operator": "empty"
+        }
+      ]
     },
     {
       "id": "security.dependabot_config_file",
@@ -600,17 +196,34 @@
         "skills/ceratops-gh-repo-lifecycle/references/health-audit.md"
       ],
       "kind": "tree_scan",
-      "comparison": "dependabot_manifest_policy",
       "applies_when": "repo.archived == false && repo.fork == false && package_manifests_present == true",
-      "expected": {
-        "dependabot_yml_present": true,
-        "updates_entries_cover_detected_package_ecosystems": true,
-        "schedule_interval_present_for_each_updates_entry": true,
-        "open_pull_requests_limit_classified": true,
-        "groups_classified_when_used": true,
-        "private_registries_classified_when_used": true,
-        "labels_referenced_by_dependabot_exist": true
-      }
+      "assertions": [
+        {
+          "path": "/repository/content/dependabot/config_present",
+          "operator": "equal",
+          "expected": true
+        },
+        {
+          "path": "/repository/content/dependabot/text_available",
+          "operator": "equal",
+          "expected": true
+        },
+        {
+          "path": "/repository/content/dependabot/missing_ecosystems",
+          "operator": "empty",
+          "level": "WARN"
+        },
+        {
+          "path": "/repository/content/dependabot/updates_present",
+          "operator": "equal",
+          "expected": true
+        },
+        {
+          "path": "/repository/content/dependabot/schedule_present",
+          "operator": "equal",
+          "expected": true
+        }
+      ]
     },
     {
       "id": "content.required_files_presence",
@@ -618,35 +231,44 @@
         "skills/ceratops-gh-repo-lifecycle/references/health-audit.md"
       ],
       "kind": "api_and_tree",
-      "comparison": "file_presence_policy",
       "applies_when": "repo.archived == false",
-      "expected": {
-        "all_repos": [
-          "README.md"
-        ],
-        "public_source_repos": [
-          "LICENSE",
-          "SECURITY.md",
-          "CONTRIBUTING.md",
-          "CODE_OF_CONDUCT.md",
-          ".github/CODEOWNERS"
-        ],
-        "when_has_issues": [
-          ".github/ISSUE_TEMPLATE/**",
-          ".github/ISSUE_TEMPLATE.md"
-        ],
-        "when_has_pull_requests": [
-          ".github/PULL_REQUEST_TEMPLATE.md",
-          ".github/pull_request_template.md",
-          ".github/PULL_REQUEST_TEMPLATE/**"
-        ],
-        "when_artifact_surface_present": [
-          "CHANGELOG.md",
-          "docs/**",
-          "examples/**"
-        ],
-        "contextual_expectations": true
-      }
+      "assertions": [
+        {
+          "path": "/repository/paths",
+          "operator": "glob_present",
+          "expected": "README.md"
+        },
+        {
+          "path": "/repository/paths",
+          "operator": "glob_present",
+          "expected": "LICENSE",
+          "when": "repo.visibility == public && repo.fork == false"
+        },
+        {
+          "path": "/repository/paths",
+          "operator": "glob_present",
+          "expected": "SECURITY.md",
+          "when": "repo.visibility == public && repo.fork == false"
+        },
+        {
+          "path": "/repository/paths",
+          "operator": "glob_present",
+          "expected": "CONTRIBUTING.md",
+          "when": "repo.visibility == public && repo.fork == false"
+        },
+        {
+          "path": "/repository/paths",
+          "operator": "glob_present",
+          "expected": "CODE_OF_CONDUCT.md",
+          "when": "repo.visibility == public && repo.fork == false"
+        },
+        {
+          "path": "/repository/paths",
+          "operator": "glob_present",
+          "expected": ".github/CODEOWNERS",
+          "when": "repo.visibility == public && repo.fork == false"
+        }
+      ]
     },
     {
       "id": "content.codeowners_valid",
@@ -655,11 +277,19 @@
       ],
       "kind": "api",
       "endpoint": "/repos/${owner}/${repo}/codeowners/errors",
-      "comparison": "empty_errors",
-      "applies_when": "tree contains .github/CODEOWNERS || tree contains CODEOWNERS || tree contains docs/CODEOWNERS",
-      "expected": {
-        "errors": []
-      }
+      "applies_when": "repository.codeowners_present",
+      "assertions": [
+        {
+          "path": "/repository/content/codeowners_errors_available",
+          "operator": "equal",
+          "expected": true,
+          "level": "WARN"
+        },
+        {
+          "path": "/repository/content/codeowners_errors",
+          "operator": "empty"
+        }
+      ]
     },
     {
       "id": "local.git_state",
@@ -668,14 +298,33 @@
         "skills/ceratops-gh-repo-lifecycle/references/create-or-publish.md"
       ],
       "kind": "local_git",
-      "comparison": "git_state_policy",
       "applies_when": "local_repo_path is provided",
-      "expected": {
-        "worktree_clean": true,
-        "current_branch": "${default_branch}",
-        "tracks_remote_default_branch": true,
-        "unmerged_local_branches_classified": true
-      }
+      "assertions": [
+        {
+          "path": "/local/git/available",
+          "operator": "equal",
+          "expected": true,
+          "level": "WARN"
+        },
+        {
+          "path": "/local/git/worktree_clean",
+          "operator": "equal",
+          "expected": true,
+          "level": "WARN"
+        },
+        {
+          "path": "/local/git/current_branch",
+          "operator": "equal",
+          "expected": "${default_branch}",
+          "level": "WARN"
+        },
+        {
+          "path": "/local/git/tracks_remote_default_branch",
+          "operator": "equal",
+          "expected": true,
+          "level": "WARN"
+        }
+      ]
     },
     {
       "id": "stale_state.local_path_references",
@@ -683,33 +332,41 @@
         "skills/ceratops-gh-repo-lifecycle/references/health-audit.md"
       ],
       "kind": "tree_scan",
-      "comparison": "regex_absence_or_approved",
-      "applies_when": "repo.archived == false",
-      "expected": {
-        "forbidden_patterns": [
+      "applies_when": "local_repo_path is provided && repo.archived == false",
+      "assertions": [
+        {
+          "path": "/local/scans/stale_state.local_path_references/matches",
+          "operator": "empty",
+          "level": "NEEDS_AI_AGENT_REVIEW"
+        }
+      ],
+      "collection": {
+        "regex_patterns": [
           "[A-Za-z]:\\\\",
           "/Users/",
           "/home/[^/]+/"
         ],
         "ignore_paths": [
-          "skills/ceratops-gh-repo-lifecycle/references/code-repo-deterministic-contract.json",
-          "skills/ceratops-gh-repo-lifecycle/scripts/github-collect-nd-evidence.py",
-          "skills/ceratops-gh-repo-lifecycle/scripts/github-validate-repo-artifact-contract.py"
-        ],
-        "allow_when": "external_runtime_requires_absolute_path_and_documented"
+          "skills/ceratops-gh-repo-lifecycle/references/code-repo-deterministic-contract.json"
+        ]
       }
     },
     {
       "id": "content.local_secret_pattern_scan",
       "source_lines": [
-        "skills/ceratops-gh-repo-lifecycle/scripts/github-validate-repo-artifact-contract.py:regex_scan_check",
+        "skills/ceratops-gh-repo-lifecycle/scripts/github_contract/collectors/local_repository.py:collect_local_repository",
         "skills/ceratops-gh-repo-lifecycle/references/health-audit.md"
       ],
       "kind": "tree_scan",
-      "comparison": "regex_absence_or_approved",
       "applies_when": "local_repo_path is provided && repo.archived == false",
-      "expected": {
-        "forbidden_patterns": [
+      "assertions": [
+        {
+          "path": "/local/scans/content.local_secret_pattern_scan/matches",
+          "operator": "empty"
+        }
+      ],
+      "collection": {
+        "regex_patterns": [
           "AKIA[0-9A-Z]{16}",
           "gh[pousr]_[A-Za-z0-9_]{20,}",
           "github_pat_[A-Za-z0-9_]{20,}",
@@ -717,7 +374,7 @@
           "xox[baprs]-[A-Za-z0-9-]{10,}",
           "BEGIN (?:RSA |OPENSSH |EC |DSA )?PRIVATE KEY"
         ],
-        "allow_when": "known_test_fixture_or_placeholder_and_documented"
+        "ignore_paths": []
       }
     }
   ],
