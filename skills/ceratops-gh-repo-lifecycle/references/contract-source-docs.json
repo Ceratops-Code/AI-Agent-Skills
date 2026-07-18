@@ -1,7 +1,7 @@
 {
   "source_docs_version": 1,
   "name": "ceratops_gh_repo_contract_source_docs",
-  "captured_on": "2026-07-12",
+  "captured_on": "2026-07-17",
   "policy": {
     "use_order": [
       "official_docs",
@@ -108,6 +108,14 @@
         "org"
       ],
       "url": "https://docs.github.com/en/rest/actions/permissions"
+    },
+    {
+      "id": "github.enterprise.actions.fork_pr_workflows",
+      "scope": [
+        "repo",
+        "org"
+      ],
+      "url": "https://docs.github.com/en/enterprise-cloud@latest/admin/enforcing-policies/enforcing-policies-for-your-enterprise/enforcing-policies-for-github-actions-in-your-enterprise"
     },
     {
       "id": "github.rest.code_security.configurations",
