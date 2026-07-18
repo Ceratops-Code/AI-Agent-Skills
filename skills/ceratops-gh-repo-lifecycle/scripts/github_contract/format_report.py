@@ -3,9 +3,93 @@
 from __future__ import annotations
 
 import json
+import re
+import sys
 from typing import Any
 
 from validator_levels import count_by_level
+
+
+REDACTED = "<redacted>"
+OMITTED = "<omitted>"
+SENSITIVE_KEYS = {
+    "api_key",
+    "authorization",
+    "billing_email",
+    "client_secret",
+    "cookie",
+    "credential",
+    "credentials",
+    "password",
+    "private_key",
+    "secret",
+    "secret_value",
+    "secrets",
+    "token",
+    "token_value",
+}
+SENSITIVE_SUFFIXES = (
+    "_api_key",
+    "_authorization",
+    "_cookie",
+    "_credential",
+    "_credentials",
+    "_password",
+    "_private_key",
+    "_secret",
+    "_token",
+)
+SENSITIVE_PATH_RE = re.compile(
+    r"(?:api_key|authorization|billing_email|client_secret|cookie|credential|password|private_key|token|(?:^|/)secrets?(?:/|$))",
+    re.IGNORECASE,
+)
+RAW_OUTPUT_KEYS = {"raw_stdout", "raw_stderr", "validator_stderr"}
+
+
+def _sensitive_key(name: str) -> bool:
+    return name in SENSITIVE_KEYS or name.endswith(SENSITIVE_SUFFIXES)
+
+
+def sanitize_for_output(value: Any, path: tuple[str, ...] = ()) -> Any:
+    """Remove collected content and sensitive values at the stdout boundary."""
+
+    if isinstance(value, list):
+        return [sanitize_for_output(item, path) for item in value]
+    if not isinstance(value, dict):
+        return value
+
+    finding_path = str(value.get("path", ""))
+    sensitive_finding = bool(SENSITIVE_PATH_RE.search(finding_path))
+    result: dict[str, Any] = {}
+    for raw_key, item in value.items():
+        key = str(raw_key)
+        normalized = re.sub(r"[^a-z0-9]+", "_", key.lower()).strip("_")
+        child_path = (*path, normalized)
+        if normalized in RAW_OUTPUT_KEYS:
+            result[key] = OMITTED
+        elif normalized == "texts" and "local" in path:
+            result[key] = {
+                "count": len(item) if isinstance(item, dict) else 0,
+                "content": OMITTED,
+            }
+        elif normalized == "text" and path[-1:] == ("workflows",):
+            result[key] = OMITTED
+        elif _sensitive_key(normalized) and not isinstance(
+            item, (bool, int, float, type(None))
+        ):
+            result[key] = REDACTED
+        elif sensitive_finding and normalized in {"actual", "expected"}:
+            result[key] = REDACTED
+        else:
+            result[key] = sanitize_for_output(item, child_path)
+    return result
+
+
+def write_json(payload: dict[str, Any]) -> None:
+    """Write one sanitized JSON document without treating data output as a log."""
+
+    sys.stdout.write(json.dumps(sanitize_for_output(payload), indent=2, sort_keys=True))
+    sys.stdout.write("\n")
 
 
 def _compact(value: Any, limit: int = 5) -> Any:

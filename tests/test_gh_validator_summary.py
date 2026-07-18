@@ -32,7 +32,12 @@ from github_contract.compare_states import (  # noqa: E402
     pointer_get,
 )
 from github_contract.compose_desired_state import compose_desired_state, repo_subset_ids  # noqa: E402
-from github_contract.format_report import build_report, build_summary_report  # noqa: E402
+from github_contract.format_report import (  # noqa: E402
+    build_report,
+    build_summary_report,
+    sanitize_for_output,
+    write_json,
+)
 from github_contract.github_api import ApiResult, load_json  # noqa: E402
 from github_contract.remediations import HANDLERS  # noqa: E402
 
@@ -430,6 +435,65 @@ class GHContractStateEngineTests(unittest.TestCase):
         self.assertEqual(release["asset_names"], ["bundle.zip"])
         self.assertNotIn("body", release)
         self.assertEqual(summary["findings"][0]["level"], "NEEDS_AI_AGENT_REVIEW")
+
+    def test_machine_output_removes_sensitive_and_raw_collected_content(self):
+        report = {
+            "private": True,
+            "token": "secret-value",
+            "observed_states": {
+                "local": {
+                    "texts": {"config.json": "password=secret-value"},
+                    "workflows": {"text": "token: secret-value"},
+                },
+                "api": {
+                    "repo.settings": {
+                        "raw_stdout": "secret-value",
+                        "raw_stderr": "secret-value",
+                    },
+                    "secret_scanning": {"enabled": True},
+                },
+            },
+            "findings": [
+                {
+                    "path": "/organization/billing_email",
+                    "actual": "private@example.com",
+                    "expected": "owner@example.com",
+                }
+            ],
+        }
+        safe = sanitize_for_output(report)
+        self.assertTrue(safe["private"])
+        self.assertEqual(safe["token"], "<redacted>")
+        self.assertEqual(
+            safe["observed_states"]["local"]["texts"],
+            {"count": 1, "content": "<omitted>"},
+        )
+        self.assertEqual(
+            safe["observed_states"]["api"]["repo.settings"]["raw_stdout"],
+            "<omitted>",
+        )
+        self.assertTrue(
+            safe["observed_states"]["api"]["secret_scanning"]["enabled"]
+        )
+        self.assertEqual(safe["findings"][0]["actual"], "<redacted>")
+        stream = io.StringIO()
+        with contextlib.redirect_stdout(stream):
+            write_json(report)
+        output = stream.getvalue()
+        self.assertNotIn("secret-value", output)
+        self.assertNotIn("private@example.com", output)
+        self.assertEqual(json.loads(output), safe)
+
+    def test_contract_entrypoints_use_sanitized_json_writer(self):
+        entrypoints = (
+            "github-collect-nd-evidence.py",
+            "github-validate-org-contract.py",
+            "github-validate-repo-artifact-contract.py",
+        )
+        for name in entrypoints:
+            text = (SCRIPTS / name).read_text(encoding="utf-8")
+            self.assertIn("write_json(", text)
+            self.assertNotIn("print(json.dumps(", text)
 
     def test_remediation_registry_covers_contract_actions(self):
         actions = {

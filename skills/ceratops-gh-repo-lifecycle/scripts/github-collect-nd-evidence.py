@@ -16,6 +16,7 @@ from github_contract import (
     compare_states,
     compose_desired_state,
 )
+from github_contract.format_report import write_json
 from github_contract.github_api import default_contract_path, load_json
 from validator_levels import count_by_level
 
@@ -413,7 +414,7 @@ def main() -> int:
     except ValueError as exc:
         parser.error(str(exc))
     if args.json:
-        print(json.dumps(report, indent=2, sort_keys=True))
+        write_json(report)
     else:
         print(f"Surface: {report['surface']}")
         print(f"Evidence command: {report['evidence_command']}")

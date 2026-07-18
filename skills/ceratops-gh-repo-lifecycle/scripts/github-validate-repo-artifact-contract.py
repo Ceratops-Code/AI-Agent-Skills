@@ -28,6 +28,7 @@ from github_contract.format_report import (
     build_report,
     build_summary_report,
     print_human,
+    write_json,
 )
 from github_contract.github_api import default_contract_path, load_json
 from github_contract.remediations import apply_remediations
@@ -241,11 +242,9 @@ def main() -> int:
         selection={"pairs": selections},
     )
     if args.json:
-        print(json.dumps(report, indent=2, sort_keys=True))
+        write_json(report)
     elif args.summary_json:
-        print(
-            json.dumps(build_summary_report(report, levels), indent=2, sort_keys=True)
-        )
+        write_json(build_summary_report(report, levels))
     else:
         print_human(report, levels)
     return (

@@ -15,7 +15,7 @@ from github_contract import (
     compose_desired_state,
 )
 from github_contract.compose_desired_state import org_subset_ids
-from github_contract.format_report import build_report
+from github_contract.format_report import build_report, write_json
 from github_contract.github_api import default_contract_path, load_json
 from github_contract.remediations import apply_remediations
 from validator_levels import has_blocking_findings
@@ -150,7 +150,7 @@ def main() -> int:
         selection={"subset": args.subset},
     )
     if args.json:
-        print(json.dumps(report, indent=2, sort_keys=True))
+        write_json(report)
     else:
         print(f"Organization: {report['target']}")
         print(
