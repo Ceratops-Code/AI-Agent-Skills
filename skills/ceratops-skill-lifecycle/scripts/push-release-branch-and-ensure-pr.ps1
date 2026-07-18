@@ -10,7 +10,8 @@ param(
 
 # Skill-local helper for the deterministic publication part of ship-to-remote.
 # It pushes the staged release branch, creates the PR when absent, reuses it
-# when present, and emits only a compact PR summary on success.
+# when present, waits for GitHub to expose the pushed head, and emits only a
+# compact PR summary on success.
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
@@ -130,6 +131,32 @@ function Get-OpenPrForBranch {
     return $items[0]
 }
 
+function Wait-OpenPrAtHead {
+    param(
+        [string]$ExpectedHead,
+        [int]$MaxAttempts = 6,
+        [int]$DelaySeconds = 2
+    )
+
+    # GitHub can briefly return the previous PR head after accepting the push.
+    # Bound the wait so propagation lag is retried without hiding durable drift.
+    $lastPr = $null
+    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt += 1) {
+        $lastPr = Get-OpenPrForBranch
+        if ($null -ne $lastPr -and $lastPr.headRefOid -eq $ExpectedHead) {
+            return $lastPr
+        }
+        if ($attempt -lt $MaxAttempts) {
+            Start-Sleep -Seconds $DelaySeconds
+        }
+    }
+
+    if ($null -eq $lastPr) {
+        throw "Open PR for '$ReleaseBranch' was not observed after $MaxAttempts attempts."
+    }
+    throw "Open PR head '$($lastPr.headRefOid)' did not match local head '$ExpectedHead' after $MaxAttempts attempts."
+}
+
 $currentBranch = (Get-GitLines @("branch", "--show-current") | Select-Object -First 1).Trim()
 if ($currentBranch -ne $ReleaseBranch) {
     throw "Expected active branch '$ReleaseBranch', got '$currentBranch'."
@@ -164,10 +191,6 @@ if ($null -eq $pr) {
         "--body",
         $Body
     )
-    $pr = Get-OpenPrForBranch
-    if ($null -eq $pr) {
-        throw "Created PR was not found as an open PR for '$ReleaseBranch'."
-    }
 } elseif (-not [string]::IsNullOrWhiteSpace($Title) -or -not [string]::IsNullOrWhiteSpace($Body)) {
     $editArgs = @("pr", "edit", [string]$pr.number)
     if (-not [string]::IsNullOrWhiteSpace($Title)) {
@@ -177,12 +200,9 @@ if ($null -eq $pr) {
         $editArgs += @("--body", $Body)
     }
     Invoke-QuietNative -FilePath "gh" -Arguments $editArgs
-    $pr = Get-OpenPrForBranch
 }
 
-if ($pr.headRefOid -ne $localHead) {
-    throw "Open PR head '$($pr.headRefOid)' does not match local head '$localHead'."
-}
+$pr = Wait-OpenPrAtHead -ExpectedHead $localHead
 
 [pscustomobject]@{
     status = "pr_ready"
