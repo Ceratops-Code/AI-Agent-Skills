@@ -26,6 +26,12 @@ def load_script_module(name: str, filename: str):
 repo_validator = load_script_module("repo_validator", "github-validate-repo-artifact-contract.py")
 pr_validator = load_script_module("pr_validator", "github-validate-pr-readiness-contract.py")
 org_validator = load_script_module("org_validator", "github-validate-org-contract.py")
+REPO_CONTRACT = json.loads(
+    (ROOT / "skills/ceratops-gh-repo-lifecycle/references/github-repo-deterministic-contract.json").read_text(
+        encoding="utf-8"
+    )
+)
+REPO_CHECKS = {check["id"]: check for check in REPO_CONTRACT["checks"]}
 
 
 class GHValidatorSummaryTests(unittest.TestCase):
@@ -234,19 +240,25 @@ jobs:
 
         self.assertEqual(findings[0]["level"], "PASS")
 
-    def test_contributor_approval_policy_does_not_apply_to_private_repos(self):
-        context = {
-            "repo.visibility": "private",
-            "repo.archived": False,
-            "type.workflow_surface": {"has_workflows": True},
-        }
+    def test_contributor_approval_policy_applies_only_to_public_repos(self):
+        expression = REPO_CHECKS["actions.fork_pr_contributor_approval"]["applies_when"]
 
-        applies = repo_validator.condition_matches(
-            "repo.visibility != private && repo.archived == false && type.workflow_surface has has_workflows",
-            context,
-        )
+        for visibility, expected in (("public", True), ("private", False), ("internal", False)):
+            with self.subTest(visibility=visibility):
+                context = {
+                    "repo.visibility": visibility,
+                    "repo.archived": False,
+                    "type.workflow_surface": {"has_workflows": True},
+                }
+                self.assertEqual(repo_validator.condition_matches(expression, context), expected)
 
-        self.assertFalse(applies)
+    def test_private_fork_workflow_policy_applies_to_private_and_internal_repos(self):
+        expression = REPO_CHECKS["actions.private_fork_pr_workflows"]["applies_when"]
+
+        for visibility, expected in (("public", False), ("private", True), ("internal", True)):
+            with self.subTest(visibility=visibility):
+                context = {"repo.visibility": visibility, "repo.archived": False}
+                self.assertEqual(repo_validator.condition_matches(expression, context), expected)
 
     def test_private_fork_workflows_require_approval_when_enabled(self):
         findings = repo_validator.private_fork_pr_workflow_findings(
