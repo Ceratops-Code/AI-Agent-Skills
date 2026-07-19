@@ -151,7 +151,7 @@ class GHContractStateEngineTests(unittest.TestCase):
             )
         )
 
-    def test_dependency_review_request_runs_only_for_public_repositories(self):
+    def test_dependency_review_request_uses_visibility_and_capability(self):
         desired_state = compose_desired_state(
             self.paths,
             {"owner": "owner", "repo": "repo", "default_branch": "main"},
@@ -162,7 +162,14 @@ class GHContractStateEngineTests(unittest.TestCase):
             "/repos/owner/repo/dependency-graph/compare/main...main"
         )
 
-        for visibility, expected_call_count in (("private", 0), ("public", 1)):
+        cases = (
+            ("private", None, 0),
+            ("private", {"code_security": {"status": "enabled"}}, 1),
+            ("private", {"advanced_security": {"status": "enabled"}}, 1),
+            ("internal", None, 1),
+            ("public", None, 1),
+        )
+        for visibility, security_and_analysis, expected_call_count in cases:
             calls: list[str] = []
 
             def fake_run_gh_api(method, endpoint, *, paginate=False):
@@ -175,6 +182,7 @@ class GHContractStateEngineTests(unittest.TestCase):
                         data={
                             "archived": False,
                             "default_branch": "main",
+                            "security_and_analysis": security_and_analysis,
                             "visibility": visibility,
                         },
                     )
