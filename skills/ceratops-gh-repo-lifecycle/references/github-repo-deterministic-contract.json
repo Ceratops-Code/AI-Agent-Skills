@@ -302,7 +302,7 @@
         {
           "method": "GET",
           "endpoint": "/repos/${owner}/${repo}/dependency-graph/compare/${default_branch}...${default_branch}",
-          "applies_when": "repo.archived == false && (repo.visibility != private || repo.security_and_analysis.code_security.status == enabled || repo.security_and_analysis.advanced_security.status == enabled)",
+          "applies_when": "repo.archived == false && (repo.visibility != private || owner.plan.name != free)",
           "covers_checks": [
             "security.dependency_review_availability"
           ]
@@ -994,7 +994,7 @@
       ],
       "kind": "api_status",
       "endpoint": "/repos/${owner}/${repo}/dependency-graph/compare/${default_branch}...${default_branch}",
-      "applies_when": "repo.archived == false && (repo.visibility != private || repo.security_and_analysis.code_security.status == enabled || repo.security_and_analysis.advanced_security.status == enabled)",
+      "applies_when": "repo.archived == false && (repo.visibility != private || owner.plan.name != free)",
       "assertions": [
         {
           "path": "/repository/security/dependency_review_available",
