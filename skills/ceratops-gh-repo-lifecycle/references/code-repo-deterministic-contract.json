@@ -342,7 +342,7 @@
       ],
       "collection": {
         "regex_patterns": [
-          "[A-Za-z]:\\\\",
+          "(?<![A-Za-z0-9_])[A-Za-z]:\\\\",
           "/Users/",
           "/home/[^/]+/"
         ],

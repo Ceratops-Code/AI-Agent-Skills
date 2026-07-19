@@ -16,6 +16,7 @@ PUBLISH_RE = re.compile(
     r"(gh release|npm\s+(?:stage\s+)?publish|twine upload|pypa/gh-action-pypi-publish|docker/build-push-action|docker push|cargo publish|gem push|nuget push|mvn deploy|Publish-Module)",
     re.IGNORECASE,
 )
+NPM_PUBLISH_RE = re.compile(r"\bnpm\s+(?:stage\s+)?publish\b", re.IGNORECASE)
 SITE_PUBLISH_RE = re.compile(
     r"(actions/(?:deploy-pages|upload-pages-artifact)@|peaceiris/actions-gh-pages@|github-pages-deploy-action@|mkdocs\s+gh-deploy\b|\bgh-pages\s+(?:-d|--dist)\b)",
     re.IGNORECASE,
@@ -324,7 +325,7 @@ def _artifact_types(
             raise ValueError(f"unsupported artifact detector condition: {condition}")
         if detector.get("except_when_root_manifest_is_private_without_publish_surface"):
             publish_surface = bool(package.get("workspaces")) or bool(
-                PUBLISH_RE.search(workflow_text)
+                NPM_PUBLISH_RE.search(workflow_text)
             )
             matched = matched and not (
                 package.get("private") is True and not publish_surface

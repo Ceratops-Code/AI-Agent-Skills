@@ -11,6 +11,7 @@ from .collectors import (
     collect_registries,
     collect_repository,
 )
+from .compare_states import condition_matches
 from .github_api import ApiResult, run_gh_api, substitute
 
 
@@ -65,18 +66,30 @@ def state_producer(path: str) -> str | None:
 def _planned_requests(desired_state: dict[str, Any]) -> list[dict[str, Any]]:
     """Combine declared fetch bundles with directly declared rule endpoints."""
 
+    parameters = desired_state["parameters"]
     requests = list(desired_state.get("requests", []))
     covered = {
-        (str(item.get("method", "GET")).upper(), str(item["endpoint"]))
+        (
+            str(item.get("method", "GET")).upper(),
+            str(substitute(item["endpoint"], parameters)),
+        )
         for item in requests
     }
     for rule in desired_state["rules"]:
         if not rule.get("endpoint"):
             continue
-        key = (str(rule.get("method", "GET")).upper(), str(rule["endpoint"]))
+        key = (
+            str(rule.get("method", "GET")).upper(),
+            str(substitute(rule["endpoint"], parameters)),
+        )
         if key not in covered:
             requests.append(
-                {"method": key[0], "endpoint": key[1], "covers_checks": [rule["id"]]}
+                {
+                    "method": key[0],
+                    "endpoint": key[1],
+                    "applies_when": rule.get("applies_when"),
+                    "covers_checks": [rule["id"]],
+                }
             )
             covered.add(key)
     return requests
@@ -85,16 +98,30 @@ def _planned_requests(desired_state: dict[str, Any]) -> list[dict[str, Any]]:
 def _fetch_all(desired_state: dict[str, Any]) -> dict[tuple[str, str], ApiResult]:
     parameters = desired_state["parameters"]
     fetched: dict[tuple[str, str], ApiResult] = {}
+    repository_seed: dict[str, Any] | None = None
     if parameters.get("owner") and parameters.get("repo"):
         endpoint = f"/repos/{parameters['owner']}/{parameters['repo']}"
         seed = run_gh_api("GET", endpoint)
         fetched[("GET", endpoint)] = seed
         if seed.ok and isinstance(seed.data, dict):
+            repository_seed = seed.data
             parameters.setdefault("default_branch", seed.data.get("default_branch"))
     if parameters.get("org_login"):
         endpoint = f"/orgs/{parameters['org_login']}"
         fetched[("GET", endpoint)] = run_gh_api("GET", endpoint)
     for request in _planned_requests(desired_state):
+        # Request conditions may depend only on parameters and the repository seed,
+        # which is fetched first so inapplicable paid or visibility-bound APIs are
+        # never called. If the seed failed, keep collecting to preserve the error.
+        if (
+            repository_seed is not None
+            and request.get("applies_when")
+            and not condition_matches(
+                str(request["applies_when"]),
+                {**parameters, "repo": repository_seed},
+            )
+        ):
+            continue
         method = str(request.get("method", "GET")).upper()
         endpoint = str(substitute(request["endpoint"], parameters))
         key = (method, endpoint)

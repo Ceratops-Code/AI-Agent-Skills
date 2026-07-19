@@ -5,6 +5,7 @@ import json
 import pathlib
 import subprocess
 import sys
+import tempfile
 import unittest
 from unittest import mock
 from typing import Any
@@ -18,13 +19,19 @@ sys.path.insert(0, str(SCRIPTS))
 import validator_levels  # noqa: E402
 from github_contract import github_api  # noqa: E402
 from github_contract.collectors import registries  # noqa: E402
-from github_contract.collectors.local_repository import classify_repository  # noqa: E402
+from github_contract.collectors.local_repository import (  # noqa: E402
+    classify_repository,
+    collect_local_repository,
+)
 from github_contract.collectors.repository import (  # noqa: E402
     stale_branch_candidates,
     stale_pull_request_candidates,
     stale_release_candidates,
 )
-from github_contract.collect_observed_states import state_producer  # noqa: E402
+from github_contract.collect_observed_states import (  # noqa: E402
+    _fetch_all,
+    state_producer,
+)
 from github_contract.compare_states import (  # noqa: E402
     OPERATORS,
     compare_states,
@@ -77,6 +84,57 @@ class GHContractStateEngineTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             validator_levels.parse_levels("NEEDS_" + "REVIEW")
 
+    def test_local_path_scan_distinguishes_regex_syntax_from_windows_paths(self):
+        rule = next(
+            item
+            for item in self.contracts["code"]["checks"]
+            if item["id"] == "stale_state.local_path_references"
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            fixture = pathlib.Path(temporary_directory) / "fixture.py"
+            fixture.write_text(
+                'USES_RE = re.compile(r"^\\s*uses:\\s*")\n', encoding="utf-8"
+            )
+            local = collect_local_repository(temporary_directory, [rule])
+            self.assertEqual(local["scans"][rule["id"]]["matches"], [])
+
+            windows_path = "C:" + chr(92) + "repo"
+            fixture.write_text(f"ROOT = {windows_path!r}\n", encoding="utf-8")
+            local = collect_local_repository(temporary_directory, [rule])
+            self.assertEqual(
+                local["scans"][rule["id"]]["matches"],
+                [
+                    {
+                        "path": "fixture.py",
+                        "pattern": rule["collection"]["regex_patterns"][0],
+                    }
+                ],
+            )
+
+    def test_private_node_app_with_docker_publish_is_not_an_npm_artifact(self):
+        local = {
+            "files": [
+                ".github/workflows/publish.yml",
+                "Dockerfile",
+                "package.json",
+            ],
+            "texts": {
+                ".github/workflows/publish.yml": "uses: docker/build-push-action@sha\n",
+                "Dockerfile": "FROM node:24\n",
+                "package.json": json.dumps(
+                    {"name": "private-app", "version": "1.0.0", "private": True}
+                ),
+            },
+        }
+        classification = classify_repository(
+            {"has_pages": False},
+            local,
+            [],
+            self.contracts["artifact"]["artifact_type_system"],
+        )
+        self.assertIn("docker_oci_image", classification["artifact_surface"])
+        self.assertNotIn("npm_package", classification["artifact_surface"])
+
     def test_contracts_compose_to_one_desired_state(self):
         desired_state = compose_desired_state(
             self.paths,
@@ -92,6 +150,45 @@ class GHContractStateEngineTests(unittest.TestCase):
                 for request in desired_state["requests"]
             )
         )
+
+    def test_dependency_review_request_runs_only_for_public_repositories(self):
+        desired_state = compose_desired_state(
+            self.paths,
+            {"owner": "owner", "repo": "repo", "default_branch": "main"},
+            repo_subset_ids(self.contracts, "all"),
+            explicit_check_ids={"security.dependency_review_availability"},
+        )
+        dependency_review_endpoint = (
+            "/repos/owner/repo/dependency-graph/compare/main...main"
+        )
+
+        for visibility, expected_call_count in (("private", 0), ("public", 1)):
+            calls: list[str] = []
+
+            def fake_run_gh_api(method, endpoint, *, paginate=False):
+                calls.append(endpoint)
+                if endpoint == "/repos/owner/repo":
+                    return ApiResult(
+                        True,
+                        method,
+                        endpoint,
+                        data={
+                            "archived": False,
+                            "default_branch": "main",
+                            "visibility": visibility,
+                        },
+                    )
+                return ApiResult(True, method, endpoint, data={})
+
+            with mock.patch(
+                "github_contract.collect_observed_states.run_gh_api",
+                side_effect=fake_run_gh_api,
+            ):
+                _fetch_all(desired_state)
+
+            self.assertEqual(
+                calls.count(dependency_review_endpoint), expected_call_count
+            )
 
     def test_every_assertion_has_an_operator_and_producer(self):
         for contract in self.contracts.values():

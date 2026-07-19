@@ -302,6 +302,7 @@
         {
           "method": "GET",
           "endpoint": "/repos/${owner}/${repo}/dependency-graph/compare/${default_branch}...${default_branch}",
+          "applies_when": "repo.visibility == public && repo.archived == false",
           "covers_checks": [
             "security.dependency_review_availability"
           ]
@@ -993,7 +994,7 @@
       ],
       "kind": "api_status",
       "endpoint": "/repos/${owner}/${repo}/dependency-graph/compare/${default_branch}...${default_branch}",
-      "applies_when": "repo.archived == false",
+      "applies_when": "repo.visibility == public && repo.archived == false",
       "assertions": [
         {
           "path": "/repository/security/dependency_review_available",
