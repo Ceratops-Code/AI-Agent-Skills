@@ -97,7 +97,8 @@ GH_LIFECYCLE_ACTIONS = {
 SKILL_LIFECYCLE_ACTIONS = {
     "create.md": "templates/skill-sections.json",
     "update.md": "runtime payloads",
-    "skills-consistency-and-contract-review.md": "skill-deterministic-contract.json",
+    "skills-contract-review.md": "skill-deterministic-contract.json",
+    "global-skills-consistency-review.md": "active Codex skill catalog",
     "fast-change.md": "release/*",
     "change-promotion.md": "stage-skill-release-branch.ps1",
     "ship-to-remote.md": "push-release-branch-and-ensure-pr.ps1",
@@ -506,25 +507,25 @@ def check_skill_contract_remediation_policy() -> list[str]:
 
 
 def check_skill_scope_validator() -> list[str]:
-    """Check objective lifecycle router rules without judging prose quality."""
+    """Check objective multi-action skill rules without judging prose quality."""
 
     errors: list[str] = []
-    router_specs = {
+    multi_action_specs = {
         "ceratops-gh-repo-lifecycle": GH_LIFECYCLE_ACTIONS,
         "ceratops-skill-lifecycle": SKILL_LIFECYCLE_ACTIONS,
     }
-    for skill_name, expected_actions in router_specs.items():
+    for skill_name, expected_actions in multi_action_specs.items():
         skill_dir = SKILLS_DIR / skill_name
-        router_path = skill_dir / "SKILL.md"
-        if not router_path.is_file():
-            errors.append(f"{skill_name}: missing router SKILL.md")
+        multi_action_path = skill_dir / "SKILL.md"
+        if not multi_action_path.is_file():
+            errors.append(f"{skill_name}: missing multi-action SKILL.md")
             continue
-        router_text = router_path.read_text(encoding="utf-8")
+        multi_action_text = multi_action_path.read_text(encoding="utf-8")
         for action_file, snippet in expected_actions.items():
             action_rel = f"references/{action_file}"
             action_path = skill_dir / action_rel
-            if action_rel not in router_text:
-                errors.append(f"{skill_name}: router does not list {action_rel}")
+            if action_rel not in multi_action_text:
+                errors.append(f"{skill_name}: multi-action skill does not list {action_rel}")
             if not action_path.is_file():
                 errors.append(f"{skill_name}: missing action reference {action_rel}")
                 continue
@@ -570,7 +571,7 @@ def check_validation_command_surface() -> list[str]:
     if "--mode full" not in workflow_text:
         errors.append("CI workflow no longer runs full skill validation")
 
-    governance_prompt = default_install_root().parent / "automations" / "governance-consistency-audit" / "automation.toml"
+    governance_prompt = default_install_root().parent / "automations" / "global-governance-consistency-audit" / "automation.toml"
     if governance_prompt.is_file():
         prompt_text = governance_prompt.read_text(encoding="utf-8", errors="replace")
         stale_terms = ("--run-skill-validation", "skill_repo.validation", "validate-skills-consistency.py")

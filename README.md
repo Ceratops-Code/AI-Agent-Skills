@@ -11,7 +11,7 @@ Reusable Ceratops skills for Codex and other `SKILL.md`-compatible agents.
 | `ceratops-credit-savings-analysis` | Analyze recent Codex runs for avoidable credit spend and recommend low-maintenance controls. |
 | `ceratops-prompt-optimizer` | Rewrite rough prompts into clearer structured prompts without changing intent. |
 | `ceratops-skill-optimize` | Propose advisory-only improvements across skill text, action references, metadata, payloads, validators, and docs. |
-| `ceratops-skill-lifecycle` | Route skill lifecycle work across create, update, skills-consistency-and-contract-review, fast-change, change-promotion, and ship-to-remote actions. |
+| `ceratops-skill-lifecycle` | Route skill lifecycle work across create, update, skills-contract-review, global-skills-consistency-review, fast-change, change-promotion, and ship-to-remote actions. |
 | `ceratops-automation-run` | Run recurring automations with shared Ceratops alert, memory, and completion policy. |
 | `ceratops-task-lifecycle` | Route task execution, ChatGPT chat import, fix-loop break, same-thread resume, handoff, and closure-check work across action references. |
 | `ceratops-code-consistency-audit` | Audit merged refactors for contradictions, docs drift, comment sufficiency, stale follow-through, and merged-only edge cases. |
@@ -34,11 +34,14 @@ templates/
   skill-sections.json
   sections/
     core.md
+    multi-action-skill.md
 ```
 
 Source `SKILL.md` files are portable, delta-only skill definitions. Runtime
 `SKILL.md` files are generated during install by expanding the shared section
 assignments from `templates/skill-sections.json`.
+`core` is assigned to every skill; `multi-action-skill` is assigned only to
+skills that select among multiple action references.
 `agents/openai.yaml` is Codex UI metadata and may be ignored by other agents.
 Each Ceratops skill declares the runtime-local icon path
 `./assets/ceratops-logo-500.png`. The repo-root `assets/ceratops-logo-500.png`
@@ -50,7 +53,9 @@ Contract sources live inside their owning lifecycle skill.
 repo-code, PR readiness, artifact, release, and code-comment contracts plus the
 `contracts-review` action. `skills/ceratops-skill-lifecycle/references/` owns
 skill-design contracts, skill source-doc tracking, and the
-`skills-consistency-and-contract-review` action.
+`skills-contract-review` action. The source-neutral
+`global-skills-consistency-review` action audits the active Codex skill catalog
+without making that catalog a Ceratops contract surface.
 
 ## Scripts
 
@@ -173,7 +178,7 @@ drift check, uncertain-state check, or broad closeout claim.
 | `repo` | Live GitHub repository settings, Actions policy, security toggles, rulesets, labels, releases, queues, and other GitHub-hosted repo state need an audit. |
 | `code` | Repository contents, workflows, Dependabot config, CODEOWNERS, local git state, local path references, or local secret-pattern posture need an audit. |
 | `artifact` | External deliverables or registry state such as PyPI, npm, DockerHub, GHCR, release assets, or docs publishing need an audit. |
-| `skill` | Ceratops skill source, metadata, shared-section, runtime payload, source-doc, installed-reference, or high-quality skill-design expectations need an audit. |
+| `skill` | Ceratops skill source, metadata, shared-section, runtime payload, source-doc, installed-reference, or high-quality skill-design expectations need a contract audit. |
 | `pr` | A live PR merge or auto-merge decision needs fresh readiness evidence. |
 | `all` | Full repo health, repo creation, or explicitly broad governance review is in scope. |
 
@@ -317,7 +322,7 @@ structure, section assignments, runtime-renderability, Codex metadata,
 placeholder leftovers, real README skill rows, cross-skill references,
 maintenance-workflow targets, contract presence, skill deterministic
 remediation-policy classification, and high-confidence secret patterns.
-Use governance validation for explicit skills consistency audits:
+Use governance validation for explicit Ceratops skill-contract audits:
 
 ```powershell
 python .\skills\ceratops-skill-lifecycle\scripts\validation\validate-skills-consistency.py --mode governance

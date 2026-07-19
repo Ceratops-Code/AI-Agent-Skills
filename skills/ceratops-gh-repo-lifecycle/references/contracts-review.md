@@ -75,12 +75,13 @@ request before asking.
   needed to decide whether a contract claim is current.
 - Do not inspect skill consistency, skill governance, skill-design contracts,
   metadata alignment, shared-section alignment, or runtime payload review here;
-  those belong to `$ceratops-skill-lifecycle`
-  `skills-consistency-and-contract-review`.
+  Ceratops contract upkeep belongs to `$ceratops-skill-lifecycle`
+  `skills-contract-review`, and active-catalog consistency belongs to
+  `global-skills-consistency-review`.
 - If the task is normal repo shipping, PR handling, dependency updates,
   repo-health work, or already-prepared skill shipping rather than contract
-  upkeep, return to this router and select the lifecycle action that owns the
-  work.
+  upkeep, return to this multi-action skill and select the lifecycle action that
+  owns the work.
 
 ### Skill-Specific Rules
 

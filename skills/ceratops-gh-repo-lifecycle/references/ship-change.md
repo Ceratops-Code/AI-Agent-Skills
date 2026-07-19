@@ -30,7 +30,7 @@ Infer missing inputs from local files and live repo state before asking.
   completion, merge, and optional release.
 - For the skills repo or another skill-source repo, use the skill lifecycle
   `ship-to-remote` action when the staged release branch is being shipped.
-- If the repo is not published or lacks a usable remote, return to the router
+- If the repo is not published or lacks a usable remote, return to the parent skill
   and select `create-or-publish`.
 - If the task is only repo validation or stale-state cleanup with no content
   changes, select `health-audit`.

@@ -39,14 +39,12 @@ Infer missing inputs from recent thread context and local state before asking.
 
 ### Skill-Specific Rules
 
-- Load only the selected action reference unless the current action explicitly
-  hands off to another action.
 - Use the selected action reference as the source of truth for workflow,
   evidence refresh, completion gate, and output contract.
 - Keep staged task execution, fix-loop break, same-thread resume, whole-task
   handoff, side-task handoff, closure check, and ChatGPT chat import inside this
-  router and its `references/` files; do not introduce alias skills or old-name
-  shims.
+  multi-action skill and its `references/` files; do not introduce alias skills
+  or old-name shims.
 - If action identity is ambiguous, choose the action that matches the user's
   immediate requested output or next state.
 
@@ -87,16 +85,7 @@ Infer missing inputs from recent thread context and local state before asking.
 - Select `import-from-chatgpt` when the output should be a transcript handoff
   extracted from a user-selected ChatGPT web chat.
 
-#### 2. Execute The Selected Action
-
-- Read the matching file under `references/`.
-- Follow that action's inputs, constraints, workflow, completion gate, and
-  output contract.
-- If the selected action discovers another action owns the remaining work,
-  switch to that action reference and report the handoff reason only when it
-  changes the user's next step.
-
-#### 3. Close From Action Evidence
+#### 2. Close From Action Evidence
 
 - Match final claims to the exact current state, prompt content, local checks,
   or external evidence actually verified.
@@ -107,10 +96,6 @@ Infer missing inputs from recent thread context and local state before asking.
 
 ### Completion Gate
 
-- The selected action reference was followed or the task was explicitly blocked
-  before action execution.
-- Any cross-action handoff used another reference in this router rather than a
-  standalone skill identity.
 - Completion, resume, handoff, and closure claims are limited to evidence
   actually checked or fresh same-task evidence that still applies.
 
