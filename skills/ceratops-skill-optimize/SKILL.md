@@ -75,17 +75,19 @@ target is available.
 
 1. Inspect the target skill text, action references when present, and companion
    metadata.
-2. Identify current purpose, trigger surface, workflow, constraints, output
+2. Before proposing a structural helper or validator change, map its owner,
+   responsibilities, callers, entrypoints, and bootstrap paths.
+3. Identify current purpose, trigger surface, workflow, constraints, output
    contract, and done criteria.
-3. Decide whether Goal / Context / Constraints / Done When structure would
+4. Decide whether Goal / Context / Constraints / Done When structure would
    improve execution.
-4. Find concrete issues: missing trigger context, unclear ownership, duplicated
+5. Find concrete issues: missing trigger context, unclear ownership, duplicated
    rules, weak completion criteria, stale labels, metadata drift, excessive
    output, or unverifiable instructions.
-5. Propose the narrowest update that fixes the issue across router text, action
+6. Propose the narrowest update that fixes the issue across router text, action
    references, metadata, runtime payloads, validators, and docs when those
    surfaces govern the same behavior.
-6. Include exact proposed replacement or addition and the smallest current
+7. Include exact proposed replacement or addition and the smallest current
    anchor needed to locate it.
 
 ## Done When
