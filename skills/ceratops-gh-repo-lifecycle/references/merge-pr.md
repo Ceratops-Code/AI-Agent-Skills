@@ -55,12 +55,13 @@ before asking.
 
 - Use this action when the PR content is already ready and the remaining work is
   to verify gates, merge, and clean up.
-- If the PR queue is part of a broader dependency campaign, return to the router
-  and select `dependency-maintenance` unless that action handed off a ready
-  dependency PR for final merge or auto-merge.
+- If the PR queue is part of a broader dependency campaign, return to the
+  parent skill and select `dependency-maintenance` unless that action handed
+  off a ready dependency PR for final merge or auto-merge.
 - If the PR needs code, docs, CI, packaging, artifact publishing, repo creation,
-  or first-time hardening work first, return to the router and select the owning
-  action, except for narrow active Codex review-thread fixes detected here.
+  or first-time hardening work first, return to the parent skill and select the
+  owning action, except for narrow active Codex review-thread fixes detected
+  here.
 
 ### Workflow
 

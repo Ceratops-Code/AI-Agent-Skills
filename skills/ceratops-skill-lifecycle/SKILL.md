@@ -1,6 +1,6 @@
 ---
 name: ceratops-skill-lifecycle
-description: Route Ceratops or compatible skill lifecycle work to action references for create, update, skills-consistency-and-contract-review, fast-change, change-promotion, and ship-to-remote work. Use when Codex should create a skill, update skill source or shared governance surfaces, audit skill consistency, maintain skill-design contracts, apply an explicit fast release-branch change, promote committed skill changes into a local release/runtime preview, or ship a staged skills batch through GitHub.
+description: Route Ceratops or compatible skill lifecycle work to action references for create, update, skills-contract-review, global-skills-consistency-review, fast-change, change-promotion, and ship-to-remote work. Use when Codex should create a skill, update skill source or shared governance surfaces, review Ceratops skill contracts, audit consistency across the active Codex skill catalog, apply an explicit fast release-branch change, promote committed skill changes into a local release/runtime preview, or ship a staged skills batch through GitHub.
 ---
 
 # Ceratops Skill Lifecycle
@@ -17,8 +17,10 @@ surface for creation, mutation, local promotion, and remote shipping.
 
 - Create a new skill: `references/create.md`
 - Update an existing skill or shared maintenance surface: `references/update.md`
-- Audit skill consistency or review skill-design contracts:
-  `references/skills-consistency-and-contract-review.md`
+- Review Ceratops skill-design contracts:
+  `references/skills-contract-review.md`
+- Audit consistency across the active Codex skill catalog:
+  `references/global-skills-consistency-review.md`
 - Apply an explicit fast release-branch change: `references/fast-change.md`
 - Promote committed skill changes into a local release branch and runtime
   preview: `references/change-promotion.md`
@@ -41,13 +43,11 @@ Infer missing inputs from the current repo state before asking.
 
 ### Skill-Specific Rules
 
-- Load only the selected action reference unless the current action explicitly
-  hands off to another action.
 - Use the action references as the source of truth for source edits, staging,
   runtime update, cleanup, validation, and output contracts.
-- Keep skill creation, update, skill consistency and contract review, fast
-  change, change promotion, and remote shipping inside this router and its
-  `references/` files; do not introduce alias skills or old-name shims.
+- Keep skill creation, update, contract review, global consistency review, fast
+  change, change promotion, and remote shipping inside this multi-action skill
+  and its `references/` files; do not introduce alias skills or old-name shims.
 - For skill-source mutation in this repo, treat source skill text, metadata,
   shared sections, `templates/skill-sections.json`, runtime payloads,
   validators, contracts, helper scripts, and docs as one coupled maintenance
@@ -65,8 +65,10 @@ Infer missing inputs from the current repo state before asking.
   shipping staged skills repo changes through GitHub.
 - If the task is advisory-only skill optimization, use
   `$ceratops-skill-optimize`.
-- If the task is a skill consistency audit or skill-design contract upkeep, use
-  `references/skills-consistency-and-contract-review.md`.
+- If the task is Ceratops skill-contract upkeep, use
+  `references/skills-contract-review.md`.
+- If the task is consistency review across the active Codex skill catalog, use
+  `references/global-skills-consistency-review.md`.
 - If the task is a general GitHub repo lifecycle operation, use
   `$ceratops-gh-repo-lifecycle`.
 
@@ -78,8 +80,9 @@ Infer missing inputs from the current repo state before asking.
   available repo governance surfaces.
 - Use `update` when an existing skill, shared section, manifest, runtime
   generation, validator, contract, helper, or doc surface must change.
-- Use `skills-consistency-and-contract-review` when the task is an explicit
-  skill consistency audit or skill-design contract upkeep.
+- Use `skills-contract-review` for Ceratops skill-design contract upkeep.
+- Use `global-skills-consistency-review` for source-neutral consistency review
+  across the active Codex skill catalog.
 - Use `fast-change` only when the user explicitly asks for a known-safe direct
   release-branch edit and targeted runtime update.
 - Use `change-promotion` when committed task-worktree branches are ready to
@@ -89,16 +92,7 @@ Infer missing inputs from the current repo state before asking.
   `release/*` branch ready to push, PR, merge, restore to `main`, and reinstall
   from `main`.
 
-#### 2. Execute the selected action
-
-- Read the matching file under `references/`.
-- Follow that action's script bundle, boundaries, workflow, completion gate, and
-  output contract.
-- If the selected action discovers that another action owns the remaining work,
-  switch to that action reference and report the handoff reason only when it
-  changes the user's next step.
-
-#### 3. Close from action evidence
+#### 2. Close from action evidence
 
 - Match final claims to the exact source diff, validator output, runtime state,
   release branch state, or live GitHub state actually verified.
@@ -109,10 +103,6 @@ Infer missing inputs from the current repo state before asking.
 
 ### Completion Gate
 
-- The selected action reference was followed or the task was explicitly blocked
-  before action execution.
-- Any cross-action handoff used another reference in this router rather than a
-  standalone skill identity.
 - Source, runtime, validation, branch, and shipping claims are limited to the
   checks and state actually verified.
 

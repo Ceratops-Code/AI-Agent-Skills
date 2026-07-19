@@ -174,14 +174,14 @@
         "skills/ceratops-skill-lifecycle/references/skill-deterministic-contract.json",
         "skills/ceratops-skill-lifecycle/references/skill-nondeterministic-contract.md",
         "skill-source-docs.json",
-        "skills/ceratops-skill-lifecycle/references/skills-consistency-and-contract-review.md",
+        "skills/ceratops-skill-lifecycle/references/skills-contract-review.md",
         "README.md"
       ],
-      "pass_condition": "The skill deterministic contract, non-deterministic contract, skill source-doc registry, skill lifecycle action reference, and contract-structure docs reference the same skill-design review surface without making routine skill validation run the non-deterministic best-practice review.",
+      "pass_condition": "The skill deterministic contract, non-deterministic contract, skill source-doc registry, skill-contract action reference, and contract-structure docs reference the same Ceratops skill-design review surface without making routine skill validation run the non-deterministic best-practice review.",
       "source_lines": [
         "skill-source-docs.json:docs scope skill",
         "skill-source-docs.json:reference_skills",
-        "skills/ceratops-skill-lifecycle/references/skills-consistency-and-contract-review.md:References",
+        "skills/ceratops-skill-lifecycle/references/skills-contract-review.md:References",
         "README.md:Contracts"
       ]
     },
@@ -199,7 +199,7 @@
       "source_lines": [
         "skills/ceratops-skill-lifecycle/scripts/validation/validate-skills-consistency.py:check_governance_consistency",
         "skills/ceratops-skill-lifecycle/scripts/validation/validate-skills-consistency.py:check_skill_contract_remediation_policy",
-        "skills/ceratops-skill-lifecycle/references/skills-consistency-and-contract-review.md:Goal",
+        "skills/ceratops-skill-lifecycle/references/skills-contract-review.md:Goal",
         "README.md:Validate"
       ]
     }

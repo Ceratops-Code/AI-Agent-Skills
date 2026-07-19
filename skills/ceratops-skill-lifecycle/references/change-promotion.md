@@ -60,9 +60,9 @@ Infer missing inputs from local repo state before asking.
 - Use this action when the goal is coherent local preview or local batching of
   unpublished skill changes in a skill repo checkout.
 - If the task is creating or updating skill source and not yet staging it,
-  return to the router and select `create` or `update`.
+  return to the parent skill and select `create` or `update`.
 - If the skills repo release branch is already staged or the task is general
-  repo shipping, return to the router and select the owning action.
+  repo shipping, return to the parent skill and select the owning action.
 
 ### Workflow
 

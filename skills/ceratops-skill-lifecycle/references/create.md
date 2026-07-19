@@ -38,7 +38,7 @@ asking.
   expectations, use the system skill creator only for scaffolding and still
   return here for repo integration if required.
 - If the task is updating an existing skill, maintaining shared layers, or
-  shipping prepared changes, return to the router and select the owning action.
+  shipping prepared changes, return to the parent skill and select the owning action.
 
 ### Workflow
 

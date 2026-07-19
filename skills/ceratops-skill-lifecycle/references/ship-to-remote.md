@@ -48,7 +48,7 @@ asking.
 
 - Use this action only for shipping a staged skills repo branch through GitHub.
 - If skill creation, skill update, or local staging work is still needed, return
-  to the router and select the owning action.
+  to the parent skill and select the owning action.
 - If the task is general non-skill repo shipping, use
   `$ceratops-gh-repo-lifecycle` with the `ship-change` action.
 - Do not edit skill source here. This action only pushes, opens or updates the

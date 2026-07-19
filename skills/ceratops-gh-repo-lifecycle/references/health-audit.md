@@ -42,7 +42,7 @@ Infer missing inputs from live repo state and local files before asking.
 - Do not use this action as a routine rubber-stamp closeout pass after normal
   ship, dependency-maintenance, or merge flows.
 - If the repo is not yet published, needs first hardening, needs normal PR and
-  release flow, or only needs PR finalization, return to the router and select
+  release flow, or only needs PR finalization, return to the parent skill and select
   the owning action.
 
 ### Workflow

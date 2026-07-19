@@ -41,7 +41,7 @@ Infer missing inputs from local files and live GitHub state before asking.
   or dependency-bot PR processing.
 - If the repo is not published, lacks a usable remote, needs substantial
   non-dependency code changes, or only needs PR finalization, return to the
-  router and select the owning action.
+  parent skill and select the owning action.
 
 ### Workflow
 

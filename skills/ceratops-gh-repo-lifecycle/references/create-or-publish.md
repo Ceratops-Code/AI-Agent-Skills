@@ -36,7 +36,7 @@ ambiguous, paid, or credential-bound.
   visibility decisions, initial hardening, and first release setup.
 - If the repo already exists and only needs local changes, normal release flow,
   state checks, stale cleanup, settings validation, or PR finalization, return
-  to the router and select the narrower action.
+  to the parent skill and select the narrower action.
 - Do not prefer connector storage over normal local credential stores.
 
 ### Workflow

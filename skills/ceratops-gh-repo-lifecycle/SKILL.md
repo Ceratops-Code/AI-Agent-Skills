@@ -40,13 +40,11 @@ repo data before asking.
 
 ### Skill-Specific Rules
 
-- Load only the selected action reference unless the current action explicitly
-  hands off to another action.
 - Use the action references as the source of truth for scripts, readiness gates,
   cleanup rules, and output contracts.
 - Keep repo creation, contract review, repo health, dependency, shipping, and
-  merge behavior inside this router and its `references/` files; do not
-  introduce alias skills or old-name shims.
+  merge behavior inside this multi-action skill and its `references/` files;
+  do not introduce alias skills or old-name shims.
 - For PR finalization reached from a broader shipping or dependency action,
   continue with `references/merge-pr.md` instead of duplicating merge gates.
 - Run broad repo or artifact health checks only when the selected action
@@ -81,16 +79,7 @@ repo data before asking.
 - Use `merge-pr` when the PR content is already ready and only PR-specific
   readiness, merge, and cleanup remain.
 
-#### 2. Execute the selected action
-
-- Read the matching file under `references/`.
-- Follow that action's script bundle, boundaries, workflow, completion gate, and
-  output contract.
-- If the selected action discovers that another action owns the remaining work,
-  switch to that action reference and report the handoff reason only when it
-  changes the user's next step.
-
-#### 3. Close from action evidence
+#### 2. Close from action evidence
 
 - Match final claims to the exact action checks and live state that were run.
 - Report retained branches, worktrees, PRs, artifacts, credentials, or external
@@ -100,10 +89,6 @@ repo data before asking.
 
 ### Completion Gate
 
-- The selected action reference was followed or the task was explicitly blocked
-  before action execution.
-- Any cross-action handoff used another reference in this router rather than a
-  standalone skill identity.
 - GitHub, repo, artifact, and local-state claims are limited to the checks and
   live data actually verified.
 

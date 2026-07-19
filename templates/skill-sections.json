@@ -1,6 +1,7 @@
 {
   "sections": {
-    "core": "templates/sections/core.md"
+    "core": "templates/sections/core.md",
+    "multi-action-skill": "templates/sections/multi-action-skill.md"
   },
   "maintenance_workflows": {
     "shared_source_changes": [
@@ -46,13 +47,16 @@
       "core"
     ],
     "ceratops-skill-lifecycle": [
-      "core"
+      "core",
+      "multi-action-skill"
     ],
     "ceratops-gh-repo-lifecycle": [
-      "core"
+      "core",
+      "multi-action-skill"
     ],
     "ceratops-task-lifecycle": [
-      "core"
+      "core",
+      "multi-action-skill"
     ]
   }
 }

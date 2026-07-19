@@ -33,10 +33,12 @@ Infer missing inputs from current repo state before asking.
 
 - Use this action to update existing Ceratops skills, compatible skills in
   another repo, or the shared skill-maintenance layer itself.
-- If the task creates a brand-new skill, return to the router and select
+- If the task creates a brand-new skill, return to the parent skill and select
   `create`.
-- If the task is a skill consistency audit or skill-design contract upkeep,
-  return to the router and select `skills-consistency-and-contract-review`.
+- If the task is Ceratops skill-contract upkeep, return to the parent skill and
+  select `skills-contract-review`.
+- If the task is consistency review across the active Codex skill catalog,
+  return to the parent skill and select `global-skills-consistency-review`.
 - If the task only promotes already-prepared committed changes, select
   `change-promotion`.
 
