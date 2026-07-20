@@ -62,14 +62,21 @@ skill-design contracts, skill source-doc tracking, and the
 `skills-contract-review` action. The source-neutral
 `global-skills-consistency-review` action audits direct installed skill folders
 that declare source ownership through `.runtime-manifest.json`.
+Each runtime manifest records schema, skill, source identity, source path, local
+source-repository root, validation profile, and installer version. Global review
+groups those direct folders by source repository and compares only parsed
+`INSTALLER_VERSION` values before managed-skill consistency checks.
 
 ## Scripts
 
 | Script | Caller And Timing |
 | --- | --- |
-| `scripts/install-skills.ps1` | Bootstrap entrypoint that prefers a supported installed lifecycle bundle, falls back to this checkout for first install, runs full target-repo validation, and installs managed copies. |
-| `skills/ceratops-skill-lifecycle/scripts/runtime/install-managed-skills.ps1` | Source-scoped runtime installer for compatible repos; full installs remove only stale folders owned by the same `runtime_source_id`, while targeted installs remove none. |
-| `skills/ceratops-skill-lifecycle/scripts/runtime/resolve-lifecycle-bundle.ps1` | Shared installed-first, checkout-fallback resolver used by bootstrap, fast-change, and release staging. |
+| `scripts/install-skills.py` | Versioned repository bootstrap that delegates validation and installation to the supported lifecycle bundle. |
+| `skills/ceratops-skill-lifecycle/scripts/templates/install-skills-template.py` | Authoritative installer copied into compatible repositories as `scripts/install-skills.py`; consistency compares only `INSTALLER_VERSION`. |
+| `skills/ceratops-skill-lifecycle/scripts/runtime/install-managed-skills.py` | Installed source-scoped runtime installer; every install runs full target-repository validation, full installs remove only same-source stale folders, and targeted installs remove none. |
+| `skills/ceratops-skill-lifecycle/scripts/runtime/resolve-lifecycle-bundle.py` | Installed-first resolver with target-checkout fallback only for the initial Ceratops installation. |
+| `skills/ceratops-skill-lifecycle/scripts/runtime/synchronize-installers.py` | Copies the authoritative installer into an approved task worktree only when its parsed version is missing or lower, then runs full validation. |
+| `skills/ceratops-skill-lifecycle/scripts/runtime/review-managed-skills.py` | Inventories direct manifest-managed runtime folders, groups source repositories, compares installer versions, and checks source/runtime consistency. |
 | `skills/ceratops-skill-lifecycle/scripts/runtime/render-runtime-skills.py` | Internal implementation called by the runtime installer to render runtime `SKILL.md` files and copy declared payloads. |
 | `skills/ceratops-gh-repo-lifecycle/scripts/github_contract_engine/` | Package CLI for contract schemas, consistency, source documents, org/repo validation, shared severity levels, and non-deterministic evidence. |
 | `skills/ceratops-gh-repo-lifecycle/scripts/github_pr_workflow/` | Package CLI for PR readiness, Codex review wait/resolution, merge orchestration, live merge verification, and post-merge local sync. |
@@ -253,7 +260,7 @@ root:
 
 ```powershell
 python -m pip install -r requirements-runtime.txt
-powershell -ExecutionPolicy Bypass -File .\scripts\install-skills.ps1
+python .\scripts\install-skills.py
 ```
 
 That bootstrap does two things explicitly:
@@ -262,36 +269,35 @@ That bootstrap does two things explicitly:
 - builds managed runtime skill copies under `$CODEX_HOME/skills/`, including
   declared runtime payloads such as the Ceratops icon
 
-For another Ceratops-compatible repo, invoke the installed lifecycle validator
-and installer as one helper bundle and pass the target checkout explicitly:
+For another Ceratops-compatible repo, run its versioned repository installer:
 
 ```powershell
-python "$env:CODEX_HOME\skills\ceratops-skill-lifecycle\scripts\validation\validate-skills-consistency.py" --repo-root <target-repo> --mode full
-powershell -ExecutionPolicy Bypass -File "$env:CODEX_HOME\skills\ceratops-skill-lifecycle\scripts\runtime\install-managed-skills.ps1" -RepoRoot <target-repo>
+python <target-repo>\scripts\install-skills.py --repo-root <target-repo>
 ```
 
-The installer records source ownership in each runtime manifest. It refuses to
-replace unmanaged folders, links, or a same-named skill owned by another source.
-An install without `-Skill` refreshes all source skills and removes only stale
-folders with the same `runtime_source_id`; an explicit `-Skill` is targeted and
-does no stale cleanup.
+The repository bootstrap prefers the supported installed lifecycle bundle and
+uses the target checkout's bundle only for the initial Ceratops installation.
+Every install runs full target-repository validation before writing. Runtime
+manifests record source ownership, local source-repository root, validation
+profile, and installer version. An install without `--skill` refreshes all
+source skills and removes only stale folders with the same `runtime_source_id`;
+an explicit `--skill` is targeted and does no stale cleanup.
 
 Installed Ceratops skills should be generated from the skills repo checkout: the
 local skills repo checkout used as the input path for the runtime installer.
 The active branch only selects which repo snapshot is installed: synced `main`
 for normal use, or a local `release/*` branch for an active unpublished preview.
-After changing the installed source snapshot, rerun
-the selected lifecycle bundle's
-`scripts/runtime/install-managed-skills.ps1 -RepoRoot <repo>` so new, renamed,
-or deleted same-source managed skill folders match that snapshot.
+After changing the installed source snapshot, rerun `python
+scripts/install-skills.py --repo-root <repo>` so new, renamed, or deleted
+same-source managed skill folders match that snapshot.
 When shipping a staged batch, reuse the same `release/local` branch name locally
 and remotely by default. Use `stage-skill-release-branch.ps1` for reviewed local
 branch staging, `push-release-branch-and-ensure-pr.ps1` for PR publication,
 `$ceratops-gh-repo-lifecycle` merge-pr for merge gates,
 `python -m github_pr_workflow sync --repo-root <repo> --align-branch
 release/local` after merge, and
-the selected lifecycle bundle's runtime installer with `-RepoRoot <repo>` for
-the final runtime rebuild from `main`. GitHub may delete the remote
+`python scripts/install-skills.py --repo-root <repo>` for the final runtime
+rebuild from `main`. GitHub may delete the remote
 `release/local` after merge; the next batch simply recreates that same remote
 branch from the current local `release/local`.
 

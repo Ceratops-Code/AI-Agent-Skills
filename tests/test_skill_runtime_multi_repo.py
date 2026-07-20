@@ -7,15 +7,16 @@ import shutil
 import subprocess
 import sys
 
-import pytest
-
-
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 VALIDATOR = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "validation" / "validate-skills-consistency.py"
 RENDERER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "runtime" / "render-runtime-skills.py"
-BOOTSTRAP = ROOT / "scripts" / "install-skills.ps1"
+BOOTSTRAP = ROOT / "scripts" / "install-skills.py"
 LIFECYCLE_SOURCE = ROOT / "skills" / "ceratops-skill-lifecycle"
+INSTALLER_TEMPLATE = LIFECYCLE_SOURCE / "scripts" / "templates" / "install-skills-template.py"
+INSTALLER_SYNCHRONIZER = LIFECYCLE_SOURCE / "scripts" / "runtime" / "synchronize-installers.py"
+MANAGED_SKILLS_REVIEWER = LIFECYCLE_SOURCE / "scripts" / "runtime" / "review-managed-skills.py"
 RUNTIME_MANIFEST = ".runtime-manifest.json"
+RUNTIME_MANIFEST_SCHEMA = "ceratops-runtime-skill.v3"
 
 
 def add_skill(repo: pathlib.Path, name: str) -> None:
@@ -76,6 +77,8 @@ def create_compatible_repo(repo: pathlib.Path, source_id: str, skill_names: list
         encoding="utf-8",
         newline="\n",
     )
+    (repo / "scripts").mkdir()
+    shutil.copy2(INSTALLER_TEMPLATE, repo / "scripts" / "install-skills.py")
     for skill_name in skill_names:
         add_skill(repo, skill_name)
     write_manifest(repo, source_id)
@@ -122,6 +125,8 @@ def run_renderer(
             str(repo),
             "--install-root",
             str(install_root),
+            "--installer-version",
+            "1",
             *extra,
         ],
         capture_output=True,
@@ -133,6 +138,24 @@ def run_renderer(
 def runtime_owner(install_root: pathlib.Path, skill_name: str) -> str:
     data = json.loads((install_root / skill_name / RUNTIME_MANIFEST).read_text(encoding="utf-8"))
     return str(data["runtime_source_id"])
+
+
+def install_bundle_manifest(bundle_root: pathlib.Path) -> None:
+    """Mark one copied lifecycle source folder as a supported installed bundle."""
+
+    (bundle_root / RUNTIME_MANIFEST).write_text(
+        json.dumps(
+            {
+                "schema": RUNTIME_MANIFEST_SCHEMA,
+                "skill": "ceratops-skill-lifecycle",
+                "validation_profile": "ceratops",
+                "installer_version": 1,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
 
 
 def test_compatible_full_validation_accepts_arbitrary_skill_names(tmp_path: pathlib.Path) -> None:
@@ -205,7 +228,7 @@ def test_targeted_install_keeps_stale_and_rejects_other_source_collision(tmp_pat
     legacy = install_root / "legacy-tool"
     legacy.mkdir()
     (legacy / RUNTIME_MANIFEST).write_text(
-        json.dumps({"schema": "ceratops-runtime-skill.v1", "skill": "legacy-tool"}) + "\n",
+        json.dumps({"schema": "ceratops-runtime-skill.v2", "skill": "legacy-tool"}) + "\n",
         encoding="utf-8",
     )
     add_skill(repo_b, "legacy-tool")
@@ -215,7 +238,6 @@ def test_targeted_install_keeps_stale_and_rejects_other_source_collision(tmp_pat
     assert "unsupported ownership manifest" in legacy_collision.stderr
 
 
-@pytest.mark.skipif(shutil.which("powershell") is None, reason="Windows PowerShell is unavailable")
 def test_bootstrap_prefers_installed_bundle_for_external_repo(tmp_path: pathlib.Path) -> None:
     repo = tmp_path / "compatible"
     codex_home = tmp_path / "codex-home"
@@ -223,27 +245,17 @@ def test_bootstrap_prefers_installed_bundle_for_external_repo(tmp_path: pathlib.
     installed_bundle = codex_home / "skills" / "ceratops-skill-lifecycle"
     create_compatible_repo(repo, "example/external", ["alpha-tool"])
     shutil.copytree(LIFECYCLE_SOURCE, installed_bundle)
-    (installed_bundle / RUNTIME_MANIFEST).write_text(
-        json.dumps({"schema": "ceratops-runtime-skill.v2", "skill": "ceratops-skill-lifecycle"}) + "\n",
-        encoding="utf-8",
-        newline="\n",
-    )
+    install_bundle_manifest(installed_bundle)
     env = {**os.environ, "CODEX_HOME": str(codex_home)}
 
     result = subprocess.run(
         [
-            "powershell",
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-            str(BOOTSTRAP),
-            "-RepoRoot",
-            str(repo),
-            "-InstallRoot",
-            str(install_root),
-            "-PythonCommand",
             sys.executable,
+            str(repo / "scripts" / "install-skills.py"),
+            "--repo-root",
+            str(repo),
+            "--install-root",
+            str(install_root),
         ],
         capture_output=True,
         text=True,
@@ -255,7 +267,6 @@ def test_bootstrap_prefers_installed_bundle_for_external_repo(tmp_path: pathlib.
     assert runtime_owner(install_root, "alpha-tool") == "example/external"
 
 
-@pytest.mark.skipif(shutil.which("powershell") is None, reason="Windows PowerShell is unavailable")
 def test_bootstrap_falls_back_to_checkout_for_first_install(tmp_path: pathlib.Path) -> None:
     codex_home = tmp_path / "empty-codex-home"
     install_root = tmp_path / "installed"
@@ -263,18 +274,12 @@ def test_bootstrap_falls_back_to_checkout_for_first_install(tmp_path: pathlib.Pa
 
     result = subprocess.run(
         [
-            "powershell",
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-            str(BOOTSTRAP),
-            "-RepoRoot",
-            str(ROOT),
-            "-InstallRoot",
-            str(install_root),
-            "-PythonCommand",
             sys.executable,
+            str(BOOTSTRAP),
+            "--repo-root",
+            str(ROOT),
+            "--install-root",
+            str(install_root),
         ],
         capture_output=True,
         text=True,
@@ -284,3 +289,108 @@ def test_bootstrap_falls_back_to_checkout_for_first_install(tmp_path: pathlib.Pa
 
     assert result.returncode == 0, result.stderr
     assert runtime_owner(install_root, "ceratops-skill-lifecycle") == "Ceratops-Code/AI-Agent-Skills"
+
+
+def test_runtime_manifest_records_source_profile_and_installer_version(tmp_path: pathlib.Path) -> None:
+    repo = tmp_path / "compatible"
+    install_root = tmp_path / "installed"
+    create_compatible_repo(repo, "example/compatible", ["alpha-tool"])
+
+    result = run_renderer(repo, install_root, "--skill", "alpha-tool")
+
+    assert result.returncode == 0, result.stderr
+    manifest = json.loads((install_root / "alpha-tool" / RUNTIME_MANIFEST).read_text(encoding="utf-8"))
+    assert manifest["schema"] == RUNTIME_MANIFEST_SCHEMA
+    assert manifest["skill"] == "alpha-tool"
+    assert manifest["runtime_source_id"] == "example/compatible"
+    assert manifest["source_path"] == "skills/alpha-tool"
+    assert manifest["source_repository_root"] == str(repo.resolve())
+    assert manifest["validation_profile"] == "ceratops-compatible"
+    assert manifest["installer_version"] == 1
+
+
+def test_every_install_runs_full_target_validation(tmp_path: pathlib.Path) -> None:
+    repo = tmp_path / "compatible"
+    codex_home = tmp_path / "codex-home"
+    install_root = tmp_path / "installed"
+    installed_bundle = codex_home / "skills" / "ceratops-skill-lifecycle"
+    create_compatible_repo(repo, "example/external", ["alpha-tool"])
+    shutil.copytree(LIFECYCLE_SOURCE, installed_bundle)
+    install_bundle_manifest(installed_bundle)
+    (repo / "README.md").write_text("# Invalid\n", encoding="utf-8", newline="\n")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(repo / "scripts" / "install-skills.py"),
+            "--repo-root",
+            str(repo),
+            "--install-root",
+            str(install_root),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={**os.environ, "CODEX_HOME": str(codex_home)},
+    )
+
+    assert result.returncode == 1
+    assert "Full target-repository validation failed" in result.stderr
+    assert not (install_root / "alpha-tool").exists()
+
+
+def test_installer_synchronization_compares_only_version(tmp_path: pathlib.Path) -> None:
+    repo = tmp_path / "compatible"
+    create_compatible_repo(repo, "example/compatible", ["alpha-tool"])
+    (repo / ".git").write_text("gitdir: test\n", encoding="utf-8", newline="\n")
+    target = repo / "scripts" / "install-skills.py"
+    custom = target.read_text(encoding="utf-8") + "\n# same-version local difference\n"
+    target.write_text(custom, encoding="utf-8", newline="\n")
+
+    retained = subprocess.run(
+        [sys.executable, str(INSTALLER_SYNCHRONIZER), "--target-repo-root", str(repo)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert retained.returncode == 0, retained.stderr
+    assert json.loads(retained.stdout)["status"] == "retained"
+    assert target.read_text(encoding="utf-8") == custom
+
+    target.write_text(custom.replace("INSTALLER_VERSION = 1", "INSTALLER_VERSION = 0"), encoding="utf-8", newline="\n")
+    updated = subprocess.run(
+        [sys.executable, str(INSTALLER_SYNCHRONIZER), "--target-repo-root", str(repo)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert updated.returncode == 0, updated.stderr
+    assert json.loads(updated.stdout)["status"] == "updated"
+    assert target.read_bytes() == INSTALLER_TEMPLATE.read_bytes()
+
+
+def test_global_review_uses_only_direct_manifest_folders(tmp_path: pathlib.Path) -> None:
+    repo = tmp_path / "compatible"
+    install_root = tmp_path / "installed"
+    create_compatible_repo(repo, "example/compatible", ["alpha-tool"])
+    assert run_renderer(repo, install_root, "--skill", "alpha-tool").returncode == 0
+    (install_root / "unmanaged-tool").mkdir()
+    nested = install_root / "unmanaged-tool" / "nested-managed"
+    nested.mkdir()
+    (nested / RUNTIME_MANIFEST).write_text("{}\n", encoding="utf-8", newline="\n")
+
+    result = subprocess.run(
+        [sys.executable, str(MANAGED_SKILLS_REVIEWER), "--runtime-root", str(install_root), "--mode", "consistency"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {
+        "groups": {"example/compatible": 1},
+        "managed": 1,
+        "mode": "consistency",
+    }

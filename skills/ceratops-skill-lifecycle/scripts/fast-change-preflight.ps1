@@ -89,14 +89,7 @@ if (-not (Test-Path -LiteralPath $skillFile -PathType Leaf)) {
     throw "SkillName must identify an existing source skill: $SkillName"
 }
 
-$checkoutBundleRoot = Join-Path $resolvedSkillsRepoRoot "skills\ceratops-skill-lifecycle"
-$bundleResolver = Join-Path $PSScriptRoot "runtime\resolve-lifecycle-bundle.ps1"
-if (-not (Test-Path -LiteralPath $bundleResolver -PathType Leaf)) {
-    throw "Missing lifecycle helper-bundle resolver: $bundleResolver"
-}
-. $bundleResolver
-$bundleRoot = Resolve-CeratopsLifecycleBundle -CheckoutBundleRoot $checkoutBundleRoot
-$installScript = Join-Path $bundleRoot "scripts\runtime\install-managed-skills.ps1"
+$installScript = Join-Path $resolvedSkillsRepoRoot "scripts\install-skills.py"
 $repoRootForRelative = $resolvedSkillsRepoRoot.TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
 $relativeTarget = $resolvedTarget.Substring($repoRootForRelative.Length + 1).Replace("\", "/")
 $installAvailable = Test-Path -LiteralPath $installScript -PathType Leaf
@@ -108,7 +101,7 @@ $result = [ordered]@{
     target = $relativeTarget
     clean = $true
     install_command_available = $installAvailable
-    install_command = if ($installAvailable) { "powershell -ExecutionPolicy Bypass -File `"$installScript`" -RepoRoot `"$resolvedSkillsRepoRoot`" -Skill `"$SkillName`"" } else { $null }
+    install_command = if ($installAvailable) { "python `"$installScript`" --repo-root `"$resolvedSkillsRepoRoot`" --skill `"$SkillName`"" } else { $null }
 }
 
 $result | ConvertTo-Json -Compress

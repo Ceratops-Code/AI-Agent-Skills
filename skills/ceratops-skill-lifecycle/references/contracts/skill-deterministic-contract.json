@@ -17,6 +17,10 @@
       "lines": "source-scoped managed runtime ownership and stale cleanup"
     },
     {
+      "path": "$AI_AGENT_SKILLS_ROOT/skills/ceratops-skill-lifecycle/scripts/templates/install-skills-template.py",
+      "lines": "authoritative versioned compatible-repository installer"
+    },
+    {
       "path": "$AI_AGENT_SKILLS_ROOT/templates/skill-sections.json",
       "lines": "shared section and runtime payload ownership"
     },
@@ -60,6 +64,7 @@
     "auto_apply_check_ids": [],
     "ai_agent_check_ids": [
       "skill.repository_identity_and_profile",
+      "skill.installer_version_consistency",
       "skill.frontmatter_and_layout",
       "skill.metadata_alignment",
       "skill.runtime_payload_portability",
@@ -95,6 +100,21 @@
       ]
     },
     {
+      "id": "skill.installer_version_consistency",
+      "category": "runtime",
+      "deterministic_evidence": [
+        "scripts/install-skills.py INSTALLER_VERSION",
+        "authoritative installer template INSTALLER_VERSION",
+        "installed runtime manifest installer_version"
+      ],
+      "pass_condition": "Compatible repositories declare one positive integer INSTALLER_VERSION in scripts/install-skills.py; consistency compares only that value, updates missing or lower versions through task worktrees, retains same-version content differences, and runs full validation after synchronization.",
+      "source_lines": [
+        "skills/ceratops-skill-lifecycle/scripts/runtime/synchronize-installers.py:installer_version",
+        "skills/ceratops-skill-lifecycle/scripts/runtime/review-managed-skills.py:inventory",
+        "skills/ceratops-skill-lifecycle/scripts/validation/validate-skills-consistency.py:check_source_installer"
+      ]
+    },
+    {
       "id": "skill.frontmatter_and_layout",
       "category": "source",
       "deterministic_evidence": [
@@ -102,7 +122,7 @@
         "source SKILL.md frontmatter",
         "source SKILL.md section and subsection structure"
       ],
-      "pass_condition": "Source skill frontmatter contains only name and description, frontmatter name matches the directory, description is present, body is nonempty, the body contains a Markdown H2 section structure, and Boundaries and Output Contract subsections are present.",
+      "pass_condition": "Source skill frontmatter contains only name and description, frontmatter name matches the directory, description is present, and the body contains a Markdown H2 section structure; the ceratops profile additionally requires Boundaries and Output Contract subsections.",
       "source_lines": [
         "skills/ceratops-skill-lifecycle/scripts/validation/validate-skills-consistency.py:parse_frontmatter",
         "skills/ceratops-skill-lifecycle/scripts/validation/validate-skills-consistency.py:check_skill"
@@ -115,7 +135,7 @@
         "skills/<skill-name>/agents/openai.yaml",
         "source SKILL.md description"
       ],
-      "pass_condition": "OpenAI interface metadata exists, default_prompt names the skill, display name resembles the skill identity, short description overlaps the trigger description, and icon fields point to existing portable runtime-local files; the ceratops profile additionally requires the shared Ceratops icon path and bytes.",
+      "pass_condition": "OpenAI interface metadata exists, default_prompt names the skill, display name resembles the skill identity, and short description overlaps the trigger description; the ceratops profile additionally requires icon fields, shared Ceratops icon paths, and matching bytes.",
       "source_lines": [
         "skills/ceratops-skill-lifecycle/scripts/validation/validate-skills-consistency.py:parse_openai_interface",
         "skills/ceratops-skill-lifecycle/scripts/validation/validate-skills-consistency.py:display_name_sane",
@@ -145,7 +165,7 @@
         "skill top-level files and directories",
         "skills/<skill-name>/references/"
       ],
-      "pass_condition": "Each skill folder contains `SKILL.md` as the only top-level file, uses only supported top-level resource directories (`agents/`, `assets/`, `scripts/`, `references/`), and keeps `references/` files one level deep.",
+      "pass_condition": "Each skill folder contains `SKILL.md` as the only top-level file and uses only profile-supported resource directories; the compatible profile may include `tests/`, while the ceratops profile allows `agents/`, `assets/`, `scripts/`, and `references/`. Reference files remain within supported nesting.",
       "source_lines": [
         "skills/ceratops-skill-lifecycle/scripts/validation/validate-skills-consistency.py:check_resource_layout"
       ]
@@ -168,14 +188,16 @@
       "deterministic_evidence": [
         "source manifest runtime_source_id",
         "installed .runtime-manifest.json ownership",
+        "installed source_repository_root and installer_version",
         "selected install scope"
       ],
-      "pass_condition": "The renderer preflights all selected targets, refuses unmanaged folders, links, invalid ownership, and same-name folders owned by another source; a full install removes only stale folders with the same runtime_source_id, while an explicit targeted install removes none.",
+      "pass_condition": "Every installation runs full target-repository validation before the renderer writes. Runtime manifests record schema, skill, runtime_source_id, source_path, source_repository_root, validation_profile, and installer_version. The renderer preflights all selected targets, refuses unmanaged folders, links, invalid ownership, and same-name folders owned by another source; a full install removes only stale folders with the same runtime_source_id, while an explicit targeted install removes none.",
       "source_lines": [
-        "skills/ceratops-skill-lifecycle/scripts/runtime/resolve-lifecycle-bundle.ps1:Resolve-CeratopsLifecycleBundle",
+        "skills/ceratops-skill-lifecycle/scripts/runtime/resolve-lifecycle-bundle.py:resolve_bundle",
+        "skills/ceratops-skill-lifecycle/scripts/runtime/install-managed-skills.py:main",
         "skills/ceratops-skill-lifecycle/scripts/runtime/render-runtime-skills.py:validate_install_targets",
         "skills/ceratops-skill-lifecycle/scripts/runtime/render-runtime-skills.py:remove_stale_managed_skills",
-        "skills/ceratops-skill-lifecycle/scripts/runtime/install-managed-skills.ps1:targetedInstall"
+        "skills/ceratops-skill-lifecycle/scripts/runtime/render-runtime-skills.py:build_skill"
       ]
     },
     {
@@ -227,6 +249,7 @@
       "deterministic_evidence": [
         "source skill identities",
         "installed managed runtime manifests",
+        "repository and installed installer versions",
         "validation command surfaces",
         "skill deterministic and nondeterministic contract mappings",
         "multi-action lifecycle action references and command snippets"

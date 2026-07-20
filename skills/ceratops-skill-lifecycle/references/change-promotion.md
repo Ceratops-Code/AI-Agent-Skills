@@ -14,9 +14,9 @@ installed runtime only when this action is intentionally selected.
 - Installed managed skill path: `$CODEX_HOME/skills/<skill-name>`
 - Default release branch: `release/local`
 - Default remote: `origin`
-- (D) Lifecycle helper bundle: the supported installed
-  `ceratops-skill-lifecycle` folder first, then the target checkout's lifecycle
-  folder for bootstrap.
+- (D) Repository installer: `python scripts/install-skills.py`, which uses the
+  supported installed lifecycle bundle and permits target-checkout fallback
+  only for the initial Ceratops installation.
 
 ### Script Bundle
 
@@ -82,8 +82,8 @@ Infer missing inputs from local repo state before asking.
   merge-base HEAD BRANCH) BRANCH`, branch merges, profile-aware full
   validation, runtime installation, merged-work cleanup, pending-work
   detection, and compact ready/not-ready output.
-- Stop if neither the installed lifecycle bundle nor the target checkout
-  contains the staged release helper and its sibling validator and installer.
+- Stop if the installed lifecycle bundle lacks the staged release helper or the
+  target repository lacks `scripts/install-skills.py`.
 - If the skills repo checkout is dirty before staging, stop instead of merging
   into it blindly.
 
