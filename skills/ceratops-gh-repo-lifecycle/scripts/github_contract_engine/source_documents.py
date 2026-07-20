@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Check the contract source-doc registry with one compact fallback path.
 
 Contracts review uses `references/contract-source-docs.json` as the bounded
@@ -28,9 +27,9 @@ USER_AGENT = "ceratops-contract-source-doc-check/1.0"
 def default_registry_path() -> pathlib.Path:
     """Find the bundled registry in source and installed skill layouts."""
 
-    script_dir = pathlib.Path(__file__).resolve().parent
-    skill_dir = script_dir.parent
-    repo_root = skill_dir.parent.parent if skill_dir.parent.name == "skills" else skill_dir
+    scripts_dir = pathlib.Path(__file__).resolve().parent.parent
+    skill_dir = scripts_dir.parent
+    repo_root = skill_dir.parents[1] if skill_dir.parent.name == "skills" else skill_dir
     candidates = [
         pathlib.Path.cwd() / "references" / "contract-source-docs.json",
         pathlib.Path.cwd() / "skills" / "ceratops-gh-repo-lifecycle" / "references" / "contract-source-docs.json",
@@ -231,14 +230,17 @@ def check_doc(doc: dict[str, Any], timeout: int) -> dict[str, Any]:
     return result
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     """Parse arguments, check source docs, and emit compact results."""
 
-    parser = argparse.ArgumentParser(description="Check contract source-doc registry URLs.")
+    parser = argparse.ArgumentParser(
+        prog="python -m github_contract_engine check-source-docs",
+        description="Check contract source-doc registry URLs.",
+    )
     parser.add_argument("--registry", default=str(default_registry_path()))
     parser.add_argument("--timeout", type=int, default=30)
     parser.add_argument("--json", action="store_true", help="Print machine-readable JSON report.")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     docs = load_registry(pathlib.Path(args.registry))
     results = [check_doc(doc, args.timeout) for doc in docs]

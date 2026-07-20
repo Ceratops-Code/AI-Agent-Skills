@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ceratops.dev/schemas/github/pr-readiness-contract.schema.json",
+  "title": "GitHub PR readiness contract",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "surface",
+    "description",
+    "source_docs",
+    "free_only",
+    "mutates",
+    "evidence",
+    "checks",
+    "approved_drift",
+    "non_deterministic_review_file"
+  ],
+  "properties": {
+    "schema": { "type": "string", "minLength": 1 },
+    "surface": { "const": "pr" },
+    "description": { "type": "string", "minLength": 1 },
+    "source_docs": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "free_only": { "type": "boolean" },
+    "mutates": { "type": "boolean" },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["command", "fields"],
+      "properties": {
+        "command": {
+          "type": "string",
+          "pattern": "^python -m github_pr_workflow validate(?:\\s|$)"
+        },
+        "fields": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "checks": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "level_on_drift", "expectation"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "level_on_drift": { "type": "string", "minLength": 1 },
+          "expectation": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "approved_drift": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "check_ids", "condition", "approval"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "check_ids": { "type": "array", "items": { "type": "string" } },
+          "condition": { "type": "string", "minLength": 1 },
+          "approval": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "non_deterministic_review_file": { "type": "string", "minLength": 1 }
+  }
+}

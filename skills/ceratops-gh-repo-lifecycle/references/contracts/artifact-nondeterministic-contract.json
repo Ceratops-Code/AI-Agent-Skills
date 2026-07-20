@@ -6,7 +6,7 @@
   "deterministic_contract": "artifact-deterministic-contract.json",
   "description": "Artifact checks that require AI-agent judgment, domain interpretation, current official documentation, or browser and registry-owner confirmation.",
   "evidence": {
-    "command": "python skills/ceratops-gh-repo-lifecycle/scripts/github-collect-nd-evidence.py --surface artifact --repo OWNER/REPO --local-repo-path PATH --json",
+    "command": "python -m github_contract_engine collect --surface artifact --repo OWNER/REPO --local-repo-path PATH --json",
     "notes": [
       "Pass artifact identities with --param artifact_contracts=[...] when package, image, or registry identity cannot be derived from local manifests.",
       "The evidence payload includes detected artifact types, release metadata, local signals, and available registry metadata."

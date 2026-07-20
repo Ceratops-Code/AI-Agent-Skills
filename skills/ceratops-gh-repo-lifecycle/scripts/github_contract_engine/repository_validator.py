@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Validate repository, local-code, and artifact desired-state contracts.
 
 The command is intentionally only orchestration. Contract JSON declares the
@@ -14,25 +13,25 @@ import argparse
 import json
 from typing import Any
 
-from github_contract_engine import (
+from . import (
     collect_observed_states,
     compare_states,
     compose_desired_state,
 )
-from github_contract_engine.compose_desired_state import (
+from .compose_desired_state import (
     REPO_SURFACES,
     check_ids,
     repo_subset_ids,
 )
-from github_contract_engine.format_report import (
+from .format_report import (
     build_report,
     build_summary_report,
     print_human,
     write_json,
 )
-from github_contract_engine.github_api import default_contract_path, load_json
-from github_contract_engine.remediations import apply_remediations
-from validator_levels import has_blocking_findings, parse_levels
+from .github_api import default_contract_path, load_json
+from .levels import has_blocking_findings, parse_levels
+from .remediations import apply_remediations
 
 
 SURFACE_CHOICES = ("all", *REPO_SURFACES)
@@ -135,6 +134,7 @@ def _selection(
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
+        prog="python -m github_contract_engine validate repo",
         description="Compare GitHub repository, local-code, and artifact observed states to deterministic contracts."
     )
     parser.add_argument("--repo", required=True, help="OWNER/REPO")
@@ -198,11 +198,11 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     """Parse arguments, run the state engine, optionally remediate, and report."""
 
     parser = _parser()
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     if args.json and args.levels:
         parser.error("--levels applies to text or --summary-json, not full --json")
     try:

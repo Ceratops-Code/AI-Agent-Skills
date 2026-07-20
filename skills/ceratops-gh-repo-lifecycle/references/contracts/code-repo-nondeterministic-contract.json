@@ -6,7 +6,7 @@
   "deterministic_contract": "code-repo-deterministic-contract.json",
   "description": "Repository-content quality and intent checks that require AI-agent judgment.",
   "evidence": {
-    "command": "python skills/ceratops-gh-repo-lifecycle/scripts/github-collect-nd-evidence.py --surface code --repo OWNER/REPO --local-repo-path PATH --json",
+    "command": "python -m github_contract_engine collect --surface code --repo OWNER/REPO --local-repo-path PATH --json",
     "notes": [
       "Collect a separate repository evidence bundle when live labels, Dependabot queues, alerts, or repository settings are also in scope."
     ]

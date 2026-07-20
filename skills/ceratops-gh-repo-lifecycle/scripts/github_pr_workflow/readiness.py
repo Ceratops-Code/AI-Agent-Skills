@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Validate the deterministic GitHub pull-request readiness contract.
 
 This script is intentionally narrow. Repository health, repo contents, and
@@ -21,11 +20,11 @@ import sys
 from dataclasses import asdict, dataclass
 from typing import Any
 
-from validator_levels import ERROR, count_by_level
+from github_contract_engine.levels import ERROR, count_by_level
 
 
-SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
-SKILL_DIR = SCRIPT_DIR.parent
+SCRIPTS_DIR = pathlib.Path(__file__).resolve().parent.parent
+SKILL_DIR = SCRIPTS_DIR.parent
 ROOT = SKILL_DIR.parent.parent if SKILL_DIR.parent.name == "skills" else SKILL_DIR
 
 
@@ -255,7 +254,10 @@ def emit(summary: dict[str, object], findings: list[Finding], *, as_json: bool, 
 def build_parser() -> argparse.ArgumentParser:
     """Create the command-line parser."""
 
-    parser = argparse.ArgumentParser(description="Validate the live GitHub PR readiness contract before merge.")
+    parser = argparse.ArgumentParser(
+        prog="python -m github_pr_workflow validate",
+        description="Validate the live GitHub PR readiness contract before merge.",
+    )
     parser.add_argument("--contract", type=pathlib.Path, default=default_contract_path(), help="PR readiness deterministic contract JSON.")
     parser.add_argument("--cwd", type=pathlib.Path, default=pathlib.Path.cwd(), help="Repo working directory used for git and gh context.")
     parser.add_argument("--pr", help="PR number, URL, or branch. Defaults to the PR attached to the current branch.")
@@ -264,22 +266,52 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main() -> int:
+def validate_readiness(
+    selector: str | None,
+    cwd: pathlib.Path,
+    contract_path: pathlib.Path,
+    *,
+    allow_admin_review_bypass: bool = False,
+) -> tuple[dict[str, object], list[Finding]]:
+    """Evaluate readiness and enforce that every emitted check is contract-backed."""
+
+    contract = load_contract(contract_path)
+    summary, findings = pr_readiness(
+        selector,
+        cwd,
+        allow_admin_review_bypass=allow_admin_review_bypass,
+    )
+    unknown = sorted(
+        {finding.check for finding in findings} - contract_check_ids(contract)
+    )
+    if unknown:
+        add(
+            findings,
+            "ERROR",
+            "contract.unknown_check_ids",
+            "Validator emitted checks missing from the PR readiness contract.",
+            actual=unknown,
+        )
+    return summary, findings
+
+
+def main(argv: list[str] | None = None) -> int:
     """Parse CLI arguments, evaluate the live PR, and emit the report."""
 
     parser = build_parser()
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     cwd = args.cwd.resolve()
     try:
         contract_path = args.contract.resolve()
-        contract = load_contract(contract_path)
         selector = args.pr
         if selector is None:
             selector = current_branch(cwd)
-        summary, findings = pr_readiness(selector, cwd, allow_admin_review_bypass=args.allow_admin_review_bypass)
-        unknown = sorted({finding.check for finding in findings} - contract_check_ids(contract))
-        if unknown:
-            add(findings, "ERROR", "contract.unknown_check_ids", "Validator emitted checks missing from the PR readiness contract.", actual=unknown)
+        summary, findings = validate_readiness(
+            selector,
+            cwd,
+            contract_path,
+            allow_admin_review_bypass=args.allow_admin_review_bypass,
+        )
         return emit(summary, findings, as_json=args.json, contract_path=contract_path)
     except CommandError as exc:
         if args.json:

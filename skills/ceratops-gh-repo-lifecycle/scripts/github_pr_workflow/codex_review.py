@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Wait for or resolve active Codex review threads on a GitHub pull request."""
 
 from __future__ import annotations
@@ -6,6 +5,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import pathlib
 import re
 import subprocess
 import sys
@@ -21,11 +21,17 @@ class CommandError(RuntimeError):
     """Raised when GitHub CLI state cannot be fetched or mutated."""
 
 
-def run_gh(args: list[str], *, stdin: str | None = None) -> str:
+def run_gh(
+    args: list[str],
+    *,
+    stdin: str | None = None,
+    cwd: pathlib.Path | None = None,
+) -> str:
     """Run a GitHub CLI command and return stdout, raising compact failures."""
 
     completed = subprocess.run(
         ["gh", *args],
+        cwd=cwd,
         input=stdin,
         text=True,
         encoding="utf-8",
@@ -39,21 +45,26 @@ def run_gh(args: list[str], *, stdin: str | None = None) -> str:
     return completed.stdout.strip()
 
 
-def gh_graphql(query: str, variables: dict[str, Any]) -> dict[str, Any]:
+def gh_graphql(
+    query: str,
+    variables: dict[str, Any],
+    *,
+    cwd: pathlib.Path | None = None,
+) -> dict[str, Any]:
     """Run a GraphQL request through gh so existing auth and host config apply."""
 
     payload = json.dumps({"query": query, "variables": variables}, separators=(",", ":"))
-    raw = run_gh(["api", "graphql", "--input", "-"], stdin=payload)
+    raw = run_gh(["api", "graphql", "--input", "-"], stdin=payload, cwd=cwd)
     data = json.loads(raw or "{}")
     if data.get("errors"):
         raise CommandError(json.dumps(data["errors"], ensure_ascii=True))
     return data
 
 
-def default_repo() -> str:
+def default_repo(cwd: pathlib.Path | None = None) -> str:
     """Return the current checkout repository in owner/name form."""
 
-    raw = run_gh(["repo", "view", "--json", "nameWithOwner"])
+    raw = run_gh(["repo", "view", "--json", "nameWithOwner"], cwd=cwd)
     data = json.loads(raw or "{}")
     name = data.get("nameWithOwner")
     if not isinstance(name, str) or "/" not in name:
@@ -61,14 +72,19 @@ def default_repo() -> str:
     return name
 
 
-def resolve_pr(selector: str, repo: str | None) -> tuple[str, str, int]:
+def resolve_pr(
+    selector: str,
+    repo: str | None,
+    *,
+    cwd: pathlib.Path | None = None,
+) -> tuple[str, str, int]:
     """Resolve PR selector and repository into owner, repo name, and number."""
 
     match = PR_URL_RE.search(selector)
     if match:
         owner, name, number = match.groups()
         return owner, name, int(number)
-    selected_repo = repo or default_repo()
+    selected_repo = repo or default_repo(cwd)
     if "/" not in selected_repo:
         raise CommandError("--repo must use OWNER/REPO")
     owner, name = selected_repo.split("/", 1)
@@ -85,7 +101,13 @@ def parse_utc(value: str) -> dt.datetime:
     return dt.datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(dt.timezone.utc)
 
 
-def fetch_pr(owner: str, name: str, number: int) -> dict[str, Any]:
+def fetch_pr(
+    owner: str,
+    name: str,
+    number: int,
+    *,
+    cwd: pathlib.Path | None = None,
+) -> dict[str, Any]:
     """Fetch PR metadata and review threads with pagination."""
 
     query = """
@@ -132,7 +154,11 @@ query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
     pr_data: dict[str, Any] | None = None
     threads: list[dict[str, Any]] = []
     while True:
-        data = gh_graphql(query, {"owner": owner, "name": name, "number": number, "cursor": cursor})
+        data = gh_graphql(
+            query,
+            {"owner": owner, "name": name, "number": number, "cursor": cursor},
+            cwd=cwd,
+        )
         pr = ((data.get("data") or {}).get("repository") or {}).get("pullRequest")
         if not isinstance(pr, dict):
             raise CommandError(f"pull request not found: {owner}/{name}#{number}")
@@ -183,11 +209,19 @@ def active_codex_threads(pr_data: dict[str, Any], authors: set[str]) -> list[dic
     return active
 
 
-def wait(args: argparse.Namespace) -> int:
-    """Wait until active Codex review threads appear or the creation window expires."""
+def wait_for_codex_threads(
+    selector: str,
+    repo: str | None,
+    *,
+    wait_seconds: int,
+    interval_seconds: int,
+    authors: list[str] | tuple[str, ...],
+    cwd: pathlib.Path | None = None,
+) -> dict[str, Any]:
+    """Return the bounded Codex review wait result without printing it."""
 
-    owner, name, number = resolve_pr(args.pr, args.repo)
-    authors = {author.lower() for author in args.author}
+    owner, name, number = resolve_pr(selector, repo, cwd=cwd)
+    normalized_authors = {author.lower() for author in authors}
     start = dt.datetime.now(dt.timezone.utc)
     waited = 0.0
     last_pr: dict[str, Any] | None = None
@@ -195,37 +229,50 @@ def wait(args: argparse.Namespace) -> int:
     deadline: dt.datetime | None = None
 
     while True:
-        last_pr = fetch_pr(owner, name, number)
+        last_pr = fetch_pr(owner, name, number, cwd=cwd)
         created_at = parse_utc(str(last_pr["createdAt"]))
-        deadline = created_at + dt.timedelta(seconds=args.wait_seconds)
-        threads = active_codex_threads(last_pr, authors)
+        deadline = created_at + dt.timedelta(seconds=wait_seconds)
+        threads = active_codex_threads(last_pr, normalized_authors)
         if threads:
             break
         now = dt.datetime.now(dt.timezone.utc)
         if now >= deadline:
             break
-        sleep_for = min(float(args.interval_seconds), (deadline - now).total_seconds())
+        sleep_for = min(float(interval_seconds), (deadline - now).total_seconds())
         if sleep_for > 0:
             time.sleep(sleep_for)
             waited = (dt.datetime.now(dt.timezone.utc) - start).total_seconds()
 
     assert last_pr is not None
-    output = {
+    return {
         "repo": f"{owner}/{name}",
         "pr": number,
         "url": last_pr.get("url"),
         "head_oid": last_pr.get("headRefOid"),
         "created_at": last_pr.get("createdAt"),
-        "wait_seconds": args.wait_seconds,
-        "interval_seconds": args.interval_seconds,
+        "wait_seconds": wait_seconds,
+        "interval_seconds": interval_seconds,
         "deadline": deadline.isoformat() if deadline else None,
         "waited_seconds": round(waited, 3),
         "status": "found_active_codex_threads" if threads else "no_active_codex_threads",
         "active_codex_thread_count": len(threads),
         "active_codex_threads": threads,
     }
+
+
+def wait(args: argparse.Namespace) -> int:
+    """Wait until active Codex review threads appear or the creation window expires."""
+
+    output = wait_for_codex_threads(
+        args.pr,
+        args.repo,
+        wait_seconds=args.wait_seconds,
+        interval_seconds=args.interval_seconds,
+        authors=args.author,
+        cwd=args.cwd,
+    )
     print(json.dumps(output, indent=2 if args.pretty else None, ensure_ascii=True))
-    return 1 if threads else 0
+    return 1 if output["active_codex_thread_count"] else 0
 
 
 def resolve(args: argparse.Namespace) -> int:
@@ -262,6 +309,7 @@ def build_parser() -> argparse.ArgumentParser:
     wait_parser.add_argument("--wait-seconds", type=int, default=180)
     wait_parser.add_argument("--interval-seconds", type=int, default=10)
     wait_parser.add_argument("--author", action="append", default=list(DEFAULT_CODEX_AUTHORS))
+    wait_parser.add_argument("--cwd", type=pathlib.Path, default=pathlib.Path.cwd())
     wait_parser.add_argument("--json", action="store_true", help="accepted for compatibility; output is always JSON")
     wait_parser.add_argument("--pretty", action="store_true", help="pretty-print JSON")
     wait_parser.set_defaults(func=wait)

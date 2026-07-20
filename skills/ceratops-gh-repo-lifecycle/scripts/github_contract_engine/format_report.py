@@ -7,7 +7,7 @@ import re
 import sys
 from typing import Any
 
-from validator_levels import count_by_level
+from .levels import count_by_level
 
 
 REDACTED = "<redacted>"

@@ -13,23 +13,20 @@ applied.
 
 ### Script Bundle
 
-- (D) GH contract consistency check: `python
-  skills/ceratops-gh-repo-lifecycle/scripts/validate-gh-contracts-consistency.py`
-- (D) Org contract checker: `python
-  skills/ceratops-gh-repo-lifecycle/scripts/github-validate-org-deterministic-contract.py
-  --help`
-- (D) GitHub, code, and artifact contract checker: `python
-  skills/ceratops-gh-repo-lifecycle/scripts/github-validate-repo-artifact-contract.py
-  --help`
-- (D) PR readiness contract checker: `python
-  skills/ceratops-gh-repo-lifecycle/scripts/github-validate-pr-readiness-contract.py
-  --help`
-- (D) Non-deterministic evidence collector: `python
-  skills/ceratops-gh-repo-lifecycle/scripts/github-collect-nd-evidence.py
-  --help`
-- (D) Source-doc registry checker: `python
-  skills/ceratops-gh-repo-lifecycle/scripts/github-check-source-docs.py
-  --help`
+- Run package commands from `skills/ceratops-gh-repo-lifecycle/scripts` in a
+  source checkout or `scripts` in the installed skill folder.
+- (D) GH contract consistency check:
+  `python -m github_contract_engine validate consistency`
+- (D) Org contract checker:
+  `python -m github_contract_engine validate org --help`
+- (D) GitHub, code, and artifact contract checker:
+  `python -m github_contract_engine validate repo --help`
+- (D) PR readiness contract checker:
+  `python -m github_pr_workflow validate --help`
+- (D) Non-deterministic evidence collector:
+  `python -m github_contract_engine collect --help`
+- (D) Source-doc registry checker:
+  `python -m github_contract_engine check-source-docs --help`
 
 ### References
 
@@ -119,7 +116,8 @@ request before asking.
   installed automation prompt when this run came from automation.
 - Check GitHub auth, local git auth, and installed tooling before asking for
   credentials.
-- Run `validate-gh-contracts-consistency.py` before manual review. If it fails,
+- Run `python -m github_contract_engine validate consistency` before manual
+  review. If it fails,
   classify each finding as stale local dirt, proposed in-scope change,
   approval-required change, or not applicable.
 
@@ -128,7 +126,8 @@ request before asking.
 - Read `references/contract-source-docs.json` and the affected contract files at
   the start of the audit and use them as the bounded checklist for the next
   evidence-gathering steps.
-- Run `github-check-source-docs.py --json` before ad hoc source-doc URL checks;
+- Run `python -m github_contract_engine check-source-docs --json` before ad hoc
+  source-doc URL checks;
   treat fallback-only transport failures as execution-context evidence.
 - Use local files, `gh`, GitHub API, `gh` help, package metadata, release
   metadata, and registry endpoints as the first-pass evidence for the GitHub or

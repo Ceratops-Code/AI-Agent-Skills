@@ -106,10 +106,9 @@ Infer missing inputs from local repo state before asking.
   the repo uses managed runtime copies.
 - If no installer exists, child-copy each affected source skill folder into its
   runtime target, then read back a changed sentinel.
-- (D) When the PR-readiness validator or installer changed and the relevant
-  script exists, run `python
-  skills/ceratops-gh-repo-lifecycle/scripts/github-validate-pr-readiness-contract.py
-  --help`.
+- (D) When the PR-workflow package or installer changed, run
+  `python -m github_pr_workflow validate --help` from
+  `skills/ceratops-gh-repo-lifecycle/scripts`.
 
 #### 4. Report staged state
 

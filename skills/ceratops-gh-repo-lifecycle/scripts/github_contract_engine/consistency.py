@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Validate GitHub contract structure and implementation coverage."""
 
 from __future__ import annotations
@@ -10,31 +9,33 @@ import pathlib
 import re
 from typing import Any
 
-from github_contract_engine.collect_observed_states import PRODUCER_REGISTRY, state_producer
-from github_contract_engine.collectors.local_repository import (
+from .collect_observed_states import PRODUCER_REGISTRY, state_producer
+from .collectors.local_repository import (
     ARTIFACT_DETECTOR_KEYS,
     ARTIFACT_DETECTOR_WHEN,
     COLLECTION_KEYS as LOCAL_COLLECTION_KEYS,
 )
-from github_contract_engine.collectors.repository import (
+from .collectors.repository import (
     COLLECTION_KEYS as REPO_COLLECTION_KEYS,
 )
-from github_contract_engine.collectors.registries import FETCHERS
-from github_contract_engine.compare_states import (
+from .collectors.registries import FETCHERS
+from .compare_states import (
     OPERATORS,
     condition_syntax_valid,
     pointer_get,
 )
-from github_contract_engine.compose_desired_state import org_subset_ids, repo_subset_ids
-from github_contract_engine.remediations import HANDLERS
+from .compose_desired_state import org_subset_ids, repo_subset_ids
+from .remediations import HANDLERS
+from .schema_validation import validate_all_contract_schemas
 
 
-SKILL_DIR = pathlib.Path(__file__).resolve().parent.parent
+SKILL_DIR = pathlib.Path(__file__).resolve().parents[2]
 REPO_ROOT = SKILL_DIR.parents[1]
 REFERENCES = SKILL_DIR / "references"
 CONTRACTS = REFERENCES / "contracts"
 SCRIPTS = SKILL_DIR / "scripts"
 SOURCE_DOCS = REFERENCES / "contract-source-docs.json"
+SCHEMAS = REFERENCES / "schemas"
 STATE_CONTRACT_PATHS = {
     "org": CONTRACTS / "github-org-deterministic-contract.json",
     "repo": CONTRACTS / "github-repo-deterministic-contract.json",
@@ -55,13 +56,28 @@ REQUIRED_FILES = [
     *STATE_CONTRACT_PATHS.values(),
     PR_CONTRACT,
     *ND_CONTRACT_PATHS.values(),
-    SCRIPTS / "github-collect-nd-evidence.py",
-    SCRIPTS / "github-validate-org-deterministic-contract.py",
-    SCRIPTS / "github-validate-repo-artifact-contract.py",
+    SCRIPTS / "github_contract_engine" / "__main__.py",
+    SCRIPTS / "github_contract_engine" / "cli.py",
+    SCRIPTS / "github_contract_engine" / "collect_non_deterministic_evidence.py",
+    SCRIPTS / "github_contract_engine" / "organization_validator.py",
+    SCRIPTS / "github_contract_engine" / "repository_validator.py",
+    SCRIPTS / "github_contract_engine" / "source_documents.py",
+    SCRIPTS / "github_contract_engine" / "schema_validation.py",
+    SCRIPTS / "github_contract_engine" / "levels.py",
     SCRIPTS / "github_contract_engine" / "compose_desired_state.py",
     SCRIPTS / "github_contract_engine" / "collect_observed_states.py",
     SCRIPTS / "github_contract_engine" / "compare_states.py",
     SCRIPTS / "github_contract_engine" / "format_report.py",
+    SCRIPTS / "github_pr_workflow" / "__main__.py",
+    SCRIPTS / "github_pr_workflow" / "cli.py",
+    SCRIPTS / "github_pr_workflow" / "readiness.py",
+    SCRIPTS / "github_pr_workflow" / "codex_review.py",
+    SCRIPTS / "github_pr_workflow" / "merge.py",
+    SCRIPTS / "github_pr_workflow" / "sync.py",
+    SCHEMAS / "state-contract.schema.json",
+    SCHEMAS / "pr-readiness-contract.schema.json",
+    SCHEMAS / "nondeterministic-contract.schema.json",
+    SCHEMAS / "source-doc-registry.schema.json",
 ]
 
 
@@ -459,16 +475,18 @@ def _validate_nd_coverage() -> list[str]:
     return errors
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
+        prog="python -m github_contract_engine validate consistency",
         description="Validate GH lifecycle contract and state-engine consistency."
     )
-    parser.parse_args()
+    parser.parse_args(argv)
     errors = [
         f"missing required GH contract file: {rel(path)}"
         for path in REQUIRED_FILES
         if not path.is_file()
     ]
+    errors.extend(validate_all_contract_schemas())
     contracts: dict[str, dict[str, Any]] = {}
     for surface, path in STATE_CONTRACT_PATHS.items():
         if not path.is_file():
@@ -537,7 +555,7 @@ def main() -> int:
             errors.append(f"{rel(PR_CONTRACT)}: invalid JSON: {exc}")
     if (
         all(path.is_file() for path in ND_CONTRACT_PATHS.values())
-        and (SCRIPTS / "github-collect-nd-evidence.py").is_file()
+        and (SCRIPTS / "github_contract_engine" / "collect_non_deterministic_evidence.py").is_file()
     ):
         errors.extend(_validate_nd_coverage())
     if errors:

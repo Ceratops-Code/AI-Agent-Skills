@@ -6,7 +6,7 @@
   "deterministic_contract": "github-pr-readiness-deterministic-contract.json",
   "description": "Pull-request intent and risk checks used when deterministic readiness leaves a decision unresolved.",
   "evidence": {
-    "command": "python skills/ceratops-gh-repo-lifecycle/scripts/github-collect-nd-evidence.py --surface pr --pr NUMBER_OR_URL --local-repo-path PATH --json"
+    "command": "python -m github_contract_engine collect --surface pr --pr NUMBER_OR_URL --local-repo-path PATH --json"
   },
   "review_result_values": {
     "pass": "AI-agent review found the intent satisfied and recorded evidence.",

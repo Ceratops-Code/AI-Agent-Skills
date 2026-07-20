@@ -64,17 +64,11 @@ without making that catalog a Ceratops contract surface.
 | `scripts/install-skills.ps1` | Bootstrap entrypoint for initial managed skill installation with direct full source validation. |
 | `skills/ceratops-skill-lifecycle/scripts/runtime/install-managed-skills.ps1` | Skill-lifecycle runtime installer for refreshing managed skill copies during local preview, fast change, and ship flows. |
 | `skills/ceratops-skill-lifecycle/scripts/runtime/render-runtime-skills.py` | Internal implementation called by the runtime installer to render runtime `SKILL.md` files and copy declared payloads. |
-| `skills/ceratops-gh-repo-lifecycle/scripts/validate-gh-contracts-consistency.py` | Validates GH contract schema, assertion operators, observed-state producers, fetch coverage, remediation handlers, subsets, and non-deterministic evidence mappings. |
-| `skills/ceratops-gh-repo-lifecycle/scripts/github-validate-pr-readiness-contract.py` | Called before PR merge decisions to validate the live PR readiness contract. |
-| `skills/ceratops-gh-repo-lifecycle/scripts/github-codex-review-gate.py` | Called before PR merge decisions to wait for or resolve active Codex review threads. |
+| `skills/ceratops-gh-repo-lifecycle/scripts/github_contract_engine/` | Package CLI for contract schemas, consistency, source documents, org/repo validation, shared severity levels, and non-deterministic evidence. |
+| `skills/ceratops-gh-repo-lifecycle/scripts/github_pr_workflow/` | Package CLI for PR readiness, Codex review wait/resolution, merge orchestration, live merge verification, and post-merge local sync. |
 | `skills/ceratops-skill-lifecycle/scripts/validation/validate-skills-consistency.py` | Skill-lifecycle validator for section, full, and governance consistency checks. |
-| `skills/ceratops-gh-repo-lifecycle/scripts/github-validate-org-deterministic-contract.py` | Called by org setup, org health, and standards review work when org settings need a bundled deterministic audit. |
-| `skills/ceratops-gh-repo-lifecycle/scripts/github-validate-repo-artifact-contract.py` | Called by repo create, repo health, dependency, and standards review work when repo settings, code, or artifact posture needs a deterministic audit. |
-| `skills/ceratops-gh-repo-lifecycle/scripts/github-collect-nd-evidence.py` | Called when non-deterministic org, repo, code, or artifact checks need one bundled evidence payload for review-owner classification. |
 | `skills/ceratops-skill-lifecycle/scripts/stage-skill-release-branch.ps1` | Called by skill change-promotion to prepare `release/local`, merge reviewed branches, validate, clean merged work, and emit compact ready/not-ready JSON. |
 | `skills/ceratops-skill-lifecycle/scripts/push-release-branch-and-ensure-pr.ps1` | Called by skill ship-to-remote to push `release/local`, create or reuse its PR, and emit compact PR JSON. |
-| `skills/ceratops-gh-repo-lifecycle/scripts/validate-and-merge-pr.ps1` | Called by GH merge-pr to run PR readiness, Codex review gate, merge, live merge verification, and compact merge JSON. |
-| `skills/ceratops-gh-repo-lifecycle/scripts/sync-main-after-pr.ps1` | Called after PR merge to fast-forward local `main`, optionally align reusable local branches, and emit compact sync JSON. |
 
 Lifecycle helpers suppress successful subcommand output and print only compact
 JSON on success. This repo keeps scripts only where they add reusable safety
@@ -118,25 +112,30 @@ The contract structure is split by the owning lifecycle skill:
   files capture checks that need intent judgment, prose review, browser
   confirmation, or current-doc interpretation after bundled evidence is
   collected.
+- `skills/ceratops-gh-repo-lifecycle/references/schemas/` contains shared closed
+  schemas for state, PR-readiness, non-deterministic, and source-registry
+  contract families.
 
 Run deterministic checks with bundled selections instead of one command per
 setting:
 
 ```powershell
-python .\skills\ceratops-gh-repo-lifecycle\scripts\github-validate-org-deterministic-contract.py --org ORG --subset all
-python .\skills\ceratops-gh-repo-lifecycle\scripts\github-validate-repo-artifact-contract.py --repo OWNER/REPO --surface repo --subset settings --local-repo-path .
-python .\skills\ceratops-gh-repo-lifecycle\scripts\github-validate-repo-artifact-contract.py --repo OWNER/REPO --surface code --subset content --local-repo-path .
-python .\skills\ceratops-gh-repo-lifecycle\scripts\github-validate-repo-artifact-contract.py --repo OWNER/REPO --select repo:dependency --select code:dependency --local-repo-path .
-python .\skills\ceratops-gh-repo-lifecycle\scripts\github-validate-repo-artifact-contract.py --repo OWNER/REPO --surface artifact --subset artifact --local-repo-path .
-python .\skills\ceratops-gh-repo-lifecycle\scripts\github-validate-repo-artifact-contract.py --repo OWNER/REPO --surface all --subset health --local-repo-path . --summary-json --levels ERROR,WARN,NEEDS_AI_AGENT_REVIEW
-python .\skills\ceratops-gh-repo-lifecycle\scripts\github-validate-pr-readiness-contract.py --pr NUMBER_OR_URL
-python .\skills\ceratops-gh-repo-lifecycle\scripts\validate-gh-contracts-consistency.py
+Push-Location .\skills\ceratops-gh-repo-lifecycle\scripts
+python -m github_contract_engine validate org --org ORG --subset all
+python -m github_contract_engine validate repo --repo OWNER/REPO --surface repo --subset settings --local-repo-path PATH
+python -m github_contract_engine validate repo --repo OWNER/REPO --surface code --subset content --local-repo-path PATH
+python -m github_contract_engine validate repo --repo OWNER/REPO --select repo:dependency --select code:dependency --local-repo-path PATH
+python -m github_contract_engine validate repo --repo OWNER/REPO --surface artifact --subset artifact --local-repo-path PATH
+python -m github_contract_engine validate repo --repo OWNER/REPO --surface all --subset health --local-repo-path PATH --summary-json --levels ERROR,WARN,NEEDS_AI_AGENT_REVIEW
+python -m github_pr_workflow validate --pr NUMBER_OR_URL --cwd PATH
+python -m github_contract_engine validate consistency
+Pop-Location
 python .\skills\ceratops-skill-lifecycle\scripts\validation\validate-skills-consistency.py --mode full
 python .\skills\ceratops-skill-lifecycle\scripts\validation\validate-skills-consistency.py --mode governance
 ```
 
-The organization and repository/artifact commands are thin entrypoints over the
-shared `scripts/github_contract_engine/` state engine. `compose_desired_state.py`
+The organization and repository/artifact commands are package operations over
+the shared `scripts/github_contract_engine/` state engine. `compose_desired_state.py`
 selects and parameterizes the JSON contract assertions;
 `collect_observed_states.py` calls reusable collectors once and composes one
 observed-states JSON document; `compare_states.py` applies generic operators;
@@ -156,16 +155,18 @@ alone is not a finding.
 Collect review evidence for non-deterministic checks with:
 
 ```powershell
-python .\skills\ceratops-gh-repo-lifecycle\scripts\github-collect-nd-evidence.py --surface org --org ORG --json
-python .\skills\ceratops-gh-repo-lifecycle\scripts\github-collect-nd-evidence.py --surface repo --repo OWNER/REPO --local-repo-path . --json
-python .\skills\ceratops-gh-repo-lifecycle\scripts\github-collect-nd-evidence.py --surface code --repo OWNER/REPO --local-repo-path . --json
-python .\skills\ceratops-gh-repo-lifecycle\scripts\github-collect-nd-evidence.py --surface artifact --repo OWNER/REPO --local-repo-path . --json
-python .\skills\ceratops-gh-repo-lifecycle\scripts\github-collect-nd-evidence.py --surface pr --pr NUMBER_OR_URL --local-repo-path . --json
+Push-Location .\skills\ceratops-gh-repo-lifecycle\scripts
+python -m github_contract_engine collect --surface org --org ORG --json
+python -m github_contract_engine collect --surface repo --repo OWNER/REPO --local-repo-path PATH --json
+python -m github_contract_engine collect --surface code --repo OWNER/REPO --local-repo-path PATH --json
+python -m github_contract_engine collect --surface artifact --repo OWNER/REPO --local-repo-path PATH --json
+python -m github_contract_engine collect --surface pr --pr NUMBER_OR_URL --local-repo-path PATH --json
+Pop-Location
 ```
 
 Contract surfaces select the area being checked. GitHub, code, artifact, and PR
-surfaces are read by `github-validate-repo-artifact-contract.py`,
-`github-validate-pr-readiness-contract.py`, and `github-collect-nd-evidence.py`.
+surfaces are read by `github_contract_engine` and `github_pr_workflow` package
+commands.
 The skill surface is represented by
 `skills/ceratops-skill-lifecycle/references/skill-*` and
 `skills/ceratops-skill-lifecycle/scripts/validation/validate-skills-consistency.py`.
@@ -240,9 +241,11 @@ Codex discovers personal skills from:
 $CODEX_HOME/skills/<skill-name>/SKILL.md
 ```
 
-Run one explicit bootstrap step from the repo root:
+Install the lifecycle runtime dependency and run the bootstrap from the repo
+root:
 
 ```powershell
+python -m pip install -r requirements-runtime.txt
 powershell -ExecutionPolicy Bypass -File .\scripts\install-skills.ps1
 ```
 
@@ -262,8 +265,9 @@ new, renamed, or deleted managed skill folders match that snapshot.
 When shipping a staged batch, reuse the same `release/local` branch name locally
 and remotely by default. Use `stage-skill-release-branch.ps1` for reviewed local
 branch staging, `push-release-branch-and-ensure-pr.ps1` for PR publication,
-`$ceratops-gh-repo-lifecycle` merge-pr for merge gates, `sync-main-after-pr.ps1
--AlignBranch release/local` after merge, and
+`$ceratops-gh-repo-lifecycle` merge-pr for merge gates,
+`python -m github_pr_workflow sync --repo-root <repo> --align-branch
+release/local` after merge, and
 `skills/ceratops-skill-lifecycle/scripts/runtime/install-managed-skills.ps1` for
 the final runtime rebuild from `main`. GitHub may delete the remote
 `release/local` after merge; the next batch simply recreates that same remote
@@ -331,8 +335,8 @@ python .\skills\ceratops-skill-lifecycle\scripts\validation\validate-skills-cons
 Run helper `--help` smoke checks only for touched helper scripts or touched
 helper claims. Full and governance validation are for explicit broad
 verification, not every regular skill update. With working GitHub auth, run
-`github-validate-org-deterministic-contract.py` and
-`github-validate-repo-artifact-contract.py` from
+`python -m github_contract_engine validate org` and
+`python -m github_contract_engine validate repo` from
 `skills/ceratops-gh-repo-lifecycle/scripts/` for deterministic GitHub, code,
 and artifact contract checks.
 

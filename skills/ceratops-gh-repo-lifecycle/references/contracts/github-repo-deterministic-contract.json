@@ -447,8 +447,7 @@
           "operator": "not_empty",
           "when": "repo.visibility == public"
         }
-      ],
-      "remediation": "Set repository topics from the repository's actual purpose; the validator cannot infer semantic topic names safely."
+      ]
     },
     {
       "id": "repo.unused_feature_flags",
@@ -487,13 +486,6 @@
       "kind": "api",
       "endpoint": "/repos/${owner}/${repo}",
       "applies_when": "repo.archived == false && repo.fork == false",
-      "profile_defaults": {
-        "merge_methods": {
-          "allow_squash_merge": true,
-          "allow_merge_commit": "allowed_if_approved",
-          "allow_rebase_merge": "allowed_if_approved"
-        }
-      },
       "assertions": [
         {
           "path": "/repository/repo/allow_auto_merge",
@@ -543,10 +535,6 @@
         "skills/ceratops-gh-repo-lifecycle/references/health-audit.md"
       ],
       "kind": "api_composite",
-      "endpoints": [
-        "/repos/${owner}/${repo}/rulesets",
-        "/repos/${owner}/${repo}/branches/${default_branch}/protection"
-      ],
       "applies_when": "repo.visibility == public && repo.archived == false && repo.fork == false",
       "assertions": [
         {
@@ -618,10 +606,6 @@
         "skills/ceratops-gh-repo-lifecycle/references/create-or-publish.md"
       ],
       "kind": "api_composite",
-      "endpoints": [
-        "/repos/${owner}/${repo}/rulesets",
-        "/repos/${owner}/${repo}/branches/${default_branch}/protection"
-      ],
       "applies_when": "expected_maintainer_bypass_actors is not empty && repo.archived == false && repo.fork == false",
       "assertions": [
         {
@@ -898,7 +882,6 @@
         "$CODEX_HOME/automations/daily-dependabot-alert-review/dependabot-org-queue-snapshot.py:snapshot schema and queue fields"
       ],
       "kind": "cli",
-      "command": "gh search prs --repo ${owner}/${repo} --state open --app dependabot --limit 1000 --json author,createdAt,id,isDraft,labels,number,repository,state,title,updatedAt,url",
       "applies_when": "repo.archived == false || repository.security.dependabot_prs.items is not empty || repository.security.dependabot_prs.available == false",
       "assertions": [
         {

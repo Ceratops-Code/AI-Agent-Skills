@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Collect one shared state document for non-deterministic contract review."""
 
 from __future__ import annotations
@@ -11,15 +10,15 @@ import subprocess
 import sys
 from typing import Any
 
-from github_contract_engine import (
+from . import (
     collect_observed_states,
     compose_desired_state,
 )
-from github_contract_engine.format_report import write_json
-from github_contract_engine.github_api import default_contract_path, load_json
+from .format_report import write_json
+from .github_api import default_contract_path, load_json
 
 
-SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
+SCRIPTS_DIR = pathlib.Path(__file__).resolve().parent.parent
 
 
 def parse_param(item: str) -> tuple[str, Any]:
@@ -99,7 +98,7 @@ def org_evidence(args: argparse.Namespace) -> dict[str, Any]:
         "org": args.org,
         "contract": os.path.abspath(args.org_contract),
         "review_contract": review_contract,
-        "evidence_command": f"python skills/ceratops-gh-repo-lifecycle/scripts/github-collect-nd-evidence.py --surface org --org {args.org} --json",
+        "evidence_command": f"python -m github_contract_engine collect --surface org --org {args.org} --json",
         "observed_states": observed_states,
         "nd_checks": nd_checks,
     }
@@ -143,7 +142,7 @@ def repo_or_artifact_evidence(args: argparse.Namespace, surface: str) -> dict[st
         "repo": args.repo,
         "contract_paths": paths,
         "review_contract": review_contract,
-        "evidence_command": f"python skills/ceratops-gh-repo-lifecycle/scripts/github-collect-nd-evidence.py --surface {surface} --repo {args.repo} --local-repo-path <PATH> --json",
+        "evidence_command": f"python -m github_contract_engine collect --surface {surface} --repo {args.repo} --local-repo-path <PATH> --json",
         "observed_states": observed_states,
         "nd_checks": nd_checks,
     }
@@ -152,14 +151,26 @@ def repo_or_artifact_evidence(args: argparse.Namespace, surface: str) -> dict[st
 def pr_evidence(args: argparse.Namespace) -> dict[str, Any]:
     contract = load_json(args.pr_contract)
     review_contract, nd_checks = _load_nd_contract(args.pr_contract, contract)
-    validator = SCRIPT_DIR / "github-validate-pr-readiness-contract.py"
-    command = [sys.executable, str(validator), "--contract", args.pr_contract, "--json"]
+    command = [
+        sys.executable,
+        "-m",
+        "github_pr_workflow",
+        "validate",
+        "--contract",
+        args.pr_contract,
+        "--json",
+    ]
     if args.pr:
         command.extend(["--pr", args.pr])
     if args.local_repo_path:
         command.extend(["--cwd", args.local_repo_path])
     process = subprocess.run(
-        command, text=True, encoding="utf-8", errors="replace", capture_output=True
+        command,
+        cwd=SCRIPTS_DIR,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        capture_output=True,
     )
     try:
         validator_report = (
@@ -180,8 +191,9 @@ def pr_evidence(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
+        prog="python -m github_contract_engine collect",
         description="Collect a shared state document for ND GitHub contract review."
     )
     parser.add_argument(
@@ -217,7 +229,7 @@ def main() -> int:
     parser.add_argument("--local-repo-path")
     parser.add_argument("--param", action="append")
     parser.add_argument("--json", action="store_true")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     try:
         if args.surface == "org":
             report = org_evidence(args)

@@ -6,7 +6,7 @@
   "deterministic_contract": "github-repo-deterministic-contract.json",
   "description": "Repository checks that require intent judgment, current documentation, paid and free classification, or browser confirmation.",
   "evidence": {
-    "command": "python skills/ceratops-gh-repo-lifecycle/scripts/github-collect-nd-evidence.py --surface repo --repo OWNER/REPO --local-repo-path PATH --json",
+    "command": "python -m github_contract_engine collect --surface repo --repo OWNER/REPO --local-repo-path PATH --json",
     "notes": [
       "Collect a separate code evidence bundle when repository-content quality or workflow-file intent is in scope."
     ]

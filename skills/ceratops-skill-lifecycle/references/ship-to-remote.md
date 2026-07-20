@@ -24,11 +24,11 @@ skills to synced `main`.
   -RemoteName origin` from a source checkout, or
   `scripts/push-release-branch-and-ensure-pr.ps1` from the installed skill
   folder.
-- (D) Post-merge sync helper:
-  `skills/ceratops-gh-repo-lifecycle/scripts/sync-main-after-pr.ps1 -RepoRoot
-  <repo> -MainBranch main -RemoteName origin -AlignBranch release/local` from a
-  source checkout, or `scripts/sync-main-after-pr.ps1` from the installed GH
-  lifecycle skill folder.
+- (D) Post-merge sync helper, run from
+  `skills/ceratops-gh-repo-lifecycle/scripts` in a source checkout or `scripts`
+  in the installed GH lifecycle skill folder:
+  `python -m github_pr_workflow sync --repo-root <repo> --main-branch main
+  --remote-name origin --align-branch release/local`.
 
 ### Inputs To Capture
 
@@ -78,9 +78,10 @@ asking.
 
 #### 4. Restore main and rebuild installed skills
 
-- (D) Run `sync-main-after-pr.ps1 -AlignBranch release/local` to fetch/prune,
-  switch to `main`, fast-forward from `origin/main`, align the reusable local
-  release branch, and emit compact sync output.
+- (D) Run `python -m github_pr_workflow sync --repo-root <repo> --align-branch
+  release/local` to fetch/prune, switch to `main`, fast-forward from
+  `origin/main`, align the reusable local release branch, and emit compact sync
+  output.
 - (D) Run `powershell -ExecutionPolicy Bypass -File
   .\skills\ceratops-skill-lifecycle\scripts\runtime\install-managed-skills.ps1`
   from `main` so `$CODEX_HOME/skills` is rebuilt from the merged main snapshot.

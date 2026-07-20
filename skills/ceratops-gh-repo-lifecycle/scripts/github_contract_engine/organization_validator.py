@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Validate one GitHub organization against its deterministic desired-state contract."""
 
 from __future__ import annotations
@@ -9,16 +8,16 @@ import os
 import pathlib
 from typing import Any
 
-from github_contract_engine import (
+from . import (
     collect_observed_states,
     compare_states,
     compose_desired_state,
 )
-from github_contract_engine.compose_desired_state import org_subset_ids
-from github_contract_engine.format_report import build_report, write_json
-from github_contract_engine.github_api import default_contract_path, load_json
-from github_contract_engine.remediations import apply_remediations
-from validator_levels import has_blocking_findings
+from .compose_desired_state import org_subset_ids
+from .format_report import build_report, write_json
+from .github_api import default_contract_path, load_json
+from .levels import has_blocking_findings
+from .remediations import apply_remediations
 
 
 LOCAL_PARAM_FILE_ENV = "CERATOPS_GH_CONTRACT_PARAMS"
@@ -88,10 +87,11 @@ def _parameters(args: argparse.Namespace, contract: dict[str, Any]) -> dict[str,
     return parameters
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     """Collect organization state once, compare, optionally remediate, and report."""
 
     parser = argparse.ArgumentParser(
+        prog="python -m github_contract_engine validate org",
         description="Compare a GitHub organization observed state to its deterministic contract."
     )
     parser.add_argument(
@@ -120,7 +120,7 @@ def main() -> int:
     )
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--no-fail", action="store_true")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     try:
         contract = load_json(args.contract)
         parameters = _parameters(args, contract)

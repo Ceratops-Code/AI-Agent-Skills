@@ -1,4 +1,4 @@
-"""Shared severity vocabulary for GH lifecycle validators.
+"""Shared severity vocabulary for GitHub lifecycle validators.
 
 The helper keeps user-facing validator levels consistent across the shared
 state engine and the separate PR-readiness validator.

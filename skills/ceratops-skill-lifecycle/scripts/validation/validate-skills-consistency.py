@@ -88,11 +88,11 @@ SECRET_PATTERNS = [
 TEXT_SUFFIXES = {".md", ".py", ".ps1", ".json", ".yml", ".yaml", ".toml", ".txt"}
 IGNORED_REPO_DIRS = {".git", "__pycache__", ".mypy_cache", ".pytest_cache", ".ruff_cache", "node_modules"}
 GH_LIFECYCLE_ACTIONS = {
-    "contracts-review.md": "validate-gh-contracts-consistency.py",
+    "contracts-review.md": "python -m github_contract_engine validate consistency",
     "create-or-publish.md": "--surface all --subset create",
     "dependency-maintenance.md": "--select repo:dependency --select code:dependency",
     "health-audit.md": "--surface all --subset health",
-    "merge-pr.md": "validate-and-merge-pr.ps1",
+    "merge-pr.md": "python -m github_pr_workflow merge",
     "ship-change.md": "merge-pr",
 }
 SKILL_LIFECYCLE_ACTIONS = {
@@ -595,7 +595,7 @@ def check_skill_scope_validator() -> list[str]:
             if snippet not in action_text:
                 errors.append(f"{skill_name}: {action_rel} missing expected scope command {snippet}")
     merge_text = (SKILLS_DIR / "ceratops-gh-repo-lifecycle" / "references" / "merge-pr.md").read_text(encoding="utf-8")
-    if "github-validate-repo-artifact-contract.py" in merge_text:
+    if "python -m github_contract_engine validate repo" in merge_text:
         errors.append("ceratops-gh-repo-lifecycle: merge-pr action must not run repo/artifact contract validation")
     return errors
 
@@ -752,7 +752,11 @@ def check_resource_layout(skill_dir: pathlib.Path) -> list[str]:
 
     references_dir = skill_dir / "references"
     if references_dir.is_dir():
-        allowed_parents = {references_dir, references_dir / "contracts"}
+        allowed_parents = {
+            references_dir,
+            references_dir / "contracts",
+            references_dir / "schemas",
+        }
         for path in references_dir.rglob("*"):
             if path.is_file() and path.parent not in allowed_parents:
                 rel_path = path.relative_to(skill_dir)

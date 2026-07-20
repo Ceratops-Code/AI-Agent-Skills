@@ -12,13 +12,13 @@ first.
 
 ### Script Bundle
 
-- (D) Dependency/security posture check: `python
-  skills/ceratops-gh-repo-lifecycle/scripts/github-validate-repo-artifact-contract.py
+- (D) Dependency/security posture check, run from the lifecycle skill's
+  `scripts` folder: `python -m github_contract_engine validate repo
   --repo OWNER/REPO --select repo:dependency --select code:dependency
   --local-repo-path PATH`
-- (D) PR readiness contract check: `python
-  skills/ceratops-gh-repo-lifecycle/scripts/github-validate-pr-readiness-contract.py
-  --pr NUMBER_OR_URL`
+- (D) PR readiness contract check, run from the same folder:
+  `python -m github_pr_workflow validate
+  --pr NUMBER_OR_URL --cwd PATH`
 
 ### Inputs To Capture
 
@@ -115,9 +115,9 @@ Infer missing inputs from local files and live GitHub state before asking.
 ### Completion Gate
 
 - Every dependency PR decision is backed by a fresh
-  `github-validate-pr-readiness-contract.py` run.
+  `python -m github_pr_workflow validate` run.
 - Dependency/security posture is verified with
-  `github-validate-repo-artifact-contract.py --select repo:dependency --select
+  `python -m github_contract_engine validate repo --select repo:dependency --select
   code:dependency --local-repo-path PATH` when queue, alert, label,
   security-setting, config, workflow ref, manifest, lockfile, or local file
   posture was part of the run.

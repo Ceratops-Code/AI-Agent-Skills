@@ -359,7 +359,6 @@
       "id": "org.settings",
       "endpoint": "/orgs/${org_login}",
       "method": "GET",
-      "settable": true,
       "desired": {
         "advanced_security_enabled_for_new_repositories": false,
         "billing_email": "${billing_email}",
@@ -415,7 +414,6 @@
       "id": "org.plan",
       "endpoint": "/orgs/${org_login}",
       "method": "GET",
-      "settable": false,
       "desired": {
         "is_verified": false,
         "plan": {
@@ -436,7 +434,6 @@
       "id": "org.logo_custom_avatar",
       "endpoint": "/orgs/${org_login}",
       "method": "GET",
-      "settable": false,
       "desired": {
         "content_type": "image/png",
         "bytes": 251208,
@@ -469,7 +466,6 @@
       "id": "actions.permissions",
       "endpoint": "/orgs/${org_login}/actions/permissions",
       "method": "GET",
-      "settable": true,
       "desired": {
         "allowed_actions": "all",
         "enabled_repositories": "all",
@@ -488,7 +484,6 @@
       "id": "actions.workflow_permissions",
       "endpoint": "/orgs/${org_login}/actions/permissions/workflow",
       "method": "GET",
-      "settable": true,
       "desired": {
         "can_approve_pull_request_reviews": false,
         "default_workflow_permissions": "read"
@@ -506,7 +501,6 @@
       "id": "actions.artifact_log_retention",
       "endpoint": "/orgs/${org_login}/actions/permissions/artifact-and-log-retention",
       "method": "GET",
-      "settable": true,
       "desired": {
         "max_days": 90
       },
@@ -522,7 +516,6 @@
       "id": "actions.fork_pr_contributor_approval",
       "endpoint": "/orgs/${org_login}/actions/permissions/fork-pr-contributor-approval",
       "method": "GET",
-      "settable": true,
       "desired": {
         "allowed_policies": [
           "first_time_contributors",
@@ -541,7 +534,6 @@
       "id": "actions.selected_actions",
       "endpoint": "/orgs/${org_login}/actions/permissions/selected-actions",
       "method": "GET",
-      "settable": false,
       "desired": {
         "status": 409,
         "message_contains": "All actions and workflows are allowed on this organization"
@@ -568,7 +560,6 @@
       "id": "actions.oidc_subject_claim_template",
       "endpoint": "/orgs/${org_login}/actions/oidc/customization/sub",
       "method": "GET",
-      "settable": true,
       "desired": {
         "status": 404,
         "message_contains": "No Actions OIDC custom sub claim template found"
@@ -595,10 +586,6 @@
       "id": "actions.runner_groups",
       "endpoint": "/orgs/${org_login}/actions/runner-groups",
       "method": "GET",
-      "settable": true,
-      "ignored_fields": [
-        "runner_groups[].id"
-      ],
       "desired": {
         "total_count": 1,
         "runner_groups": [
@@ -624,7 +611,6 @@
       "id": "actions.runners",
       "endpoint": "/orgs/${org_login}/actions/runners",
       "method": "GET",
-      "settable": false,
       "desired": {
         "total_count": 0,
         "runners": []
@@ -641,7 +627,6 @@
       "id": "actions.secrets",
       "endpoint": "/orgs/${org_login}/actions/secrets",
       "method": "GET",
-      "settable": true,
       "desired": {
         "total_count": 0,
         "secrets": []
@@ -658,7 +643,6 @@
       "id": "actions.variables",
       "endpoint": "/orgs/${org_login}/actions/variables",
       "method": "GET",
-      "settable": true,
       "desired": {
         "total_count": 0,
         "variables": []
@@ -675,7 +659,6 @@
       "id": "dependabot.secrets",
       "endpoint": "/orgs/${org_login}/dependabot/secrets",
       "method": "GET",
-      "settable": true,
       "desired": {
         "total_count": 0,
         "secrets": []
@@ -692,8 +675,6 @@
       "id": "dependabot.repository_access",
       "endpoint": "/orgs/${org_login}/dependabot/repository-access",
       "method": "GET",
-      "settable": true,
-      "no_paid_plan_required": true,
       "allowed_uninitialized_error": {
         "status": 404,
         "only_when_public_repos_count": 0,
@@ -734,8 +715,6 @@
       "id": "dependabot.open_alert_queue",
       "endpoint": "/orgs/${org_login}/dependabot/alerts?state=open&per_page=100",
       "method": "GET",
-      "settable": false,
-      "no_paid_plan_required": true,
       "source_lines": [
         "$CODEX_HOME/automations/daily-dependabot-alert-review/automation.toml:task-specific Dependabot queue contract",
         "$CODEX_HOME/automations/daily-dependabot-alert-review/dependabot-org-queue-snapshot.py:snapshot schema and alert fields"
@@ -755,8 +734,6 @@
       "id": "dependabot.open_pr_queue",
       "endpoint": "/search/issues?q=org:${org_login}+is:pr+is:open+author:app/dependabot&per_page=100",
       "method": "GET",
-      "settable": false,
-      "no_paid_plan_required": true,
       "source_lines": [
         "$CODEX_HOME/automations/daily-dependabot-alert-review/automation.toml:task-specific Dependabot queue contract",
         "$CODEX_HOME/automations/daily-dependabot-alert-review/dependabot-org-queue-snapshot.py:snapshot schema and PR fields"
@@ -776,13 +753,6 @@
       "id": "code_security.configurations",
       "endpoint": "/orgs/${org_login}/code-security/configurations",
       "method": "GET",
-      "settable": true,
-      "ignored_fields": [
-        "id",
-        "url",
-        "created_at",
-        "updated_at"
-      ],
       "desired": {
         "advanced_security": "enabled",
         "code_scanning_default_setup": "enabled",
@@ -822,7 +792,6 @@
       "id": "code_security.configuration_defaults",
       "endpoint": "/orgs/${org_login}/code-security/configurations/defaults",
       "method": "GET",
-      "settable": true,
       "desired": [],
       "assertions": [
         {
@@ -836,7 +805,6 @@
       "id": "private_registries.configurations",
       "endpoint": "/orgs/${org_login}/private-registries",
       "method": "GET",
-      "settable": true,
       "desired": {
         "total_count": 0,
         "configurations": []
@@ -853,7 +821,6 @@
       "id": "custom_properties.schema",
       "endpoint": "/orgs/${org_login}/properties/schema",
       "method": "GET",
-      "settable": true,
       "desired": [],
       "assertions": [
         {
@@ -867,10 +834,6 @@
       "id": "organization.roles",
       "endpoint": "/orgs/${org_login}/organization-roles",
       "method": "GET",
-      "settable": false,
-      "ignored_fields": [
-        "roles[].id"
-      ],
       "desired": {
         "total_count": 9,
         "roles": [
@@ -973,7 +936,6 @@
       "id": "organization.custom_repository_roles",
       "endpoint": "/orgs/${org_login}/custom-repository-roles",
       "method": "GET",
-      "settable": false,
       "desired": {
         "status": 404,
         "message_contains": "Feature not available"
@@ -1000,7 +962,6 @@
       "id": "organization.security_managers",
       "endpoint": "/orgs/${org_login}/security-managers",
       "method": "GET",
-      "settable": true,
       "desired": [],
       "assertions": [
         {
@@ -1014,7 +975,6 @@
       "id": "organization.blocked_users",
       "endpoint": "/orgs/${org_login}/blocks",
       "method": "GET",
-      "settable": true,
       "desired": [],
       "assertions": [
         {
@@ -1028,7 +988,6 @@
       "id": "organization.interaction_limits",
       "endpoint": "/orgs/${org_login}/interaction-limits",
       "method": "GET",
-      "settable": true,
       "desired": {
         "expires_at": null,
         "limit": null,
@@ -1046,10 +1005,6 @@
       "id": "organization.issue_types",
       "endpoint": "/orgs/${org_login}/issue-types",
       "method": "GET",
-      "settable": true,
-      "ignored_fields": [
-        "[].id"
-      ],
       "desired": [
         {
           "color": "yellow",
@@ -1082,7 +1037,6 @@
       "id": "organization.issue_fields",
       "endpoint": "/orgs/${org_login}/issue-fields",
       "method": "GET",
-      "settable": true,
       "desired": [
         {
           "data_type": "single_select",
@@ -1121,7 +1075,6 @@
       "id": "organization.immutable_releases",
       "endpoint": "/orgs/${org_login}/settings/immutable-releases",
       "method": "GET",
-      "settable": true,
       "desired": {
         "enforced_repositories": "none"
       },
@@ -1138,7 +1091,6 @@
       "id": "organization.immutable_releases_selected_repositories",
       "endpoint": "/orgs/${org_login}/settings/immutable-releases/repositories",
       "method": "GET",
-      "settable": true,
       "desired": {
         "status": 409,
         "message_contains": "Immutable releases not enforced for any repositories"
@@ -1165,7 +1117,6 @@
       "id": "organization.announcement_banner",
       "endpoint": "/orgs/${org_login}/announcement",
       "method": "GET",
-      "settable": true,
       "desired": {
         "status": 404
       },
@@ -1186,7 +1137,6 @@
       "id": "organization.webhooks",
       "endpoint": "/orgs/${org_login}/hooks",
       "method": "GET",
-      "settable": true,
       "desired": [],
       "assertions": [
         {
@@ -1200,7 +1150,6 @@
       "id": "organization.teams",
       "endpoint": "/orgs/${org_login}/teams",
       "method": "GET",
-      "settable": true,
       "desired": [],
       "assertions": [
         {
@@ -1214,7 +1163,6 @@
       "id": "organization.members",
       "endpoint": "/orgs/${org_login}/members",
       "method": "GET",
-      "settable": true,
       "desired": [
         {
           "login": "${owner_login}",
@@ -1234,7 +1182,6 @@
       "id": "organization.outside_collaborators",
       "endpoint": "/orgs/${org_login}/outside_collaborators",
       "method": "GET",
-      "settable": true,
       "desired": [],
       "assertions": [
         {
@@ -1248,7 +1195,6 @@
       "id": "organization.invitations",
       "endpoint": "/orgs/${org_login}/invitations",
       "method": "GET",
-      "settable": true,
       "desired": [],
       "assertions": [
         {
@@ -1262,7 +1208,6 @@
       "id": "organization.failed_invitations",
       "endpoint": "/orgs/${org_login}/failed_invitations",
       "method": "GET",
-      "settable": true,
       "desired": [],
       "assertions": [
         {
@@ -1276,7 +1221,6 @@
       "id": "organization.rulesets",
       "endpoint": "/orgs/${org_login}/rulesets",
       "method": "GET",
-      "settable": false,
       "desired": {
         "status": 403,
         "message_contains": "Upgrade to GitHub Team to enable this feature."
@@ -1303,7 +1247,6 @@
       "id": "organization.personal_access_token_requests",
       "endpoint": "/orgs/${org_login}/personal-access-token-requests",
       "method": "GET",
-      "settable": false,
       "desired": {
         "status": 404
       },
@@ -1324,7 +1267,6 @@
       "id": "codespaces.secrets",
       "endpoint": "/orgs/${org_login}/codespaces/secrets",
       "method": "GET",
-      "settable": true,
       "desired": {
         "status": 404
       },
@@ -1345,7 +1287,6 @@
       "id": "hosted_compute.network_configurations",
       "endpoint": "/orgs/${org_login}/settings/network-configurations",
       "method": "GET",
-      "settable": false,
       "desired": {
         "status": 404
       },

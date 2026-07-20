@@ -6,7 +6,7 @@
   "deterministic_contract": "github-org-deterministic-contract.json",
   "description": "Organization checks whose outcome depends on intent, least privilege, security ownership, browser confirmation, or paid-feature classification.",
   "evidence": {
-    "command": "python skills/ceratops-gh-repo-lifecycle/scripts/github-collect-nd-evidence.py --surface org --org ORG --json",
+    "command": "python -m github_contract_engine collect --surface org --org ORG --json",
     "notes": [
       "Browser confirmation is required only when API evidence is missing, ambiguous, plan-limited, or disputed."
     ]

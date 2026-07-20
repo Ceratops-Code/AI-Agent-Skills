@@ -10,7 +10,7 @@
   "free_only": true,
   "mutates": false,
   "evidence": {
-    "command": "python skills/ceratops-gh-repo-lifecycle/scripts/github-validate-pr-readiness-contract.py --pr NUMBER_OR_URL --json [--allow-admin-review-bypass]",
+    "command": "python -m github_pr_workflow validate --pr NUMBER_OR_URL --cwd PATH --json [--allow-admin-review-bypass]",
     "fields": [
       "number",
       "url",

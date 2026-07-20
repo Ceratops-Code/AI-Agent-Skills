@@ -11,11 +11,11 @@ credential-bound fixes precisely.
 
 ### Script Bundle
 
-- (D) Full GitHub, code, and artifact contract check: `python
-  skills/ceratops-gh-repo-lifecycle/scripts/github-validate-repo-artifact-contract.py
+- (D) Full GitHub, code, and artifact contract check, run from the lifecycle
+  skill's `scripts` folder: `python -m github_contract_engine validate repo
   --repo OWNER/REPO --surface all --subset health --local-repo-path PATH`
-- (D) Optional org contract check when org posture is in scope: `python
-  skills/ceratops-gh-repo-lifecycle/scripts/github-validate-org-deterministic-contract.py
+- (D) Optional org contract check when org posture is in scope, run from the
+  same folder: `python -m github_contract_engine validate org
   --org ORG`
 - (D) Add `--summary-json --levels ERROR,WARN,NEEDS_AI_AGENT_REVIEW`, `--json`,
   `--check-id`, or a narrower `--subset` when another step needs structured or
@@ -109,7 +109,7 @@ Infer missing inputs from live repo state and local files before asking.
 ### Completion Gate
 
 - Any broad current-health claim is backed by
-  `github-validate-repo-artifact-contract.py` or equivalent command-result
+  `python -m github_contract_engine validate repo` or equivalent command-result
   evidence.
 - Actions hardening claims are backed by a fresh local workflow scan when repo
   files were available.

@@ -1,5 +1,4 @@
 import contextlib
-import importlib.util
 import io
 import json
 import pathlib
@@ -16,7 +15,8 @@ SCRIPTS = ROOT / "skills" / "ceratops-gh-repo-lifecycle" / "scripts"
 REFERENCES = SCRIPTS.parent / "references" / "contracts"
 sys.path.insert(0, str(SCRIPTS))
 
-import validator_levels  # noqa: E402
+from github_contract_engine import levels  # noqa: E402
+from github_contract_engine import schema_validation  # noqa: E402
 from github_contract_engine import github_api  # noqa: E402
 from github_contract_engine.collectors import registries  # noqa: E402
 from github_contract_engine.collectors.local_repository import (  # noqa: E402
@@ -47,20 +47,7 @@ from github_contract_engine.format_report import (  # noqa: E402
 )
 from github_contract_engine.github_api import ApiResult, load_json  # noqa: E402
 from github_contract_engine.remediations import HANDLERS  # noqa: E402
-
-
-def load_script_module(name: str, filename: str):
-    spec = importlib.util.spec_from_file_location(name, SCRIPTS / filename)
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[name] = module
-    spec.loader.exec_module(module)
-    return module
-
-
-pr_validator = load_script_module(
-    "pr_validator", "github-validate-pr-readiness-contract.py"
-)
+from github_pr_workflow import readiness as pr_validator  # noqa: E402
 
 
 class GHContractStateEngineTests(unittest.TestCase):
@@ -79,10 +66,12 @@ class GHContractStateEngineTests(unittest.TestCase):
         }
 
     def test_levels_use_explicit_agent_review_name(self):
-        levels = validator_levels.parse_levels("ERROR,WARN,NEEDS_AI_AGENT_REVIEW")
-        self.assertEqual(levels, ["ERROR", "WARN", "NEEDS_AI_AGENT_REVIEW"])
+        selected_levels = levels.parse_levels("ERROR,WARN,NEEDS_AI_AGENT_REVIEW")
+        self.assertEqual(
+            selected_levels, ["ERROR", "WARN", "NEEDS_AI_AGENT_REVIEW"]
+        )
         with self.assertRaises(ValueError):
-            validator_levels.parse_levels("NEEDS_" + "REVIEW")
+            levels.parse_levels("NEEDS_" + "REVIEW")
 
     def test_local_path_scan_distinguishes_regex_syntax_from_windows_paths(self):
         rule = next(
@@ -597,12 +586,14 @@ class GHContractStateEngineTests(unittest.TestCase):
 
     def test_contract_entrypoints_use_sanitized_json_writer(self):
         entrypoints = (
-            "github-collect-nd-evidence.py",
-            "github-validate-org-deterministic-contract.py",
-            "github-validate-repo-artifact-contract.py",
+            "collect_non_deterministic_evidence.py",
+            "organization_validator.py",
+            "repository_validator.py",
         )
         for name in entrypoints:
-            text = (SCRIPTS / name).read_text(encoding="utf-8")
+            text = (SCRIPTS / "github_contract_engine" / name).read_text(
+                encoding="utf-8"
+            )
             self.assertIn("write_json(", text)
             self.assertNotIn("print(json.dumps(", text)
 
@@ -623,12 +614,50 @@ class GHContractStateEngineTests(unittest.TestCase):
 
     def test_consistency_validator_passes(self):
         process = subprocess.run(
-            [sys.executable, str(SCRIPTS / "validate-gh-contracts-consistency.py")],
-            cwd=ROOT,
+            [
+                sys.executable,
+                "-m",
+                "github_contract_engine",
+                "validate",
+                "consistency",
+            ],
+            cwd=SCRIPTS,
             text=True,
             capture_output=True,
         )
         self.assertEqual(process.returncode, 0, process.stdout + process.stderr)
+        schema = load_json(
+            SCRIPTS.parent
+            / "references"
+            / "schemas"
+            / "state-contract.schema.json"
+        )
+        misspelled = json.loads(json.dumps(self.contracts["repo"]))
+        assertion = misspelled["checks"][0]["assertions"][0]
+        assertion["operatr"] = assertion.pop("operator")
+        errors = schema_validation.validate_contract_document(
+            misspelled,
+            schema,
+            document_name="misspelled.json",
+            schema_name="state-contract.schema.json",
+        )
+        self.assertTrue(
+            any(
+                "operatr" in error and "/checks/0/assertions/0" in error
+                for error in errors
+            )
+        )
+        inert = json.loads(json.dumps(self.contracts["repo"]))
+        inert["checks"][0]["settable"] = True
+        inert_errors = schema_validation.validate_contract_document(
+            inert,
+            schema,
+            document_name="inert.json",
+            schema_name="state-contract.schema.json",
+        )
+        self.assertTrue(
+            any("settable" in error and "/checks/0" in error for error in inert_errors)
+        )
 
     def test_pr_readiness_emit_errors_on_error_level(self):
         finding = pr_validator.Finding(
@@ -643,19 +672,35 @@ class GHContractStateEngineTests(unittest.TestCase):
         self.assertEqual(json.loads(stream.getvalue())["counts"]["ERROR"], 1)
 
     def test_merge_helper_revalidates_after_review_wait(self):
-        text = (SCRIPTS / "validate-and-merge-pr.ps1").read_text(encoding="utf-8")
-        readiness_call = (
-            'Invoke-QuietNative -FilePath "python" -Arguments $readinessArgs'
+        text = (SCRIPTS / "github_pr_workflow" / "merge.py").read_text(
+            encoding="utf-8"
         )
+        readiness_call = "    _validate_readiness("
         positions = [
             index
             for index in range(len(text))
             if text.startswith(readiness_call, index)
         ]
         self.assertEqual(len(positions), 2)
-        self.assertLess(positions[0], text.index("$reviewGateScript,"))
-        self.assertLess(text.index("$reviewGateScript,"), positions[1])
-        self.assertLess(positions[1], text.index('$ghArgs = @("pr", "merge"'))
+        wait_position = text.index("review = codex_review.wait_for_codex_threads(")
+        self.assertLess(positions[0], wait_position)
+        self.assertLess(wait_position, positions[1])
+        self.assertLess(positions[1], text.index('gh_args = ["gh", "pr", "merge"'))
+
+        sync_text = (SCRIPTS / "github_pr_workflow" / "sync.py").read_text(
+            encoding="utf-8"
+        )
+        first_clean = sync_text.index('_assert_clean(repo_root, "before syncing main")')
+        fetch = sync_text.index('"fetch", "--prune", args.remote_name')
+        switch = sync_text.index('"switch", args.main_branch')
+        fast_forward = sync_text.index('"--ff-only"')
+        second_clean = sync_text.index('_assert_clean(repo_root, f"after fast-forwarding')
+        align = sync_text.index('"branch", "-f", branch, args.main_branch')
+        self.assertLess(first_clean, fetch)
+        self.assertLess(fetch, switch)
+        self.assertLess(switch, fast_forward)
+        self.assertLess(fast_forward, second_clean)
+        self.assertLess(second_clean, align)
 
 
 if __name__ == "__main__":
