@@ -7,10 +7,9 @@ description: Propose advisory-only improvements for existing Codex or Ceratops s
 
 ## Goal
 
-Propose the smallest clear skill update that improves an existing skill's
-structure, trigger behavior, workflow, constraints, output contract, or done
-criteria without changing its intended purpose unless the user explicitly
-requests that behavior change.
+Propose clear, targeted skill updates for every material issue found within the
+requested scope without changing the skill's intended purpose unless the user
+explicitly requests that behavior change.
 
 ## Context
 
