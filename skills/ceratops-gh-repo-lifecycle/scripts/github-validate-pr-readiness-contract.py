@@ -104,15 +104,14 @@ def default_contract_path() -> pathlib.Path:
 
     candidates = [
         pathlib.Path.cwd() / "github-pr-readiness-deterministic-contract.json",
-        pathlib.Path.cwd() / "skills" / "ceratops-gh-repo-lifecycle" / "references" / "github-pr-readiness-deterministic-contract.json",
-        ROOT / "skills" / "ceratops-gh-repo-lifecycle" / "references" / "github-pr-readiness-deterministic-contract.json",
-        SKILL_DIR / "references" / "github-pr-readiness-deterministic-contract.json",
-        SCRIPT_DIR / "github-pr-readiness-deterministic-contract.json",
+        pathlib.Path.cwd() / "skills" / "ceratops-gh-repo-lifecycle" / "references" / "contracts" / "github-pr-readiness-deterministic-contract.json",
+        ROOT / "skills" / "ceratops-gh-repo-lifecycle" / "references" / "contracts" / "github-pr-readiness-deterministic-contract.json",
+        SKILL_DIR / "references" / "contracts" / "github-pr-readiness-deterministic-contract.json",
     ]
     for candidate in candidates:
         if candidate.is_file():
             return candidate
-    return SKILL_DIR / "references" / "github-pr-readiness-deterministic-contract.json"
+    return SKILL_DIR / "references" / "contracts" / "github-pr-readiness-deterministic-contract.json"
 
 
 def load_contract(path: pathlib.Path) -> dict[str, Any]:

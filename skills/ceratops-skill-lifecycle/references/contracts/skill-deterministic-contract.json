@@ -1,0 +1,208 @@
+{
+  "contract_format_version": 1,
+  "kind": "skill_design_contract",
+  "name": "ceratops_skill_deterministic_contract",
+  "captured_on": "2026-05-14",
+  "source_files": [
+    {
+      "path": "$AI_AGENT_SKILLS_ROOT/skills/ceratops-skill-lifecycle/references/skill-source-docs.json",
+      "lines": "source-doc registry, skill standards, and installed skill references"
+    },
+    {
+      "path": "$AI_AGENT_SKILLS_ROOT/skills/ceratops-skill-lifecycle/scripts/validation/validate-skills-consistency.py",
+      "lines": "deterministic skill source, metadata, runtime, contract, and portability checks"
+    },
+    {
+      "path": "$AI_AGENT_SKILLS_ROOT/templates/skill-sections.json",
+      "lines": "shared section and runtime payload ownership"
+    },
+    {
+      "path": "$AI_AGENT_SKILLS_ROOT/AGENTS.md",
+      "lines": "skill maintenance and source-of-truth rules"
+    }
+  ],
+  "parameters": {
+    "skill_name": {
+      "type": "string",
+      "required": true
+    },
+    "skill_dir": {
+      "type": "string",
+      "required": false,
+      "default_from": "skills/${skill_name}"
+    },
+    "validation_mode": {
+      "type": "string",
+      "required": false,
+      "default": "full",
+      "allowed": [
+        "sections",
+        "full",
+        "governance"
+      ]
+    }
+  },
+  "required_scopes": [
+    "skill"
+  ],
+  "source_docs_ref": "skill-source-docs.json",
+  "source_doc_scopes": [
+    "skill"
+  ],
+  "non_deterministic_review_file": "skill-nondeterministic-contract.json",
+  "remediation_policy": {
+    "default": "report_only",
+    "apply_flag": null,
+    "auto_apply_check_ids": [],
+    "ai_agent_check_ids": [
+      "skill.frontmatter_and_layout",
+      "skill.metadata_alignment",
+      "skill.runtime_payload_portability",
+      "skill.shared_section_generation",
+      "skill.resource_layout",
+      "skill.public_doc_alignment",
+      "skill.private_path_and_secret_absence",
+      "skill.contract_reference_alignment",
+      "skill.governance_consistency_audit"
+    ],
+    "destructive_or_irreversible": "always_report_only"
+  },
+  "execution": {
+    "deterministic_helper": "skills/ceratops-skill-lifecycle/scripts/validation/validate-skills-consistency.py",
+    "full_validation_command": "python skills/ceratops-skill-lifecycle/scripts/validation/validate-skills-consistency.py --mode full",
+    "governance_validation_command": "python skills/ceratops-skill-lifecycle/scripts/validation/validate-skills-consistency.py --mode governance",
+    "section_validation_command": "python skills/ceratops-skill-lifecycle/scripts/validation/validate-skills-consistency.py --mode sections",
+    "result_contract": "Exit 0 with an ok line when selected deterministic checks pass; nonzero with line-specific errors when they fail."
+  },
+  "checks": [
+    {
+      "id": "skill.frontmatter_and_layout",
+      "category": "source",
+      "deterministic_evidence": [
+        "skill directory name",
+        "source SKILL.md frontmatter",
+        "source SKILL.md section and subsection structure"
+      ],
+      "pass_condition": "Source skill frontmatter contains only name and description, frontmatter name matches the directory, description is present, body is nonempty, the body contains a Markdown H2 section structure, and Boundaries and Output Contract subsections are present.",
+      "source_lines": [
+        "skills/ceratops-skill-lifecycle/scripts/validation/validate-skills-consistency.py:parse_frontmatter",
+        "skills/ceratops-skill-lifecycle/scripts/validation/validate-skills-consistency.py:check_skill"
+      ]
+    },
+    {
+      "id": "skill.metadata_alignment",
+      "category": "metadata",
+      "deterministic_evidence": [
+        "skills/<skill-name>/agents/openai.yaml",
+        "source SKILL.md description"
+      ],
+      "pass_condition": "OpenAI interface metadata exists, default_prompt names the skill, display name resembles the skill identity, short description overlaps the trigger description, and icon fields use the runtime-local shared Ceratops icon path.",
+      "source_lines": [
+        "skills/ceratops-skill-lifecycle/scripts/validation/validate-skills-consistency.py:parse_openai_interface",
+        "skills/ceratops-skill-lifecycle/scripts/validation/validate-skills-consistency.py:display_name_sane",
+        "skills/ceratops-skill-lifecycle/scripts/validation/validate-skills-consistency.py:short_description_relevant",
+        "skills/ceratops-skill-lifecycle/scripts/validation/validate-skills-consistency.py:check_skill"
+      ]
+    },
+    {
+      "id": "skill.shared_section_generation",
+      "category": "runtime",
+      "deterministic_evidence": [
+        "templates/skill-sections.json",
+        "templates/sections/*",
+        "source SKILL.md"
+      ],
+      "pass_condition": "Every Ceratops skill has a manifest assignment including core, source SKILL.md files remain delta-only, assigned shared sections render, and source files do not contain generated runtime shared-section blocks.",
+      "source_lines": [
+        "skills/ceratops-skill-lifecycle/scripts/validation/validate-skills-consistency.py:rendered_sections_block",
+        "skills/ceratops-skill-lifecycle/scripts/validation/validate-skills-consistency.py:check_section_sources",
+        "skills/ceratops-skill-lifecycle/scripts/validation/validate-skills-consistency.py:check_skill"
+      ]
+    },
+    {
+      "id": "skill.resource_layout",
+      "category": "source",
+      "deterministic_evidence": [
+        "skill top-level files and directories",
+        "skills/<skill-name>/references/"
+      ],
+      "pass_condition": "Each skill folder contains `SKILL.md` as the only top-level file, uses only supported top-level resource directories (`agents/`, `assets/`, `scripts/`, `references/`), and keeps `references/` files one level deep.",
+      "source_lines": [
+        "skills/ceratops-skill-lifecycle/scripts/validation/validate-skills-consistency.py:check_resource_layout"
+      ]
+    },
+    {
+      "id": "skill.runtime_payload_portability",
+      "category": "runtime",
+      "deterministic_evidence": [
+        "templates/skill-sections.json runtime_payloads",
+        "declared payload paths"
+      ],
+      "pass_condition": "Runtime payload declarations point only to existing repo-relative paths or matching globs and do not use absolute paths or parent-directory traversal.",
+      "source_lines": [
+        "skills/ceratops-skill-lifecycle/scripts/validation/validate-skills-consistency.py:check_runtime_payloads"
+      ]
+    },
+    {
+      "id": "skill.public_doc_alignment",
+      "category": "docs",
+      "deterministic_evidence": [
+        "README.md skill table",
+        "skills/<skill-name>/SKILL.md"
+      ],
+      "pass_condition": "Every source skill has a README skill table row and every README Ceratops skill row points to an existing source skill directory.",
+      "source_lines": [
+        "skills/ceratops-skill-lifecycle/scripts/validation/validate-skills-consistency.py:readme_skill_rows",
+        "skills/ceratops-skill-lifecycle/scripts/validation/validate-skills-consistency.py:check_skill"
+      ]
+    },
+    {
+      "id": "skill.private_path_and_secret_absence",
+      "category": "safety",
+      "deterministic_evidence": [
+        "repo text files"
+      ],
+      "pass_condition": "Repo-tracked text files do not contain high-confidence secret patterns or user-local absolute filesystem paths.",
+      "source_lines": [
+        "skills/ceratops-skill-lifecycle/scripts/validation/validate-skills-consistency.py:SECRET_PATTERNS",
+        "skills/ceratops-skill-lifecycle/scripts/validation/validate-skills-consistency.py:check_secrets"
+      ]
+    },
+    {
+      "id": "skill.contract_reference_alignment",
+      "category": "contracts",
+      "deterministic_evidence": [
+        "skills/ceratops-skill-lifecycle/references/contracts/skill-deterministic-contract.json",
+        "skills/ceratops-skill-lifecycle/references/contracts/skill-nondeterministic-contract.json",
+        "skill-source-docs.json",
+        "skills/ceratops-skill-lifecycle/references/skills-contract-review.md",
+        "README.md"
+      ],
+      "pass_condition": "The skill deterministic contract, non-deterministic contract, skill source-doc registry, skill-contract action reference, and contract-structure docs reference the same Ceratops skill-design review surface without making routine skill validation run the non-deterministic best-practice review.",
+      "source_lines": [
+        "skill-source-docs.json:docs scope skill",
+        "skill-source-docs.json:reference_skills",
+        "skills/ceratops-skill-lifecycle/references/skills-contract-review.md:References",
+        "README.md:Contracts"
+      ]
+    },
+    {
+      "id": "skill.governance_consistency_audit",
+      "category": "governance",
+      "deterministic_evidence": [
+        "source skill identities",
+        "installed managed runtime manifests",
+        "validation command surfaces",
+        "skill deterministic and nondeterministic contract mappings",
+        "skill lifecycle action command snippets"
+      ],
+      "pass_condition": "Explicit governance validation checks active skill identity drift, rename completeness, current-source skill references, generated runtime shared-section integrity, validation command-surface alignment, skill deterministic remediation-policy classification, skill lifecycle action scope command drift, and compact validator success output without adding one-time stale-term detectors.",
+      "source_lines": [
+        "skills/ceratops-skill-lifecycle/scripts/validation/validate-skills-consistency.py:check_governance_consistency",
+        "skills/ceratops-skill-lifecycle/scripts/validation/validate-skills-consistency.py:check_skill_contract_remediation_policy",
+        "skills/ceratops-skill-lifecycle/references/skills-contract-review.md:Goal",
+        "README.md:Validate"
+      ]
+    }
+  ]
+}

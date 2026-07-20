@@ -68,7 +68,7 @@ without making that catalog a Ceratops contract surface.
 | `skills/ceratops-gh-repo-lifecycle/scripts/github-validate-pr-readiness-contract.py` | Called before PR merge decisions to validate the live PR readiness contract. |
 | `skills/ceratops-gh-repo-lifecycle/scripts/github-codex-review-gate.py` | Called before PR merge decisions to wait for or resolve active Codex review threads. |
 | `skills/ceratops-skill-lifecycle/scripts/validation/validate-skills-consistency.py` | Skill-lifecycle validator for section, full, and governance consistency checks. |
-| `skills/ceratops-gh-repo-lifecycle/scripts/github-validate-org-contract.py` | Called by org setup, org health, and standards review work when org settings need a bundled deterministic audit. |
+| `skills/ceratops-gh-repo-lifecycle/scripts/github-validate-org-deterministic-contract.py` | Called by org setup, org health, and standards review work when org settings need a bundled deterministic audit. |
 | `skills/ceratops-gh-repo-lifecycle/scripts/github-validate-repo-artifact-contract.py` | Called by repo create, repo health, dependency, and standards review work when repo settings, code, or artifact posture needs a deterministic audit. |
 | `skills/ceratops-gh-repo-lifecycle/scripts/github-collect-nd-evidence.py` | Called when non-deterministic org, repo, code, or artifact checks need one bundled evidence payload for review-owner classification. |
 | `skills/ceratops-skill-lifecycle/scripts/stage-skill-release-branch.ps1` | Called by skill change-promotion to prepare `release/local`, merge reviewed branches, validate, clean merged work, and emit compact ready/not-ready JSON. |
@@ -87,35 +87,35 @@ The contract structure is split by the owning lifecycle skill:
 - `skills/ceratops-gh-repo-lifecycle/references/contract-source-docs.json`
   records official source documents and reference repositories used by GitHub,
   repo, PR readiness, code, and artifact contracts.
-- `skills/ceratops-gh-repo-lifecycle/references/github-org-deterministic-contract.json`
+- `skills/ceratops-gh-repo-lifecycle/references/contracts/github-org-deterministic-contract.json`
   defines deterministic organization settings, policy, identity, security,
   Dependabot, and default-logo/custom-logo checks.
-- `skills/ceratops-gh-repo-lifecycle/references/github-repo-deterministic-contract.json`
+- `skills/ceratops-gh-repo-lifecycle/references/contracts/github-repo-deterministic-contract.json`
   defines deterministic live GitHub repository settings, security,
   branch/ruleset, Actions policy, queues, releases, and stale GitHub state
   checks.
-- `skills/ceratops-gh-repo-lifecycle/references/github-pr-readiness-deterministic-contract.json`
+- `skills/ceratops-gh-repo-lifecycle/references/contracts/github-pr-readiness-deterministic-contract.json`
   defines deterministic live PR readiness checks used before merge and
   auto-merge decisions.
-- `skills/ceratops-gh-repo-lifecycle/references/code-repo-deterministic-contract.json`
+- `skills/ceratops-gh-repo-lifecycle/references/contracts/code-repo-deterministic-contract.json`
   defines deterministic repository-content checks for files, workflow text,
   Dependabot config, CODEOWNERS, local git state, local path references, and
   secret-pattern scans.
-- `skills/ceratops-gh-repo-lifecycle/references/artifact-deterministic-contract.json`
+- `skills/ceratops-gh-repo-lifecycle/references/contracts/artifact-deterministic-contract.json`
   defines external artifact checks for PyPI, npm, DockerHub or OCI registries,
   GitHub Container Registry, GitHub releases, docs sites, and other package
   registries.
 - `skills/ceratops-skill-lifecycle/references/skill-source-docs.json` records
   official skill-standard documents and installed OpenAI skill references used
   by skill-design contracts.
-- `skills/ceratops-skill-lifecycle/references/skill-deterministic-contract.json`
+- `skills/ceratops-skill-lifecycle/references/contracts/skill-deterministic-contract.json`
   defines deterministic Ceratops skill checks for source structure, resource
   layout, metadata, shared-section generation, runtime payloads, public docs,
   portability, and contract presence.
-- `skills/ceratops-gh-repo-lifecycle/references/*-nondeterministic-contract.md`
+- `skills/ceratops-gh-repo-lifecycle/references/contracts/*-nondeterministic-contract.json`
   and
-  `skills/ceratops-skill-lifecycle/references/*-nondeterministic-contract.md`
-  files capture checks that need intent judgment, prose review, manual browser
+  `skills/ceratops-skill-lifecycle/references/contracts/*-nondeterministic-contract.json`
+  files capture checks that need intent judgment, prose review, browser
   confirmation, or current-doc interpretation after bundled evidence is
   collected.
 
@@ -123,7 +123,7 @@ Run deterministic checks with bundled selections instead of one command per
 setting:
 
 ```powershell
-python .\skills\ceratops-gh-repo-lifecycle\scripts\github-validate-org-contract.py --org ORG --subset all
+python .\skills\ceratops-gh-repo-lifecycle\scripts\github-validate-org-deterministic-contract.py --org ORG --subset all
 python .\skills\ceratops-gh-repo-lifecycle\scripts\github-validate-repo-artifact-contract.py --repo OWNER/REPO --surface repo --subset settings --local-repo-path .
 python .\skills\ceratops-gh-repo-lifecycle\scripts\github-validate-repo-artifact-contract.py --repo OWNER/REPO --surface code --subset content --local-repo-path .
 python .\skills\ceratops-gh-repo-lifecycle\scripts\github-validate-repo-artifact-contract.py --repo OWNER/REPO --select repo:dependency --select code:dependency --local-repo-path .
@@ -136,7 +136,7 @@ python .\skills\ceratops-skill-lifecycle\scripts\validation\validate-skills-cons
 ```
 
 The organization and repository/artifact commands are thin entrypoints over the
-shared `scripts/github_contract/` state engine. `compose_desired_state.py`
+shared `scripts/github_contract_engine/` state engine. `compose_desired_state.py`
 selects and parameterizes the JSON contract assertions;
 `collect_observed_states.py` calls reusable collectors once and composes one
 observed-states JSON document; `compare_states.py` applies generic operators;
@@ -222,11 +222,11 @@ A successful mutation command is enough evidence for that exact mutation. Re-run
 a validator only for drift/audit work, uncertain state, broader closure claims,
 or checks not already proven by the successful command.
 
-`skills/ceratops-gh-repo-lifecycle/references/code-comment-nondeterministic-contract.md`
+`skills/ceratops-gh-repo-lifecycle/references/contracts/code-comment-nondeterministic-contract.json`
 is a non-deterministic local review rubric for comment sufficiency. It avoids
 repeated live research during code-consistency audits and is not part of routine
 ongoing-work validation.
-`skills/ceratops-skill-lifecycle/references/skill-nondeterministic-contract.md`
+`skills/ceratops-skill-lifecycle/references/contracts/skill-nondeterministic-contract.json`
 is the local review rubric for high-quality skill design. It uses installed
 OpenAI skills from `$CODEX_HOME/plugins/cache/` as pattern examples only and
 keeps durable Ceratops obligations in the deterministic skill contract, shared
@@ -330,10 +330,11 @@ python .\skills\ceratops-skill-lifecycle\scripts\validation\validate-skills-cons
 
 Run helper `--help` smoke checks only for touched helper scripts or touched
 helper claims. Full and governance validation are for explicit broad
-verification, not every regular skill update. With working GitHub auth, use
-`skills/ceratops-gh-repo-lifecycle/scripts/github-validate-org-contract.py` and
-`skills/ceratops-gh-repo-lifecycle/scripts/github-validate-repo-artifact-contract.py`
-for deterministic GitHub, code, and artifact contract checks.
+verification, not every regular skill update. With working GitHub auth, run
+`github-validate-org-deterministic-contract.py` and
+`github-validate-repo-artifact-contract.py` from
+`skills/ceratops-gh-repo-lifecycle/scripts/` for deterministic GitHub, code,
+and artifact contract checks.
 
 ## Releases
 

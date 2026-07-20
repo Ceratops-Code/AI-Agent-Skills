@@ -22,9 +22,10 @@ and deterministic governance checks owned by `ceratops-skill-lifecycle`.
 ### References
 
 - Skill source-doc registry: `references/skill-source-docs.json`
-- Skill deterministic contract: `references/skill-deterministic-contract.json`
+- Skill deterministic contract:
+  `references/contracts/skill-deterministic-contract.json`
 - Skill non-deterministic contract:
-  `references/skill-nondeterministic-contract.md`
+  `references/contracts/skill-nondeterministic-contract.json`
 - Shared-section manifest: `templates/skill-sections.json`
 - Skill consistency validator:
   `scripts/validation/validate-skills-consistency.py`

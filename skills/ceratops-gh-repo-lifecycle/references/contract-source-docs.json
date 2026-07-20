@@ -16,6 +16,14 @@
   },
   "docs": [
     {
+      "id": "github.rest.api_versions",
+      "scope": [
+        "repo",
+        "org"
+      ],
+      "url": "https://docs.github.com/en/rest/about-the-rest-api/api-versions?apiVersion=2026-03-10"
+    },
+    {
       "id": "github.rest.orgs",
       "scope": [
         "org"
@@ -108,6 +116,22 @@
         "org"
       ],
       "url": "https://docs.github.com/en/rest/actions/permissions"
+    },
+    {
+      "id": "github.actions.workflow_execution_protections",
+      "scope": [
+        "repo",
+        "org"
+      ],
+      "url": "https://docs.github.com/en/organizations/managing-organization-settings/actions-policies/workflow-execution-protections"
+    },
+    {
+      "id": "github.rest.actions.oidc",
+      "scope": [
+        "repo",
+        "org"
+      ],
+      "url": "https://docs.github.com/en/rest/actions/oidc?apiVersion=2026-03-10"
     },
     {
       "id": "github.enterprise.actions.fork_pr_workflows",
@@ -244,9 +268,11 @@
     {
       "id": "github.actions.oidc",
       "scope": [
+        "repo",
+        "org",
         "artifact"
       ],
-      "url": "https://docs.github.com/en/actions/concepts/security/openid-connect"
+      "url": "https://docs.github.com/en/actions/reference/security/oidc"
     },
     {
       "id": "github.actions.artifact_attestations",

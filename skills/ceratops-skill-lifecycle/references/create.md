@@ -18,9 +18,9 @@ preview unless the user explicitly opts out.
   declarations, docs, runtime generation, validation scripts, and helper-runtime
   claims.
 - Which applicable checks from
-  `skills/ceratops-skill-lifecycle/references/skill-deterministic-contract.json`
+  `skills/ceratops-skill-lifecycle/references/contracts/skill-deterministic-contract.json`
   and
-  `skills/ceratops-skill-lifecycle/references/skill-nondeterministic-contract.md`
+  `skills/ceratops-skill-lifecycle/references/contracts/skill-nondeterministic-contract.json`
   shape the new skill.
 - Which Ceratops-specific surfaces are absent in a non-Ceratops repo and should
   be skipped.

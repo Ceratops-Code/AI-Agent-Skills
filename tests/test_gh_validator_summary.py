@@ -13,40 +13,40 @@ from typing import Any
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "skills" / "ceratops-gh-repo-lifecycle" / "scripts"
-REFERENCES = SCRIPTS.parent / "references"
+REFERENCES = SCRIPTS.parent / "references" / "contracts"
 sys.path.insert(0, str(SCRIPTS))
 
 import validator_levels  # noqa: E402
-from github_contract import github_api  # noqa: E402
-from github_contract.collectors import registries  # noqa: E402
-from github_contract.collectors.local_repository import (  # noqa: E402
+from github_contract_engine import github_api  # noqa: E402
+from github_contract_engine.collectors import registries  # noqa: E402
+from github_contract_engine.collectors.local_repository import (  # noqa: E402
     classify_repository,
     collect_local_repository,
 )
-from github_contract.collectors.repository import (  # noqa: E402
+from github_contract_engine.collectors.repository import (  # noqa: E402
     stale_branch_candidates,
     stale_pull_request_candidates,
     stale_release_candidates,
 )
-from github_contract.collect_observed_states import (  # noqa: E402
+from github_contract_engine.collect_observed_states import (  # noqa: E402
     _fetch_all,
     state_producer,
 )
-from github_contract.compare_states import (  # noqa: E402
+from github_contract_engine.compare_states import (  # noqa: E402
     OPERATORS,
     compare_states,
     condition_matches,
     pointer_get,
 )
-from github_contract.compose_desired_state import compose_desired_state, repo_subset_ids  # noqa: E402
-from github_contract.format_report import (  # noqa: E402
+from github_contract_engine.compose_desired_state import compose_desired_state, repo_subset_ids  # noqa: E402
+from github_contract_engine.format_report import (  # noqa: E402
     build_report,
     build_summary_report,
     sanitize_for_output,
     write_json,
 )
-from github_contract.github_api import ApiResult, load_json  # noqa: E402
-from github_contract.remediations import HANDLERS  # noqa: E402
+from github_contract_engine.github_api import ApiResult, load_json  # noqa: E402
+from github_contract_engine.remediations import HANDLERS  # noqa: E402
 
 
 def load_script_module(name: str, filename: str):
@@ -141,7 +141,7 @@ class GHContractStateEngineTests(unittest.TestCase):
             {"owner": "owner", "repo": "repo", "default_branch": "main"},
             repo_subset_ids(self.contracts, "all"),
         )
-        self.assertEqual(len(desired_state["rules"]), 74)
+        self.assertEqual(len(desired_state["rules"]), 75)
         self.assertTrue(all(rule["assertions"] for rule in desired_state["rules"]))
         self.assertTrue(
             any(
@@ -151,7 +151,7 @@ class GHContractStateEngineTests(unittest.TestCase):
             )
         )
 
-    def test_dependency_review_request_uses_visibility_and_capability(self):
+    def test_dependency_review_request_uses_visibility_and_owner_plan(self):
         desired_state = compose_desired_state(
             self.paths,
             {"owner": "owner", "repo": "repo", "default_branch": "main"},
@@ -164,12 +164,12 @@ class GHContractStateEngineTests(unittest.TestCase):
 
         cases = (
             ("private", None, 0),
-            ("private", {"code_security": {"status": "enabled"}}, 1),
-            ("private", {"advanced_security": {"status": "enabled"}}, 1),
-            ("internal", None, 1),
-            ("public", None, 1),
+            ("private", "free", 0),
+            ("private", "pro", 1),
+            ("internal", "free", 1),
+            ("public", "free", 1),
         )
-        for visibility, security_and_analysis, expected_call_count in cases:
+        for visibility, owner_plan, expected_call_count in cases:
             calls: list[str] = []
 
             def fake_run_gh_api(method, endpoint, *, paginate=False):
@@ -182,14 +182,20 @@ class GHContractStateEngineTests(unittest.TestCase):
                         data={
                             "archived": False,
                             "default_branch": "main",
-                            "security_and_analysis": security_and_analysis,
                             "visibility": visibility,
                         },
+                    )
+                if endpoint == "/orgs/owner":
+                    return ApiResult(
+                        True,
+                        method,
+                        endpoint,
+                        data={"plan": {"name": owner_plan}} if owner_plan else {},
                     )
                 return ApiResult(True, method, endpoint, data={})
 
             with mock.patch(
-                "github_contract.collect_observed_states.run_gh_api",
+                "github_contract_engine.collect_observed_states.run_gh_api",
                 side_effect=fake_run_gh_api,
             ):
                 _fetch_all(desired_state)
@@ -592,7 +598,7 @@ class GHContractStateEngineTests(unittest.TestCase):
     def test_contract_entrypoints_use_sanitized_json_writer(self):
         entrypoints = (
             "github-collect-nd-evidence.py",
-            "github-validate-org-contract.py",
+            "github-validate-org-deterministic-contract.py",
             "github-validate-repo-artifact-contract.py",
         )
         for name in entrypoints:

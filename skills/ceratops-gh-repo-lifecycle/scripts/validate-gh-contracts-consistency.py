@@ -1,69 +1,68 @@
 #!/usr/bin/env python3
-"""Validate deterministic contract schema, implementation coverage, and ND mappings."""
+"""Validate GitHub contract structure and implementation coverage."""
 
 from __future__ import annotations
 
 import argparse
-import ast
 import fnmatch
 import json
 import pathlib
 import re
 from typing import Any
 
-from github_contract.collect_observed_states import PRODUCER_REGISTRY, state_producer
-from github_contract.collectors.local_repository import (
+from github_contract_engine.collect_observed_states import PRODUCER_REGISTRY, state_producer
+from github_contract_engine.collectors.local_repository import (
     ARTIFACT_DETECTOR_KEYS,
     ARTIFACT_DETECTOR_WHEN,
     COLLECTION_KEYS as LOCAL_COLLECTION_KEYS,
 )
-from github_contract.collectors.repository import (
+from github_contract_engine.collectors.repository import (
     COLLECTION_KEYS as REPO_COLLECTION_KEYS,
 )
-from github_contract.collectors.registries import FETCHERS
-from github_contract.compare_states import (
+from github_contract_engine.collectors.registries import FETCHERS
+from github_contract_engine.compare_states import (
     OPERATORS,
     condition_syntax_valid,
     pointer_get,
 )
-from github_contract.compose_desired_state import org_subset_ids, repo_subset_ids
-from github_contract.remediations import HANDLERS
+from github_contract_engine.compose_desired_state import org_subset_ids, repo_subset_ids
+from github_contract_engine.remediations import HANDLERS
 
 
 SKILL_DIR = pathlib.Path(__file__).resolve().parent.parent
 REPO_ROOT = SKILL_DIR.parents[1]
 REFERENCES = SKILL_DIR / "references"
+CONTRACTS = REFERENCES / "contracts"
 SCRIPTS = SKILL_DIR / "scripts"
 SOURCE_DOCS = REFERENCES / "contract-source-docs.json"
 STATE_CONTRACT_PATHS = {
-    "org": REFERENCES / "github-org-deterministic-contract.json",
-    "repo": REFERENCES / "github-repo-deterministic-contract.json",
-    "code": REFERENCES / "code-repo-deterministic-contract.json",
-    "artifact": REFERENCES / "artifact-deterministic-contract.json",
+    "org": CONTRACTS / "github-org-deterministic-contract.json",
+    "repo": CONTRACTS / "github-repo-deterministic-contract.json",
+    "code": CONTRACTS / "code-repo-deterministic-contract.json",
+    "artifact": CONTRACTS / "artifact-deterministic-contract.json",
 }
-PR_CONTRACT = REFERENCES / "github-pr-readiness-deterministic-contract.json"
-ND_CONTRACTS = [
-    REFERENCES / "github-org-nondeterministic-contract.md",
-    REFERENCES / "github-repo-nondeterministic-contract.md",
-    REFERENCES / "github-pr-readiness-nondeterministic-contract.md",
-    REFERENCES / "code-repo-nondeterministic-contract.md",
-    REFERENCES / "artifact-nondeterministic-contract.md",
-]
+PR_CONTRACT = CONTRACTS / "github-pr-readiness-deterministic-contract.json"
+ND_CONTRACT_PATHS = {
+    "org": CONTRACTS / "github-org-nondeterministic-contract.json",
+    "repo": CONTRACTS / "github-repo-nondeterministic-contract.json",
+    "pr": CONTRACTS / "github-pr-readiness-nondeterministic-contract.json",
+    "code": CONTRACTS / "code-repo-nondeterministic-contract.json",
+    "artifact": CONTRACTS / "artifact-nondeterministic-contract.json",
+    "code_comments": CONTRACTS / "code-comment-nondeterministic-contract.json",
+}
 REQUIRED_FILES = [
     SOURCE_DOCS,
     *STATE_CONTRACT_PATHS.values(),
     PR_CONTRACT,
-    *ND_CONTRACTS,
-    REFERENCES / "code-comment-nondeterministic-contract.md",
+    *ND_CONTRACT_PATHS.values(),
     SCRIPTS / "github-collect-nd-evidence.py",
-    SCRIPTS / "github-validate-org-contract.py",
+    SCRIPTS / "github-validate-org-deterministic-contract.py",
     SCRIPTS / "github-validate-repo-artifact-contract.py",
-    SCRIPTS / "github_contract" / "compose_desired_state.py",
-    SCRIPTS / "github_contract" / "collect_observed_states.py",
-    SCRIPTS / "github_contract" / "compare_states.py",
-    SCRIPTS / "github_contract" / "format_report.py",
+    SCRIPTS / "github_contract_engine" / "compose_desired_state.py",
+    SCRIPTS / "github_contract_engine" / "collect_observed_states.py",
+    SCRIPTS / "github_contract_engine" / "compare_states.py",
+    SCRIPTS / "github_contract_engine" / "format_report.py",
 ]
-ND_ID_RE = re.compile(r"`(ND\.[^`]+)`")
 
 
 def rel(path: pathlib.Path) -> str:
@@ -82,40 +81,52 @@ def check_ids(contract: dict[str, Any]) -> list[str]:
     ]
 
 
-def _evidence_keys(node: ast.AST) -> list[str] | None:
-    if not isinstance(node, ast.List):
-        return None
-    values: list[str] = []
-    for item in node.elts:
-        if (
-            isinstance(item, ast.Constant)
-            and isinstance(item.value, str)
-            and item.value
-        ):
-            values.append(item.value)
-        elif isinstance(item, ast.JoinedStr):
-            values.append(ast.unparse(item))
-        else:
-            return None
-    return values
+def _validate_nd_contract(
+    surface: str, path: pathlib.Path
+) -> tuple[list[str], set[str]]:
+    """Validate one canonical AI-review contract and return its check IDs."""
 
+    errors: list[str] = []
+    try:
+        contract = load_json(path)
+    except json.JSONDecodeError as exc:
+        return [f"{rel(path)}: invalid JSON: {exc}"], set()
+    if contract.get("kind") != "nondeterministic_review_contract":
+        errors.append(f"{rel(path)}: kind must be nondeterministic_review_contract")
+    if contract.get("surface") != surface:
+        errors.append(f"{rel(path)}: surface must be {surface}")
+    checks = contract.get("checks", [])
+    if not isinstance(checks, list) or not checks:
+        return [*errors, f"{rel(path)}: checks must be a non-empty list"], set()
 
-def nd_evidence_mappings(path: pathlib.Path) -> dict[str, list[str]]:
-    """Read literal ND mapping dictionaries without importing the networked collector."""
-
-    mappings: dict[str, list[str]] = {}
-    tree = ast.parse(path.read_text(encoding="utf-8"))
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Dict):
+    check_ids: list[str] = []
+    for index, check in enumerate(checks):
+        if not isinstance(check, dict):
+            errors.append(f"{rel(path)}: checks[{index}] must be an object")
             continue
-        for key, value in zip(node.keys, node.values):
-            if (
-                isinstance(key, ast.Constant)
-                and isinstance(key.value, str)
-                and key.value.startswith("ND.")
-            ):
-                mappings[key.value] = _evidence_keys(value) or []
-    return mappings
+        check_id = check.get("id")
+        if not isinstance(check_id, str) or not check_id.startswith("ND."):
+            errors.append(f"{rel(path)}: checks[{index}] has invalid ND check ID")
+            continue
+        check_ids.append(check_id)
+        for field in ("applies_when", "review_required"):
+            if not isinstance(check.get(field), str) or not check[field].strip():
+                errors.append(f"{rel(path)}: {check_id} requires non-empty {field}")
+        evidence_keys = check.get("evidence_keys")
+        if (
+            not isinstance(evidence_keys, list)
+            or not evidence_keys
+            or not all(isinstance(key, str) and key for key in evidence_keys)
+        ):
+            errors.append(
+                f"{rel(path)}: {check_id} evidence_keys must list non-empty strings"
+            )
+    duplicates = {item for item in check_ids if check_ids.count(item) > 1}
+    errors.extend(
+        f"{rel(path)}: duplicate AI-review check ID {item}"
+        for item in sorted(duplicates)
+    )
+    return errors, set(check_ids)
 
 
 def _validate_fetch_bundles(
@@ -231,11 +242,11 @@ def _validate_source_lines(path: pathlib.Path, check: dict[str, Any]) -> list[st
         source_name, separator, anchor = str(reference).partition(":")
         if source_name.startswith("$"):
             continue
-        source = (
-            path.parent / source_name
-            if "/" not in source_name and "\\" not in source_name
-            else REPO_ROOT / source_name
-        )
+        if "/" not in source_name and "\\" not in source_name:
+            contract_local = path.parent / source_name
+            source = contract_local if contract_local.is_file() else REFERENCES / source_name
+        else:
+            source = REPO_ROOT / source_name
         if not source.is_file():
             errors.append(
                 f"{rel(path)}: {check.get('id')} references missing source {source_name}"
@@ -294,14 +305,6 @@ def _validate_state_contract(path: pathlib.Path, contract: dict[str, Any]) -> li
         for key in sorted(declared_collection_keys - implemented_collection_keys)
     )
 
-    auto_apply = set(
-        contract.get("remediation_policy", {}).get("auto_apply_check_ids", [])
-    )
-    unknown_auto = auto_apply - known
-    errors.extend(
-        f"{rel(path)}: remediation policy references unknown check {item}"
-        for item in sorted(unknown_auto)
-    )
     for allowance in contract.get("approved_drift", {}).get("allowances", []):
         ids = allowance.get(
             "check_ids", allowance.get("allowed_checks", allowance.get("check_id", "*"))
@@ -384,18 +387,10 @@ def _validate_state_contract(path: pathlib.Path, contract: dict[str, Any]) -> li
         action = check.get("remediation_action")
         if action:
             declared_actions.add(str(action))
-            if check_id not in auto_apply:
-                errors.append(
-                    f"{rel(path)}: {check_id} has a remediation action but is not auto-apply"
-                )
             if action not in HANDLERS:
                 errors.append(
                     f"{rel(path)}: {check_id} remediation action has no handler: {action}"
                 )
-        elif check_id in auto_apply:
-            errors.append(
-                f"{rel(path)}: auto-apply check has no remediation action: {check_id}"
-            )
     unused_handlers = set(HANDLERS) - declared_actions
     # Handlers are shared across contracts, so global unused-handler validation is done later.
     _ = unused_handlers
@@ -432,25 +427,35 @@ def _validate_subsets(contracts: dict[str, dict[str, Any]]) -> list[str]:
 
 
 def _validate_nd_coverage() -> list[str]:
-    required = {
-        check_id
-        for path in ND_CONTRACTS
-        for check_id in ND_ID_RE.findall(path.read_text(encoding="utf-8"))
+    errors: list[str] = []
+    owners: dict[str, pathlib.Path] = {}
+    deterministic_names = {
+        "org": STATE_CONTRACT_PATHS["org"].name,
+        "repo": STATE_CONTRACT_PATHS["repo"].name,
+        "pr": PR_CONTRACT.name,
+        "code": STATE_CONTRACT_PATHS["code"].name,
+        "artifact": STATE_CONTRACT_PATHS["artifact"].name,
     }
-    mappings = nd_evidence_mappings(SCRIPTS / "github-collect-nd-evidence.py")
-    errors = [
-        f"{check_id}: no ND evidence mapping"
-        for check_id in sorted(required - set(mappings))
-    ]
-    errors.extend(
-        f"scripts/github-collect-nd-evidence.py: obsolete ND evidence mapping {check_id}"
-        for check_id in sorted(set(mappings) - required)
-    )
-    errors.extend(
-        f"{check_id}: ND evidence mapping must list evidence keys"
-        for check_id in sorted(required)
-        if not mappings.get(check_id)
-    )
+    for surface, path in ND_CONTRACT_PATHS.items():
+        contract_errors, ids = _validate_nd_contract(surface, path)
+        errors.extend(contract_errors)
+        if path.is_file() and surface in deterministic_names:
+            try:
+                contract = load_json(path)
+                if contract.get("deterministic_contract") != deterministic_names[surface]:
+                    errors.append(
+                        f"{rel(path)}: deterministic_contract must be "
+                        f"{deterministic_names[surface]}"
+                    )
+            except json.JSONDecodeError:
+                pass
+        for check_id in ids:
+            if check_id in owners:
+                errors.append(
+                    f"{rel(path)}: AI-review check {check_id} is also declared in "
+                    f"{rel(owners[check_id])}"
+                )
+            owners[check_id] = path
     return errors
 
 
@@ -474,6 +479,11 @@ def main() -> int:
             errors.append(f"{rel(path)}: invalid JSON: {exc}")
             continue
         errors.extend(_validate_state_contract(path, contracts[surface]))
+        expected_review = ND_CONTRACT_PATHS[surface].name
+        if contracts[surface].get("non_deterministic_review_file") != expected_review:
+            errors.append(
+                f"{rel(path)}: non_deterministic_review_file must be {expected_review}"
+            )
     if all(surface in contracts for surface in STATE_CONTRACT_PATHS):
         errors.extend(_validate_subsets(contracts))
         declared_collection_keys = {
@@ -517,10 +527,16 @@ def main() -> int:
                 f"{rel(PR_CONTRACT)}: duplicate deterministic check ID {item}"
                 for item in sorted({item for item in ids if ids.count(item) > 1})
             )
+            expected_review = ND_CONTRACT_PATHS["pr"].name
+            if pr.get("non_deterministic_review_file") != expected_review:
+                errors.append(
+                    f"{rel(PR_CONTRACT)}: non_deterministic_review_file must be "
+                    f"{expected_review}"
+                )
         except json.JSONDecodeError as exc:
             errors.append(f"{rel(PR_CONTRACT)}: invalid JSON: {exc}")
     if (
-        all(path.is_file() for path in ND_CONTRACTS)
+        all(path.is_file() for path in ND_CONTRACT_PATHS.values())
         and (SCRIPTS / "github-collect-nd-evidence.py").is_file()
     ):
         errors.extend(_validate_nd_coverage())

@@ -15,7 +15,7 @@ credential-bound fixes precisely.
   skills/ceratops-gh-repo-lifecycle/scripts/github-validate-repo-artifact-contract.py
   --repo OWNER/REPO --surface all --subset health --local-repo-path PATH`
 - (D) Optional org contract check when org posture is in scope: `python
-  skills/ceratops-gh-repo-lifecycle/scripts/github-validate-org-contract.py
+  skills/ceratops-gh-repo-lifecycle/scripts/github-validate-org-deterministic-contract.py
   --org ORG`
 - (D) Add `--summary-json --levels ERROR,WARN,NEEDS_AI_AGENT_REVIEW`, `--json`,
   `--check-id`, or a narrower `--subset` when another step needs structured or

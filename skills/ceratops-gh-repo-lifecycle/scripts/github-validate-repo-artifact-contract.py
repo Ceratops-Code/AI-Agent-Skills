@@ -14,24 +14,24 @@ import argparse
 import json
 from typing import Any
 
-from github_contract import (
+from github_contract_engine import (
     collect_observed_states,
     compare_states,
     compose_desired_state,
 )
-from github_contract.compose_desired_state import (
+from github_contract_engine.compose_desired_state import (
     REPO_SURFACES,
     check_ids,
     repo_subset_ids,
 )
-from github_contract.format_report import (
+from github_contract_engine.format_report import (
     build_report,
     build_summary_report,
     print_human,
     write_json,
 )
-from github_contract.github_api import default_contract_path, load_json
-from github_contract.remediations import apply_remediations
+from github_contract_engine.github_api import default_contract_path, load_json
+from github_contract_engine.remediations import apply_remediations
 from validator_levels import has_blocking_findings, parse_levels
 
 

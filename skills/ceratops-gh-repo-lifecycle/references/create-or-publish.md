@@ -15,7 +15,7 @@ release semantics.
   skills/ceratops-gh-repo-lifecycle/scripts/github-validate-repo-artifact-contract.py
   --repo OWNER/REPO --surface all --subset create --local-repo-path PATH`
 - (D) Optional org posture check: `python
-  skills/ceratops-gh-repo-lifecycle/scripts/github-validate-org-contract.py
+  skills/ceratops-gh-repo-lifecycle/scripts/github-validate-org-deterministic-contract.py
   --org ORG`
 
 ### Inputs To Capture

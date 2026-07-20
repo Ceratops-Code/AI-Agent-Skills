@@ -16,7 +16,7 @@ applied.
 - (D) GH contract consistency check: `python
   skills/ceratops-gh-repo-lifecycle/scripts/validate-gh-contracts-consistency.py`
 - (D) Org contract checker: `python
-  skills/ceratops-gh-repo-lifecycle/scripts/github-validate-org-contract.py
+  skills/ceratops-gh-repo-lifecycle/scripts/github-validate-org-deterministic-contract.py
   --help`
 - (D) GitHub, code, and artifact contract checker: `python
   skills/ceratops-gh-repo-lifecycle/scripts/github-validate-repo-artifact-contract.py
@@ -35,17 +35,19 @@ applied.
 
 - Contract source-doc registry: `references/contract-source-docs.json`
 - Org deterministic contract:
-  `references/github-org-deterministic-contract.json`
+  `references/contracts/github-org-deterministic-contract.json`
 - GitHub repo deterministic contract:
-  `references/github-repo-deterministic-contract.json`
+  `references/contracts/github-repo-deterministic-contract.json`
 - GitHub PR readiness deterministic contract:
-  `references/github-pr-readiness-deterministic-contract.json`
+  `references/contracts/github-pr-readiness-deterministic-contract.json`
 - Code repo deterministic contract:
-  `references/code-repo-deterministic-contract.json`
+  `references/contracts/code-repo-deterministic-contract.json`
 - Artifact deterministic contract:
-  `references/artifact-deterministic-contract.json`
-- Non-deterministic review prompts: `references/*-nondeterministic-contract.md`
-- Code comment rubric: `references/code-comment-nondeterministic-contract.md`
+  `references/contracts/artifact-deterministic-contract.json`
+- AI-agent review contracts:
+  `references/contracts/*-nondeterministic-contract.json`
+- Code comment rubric:
+  `references/contracts/code-comment-nondeterministic-contract.json`
 
 ### Inputs To Capture
 
@@ -97,8 +99,8 @@ request before asking.
   targets, and separate no-extra-cost defaults from paid GitHub Code Security or
   Secret Protection features.
 - Treat artifact surfaces as in scope only when
-  `references/artifact-deterministic-contract.json` or this lifecycle action set
-  claims to cover them.
+  `references/contracts/artifact-deterministic-contract.json` or this lifecycle
+  action set claims to cover them.
 - Keep durable standards in the skill-local contracts and
   `references/contract-source-docs.json`; do not recreate a separate standards
   checklist file.
