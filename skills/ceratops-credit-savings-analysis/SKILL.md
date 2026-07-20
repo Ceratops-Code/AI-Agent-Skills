@@ -57,6 +57,11 @@ cannot be identified.
   inspected evidence as implemented or still unimplemented; omit implemented
   controls unless needed to justify that no still-unimplemented proposal
   remains.
+- When prompt-level savings cases exist, rank the top five evidence-backed
+  cases, or all available cases when fewer exist, using only information
+  available when each prompt was written; present them as
+  `Original prompt | What happened | Cheaper wording` and exclude
+  hindsight-dependent rewrites.
 
 ### Boundaries
 
@@ -105,5 +110,6 @@ Start with one of:
 - `Found still-unimplemented credit-savings proposals.`
 - `Blocked: <specific missing evidence or target>.`
 
-Then report only findings with still-unimplemented recommendations, excluded
-ordinary failures, and important evidence limits.
+Then report only findings with still-unimplemented recommendations, any required
+ranked prompt-level table, excluded ordinary failures, and important evidence
+limits.
