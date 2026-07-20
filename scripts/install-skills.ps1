@@ -5,12 +5,11 @@ param(
     [string]$PythonCommand
 )
 
-# Bootstrap entrypoint for initial Ceratops skill installation.
+# Bootstrap entrypoint for managed skill installation.
 #
-# Routine skill-lifecycle tasks call the skill-local runtime helper and
-# validator directly. This repo-root wrapper exists so a fresh checkout still
-# has one stable command that validates source consistency and installs managed
-# skills into a Codex runtime.
+# Prefer a supported installed lifecycle helper bundle so one installation can
+# manage multiple compatible repos. A fresh or legacy installation falls back
+# to the target checkout's bundle for bootstrap.
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
@@ -20,8 +19,16 @@ if ([string]::IsNullOrWhiteSpace($RepoRoot)) {
 }
 
 $resolvedRepoRoot = (Resolve-Path -LiteralPath $RepoRoot).Path
-$installer = Join-Path $resolvedRepoRoot "skills\ceratops-skill-lifecycle\scripts\runtime\install-managed-skills.ps1"
-$validator = Join-Path $resolvedRepoRoot "skills\ceratops-skill-lifecycle\scripts\validation\validate-skills-consistency.py"
+$checkoutBundleRoot = Join-Path $resolvedRepoRoot "skills\ceratops-skill-lifecycle"
+$bundleResolver = Join-Path $PSScriptRoot "..\skills\ceratops-skill-lifecycle\scripts\runtime\resolve-lifecycle-bundle.ps1"
+if (-not (Test-Path -LiteralPath $bundleResolver -PathType Leaf)) {
+    throw "Missing lifecycle helper-bundle resolver: $bundleResolver"
+}
+. $bundleResolver
+$bundleRoot = Resolve-CeratopsLifecycleBundle -CheckoutBundleRoot $checkoutBundleRoot
+
+$installer = Join-Path $bundleRoot "scripts\runtime\install-managed-skills.ps1"
+$validator = Join-Path $bundleRoot "scripts\validation\validate-skills-consistency.py"
 if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) {
     throw "Missing skill lifecycle runtime installer: $installer"
 }

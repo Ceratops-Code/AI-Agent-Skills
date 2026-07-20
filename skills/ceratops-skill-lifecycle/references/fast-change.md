@@ -2,7 +2,7 @@
 
 ## Goal
 
-Apply one clearly understood Ceratops skill change directly on an intended local
+Apply one clearly understood compatible skill change directly on an intended local
 release branch without a task worktree, broad validation, or broad repo checks,
 then commit the change and update only the affected runtime skill copy.
 
@@ -24,13 +24,10 @@ skill and select `update`.
 
 ### Script Bundle
 
-- (D) Fast-change preflight:
-  `skills/ceratops-skill-lifecycle/scripts/fast-change-preflight.ps1
+- (D) Resolve the installed lifecycle bundle first and the target checkout's
+  lifecycle bundle second, then run `scripts/fast-change-preflight.ps1
   -SkillsRepoRoot <repo> -ReleaseBranch release/local -SkillName <skill-name>
-  -TargetPath <target-file>` from a source checkout, or
-  `scripts/fast-change-preflight.ps1 -SkillsRepoRoot <repo> -ReleaseBranch
-  release/local -SkillName <skill-name> -TargetPath <target-file>` from the
-  installed skill folder.
+  -TargetPath <target-file>` from the selected bundle.
 
 ## Constraints
 
@@ -53,10 +50,10 @@ skill and select `update`.
    file, and targeted install command evidence; stop on helper failure.
 4. Patch the target source file and inspect the diff.
 5. Commit the release-branch change.
-6. Update only the affected runtime skill copy through
-   `skills/ceratops-skill-lifecycle/scripts/runtime/install-managed-skills.ps1
-   -Skill <skill-name>` when available; otherwise child-copy that skill folder
-   and read back a changed sentinel.
+6. Update only the affected runtime skill copy through the selected lifecycle
+   bundle's `scripts/runtime/install-managed-skills.ps1 -RepoRoot <repo> -Skill
+   <skill-name>`; stop if the bundle is unavailable. A targeted install never
+   removes stale skills.
 7. Optionally apply and commit the same change in explicitly requested active
    worktrees or branches when it merges cleanly.
 

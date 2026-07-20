@@ -45,7 +45,7 @@ Infer missing inputs from the repository state before asking.
 
 - Use this action only for Ceratops skill-contract review and coupled
   repository-governance consistency.
-- Do not use this action for consistency across the active Codex skill catalog;
+- Do not use this action for consistency across manifest-managed installed skills;
   use `global-skills-consistency-review`.
 - Do not inspect GitHub org, GitHub repo, PR readiness, repo-code, artifact,
   registry, or release contracts; those belong to

@@ -13,7 +13,7 @@ Reusable Ceratops skills for Codex and other `SKILL.md`-compatible agents.
 | `ceratops-skill-optimize` | Propose advisory-only improvements across skill text, action references, metadata, payloads, validators, and docs. |
 | `ceratops-skill-lifecycle` | Route skill lifecycle work across create, update, skills-contract-review, global-skills-consistency-review, fast-change, change-promotion, and ship-to-remote actions. |
 | `ceratops-automation-run` | Run recurring automations with shared Ceratops alert, memory, and completion policy. |
-| `ceratops-task-lifecycle` | Route task execution, ChatGPT chat import, fix-loop break, same-thread resume, handoff, and closure-check work across action references. |
+| `ceratops-task-lifecycle` | Route task execution, fix-loop break, same-thread resume, handoff, and closure-check work across action references. |
 | `ceratops-code-consistency-audit` | Audit merged refactors for contradictions, docs drift, comment sufficiency, stale follow-through, and merged-only edge cases. |
 
 ## Layout
@@ -40,6 +40,12 @@ templates/
 Source `SKILL.md` files are portable, delta-only skill definitions. Runtime
 `SKILL.md` files are generated during install by expanding the shared section
 assignments from `templates/skill-sections.json`.
+That manifest also declares a stable `runtime_source_id`, unique among source
+repos that share an install root, and a
+`validation_profile`. Compatible external repos use `ceratops-compatible`;
+this repo uses `ceratops`, which adds Ceratops icon, contract,
+retired-artifact, and repository-governance checks to the common full checks.
+Skill names are independent of the profile and need no `ceratops-` prefix.
 `core` is assigned to every skill; `multi-action-skill` is assigned only to
 skills that select among multiple action references.
 `agents/openai.yaml` is Codex UI metadata and may be ignored by other agents.
@@ -54,15 +60,16 @@ repo-code, PR readiness, artifact, release, and code-comment contracts plus the
 `contracts-review` action. `skills/ceratops-skill-lifecycle/references/` owns
 skill-design contracts, skill source-doc tracking, and the
 `skills-contract-review` action. The source-neutral
-`global-skills-consistency-review` action audits the active Codex skill catalog
-without making that catalog a Ceratops contract surface.
+`global-skills-consistency-review` action audits direct installed skill folders
+that declare source ownership through `.runtime-manifest.json`.
 
 ## Scripts
 
 | Script | Caller And Timing |
 | --- | --- |
-| `scripts/install-skills.ps1` | Bootstrap entrypoint for initial managed skill installation with direct full source validation. |
-| `skills/ceratops-skill-lifecycle/scripts/runtime/install-managed-skills.ps1` | Skill-lifecycle runtime installer for refreshing managed skill copies during local preview, fast change, and ship flows. |
+| `scripts/install-skills.ps1` | Bootstrap entrypoint that prefers a supported installed lifecycle bundle, falls back to this checkout for first install, runs full target-repo validation, and installs managed copies. |
+| `skills/ceratops-skill-lifecycle/scripts/runtime/install-managed-skills.ps1` | Source-scoped runtime installer for compatible repos; full installs remove only stale folders owned by the same `runtime_source_id`, while targeted installs remove none. |
+| `skills/ceratops-skill-lifecycle/scripts/runtime/resolve-lifecycle-bundle.ps1` | Shared installed-first, checkout-fallback resolver used by bootstrap, fast-change, and release staging. |
 | `skills/ceratops-skill-lifecycle/scripts/runtime/render-runtime-skills.py` | Internal implementation called by the runtime installer to render runtime `SKILL.md` files and copy declared payloads. |
 | `skills/ceratops-gh-repo-lifecycle/scripts/github_contract_engine/` | Package CLI for contract schemas, consistency, source documents, org/repo validation, shared severity levels, and non-deterministic evidence. |
 | `skills/ceratops-gh-repo-lifecycle/scripts/github_pr_workflow/` | Package CLI for PR readiness, Codex review wait/resolution, merge orchestration, live merge verification, and post-merge local sync. |
@@ -255,20 +262,35 @@ That bootstrap does two things explicitly:
 - builds managed runtime skill copies under `$CODEX_HOME/skills/`, including
   declared runtime payloads such as the Ceratops icon
 
+For another Ceratops-compatible repo, invoke the installed lifecycle validator
+and installer as one helper bundle and pass the target checkout explicitly:
+
+```powershell
+python "$env:CODEX_HOME\skills\ceratops-skill-lifecycle\scripts\validation\validate-skills-consistency.py" --repo-root <target-repo> --mode full
+powershell -ExecutionPolicy Bypass -File "$env:CODEX_HOME\skills\ceratops-skill-lifecycle\scripts\runtime\install-managed-skills.ps1" -RepoRoot <target-repo>
+```
+
+The installer records source ownership in each runtime manifest. It refuses to
+replace unmanaged folders, links, or a same-named skill owned by another source.
+An install without `-Skill` refreshes all source skills and removes only stale
+folders with the same `runtime_source_id`; an explicit `-Skill` is targeted and
+does no stale cleanup.
+
 Installed Ceratops skills should be generated from the skills repo checkout: the
 local skills repo checkout used as the input path for the runtime installer.
 The active branch only selects which repo snapshot is installed: synced `main`
 for normal use, or a local `release/*` branch for an active unpublished preview.
 After changing the installed source snapshot, rerun
-`skills/ceratops-skill-lifecycle/scripts/runtime/install-managed-skills.ps1` so
-new, renamed, or deleted managed skill folders match that snapshot.
+the selected lifecycle bundle's
+`scripts/runtime/install-managed-skills.ps1 -RepoRoot <repo>` so new, renamed,
+or deleted same-source managed skill folders match that snapshot.
 When shipping a staged batch, reuse the same `release/local` branch name locally
 and remotely by default. Use `stage-skill-release-branch.ps1` for reviewed local
 branch staging, `push-release-branch-and-ensure-pr.ps1` for PR publication,
 `$ceratops-gh-repo-lifecycle` merge-pr for merge gates,
 `python -m github_pr_workflow sync --repo-root <repo> --align-branch
 release/local` after merge, and
-`skills/ceratops-skill-lifecycle/scripts/runtime/install-managed-skills.ps1` for
+the selected lifecycle bundle's runtime installer with `-RepoRoot <repo>` for
 the final runtime rebuild from `main`. GitHub may delete the remote
 `release/local` after merge; the next batch simply recreates that same remote
 branch from the current local `release/local`.
@@ -320,13 +342,16 @@ explicit skill consistency audits.
 The renderer composes each runtime skill's shared block from
 `templates/skill-sections.json` and `templates/sections/`, and each generated
 runtime `SKILL.md` block includes section-source comments so the origin of every
-shared section stays visible in the installed skill copy. The validator checks
-skill frontmatter, folder/name consistency, section and required-subsection
-structure, section assignments, runtime-renderability, Codex metadata,
-placeholder leftovers, real README skill rows, cross-skill references,
-maintenance-workflow targets, contract presence, skill deterministic
-remediation-policy classification, and high-confidence secret patterns.
-Use governance validation for explicit Ceratops skill-contract audits:
+shared section stays visible in the installed skill copy. Full validation
+always checks manifest identity and profile, source skill structure,
+shared-section assignments and rendering, payload portability, Codex metadata
+and relative icon existence, the README Skills table, cross-skill references,
+and high-confidence secret or private-path patterns. The `ceratops` profile
+additionally checks the shared Ceratops icon, lifecycle contracts, retired
+Ceratops artifacts, and repository-specific governance; the
+`ceratops-compatible` profile skips only those Ceratops-specific additions.
+Use governance validation when the full profile-aware source checks should also
+compare installed runtime identity and generated shared-section state:
 
 ```powershell
 python .\skills\ceratops-skill-lifecycle\scripts\validation\validate-skills-consistency.py --mode governance

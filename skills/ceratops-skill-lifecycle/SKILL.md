@@ -1,6 +1,6 @@
 ---
 name: ceratops-skill-lifecycle
-description: Route Ceratops or compatible skill lifecycle work to action references for create, update, skills-contract-review, global-skills-consistency-review, fast-change, change-promotion, and ship-to-remote work. Use when Codex should create a skill, update skill source or shared governance surfaces, review Ceratops skill contracts, audit consistency across the active Codex skill catalog, apply an explicit fast release-branch change, promote committed skill changes into a local release/runtime preview, or ship a staged skills batch through GitHub.
+description: Route Ceratops or compatible skill lifecycle work to action references for create, update, skills-contract-review, global-skills-consistency-review, fast-change, change-promotion, and ship-to-remote work. Use when Codex should create a skill, update skill source or shared governance surfaces, review Ceratops skill contracts, audit consistency across manifest-managed installed skills, apply an explicit fast release-branch change, promote committed skill changes into a local release/runtime preview, or ship a staged skills batch through GitHub.
 ---
 
 # Ceratops Skill Lifecycle
@@ -19,7 +19,7 @@ surface for creation, mutation, local promotion, and remote shipping.
 - Update an existing skill or shared maintenance surface: `references/update.md`
 - Review Ceratops skill-design contracts:
   `references/skills-contract-review.md`
-- Audit consistency across the active Codex skill catalog:
+- Audit consistency across manifest-managed installed skills:
   `references/global-skills-consistency-review.md`
 - Apply an explicit fast release-branch change: `references/fast-change.md`
 - Promote committed skill changes into a local release branch and runtime
@@ -34,6 +34,9 @@ surface for creation, mutation, local promotion, and remote shipping.
 - Which repo-owned surfaces are in scope: source skill folders,
   `agents/openai.yaml`, `templates/`, runtime payload declarations, validators,
   contracts, helper scripts, docs, or runtime generation.
+- Whether `templates/skill-sections.json` declares a stable
+  `runtime_source_id` and either the `ceratops` or `ceratops-compatible`
+  validation profile.
 - Whether the task should stop at local task-worktree changes or continue to
   local promotion or remote shipping.
 
@@ -52,6 +55,10 @@ Infer missing inputs from the current repo state before asking.
   shared sections, `templates/skill-sections.json`, runtime payloads,
   validators, contracts, helper scripts, and docs as one coupled maintenance
   surface when they exist.
+- Treat another repo as Ceratops-compatible only when its section manifest
+  declares `runtime_source_id`, `validation_profile: ceratops-compatible`,
+  shared sections, and per-skill assignments. Skill names need not use a
+  Ceratops prefix.
 - Stop in the task worktree by default for update actions and for create actions
   outside this repo. In this repo, new Ceratops skill creation continues through
   change-promotion and install verification unless the user opts out.
@@ -67,7 +74,7 @@ Infer missing inputs from the current repo state before asking.
   `$ceratops-skill-optimize`.
 - If the task is Ceratops skill-contract upkeep, use
   `references/skills-contract-review.md`.
-- If the task is consistency review across the active Codex skill catalog, use
+- If the task is consistency review across manifest-managed installed skills, use
   `references/global-skills-consistency-review.md`.
 - If the task is a general GitHub repo lifecycle operation, use
   `$ceratops-gh-repo-lifecycle`.
@@ -82,7 +89,7 @@ Infer missing inputs from the current repo state before asking.
   generation, validator, contract, helper, or doc surface must change.
 - Use `skills-contract-review` for Ceratops skill-design contract upkeep.
 - Use `global-skills-consistency-review` for source-neutral consistency review
-  across the active Codex skill catalog.
+  across manifest-managed installed skills.
 - Use `fast-change` only when the user explicitly asks for a known-safe direct
   release-branch edit and targeted runtime update.
 - Use `change-promotion` when committed task-worktree branches are ready to

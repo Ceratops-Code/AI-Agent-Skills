@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate Ceratops skill source folders and runtime generation inputs.
+"""Validate Ceratops-compatible skill source and runtime-generation inputs.
 
 Called by CI, governance validation, explicit skill-maintenance validation, and
 runtime smoke paths. The default mode is a full repository validation. `--mode
@@ -25,10 +25,16 @@ SKILLS_DIR = ROOT / "skills"
 README = ROOT / "README.md"
 SECTION_MANIFEST = ROOT / "templates" / "skill-sections.json"
 SKILL_CONTRACT_DIR = pathlib.Path("skills/ceratops-skill-lifecycle/references/contracts")
-REPO_NAME = ROOT.name
-MANIFEST_NAME = ".ceratops-runtime-manifest.json"
+MANIFEST_NAME = ".runtime-manifest.json"
+RUNTIME_MANIFEST_SCHEMA = "ceratops-runtime-skill.v2"
+PROFILE_CERATOPS = "ceratops"
+PROFILE_COMPATIBLE = "ceratops-compatible"
+VALIDATION_PROFILES = {PROFILE_CERATOPS, PROFILE_COMPATIBLE}
 BOOTSTRAP_INSTALLER = ROOT / "scripts" / "install-skills.ps1"
 RUNTIME_INSTALLER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "runtime" / "install-managed-skills.ps1"
+BUNDLE_RESOLVER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "runtime" / "resolve-lifecycle-bundle.ps1"
+FAST_CHANGE_HELPER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "fast-change-preflight.ps1"
+STAGE_HELPER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "stage-skill-release-branch.ps1"
 VALIDATOR = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "validation" / "validate-skills-consistency.py"
 WORKFLOW = ROOT / ".github" / "workflows" / "validate.yml"
 SKILL_DETERMINISTIC_CONTRACT = pathlib.Path("skills/ceratops-skill-lifecycle/references/contracts/skill-deterministic-contract.json")
@@ -43,7 +49,7 @@ SECTIONS_END = "<!-- CERATOPS_SHARED_SECTIONS_END -->"
 
 NAME_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$")
 SKILL_REF_RE = re.compile(r"\$([a-z0-9]+(?:-[a-z0-9]+)+)(?![A-Za-z0-9_-])")
-README_SKILL_ROW_RE = re.compile(r"^\|\s*`(?P<name>ceratops-[a-z0-9-]+)`\s*\|", re.MULTILINE)
+README_SKILL_ROW_RE = re.compile(r"^\|\s*`(?P<name>[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?)`\s*\|", re.MULTILINE)
 ALLOWED_EXTERNAL_SKILL_REFS = {"skill-creator", "skill-name"}
 INTERFACE_FIELD_RE = re.compile(
     r"^\s*(display_name|short_description|icon_small|icon_large|default_prompt):\s*(.+?)\s*$",
@@ -99,10 +105,18 @@ SKILL_LIFECYCLE_ACTIONS = {
     "create.md": "templates/skill-sections.json",
     "update.md": "runtime payloads",
     "skills-contract-review.md": "skill-deterministic-contract.json",
-    "global-skills-consistency-review.md": "active Codex skill catalog",
+    "global-skills-consistency-review.md": ".runtime-manifest.json",
     "fast-change.md": "release/*",
     "change-promotion.md": "stage-skill-release-branch.ps1",
     "ship-to-remote.md": "push-release-branch-and-ensure-pr.ps1",
+}
+TASK_LIFECYCLE_ACTIONS = {
+    "execute-in-stages.md": "staged contingent execution",
+    "fixloop-break.md": "repeated failed fix loop",
+    "manual-resume.md": "same-thread task",
+    "full-handoff.md": "whole task in a new thread",
+    "side-task-handoff.md": "side task in a new thread",
+    "closure-check.md": "required work remains",
 }
 
 
@@ -159,6 +173,26 @@ def load_section_manifest() -> dict[str, object]:
     return json.loads(SECTION_MANIFEST.read_text(encoding="utf-8"))
 
 
+def check_repo_manifest_identity(manifest: Mapping[str, object]) -> list[str]:
+    """Require stable ownership and one supported validation profile."""
+
+    errors: list[str] = []
+    source_id = manifest.get("runtime_source_id")
+    profile = manifest.get("validation_profile")
+    if not isinstance(source_id, str) or not source_id.strip():
+        errors.append("section manifest runtime_source_id must be a nonempty string")
+    if profile not in VALIDATION_PROFILES:
+        errors.append("section manifest validation_profile must be ceratops or ceratops-compatible")
+    return errors
+
+
+def validation_profile(manifest: Mapping[str, object]) -> str:
+    """Return the validated repository profile, or an empty sentinel."""
+
+    value = manifest.get("validation_profile")
+    return value if isinstance(value, str) and value in VALIDATION_PROFILES else ""
+
+
 def parse_openai_interface(path: pathlib.Path) -> dict[str, str]:
     """Extract the flat `interface` fields validated from `openai.yaml`."""
 
@@ -188,7 +222,7 @@ def meaningful_short_description_tokens(text: str) -> set[str]:
     }
 
 
-def display_name_sane(skill_name: str, display_name: str) -> bool:
+def display_name_sane(skill_name: str, display_name: str, profile: str) -> bool:
     """Check that the UI display name still resembles the skill directory."""
 
     name_tokens = {token for token in normalized_tokens(skill_name) if token != "ceratops"}
@@ -196,7 +230,8 @@ def display_name_sane(skill_name: str, display_name: str) -> bool:
         return False
     display_tokens = set(normalized_tokens(display_name))
     overlap = len(name_tokens & display_tokens)
-    return display_name.startswith("Ceratops ") and overlap / len(name_tokens) >= 0.5
+    prefix_ok = profile != PROFILE_CERATOPS or display_name.startswith("Ceratops ")
+    return prefix_ok and overlap / len(name_tokens) >= 0.5
 
 
 def short_description_relevant(short_description: str, skill_description: str) -> bool:
@@ -257,7 +292,10 @@ def check_runtime_payloads(manifest: dict[str, object], skill_names: set[str]) -
 def readme_skill_rows(readme_text: str) -> set[str]:
     """Return skill names documented in the README skill table."""
 
-    return {match.group("name") for match in README_SKILL_ROW_RE.finditer(readme_text)}
+    match = re.search(r"^## Skills\s*$\n(?P<body>.*?)(?=^##\s|\Z)", readme_text, re.MULTILINE | re.DOTALL)
+    if match is None:
+        return set()
+    return {row.group("name") for row in README_SKILL_ROW_RE.finditer(match.group("body"))}
 
 
 def validate_workflow_target(command: str, skill_names: set[str]) -> list[str]:
@@ -385,7 +423,7 @@ def iter_repo_text_files() -> list[pathlib.Path]:
 
 
 def check_repo_skill_refs(skill_names: set[str]) -> list[str]:
-    """Reject stale `$ceratops-*` references anywhere in portable repo text."""
+    """Reject stale skill references anywhere in portable repo text."""
 
     errors: list[str] = []
     for path in iter_repo_text_files():
@@ -411,7 +449,7 @@ def generated_block(text: str) -> str | None:
 
 
 def check_installed_runtime_identity(manifest: dict[str, object], skill_names: set[str]) -> list[str]:
-    """Check managed installed Ceratops runtime folders when they are present.
+    """Check installed runtime folders owned by this source when present.
 
     Missing runtime copies are allowed in task worktrees because local preview
     installation happens from the staged release checkout. Existing managed
@@ -422,21 +460,30 @@ def check_installed_runtime_identity(manifest: dict[str, object], skill_names: s
     install_root = default_install_root()
     if not install_root.is_dir():
         return errors
+    source_id = manifest.get("runtime_source_id")
+    if not isinstance(source_id, str) or not source_id:
+        return errors
 
-    for skill_dir in sorted(path for path in install_root.iterdir() if path.is_dir() and path.name.startswith("ceratops-")):
+    for skill_dir in sorted(path for path in install_root.iterdir() if path.is_dir()):
         runtime_manifest_path = skill_dir / MANIFEST_NAME
         if not runtime_manifest_path.is_file():
             continue
         try:
-            runtime_manifest = read_json(runtime_manifest_path)
-        except json.JSONDecodeError as exc:
-            errors.append(f"{skill_dir.name}: invalid runtime manifest: {exc}")
+            runtime_manifest_obj = json.loads(runtime_manifest_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
             continue
-        if runtime_manifest.get("source_repo") != REPO_NAME:
+        if not isinstance(runtime_manifest_obj, dict):
+            continue
+        runtime_manifest = runtime_manifest_obj
+        if runtime_manifest.get("runtime_source_id") != source_id:
             continue
 
         skill_name = str(runtime_manifest.get("skill", ""))
         expected_source_path = f"skills/{skill_name}" if skill_name else ""
+        if runtime_manifest.get("schema") != RUNTIME_MANIFEST_SCHEMA:
+            errors.append(f"{skill_dir.name}: runtime manifest schema must be {RUNTIME_MANIFEST_SCHEMA}")
+        if runtime_manifest.get("validation_profile") != validation_profile(manifest):
+            errors.append(f"{skill_dir.name}: runtime manifest validation_profile does not match source")
         if skill_dir.name != skill_name:
             errors.append(f"{skill_dir.name}: runtime manifest skill is {skill_name!r}")
         if runtime_manifest.get("source_path") != expected_source_path:
@@ -573,6 +620,7 @@ def check_skill_scope_validator() -> list[str]:
     multi_action_specs = {
         "ceratops-gh-repo-lifecycle": GH_LIFECYCLE_ACTIONS,
         "ceratops-skill-lifecycle": SKILL_LIFECYCLE_ACTIONS,
+        "ceratops-task-lifecycle": TASK_LIFECYCLE_ACTIONS,
     }
     for skill_name, expected_actions in multi_action_specs.items():
         skill_dir = SKILLS_DIR / skill_name
@@ -581,6 +629,10 @@ def check_skill_scope_validator() -> list[str]:
             errors.append(f"{skill_name}: missing multi-action SKILL.md")
             continue
         multi_action_text = multi_action_path.read_text(encoding="utf-8")
+        actual_actions = {path.name for path in (skill_dir / "references").glob("*.md")}
+        unexpected_actions = sorted(actual_actions - set(expected_actions))
+        for action_file in unexpected_actions:
+            errors.append(f"{skill_name}: unexpected action reference references/{action_file}")
         for action_file, snippet in expected_actions.items():
             action_rel = f"references/{action_file}"
             action_path = skill_dir / action_rel
@@ -607,6 +659,11 @@ def check_validation_command_surface() -> list[str]:
     validator_text = VALIDATOR.read_text(encoding="utf-8") if VALIDATOR.is_file() else ""
     bootstrap_installer_text = BOOTSTRAP_INSTALLER.read_text(encoding="utf-8") if BOOTSTRAP_INSTALLER.is_file() else ""
     runtime_installer_text = RUNTIME_INSTALLER.read_text(encoding="utf-8") if RUNTIME_INSTALLER.is_file() else ""
+    renderer_path = RUNTIME_INSTALLER.with_name("render-runtime-skills.py")
+    renderer_text = renderer_path.read_text(encoding="utf-8") if renderer_path.is_file() else ""
+    bundle_resolver_text = BUNDLE_RESOLVER.read_text(encoding="utf-8") if BUNDLE_RESOLVER.is_file() else ""
+    fast_change_text = FAST_CHANGE_HELPER.read_text(encoding="utf-8") if FAST_CHANGE_HELPER.is_file() else ""
+    stage_helper_text = STAGE_HELPER.read_text(encoding="utf-8") if STAGE_HELPER.is_file() else ""
     readme_text = README.read_text(encoding="utf-8") if README.is_file() else ""
     workflow_text = WORKFLOW.read_text(encoding="utf-8") if WORKFLOW.is_file() else ""
 
@@ -625,6 +682,21 @@ def check_validation_command_surface() -> list[str]:
         errors.append("bootstrap installer must run direct full skill validation")
     if "validate-skills-consistency.py" in runtime_installer_text or '"--mode"' in runtime_installer_text:
         errors.append("runtime installer must not run skill consistency validation")
+    if "ValidateSet" in stage_helper_text or "$Validate" in stage_helper_text:
+        errors.append("release staging must not expose a validation selector")
+    if '"--mode"' not in stage_helper_text or '"full"' not in stage_helper_text:
+        errors.append("release staging must always run direct full skill validation")
+    for surface_name, surface_text in (
+        ("bootstrap installer", bootstrap_installer_text),
+        ("fast-change preflight", fast_change_text),
+        ("release staging", stage_helper_text),
+    ):
+        if "resolve-lifecycle-bundle.ps1" not in surface_text:
+            errors.append(f"{surface_name} must use the shared lifecycle bundle resolver")
+    if RUNTIME_MANIFEST_SCHEMA not in renderer_text:
+        errors.append("runtime renderer must emit the lifecycle bundle capability schema")
+    if RUNTIME_MANIFEST_SCHEMA not in bundle_resolver_text or "installedBundleRoot" not in bundle_resolver_text:
+        errors.append("lifecycle bundle resolver must enforce installed runtime capability before checkout fallback")
     for snippet in ("--mode governance", "--mode full", "--mode sections"):
         if snippet not in readme_text:
             errors.append(f"README is missing validation command snippet {snippet}")
@@ -660,17 +732,21 @@ def check_governance_consistency(
     skill_dirs: list[pathlib.Path],
     readme_rows: set[str],
     skill_names: set[str],
+    profile: str,
+    include_installed_runtime: bool,
 ) -> list[str]:
-    """Run explicit governance-only Ceratops skill consistency checks."""
+    """Run full source governance plus optional installed-runtime checks."""
 
     errors: list[str] = []
     errors.extend(check_repo_skill_refs(skill_names))
-    errors.extend(check_installed_runtime_identity(manifest, skill_names))
-    errors.extend(check_validation_command_surface())
-    errors.extend(check_skill_contract_remediation_policy())
-    errors.extend(check_skill_nondeterministic_contract())
-    errors.extend(check_skill_scope_validator())
-    errors.extend(check_validator_output_budget())
+    if include_installed_runtime:
+        errors.extend(check_installed_runtime_identity(manifest, skill_names))
+    if profile == PROFILE_CERATOPS:
+        errors.extend(check_validation_command_surface())
+        errors.extend(check_skill_contract_remediation_policy())
+        errors.extend(check_skill_nondeterministic_contract())
+        errors.extend(check_skill_scope_validator())
+        errors.extend(check_validator_output_budget())
 
     assignments = manifest.get("skills", {})
     payloads = manifest.get("runtime_payloads", {})
@@ -766,7 +842,13 @@ def check_resource_layout(skill_dir: pathlib.Path) -> list[str]:
     return errors
 
 
-def check_skill(skill_dir: pathlib.Path, readme_rows: set[str], manifest: dict[str, object], skill_names: set[str]) -> list[str]:
+def check_skill(
+    skill_dir: pathlib.Path,
+    readme_rows: set[str],
+    manifest: dict[str, object],
+    skill_names: set[str],
+    profile: str,
+) -> list[str]:
     """Validate one source skill, metadata file, icon, README row, and refs."""
 
     errors: list[str] = []
@@ -831,17 +913,25 @@ def check_skill(skill_dir: pathlib.Path, readme_rows: set[str], manifest: dict[s
         short_description = interface.get("short_description", "")
         icon_small = interface.get("icon_small", "")
         icon_large = interface.get("icon_large", "")
-        if display_name and not display_name_sane(name, display_name):
+        if display_name and not display_name_sane(name, display_name, profile):
             errors.append(f"{name}: display_name no longer matches the skill name closely enough")
         if short_description and not short_description_relevant(short_description, frontmatter.get("description", "")):
             errors.append(f"{name}: short_description no longer matches the skill description closely enough")
         for field_name, icon_value in (("icon_small", icon_small), ("icon_large", icon_large)):
-            if icon_value and icon_value != CERATOPS_ICON_REL:
+            normalized_icon = icon_value.replace("\\", "/")
+            portable_icon = pathlib.PurePosixPath(normalized_icon)
+            if not icon_value:
+                errors.append(f"{name}: {field_name} must name a relative icon file")
+                continue
+            if portable_icon.is_absolute() or ".." in portable_icon.parts:
+                errors.append(f"{name}: {field_name} must use a portable relative path")
+                continue
+            if profile == PROFILE_CERATOPS and icon_value != CERATOPS_ICON_REL:
                 errors.append(f"{name}: {field_name} should use shared Ceratops icon {CERATOPS_ICON_REL}")
-            icon_path = (skill_dir / icon_value).resolve() if icon_value else None
-            if icon_path and not icon_path.is_file():
+            icon_path = skill_dir / portable_icon
+            if not icon_path.is_file():
                 errors.append(f"{name}: {field_name} points to missing file {icon_value}")
-            elif icon_path and CERATOPS_ICON_SOURCE.is_file() and icon_path.read_bytes() != CERATOPS_ICON_SOURCE.read_bytes():
+            elif profile == PROFILE_CERATOPS and CERATOPS_ICON_SOURCE.is_file() and icon_path.read_bytes() != CERATOPS_ICON_SOURCE.read_bytes():
                 errors.append(f"{name}: {field_name} does not match repo icon {CERATOPS_ICON_SOURCE.relative_to(ROOT)}")
         errors.extend(check_skill_refs(openai_yaml, yaml_text, skill_names))
 
@@ -871,12 +961,13 @@ def check_secrets() -> list[str]:
 def main() -> int:
     """Run section, full, or governance skill consistency validation."""
 
-    global ROOT, SKILLS_DIR, README, SECTION_MANIFEST, REPO_NAME, CERATOPS_ICON_SOURCE
-    global BOOTSTRAP_INSTALLER, RUNTIME_INSTALLER, VALIDATOR, WORKFLOW
+    global ROOT, SKILLS_DIR, README, SECTION_MANIFEST, CERATOPS_ICON_SOURCE
+    global BOOTSTRAP_INSTALLER, RUNTIME_INSTALLER, BUNDLE_RESOLVER, FAST_CHANGE_HELPER
+    global STAGE_HELPER, VALIDATOR, WORKFLOW
 
-    parser = argparse.ArgumentParser(description="Validate Ceratops skill source and runtime-generation inputs.")
+    parser = argparse.ArgumentParser(description="Validate Ceratops-compatible skill source and runtime-generation inputs.")
     parser.add_argument("--repo-root", type=pathlib.Path, help="Source skills repository root.")
-    parser.add_argument("--mode", choices=["full", "sections", "governance"], default="full", help="Use sections for the lightweight shared-section check or governance for explicit audit checks.")
+    parser.add_argument("--mode", choices=["full", "sections", "governance"], default="full", help="Use sections for a targeted shared-section check or governance for explicit profile-aware audit checks.")
     args = parser.parse_args()
 
     if args.repo_root is not None:
@@ -884,10 +975,12 @@ def main() -> int:
         SKILLS_DIR = ROOT / "skills"
         README = ROOT / "README.md"
         SECTION_MANIFEST = ROOT / "templates" / "skill-sections.json"
-        REPO_NAME = ROOT.name
         CERATOPS_ICON_SOURCE = ROOT / "assets" / "ceratops-logo-500.png"
         BOOTSTRAP_INSTALLER = ROOT / "scripts" / "install-skills.ps1"
         RUNTIME_INSTALLER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "runtime" / "install-managed-skills.ps1"
+        BUNDLE_RESOLVER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "runtime" / "resolve-lifecycle-bundle.ps1"
+        FAST_CHANGE_HELPER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "fast-change-preflight.ps1"
+        STAGE_HELPER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "stage-skill-release-branch.ps1"
         VALIDATOR = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "validation" / "validate-skills-consistency.py"
         WORKFLOW = ROOT / ".github" / "workflows" / "validate.yml"
 
@@ -898,6 +991,8 @@ def main() -> int:
         errors.append("missing templates/skill-sections.json")
 
     manifest = load_section_manifest() if SECTION_MANIFEST.is_file() else {"sections": {}, "skills": {}}
+    errors.extend(check_repo_manifest_identity(manifest))
+    profile = validation_profile(manifest)
     skill_dirs = sorted(p for p in SKILLS_DIR.iterdir() if p.is_dir()) if SKILLS_DIR.is_dir() else []
     if args.mode == "sections":
         errors.extend(check_section_sources(manifest, skill_dirs))
@@ -911,13 +1006,14 @@ def main() -> int:
 
     if not README.is_file():
         errors.append("missing README.md")
-    if not (ROOT / SKILL_CONTRACT_DIR).is_dir():
-        errors.append(f"missing skill contract directory: {SKILL_CONTRACT_DIR}")
-    for rel_path in REQUIRED_CONTRACT_FILES:
-        if not (ROOT / rel_path).is_file():
-            errors.append(f"missing required contract file: {rel_path}")
-    if not CERATOPS_ICON_SOURCE.is_file():
-        errors.append(f"missing shared Ceratops icon source: {CERATOPS_ICON_SOURCE.relative_to(ROOT)}")
+    if profile == PROFILE_CERATOPS:
+        if not (ROOT / SKILL_CONTRACT_DIR).is_dir():
+            errors.append(f"missing skill contract directory: {SKILL_CONTRACT_DIR}")
+        for rel_path in REQUIRED_CONTRACT_FILES:
+            if not (ROOT / rel_path).is_file():
+                errors.append(f"missing required contract file: {rel_path}")
+        if not CERATOPS_ICON_SOURCE.is_file():
+            errors.append(f"missing shared Ceratops icon source: {CERATOPS_ICON_SOURCE.relative_to(ROOT)}")
 
     sections_obj = manifest.get("sections", {})
     workflow_hints_obj = manifest.get("maintenance_workflows", {})
@@ -934,6 +1030,10 @@ def main() -> int:
     if not isinstance(workflow_hints_obj, dict):
         errors.append("section manifest maintenance_workflows must be an object")
     else:
+        for workflow_name, commands in workflow_hints.items():
+            if not isinstance(commands, list) or not all(isinstance(item, str) for item in commands):
+                errors.append(f"section manifest maintenance_workflows.{workflow_name} must be a list of strings")
+    if profile == PROFILE_CERATOPS:
         required_workflows = {
             "shared_source_changes",
             "skill_local_or_metadata_changes",
@@ -941,13 +1041,7 @@ def main() -> int:
             "new_skill_local_availability",
         }
         for workflow_name in required_workflows:
-            commands = workflow_hints.get(workflow_name)
-            if not isinstance(commands, list) or not all(isinstance(item, str) for item in commands):
-                errors.append(f"section manifest maintenance_workflows.{workflow_name} must be a list of strings")
-        for workflow_name, commands in workflow_hints.items():
-            if workflow_name in required_workflows:
-                continue
-            if not isinstance(commands, list) or not all(isinstance(item, str) for item in commands):
+            if workflow_name not in workflow_hints:
                 errors.append(f"section manifest maintenance_workflows.{workflow_name} must be a list of strings")
     for section_name, section_rel_path in sections.items():
         if not isinstance(section_rel_path, str) or not (ROOT / section_rel_path).is_file():
@@ -985,12 +1079,22 @@ def main() -> int:
         if skill_dir.name not in assignments:
             errors.append(f"{skill_dir.name}: missing section assignment in manifest")
             continue
-        errors.extend(check_skill(skill_dir, readme_rows, manifest, skill_names))
-    errors.extend(check_contract_source_lines())
+        errors.extend(check_skill(skill_dir, readme_rows, manifest, skill_names, profile))
+    if profile == PROFILE_CERATOPS:
+        errors.extend(check_contract_source_lines())
     errors.extend(check_secrets())
-    errors.extend(check_retired_baseline_absent())
-    if args.mode == "governance":
-        errors.extend(check_governance_consistency(manifest, skill_dirs, readme_rows, skill_names))
+    if profile == PROFILE_CERATOPS:
+        errors.extend(check_retired_baseline_absent())
+    errors.extend(
+        check_governance_consistency(
+            manifest,
+            skill_dirs,
+            readme_rows,
+            skill_names,
+            profile,
+            include_installed_runtime=args.mode == "governance",
+        )
+    )
 
     if errors:
         print(f"errors: {len(errors)}", file=sys.stderr)
