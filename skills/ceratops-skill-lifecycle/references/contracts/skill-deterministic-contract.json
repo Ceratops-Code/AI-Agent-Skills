@@ -2,7 +2,7 @@
   "contract_format_version": 1,
   "kind": "skill_design_contract",
   "name": "ceratops_skill_deterministic_contract",
-  "captured_on": "2026-05-14",
+  "captured_on": "2026-07-20",
   "source_files": [
     {
       "path": "$AI_AGENT_SKILLS_ROOT/skills/ceratops-skill-lifecycle/references/skill-source-docs.json",
@@ -11,6 +11,10 @@
     {
       "path": "$AI_AGENT_SKILLS_ROOT/skills/ceratops-skill-lifecycle/scripts/validation/validate-skills-consistency.py",
       "lines": "deterministic skill source, metadata, runtime, contract, and portability checks"
+    },
+    {
+      "path": "$AI_AGENT_SKILLS_ROOT/skills/ceratops-skill-lifecycle/scripts/runtime/render-runtime-skills.py",
+      "lines": "source-scoped managed runtime ownership and stale cleanup"
     },
     {
       "path": "$AI_AGENT_SKILLS_ROOT/templates/skill-sections.json",
@@ -55,9 +59,11 @@
     "apply_flag": null,
     "auto_apply_check_ids": [],
     "ai_agent_check_ids": [
+      "skill.repository_identity_and_profile",
       "skill.frontmatter_and_layout",
       "skill.metadata_alignment",
       "skill.runtime_payload_portability",
+      "skill.runtime_source_ownership",
       "skill.shared_section_generation",
       "skill.resource_layout",
       "skill.public_doc_alignment",
@@ -75,6 +81,19 @@
     "result_contract": "Exit 0 with an ok line when selected deterministic checks pass; nonzero with line-specific errors when they fail."
   },
   "checks": [
+    {
+      "id": "skill.repository_identity_and_profile",
+      "category": "runtime",
+      "deterministic_evidence": [
+        "templates/skill-sections.json runtime_source_id",
+        "templates/skill-sections.json validation_profile"
+      ],
+      "pass_condition": "The source manifest declares a nonempty stable runtime_source_id and either the ceratops or ceratops-compatible validation profile; full validation always applies common checks and only the ceratops profile adds Ceratops-specific icon, contract, retired-artifact, and repository-governance checks.",
+      "source_lines": [
+        "skills/ceratops-skill-lifecycle/scripts/validation/validate-skills-consistency.py:check_repo_manifest_identity",
+        "skills/ceratops-skill-lifecycle/scripts/validation/validate-skills-consistency.py:main"
+      ]
+    },
     {
       "id": "skill.frontmatter_and_layout",
       "category": "source",
@@ -96,7 +115,7 @@
         "skills/<skill-name>/agents/openai.yaml",
         "source SKILL.md description"
       ],
-      "pass_condition": "OpenAI interface metadata exists, default_prompt names the skill, display name resembles the skill identity, short description overlaps the trigger description, and icon fields use the runtime-local shared Ceratops icon path.",
+      "pass_condition": "OpenAI interface metadata exists, default_prompt names the skill, display name resembles the skill identity, short description overlaps the trigger description, and icon fields point to existing portable runtime-local files; the ceratops profile additionally requires the shared Ceratops icon path and bytes.",
       "source_lines": [
         "skills/ceratops-skill-lifecycle/scripts/validation/validate-skills-consistency.py:parse_openai_interface",
         "skills/ceratops-skill-lifecycle/scripts/validation/validate-skills-consistency.py:display_name_sane",
@@ -112,7 +131,7 @@
         "templates/sections/*",
         "source SKILL.md"
       ],
-      "pass_condition": "Every Ceratops skill has a manifest assignment including core, source SKILL.md files remain delta-only, assigned shared sections render, and source files do not contain generated runtime shared-section blocks.",
+      "pass_condition": "Every source skill has a manifest assignment including core, source SKILL.md files remain delta-only, assigned shared sections render, and source files do not contain generated runtime shared-section blocks.",
       "source_lines": [
         "skills/ceratops-skill-lifecycle/scripts/validation/validate-skills-consistency.py:rendered_sections_block",
         "skills/ceratops-skill-lifecycle/scripts/validation/validate-skills-consistency.py:check_section_sources",
@@ -144,13 +163,29 @@
       ]
     },
     {
+      "id": "skill.runtime_source_ownership",
+      "category": "runtime",
+      "deterministic_evidence": [
+        "source manifest runtime_source_id",
+        "installed .runtime-manifest.json ownership",
+        "selected install scope"
+      ],
+      "pass_condition": "The renderer preflights all selected targets, refuses unmanaged folders, links, invalid ownership, and same-name folders owned by another source; a full install removes only stale folders with the same runtime_source_id, while an explicit targeted install removes none.",
+      "source_lines": [
+        "skills/ceratops-skill-lifecycle/scripts/runtime/resolve-lifecycle-bundle.ps1:Resolve-CeratopsLifecycleBundle",
+        "skills/ceratops-skill-lifecycle/scripts/runtime/render-runtime-skills.py:validate_install_targets",
+        "skills/ceratops-skill-lifecycle/scripts/runtime/render-runtime-skills.py:remove_stale_managed_skills",
+        "skills/ceratops-skill-lifecycle/scripts/runtime/install-managed-skills.ps1:targetedInstall"
+      ]
+    },
+    {
       "id": "skill.public_doc_alignment",
       "category": "docs",
       "deterministic_evidence": [
         "README.md skill table",
         "skills/<skill-name>/SKILL.md"
       ],
-      "pass_condition": "Every source skill has a README skill table row and every README Ceratops skill row points to an existing source skill directory.",
+      "pass_condition": "Every source skill has a row in the README Skills table and every row in that table points to an existing source skill directory, without requiring a name prefix.",
       "source_lines": [
         "skills/ceratops-skill-lifecycle/scripts/validation/validate-skills-consistency.py:readme_skill_rows",
         "skills/ceratops-skill-lifecycle/scripts/validation/validate-skills-consistency.py:check_skill"
@@ -194,9 +229,9 @@
         "installed managed runtime manifests",
         "validation command surfaces",
         "skill deterministic and nondeterministic contract mappings",
-        "skill lifecycle action command snippets"
+        "multi-action lifecycle action references and command snippets"
       ],
-      "pass_condition": "Explicit governance validation checks active skill identity drift, rename completeness, current-source skill references, generated runtime shared-section integrity, validation command-surface alignment, skill deterministic remediation-policy classification, skill lifecycle action scope command drift, and compact validator success output without adding one-time stale-term detectors.",
+      "pass_condition": "Full validation checks rename completeness, current-source skill references, README alignment, and profile-aware source governance; governance mode additionally checks source-owned installed runtime identity and generated shared-section integrity without one-time stale-term detectors.",
       "source_lines": [
         "skills/ceratops-skill-lifecycle/scripts/validation/validate-skills-consistency.py:check_governance_consistency",
         "skills/ceratops-skill-lifecycle/scripts/validation/validate-skills-consistency.py:check_skill_contract_remediation_policy",

@@ -20,8 +20,9 @@ repo docs, then update the narrowest correct source that exists.
 - Whether the change belongs in skill-local text, shared sections, manifests,
   runtime generation, validation, helper-runtime code or claims, contracts, or
   docs.
-- Which Ceratops-specific surfaces are absent in a non-Ceratops repo and
-  therefore intentionally skipped.
+- Target repo `runtime_source_id` and `validation_profile`; the `ceratops`
+  profile adds Ceratops icon, contract, retired-artifact, and repository
+  governance checks while `ceratops-compatible` uses the common full checks.
 - Whether the task should stop at local repo changes or also continue to local
   promotion.
 
@@ -37,7 +38,7 @@ Infer missing inputs from current repo state before asking.
   `create`.
 - If the task is Ceratops skill-contract upkeep, return to the parent skill and
   select `skills-contract-review`.
-- If the task is consistency review across the active Codex skill catalog,
+- If the task is consistency review across manifest-managed installed skills,
   return to the parent skill and select `global-skills-consistency-review`.
 - If the task only promotes already-prepared committed changes, select
   `change-promotion`.
@@ -53,8 +54,9 @@ Infer missing inputs from current repo state before asking.
   broaden to full-file reads only for governing control files, ownership
   decisions, or unresolved context.
 - Identify source-of-truth files versus generated output.
-- Identify absent Ceratops repo components before treating template, validation,
-  installation, or contract steps as required.
+- Require a compatible section manifest before using the shared validator or
+  installer. Do not infer compatibility from skill-name prefixes or from the
+  presence of the lifecycle source skill.
 - Classify the requested change as skill-local, shared, structural,
   validation-only, helper-runtime-adjacent, or docs-only.
 
@@ -97,6 +99,10 @@ Infer missing inputs from current repo state before asking.
   command when supported.
 - If runtime generation code changed, run the repo's runtime-generation check
   path when provided.
+- When invoking lifecycle validation or installation for another compatible
+  repo, resolve one installed lifecycle helper bundle first, fall back to the
+  target checkout's lifecycle bundle only when needed for bootstrap, and pass
+  the target checkout explicitly as `-RepoRoot` or `--repo-root`.
 - Reserve governance validation for scheduled governance automation, explicit
   broad validation, validation-script changes, or concrete cross-surface
   uncertainty.

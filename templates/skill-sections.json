@@ -1,4 +1,6 @@
 {
+  "runtime_source_id": "Ceratops-Code/AI-Agent-Skills",
+  "validation_profile": "ceratops",
   "sections": {
     "core": "templates/sections/core.md",
     "multi-action-skill": "templates/sections/multi-action-skill.md"

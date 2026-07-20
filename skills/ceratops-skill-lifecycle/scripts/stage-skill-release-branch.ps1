@@ -4,9 +4,7 @@ param(
     [string[]]$ApprovedBranch = @(),
     [string]$MainBranch = "main",
     [string]$ReleaseBranch = "release/local",
-    [string]$RemoteName = "origin",
-    [ValidateSet("none", "full")]
-    [string]$Validate = "full"
+    [string]$RemoteName = "origin"
 )
 
 # Skill-local helper for deterministic change-promotion work. It prepares the
@@ -23,7 +21,14 @@ if ([string]::IsNullOrWhiteSpace($SkillsRepoRoot)) {
 }
 
 $resolvedSkillsRepoRoot = (Resolve-Path -LiteralPath $SkillsRepoRoot).Path
-$scriptRoot = $PSScriptRoot
+$checkoutBundleRoot = Join-Path $resolvedSkillsRepoRoot "skills\ceratops-skill-lifecycle"
+$bundleResolver = Join-Path $PSScriptRoot "runtime\resolve-lifecycle-bundle.ps1"
+if (-not (Test-Path -LiteralPath $bundleResolver -PathType Leaf)) {
+    throw "Missing lifecycle helper-bundle resolver: $bundleResolver"
+}
+. $bundleResolver
+$bundleRoot = Resolve-CeratopsLifecycleBundle -CheckoutBundleRoot $checkoutBundleRoot
+$scriptRoot = Join-Path $bundleRoot "scripts"
 $prepareScript = Join-Path $scriptRoot "prepare-release-branch.ps1"
 $pendingScript = Join-Path $scriptRoot "check-pending-release-work.ps1"
 
@@ -135,36 +140,33 @@ foreach ($branch in $ApprovedBranch) {
     $mergedBranches += $branch
 }
 
-$validation = "skipped"
-if ($Validate -ne "none") {
-    $validator = Join-Path $scriptRoot "validation\validate-skills-consistency.py"
-    if (-not (Test-Path -LiteralPath $validator -PathType Leaf)) {
-        throw "Missing skill consistency validator: $validator"
-    }
-    Invoke-QuietNative -FilePath "python" -Arguments @(
-        $validator,
-        "--repo-root",
-        $resolvedSkillsRepoRoot,
-        "--mode",
-        $Validate
-    )
-    $validation = $Validate
+$validator = Join-Path $scriptRoot "validation\validate-skills-consistency.py"
+if (-not (Test-Path -LiteralPath $validator -PathType Leaf)) {
+    throw "Missing skill consistency validator: $validator"
 }
+Invoke-QuietNative -FilePath "python" -Arguments @(
+    $validator,
+    "--repo-root",
+    $resolvedSkillsRepoRoot,
+    "--mode",
+    "full"
+)
+$validation = "full"
 
-$runtimeInstall = "skipped_missing_installer"
 $installScript = Join-Path $scriptRoot "runtime\install-managed-skills.ps1"
-if (Test-Path -LiteralPath $installScript) {
-    Invoke-QuietNative -FilePath "powershell" -Arguments @(
-        "-NoProfile",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-File",
-        $installScript,
-        "-RepoRoot",
-        $resolvedSkillsRepoRoot
-    )
-    $runtimeInstall = "managed"
+if (-not (Test-Path -LiteralPath $installScript -PathType Leaf)) {
+    throw "Missing runtime skill installer: $installScript"
 }
+Invoke-QuietNative -FilePath "powershell" -Arguments @(
+    "-NoProfile",
+    "-ExecutionPolicy",
+    "Bypass",
+    "-File",
+    $installScript,
+    "-RepoRoot",
+    $resolvedSkillsRepoRoot
+)
+$runtimeInstall = "managed"
 
 $pendingArgs = @(
     "-NoProfile",

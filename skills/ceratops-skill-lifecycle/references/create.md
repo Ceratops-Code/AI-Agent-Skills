@@ -22,8 +22,8 @@ preview unless the user explicitly opts out.
   and
   `skills/ceratops-skill-lifecycle/references/contracts/skill-nondeterministic-contract.json`
   shape the new skill.
-- Which Ceratops-specific surfaces are absent in a non-Ceratops repo and should
-  be skipped.
+- Target repo `runtime_source_id` and `validation_profile` when the new skill is
+  being integrated into a Ceratops-compatible repository.
 
 Infer missing inputs from the current repo structure and the user request before
 asking.
@@ -49,9 +49,10 @@ asking.
 - In this repo, inspect `skills/ceratops-skill-lifecycle/references/` and select
   only deterministic and non-deterministic checks that apply to the skill's
   purpose, artifacts, tools, references, and side effects.
-- In another repo, detect whether shared sections, manifests, validators,
-  installers, metadata files, docs, or runtime payload declarations exist before
-  treating them as required.
+- In another repo, use the shared lifecycle only when
+  `templates/skill-sections.json` declares `runtime_source_id`,
+  `validation_profile: ceratops-compatible`, shared sections, and per-skill
+  assignments. Do not require Ceratops-prefixed skill names.
 - When a Ceratops skills source checkout is locally present and no explicit
   other source repo was named, scaffold and edit the new skill only in that
   checkout's thread-owned worktree; after validation, promote through the
@@ -93,8 +94,9 @@ asking.
 - For a Ceratops skills source checkout, use `change-promotion` and verify the
   managed install into `$CODEX_HOME/skills` unless the user explicitly opted
   out.
-- In another repo, run only that repo's available install, merge, ship, or
-  runtime update path; if none exists, report it as not provided.
+- In another compatible repo, resolve the installed lifecycle helper bundle
+  first and the checkout bundle second, then pass the target repo explicitly to
+  its full validation and managed install path.
 
 ## Done When
 

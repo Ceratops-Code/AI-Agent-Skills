@@ -11,10 +11,10 @@ skills to synced `main`.
 ### Defaults
 
 - Default release branch: `release/local`
-- (D) Skill runtime installer:
-  `powershell -ExecutionPolicy Bypass -File
-  .\skills\ceratops-skill-lifecycle\scripts\runtime\install-managed-skills.ps1`
-- Installed Ceratops skill path: `$CODEX_HOME/skills/<skill-name>`
+- (D) Lifecycle helper bundle: the supported installed
+  `ceratops-skill-lifecycle` folder first, then the target checkout's lifecycle
+  folder for bootstrap.
+- Installed managed skill path: `$CODEX_HOME/skills/<skill-name>`
 
 ### Script Bundle
 
@@ -82,11 +82,12 @@ asking.
   release/local` to fetch/prune, switch to `main`, fast-forward from
   `origin/main`, align the reusable local release branch, and emit compact sync
   output.
-- (D) Run `powershell -ExecutionPolicy Bypass -File
-  .\skills\ceratops-skill-lifecycle\scripts\runtime\install-managed-skills.ps1`
-  from `main` so `$CODEX_HOME/skills` is rebuilt from the merged main snapshot.
+- (D) Run the selected lifecycle bundle's
+  `scripts/runtime/install-managed-skills.ps1 -RepoRoot <repo>` after restoring
+  `main`, so this source repository's managed skills are rebuilt from the
+  merged main snapshot and same-source stale runtime folders are removed.
 - Verify the skills repo checkout is clean on `main` and expected installed
-  skill folders have current `.ceratops-runtime-manifest.json` files.
+  skill folders have current `.runtime-manifest.json` files.
 
 ## Done When
 

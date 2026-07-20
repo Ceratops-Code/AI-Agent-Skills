@@ -17,8 +17,10 @@ Contributions should keep skills practical, current, and safe.
   keep GH-only wording in GH-only sections, keep GH org/repo/PR/code/artifact
   contract review in
   `skills/ceratops-gh-repo-lifecycle/references/contracts-review.md`, and keep
-  skill consistency or skill-design contract upkeep in
-  `skills/ceratops-skill-lifecycle/references/skills-consistency-and-contract-review.md`.
+  source-neutral catalog consistency in
+  `skills/ceratops-skill-lifecycle/references/global-skills-consistency-review.md`,
+  and skill-design contract upkeep in
+  `skills/ceratops-skill-lifecycle/references/skills-contract-review.md`.
 - Do not add secrets, private endpoints, local machine paths, or org-internal
   procedures.
 - Prefer current official docs over memory when changing GitHub, registry, or
