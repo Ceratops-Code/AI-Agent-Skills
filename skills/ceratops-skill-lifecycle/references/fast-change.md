@@ -24,10 +24,9 @@ skill and select `update`.
 
 ### Script Bundle
 
-- (D) Resolve the installed lifecycle bundle first and the target checkout's
-  lifecycle bundle second, then run `scripts/fast-change-preflight.ps1
-  -SkillsRepoRoot <repo> -ReleaseBranch release/local -SkillName <skill-name>
-  -TargetPath <target-file>` from the selected bundle.
+- (D) Run `scripts/fast-change-preflight.ps1 -SkillsRepoRoot <repo>
+  -ReleaseBranch release/local -SkillName <skill-name> -TargetPath
+  <target-file>` from the supported installed lifecycle bundle.
 
 ## Constraints
 
@@ -50,10 +49,10 @@ skill and select `update`.
    file, and targeted install command evidence; stop on helper failure.
 4. Patch the target source file and inspect the diff.
 5. Commit the release-branch change.
-6. Update only the affected runtime skill copy through the selected lifecycle
-   bundle's `scripts/runtime/install-managed-skills.ps1 -RepoRoot <repo> -Skill
-   <skill-name>`; stop if the bundle is unavailable. A targeted install never
-   removes stale skills.
+6. Update only the affected runtime skill copy through `python
+   scripts/install-skills.py --repo-root <repo> --skill <skill-name>` in the
+   target repository; stop if the installed lifecycle bundle is unavailable. A
+   targeted install runs full validation and never removes stale skills.
 7. Optionally apply and commit the same change in explicitly requested active
    worktrees or branches when it merges cleanly.
 

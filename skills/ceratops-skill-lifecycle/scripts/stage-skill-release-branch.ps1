@@ -21,14 +21,7 @@ if ([string]::IsNullOrWhiteSpace($SkillsRepoRoot)) {
 }
 
 $resolvedSkillsRepoRoot = (Resolve-Path -LiteralPath $SkillsRepoRoot).Path
-$checkoutBundleRoot = Join-Path $resolvedSkillsRepoRoot "skills\ceratops-skill-lifecycle"
-$bundleResolver = Join-Path $PSScriptRoot "runtime\resolve-lifecycle-bundle.ps1"
-if (-not (Test-Path -LiteralPath $bundleResolver -PathType Leaf)) {
-    throw "Missing lifecycle helper-bundle resolver: $bundleResolver"
-}
-. $bundleResolver
-$bundleRoot = Resolve-CeratopsLifecycleBundle -CheckoutBundleRoot $checkoutBundleRoot
-$scriptRoot = Join-Path $bundleRoot "scripts"
+$scriptRoot = $PSScriptRoot
 $prepareScript = Join-Path $scriptRoot "prepare-release-branch.ps1"
 $pendingScript = Join-Path $scriptRoot "check-pending-release-work.ps1"
 
@@ -140,32 +133,16 @@ foreach ($branch in $ApprovedBranch) {
     $mergedBranches += $branch
 }
 
-$validator = Join-Path $scriptRoot "validation\validate-skills-consistency.py"
-if (-not (Test-Path -LiteralPath $validator -PathType Leaf)) {
-    throw "Missing skill consistency validator: $validator"
+$installScript = Join-Path $resolvedSkillsRepoRoot "scripts\install-skills.py"
+if (-not (Test-Path -LiteralPath $installScript -PathType Leaf)) {
+    throw "Missing repository skill installer: $installScript"
 }
 Invoke-QuietNative -FilePath "python" -Arguments @(
-    $validator,
-    "--repo-root",
-    $resolvedSkillsRepoRoot,
-    "--mode",
-    "full"
-)
-$validation = "full"
-
-$installScript = Join-Path $scriptRoot "runtime\install-managed-skills.ps1"
-if (-not (Test-Path -LiteralPath $installScript -PathType Leaf)) {
-    throw "Missing runtime skill installer: $installScript"
-}
-Invoke-QuietNative -FilePath "powershell" -Arguments @(
-    "-NoProfile",
-    "-ExecutionPolicy",
-    "Bypass",
-    "-File",
     $installScript,
-    "-RepoRoot",
+    "--repo-root",
     $resolvedSkillsRepoRoot
 )
+$validation = "full"
 $runtimeInstall = "managed"
 
 $pendingArgs = @(

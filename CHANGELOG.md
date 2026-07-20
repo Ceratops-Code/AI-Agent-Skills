@@ -3,9 +3,9 @@
 ## Unreleased
 
 - Moved Ceratops skills to a copy-based runtime install model: source skills
-  stay delta-only, `scripts/render-runtime-skills.py` renders shared sections,
-  and `scripts/install-skills.ps1` copies managed runtime skill folders plus
-  declared payloads.
+  stay delta-only, the lifecycle renderer expands shared sections, and the
+  versioned `scripts/install-skills.py` bootstrap installs managed runtime skill
+  folders plus declared payloads.
 - Consolidated GitHub repo lifecycle work into `ceratops-gh-repo-lifecycle` and
   skill creation, mutation, promotion, and shipping work into
   `ceratops-skill-lifecycle`.

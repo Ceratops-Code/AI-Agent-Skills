@@ -14,7 +14,10 @@ repo docs, then update the narrowest correct source that exists.
 
 - Existing skills or shared files in scope: `skills/*`, `templates/sections/`,
   `templates/skill-sections.json`,
+  `skills/ceratops-skill-lifecycle/scripts/templates/install-skills-template.py`,
+  `scripts/install-skills.py`,
   `skills/ceratops-skill-lifecycle/scripts/runtime/render-runtime-skills.py`,
+  installer resolution, synchronization, and global-review helpers,
   `skills/ceratops-skill-lifecycle/scripts/validation/validate-skills-consistency.py`,
   skill-local `references/`, helper-runtime files, and repo docs.
 - Whether the change belongs in skill-local text, shared sections, manifests,
@@ -99,10 +102,10 @@ Infer missing inputs from current repo state before asking.
   command when supported.
 - If runtime generation code changed, run the repo's runtime-generation check
   path when provided.
-- When invoking lifecycle validation or installation for another compatible
-  repo, resolve one installed lifecycle helper bundle first, fall back to the
-  target checkout's lifecycle bundle only when needed for bootstrap, and pass
-  the target checkout explicitly as `-RepoRoot` or `--repo-root`.
+- Install a compatible repo through its `python scripts/install-skills.py
+  --repo-root <repo>` entrypoint. It must use the supported installed lifecycle
+  bundle, with target-checkout fallback allowed only for the initial Ceratops
+  installation, and every install must run full target-repository validation.
 - Reserve governance validation for scheduled governance automation, explicit
   broad validation, validation-script changes, or concrete cross-surface
   uncertainty.

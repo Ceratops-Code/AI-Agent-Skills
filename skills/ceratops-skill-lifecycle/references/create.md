@@ -94,9 +94,9 @@ asking.
 - For a Ceratops skills source checkout, use `change-promotion` and verify the
   managed install into `$CODEX_HOME/skills` unless the user explicitly opted
   out.
-- In another compatible repo, resolve the installed lifecycle helper bundle
-  first and the checkout bundle second, then pass the target repo explicitly to
-  its full validation and managed install path.
+- In another compatible repo, run `python scripts/install-skills.py --repo-root
+  <repo>` so the versioned repository bootstrap uses the installed lifecycle
+  bundle and performs full validation before installation.
 
 ## Done When
 

@@ -24,9 +24,9 @@ Skills repo checkout and worktrees:
 - Keep installed Ceratops skill folders generated from the skills repo checkout
   path, not from task worktrees. For local preview of unpublished batches,
   refresh remote refs with `git fetch --prune origin`, then merge ready worktree
-  branches into the skills repo checkout's local `release/*` branch and rerun
-  `skills/ceratops-skill-lifecycle/scripts/runtime/install-managed-skills.ps1`
-  instead of generating installed skills from task worktrees.
+  branches into the skills repo checkout's local `release/*` branch and run
+  `python scripts/install-skills.py` from that checkout instead of generating
+  installed skills from task worktrees.
 - Do not stage skill-source changes into a local `release/*` batch unless the
   task explicitly requests staging, shipping, or local preview sync.
 - Skills-repo changes must ship from `release/*`, never directly from task or

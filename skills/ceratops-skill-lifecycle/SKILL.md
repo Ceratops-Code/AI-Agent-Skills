@@ -59,6 +59,10 @@ Infer missing inputs from the current repo state before asking.
   declares `runtime_source_id`, `validation_profile: ceratops-compatible`,
   shared sections, and per-skill assignments. Skill names need not use a
   Ceratops prefix.
+- Treat `scripts/templates/install-skills-template.py` as the authoritative
+  installer source. Copy only `scripts/install-skills.py` into compatible
+  repositories, and compare installers only by their parsed integer
+  `INSTALLER_VERSION`.
 - Stop in the task worktree by default for update actions and for create actions
   outside this repo. In this repo, new Ceratops skill creation continues through
   change-promotion and install verification unless the user opts out.
