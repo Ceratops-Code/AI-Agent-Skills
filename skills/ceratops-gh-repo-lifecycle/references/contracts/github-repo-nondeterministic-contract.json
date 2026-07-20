@@ -1,0 +1,77 @@
+{
+  "contract_format_version": 1,
+  "kind": "nondeterministic_review_contract",
+  "name": "ceratops_github_repo_nondeterministic_contract",
+  "surface": "repo",
+  "deterministic_contract": "github-repo-deterministic-contract.json",
+  "description": "Repository checks that require intent judgment, current documentation, paid and free classification, or browser confirmation.",
+  "evidence": {
+    "command": "python -m github_contract_engine collect --surface repo --repo OWNER/REPO --local-repo-path PATH --json",
+    "notes": [
+      "Collect a separate code evidence bundle when repository-content quality or workflow-file intent is in scope."
+    ]
+  },
+  "review_result_values": {
+    "pass": "AI-agent review found the intent satisfied and recorded evidence.",
+    "fail": "AI-agent review found a concrete mismatch.",
+    "approved_drift": "The mismatch is allowed by the deterministic contract's approved drift profile.",
+    "blocked": "Review needs unavailable permission, paid functionality, a missing product decision, or browser confirmation.",
+    "not_applicable": "Repository state or source does not apply."
+  },
+  "checks": [
+    {
+      "id": "ND.github.repo-public-contract-accuracy",
+      "applies_when": "A non-archived repository, especially a public repository, is reviewed.",
+      "review_required": "Confirm description, topics, homepage, visibility, feature flags, support route, and visible GitHub surfaces are accurate and not misleading.",
+      "evidence_keys": ["repository.repo", "repository.topics", "repository.content.community_profile"]
+    },
+    {
+      "id": "ND.github.release-posture-fit",
+      "applies_when": "The repository has releases, tags, a protected release process, or public release claims.",
+      "review_required": "Confirm releases, tags, draft and prerelease state, release-note source, rollback expectations, and user-facing text match the project.",
+      "evidence_keys": ["repository.stale.releases", "repository.stale.tags"]
+    },
+    {
+      "id": "ND.github.merge-branch-policy-fit",
+      "applies_when": "The repository is neither archived nor a fork.",
+      "review_required": "Confirm required checks match real CI, review count is appropriate, bypass and administration exceptions are deliberate, and private-plan gaps are classified.",
+      "evidence_keys": ["repository.protection", "repository.rulesets"]
+    },
+    {
+      "id": "ND.github.actions-policy-fit",
+      "applies_when": "Actions is enabled or workflows are present.",
+      "review_required": "Confirm Actions policy, workflow protections, token defaults, OIDC posture, SHA pinning, retention, fork approval, and recent default-branch runs fit the repository.",
+      "evidence_keys": ["api.actions.oidc_subject_claim_posture", "repository.actions", "repository.rulesets", "local.workflows"]
+    },
+    {
+      "id": "ND.github.security-reporting-and-paid-surface-fit",
+      "applies_when": "Security settings, public repositories, or private repositories with paid-feature responses are reviewed.",
+      "review_required": "Confirm reporting, paid controls, alerts, configurations, and churn-prone settings are classified correctly and not enabled without explicit approval.",
+      "evidence_keys": ["repository.security"]
+    },
+    {
+      "id": "ND.github.dependabot-queue-fit",
+      "applies_when": "Dependabot alerts or open Dependabot pull requests exist.",
+      "review_required": "Classify queue items as active work, intentionally retained, approved drift, stale, or blocked before merging or closing.",
+      "evidence_keys": ["repository.security.dependabot_alerts", "repository.security.dependabot_prs"]
+    },
+    {
+      "id": "ND.github.stale-state-intent-classification",
+      "applies_when": "Open pull requests, extra branches, tags, releases, security alerts, code-scanning alerts, or process findings are present.",
+      "review_required": "Classify each item as active, intentionally retained, approved drift, stale, or blocked before removal or repair.",
+      "evidence_keys": ["repository.stale"]
+    },
+    {
+      "id": "ND.github.sources-current-doc-recheck",
+      "applies_when": "Feature availability, paid status, or API behavior matters and local evidence is ambiguous.",
+      "review_required": "Recheck official GitHub documentation or gh help before deciding drift.",
+      "evidence_keys": ["contract-source-docs.json"]
+    },
+    {
+      "id": "ND.reference-repo.comparator-only",
+      "applies_when": "A reference repository is consulted.",
+      "review_required": "Record the exact standards question answered and do not audit or repair the reference repository.",
+      "evidence_keys": ["reference_repository_question"]
+    }
+  ]
+}

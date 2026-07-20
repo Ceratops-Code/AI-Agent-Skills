@@ -11,11 +11,11 @@ release semantics.
 
 ### Script Bundle
 
-- (D) GitHub, code, and artifact setup check: `python
-  skills/ceratops-gh-repo-lifecycle/scripts/github-validate-repo-artifact-contract.py
+- (D) GitHub, code, and artifact setup check, run from the lifecycle skill's
+  `scripts` folder: `python -m github_contract_engine validate repo
   --repo OWNER/REPO --surface all --subset create --local-repo-path PATH`
-- (D) Optional org posture check: `python
-  skills/ceratops-gh-repo-lifecycle/scripts/github-validate-org-contract.py
+- (D) Optional org posture check, run from the same folder:
+  `python -m github_contract_engine validate org
   --org ORG`
 
 ### Inputs To Capture
@@ -36,7 +36,7 @@ ambiguous, paid, or credential-bound.
   visibility decisions, initial hardening, and first release setup.
 - If the repo already exists and only needs local changes, normal release flow,
   state checks, stale cleanup, settings validation, or PR finalization, return
-  to the router and select the narrower action.
+  to the parent skill and select the narrower action.
 - Do not prefer connector storage over normal local credential stores.
 
 ### Workflow
@@ -96,7 +96,7 @@ ambiguous, paid, or credential-bound.
 ### Completion Gate
 
 - Final GitHub setting claims are backed by successful mutation commands or a
-  relevant `github-validate-repo-artifact-contract.py` run.
+  relevant `python -m github_contract_engine validate repo` run.
 - Maintainer bypass claims are backed by live pull-request-only ruleset evidence
   when the platform supports it.
 - Live external state is verified when command-result evidence is insufficient,

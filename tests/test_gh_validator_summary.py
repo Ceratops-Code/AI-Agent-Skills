@@ -1,10 +1,10 @@
 import contextlib
-import importlib.util
 import io
 import json
 import pathlib
 import subprocess
 import sys
+import tempfile
 import unittest
 from unittest import mock
 from typing import Any
@@ -12,48 +12,42 @@ from typing import Any
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "skills" / "ceratops-gh-repo-lifecycle" / "scripts"
-REFERENCES = SCRIPTS.parent / "references"
+REFERENCES = SCRIPTS.parent / "references" / "contracts"
 sys.path.insert(0, str(SCRIPTS))
 
-import validator_levels  # noqa: E402
-from github_contract import github_api  # noqa: E402
-from github_contract.collectors import registries  # noqa: E402
-from github_contract.collectors.local_repository import classify_repository  # noqa: E402
-from github_contract.collectors.repository import (  # noqa: E402
+from github_contract_engine import levels  # noqa: E402
+from github_contract_engine import schema_validation  # noqa: E402
+from github_contract_engine import github_api  # noqa: E402
+from github_contract_engine.collectors import registries  # noqa: E402
+from github_contract_engine.collectors.local_repository import (  # noqa: E402
+    classify_repository,
+    collect_local_repository,
+)
+from github_contract_engine.collectors.repository import (  # noqa: E402
     stale_branch_candidates,
     stale_pull_request_candidates,
     stale_release_candidates,
 )
-from github_contract.collect_observed_states import state_producer  # noqa: E402
-from github_contract.compare_states import (  # noqa: E402
+from github_contract_engine.collect_observed_states import (  # noqa: E402
+    _fetch_all,
+    state_producer,
+)
+from github_contract_engine.compare_states import (  # noqa: E402
     OPERATORS,
     compare_states,
     condition_matches,
     pointer_get,
 )
-from github_contract.compose_desired_state import compose_desired_state, repo_subset_ids  # noqa: E402
-from github_contract.format_report import (  # noqa: E402
+from github_contract_engine.compose_desired_state import compose_desired_state, repo_subset_ids  # noqa: E402
+from github_contract_engine.format_report import (  # noqa: E402
     build_report,
     build_summary_report,
     sanitize_for_output,
     write_json,
 )
-from github_contract.github_api import ApiResult, load_json  # noqa: E402
-from github_contract.remediations import HANDLERS  # noqa: E402
-
-
-def load_script_module(name: str, filename: str):
-    spec = importlib.util.spec_from_file_location(name, SCRIPTS / filename)
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[name] = module
-    spec.loader.exec_module(module)
-    return module
-
-
-pr_validator = load_script_module(
-    "pr_validator", "github-validate-pr-readiness-contract.py"
-)
+from github_contract_engine.github_api import ApiResult, load_json  # noqa: E402
+from github_contract_engine.remediations import HANDLERS  # noqa: E402
+from github_pr_workflow import readiness as pr_validator  # noqa: E402
 
 
 class GHContractStateEngineTests(unittest.TestCase):
@@ -72,10 +66,63 @@ class GHContractStateEngineTests(unittest.TestCase):
         }
 
     def test_levels_use_explicit_agent_review_name(self):
-        levels = validator_levels.parse_levels("ERROR,WARN,NEEDS_AI_AGENT_REVIEW")
-        self.assertEqual(levels, ["ERROR", "WARN", "NEEDS_AI_AGENT_REVIEW"])
+        selected_levels = levels.parse_levels("ERROR,WARN,NEEDS_AI_AGENT_REVIEW")
+        self.assertEqual(
+            selected_levels, ["ERROR", "WARN", "NEEDS_AI_AGENT_REVIEW"]
+        )
         with self.assertRaises(ValueError):
-            validator_levels.parse_levels("NEEDS_" + "REVIEW")
+            levels.parse_levels("NEEDS_" + "REVIEW")
+
+    def test_local_path_scan_distinguishes_regex_syntax_from_windows_paths(self):
+        rule = next(
+            item
+            for item in self.contracts["code"]["checks"]
+            if item["id"] == "stale_state.local_path_references"
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            fixture = pathlib.Path(temporary_directory) / "fixture.py"
+            fixture.write_text(
+                'USES_RE = re.compile(r"^\\s*uses:\\s*")\n', encoding="utf-8"
+            )
+            local = collect_local_repository(temporary_directory, [rule])
+            self.assertEqual(local["scans"][rule["id"]]["matches"], [])
+
+            windows_path = "C:" + chr(92) + "repo"
+            fixture.write_text(f"ROOT = {windows_path!r}\n", encoding="utf-8")
+            local = collect_local_repository(temporary_directory, [rule])
+            self.assertEqual(
+                local["scans"][rule["id"]]["matches"],
+                [
+                    {
+                        "path": "fixture.py",
+                        "pattern": rule["collection"]["regex_patterns"][0],
+                    }
+                ],
+            )
+
+    def test_private_node_app_with_docker_publish_is_not_an_npm_artifact(self):
+        local = {
+            "files": [
+                ".github/workflows/publish.yml",
+                "Dockerfile",
+                "package.json",
+            ],
+            "texts": {
+                ".github/workflows/publish.yml": "uses: docker/build-push-action@sha\n",
+                "Dockerfile": "FROM node:24\n",
+                "package.json": json.dumps(
+                    {"name": "private-app", "version": "1.0.0", "private": True}
+                ),
+            },
+        }
+        classification = classify_repository(
+            {"has_pages": False},
+            local,
+            [],
+            self.contracts["artifact"]["artifact_type_system"],
+        )
+        self.assertIn("docker_oci_image", classification["artifact_surface"])
+        self.assertNotIn("npm_package", classification["artifact_surface"])
 
     def test_contracts_compose_to_one_desired_state(self):
         desired_state = compose_desired_state(
@@ -83,7 +130,7 @@ class GHContractStateEngineTests(unittest.TestCase):
             {"owner": "owner", "repo": "repo", "default_branch": "main"},
             repo_subset_ids(self.contracts, "all"),
         )
-        self.assertEqual(len(desired_state["rules"]), 74)
+        self.assertEqual(len(desired_state["rules"]), 75)
         self.assertTrue(all(rule["assertions"] for rule in desired_state["rules"]))
         self.assertTrue(
             any(
@@ -92,6 +139,59 @@ class GHContractStateEngineTests(unittest.TestCase):
                 for request in desired_state["requests"]
             )
         )
+
+    def test_dependency_review_request_uses_visibility_and_owner_plan(self):
+        desired_state = compose_desired_state(
+            self.paths,
+            {"owner": "owner", "repo": "repo", "default_branch": "main"},
+            repo_subset_ids(self.contracts, "all"),
+            explicit_check_ids={"security.dependency_review_availability"},
+        )
+        dependency_review_endpoint = (
+            "/repos/owner/repo/dependency-graph/compare/main...main"
+        )
+
+        cases = (
+            ("private", None, 0),
+            ("private", "free", 0),
+            ("private", "pro", 1),
+            ("internal", "free", 1),
+            ("public", "free", 1),
+        )
+        for visibility, owner_plan, expected_call_count in cases:
+            calls: list[str] = []
+
+            def fake_run_gh_api(method, endpoint, *, paginate=False):
+                calls.append(endpoint)
+                if endpoint == "/repos/owner/repo":
+                    return ApiResult(
+                        True,
+                        method,
+                        endpoint,
+                        data={
+                            "archived": False,
+                            "default_branch": "main",
+                            "visibility": visibility,
+                        },
+                    )
+                if endpoint == "/orgs/owner":
+                    return ApiResult(
+                        True,
+                        method,
+                        endpoint,
+                        data={"plan": {"name": owner_plan}} if owner_plan else {},
+                    )
+                return ApiResult(True, method, endpoint, data={})
+
+            with mock.patch(
+                "github_contract_engine.collect_observed_states.run_gh_api",
+                side_effect=fake_run_gh_api,
+            ):
+                _fetch_all(desired_state)
+
+            self.assertEqual(
+                calls.count(dependency_review_endpoint), expected_call_count
+            )
 
     def test_every_assertion_has_an_operator_and_producer(self):
         for contract in self.contracts.values():
@@ -486,12 +586,14 @@ class GHContractStateEngineTests(unittest.TestCase):
 
     def test_contract_entrypoints_use_sanitized_json_writer(self):
         entrypoints = (
-            "github-collect-nd-evidence.py",
-            "github-validate-org-contract.py",
-            "github-validate-repo-artifact-contract.py",
+            "collect_non_deterministic_evidence.py",
+            "organization_validator.py",
+            "repository_validator.py",
         )
         for name in entrypoints:
-            text = (SCRIPTS / name).read_text(encoding="utf-8")
+            text = (SCRIPTS / "github_contract_engine" / name).read_text(
+                encoding="utf-8"
+            )
             self.assertIn("write_json(", text)
             self.assertNotIn("print(json.dumps(", text)
 
@@ -512,12 +614,50 @@ class GHContractStateEngineTests(unittest.TestCase):
 
     def test_consistency_validator_passes(self):
         process = subprocess.run(
-            [sys.executable, str(SCRIPTS / "validate-gh-contracts-consistency.py")],
-            cwd=ROOT,
+            [
+                sys.executable,
+                "-m",
+                "github_contract_engine",
+                "validate",
+                "consistency",
+            ],
+            cwd=SCRIPTS,
             text=True,
             capture_output=True,
         )
         self.assertEqual(process.returncode, 0, process.stdout + process.stderr)
+        schema = load_json(
+            SCRIPTS.parent
+            / "references"
+            / "schemas"
+            / "state-contract.schema.json"
+        )
+        misspelled = json.loads(json.dumps(self.contracts["repo"]))
+        assertion = misspelled["checks"][0]["assertions"][0]
+        assertion["operatr"] = assertion.pop("operator")
+        errors = schema_validation.validate_contract_document(
+            misspelled,
+            schema,
+            document_name="misspelled.json",
+            schema_name="state-contract.schema.json",
+        )
+        self.assertTrue(
+            any(
+                "operatr" in error and "/checks/0/assertions/0" in error
+                for error in errors
+            )
+        )
+        inert = json.loads(json.dumps(self.contracts["repo"]))
+        inert["checks"][0]["settable"] = True
+        inert_errors = schema_validation.validate_contract_document(
+            inert,
+            schema,
+            document_name="inert.json",
+            schema_name="state-contract.schema.json",
+        )
+        self.assertTrue(
+            any("settable" in error and "/checks/0" in error for error in inert_errors)
+        )
 
     def test_pr_readiness_emit_errors_on_error_level(self):
         finding = pr_validator.Finding(
@@ -532,19 +672,35 @@ class GHContractStateEngineTests(unittest.TestCase):
         self.assertEqual(json.loads(stream.getvalue())["counts"]["ERROR"], 1)
 
     def test_merge_helper_revalidates_after_review_wait(self):
-        text = (SCRIPTS / "validate-and-merge-pr.ps1").read_text(encoding="utf-8")
-        readiness_call = (
-            'Invoke-QuietNative -FilePath "python" -Arguments $readinessArgs'
+        text = (SCRIPTS / "github_pr_workflow" / "merge.py").read_text(
+            encoding="utf-8"
         )
+        readiness_call = "    _validate_readiness("
         positions = [
             index
             for index in range(len(text))
             if text.startswith(readiness_call, index)
         ]
         self.assertEqual(len(positions), 2)
-        self.assertLess(positions[0], text.index("$reviewGateScript,"))
-        self.assertLess(text.index("$reviewGateScript,"), positions[1])
-        self.assertLess(positions[1], text.index('$ghArgs = @("pr", "merge"'))
+        wait_position = text.index("review = codex_review.wait_for_codex_threads(")
+        self.assertLess(positions[0], wait_position)
+        self.assertLess(wait_position, positions[1])
+        self.assertLess(positions[1], text.index('gh_args = ["gh", "pr", "merge"'))
+
+        sync_text = (SCRIPTS / "github_pr_workflow" / "sync.py").read_text(
+            encoding="utf-8"
+        )
+        first_clean = sync_text.index('_assert_clean(repo_root, "before syncing main")')
+        fetch = sync_text.index('"fetch", "--prune", args.remote_name')
+        switch = sync_text.index('"switch", args.main_branch')
+        fast_forward = sync_text.index('"--ff-only"')
+        second_clean = sync_text.index('_assert_clean(repo_root, f"after fast-forwarding')
+        align = sync_text.index('"branch", "-f", branch, args.main_branch')
+        self.assertLess(first_clean, fetch)
+        self.assertLess(fetch, switch)
+        self.assertLess(switch, fast_forward)
+        self.assertLess(fast_forward, second_clean)
+        self.assertLess(second_clean, align)
 
 
 if __name__ == "__main__":

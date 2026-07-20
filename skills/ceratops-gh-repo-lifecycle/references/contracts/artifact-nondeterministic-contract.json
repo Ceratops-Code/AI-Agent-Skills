@@ -1,0 +1,162 @@
+{
+  "contract_format_version": 1,
+  "kind": "nondeterministic_review_contract",
+  "name": "ceratops_artifact_nondeterministic_contract",
+  "surface": "artifact",
+  "deterministic_contract": "artifact-deterministic-contract.json",
+  "description": "Artifact checks that require AI-agent judgment, domain interpretation, current official documentation, or browser and registry-owner confirmation.",
+  "evidence": {
+    "command": "python -m github_contract_engine collect --surface artifact --repo OWNER/REPO --local-repo-path PATH --json",
+    "notes": [
+      "Pass artifact identities with --param artifact_contracts=[...] when package, image, or registry identity cannot be derived from local manifests.",
+      "The evidence payload includes detected artifact types, release metadata, local signals, and available registry metadata."
+    ]
+  },
+  "review_result_values": {
+    "pass": "AI-agent review found the intent satisfied and recorded evidence.",
+    "fail": "AI-agent review found a concrete mismatch.",
+    "approved_drift": "The mismatch is allowed by the deterministic contract's approved drift profile.",
+    "blocked": "Review needs unavailable permission, paid functionality, registry access, artifact access, or a product decision.",
+    "not_applicable": "The artifact type or source does not apply."
+  },
+  "checks": [
+    {
+      "id": "ND.artifact.scope-fit",
+      "applies_when": "The repository has artifact signals, the current change affects a releasable artifact, or an artifact or no-artifact claim is planned.",
+      "review_required": "Confirm the artifact contract should run and identify which claim or change triggered it.",
+      "evidence_keys": ["artifact.types", "parameters.current_change_affects_artifact", "parameters.final_answer_makes_artifact_claim"]
+    },
+    {
+      "id": "ND.artifact.real-deliverable-intent",
+      "applies_when": "Any artifact detector matches, or no-artifact is claimed.",
+      "review_required": "Confirm the real deliverable from project intent, README, release workflow, registry state, and user-facing documentation instead of relying only on manifests.",
+      "evidence_keys": ["artifact.types", "local.manifests", "local.workflows", "repository.stale.releases", "registries"]
+    },
+    {
+      "id": "ND.artifact.identity-contract-fit",
+      "applies_when": "Any external artifact exists or is planned.",
+      "review_required": "Confirm artifact name, registry coordinates, version source, release policy, tag style, changelog source, and post-publish consumer check describe the actual external contract.",
+      "evidence_keys": ["artifact.contracts", "local.manifests", "registries"]
+    },
+    {
+      "id": "ND.artifact.audit-boundary",
+      "applies_when": "Audit-only mode is active.",
+      "review_required": "Confirm the workflow stays in classify and report mode and does not mutate tags, releases, packages, registry state, credentials, or package ownership.",
+      "evidence_keys": ["artifact.audit_only", "artifact.publish_requested"]
+    },
+    {
+      "id": "ND.artifact.local-smoke-sufficiency",
+      "applies_when": "A build, package, install, pull, run, or consume check is required.",
+      "review_required": "Confirm local and registry smoke checks exercise the real consumer path instead of only an editable checkout or local build cache.",
+      "evidence_keys": ["artifact.recorded_checks", "local"]
+    },
+    {
+      "id": "ND.artifact.publish-necessity",
+      "applies_when": "Publishing, tagging, release creation, or package upload is proposed.",
+      "review_required": "Confirm repository policy and the merged change actually require a public or private artifact release before registry mutation.",
+      "evidence_keys": ["parameters.merged_change_requires_release", "artifact.contracts", "repository.stale.tags"]
+    },
+    {
+      "id": "ND.artifact.version-policy-fit",
+      "applies_when": "Any artifact version or release tag is derived.",
+      "review_required": "Confirm the version source and tag style fit the ecosystem, repository policy, and existing release history.",
+      "evidence_keys": ["artifact.contracts", "repository.stale.tags", "repository.stale.releases", "registries"]
+    },
+    {
+      "id": "ND.artifact.live-endpoint-sufficiency",
+      "applies_when": "A live registry, release, digest, package, or documentation endpoint is checked.",
+      "review_required": "Confirm the endpoint is authoritative for the selected artifact, visibility, and registry target.",
+      "evidence_keys": ["registries", "repository.stale.releases"]
+    },
+    {
+      "id": "ND.artifact.identity-path-fit",
+      "applies_when": "A publish workflow exists.",
+      "review_required": "Confirm trusted publishing, OIDC, or another short-lived identity path is supported by the registry; otherwise confirm token fallback is explicit and minimally scoped.",
+      "evidence_keys": ["local.workflows", "artifact.contracts"]
+    },
+    {
+      "id": "ND.artifact.provenance-fit",
+      "applies_when": "Attestations, provenance, SBOM, or linked artifact metadata are emitted or claimed.",
+      "review_required": "Confirm provenance verification uses GitHub or registry-specific tooling and emitted metadata does not expose secrets or misleading build data.",
+      "evidence_keys": ["local.workflows", "registries"]
+    },
+    {
+      "id": "ND.pypi.package-contract-quality",
+      "applies_when": "A PyPI or Python package artifact is in scope.",
+      "review_required": "Confirm rendering, license metadata, Python support, distribution choices, trusted publishing, exact-version installation, and attestation verification fit the package.",
+      "evidence_keys": ["local.manifests.pypi", "local.workflows", "registries.pypi"]
+    },
+    {
+      "id": "ND.npm.package-contract-quality",
+      "applies_when": "An npm package artifact is in scope.",
+      "review_required": "Confirm package contents, access mode, scope, dist-tag policy, trusted publishing, approval path, provenance, build path, and consumer installation fit the package.",
+      "evidence_keys": ["local.manifests.npm", "local.workflows", "registries.npm"]
+    },
+    {
+      "id": "ND.docker.image-contract-quality",
+      "applies_when": "A Docker or OCI image artifact is in scope.",
+      "review_required": "Confirm image target, tags, base-image strategy, build context, multi-stage use, non-root practicality, ports, health checks, smoke run, provenance, and SBOM policy fit the image.",
+      "evidence_keys": ["local.manifests.docker", "registries.dockerhub"]
+    },
+    {
+      "id": "ND.maven.package-contract-quality",
+      "applies_when": "A Maven or Gradle-published artifact is in scope.",
+      "review_required": "Confirm coordinates, namespace ownership, signing, source and documentation expectations, portal behavior, and consumer resolution fit the artifact.",
+      "evidence_keys": ["local.manifests.maven", "registries.maven"]
+    },
+    {
+      "id": "ND.nuget.package-contract-quality",
+      "applies_when": "A NuGet package artifact is in scope.",
+      "review_required": "Confirm package ID, metadata, README, license, repository and source-link expectations, trusted publishing, push path, and consumer installation fit the package.",
+      "evidence_keys": ["local.manifests.nuget", "registries.nuget"]
+    },
+    {
+      "id": "ND.crates.package-contract-quality",
+      "applies_when": "A crates.io or Cargo artifact is in scope.",
+      "review_required": "Confirm crate metadata, publish restrictions, documentation expectations, package contents, dry-run evidence, and consumer installation fit the crate.",
+      "evidence_keys": ["local.manifests.crates", "registries.crates"]
+    },
+    {
+      "id": "ND.rubygems.package-contract-quality",
+      "applies_when": "A RubyGems artifact is in scope.",
+      "review_required": "Confirm gemspec metadata, gem contents, trusted publishing, build and push path, and consumer installation fit the gem.",
+      "evidence_keys": ["local.manifests.rubygems", "registries.rubygems"]
+    },
+    {
+      "id": "ND.powershell.package-contract-quality",
+      "applies_when": "A PowerShell Gallery module or script is in scope.",
+      "review_required": "Confirm manifest metadata, tags, license and project links, validation, publish path, and consumer installation or import fit the artifact.",
+      "evidence_keys": ["local.manifests.powershell_gallery", "registries.powershell_gallery"]
+    },
+    {
+      "id": "ND.github-packages.contract-quality",
+      "applies_when": "GitHub Packages or GHCR is the registry.",
+      "review_required": "Confirm package linkage, access control, visibility, billing implications, and token choice match the intended package use.",
+      "evidence_keys": ["artifact.contracts", "api"]
+    },
+    {
+      "id": "ND.release-assets.contract-quality",
+      "applies_when": "GitHub release assets, binaries, archives, installers, or CLI binaries are in scope.",
+      "review_required": "Confirm asset naming, checksums, release notes, prerelease or draft state, platform matrix, download path, and install or run smoke check are meaningful.",
+      "evidence_keys": ["artifact.release_assets", "repository.stale.releases"]
+    },
+    {
+      "id": "ND.docs-site.contract-quality",
+      "applies_when": "A GitHub Pages or static documentation site artifact is in scope.",
+      "review_required": "Confirm the site is a real deliverable, the live URL and homepage are correct, navigation checks are meaningful, and stale published documentation is classified.",
+      "evidence_keys": ["artifact.types", "local.workflows"]
+    },
+    {
+      "id": "ND.iac-module.contract-quality",
+      "applies_when": "A Terraform module or Helm chart artifact is in scope.",
+      "review_required": "Confirm registry target, module or chart metadata, versioning, package and lint evidence, and consumer installation or pull fit the module.",
+      "evidence_keys": ["local.manifests.iac", "artifact.contracts"]
+    },
+    {
+      "id": "ND.sources.current-doc-recheck",
+      "applies_when": "Registry availability, trusted publishing, provenance, or paid and free behavior affects the result.",
+      "review_required": "Recheck official GitHub or registry documentation before deciding drift.",
+      "evidence_keys": ["contract-source-docs.json"]
+    }
+  ]
+}

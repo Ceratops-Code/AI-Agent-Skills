@@ -1,0 +1,76 @@
+{
+  "contract_format_version": 1,
+  "kind": "nondeterministic_review_contract",
+  "name": "ceratops_code_comment_nondeterministic_contract",
+  "surface": "code_comments",
+  "description": "Local AI-agent review rubric for comment sufficiency. It is not an ordinary implementation, shipping, or skill-update check.",
+  "usage": "Use during ceratops-code-consistency-audit when scripts, public APIs, automation helpers, contract validators, or non-obvious safety logic are in scope.",
+  "scope_policy": [
+    "Apply to repository scripts, CLI entrypoints, automation helpers, contract validators, and nontrivial project code touched by a consistency audit.",
+    "Prefer project-local conventions when they exist.",
+    "Do not research current language comment standards unless the user explicitly requests a standards refresh."
+  ],
+  "comment_roles": {
+    "required": [
+      "Public intent or usage contract.",
+      "Non-obvious safety boundary.",
+      "External API or filesystem side-effect boundary.",
+      "Data shape or contract interpretation that is not obvious from names.",
+      "Reason for intentionally unusual or conservative behavior."
+    ],
+    "discouraged": [
+      "Line-by-line restatement of simple code.",
+      "Stale implementation history.",
+      "Commented-out code."
+    ],
+    "prohibited": [
+      "TODO comments."
+    ]
+  },
+  "language_defaults": {
+    "python": [
+      "Standalone scripts, reusable modules, and contract validators should have useful module docstrings.",
+      "Public classes, functions, dataclasses, and CLI entrypoints should have docstrings when behavior is not trivial.",
+      "Non-obvious destructive, mutating, credential, network, or filesystem-boundary logic should have concise intent or safety comments."
+    ],
+    "powershell": [
+      "User-facing scripts should have a top-level comment or self-explanatory parameter block.",
+      "Parameter names and validation should make common usage clear.",
+      "Removal, move, branch, runtime-install, or generated-copy logic should have nearby intent or safety comments."
+    ],
+    "javascript_typescript": [
+      "Header comments are useful for standalone scripts or non-obvious integration points.",
+      "Exported APIs should use comments or JSDoc when behavior, side effects, or data shape is not obvious.",
+      "Filesystem, network, package-publish, or credential-sensitive behavior should have concise safety comments."
+    ],
+    "shell": [
+      "User-facing scripts should have a header comment.",
+      "Destructive commands, shell-option choices, traps, and non-obvious quoting or path handling should have nearby comments."
+    ],
+    "json_contracts": [
+      "Top-level purpose, scope, parameters, and remediation fields should explain intent without separate prose.",
+      "Each check should carry enough identity, description, expected value, source, and remediation data for deterministic scripts and reviewers."
+    ]
+  },
+  "review_result_values": {
+    "pass": "AI-agent review found comments sufficient and aligned.",
+    "fail": "AI-agent review found a concrete maintainability or documentation mismatch.",
+    "approved_drift": "The mismatch is explicitly allowed by project-local policy.",
+    "blocked": "Review needs unavailable code context or an unresolved ownership decision.",
+    "not_applicable": "The reviewed surface does not require explanatory comments."
+  },
+  "checks": [
+    {
+      "id": "ND.comments.sufficiency_for_maintenance",
+      "applies_when": "The reviewed code has non-obvious behavior, invariants, safety boundaries, side effects, or public script usage.",
+      "review_required": "Confirm comments let a future maintainer update the code without reconstructing intent from history.",
+      "evidence_keys": ["local.files", "local.texts"]
+    },
+    {
+      "id": "ND.comments.readme_alignment",
+      "applies_when": "The reviewed code exposes scripts or contracts that users run.",
+      "review_required": "Confirm README documentation names active scripts and contracts without presenting retired helpers or generated internals as workflow entrypoints.",
+      "evidence_keys": ["local.files", "local.texts"]
+    }
+  ]
+}

@@ -1,0 +1,68 @@
+{
+  "contract_format_version": 1,
+  "kind": "nondeterministic_review_contract",
+  "name": "ceratops_github_pr_readiness_nondeterministic_contract",
+  "surface": "pr",
+  "deterministic_contract": "github-pr-readiness-deterministic-contract.json",
+  "description": "Pull-request intent and risk checks used when deterministic readiness leaves a decision unresolved.",
+  "evidence": {
+    "command": "python -m github_contract_engine collect --surface pr --pr NUMBER_OR_URL --local-repo-path PATH --json"
+  },
+  "review_result_values": {
+    "pass": "AI-agent review found the intent satisfied and recorded evidence.",
+    "fail": "AI-agent review found a concrete mismatch.",
+    "approved_drift": "The mismatch is explicitly allowed by active pull-request policy.",
+    "blocked": "Review needs missing policy, unavailable evidence, or explicit user authority.",
+    "not_applicable": "The pull-request state does not require this check."
+  },
+  "checks": [
+    {
+      "id": "ND.pr.merge-method-fit",
+      "applies_when": "A pull request is ready to merge.",
+      "review_required": "Confirm merge, squash, or rebase matches repository policy, release history, branch shape, and user intent.",
+      "evidence_keys": ["validator_report.summary", "validator_report.findings", "merge_method_policy"]
+    },
+    {
+      "id": "ND.pr.auto-merge-vs-direct-fit",
+      "applies_when": "Checks are pending or auto-merge is considered.",
+      "review_required": "Confirm whether to wait, enable auto-merge, or merge directly.",
+      "evidence_keys": ["validator_report.findings.pr.status_checks", "validator_report.findings.pr.auto_merge_request"]
+    },
+    {
+      "id": "ND.pr.queue-or-admin-bypass-fit",
+      "applies_when": "A merge queue, administration merge, or policy bypass is possible.",
+      "review_required": "Confirm bypassing the queue or ordinary protection is intentional and justified by current evidence.",
+      "evidence_keys": ["validator_report.findings", "branch_protection_or_queue_context"]
+    },
+    {
+      "id": "ND.pr.self-merge-fit",
+      "applies_when": "The acting maintainer's own review is the remaining blocker.",
+      "review_required": "Confirm repository policy intentionally allows self-merge rather than requiring another reviewer.",
+      "evidence_keys": ["validator_report.findings.pr.review_decision", "actor_and_review_policy"]
+    },
+    {
+      "id": "ND.pr.workflow-change-risk",
+      "applies_when": "The pull request changes workflows, Actions permissions, release automation, or credentials.",
+      "review_required": "Confirm the change does not introduce mutable references, credential expansion, or an unreviewed release path.",
+      "evidence_keys": ["changed_files", "workflow_files", "actions_permissions"]
+    },
+    {
+      "id": "ND.pr.flaky-or-unrelated-check-classification",
+      "applies_when": "A check is failing, missing, skipped, or stale but may be unrelated.",
+      "review_required": "Confirm the classification is evidence-backed before merging or enabling auto-merge.",
+      "evidence_keys": ["validator_report.findings.pr.status_checks", "ci_logs_or_reruns"]
+    },
+    {
+      "id": "ND.pr.release-or-artifact-followup-fit",
+      "applies_when": "Merge may require a tag, release, package, image, or registry update.",
+      "review_required": "Confirm whether merge must remain coupled to artifact publishing through the ship workflow.",
+      "evidence_keys": ["changed_files", "release_policy", "artifact_contract"]
+    },
+    {
+      "id": "ND.pr.branch-cleanup-fit",
+      "applies_when": "Branch deletion, safety-branch retention, or worktree cleanup is planned.",
+      "review_required": "Confirm cleanup preserves reachable work, fork branches, release branches, and reusable integration branches.",
+      "evidence_keys": ["validator_report.summary", "branch_cleanup_policy", "local_git_state"]
+    }
+  ]
+}

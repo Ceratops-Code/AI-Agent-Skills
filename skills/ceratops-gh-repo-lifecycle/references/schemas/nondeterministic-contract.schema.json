@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ceratops.dev/schemas/github/nondeterministic-contract.schema.json",
+  "title": "GitHub lifecycle non-deterministic review contract",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract_format_version",
+    "kind",
+    "name",
+    "surface",
+    "description",
+    "checks",
+    "review_result_values"
+  ],
+  "properties": {
+    "contract_format_version": { "const": 1 },
+    "kind": { "const": "nondeterministic_review_contract" },
+    "name": { "type": "string", "minLength": 1 },
+    "surface": {
+      "enum": ["org", "repo", "pr", "code", "artifact", "code_comments"]
+    },
+    "description": { "type": "string", "minLength": 1 },
+    "deterministic_contract": { "type": "string", "minLength": 1 },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["command"],
+      "properties": {
+        "command": {
+          "type": "string",
+          "pattern": "^python -m github_contract_engine collect(?:\\s|$)"
+        },
+        "notes": {}
+      }
+    },
+    "checks": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "applies_when", "review_required", "evidence_keys"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^ND\\." },
+          "applies_when": { "type": "string", "minLength": 1 },
+          "review_required": { "type": "string", "minLength": 1 },
+          "evidence_keys": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "type": "string", "minLength": 1 }
+          }
+        }
+      }
+    },
+    "review_result_values": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pass", "fail", "not_applicable", "blocked", "approved_drift"],
+      "properties": {
+        "pass": {},
+        "fail": {},
+        "not_applicable": {},
+        "blocked": {},
+        "approved_drift": {}
+      }
+    },
+    "comment_roles": { "type": "object" },
+    "language_defaults": { "type": "object" },
+    "scope_policy": {},
+    "usage": {}
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "surface": { "const": "code_comments" } },
+        "required": ["surface"]
+      },
+      "else": { "required": ["deterministic_contract", "evidence"] }
+    }
+  ]
+}

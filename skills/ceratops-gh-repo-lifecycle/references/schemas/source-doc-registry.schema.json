@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ceratops.dev/schemas/github/source-doc-registry.schema.json",
+  "title": "GitHub lifecycle source-document registry",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "source_docs_version",
+    "name",
+    "captured_on",
+    "policy",
+    "docs",
+    "reference_repos",
+    "reference_skills"
+  ],
+  "properties": {
+    "source_docs_version": { "type": "integer" },
+    "name": { "type": "string", "minLength": 1 },
+    "captured_on": { "type": "string", "minLength": 1 },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["use_order", "installed_openai_skill_references", "reference_repository_examples"],
+      "properties": {
+        "use_order": { "type": "array", "items": { "type": "string" } },
+        "installed_openai_skill_references": { "type": "string" },
+        "reference_repository_examples": { "type": "string" }
+      }
+    },
+    "docs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "scope", "url"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "scope": { "type": "array", "items": { "type": "string" } },
+          "url": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "reference_repos": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "url", "scope", "focus", "files"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "url": { "type": "string", "minLength": 1 },
+          "scope": { "type": "array", "items": { "type": "string" } },
+          "focus": { "type": "array", "items": { "type": "string" } },
+          "files": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+    "reference_skills": { "type": "array" }
+  }
+}

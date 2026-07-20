@@ -1,0 +1,107 @@
+{
+  "contract_format_version": 1,
+  "kind": "nondeterministic_review_contract",
+  "name": "ceratops_github_org_nondeterministic_contract",
+  "surface": "org",
+  "deterministic_contract": "github-org-deterministic-contract.json",
+  "description": "Organization checks whose outcome depends on intent, least privilege, security ownership, browser confirmation, or paid-feature classification.",
+  "evidence": {
+    "command": "python -m github_contract_engine collect --surface org --org ORG --json",
+    "notes": [
+      "Browser confirmation is required only when API evidence is missing, ambiguous, plan-limited, or disputed."
+    ]
+  },
+  "review_result_values": {
+    "pass": "AI-agent review found the intent satisfied and recorded evidence.",
+    "fail": "AI-agent review found a concrete mismatch.",
+    "approved_drift": "The mismatch is allowed by the deterministic contract's approved drift profile.",
+    "blocked": "Review needs unavailable permission, paid functionality, missing administration access, or browser UI access.",
+    "not_applicable": "The organization plan, feature availability, or policy scope makes the check irrelevant."
+  },
+  "checks": [
+    {
+      "id": "ND.org.identity-screen-parity",
+      "applies_when": "Organization profile, logo, display name, billing email, blog, location, or public profile text is user-facing.",
+      "review_required": "Confirm the visible organization identity is intentional, current, and matches the intended source organization where byte equality is not the right rule.",
+      "evidence_keys": ["api.org.settings", "api.org.plan"]
+    },
+    {
+      "id": "ND.org.logo-visual-confirmation",
+      "applies_when": "The avatar hash cannot be fetched, GitHub returns transformed image variants, or browser parity is disputed.",
+      "review_required": "Confirm in the browser that the organization uses the intended custom logo rather than a generated default avatar or stale upload.",
+      "evidence_keys": ["organization.avatar"]
+    },
+    {
+      "id": "ND.org.member-role-intent",
+      "applies_when": "Members, owners, outside collaborators, custom roles, or security managers differ from contract expectations.",
+      "review_required": "Confirm the people and role set is intended, least-privilege, and not a stale invite, missing owner, or forgotten collaborator.",
+      "evidence_keys": ["api.organization.members", "api.organization.outside_collaborators", "api.organization.roles"]
+    },
+    {
+      "id": "ND.org.team-purpose-and-permission-fit",
+      "applies_when": "Teams or organization roles exist.",
+      "review_required": "Confirm team names, descriptions, privacy, maintainers, inherited access, and repository access fit the organization operating model.",
+      "evidence_keys": ["api.organization.teams"]
+    },
+    {
+      "id": "ND.org.webhook-and-integration-intent",
+      "applies_when": "Organization webhooks, Actions secrets or variables, Dependabot secrets, private registries, or GitHub Apps affect behavior.",
+      "review_required": "Confirm each integration is still used, scoped to the correct repositories, and has a real owner; confirm hidden secret values with that owner when needed.",
+      "evidence_keys": ["api.organization.webhooks", "api.actions.secrets", "api.actions.variables"]
+    },
+    {
+      "id": "ND.org.actions-policy-fit",
+      "applies_when": "Actions policy, runner groups, selected actions, OIDC templates, retention, fork approval, or hosted compute settings differ or are unavailable.",
+      "review_required": "Confirm required workflows remain possible while unwanted action, runner, trigger, OIDC, retention, and fork exposure is prevented; classify preview and plan-limited controls.",
+      "evidence_keys": ["api.actions.permissions", "api.actions.workflow_permissions", "api.actions.artifact_log_retention", "api.actions.oidc_subject_claim_template", "api.organization.rulesets"]
+    },
+    {
+      "id": "ND.org.security-configuration-intent",
+      "applies_when": "Code-security configurations, defaults, security managers, dependency submission, or paid security surfaces are present or missing.",
+      "review_required": "Confirm the security posture is intentional, no-extra-cost features are enabled when available, and paid requirements are classified rather than silently required.",
+      "evidence_keys": ["api.code_security.configurations", "api.code_security.configuration_defaults"]
+    },
+    {
+      "id": "ND.org.dependabot-private-registry-fit",
+      "applies_when": "Dependabot repository access, secrets, or private registry configurations exist.",
+      "review_required": "Confirm access is limited to intended repositories and registries, credentials remain valid, and broad repository access is intentional.",
+      "evidence_keys": ["api.dependabot.repository_access", "api.dependabot.secrets", "api.private_registries.configurations"]
+    },
+    {
+      "id": "ND.org.dependabot-queue-fit",
+      "applies_when": "Open Dependabot alerts or Dependabot-authored pull requests exist anywhere in the organization.",
+      "review_required": "Classify each item as active, fixed, superseded, blocked, intentionally retained, or safely mergeable; archived repository items are report-only unless explicitly reactivated.",
+      "evidence_keys": ["api.dependabot.open_alert_queue", "api.dependabot.open_pr_queue"]
+    },
+    {
+      "id": "ND.org.custom-property-schema-fit",
+      "applies_when": "Custom properties or a repository metadata schema exists.",
+      "review_required": "Confirm names, allowed values, required flags, defaults, and descriptions remain useful and do not encode stale taxonomy.",
+      "evidence_keys": ["api.custom_properties.schema"]
+    },
+    {
+      "id": "ND.org.moderation-and-community-fit",
+      "applies_when": "Blocked users, interaction limits, issue types or fields, banners, or reported-content policy differ or are unavailable.",
+      "review_required": "Confirm moderation state, intake fields, and announcement text are intentional and not stale incident response.",
+      "evidence_keys": ["api.organization.blocked_users", "api.organization.interaction_limits", "api.organization.issue_types"]
+    },
+    {
+      "id": "ND.org.ruleset-and-token-request-fit",
+      "applies_when": "Organization rulesets or personal access token requests are enabled, unavailable, or plan-limited.",
+      "review_required": "Confirm rulesets and token approval policies match merge and credential posture; classify plan-limit errors and the intended repository-level fallback.",
+      "evidence_keys": ["api.organization.rulesets", "api.organization.personal_access_token_requests"]
+    },
+    {
+      "id": "ND.org.paid-feature-classification",
+      "applies_when": "Any endpoint returns plan-limited, enterprise-only, or permission-limited state.",
+      "review_required": "Confirm whether the gap is paid functionality, missing permission, or true drift before deciding remediation.",
+      "evidence_keys": ["api"]
+    },
+    {
+      "id": "ND.org.source-doc-recheck",
+      "applies_when": "GitHub renamed, moved, or plan-gated a setting, or API and browser state disagree.",
+      "review_required": "Recheck current official GitHub documentation and the browser UI before deciding drift.",
+      "evidence_keys": ["contract-source-docs.json"]
+    }
+  ]
+}

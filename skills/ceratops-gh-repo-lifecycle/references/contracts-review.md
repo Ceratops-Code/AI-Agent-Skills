@@ -13,39 +13,38 @@ applied.
 
 ### Script Bundle
 
-- (D) GH contract consistency check: `python
-  skills/ceratops-gh-repo-lifecycle/scripts/validate-gh-contracts-consistency.py`
-- (D) Org contract checker: `python
-  skills/ceratops-gh-repo-lifecycle/scripts/github-validate-org-contract.py
-  --help`
-- (D) GitHub, code, and artifact contract checker: `python
-  skills/ceratops-gh-repo-lifecycle/scripts/github-validate-repo-artifact-contract.py
-  --help`
-- (D) PR readiness contract checker: `python
-  skills/ceratops-gh-repo-lifecycle/scripts/github-validate-pr-readiness-contract.py
-  --help`
-- (D) Non-deterministic evidence collector: `python
-  skills/ceratops-gh-repo-lifecycle/scripts/github-collect-nd-evidence.py
-  --help`
-- (D) Source-doc registry checker: `python
-  skills/ceratops-gh-repo-lifecycle/scripts/github-check-source-docs.py
-  --help`
+- Run package commands from `skills/ceratops-gh-repo-lifecycle/scripts` in a
+  source checkout or `scripts` in the installed skill folder.
+- (D) GH contract consistency check:
+  `python -m github_contract_engine validate consistency`
+- (D) Org contract checker:
+  `python -m github_contract_engine validate org --help`
+- (D) GitHub, code, and artifact contract checker:
+  `python -m github_contract_engine validate repo --help`
+- (D) PR readiness contract checker:
+  `python -m github_pr_workflow validate --help`
+- (D) Non-deterministic evidence collector:
+  `python -m github_contract_engine collect --help`
+- (D) Source-doc registry checker:
+  `python -m github_contract_engine check-source-docs --help`
 
 ### References
 
 - Contract source-doc registry: `references/contract-source-docs.json`
 - Org deterministic contract:
-  `references/github-org-deterministic-contract.json`
+  `references/contracts/github-org-deterministic-contract.json`
 - GitHub repo deterministic contract:
-  `references/github-repo-deterministic-contract.json`
+  `references/contracts/github-repo-deterministic-contract.json`
 - GitHub PR readiness deterministic contract:
-  `references/github-pr-readiness-deterministic-contract.json`
+  `references/contracts/github-pr-readiness-deterministic-contract.json`
 - Code repo deterministic contract:
-  `references/code-repo-deterministic-contract.json`
+  `references/contracts/code-repo-deterministic-contract.json`
 - Artifact deterministic contract:
-  `references/artifact-deterministic-contract.json`
-- Non-deterministic review prompts: `references/*-nondeterministic-contract.md`
-- Code comment rubric: `references/code-comment-nondeterministic-contract.md`
+  `references/contracts/artifact-deterministic-contract.json`
+- AI-agent review contracts:
+  `references/contracts/*-nondeterministic-contract.json`
+- Code comment rubric:
+  `references/contracts/code-comment-nondeterministic-contract.json`
 
 ### Inputs To Capture
 
@@ -75,12 +74,13 @@ request before asking.
   needed to decide whether a contract claim is current.
 - Do not inspect skill consistency, skill governance, skill-design contracts,
   metadata alignment, shared-section alignment, or runtime payload review here;
-  those belong to `$ceratops-skill-lifecycle`
-  `skills-consistency-and-contract-review`.
+  Ceratops contract upkeep belongs to `$ceratops-skill-lifecycle`
+  `skills-contract-review`, and active-catalog consistency belongs to
+  `global-skills-consistency-review`.
 - If the task is normal repo shipping, PR handling, dependency updates,
   repo-health work, or already-prepared skill shipping rather than contract
-  upkeep, return to this router and select the lifecycle action that owns the
-  work.
+  upkeep, return to this multi-action skill and select the lifecycle action that
+  owns the work.
 
 ### Skill-Specific Rules
 
@@ -96,8 +96,8 @@ request before asking.
   targets, and separate no-extra-cost defaults from paid GitHub Code Security or
   Secret Protection features.
 - Treat artifact surfaces as in scope only when
-  `references/artifact-deterministic-contract.json` or this lifecycle action set
-  claims to cover them.
+  `references/contracts/artifact-deterministic-contract.json` or this lifecycle
+  action set claims to cover them.
 - Keep durable standards in the skill-local contracts and
   `references/contract-source-docs.json`; do not recreate a separate standards
   checklist file.
@@ -116,7 +116,8 @@ request before asking.
   installed automation prompt when this run came from automation.
 - Check GitHub auth, local git auth, and installed tooling before asking for
   credentials.
-- Run `validate-gh-contracts-consistency.py` before manual review. If it fails,
+- Run `python -m github_contract_engine validate consistency` before manual
+  review. If it fails,
   classify each finding as stale local dirt, proposed in-scope change,
   approval-required change, or not applicable.
 
@@ -125,7 +126,8 @@ request before asking.
 - Read `references/contract-source-docs.json` and the affected contract files at
   the start of the audit and use them as the bounded checklist for the next
   evidence-gathering steps.
-- Run `github-check-source-docs.py --json` before ad hoc source-doc URL checks;
+- Run `python -m github_contract_engine check-source-docs --json` before ad hoc
+  source-doc URL checks;
   treat fallback-only transport failures as execution-context evidence.
 - Use local files, `gh`, GitHub API, `gh` help, package metadata, release
   metadata, and registry endpoints as the first-pass evidence for the GitHub or

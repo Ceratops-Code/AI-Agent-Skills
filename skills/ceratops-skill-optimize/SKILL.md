@@ -1,6 +1,6 @@
 ---
 name: ceratops-skill-optimize
-description: Propose advisory-only improvements for existing Codex or Ceratops skills, including router SKILL.md text, action references, triggers, metadata, runtime payload declarations, validators, docs, workflow constraints, output contracts, and done criteria. Use when Codex should recommend exact skill changes without applying them.
+description: Propose advisory-only improvements for existing Codex or Ceratops skills, including multi-action skill text, action references, triggers, metadata, runtime payload declarations, validators, docs, workflow constraints, output contracts, and done criteria. Use when Codex should recommend exact skill changes without applying them.
 ---
 
 # Ceratops Skill Optimizer
@@ -19,9 +19,10 @@ requests that behavior change.
 - Current skill text or the concrete target skill path.
 - The skill's purpose, trigger conditions, expected user request, workflow,
   constraints, output contract, and completion criteria.
-- Companion artifacts that govern the same behavior, such as router `SKILL.md`,
-  action reference files, `agents/openai.yaml`, bundled resources, helper
-  references, docs, manifests, runtime payload declarations, or validators.
+- Companion artifacts that govern the same behavior, such as a multi-action
+  skill's `SKILL.md`, action reference files, `agents/openai.yaml`, bundled
+  resources, helper references, docs, manifests, runtime payload declarations,
+  or validators.
 - Whether the requested change is structural, behavioral, trigger-only,
   output-only, validation-only, or wording-only.
 
@@ -45,7 +46,7 @@ target is available.
 - Inspect companion artifacts only when they exist and govern trigger behavior,
   runtime packaging, helper usage, validation, docs, or user-visible output for
   the target skill.
-- For router skills, inspect the router `SKILL.md` and action reference files;
+- For multi-action skills, inspect the `SKILL.md` and action reference files;
   inspect metadata, runtime payload declarations, validators, and docs only when
   they govern the action surface.
 - When companion artifacts govern the same behavior, include the aligned
@@ -75,17 +76,19 @@ target is available.
 
 1. Inspect the target skill text, action references when present, and companion
    metadata.
-2. Identify current purpose, trigger surface, workflow, constraints, output
+2. Before proposing a structural helper or validator change, map its owner,
+   responsibilities, callers, entrypoints, and bootstrap paths.
+3. Identify current purpose, trigger surface, workflow, constraints, output
    contract, and done criteria.
-3. Decide whether Goal / Context / Constraints / Done When structure would
+4. Decide whether Goal / Context / Constraints / Done When structure would
    improve execution.
-4. Find concrete issues: missing trigger context, unclear ownership, duplicated
+5. Find concrete issues: missing trigger context, unclear ownership, duplicated
    rules, weak completion criteria, stale labels, metadata drift, excessive
    output, or unverifiable instructions.
-5. Propose the narrowest update that fixes the issue across router text, action
-   references, metadata, runtime payloads, validators, and docs when those
-   surfaces govern the same behavior.
-6. Include exact proposed replacement or addition and the smallest current
+6. Propose the narrowest update that fixes the issue across multi-action skill
+   text, action references, metadata, runtime payloads, validators, and docs
+   when those surfaces govern the same behavior.
+7. Include exact proposed replacement or addition and the smallest current
    anchor needed to locate it.
 
 ## Done When

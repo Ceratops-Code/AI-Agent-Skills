@@ -24,18 +24,19 @@ ROOT = pathlib.Path(__file__).resolve().parents[4]
 SKILLS_DIR = ROOT / "skills"
 README = ROOT / "README.md"
 SECTION_MANIFEST = ROOT / "templates" / "skill-sections.json"
-SKILL_CONTRACT_DIR = pathlib.Path("skills/ceratops-skill-lifecycle/references")
+SKILL_CONTRACT_DIR = pathlib.Path("skills/ceratops-skill-lifecycle/references/contracts")
 REPO_NAME = ROOT.name
 MANIFEST_NAME = ".ceratops-runtime-manifest.json"
 BOOTSTRAP_INSTALLER = ROOT / "scripts" / "install-skills.ps1"
 RUNTIME_INSTALLER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "runtime" / "install-managed-skills.ps1"
 VALIDATOR = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "validation" / "validate-skills-consistency.py"
 WORKFLOW = ROOT / ".github" / "workflows" / "validate.yml"
-SKILL_DETERMINISTIC_CONTRACT = pathlib.Path("skills/ceratops-skill-lifecycle/references/skill-deterministic-contract.json")
+SKILL_DETERMINISTIC_CONTRACT = pathlib.Path("skills/ceratops-skill-lifecycle/references/contracts/skill-deterministic-contract.json")
+SKILL_NONDETERMINISTIC_CONTRACT = pathlib.Path("skills/ceratops-skill-lifecycle/references/contracts/skill-nondeterministic-contract.json")
 REQUIRED_CONTRACT_FILES = [
     pathlib.Path("skills/ceratops-skill-lifecycle/references/skill-source-docs.json"),
-    pathlib.Path("skills/ceratops-skill-lifecycle/references/skill-deterministic-contract.json"),
-    pathlib.Path("skills/ceratops-skill-lifecycle/references/skill-nondeterministic-contract.md"),
+    SKILL_DETERMINISTIC_CONTRACT,
+    SKILL_NONDETERMINISTIC_CONTRACT,
 ]
 SECTIONS_START = "<!-- CERATOPS_SHARED_SECTIONS_START -->"
 SECTIONS_END = "<!-- CERATOPS_SHARED_SECTIONS_END -->"
@@ -87,17 +88,18 @@ SECRET_PATTERNS = [
 TEXT_SUFFIXES = {".md", ".py", ".ps1", ".json", ".yml", ".yaml", ".toml", ".txt"}
 IGNORED_REPO_DIRS = {".git", "__pycache__", ".mypy_cache", ".pytest_cache", ".ruff_cache", "node_modules"}
 GH_LIFECYCLE_ACTIONS = {
-    "contracts-review.md": "validate-gh-contracts-consistency.py",
+    "contracts-review.md": "python -m github_contract_engine validate consistency",
     "create-or-publish.md": "--surface all --subset create",
     "dependency-maintenance.md": "--select repo:dependency --select code:dependency",
     "health-audit.md": "--surface all --subset health",
-    "merge-pr.md": "validate-and-merge-pr.ps1",
+    "merge-pr.md": "python -m github_pr_workflow merge",
     "ship-change.md": "merge-pr",
 }
 SKILL_LIFECYCLE_ACTIONS = {
     "create.md": "templates/skill-sections.json",
     "update.md": "runtime payloads",
-    "skills-consistency-and-contract-review.md": "skill-deterministic-contract.json",
+    "skills-contract-review.md": "skill-deterministic-contract.json",
+    "global-skills-consistency-review.md": "active Codex skill catalog",
     "fast-change.md": "release/*",
     "change-promotion.md": "stage-skill-release-branch.ps1",
     "ship-to-remote.md": "push-release-branch-and-ensure-pr.ps1",
@@ -482,7 +484,7 @@ def contract_remediation_ids(path: pathlib.Path) -> set[str]:
     if not isinstance(policy, dict):
         return set()
     classified: set[str] = set()
-    for key in ("auto_apply_check_ids", "manual_check_ids"):
+    for key in ("auto_apply_check_ids", "ai_agent_check_ids"):
         values = policy.get(key, [])
         if isinstance(values, list):
             classified.update(str(value) for value in values if isinstance(value, str) and value)
@@ -505,26 +507,85 @@ def check_skill_contract_remediation_policy() -> list[str]:
     return errors
 
 
-def check_skill_scope_validator() -> list[str]:
-    """Check objective lifecycle router rules without judging prose quality."""
+def check_skill_nondeterministic_contract() -> list[str]:
+    """Validate the canonical AI-agent skill-review contract."""
 
     errors: list[str] = []
-    router_specs = {
+    try:
+        deterministic = read_json(ROOT / SKILL_DETERMINISTIC_CONTRACT)
+        contract = read_json(ROOT / SKILL_NONDETERMINISTIC_CONTRACT)
+    except json.JSONDecodeError as exc:
+        return [f"skill contract JSON is invalid: {exc}"]
+    if deterministic.get("non_deterministic_review_file") != SKILL_NONDETERMINISTIC_CONTRACT.name:
+        errors.append(
+            f"{SKILL_DETERMINISTIC_CONTRACT}: non_deterministic_review_file must be "
+            f"{SKILL_NONDETERMINISTIC_CONTRACT.name}"
+        )
+    if contract.get("kind") != "nondeterministic_review_contract":
+        errors.append(
+            f"{SKILL_NONDETERMINISTIC_CONTRACT}: kind must be "
+            "nondeterministic_review_contract"
+        )
+    if contract.get("surface") != "skill":
+        errors.append(f"{SKILL_NONDETERMINISTIC_CONTRACT}: surface must be skill")
+    checks = contract.get("checks", [])
+    if not isinstance(checks, list) or not checks:
+        return [*errors, f"{SKILL_NONDETERMINISTIC_CONTRACT}: checks must be non-empty"]
+    ids: list[str] = []
+    for index, check in enumerate(checks):
+        if not isinstance(check, dict):
+            errors.append(
+                f"{SKILL_NONDETERMINISTIC_CONTRACT}: checks[{index}] must be an object"
+            )
+            continue
+        check_id = check.get("id")
+        if not isinstance(check_id, str) or not check_id.startswith("ND.skill."):
+            errors.append(
+                f"{SKILL_NONDETERMINISTIC_CONTRACT}: checks[{index}] has invalid ID"
+            )
+            continue
+        ids.append(check_id)
+        for field in ("applies_when", "review_required"):
+            if not isinstance(check.get(field), str) or not check[field].strip():
+                errors.append(
+                    f"{SKILL_NONDETERMINISTIC_CONTRACT}: {check_id} requires {field}"
+                )
+        evidence_keys = check.get("evidence_keys")
+        if (
+            not isinstance(evidence_keys, list)
+            or not evidence_keys
+            or not all(isinstance(key, str) and key for key in evidence_keys)
+        ):
+            errors.append(
+                f"{SKILL_NONDETERMINISTIC_CONTRACT}: {check_id} requires evidence_keys"
+            )
+    errors.extend(
+        f"{SKILL_NONDETERMINISTIC_CONTRACT}: duplicate check ID {check_id}"
+        for check_id in sorted({item for item in ids if ids.count(item) > 1})
+    )
+    return errors
+
+
+def check_skill_scope_validator() -> list[str]:
+    """Check objective multi-action skill rules without judging prose quality."""
+
+    errors: list[str] = []
+    multi_action_specs = {
         "ceratops-gh-repo-lifecycle": GH_LIFECYCLE_ACTIONS,
         "ceratops-skill-lifecycle": SKILL_LIFECYCLE_ACTIONS,
     }
-    for skill_name, expected_actions in router_specs.items():
+    for skill_name, expected_actions in multi_action_specs.items():
         skill_dir = SKILLS_DIR / skill_name
-        router_path = skill_dir / "SKILL.md"
-        if not router_path.is_file():
-            errors.append(f"{skill_name}: missing router SKILL.md")
+        multi_action_path = skill_dir / "SKILL.md"
+        if not multi_action_path.is_file():
+            errors.append(f"{skill_name}: missing multi-action SKILL.md")
             continue
-        router_text = router_path.read_text(encoding="utf-8")
+        multi_action_text = multi_action_path.read_text(encoding="utf-8")
         for action_file, snippet in expected_actions.items():
             action_rel = f"references/{action_file}"
             action_path = skill_dir / action_rel
-            if action_rel not in router_text:
-                errors.append(f"{skill_name}: router does not list {action_rel}")
+            if action_rel not in multi_action_text:
+                errors.append(f"{skill_name}: multi-action skill does not list {action_rel}")
             if not action_path.is_file():
                 errors.append(f"{skill_name}: missing action reference {action_rel}")
                 continue
@@ -534,7 +595,7 @@ def check_skill_scope_validator() -> list[str]:
             if snippet not in action_text:
                 errors.append(f"{skill_name}: {action_rel} missing expected scope command {snippet}")
     merge_text = (SKILLS_DIR / "ceratops-gh-repo-lifecycle" / "references" / "merge-pr.md").read_text(encoding="utf-8")
-    if "github-validate-repo-artifact-contract.py" in merge_text:
+    if "python -m github_contract_engine validate repo" in merge_text:
         errors.append("ceratops-gh-repo-lifecycle: merge-pr action must not run repo/artifact contract validation")
     return errors
 
@@ -570,7 +631,7 @@ def check_validation_command_surface() -> list[str]:
     if "--mode full" not in workflow_text:
         errors.append("CI workflow no longer runs full skill validation")
 
-    governance_prompt = default_install_root().parent / "automations" / "governance-consistency-audit" / "automation.toml"
+    governance_prompt = default_install_root().parent / "automations" / "global-governance-consistency-audit" / "automation.toml"
     if governance_prompt.is_file():
         prompt_text = governance_prompt.read_text(encoding="utf-8", errors="replace")
         stale_terms = ("--run-skill-validation", "skill_repo.validation", "validate-skills-consistency.py")
@@ -607,6 +668,7 @@ def check_governance_consistency(
     errors.extend(check_installed_runtime_identity(manifest, skill_names))
     errors.extend(check_validation_command_surface())
     errors.extend(check_skill_contract_remediation_policy())
+    errors.extend(check_skill_nondeterministic_contract())
     errors.extend(check_skill_scope_validator())
     errors.extend(check_validator_output_budget())
 
@@ -690,10 +752,17 @@ def check_resource_layout(skill_dir: pathlib.Path) -> list[str]:
 
     references_dir = skill_dir / "references"
     if references_dir.is_dir():
+        allowed_parents = {
+            references_dir,
+            references_dir / "contracts",
+            references_dir / "schemas",
+        }
         for path in references_dir.rglob("*"):
-            if path.is_file() and path.parent != references_dir:
+            if path.is_file() and path.parent not in allowed_parents:
                 rel_path = path.relative_to(skill_dir)
-                errors.append(f"{skill_dir.name}: references file must be one level deep: {rel_path}")
+                errors.append(
+                    f"{skill_dir.name}: unsupported nested references file: {rel_path}"
+                )
     return errors
 
 

@@ -3,4 +3,4 @@ interface:
   short_description: "Create, update, audit, promote, and ship skills"
   icon_small: "./assets/ceratops-logo-500.png"
   icon_large: "./assets/ceratops-logo-500.png"
-  default_prompt: "Use $ceratops-skill-lifecycle for this skill task. Select create, update, skills-consistency-and-contract-review, fast-change, change-promotion, or ship-to-remote as the narrowest action, update the right source of truth, and stop before promotion or shipping unless requested."
+  default_prompt: "Use $ceratops-skill-lifecycle for this skill task. Select create, update, skills-contract-review, global-skills-consistency-review, fast-change, change-promotion, or ship-to-remote as the narrowest action, update the right source of truth, and stop before promotion or shipping unless requested."

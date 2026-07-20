@@ -1,0 +1,105 @@
+{
+  "contract_format_version": 1,
+  "kind": "nondeterministic_review_contract",
+  "name": "ceratops_skill_nondeterministic_contract",
+  "surface": "skill",
+  "deterministic_contract": "skill-deterministic-contract.json",
+  "description": "Skill-design quality checks that require AI-agent judgment.",
+  "good_skill_definition": "A good skill is a scoped workflow contract that triggers only for the task class it can handle, captures the inputs needed to act, routes to the smallest relevant references or helpers, keeps deterministic behavior in executable code when practical, states safety and blocker boundaries, defines evidence and completion gates, and specifies concise final reporting without becoming a broad best-practices essay.",
+  "common_skill_content_roles": {
+    "triggering_metadata": "Frontmatter and agents/openai.yaml trigger only the intended task class.",
+    "scope_and_applicability": "The skill names its workflow surface, required inputs, in-scope work, and out-of-scope work.",
+    "operating_rules_and_constraints": "The skill states safe defaults, blockers, risky-action boundaries, and source-of-truth precedence.",
+    "ordered_workflow": "Execution steps are dependency-ordered, evidence-gated, and route failures before further mutation.",
+    "tool_script_and_reference_routing": "Deterministic or repeatable behavior is delegated to helpers when practical, and references are loaded progressively.",
+    "examples_templates_and_gotchas": "Examples, templates, and edge cases are included only when they reduce likely execution mistakes.",
+    "validation_and_completion": "The skill names the checks, evidence, final state, and retained risks required before completion.",
+    "final_output": "The skill states what to report, what to omit, and which blockers or retained state remain visible."
+  },
+  "evidence": {
+    "sources": [
+      "skills/<skill-name>/SKILL.md",
+      "skills/<skill-name>/agents/openai.yaml",
+      "templates/skill-sections.json",
+      "skills/ceratops-skill-lifecycle/references/contracts/skill-deterministic-contract.json",
+      "skills/ceratops-skill-lifecycle/references/skill-source-docs.json",
+      "$CODEX_HOME/plugins/cache/openai-primary-runtime/*/*/skills/*/SKILL.md",
+      "$CODEX_HOME/plugins/cache/openai-curated/*/*/skills/*/SKILL.md"
+    ],
+    "source_policy": [
+      "Use local evidence first.",
+      "Use upstream sources from skill-source-docs.json as standards evidence.",
+      "Use installed OpenAI skills only as pattern examples.",
+      "Compare at most two or three examples relevant to the current skill type or standards question and record the specific pattern each informed."
+    ]
+  },
+  "review_result_values": {
+    "pass": "AI-agent review found the intent satisfied and recorded evidence.",
+    "fail": "AI-agent review found a concrete mismatch.",
+    "approved_drift": "The mismatch is allowed by the skill's documented scope or an active higher-precedence rule.",
+    "blocked": "Review needs unavailable examples, a missing product decision, or unclear source-of-truth ownership.",
+    "not_applicable": "The skill type or requested scope does not require this check."
+  },
+  "checks": [
+    {
+      "id": "ND.skill.trigger-fit",
+      "applies_when": "Every skill source or metadata review.",
+      "review_required": "Confirm frontmatter, plugin or skill description, and default prompt trigger only the intended task class and do not overtrigger on adjacent work.",
+      "evidence_keys": ["skill.SKILL.md", "skill.agents.openai.yaml"]
+    },
+    {
+      "id": "ND.skill.role-based-structure",
+      "applies_when": "Every skill source review.",
+      "review_required": "Confirm the skill satisfies the common skill content roles directly or through clearly routed shared sections, helpers, references, or assets.",
+      "evidence_keys": ["skill.SKILL.md", "skill.references", "templates.skill-sections"]
+    },
+    {
+      "id": "ND.skill.scope-boundary",
+      "applies_when": "Every skill source review.",
+      "review_required": "Confirm scope, inputs, rules, boundaries, completion gates, and output contract agree on one workflow surface and do not mix unrelated owners or lifecycle phases.",
+      "evidence_keys": ["skill.SKILL.md", "skill.references"]
+    },
+    {
+      "id": "ND.skill.workflow-contract",
+      "applies_when": "The skill tells the agent how to execute work.",
+      "review_required": "Confirm steps are dependency-ordered, name decision evidence, route blockers explicitly, and avoid ceremonial work.",
+      "evidence_keys": ["skill.SKILL.md", "skill.references", "skill.scripts"]
+    },
+    {
+      "id": "ND.skill.deterministic-placement",
+      "applies_when": "The skill has commands, scripts, generated artifacts, validators, or repeatable cleanup.",
+      "review_required": "Confirm deterministic behavior lives in executable helpers when practical and prompt text retains high-level intent, routing, exceptions, and result handling.",
+      "evidence_keys": ["skill.SKILL.md", "skill.scripts", "skill.references"]
+    },
+    {
+      "id": "ND.skill.reference-discipline",
+      "applies_when": "The skill references documentation, examples, templates, assets, or installed OpenAI skills.",
+      "review_required": "Confirm references are loaded progressively, deep procedural detail stays in skill-local resources, examples are patterns rather than authority, and public files use portable paths.",
+      "evidence_keys": ["skill.SKILL.md", "skill.references", "skill.assets", "skill-source-docs.json"]
+    },
+    {
+      "id": "ND.skill.context-economy",
+      "applies_when": "Every skill source review.",
+      "review_required": "Confirm the skill minimizes routine reads, broad scans, repeated validation, and final-output verbosity while preserving evidence gates and blocker reporting.",
+      "evidence_keys": ["skill.SKILL.md", "skill.references", "skill.scripts"]
+    },
+    {
+      "id": "ND.skill.safety-and-state-boundaries",
+      "applies_when": "The skill mutates files, Git state, services, credentials, automations, or runtime installations.",
+      "review_required": "Confirm the skill names safe default scope, requires authority for risky steps, classifies retained or stale state, and does not widen across sibling scopes.",
+      "evidence_keys": ["skill.SKILL.md", "skill.references", "AGENTS.md"]
+    },
+    {
+      "id": "ND.skill.output-and-closure",
+      "applies_when": "Every skill source review.",
+      "review_required": "Confirm the output contract says what to report and omit, which blockers or retained state remain visible, and what completion claim the evidence supports.",
+      "evidence_keys": ["skill.SKILL.md", "skill.references"]
+    },
+    {
+      "id": "ND.skill.openai-example-comparison",
+      "applies_when": "An explicit skill-design refresh or ambiguous high-quality-skill decision is in scope.",
+      "review_required": "Compare two or three relevant installed OpenAI skill examples and record the concrete pattern borrowed or rejected.",
+      "evidence_keys": ["skill-source-docs.json", "installed_openai_skill_examples"]
+    }
+  ]
+}

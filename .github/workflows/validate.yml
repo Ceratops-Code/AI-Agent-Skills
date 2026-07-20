@@ -45,5 +45,6 @@ jobs:
       - name: Validate skills
         run: python skills/ceratops-skill-lifecycle/scripts/validation/validate-skills-consistency.py --mode full
 
-      - name: Smoke-test PR readiness helper script
-        run: python skills/ceratops-gh-repo-lifecycle/scripts/github-validate-pr-readiness-contract.py --help
+      - name: Smoke-test PR workflow CLI
+        working-directory: skills/ceratops-gh-repo-lifecycle/scripts
+        run: python -m github_pr_workflow validate --help

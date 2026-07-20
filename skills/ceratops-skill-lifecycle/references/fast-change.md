@@ -19,8 +19,8 @@ then commit the change and update only the affected runtime skill copy.
 - Target installed skills directory. Use `$CODEX_HOME/skills` unless the user
   provides another target.
 
-If the change is not exact, low-risk, and dependency-free, return to the router
-and select `update`.
+If the change is not exact, low-risk, and dependency-free, return to the parent
+skill and select `update`.
 
 ### Script Bundle
 

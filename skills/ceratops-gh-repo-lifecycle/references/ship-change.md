@@ -30,7 +30,7 @@ Infer missing inputs from local files and live repo state before asking.
   completion, merge, and optional release.
 - For the skills repo or another skill-source repo, use the skill lifecycle
   `ship-to-remote` action when the staged release branch is being shipped.
-- If the repo is not published or lacks a usable remote, return to the router
+- If the repo is not published or lacks a usable remote, return to the parent skill
   and select `create-or-publish`.
 - If the task is only repo validation or stale-state cleanup with no content
   changes, select `health-audit`.
@@ -90,10 +90,11 @@ Infer missing inputs from local files and live repo state before asking.
 - Wait for required CI, code scanning, and branch protection checks, and fix
   in-scope failures.
 - When only PR finalization remains, continue with `merge-pr`.
-- After merge, use `sync-main-after-pr.ps1` when available to sync the local
-  default branch, then prune stale refs, remove temporary worktrees as soon as
-  their branches are no longer needed, and keep a safety branch or worktree only
-  with an explicit reason.
+- After merge, run `python -m github_pr_workflow sync --repo-root PATH` from the
+  lifecycle skill's `scripts` folder to sync the local default branch, then
+  prune stale refs, remove temporary worktrees as soon as their branches are no
+  longer needed, and keep a safety branch or worktree only with an explicit
+  reason.
 - Publish and verify touched artifacts through the package manager, registry
   CLI, or registry API that owns the artifact surface.
 

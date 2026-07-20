@@ -24,7 +24,7 @@ only partially cover.
 - Expected sources of truth such as README files, docs, examples, configs,
   tests, manifests, generated metadata, automation, or control files.
 - Local comment standards such as
-  `skills/ceratops-gh-repo-lifecycle/references/code-comment-nondeterministic-contract.md`,
+  `skills/ceratops-gh-repo-lifecycle/references/contracts/code-comment-nondeterministic-contract.json`,
   README guidance, or language-specific conventions already present in the repo.
 - High-risk surfaces such as public APIs, migrations, feature flags, rename
   waves, packaging, install flows, or generated artifacts.
@@ -47,7 +47,7 @@ Infer missing inputs from repo state before asking.
   issue when scripts, public APIs, automation helpers, contract checkers, or
   non-obvious safety logic are in scope.
 - Use local project conventions and
-  `skills/ceratops-gh-repo-lifecycle/references/code-comment-nondeterministic-contract.md`
+  `skills/ceratops-gh-repo-lifecycle/references/contracts/code-comment-nondeterministic-contract.json`
   when present; do not research current language comment standards unless the
   user explicitly asks for a standards refresh.
 - When git history or recent merge context is available, judge the current

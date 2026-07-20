@@ -218,8 +218,20 @@ if ($CleanMergedBranches) {
         }
     }
 
+    $checkedOutBranches = @(
+        foreach ($record in Get-WorktreeRecords) {
+            if ($record.PSObject.Properties.Name -contains "branch") {
+                Convert-BranchRefToName $record.branch
+            }
+        }
+    )
     foreach ($branchName in Get-GitLines @("for-each-ref", "--format=%(refname:short)", "refs/heads")) {
         if (Test-IsProtectedBranch $branchName) {
+            continue
+        }
+        # Worktree-backed branches were either removed above or intentionally
+        # retained; the branch-only pass must not try to delete retained work.
+        if ($checkedOutBranches -contains $branchName) {
             continue
         }
         if (Test-GitSuccess @("merge-base", "--is-ancestor", $branchName, $ReleaseBranch)) {

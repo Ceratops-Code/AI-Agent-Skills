@@ -48,9 +48,10 @@ explaining how the skill was exercised or reviewed.
 Run `python
 .\skills\ceratops-skill-lifecycle\scripts\validation\validate-skills-consistency.py
 --mode sections` only when shared section source files or
-`templates/skill-sections.json` changed. Run `python
-.\skills\ceratops-gh-repo-lifecycle\scripts\github-validate-pr-readiness-contract.py
---help` only when PR-readiness validator code or related skill claims changed.
+`templates/skill-sections.json` changed. Run
+`python -m github_pr_workflow validate --help` from
+`skills/ceratops-gh-repo-lifecycle/scripts` only when PR-workflow code or
+related skill claims changed.
 The section mode validates section assignments and rejects stale source files
 that still contain generated runtime blocks.
 `skills/ceratops-skill-lifecycle/scripts/runtime/render-runtime-skills.py`
