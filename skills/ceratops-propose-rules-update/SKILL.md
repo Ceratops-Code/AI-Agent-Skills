@@ -28,12 +28,14 @@ rule change.
    relevant rule, single cause, or owning artifact exists.
 2. Inspect exact current text from every involved source. For global and local
    instructions, determine scope and precedence before evaluating interaction.
-3. Query structured history before drafting. From this skill directory, run
-   `python scripts/rule_history.py lookup --history <history> --rules <rules>
-   ID...`, repeating both options for an interacting instruction stack. Query
-   relation targets when adding a rule. If structured history does not exist,
-   use targeted source history and state that recorded behavioral history was
-   unavailable.
+3. Resolve structured history before drafting. For global rules, check
+   `$CODEX_HOME/AGENTS.history.json`; for local rules, check
+   `AGENTS.history.json` beside their `AGENTS.md`. From this skill directory,
+   run `python scripts/rule_history.py lookup --history <history> --rules
+   <rules> ID...`, repeating both options for an interacting instruction stack.
+   Query relation targets when adding a rule. If the applicable history does
+   not exist, use targeted source history and state that recorded behavioral
+   history was unavailable.
 4. Compare a local correction with a structural or non-rule correction. Select
    by prevention of the failure, regression safety, behavioral scope, and
    complexity; textual minimality does not win automatically.
