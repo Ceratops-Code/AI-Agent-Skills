@@ -14,6 +14,9 @@ Use one sentence when one condition determines one required behavior:
 [RULE-ID] When <condition>, require <behavior>.
 ```
 
+Use the strongest unambiguous wording that accurately expresses the intended
+rule.
+
 Add an exception or relationship only when it changes the decision. Keep
 scenarios outside governing instructions and use them as regression evidence.
 
