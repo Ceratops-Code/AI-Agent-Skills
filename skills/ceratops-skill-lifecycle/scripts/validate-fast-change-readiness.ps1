@@ -8,8 +8,9 @@ param(
     [string]$TargetPath
 )
 
-# Fast-change helper for ceratops-skill-lifecycle. It performs the small,
-# deterministic evidence bundle required before a direct release-branch edit:
+# Fast-change readiness helper for ceratops-skill-lifecycle. It performs the
+# small deterministic evidence bundle required before a direct release-branch
+# edit:
 # intended branch, clean worktree, target file existence, and targeted install
 # command availability. It does not prepare branches or mutate files.
 

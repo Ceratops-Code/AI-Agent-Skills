@@ -24,7 +24,7 @@ skill and select `update`.
 
 ### Script Bundle
 
-- (D) Run `scripts/fast-change-preflight.ps1 -SkillsRepoRoot <repo>
+- (D) Run `scripts/validate-fast-change-readiness.ps1 -SkillsRepoRoot <repo>
   -ReleaseBranch release/local -SkillName <skill-name> -TargetPath
   <target-file>` from the supported installed lifecycle bundle.
 
@@ -45,14 +45,15 @@ skill and select `update`.
 2. If the checkout is clean on `main`, prepare and switch to the intended local
    `release/*` branch with the repo's release-branch helper; if no helper
    exists, stop instead of hand-rolling release branch setup.
-3. (D) Run fast-change preflight for the intended branch, clean worktree, target
-   file, and targeted install command evidence; stop on helper failure.
+3. (D) Validate fast-change readiness for the intended branch, clean worktree,
+   target file, and targeted install command evidence; stop on helper failure.
 4. Patch the target source file and inspect the diff.
 5. Commit the release-branch change.
 6. Update only the affected runtime skill copy through `python
    scripts/install-skills.py --repo-root <repo> --skill <skill-name>` in the
    target repository; stop if the installed lifecycle bundle is unavailable. A
-   targeted install runs full validation and never removes stale skills.
+   targeted install validates only the selected skill and never removes stale
+   skills.
 7. Optionally apply and commit the same change in explicitly requested active
    worktrees or branches when it merges cleanly.
 
@@ -63,7 +64,7 @@ skill and select `update`.
 - The checkout is on the intended local `release/*` branch and contains the
   committed change.
 - The affected runtime skill copy was updated or the exact blocker is reported.
-- No broad validation or broad checks were run.
+- No repository-wide validation or broad checks were run.
 - Optional branch or worktree propagation is completed, intentionally skipped,
   or blocked with exact branch names.
 

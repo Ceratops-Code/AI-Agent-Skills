@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render copy-based runtime skill folders from Ceratops-compatible repos.
+"""Build copy-based runtime skill folders from Ceratops-compatible repos.
 
 Source skill folders intentionally contain only the skill-specific delta in
 `SKILL.md`. This script expands shared template sections into a complete runtime
@@ -8,9 +8,9 @@ installs the result under a runtime skills directory such as
 `$CODEX_HOME/skills`.
 
 Called by the installed skill-lifecycle runtime installer during local installs
-and runtime branch preview rebuilds. It can also be run directly when a caller
-supplies the source repo root, output directory, and installer version. The
-renderer is the only script that writes installed skill contents.
+and runtime branch preview rebuilds. The runtime validator also uses the pure
+expected-tree writer so installation and drift comparison share one canonical
+output definition. Only this module writes installed skill contents.
 """
 
 from __future__ import annotations
@@ -41,6 +41,16 @@ VALIDATION_PROFILES = {"ceratops", "ceratops-compatible"}
 IGNORE_NAMES = {".git", "__pycache__", ".mypy_cache", ".pytest_cache", ".ruff_cache", "node_modules"}
 
 
+def configure_repo(repo_root: pathlib.Path) -> None:
+    """Select the source repository used by subsequent build operations."""
+
+    global ROOT, SECTION_MANIFEST, SKILLS
+
+    ROOT = repo_root.resolve()
+    SECTION_MANIFEST = ROOT / "templates" / "skill-sections.json"
+    SKILLS = ROOT / "skills"
+
+
 def load_manifest() -> dict[str, object]:
     """Load the shared-section and payload manifest used by every build."""
 
@@ -56,7 +66,7 @@ def source_skill_names() -> list[str]:
 def validate_manifest(manifest: Mapping[str, object], skill_names: set[str]) -> list[str]:
     """Validate manifest shape before any runtime folders are written.
 
-    The renderer fails before touching the install destination when a skill assignment,
+    The builder fails before touching the install destination when a skill assignment,
     section path, or required core section is stale. This keeps install failures
     cheap and prevents partially refreshed runtime copies.
     """
@@ -220,7 +230,7 @@ def payload_patterns_for(skill_name: str, manifest: Mapping[str, object]) -> lis
 
 
 def is_managed_runtime_dir(path: pathlib.Path) -> bool:
-    """Identify runtime folders that this renderer is allowed to replace."""
+    """Identify runtime folders that this builder is allowed to replace."""
 
     return (path / MANIFEST_NAME).is_file()
 
@@ -309,13 +319,15 @@ def enable_windows_acl_inheritance(path: pathlib.Path) -> None:
         raise RuntimeError(message)
 
 
-def build_skill(
+def write_expected_skill(
     skill_name: str,
-    install_root: pathlib.Path,
+    target_skill: pathlib.Path,
     manifest: Mapping[str, object],
     installer_version: int,
-) -> pathlib.Path:
-    """Build one skill atomically in a temporary folder, then move it in place."""
+    *,
+    source_repository_root: pathlib.Path | None = None,
+) -> None:
+    """Write the canonical managed runtime tree without replacing an install."""
 
     source_dir = SKILLS / skill_name
     source_skill = source_dir / "SKILL.md"
@@ -324,34 +336,52 @@ def build_skill(
     if not source_skill.is_file():
         raise FileNotFoundError(f"missing source skill: {source_skill}")
 
+    shutil.copytree(source_dir, target_skill, ignore=ignore_source_dir)
+    shared_block = rendered_sections_block(skill_name, manifest)
+    runtime_skill_text = compose_runtime_skill(
+        source_skill.read_text(encoding="utf-8"), shared_block, skill_name
+    )
+    (target_skill / "SKILL.md").write_text(
+        runtime_skill_text, encoding="utf-8", newline="\n"
+    )
+
+    for payload in expand_payload_patterns(payload_patterns_for(skill_name, manifest)):
+        relative = payload.relative_to(ROOT)
+        copy_path(payload, target_skill / relative)
+
+    runtime_manifest = {
+        "schema": RUNTIME_MANIFEST_SCHEMA,
+        "skill": skill_name,
+        "runtime_source_id": source_id,
+        "validation_profile": validation_profile,
+        "source_path": str(source_dir.relative_to(ROOT)).replace("\\", "/"),
+        "source_repository_root": str(source_repository_root or ROOT),
+        "installer_version": installer_version,
+        "generated_from": str(SECTION_MANIFEST.relative_to(ROOT)).replace("\\", "/"),
+        "payload_patterns": payload_patterns_for(skill_name, manifest),
+    }
+    (target_skill / MANIFEST_NAME).write_text(
+        json.dumps(runtime_manifest, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
+def build_skill(
+    skill_name: str,
+    install_root: pathlib.Path,
+    manifest: Mapping[str, object],
+    installer_version: int,
+) -> pathlib.Path:
+    """Build one skill atomically in a temporary folder, then move it in place."""
+
+    source_id = cast(str, manifest["runtime_source_id"])
     install_root.mkdir(parents=True, exist_ok=True)
     temp_parent = pathlib.Path(tempfile.mkdtemp(prefix=f".{skill_name}.", dir=install_root))
     temp_skill = temp_parent / skill_name
     target_skill = install_root / skill_name
 
     try:
-        shutil.copytree(source_dir, temp_skill, ignore=ignore_source_dir)
-        shared_block = rendered_sections_block(skill_name, manifest)
-        runtime_skill_text = compose_runtime_skill(source_skill.read_text(encoding="utf-8"), shared_block, skill_name)
-        (temp_skill / "SKILL.md").write_text(runtime_skill_text, encoding="utf-8", newline="\n")
-
-        for payload in expand_payload_patterns(payload_patterns_for(skill_name, manifest)):
-            relative = payload.relative_to(ROOT)
-            copy_path(payload, temp_skill / relative)
-
-        runtime_manifest = {
-            "schema": RUNTIME_MANIFEST_SCHEMA,
-            "skill": skill_name,
-            "runtime_source_id": source_id,
-            "validation_profile": validation_profile,
-            "source_path": str(source_dir.relative_to(ROOT)).replace("\\", "/"),
-            "source_repository_root": str(ROOT),
-            "installer_version": installer_version,
-            "generated_from": str(SECTION_MANIFEST.relative_to(ROOT)).replace("\\", "/"),
-            "payload_patterns": payload_patterns_for(skill_name, manifest),
-        }
-        (temp_skill / MANIFEST_NAME).write_text(json.dumps(runtime_manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-
+        write_expected_skill(skill_name, temp_skill, manifest, installer_version)
         remove_existing_runtime_target(target_skill, source_id)
         temp_skill.replace(target_skill)
         enable_windows_acl_inheritance(target_skill)
@@ -391,23 +421,19 @@ def remove_stale_managed_skills(install_root: pathlib.Path, expected: set[str], 
 def main() -> int:
     """Parse CLI arguments, validate source state, and build selected skills."""
 
-    global ROOT, SECTION_MANIFEST, SKILLS
-
-    parser = argparse.ArgumentParser(description="Render copy-based Ceratops runtime skill folders.")
+    parser = argparse.ArgumentParser(description="Build copy-based Ceratops runtime skill folders.")
     parser.add_argument("--repo-root", required=True, type=pathlib.Path, help="Source skills repository root.")
     parser.add_argument("--install-root", required=True, type=pathlib.Path)
     parser.add_argument("--installer-version", required=True, type=int)
-    parser.add_argument("--skill", action="append", help="Render only this skill. Can be repeated.")
-    parser.add_argument("--remove-stale", action="store_true", help="Remove runtime folders previously generated by this renderer but no longer present in source.")
+    parser.add_argument("--skill", action="append", help="Build only this skill. Can be repeated.")
+    parser.add_argument("--remove-stale", action="store_true", help="Remove runtime folders previously generated by this builder but no longer present in source.")
     args = parser.parse_args()
 
     if args.installer_version < 1:
         print("installer version must be a positive integer", file=sys.stderr)
         return 1
 
-    ROOT = args.repo_root.resolve()
-    SECTION_MANIFEST = ROOT / "templates" / "skill-sections.json"
-    SKILLS = ROOT / "skills"
+    configure_repo(args.repo_root)
 
     manifest = load_manifest()
     skill_names = source_skill_names()

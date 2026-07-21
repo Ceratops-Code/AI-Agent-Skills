@@ -1,6 +1,6 @@
 ---
 name: ceratops-gh-repo-lifecycle
-description: Route Ceratops GitHub repository lifecycle work to action references for create-or-publish, contracts-review, health-audit, dependency-maintenance, ship-change, and merge-pr work. Use when Codex should create or harden a repo, review GitHub/code/repo/org/PR/artifact contracts, audit or repair repo health, process dependency PRs or alerts, ship local changes through GitHub, or finalize a ready PR.
+description: Route Ceratops GitHub repository lifecycle work to action references for create-or-publish, contracts-review, health-audit, dependency-maintenance, ensure-pr, ship-change, and merge-pr work. Use when Codex should create or harden a repo, review GitHub/code/repo/org/PR/artifact contracts, audit or repair repo health, process dependency PRs or alerts, publish a prepared branch as a PR, ship local changes through GitHub, or finalize a ready PR.
 ---
 
 # Ceratops GH Repo Lifecycle
@@ -21,6 +21,7 @@ creation, health, dependency, shipping, and merge actions.
   and release contracts: `references/contracts-review.md`
 - Audit or repair repo health: `references/health-audit.md`
 - Maintain dependency PRs or alerts: `references/dependency-maintenance.md`
+- Push a prepared branch and ensure its PR: `references/ensure-pr.md`
 - Ship local repo changes through GitHub: `references/ship-change.md`
 - Finalize an already-ready PR: `references/merge-pr.md`
 
@@ -29,7 +30,8 @@ creation, health, dependency, shipping, and merge actions.
 - Target repo, local checkout, PR, branch, artifact, dependency queue, or
   creation request that identifies the action.
 - Whether the work is first publication, existing repo health, dependency
-  maintenance, local change shipping, or PR finalization.
+  maintenance, prepared-branch PR publication, local change shipping, or PR
+  finalization.
 - Required live GitHub, local repo, CI, artifact, and credential context named
   by the selected action reference.
 
@@ -42,9 +44,9 @@ repo data before asking.
 
 - Use the action references as the source of truth for scripts, readiness gates,
   cleanup rules, and output contracts.
-- Keep repo creation, contract review, repo health, dependency, shipping, and
-  merge behavior inside this multi-action skill and its `references/` files;
-  do not introduce alias skills or old-name shims.
+- Keep repo creation, contract review, repo health, dependency, PR publication,
+  shipping, and merge behavior inside this multi-action skill and its
+  `references/` files; do not introduce alias skills or old-name shims.
 - For PR finalization reached from a broader shipping or dependency action,
   continue with `references/merge-pr.md` instead of duplicating merge gates.
 - Run broad repo or artifact health checks only when the selected action
@@ -56,7 +58,8 @@ repo data before asking.
   dependency maintenance, local repo change shipping, and PR merge or auto-merge
   decisions.
 - If the task is skill creation, skill mutation, local skill release promotion,
-  or staged skill remote shipping, stop and use `$ceratops-skill-lifecycle`.
+  or staged skill remote shipping, use `$ceratops-skill-lifecycle`; accept its
+  explicit `ensure-pr` handoff for the GitHub publication step.
 - If the task is contract review rather than lifecycle execution, use
   `references/contracts-review.md`.
 - If the task is general GitHub triage with no Ceratops lifecycle action, use
@@ -74,6 +77,8 @@ repo data before asking.
   stale-state cleanup, or safe health repair.
 - Use `dependency-maintenance` when the main goal is dependency-bot PRs,
   dependency alerts, security updates, or dependency queue handling.
+- Use `ensure-pr` when a clean prepared branch only needs push and PR create or
+  update before returning to its calling lifecycle.
 - Use `ship-change` when the repo already exists and local changes need to be
   completed, validated, PR'd, merged, and optionally released.
 - Use `merge-pr` when the PR content is already ready and only PR-specific

@@ -2,22 +2,12 @@
 
 ## Goal
 
-Review Ceratops skill-design contracts and the coupled source, metadata,
-shared-section, runtime-payload, validator, and documentation surfaces in the
-active skills repository. Keep Ceratops skill standards, source-doc tracking,
-and deterministic governance checks owned by `ceratops-skill-lifecycle`.
+Refresh the skill-design standards in
+`references/contracts/skill-deterministic-contract.json` and
+`references/contracts/skill-nondeterministic-contract.json` against current
+best practices from `references/skill-source-docs.json`.
 
 ## Context
-
-### Script Bundle
-
-- (D) Ceratops skill governance validator: `python
-  skills/ceratops-skill-lifecycle/scripts/validation/validate-skills-consistency.py
-  --mode governance`
-- (D) Markdown lint when source skill Markdown is in scope: `npm run
-  lint:markdown`
-- (D) Python type check when skill helper or validator scripts are in scope:
-  `python -m mypy`
 
 ### References
 
@@ -26,105 +16,95 @@ and deterministic governance checks owned by `ceratops-skill-lifecycle`.
   `references/contracts/skill-deterministic-contract.json`
 - Skill non-deterministic contract:
   `references/contracts/skill-nondeterministic-contract.json`
-- Shared-section manifest: `templates/skill-sections.json`
-- Skill consistency validator:
-  `scripts/validation/validate-skills-consistency.py`
 
 ### Inputs To Capture
 
-- Whether the user wants report-only contract review or approved fixes.
-- Whether installed Ceratops runtime copies should reflect the current checkout.
-- Recent contract, shared-section, metadata, runtime-payload, validator, README,
-  action-reference, or automation changes that need coupled review.
+- Whether the user wants a report-only review or approved contract updates.
+- The standards question or contract area that requires current evidence.
+- Whether the source-doc registry itself is stale or incomplete for that
+  question.
 
-Infer missing inputs from the repository state before asking.
+Infer missing inputs from the contract files before asking.
 
 ## Constraints
 
 ### Boundaries
 
-- Use this action only for Ceratops skill-contract review and coupled
-  repository-governance consistency.
-- Do not use this action for consistency across manifest-managed installed skills;
-  use `global-skills-consistency-review`.
-- Do not inspect GitHub org, GitHub repo, PR readiness, repo-code, artifact,
-  registry, or release contracts; those belong to
-  `$ceratops-gh-repo-lifecycle` `contracts-review`.
-- Do not mutate installed skills during report-only reviews. If runtime repair
-  is approved, regenerate through the skill-lifecycle runtime installer from
-  the skills repository checkout.
+- Use this action only to maintain the skill source-doc registry and the two
+  skill-design contracts.
+- Do not audit whether any source or installed skill satisfies the contracts;
+  use `skills-consistency-review` for repository compliance.
+- Do not run `skills-consistency-source-validator.py`; repository validation
+  belongs to `skills-consistency-review`.
+- Do not inspect unrelated metadata, shared sections, runtime payloads,
+  automation prompts, helpers, installers, or installed runtime copies.
 
 ### Skill-Specific Rules
 
-- Treat `--mode governance` as the deterministic owner for machine-checkable
-  Ceratops skill-contract and repository consistency drift.
-- Keep duplicate contract text, shared-section fit, multi-action-skill fit,
-  retired-name drift, and rule-shape quality as non-deterministic checks unless
-  the validator reports an objective finding.
-- Do not add backward-compatibility aliases, old-name shims, pointer artifacts,
-  one-time migration detectors, or stale-term audit checks.
-- Keep Ceratops skill standards in this action's skill-local `references/` files
-  and validator; do not recreate a repository-root contract payload.
+- Treat official sources listed in `skill-source-docs.json` as standards
+  authority and installed OpenAI skills only as bounded pattern evidence.
+- Refresh evidence only for a concrete standards question; do not perform
+  broad research when the existing evidence is current and sufficient.
+- Keep deterministic, machine-checkable requirements in
+  `skill-deterministic-contract.json` and judgment-dependent requirements in
+  `skill-nondeterministic-contract.json`.
+- Preserve stable check IDs, remediation classifications, scope, and evidence
+  mappings unless current best-practice evidence requires a change.
+- Treat the contracts as standards definitions, not evidence that any skill
+  complies with them.
+- Keep skill standards under this action's `references/` tree; do not recreate
+  a repository-root contract payload.
 
-### Workflow
+## Workflow
 
-#### 1. Run deterministic checks
+### 1. Inspect current standards evidence
 
-- Run the governance validation command from the skills repository checkout.
-- Run Markdown lint and mypy for explicit broad contract review, or when the
-  touched Markdown, helper scripts, validators, or configs require them.
-- If a deterministic check fails, report the exact findings before broad manual
-  review.
+- Read `skill-source-docs.json` and both skill contracts.
+- Identify the exact contract requirement whose currency, placement, or scope
+  needs review.
 
-#### 2. Review contract consistency
+### 2. Refresh only necessary sources
 
-- Review duplicate contract text that may belong in `templates/sections/`.
-- Review shared-section fit for missing, duplicated, over-broad, too narrow, or
-  skill-specific shared text.
-- Review multi-action/action-reference consistency across action lists,
-  reference files, boundaries, metadata prompts, README rows, runtime payloads,
-  and validator expectations.
-- Review retired-name drift in active triggers, metadata, manifests, validators,
-  automations, docs, and cross-skill references.
-- Keep only shared sections with more than one real consuming skill.
-- When contract files, source docs, validators, manifests, or source skills
-  changed, review alignment between those surfaces, README contract docs, and
-  actual source-skill structure.
-- Inventory all Ceratops source skills before accepting a new deterministic
-  structure requirement.
+- Check the highest-priority current source capable of resolving the standards
+  question.
+- Use at most two or three relevant installed OpenAI skill examples when
+  official guidance leaves a concrete pattern decision unresolved.
+- Update source registry entries and capture dates only for evidence actually
+  refreshed.
 
-#### 3. Apply only approved fixes
+### 3. Reconcile the contracts
 
-- Use the narrowest skill-maintenance workflow that owns each source fix.
-- Regenerate installed runtime copies only when runtime mutation is explicitly
-  in scope.
-- Use `$ceratops-propose-rules-update` before editing automation prompts or
-  helper contracts.
+- Update the deterministic or non-deterministic contract according to the
+  evidence type.
+- Keep cross-contract references, check IDs, evidence keys, and remediation
+  classifications internally consistent.
+- Do not convert a skill-compliance finding into a standards change unless the
+  referenced best-practice evidence shows the contract itself is wrong.
 
-#### 4. Close with scoped evidence
+### 4. Verify contract artifacts
 
-- Re-run `--mode governance` after any in-scope repair.
-- If source skills changed and local runtime availability is required, stage
-  through `change-promotion`.
+- Parse every changed JSON contract or registry file.
+- Re-open the changed contract entries and confirm that no standard, check, or
+  protection was unintentionally dropped.
+- If changed contract sources must be available in the installed runtime, hand
+  off to `change-promotion`.
 
 ## Done When
 
 ### Completion Gate
 
-- Governance validation passes or every deterministic finding is reported with
-  its owning file and smallest credible repair.
-- Every manual review category is passed, not applicable, intentionally
-  deferred, or blocked.
-- Every approved source, runtime, or automation repair is verified by the
-  narrowest relevant command.
+- Every reviewed contract claim is supported by current registered evidence or
+  reported as unresolved.
+- Deterministic and judgment-dependent requirements remain in their respective
+  contracts with consistent IDs and references.
+- No source skill, installed skill, repository validator, or runtime surface was
+  treated as reviewed for compliance.
 
 ### Output Contract
 
 Report only:
 
-- governance validation outcome
-- deterministic findings and smallest repairs
-- manual contract-review results, including deferred or blocked categories
-- source, runtime, or automation changes made
-- unresolved blockers, intentionally deferred candidates, and important
-  unverified items
+- source evidence refreshed
+- contract entries added, changed, retained, or retired
+- unresolved standards questions or unavailable evidence
+- anything important not verified

@@ -20,7 +20,7 @@ import sys
 
 BUNDLE_ROOT = pathlib.Path(__file__).resolve().parents[2]
 TEMPLATE = BUNDLE_ROOT / "scripts" / "templates" / "install-skills-template.py"
-VALIDATOR = BUNDLE_ROOT / "scripts" / "validation" / "validate-skills-consistency.py"
+VALIDATOR = BUNDLE_ROOT / "scripts" / "skills-consistency-source-validator.py"
 TARGET_RELATIVE = pathlib.Path("scripts/install-skills.py")
 
 
@@ -66,7 +66,7 @@ def run_validation(repo_root: pathlib.Path) -> None:
     )
     if result.returncode != 0:
         detail = (result.stderr or result.stdout).strip()
-        raise RuntimeError(f"full target-repository validation failed: {detail}")
+        raise RuntimeError(f"full source-repository validation failed: {detail}")
 
 
 def main() -> int:

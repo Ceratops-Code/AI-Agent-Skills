@@ -8,10 +8,9 @@ param(
 )
 
 # Skill-local helper for deterministic change-promotion work. It prepares the
-# reusable release branch, merges branches the agent has already reviewed and
-# approved, runs skill-local runtime installation and validation helpers when
-# available, checks pending local work, and emits one compact JSON summary on
-# success.
+# reusable release branch, merges approved branches, validates and installs the
+# promoted snapshot, checks pending local work, and emits one compact JSON
+# summary on success.
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"

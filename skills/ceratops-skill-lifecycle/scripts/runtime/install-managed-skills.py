@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Validate and install managed runtime skills from a compatible repository.
 
-Every invocation runs full target-repository validation before the renderer can
-write. Full installs request same-source stale cleanup; any explicit skill list
-is targeted and never removes stale runtime folders.
+Full installs validate the complete source repository before building and
+same-source stale cleanup. Explicit skill lists validate only those source
+skills before targeted building and never remove stale runtime folders.
 """
 
 from __future__ import annotations
@@ -16,8 +16,8 @@ import sys
 
 
 BUNDLE_ROOT = pathlib.Path(__file__).resolve().parents[2]
-VALIDATOR = BUNDLE_ROOT / "scripts" / "validation" / "validate-skills-consistency.py"
-RENDERER = BUNDLE_ROOT / "scripts" / "runtime" / "render-runtime-skills.py"
+VALIDATOR = BUNDLE_ROOT / "scripts" / "skills-consistency-source-validator.py"
+BUILDER = BUNDLE_ROOT / "scripts" / "runtime" / "managed_runtime_builder.py"
 
 
 def default_install_root() -> pathlib.Path:
@@ -44,7 +44,7 @@ def run_checked(arguments: list[str], failure: str) -> str:
 
 
 def main() -> int:
-    """Validate the target repository and invoke the renderer."""
+    """Validate the target repository and invoke the managed runtime builder."""
 
     parser = argparse.ArgumentParser(description="Validate and install managed runtime skills.")
     parser.add_argument("--repo-root", required=True, type=pathlib.Path)
@@ -61,7 +61,7 @@ def main() -> int:
     if not (repo_root / "skills").is_dir():
         print(f"missing skills directory: {repo_root / 'skills'}", file=sys.stderr)
         return 1
-    if not VALIDATOR.is_file() or not RENDERER.is_file():
+    if not VALIDATOR.is_file() or not BUILDER.is_file():
         print("installed lifecycle bundle is incomplete", file=sys.stderr)
         return 1
 
@@ -73,13 +73,25 @@ def main() -> int:
         return 1
 
     try:
+        validation_mode = "skill" if args.skill is not None else "full"
+        validation_command = [
+            sys.executable,
+            str(VALIDATOR),
+            "--repo-root",
+            str(repo_root),
+            "--mode",
+            validation_mode,
+        ]
+        if validation_mode == "skill":
+            for skill_name in selected:
+                validation_command.extend(("--skill", skill_name))
         run_checked(
-            [sys.executable, str(VALIDATOR), "--repo-root", str(repo_root), "--mode", "full"],
-            "Full target-repository validation failed",
+            validation_command,
+            "Targeted skill validation failed" if validation_mode == "skill" else "Full source-repository validation failed",
         )
         command = [
             sys.executable,
-            str(RENDERER),
+            str(BUILDER),
             "--repo-root",
             str(repo_root),
             "--install-root",
@@ -91,7 +103,7 @@ def main() -> int:
             command.extend(("--skill", skill_name))
         if args.skill is None:
             command.append("--remove-stale")
-        run_checked(command, "Runtime skill rendering failed")
+        run_checked(command, "Managed runtime build failed")
     except (OSError, RuntimeError) as exc:
         print(str(exc), file=sys.stderr)
         return 1

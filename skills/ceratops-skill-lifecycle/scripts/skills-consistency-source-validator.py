@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """Validate Ceratops-compatible skill source and runtime-generation inputs.
 
-Called by CI, governance validation, explicit skill-maintenance validation, and
-runtime smoke paths. The default mode is a full repository validation. `--mode
-sections` is the lightweight replacement for the retired section-sync script:
-it checks shared section assignments and source skill delta-only status without
-running unrelated README, metadata, secret, or contract checks.
+Called by CI, explicit skill-maintenance validation, and runtime installation.
+The default mode is a full source-repository validation.
+``--mode skill`` validates only explicitly selected skills and their required
+rendering inputs for targeted installation. ``--mode sections`` checks shared
+section assignments and source skill delta-only status without running
+unrelated README, metadata, secret, or contract checks.
 """
 
 from __future__ import annotations
@@ -13,7 +14,6 @@ from __future__ import annotations
 import argparse
 import ast
 import json
-import os
 import pathlib
 import re
 import sys
@@ -21,12 +21,11 @@ from collections.abc import Mapping, Sequence
 from typing import cast
 
 
-ROOT = pathlib.Path(__file__).resolve().parents[4]
+ROOT = pathlib.Path(__file__).resolve().parents[3]
 SKILLS_DIR = ROOT / "skills"
 README = ROOT / "README.md"
 SECTION_MANIFEST = ROOT / "templates" / "skill-sections.json"
 SKILL_CONTRACT_DIR = pathlib.Path("skills/ceratops-skill-lifecycle/references/contracts")
-MANIFEST_NAME = ".runtime-manifest.json"
 RUNTIME_MANIFEST_SCHEMA = "ceratops-runtime-skill.v3"
 PROFILE_CERATOPS = "ceratops"
 PROFILE_COMPATIBLE = "ceratops-compatible"
@@ -36,10 +35,11 @@ RUNTIME_INSTALLER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "
 BUNDLE_RESOLVER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "runtime" / "resolve-lifecycle-bundle.py"
 INSTALLER_TEMPLATE = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "templates" / "install-skills-template.py"
 INSTALLER_SYNCHRONIZER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "runtime" / "synchronize-installers.py"
-MANAGED_SKILLS_REVIEWER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "runtime" / "review-managed-skills.py"
-FAST_CHANGE_HELPER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "fast-change-preflight.ps1"
-STAGE_HELPER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "stage-skill-release-branch.ps1"
-VALIDATOR = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "validation" / "validate-skills-consistency.py"
+RUNTIME_BUILDER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "runtime" / "managed_runtime_builder.py"
+RUNTIME_VALIDATOR = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "runtime" / "skills-consistency-runtime-validator.py"
+FAST_CHANGE_READINESS_HELPER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "validate-fast-change-readiness.ps1"
+PROMOTION_HELPER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "promote-skill-branches-to-release-and-install.ps1"
+VALIDATOR = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "skills-consistency-source-validator.py"
 WORKFLOW = ROOT / ".github" / "workflows" / "validate.yml"
 SKILL_DETERMINISTIC_CONTRACT = pathlib.Path("skills/ceratops-skill-lifecycle/references/contracts/skill-deterministic-contract.json")
 SKILL_NONDETERMINISTIC_CONTRACT = pathlib.Path("skills/ceratops-skill-lifecycle/references/contracts/skill-nondeterministic-contract.json")
@@ -102,17 +102,19 @@ GH_LIFECYCLE_ACTIONS = {
     "create-or-publish.md": "--surface all --subset create",
     "dependency-maintenance.md": "--select repo:dependency --select code:dependency",
     "health-audit.md": "--surface all --subset health",
+    "ensure-pr.md": "python -m github_pr_workflow ensure-pr",
     "merge-pr.md": "python -m github_pr_workflow merge",
     "ship-change.md": "merge-pr",
 }
 SKILL_LIFECYCLE_ACTIONS = {
     "create.md": "templates/skill-sections.json",
+    "make-repo-compatible.md": "ceratops-compatible",
     "update.md": "runtime payloads",
     "skills-contract-review.md": "skill-deterministic-contract.json",
-    "global-skills-consistency-review.md": ".runtime-manifest.json",
+    "skills-consistency-review.md": "--repo-root",
     "fast-change.md": "release/*",
-    "change-promotion.md": "stage-skill-release-branch.ps1",
-    "ship-to-remote.md": "push-release-branch-and-ensure-pr.ps1",
+    "change-promotion.md": "promote-skill-branches-to-release-and-install.ps1",
+    "ship-to-remote.md": "ensure-pr",
 }
 TASK_LIFECYCLE_ACTIONS = {
     "execute-in-stages.md": "staged contingent execution",
@@ -128,15 +130,6 @@ def is_ignored_repo_path(path: pathlib.Path) -> bool:
     """Return true for generated dependency/cache paths outside source review."""
 
     return any(part in IGNORED_REPO_DIRS for part in path.relative_to(ROOT).parts)
-
-
-def default_install_root() -> pathlib.Path:
-    """Resolve the installed skill root without requiring callers to pass it."""
-
-    codex_home = os.environ.get("CODEX_HOME")
-    if codex_home:
-        return pathlib.Path(codex_home) / "skills"
-    return pathlib.Path.home() / ".codex" / "skills"
 
 
 def read_json(path: pathlib.Path) -> dict[str, object]:
@@ -307,8 +300,12 @@ def rendered_sections_block(skill_name: str, manifest: dict[str, object]) -> str
     return f"{SECTIONS_START}\n{joined}\n{SECTIONS_END}"
 
 
-def check_runtime_payloads(manifest: dict[str, object], skill_names: set[str]) -> list[str]:
-    """Validate declared runtime payload paths without copying any files."""
+def check_runtime_payloads(
+    manifest: dict[str, object],
+    skill_names: set[str],
+    selected_skill_names: set[str] | None = None,
+) -> list[str]:
+    """Validate applicable runtime payload paths without copying any files."""
 
     errors: list[str] = []
     payloads = manifest.get("runtime_payloads", {})
@@ -316,6 +313,8 @@ def check_runtime_payloads(manifest: dict[str, object], skill_names: set[str]) -
         errors.append("section manifest runtime_payloads must be an object")
         return errors
     for skill_name, values in payloads.items():
+        if selected_skill_names is not None and skill_name != "*" and skill_name not in selected_skill_names:
+            continue
         if skill_name != "*" and skill_name not in skill_names:
             errors.append(f"runtime_payloads points to unknown skill {skill_name}")
         if not isinstance(values, list) or not all(isinstance(item, str) for item in values):
@@ -480,93 +479,6 @@ def check_repo_skill_refs(skill_names: set[str]) -> list[str]:
     return errors
 
 
-def generated_block(text: str) -> str | None:
-    """Extract the generated shared-section block from one runtime skill."""
-
-    start = text.find(SECTIONS_START)
-    if start < 0:
-        return None
-    end = text.find(SECTIONS_END, start)
-    if end < 0:
-        return None
-    return text[start : end + len(SECTIONS_END)]
-
-
-def check_installed_runtime_identity(manifest: dict[str, object], skill_names: set[str]) -> list[str]:
-    """Check installed runtime folders owned by this source when present.
-
-    Missing runtime copies are allowed in task worktrees because local preview
-    installation happens from the staged release checkout. Existing managed
-    runtime folders are still useful evidence for stale rename leftovers.
-    """
-
-    errors: list[str] = []
-    install_root = default_install_root()
-    if not install_root.is_dir():
-        return errors
-    source_id = manifest.get("runtime_source_id")
-    if not isinstance(source_id, str) or not source_id:
-        return errors
-
-    for skill_dir in sorted(path for path in install_root.iterdir() if path.is_dir()):
-        runtime_manifest_path = skill_dir / MANIFEST_NAME
-        if not runtime_manifest_path.is_file():
-            continue
-        try:
-            runtime_manifest_obj = json.loads(runtime_manifest_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
-        if not isinstance(runtime_manifest_obj, dict):
-            continue
-        runtime_manifest = runtime_manifest_obj
-        if runtime_manifest.get("runtime_source_id") != source_id:
-            continue
-
-        skill_name = str(runtime_manifest.get("skill", ""))
-        expected_source_path = f"skills/{skill_name}" if skill_name else ""
-        if runtime_manifest.get("schema") != RUNTIME_MANIFEST_SCHEMA:
-            errors.append(f"{skill_dir.name}: runtime manifest schema must be {RUNTIME_MANIFEST_SCHEMA}")
-        if runtime_manifest.get("validation_profile") != validation_profile(manifest):
-            errors.append(f"{skill_dir.name}: runtime manifest validation_profile does not match source")
-        runtime_installer_version = runtime_manifest.get("installer_version")
-        if (
-            not isinstance(runtime_installer_version, int)
-            or isinstance(runtime_installer_version, bool)
-            or runtime_installer_version < 1
-        ):
-            errors.append(f"{skill_dir.name}: runtime manifest installer_version must be a positive integer")
-        source_root = runtime_manifest.get("source_repository_root")
-        if not isinstance(source_root, str) or not pathlib.Path(source_root).is_absolute():
-            errors.append(f"{skill_dir.name}: runtime manifest source_repository_root must be an absolute local path")
-        if skill_dir.name != skill_name:
-            errors.append(f"{skill_dir.name}: runtime manifest skill is {skill_name!r}")
-        if runtime_manifest.get("source_path") != expected_source_path:
-            errors.append(f"{skill_dir.name}: runtime manifest source_path does not match {expected_source_path}")
-        if skill_name not in skill_names:
-            errors.append(f"{skill_dir.name}: managed runtime folder has no matching source skill")
-            continue
-
-        skill_md = skill_dir / "SKILL.md"
-        if not skill_md.is_file():
-            errors.append(f"{skill_dir.name}: installed runtime SKILL.md is missing")
-            continue
-        try:
-            frontmatter, _body = parse_frontmatter(skill_md)
-        except ValueError as exc:
-            errors.append(f"{skill_dir.name}: installed runtime {exc}")
-            continue
-        if frontmatter.get("name") != skill_name:
-            errors.append(f"{skill_dir.name}: installed runtime frontmatter name does not match")
-        if b"\r\n" in skill_md.read_bytes():
-            errors.append(f"{skill_dir.name}: installed runtime SKILL.md uses CRLF line endings")
-        runtime_block = generated_block(skill_md.read_text(encoding="utf-8"))
-        if runtime_block is None:
-            errors.append(f"{skill_dir.name}: installed runtime shared-section block is missing")
-        elif runtime_block != rendered_sections_block(skill_name, manifest):
-            errors.append(f"{skill_dir.name}: installed runtime shared-section block is stale")
-    return errors
-
-
 def contract_check_ids(path: pathlib.Path) -> set[str]:
     """Return deterministic check IDs from one JSON contract."""
 
@@ -707,24 +619,23 @@ def check_skill_scope_validator() -> list[str]:
 
 
 def check_validation_command_surface() -> list[str]:
-    """Keep validator modes, lifecycle helper paths, docs, CI, and automation aligned."""
+    """Keep source-validator modes, lifecycle helper paths, docs, and CI aligned."""
 
     errors: list[str] = []
     validator_text = VALIDATOR.read_text(encoding="utf-8") if VALIDATOR.is_file() else ""
     bootstrap_installer_text = BOOTSTRAP_INSTALLER.read_text(encoding="utf-8") if BOOTSTRAP_INSTALLER.is_file() else ""
     runtime_installer_text = RUNTIME_INSTALLER.read_text(encoding="utf-8") if RUNTIME_INSTALLER.is_file() else ""
-    renderer_path = RUNTIME_INSTALLER.with_name("render-runtime-skills.py")
-    renderer_text = renderer_path.read_text(encoding="utf-8") if renderer_path.is_file() else ""
+    builder_text = RUNTIME_BUILDER.read_text(encoding="utf-8") if RUNTIME_BUILDER.is_file() else ""
     bundle_resolver_text = BUNDLE_RESOLVER.read_text(encoding="utf-8") if BUNDLE_RESOLVER.is_file() else ""
     installer_template_text = INSTALLER_TEMPLATE.read_text(encoding="utf-8") if INSTALLER_TEMPLATE.is_file() else ""
     synchronizer_text = INSTALLER_SYNCHRONIZER.read_text(encoding="utf-8") if INSTALLER_SYNCHRONIZER.is_file() else ""
-    reviewer_text = MANAGED_SKILLS_REVIEWER.read_text(encoding="utf-8") if MANAGED_SKILLS_REVIEWER.is_file() else ""
-    fast_change_text = FAST_CHANGE_HELPER.read_text(encoding="utf-8") if FAST_CHANGE_HELPER.is_file() else ""
-    stage_helper_text = STAGE_HELPER.read_text(encoding="utf-8") if STAGE_HELPER.is_file() else ""
+    runtime_validator_text = RUNTIME_VALIDATOR.read_text(encoding="utf-8") if RUNTIME_VALIDATOR.is_file() else ""
+    fast_change_readiness_text = FAST_CHANGE_READINESS_HELPER.read_text(encoding="utf-8") if FAST_CHANGE_READINESS_HELPER.is_file() else ""
+    promotion_helper_text = PROMOTION_HELPER.read_text(encoding="utf-8") if PROMOTION_HELPER.is_file() else ""
     readme_text = README.read_text(encoding="utf-8") if README.is_file() else ""
     workflow_text = WORKFLOW.read_text(encoding="utf-8") if WORKFLOW.is_file() else ""
 
-    for mode in ("sections", "full", "governance"):
+    for mode in ("skill", "sections", "full"):
         if f'"{mode}"' not in validator_text:
             errors.append(f"validator does not declare --mode {mode}")
     if "-Validate" in bootstrap_installer_text or "-Validate" in runtime_installer_text:
@@ -734,36 +645,33 @@ def check_validation_command_surface() -> list[str]:
     for name, text in (("repo installer", bootstrap_installer_text), ("authoritative installer template", installer_template_text)):
         if "INSTALLER_VERSION" not in text or "resolve-lifecycle-bundle.py" not in text or "install-managed-skills.py" not in text:
             errors.append(f"{name} must declare its version and call the Python lifecycle resolver and installer")
-    if "validate-skills-consistency.py" not in runtime_installer_text or '"--mode"' not in runtime_installer_text or '"full"' not in runtime_installer_text:
-        errors.append("runtime installer must run full target-repository validation")
-    if "ValidateSet" in stage_helper_text or "$Validate" in stage_helper_text:
-        errors.append("release staging must not expose a validation selector")
-    if "scripts\\install-skills.py" not in stage_helper_text or '"python"' not in stage_helper_text:
-        errors.append("release staging must install through the target repository Python installer")
-    if "scripts\\install-skills.py" not in fast_change_text:
-        errors.append("fast-change preflight must expose the target repository Python installer")
-    if RUNTIME_MANIFEST_SCHEMA not in renderer_text:
-        errors.append("runtime renderer must emit the lifecycle bundle capability schema")
+    if "skills-consistency-source-validator.py" not in runtime_installer_text or '"--mode"' not in runtime_installer_text:
+        errors.append("runtime installer must call the source validator")
+    if '"full"' not in runtime_installer_text or '"skill"' not in runtime_installer_text:
+        errors.append("runtime installer must select full or targeted source validation from install scope")
+    if "ValidateSet" in promotion_helper_text or "$Validate" in promotion_helper_text:
+        errors.append("release promotion must not expose a validation selector")
+    if "scripts\\install-skills.py" not in promotion_helper_text or '"python"' not in promotion_helper_text:
+        errors.append("release promotion must install through the target repository Python installer")
+    if "scripts\\install-skills.py" not in fast_change_readiness_text:
+        errors.append("fast-change readiness must expose the target repository Python installer")
+    if RUNTIME_MANIFEST_SCHEMA not in builder_text:
+        errors.append("runtime builder must emit the lifecycle bundle capability schema")
     for field in ("source_repository_root", "installer_version"):
-        if field not in renderer_text or field not in reviewer_text:
-            errors.append(f"runtime generation and global review must both own manifest field {field}")
+        if field not in builder_text or field not in runtime_validator_text:
+            errors.append(f"runtime building and validation must both own manifest field {field}")
+    if "compare_managed_tree" not in runtime_validator_text or '"--mode"' in runtime_validator_text:
+        errors.append("runtime validator must compare managed trees through one command")
     if RUNTIME_MANIFEST_SCHEMA not in bundle_resolver_text or "installed_bundle_supported" not in bundle_resolver_text:
         errors.append("lifecycle bundle resolver must enforce installed runtime capability before checkout fallback")
     if "INSTALLER_VERSION" not in synchronizer_text or "shutil.copy2" not in synchronizer_text:
         errors.append("installer synchronizer must compare versions and copy the authoritative template")
-    for snippet in ("--mode governance", "--mode full", "--mode sections"):
+    for snippet in ("--mode full", "--mode sections", "--mode skill"):
         if snippet not in readme_text:
             errors.append(f"README is missing validation command snippet {snippet}")
     if "scripts/install-skills.py" not in workflow_text:
         errors.append("CI workflow must render managed skills through the Python repo installer")
 
-    governance_prompt = default_install_root().parent / "automations" / "global-governance-consistency-audit" / "automation.toml"
-    if governance_prompt.is_file():
-        prompt_text = governance_prompt.read_text(encoding="utf-8", errors="replace")
-        stale_terms = ("--run-skill-validation", "skill_repo.validation", "validate-skills-consistency.py")
-        for term in stale_terms:
-            if term in prompt_text:
-                errors.append(f"governance automation still owns skill validation term {term}")
     return errors
 
 
@@ -781,20 +689,17 @@ def check_validator_output_budget() -> list[str]:
     return errors
 
 
-def check_governance_consistency(
+def check_source_governance_consistency(
     manifest: dict[str, object],
     skill_dirs: list[pathlib.Path],
     readme_rows: set[str],
     skill_names: set[str],
     profile: str,
-    include_installed_runtime: bool,
 ) -> list[str]:
-    """Run full source governance plus optional installed-runtime checks."""
+    """Run source-only governance checks included by full validation."""
 
     errors: list[str] = []
     errors.extend(check_repo_skill_refs(skill_names))
-    if include_installed_runtime:
-        errors.extend(check_installed_runtime_identity(manifest, skill_names))
     if profile == PROFILE_CERATOPS:
         errors.extend(check_validation_command_surface())
         errors.extend(check_skill_contract_remediation_policy())
@@ -867,6 +772,48 @@ def check_section_sources(manifest: dict[str, object], skill_dirs: list[pathlib.
             rendered_sections_block(skill_dir.name, manifest)
         except Exception as exc:
             errors.append(f"{skill_dir.name}: could not render runtime shared sections: {exc}")
+    return errors
+
+
+def check_selected_skills(
+    manifest: dict[str, object],
+    skill_dirs: list[pathlib.Path],
+    selected_skill_names: set[str],
+    profile: str,
+) -> list[str]:
+    """Validate selected skills and only the source inputs needed to render them."""
+
+    errors: list[str] = []
+    skill_names = {skill_dir.name for skill_dir in skill_dirs}
+    skill_dir_by_name = {skill_dir.name: skill_dir for skill_dir in skill_dirs}
+    sections = manifest.get("sections", {})
+    assignments = manifest.get("skills", {})
+    if not isinstance(sections, dict):
+        return ["section manifest sections must be an object"]
+    if not isinstance(assignments, dict):
+        return ["section manifest skills must be an object"]
+
+    unknown = sorted(selected_skill_names - skill_names)
+    for skill_name in unknown:
+        errors.append(f"{skill_name}: selected skill does not exist")
+    readme_text = README.read_text(encoding="utf-8") if README.is_file() else ""
+    readme_rows = readme_skill_rows(readme_text)
+    for skill_name in sorted(selected_skill_names & skill_names):
+        section_names = assignments.get(skill_name)
+        if not isinstance(section_names, list) or not all(isinstance(item, str) for item in section_names):
+            errors.append(f"{skill_name}: section assignment must be a list of section names")
+            continue
+        if "core" not in section_names:
+            errors.append(f"{skill_name}: section assignment must include core")
+        for section_name in section_names:
+            section_path = sections.get(section_name)
+            if not isinstance(section_path, str) or not (ROOT / section_path).is_file():
+                errors.append(f"{skill_name}: missing section file for {section_name}")
+        errors.extend(check_skill(skill_dir_by_name[skill_name], readme_rows, manifest, skill_names, profile))
+
+    errors.extend(check_runtime_payloads(manifest, skill_names, selected_skill_names))
+    selected_dirs = [skill_dir_by_name[name] for name in sorted(selected_skill_names & skill_names)]
+    errors.extend(check_secrets(selected_dirs))
     return errors
 
 
@@ -1000,36 +947,43 @@ def check_skill(
     return errors
 
 
-def check_secrets() -> list[str]:
-    """Scan text files for high-confidence secrets and local private paths."""
+def check_secrets(search_roots: Sequence[pathlib.Path] | None = None) -> list[str]:
+    """Scan selected source roots for high-confidence secrets and private paths."""
 
     errors: list[str] = []
-    for path in ROOT.rglob("*"):
-        if not path.is_file() or is_ignored_repo_path(path):
-            continue
-        try:
-            text = path.read_text(encoding="utf-8")
-        except UnicodeDecodeError:
-            continue
-        rel = path.relative_to(ROOT)
-        for pattern in SECRET_PATTERNS:
-            if pattern.search(text):
-                errors.append(f"{rel}: high-confidence secret or private path pattern")
+    for search_root in search_roots or (ROOT,):
+        for path in search_root.rglob("*"):
+            if not path.is_file() or is_ignored_repo_path(path):
+                continue
+            try:
+                text = path.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                continue
+            rel = path.relative_to(ROOT)
+            for pattern in SECRET_PATTERNS:
+                if pattern.search(text):
+                    errors.append(f"{rel}: high-confidence secret or private path pattern")
     return errors
 
 
 def main() -> int:
-    """Run section, full, or governance skill consistency validation."""
+    """Run selected-skill, section, or full source validation."""
 
     global ROOT, SKILLS_DIR, README, SECTION_MANIFEST, CERATOPS_ICON_SOURCE
     global BOOTSTRAP_INSTALLER, RUNTIME_INSTALLER, BUNDLE_RESOLVER, INSTALLER_TEMPLATE
-    global INSTALLER_SYNCHRONIZER, MANAGED_SKILLS_REVIEWER, FAST_CHANGE_HELPER
-    global STAGE_HELPER, VALIDATOR, WORKFLOW
+    global INSTALLER_SYNCHRONIZER, RUNTIME_BUILDER, RUNTIME_VALIDATOR, FAST_CHANGE_READINESS_HELPER
+    global PROMOTION_HELPER, VALIDATOR, WORKFLOW
 
     parser = argparse.ArgumentParser(description="Validate Ceratops-compatible skill source and runtime-generation inputs.")
     parser.add_argument("--repo-root", type=pathlib.Path, help="Source skills repository root.")
-    parser.add_argument("--mode", choices=["full", "sections", "governance"], default="full", help="Use sections for a targeted shared-section check or governance for explicit profile-aware audit checks.")
+    parser.add_argument("--mode", choices=["skill", "sections", "full"], default="full", help="Use skill for selected-skill installation, sections for shared-source changes, or full for source-repository validation.")
+    parser.add_argument("--skill", action="append", help="Source skill to validate in skill mode; repeat for multiple skills.")
     args = parser.parse_args()
+    selected_skill_names = set(args.skill or [])
+    if args.mode == "skill" and not selected_skill_names:
+        parser.error("--mode skill requires at least one --skill")
+    if args.mode != "skill" and selected_skill_names:
+        parser.error("--skill is valid only with --mode skill")
 
     if args.repo_root is not None:
         ROOT = args.repo_root.resolve()
@@ -1042,10 +996,11 @@ def main() -> int:
         BUNDLE_RESOLVER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "runtime" / "resolve-lifecycle-bundle.py"
         INSTALLER_TEMPLATE = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "templates" / "install-skills-template.py"
         INSTALLER_SYNCHRONIZER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "runtime" / "synchronize-installers.py"
-        MANAGED_SKILLS_REVIEWER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "runtime" / "review-managed-skills.py"
-        FAST_CHANGE_HELPER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "fast-change-preflight.ps1"
-        STAGE_HELPER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "stage-skill-release-branch.ps1"
-        VALIDATOR = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "validation" / "validate-skills-consistency.py"
+        RUNTIME_BUILDER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "runtime" / "managed_runtime_builder.py"
+        RUNTIME_VALIDATOR = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "runtime" / "skills-consistency-runtime-validator.py"
+        FAST_CHANGE_READINESS_HELPER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "validate-fast-change-readiness.ps1"
+        PROMOTION_HELPER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "promote-skill-branches-to-release-and-install.ps1"
+        VALIDATOR = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "skills-consistency-source-validator.py"
         WORKFLOW = ROOT / ".github" / "workflows" / "validate.yml"
 
     errors: list[str] = []
@@ -1057,8 +1012,18 @@ def main() -> int:
     manifest = load_section_manifest() if SECTION_MANIFEST.is_file() else {"sections": {}, "skills": {}}
     errors.extend(check_repo_manifest_identity(manifest))
     profile = validation_profile(manifest)
-    errors.extend(check_source_installer(profile))
     skill_dirs = sorted(p for p in SKILLS_DIR.iterdir() if p.is_dir()) if SKILLS_DIR.is_dir() else []
+    if args.mode == "skill":
+        errors.extend(check_selected_skills(manifest, skill_dirs, selected_skill_names, profile))
+        if errors:
+            print(f"errors: {len(errors)}", file=sys.stderr)
+            for error in errors:
+                print(error, file=sys.stderr)
+            return 1
+        print(f"ok: skill {len(selected_skill_names)}")
+        return 0
+
+    errors.extend(check_source_installer(profile))
     if args.mode == "sections":
         errors.extend(check_section_sources(manifest, skill_dirs))
         if errors:
@@ -1151,13 +1116,12 @@ def main() -> int:
     if profile == PROFILE_CERATOPS:
         errors.extend(check_retired_baseline_absent())
     errors.extend(
-        check_governance_consistency(
+        check_source_governance_consistency(
             manifest,
             skill_dirs,
             readme_rows,
             skill_names,
             profile,
-            include_installed_runtime=args.mode == "governance",
         )
     )
 
@@ -1167,10 +1131,7 @@ def main() -> int:
             print(error, file=sys.stderr)
         return 1
 
-    if args.mode == "governance":
-        print(f"ok: governance {len(skill_dirs)}")
-    else:
-        print(f"ok: {len(skill_dirs)}")
+    print(f"ok: {len(skill_dirs)}")
     return 0
 
 

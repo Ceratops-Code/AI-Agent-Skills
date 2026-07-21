@@ -16,10 +16,10 @@ Contributions should keep skills practical, current, and safe.
   `templates/skill-sections.json`, keep the universal `core` section focused,
   keep GH-only wording in GH-only sections, keep GH org/repo/PR/code/artifact
   contract review in
-  `skills/ceratops-gh-repo-lifecycle/references/contracts-review.md`, and keep
-  source-neutral catalog consistency in
-  `skills/ceratops-skill-lifecycle/references/global-skills-consistency-review.md`,
-  and skill-design contract upkeep in
+  `skills/ceratops-gh-repo-lifecycle/references/contracts-review.md`, keep
+  repository skill consistency and contract compliance in
+  `skills/ceratops-skill-lifecycle/references/skills-consistency-review.md`, and
+  keep skill-design standards refresh in
   `skills/ceratops-skill-lifecycle/references/skills-contract-review.md`.
 - Do not add secrets, private endpoints, local machine paths, or org-internal
   procedures.
@@ -42,13 +42,13 @@ python -m mypy
 ```
 
 ```powershell
-python .\skills\ceratops-skill-lifecycle\scripts\validation\validate-skills-consistency.py --mode full
+python .\skills\ceratops-skill-lifecycle\scripts\skills-consistency-source-validator.py --mode full
 ```
 
 If the change affects workflow behavior, include a short test note in the PR
 explaining how the skill was exercised or reviewed.
 Run `python
-.\skills\ceratops-skill-lifecycle\scripts\validation\validate-skills-consistency.py
+.\skills\ceratops-skill-lifecycle\scripts\skills-consistency-source-validator.py
 --mode sections` only when shared section source files or
 `templates/skill-sections.json` changed. Run
 `python -m github_pr_workflow validate --help` from
@@ -56,5 +56,5 @@ Run `python
 related skill claims changed.
 The section mode validates section assignments and rejects stale source files
 that still contain generated runtime blocks.
-`skills/ceratops-skill-lifecycle/scripts/runtime/render-runtime-skills.py`
+`skills/ceratops-skill-lifecycle/scripts/runtime/managed_runtime_builder.py`
 composes runtime `SKILL.md` files and copies declared payloads during install.

@@ -1,6 +1,6 @@
 ---
 name: ceratops-skill-optimize
-description: Propose advisory-only improvements for existing Codex or Ceratops skills, including multi-action skill text, action references, triggers, metadata, runtime payload declarations, validators, docs, workflow constraints, output contracts, and done criteria. Use when Codex should recommend exact skill changes without applying them.
+description: Propose advisory-only improvements for one existing Codex or Ceratops skill by default, or multiple skills when explicitly requested, including multi-action skill text, action references, triggers, metadata, runtime payload declarations, validators, docs, workflow constraints, output contracts, and done criteria. Use when Codex should recommend exact skill changes without applying them.
 ---
 
 # Ceratops Skill Optimizer
@@ -15,7 +15,8 @@ explicitly requests that behavior change.
 
 ### Inputs To Capture
 
-- Current skill text or the concrete target skill path.
+- Current skill text or a concrete path for one target skill by default, or the
+  explicit target set when the user requests multi-skill or all-skill review.
 - The skill's purpose, trigger conditions, expected user request, workflow,
   constraints, output contract, and completion criteria.
 - Companion artifacts that govern the same behavior, such as a multi-action
@@ -26,13 +27,15 @@ explicitly requests that behavior change.
   output-only, validation-only, or wording-only.
 
 Ask one concise question and stop if no skill text, file path, or concrete
-target is available.
+target set is available.
 
 ## Constraints
 
 ### Skill-Specific Rules
 
 - Do not apply edits or mutate files.
+- Review one skill by default. Review multiple or all skills only when the user
+  explicitly requests that broader target set.
 - Preserve the skill's existing intent unless the user explicitly asks to change
   behavior.
 - Prefer targeted proposals over whole-skill rewrites.
@@ -73,36 +76,38 @@ target is available.
 
 ### Workflow
 
-1. Inspect the target skill text, action references when present, and companion
-   metadata.
+1. Inspect each explicitly targeted skill's text, action references when
+   present, and companion metadata.
 2. Before proposing a structural helper or validator change, map its owner,
    responsibilities, callers, entrypoints, and bootstrap paths.
-3. Identify current purpose, trigger surface, workflow, constraints, output
-   contract, and done criteria.
-4. Decide whether Goal / Context / Constraints / Done When structure would
-   improve execution.
-5. Find concrete issues: missing trigger context, unclear ownership, duplicated
-   rules, weak completion criteria, stale labels, metadata drift, excessive
-   output, or unverifiable instructions.
-6. Propose the narrowest update that fixes the issue across multi-action skill
-   text, action references, metadata, runtime payloads, validators, and docs
-   when those surfaces govern the same behavior.
-7. Include exact proposed replacement or addition and the smallest current
-   anchor needed to locate it.
+3. For each target skill, identify current purpose, trigger surface, workflow,
+   constraints, output contract, and done criteria.
+4. For each target skill, decide whether Goal / Context / Constraints / Done
+   When structure would improve execution.
+5. For each target skill, find concrete issues: missing trigger context, unclear
+   ownership, duplicated rules, weak completion criteria, stale labels,
+   metadata drift, excessive output, or unverifiable instructions.
+6. For each target skill, propose the narrowest update that fixes the issue
+   across multi-action skill text, action references, metadata, runtime
+   payloads, validators, and docs when those surfaces govern the same behavior.
+7. Include each target skill, exact proposed replacement or addition, and the
+   smallest current anchor needed to locate it.
 
 ## Done When
 
 ### Completion Gate
 
 - The response states whether an update is recommended.
-- Every proposed change includes exact new text and target location.
+- Every explicitly targeted skill was reviewed.
+- Every proposed change includes exact new text, target skill, and target
+  location.
 - Behavior changes, recurring cost increases, blockers, and missing inputs are
   explicit.
 - No files were edited.
 
 ### Output Contract
 
-Return only:
+Return only, grouped by target skill when more than one is reviewed:
 
 - recommendation status
 - target section or insertion point

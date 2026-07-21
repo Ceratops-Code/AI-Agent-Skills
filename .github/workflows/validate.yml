@@ -35,14 +35,11 @@ jobs:
       - name: Type-check Python
         run: python -m mypy
 
-      - name: Run unit tests
-        run: python -m unittest discover -s tests
+      - name: Run tests
+        run: python -m pytest -q
 
-      - name: Render managed skills
+      - name: Validate and render managed skills
         run: python scripts/install-skills.py --install-root "${{ runner.temp }}/ceratops-skills"
-
-      - name: Validate skills
-        run: python skills/ceratops-skill-lifecycle/scripts/validation/validate-skills-consistency.py --mode full
 
       - name: Smoke-test PR workflow CLI
         working-directory: skills/ceratops-gh-repo-lifecycle/scripts

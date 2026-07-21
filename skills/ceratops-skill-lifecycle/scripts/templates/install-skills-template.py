@@ -10,13 +10,14 @@ ownership checks, and stale cleanup belong to the installed lifecycle bundle.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import pathlib
 import subprocess
 import sys
 
 
-INSTALLER_VERSION = 1
+INSTALLER_VERSION = 2
 LIFECYCLE_SKILL = "ceratops-skill-lifecycle"
 RESOLVER_RELATIVE = pathlib.Path("scripts/runtime/resolve-lifecycle-bundle.py")
 INSTALLER_RELATIVE = pathlib.Path("scripts/runtime/install-managed-skills.py")
@@ -30,15 +31,28 @@ def codex_skills_root() -> pathlib.Path:
 
 
 def resolver_path(repo_root: pathlib.Path) -> pathlib.Path:
-    """Locate the installed resolver, or the Ceratops source bootstrap copy."""
+    """Use a capable installed resolver or the newer Ceratops source resolver."""
 
-    installed = codex_skills_root() / LIFECYCLE_SKILL / RESOLVER_RELATIVE
-    if installed.is_file():
+    installed_bundle = codex_skills_root() / LIFECYCLE_SKILL
+    installed = installed_bundle / RESOLVER_RELATIVE
+    installed_version = 0
+    try:
+        manifest = json.loads(
+            (installed_bundle / ".runtime-manifest.json").read_text(encoding="utf-8")
+        )
+        value = manifest.get("installer_version") if isinstance(manifest, dict) else None
+        if isinstance(value, int) and not isinstance(value, bool):
+            installed_version = value
+    except (OSError, json.JSONDecodeError):
+        pass
+    if installed.is_file() and installed_version >= INSTALLER_VERSION:
         return installed
 
     checkout = repo_root / "skills" / LIFECYCLE_SKILL / RESOLVER_RELATIVE
     if checkout.is_file():
         return checkout
+    if installed.is_file():
+        return installed
 
     raise FileNotFoundError(
         "A supported installed ceratops-skill-lifecycle bundle is required. "

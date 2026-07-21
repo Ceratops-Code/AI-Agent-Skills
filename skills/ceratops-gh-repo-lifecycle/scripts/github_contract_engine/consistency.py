@@ -70,6 +70,7 @@ REQUIRED_FILES = [
     SCRIPTS / "github_contract_engine" / "format_report.py",
     SCRIPTS / "github_pr_workflow" / "__main__.py",
     SCRIPTS / "github_pr_workflow" / "cli.py",
+    SCRIPTS / "github_pr_workflow" / "ensure_pr.py",
     SCRIPTS / "github_pr_workflow" / "readiness.py",
     SCRIPTS / "github_pr_workflow" / "codex_review.py",
     SCRIPTS / "github_pr_workflow" / "merge.py",

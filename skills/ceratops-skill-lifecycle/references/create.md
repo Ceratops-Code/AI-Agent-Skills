@@ -32,8 +32,10 @@ asking.
 
 ### Boundaries
 
-- Use this action when creating a brand-new Ceratops skill in this repo or a
-  complete skill in another skill repo.
+- Use this action when creating a brand-new skill in this repo or another skills
+  repository.
+- If the target repository is not Ceratops-compatible, select
+  `make-repo-compatible`, complete that action, then resume `create`.
 - If the task is generic one-off scaffolding with no repo integration
   expectations, use the system skill creator only for scaffolding and still
   return here for repo integration if required.
@@ -49,10 +51,11 @@ asking.
 - In this repo, inspect `skills/ceratops-skill-lifecycle/references/` and select
   only deterministic and non-deterministic checks that apply to the skill's
   purpose, artifacts, tools, references, and side effects.
-- In another repo, use the shared lifecycle only when
-  `templates/skill-sections.json` declares `runtime_source_id`,
-  `validation_profile: ceratops-compatible`, shared sections, and per-skill
-  assignments. Do not require Ceratops-prefixed skill names.
+- In another repo, verify that `templates/skill-sections.json` declares
+  `runtime_source_id`, `validation_profile: ceratops-compatible`, shared
+  sections, and per-skill assignments; otherwise complete
+  `make-repo-compatible` before continuing. Do not require Ceratops-prefixed
+  skill names.
 - When a Ceratops skills source checkout is locally present and no explicit
   other source repo was named, scaffold and edit the new skill only in that
   checkout's thread-owned worktree; after validation, promote through the
@@ -95,8 +98,9 @@ asking.
   managed install into `$CODEX_HOME/skills` unless the user explicitly opted
   out.
 - In another compatible repo, run `python scripts/install-skills.py --repo-root
-  <repo>` so the versioned repository bootstrap uses the installed lifecycle
-  bundle and performs full validation before installation.
+  <repo>` only when runtime installation is explicitly requested; the versioned
+  repository bootstrap uses the installed lifecycle bundle and performs full
+  validation before installation.
 
 ## Done When
 
