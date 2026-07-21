@@ -61,7 +61,7 @@ def parse_relations(text: str) -> dict[str, set[str]]:
         elif not line.strip() or line.startswith("## "):
             current = None
 
-    relations = {rule_id: set() for rule_id in records}
+    relations: dict[str, set[str]] = {rule_id: set() for rule_id in records}
     for rule_id, parts in records.items():
         record = " ".join(parts)
         for match in RELATION.finditer(record):
@@ -79,7 +79,7 @@ def load_graph(paths: list[Path]) -> dict[str, set[str]]:
             if rule_id in outgoing:
                 raise ValueError(f"duplicate rule ID across sources: {rule_id}")
             outgoing[rule_id] = targets
-    graph = {rule_id: set() for rule_id in outgoing}
+    graph: dict[str, set[str]] = {rule_id: set() for rule_id in outgoing}
     for rule_id, targets in outgoing.items():
         for target in targets:
             if target not in graph:
