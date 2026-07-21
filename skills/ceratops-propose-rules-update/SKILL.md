@@ -13,6 +13,14 @@ deterministic enforcement.
 
 Read [references/rule-design.md](references/rule-design.md) before drafting.
 
+## Constraints
+
+### Boundaries
+
+Use this skill for instruction-system changes. Route general prompt rewrites to
+`$ceratops-prompt-optimizer`; answer diagnosis-only requests without forcing a
+rule change.
+
 ## Workflow
 
 1. Reconstruct the failed decision from current evidence. Identify the active
@@ -63,6 +71,8 @@ better than the current state and material alternative. Otherwise change the
 intervention or report the unresolved decision point.
 
 ## Output
+
+### Output Contract
 
 Report only the selected exact change, its decision and regression evidence,
 and unresolved impact.
