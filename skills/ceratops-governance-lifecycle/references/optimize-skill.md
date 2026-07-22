@@ -1,9 +1,4 @@
----
-name: ceratops-skill-optimize
-description: Propose advisory-only improvements for one existing Codex or Ceratops skill by default, or multiple skills when explicitly requested, including multi-action skill text, action references, triggers, metadata, runtime payload declarations, validators, docs, workflow constraints, output contracts, and done criteria. Use when Codex should recommend exact skill changes without applying them.
----
-
-# Ceratops Skill Optimizer
+# Optimize Skill Action
 
 ## Goal
 
@@ -33,28 +28,23 @@ target set is available.
 
 ### Skill-Specific Rules
 
-- Do not apply edits or mutate files.
 - Review one skill by default. Review multiple or all skills only when the user
   explicitly requests that broader target set.
-- Preserve the skill's existing intent unless the user explicitly asks to change
-  behavior.
-- Prefer targeted proposals over whole-skill rewrites.
 - Put trigger information in YAML frontmatter descriptions rather than only in
   the body.
 - Keep `SKILL.md` focused on execution rules that are useful after the skill has
   already triggered.
 - Include a role only when it changes how Codex should judge tradeoffs, inspect
   inputs, choose tools, or decide completion.
-- Inspect companion artifacts only when they exist and govern trigger behavior,
-  runtime packaging, helper usage, validation, docs, or user-visible output for
-  the target skill.
 - For multi-action skills, inspect the `SKILL.md` and action reference files;
   inspect metadata, runtime payload declarations, validators, and docs only when
   they govern the action surface.
 - When companion artifacts govern the same behavior, include the aligned
   companion update or state why it is intentionally retained.
-- Remove or merge duplicate responsibilities and avoid overlong, brittle, vague,
-  contradictory, or purely stylistic changes.
+- Merge semantically shared behavior even when wording differs; for multi-action
+  skills, place the common invariant in the parent `SKILL.md` and retain only
+  action-specific deltas in references.
+- Avoid overlong, brittle, vague, contradictory, or purely stylistic changes.
 - Prefer deterministic scripts or helpers for repeatable procedural behavior
   only when text instructions are insufficient.
 - Do not add auxiliary documentation, README files, examples, or unrelated
@@ -65,14 +55,14 @@ target set is available.
 
 ### Boundaries
 
-- Use this skill for advisory skill optimization and exact proposed skill text
+- Use this action for advisory skill optimization and exact proposed skill text
   changes.
 - If the user asks to apply changes to Ceratops skills, use
   `$ceratops-skill-lifecycle` with the `update` action.
 - If the user asks to create a new skill, use `$ceratops-skill-lifecycle` with
   the `create` action.
-- If the requested change is one durable rule, use
-  `$ceratops-propose-rules-update`.
+- If the requested change is one durable rule, return to the parent skill and
+  select `propose-rules-update`.
 
 ### Workflow
 

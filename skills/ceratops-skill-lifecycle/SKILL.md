@@ -79,7 +79,7 @@ Infer missing inputs from the current repo state before asking.
   fast direct release-branch changes, promoting committed skill branches into a
   local release branch, and shipping staged skills repo changes through GitHub.
 - If the task is advisory-only skill optimization, use
-  `$ceratops-skill-optimize`.
+  `$ceratops-governance-lifecycle` action `optimize-skill`.
 - If the task is Ceratops skill-contract standards upkeep, use
   `references/skills-contract-review.md`.
 - If the task is repository skill consistency and contract compliance, use

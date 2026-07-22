@@ -73,8 +73,8 @@ Infer missing inputs from the repository and installed manifests before asking.
 - Update source repositories only through task worktrees and regenerate runtime
   copies only through the owning repository installer.
 - Do not turn repository consistency review into general skill optimization;
-  use `$ceratops-skill-optimize` for advisory improvement beyond contract or
-  coupled-surface defects.
+  use `$ceratops-governance-lifecycle` action `optimize-skill` for advisory
+  improvement beyond contract or coupled-surface defects.
 
 ### Skill-Specific Rules
 

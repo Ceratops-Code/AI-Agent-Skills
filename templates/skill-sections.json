@@ -33,16 +33,11 @@
     "ceratops-automation-run": [
       "core"
     ],
-    "ceratops-propose-rules-update": [
-      "core"
+    "ceratops-governance-lifecycle": [
+      "core",
+      "multi-action-skill"
     ],
     "ceratops-credit-savings-analysis": [
-      "core"
-    ],
-    "ceratops-prompt-optimizer": [
-      "core"
-    ],
-    "ceratops-skill-optimize": [
       "core"
     ],
     "ceratops-code-consistency-audit": [
