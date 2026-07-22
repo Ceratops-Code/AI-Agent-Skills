@@ -14,7 +14,7 @@ import re
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable, cast
 
 
 RULE_ID_PATTERN = r"[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+"
@@ -390,7 +390,7 @@ def _strong_components(
 
 def validate_rule_stack(
     sources: list[ParsedRuleSource], *, global_source: str
-) -> dict[str, object]:
+) -> dict[str, Any]:
     """Validate IDs, targets, relation cycles, and cross-scope legality."""
     findings: list[dict[str, object]] = []
     semantic_reviews: list[dict[str, object]] = []
@@ -411,16 +411,18 @@ def validate_rule_stack(
 
     edges: list[dict[str, object]] = []
     symmetric_seen: set[tuple[str, str, str]] = set()
-    directional_graphs = {
+    directional_graphs: dict[str, dict[str, set[str]]] = {
         key: {rule_id: set() for rule_id in records_by_id}
         for key in DIRECTIONAL_KEYS
     }
-    combined_graph = {rule_id: set() for rule_id in records_by_id}
+    combined_graph: dict[str, set[str]] = {
+        rule_id: set() for rule_id in records_by_id
+    }
     for record in all_records:
         for relation, targets in record.relations.items():
             for target in targets:
                 target_record = records_by_id.get(target)
-                edge = {
+                edge: dict[str, object] = {
                     "source": record.rule_id,
                     "relation": relation,
                     "target": target,
@@ -472,9 +474,10 @@ def validate_rule_stack(
                     directional_graphs[relation][record.rule_id].add(target)
                     combined_graph[record.rule_id].add(target)
                 else:
-                    pair = tuple(sorted((record.rule_id, target)))
+                    first, second = sorted((record.rule_id, target))
+                    pair = (first, second)
                     marker = (relation, *pair)
-                    review = {
+                    review: dict[str, object] = {
                         "code": relation,
                         "rules": list(pair),
                     }
@@ -493,10 +496,17 @@ def validate_rule_stack(
     cycles: list[dict[str, object]] = []
     for relation, graph in directional_graphs.items():
         for members in _strong_components(records_by_id, graph):
-            cycle = {"relation": relation, "rules": members}
+            cycle: dict[str, object] = {
+                "relation": relation,
+                "rules": members,
+            }
             cycles.append(cycle)
-            target = findings if relation == "overrides" else semantic_reviews
-            target.append({"code": f"{relation}_cycle", "rules": members})
+            cycle_findings = (
+                findings if relation == "overrides" else semantic_reviews
+            )
+            cycle_findings.append(
+                {"code": f"{relation}_cycle", "rules": members}
+            )
     for members in _strong_components(records_by_id, combined_graph):
         relation_types = sorted(
             {
@@ -508,7 +518,11 @@ def validate_rule_stack(
             }
         )
         if len(relation_types) > 1:
-            cycle = {"relation": "mixed", "types": relation_types, "rules": members}
+            cycle = {
+                "relation": "mixed",
+                "types": relation_types,
+                "rules": members,
+            }
             cycles.append(cycle)
             semantic_reviews.append({"code": "mixed_cycle", **cycle})
 
@@ -524,20 +538,22 @@ def validate_rule_stack(
     }
 
 
-def rule_source_summary(source: ParsedRuleSource) -> dict[str, object]:
+def rule_source_summary(source: ParsedRuleSource) -> dict[str, Any]:
     """Return compact per-source facts for inventory output."""
     def compact(items: list[dict[str, object]]) -> dict[str, object]:
         grouped: dict[str, list[dict[str, object]]] = {}
         for item in items:
             grouped.setdefault(str(item["code"]), []).append(item)
-        summaries = []
+        summaries: list[dict[str, object]] = []
         for code, matches in sorted(grouped.items()):
             summary: dict[str, object] = {"code": code, "count": len(matches)}
             rule_ids = sorted(
                 {str(item["rule_id"]) for item in matches if "rule_id" in item}
             )
             lines = sorted(
-                {int(item["line"]) for item in matches if "line" in item}
+                line
+                for item in matches
+                if isinstance((line := item.get("line")), int)
             )
             details = sorted(
                 {str(item["detail"]) for item in matches if "detail" in item}
@@ -575,7 +591,7 @@ def load_history_references(
     """Report history references that cannot constrain any current rule."""
     findings: list[dict[str, object]] = []
     for index, entry in enumerate(entries):
-        values = entry["rules"]
+        values = cast(list[object], entry["rules"])
         obsolete = sorted(
             str(value)
             for value in values
@@ -612,8 +628,9 @@ def load_history_source(path: Path) -> list[dict[str, object]]:
         raise ValueError("history entries must be a non-empty list")
     if not all(isinstance(entry, dict) for entry in entries):
         raise ValueError("each history entry must be an object")
+    typed_entries = cast(list[dict[str, object]], entries)
     expected_keys = set(HISTORY_ENTRY_KEYS)
-    for index, entry in enumerate(entries):
+    for index, entry in enumerate(typed_entries):
         actual_keys = set(entry)
         if actual_keys != expected_keys:
             raise ValueError(
@@ -646,7 +663,7 @@ def load_history_source(path: Path) -> list[dict[str, object]]:
                 raise ValueError(
                     f"history entry {index} {field_name} must be non-empty text"
                 )
-    return entries
+    return typed_entries
 
 
 def history_limit_findings(

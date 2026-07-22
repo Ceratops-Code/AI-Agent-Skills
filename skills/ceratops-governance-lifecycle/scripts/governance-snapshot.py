@@ -16,7 +16,7 @@ import subprocess
 import tomllib
 from collections import Counter
 from datetime import datetime, timezone
-from typing import Iterable
+from typing import Any, Iterable, cast
 
 from rule_graph import (
     history_limit_findings,
@@ -328,7 +328,9 @@ def git_inventory(automation_root: pathlib.Path, projects_root: pathlib.Path) ->
         "count": len(items),
         "dirty_count": sum(1 for item in items if item.get("dirty")),
         "misplaced_worktree_count": sum(
-            len(item.get("misplaced_worktrees", [])) for item in items
+            len(value)
+            for item in items
+            if isinstance((value := item.get("misplaced_worktrees")), list)
         ),
         "items": items,
     }
@@ -376,10 +378,11 @@ def _history_inventory(
         *history_limit_findings(history_path, entries),
     ]
     for entry_index, entry in enumerate(entries):
-        if "*" in entry["rules"]:
+        rules = cast(list[object], entry["rules"])
+        if "*" in rules:
             continue
         owned_references = {
-            str(value) for value in entry["rules"] if value != "*"
+            str(value) for value in rules if value != "*"
         }
         if owned_rule_ids and not owned_references.intersection(owned_rule_ids):
             findings.append(
@@ -409,9 +412,9 @@ def _touches_rules(item: dict[str, object], rule_ids: set[str]) -> bool:
 
 
 def _compact_edges(edges: list[dict[str, object]]) -> list[dict[str, object]]:
-    compact = []
+    compact: list[dict[str, object]] = []
     for edge in edges:
-        item = {
+        item: dict[str, object] = {
             key: edge[key] for key in ("source", "relation", "target")
         }
         if edge.get("source_file") != edge.get("target_file"):
@@ -428,8 +431,8 @@ def agents_rule_graph_inventory(
     global_path = (codex_home / "AGENTS.md").resolve()
     parsed = {path.resolve(): parse_rule_source(path) for path in paths}
     local_paths = sorted(path for path in parsed if path != global_path)
-    file_items: list[dict[str, object]] = []
-    stacks: list[dict[str, object]] = []
+    file_items: list[dict[str, Any]] = []
+    stacks: list[dict[str, Any]] = []
 
     if global_path in parsed:
         global_source = parsed[global_path]
@@ -653,7 +656,13 @@ def d_rule_brevity_inventory(
         sources_checked += 1
         candidates.extend(collect_overlong_d_rules(read_text(path), str(path), "agents_file"))
 
-    candidates.sort(key=lambda item: (-int(item["chars"]), str(item["source"]), int(item["line"])))
+    candidates.sort(
+        key=lambda item: (
+            -cast(int, item["chars"]),
+            cast(str, item["source"]),
+            cast(int, item["line"]),
+        )
+    )
     return {
         "char_limit": D_RULE_CHAR_LIMIT,
         "sources_checked": sources_checked,
