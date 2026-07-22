@@ -1,9 +1,4 @@
----
-name: ceratops-propose-rules-update
-description: Diagnose instruction-system failures and design compact, regression-safe rule, workflow, or helper changes. Use when asked to add, change, reconcile, or review AGENTS.md rules, skill instructions, automation prompts, helper contracts, policy lines, or interactions between global and local instructions.
----
-
-# Ceratops Propose Rules Update
+# Propose Rules Update Action
 
 ## Goal
 
@@ -11,15 +6,17 @@ Produce the smallest safe behavioral correction, not the smallest text patch.
 Every confirmed failure must change the controlling instruction surface or its
 deterministic enforcement.
 
-Read [references/rule-design.md](references/rule-design.md) before drafting.
+Read [rule-design.md](rule-design.md) before drafting.
 
 ## Constraints
 
 ### Boundaries
 
-Use this skill for instruction-system changes. Route general prompt rewrites to
-`$ceratops-prompt-optimizer`; answer diagnosis-only requests without forcing a
-rule change.
+Use this action for instruction-system changes. Route general prompt rewrites
+through the parent skill's `optimize-prompt` action; answer diagnosis-only
+requests without forcing a rule change.
+Route approved skill-source mutations through `$ceratops-skill-lifecycle`
+`update` after accepting the proposal.
 
 ## Workflow
 
@@ -65,14 +62,14 @@ with the original, champion, and regression evidence, then submit `improved` or
 reports 200 iterations or ten consecutive non-improvements. Never claim state
 the controller did not report.
 
-## Completion gate
+## Done When
+
+### Completion Gate
 
 A proposal is complete only when it prevents the current recorded failure,
 preserves earlier recorded behavior unless intentionally superseded, and is
 better than the current state and material alternative. Otherwise change the
 intervention or report the unresolved decision point.
-
-## Output
 
 ### Output Contract
 

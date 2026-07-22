@@ -1,9 +1,4 @@
----
-name: ceratops-prompt-optimizer
-description: Transform raw, simple, vague, or under-specified prompts into clearer structured prompts without changing intent or answering the prompt.
----
-
-# Ceratops Prompt Optimizer
+# Optimize Prompt Action
 
 ## Goal
 
@@ -42,12 +37,12 @@ Ask for the missing raw prompt only when none was provided.
 
 ### Boundaries
 
-- Use this skill for prompt rewrites, prompt templates, and prompt-clarity
+- Use this action for prompt rewrites, prompt templates, and prompt-clarity
   improvements.
-- If the requested change is to a durable rule or instruction file, use
-  `$ceratops-propose-rules-update`.
-- If the requested change is to a skill workflow, use
-  `$ceratops-skill-optimize`.
+- If the requested change is to a durable rule or instruction file, return to
+  the parent skill and select `propose-rules-update`.
+- If the requested change is to a skill workflow, return to the parent skill
+  and select `optimize-skill`.
 
 ### Workflow
 

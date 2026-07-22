@@ -1,9 +1,4 @@
----
-name: ceratops-skill-optimize
-description: Propose advisory-only improvements for one existing Codex or Ceratops skill by default, or multiple skills when explicitly requested, including multi-action skill text, action references, triggers, metadata, runtime payload declarations, validators, docs, workflow constraints, output contracts, and done criteria. Use when Codex should recommend exact skill changes without applying them.
----
-
-# Ceratops Skill Optimizer
+# Optimize Skill Action
 
 ## Goal
 
@@ -65,14 +60,14 @@ target set is available.
 
 ### Boundaries
 
-- Use this skill for advisory skill optimization and exact proposed skill text
+- Use this action for advisory skill optimization and exact proposed skill text
   changes.
 - If the user asks to apply changes to Ceratops skills, use
   `$ceratops-skill-lifecycle` with the `update` action.
 - If the user asks to create a new skill, use `$ceratops-skill-lifecycle` with
   the `create` action.
-- If the requested change is one durable rule, use
-  `$ceratops-propose-rules-update`.
+- If the requested change is one durable rule, return to the parent skill and
+  select `propose-rules-update`.
 
 ### Workflow
 

@@ -71,7 +71,7 @@ cannot be identified.
 - If the active issue is one unresolved bug, use `$ceratops-task-lifecycle` with
   the `fixloop-break` or `execute-in-stages` action first.
 - If the user already knows the specific rule to change, use
-  `$ceratops-propose-rules-update`.
+  `$ceratops-governance-lifecycle` action `propose-rules-update`.
 
 ### Workflow
 
