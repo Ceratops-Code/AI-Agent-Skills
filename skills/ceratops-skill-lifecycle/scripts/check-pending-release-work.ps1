@@ -163,6 +163,7 @@ function Get-WorktreeStatus {
 
 $findings = @()
 $removed = @()
+$reportedDirtyWorktrees = @{}
 $skillsRepoPath = $resolvedSkillsRepoRoot.TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
 $expectedWorktreeRoot = Get-ExpectedWorktreeRoot
 
@@ -204,6 +205,7 @@ if ($CleanMergedBranches) {
                     Path = $worktreePath
                     Detail = "$($status.Count) status entr$(if ($status.Count -eq 1) { 'y' } else { 'ies' }); not removed"
                 }
+                $reportedDirtyWorktrees[$normalizedWorktreePath] = $true
                 continue
             }
 
@@ -274,7 +276,7 @@ foreach ($record in Get-WorktreeRecords) {
     # Dirty worktrees outside the skills repo checkout are reported before shipping
     # so they are either staged, intentionally retained, or cleaned up.
     $status = @(Get-WorktreeStatus $worktreePath)
-    if ($status.Count -gt 0) {
+    if ($status.Count -gt 0 -and -not $reportedDirtyWorktrees.ContainsKey($normalizedWorktreePath)) {
         $findings += [pscustomobject]@{
             Kind = "dirty_worktree"
             Branch = $branchName

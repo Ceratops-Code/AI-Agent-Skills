@@ -14,14 +14,18 @@ repo docs, then update the narrowest correct source that exists.
 
 - Existing skills or shared files in scope: `skills/*`, `templates/sections/`,
   `templates/skill-sections.json`,
-  `skills/ceratops-skill-lifecycle/scripts/runtime/render-runtime-skills.py`,
-  `skills/ceratops-skill-lifecycle/scripts/validation/validate-skills-consistency.py`,
+  `skills/ceratops-skill-lifecycle/scripts/templates/install-skills-template.py`,
+  `scripts/install-skills.py`,
+  `skills/ceratops-skill-lifecycle/scripts/runtime/managed_runtime_builder.py`,
+  installer resolution, synchronization, and repository-consistency helpers,
+  `skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py`,
   skill-local `references/`, helper-runtime files, and repo docs.
 - Whether the change belongs in skill-local text, shared sections, manifests,
   runtime generation, validation, helper-runtime code or claims, contracts, or
   docs.
-- Which Ceratops-specific surfaces are absent in a non-Ceratops repo and
-  therefore intentionally skipped.
+- Target repo `runtime_source_id` and `validation_profile`; the `ceratops`
+  profile adds Ceratops icon, contract, retired-artifact, and repository
+  governance checks while `ceratops-compatible` uses the common full checks.
 - Whether the task should stop at local repo changes or also continue to local
   promotion.
 
@@ -35,10 +39,10 @@ Infer missing inputs from current repo state before asking.
   another repo, or the shared skill-maintenance layer itself.
 - If the task creates a brand-new skill, return to the parent skill and select
   `create`.
-- If the task is Ceratops skill-contract upkeep, return to the parent skill and
-  select `skills-contract-review`.
-- If the task is consistency review across the active Codex skill catalog,
-  return to the parent skill and select `global-skills-consistency-review`.
+- If the task is Ceratops skill-contract standards upkeep, return to the parent
+  skill and select `skills-contract-review`.
+- If the task is repository skill consistency or contract compliance, return
+  to the parent skill and select `skills-consistency-review`.
 - If the task only promotes already-prepared committed changes, select
   `change-promotion`.
 
@@ -53,8 +57,9 @@ Infer missing inputs from current repo state before asking.
   broaden to full-file reads only for governing control files, ownership
   decisions, or unresolved context.
 - Identify source-of-truth files versus generated output.
-- Identify absent Ceratops repo components before treating template, validation,
-  installation, or contract steps as required.
+- Require a compatible section manifest before using the shared validator or
+  installer. Do not infer compatibility from skill-name prefixes or from the
+  presence of the lifecycle source skill.
 - Classify the requested change as skill-local, shared, structural,
   validation-only, helper-runtime-adjacent, or docs-only.
 
@@ -97,9 +102,13 @@ Infer missing inputs from current repo state before asking.
   command when supported.
 - If runtime generation code changed, run the repo's runtime-generation check
   path when provided.
-- Reserve governance validation for scheduled governance automation, explicit
-  broad validation, validation-script changes, or concrete cross-surface
-  uncertainty.
+- Install a compatible repo through its `python scripts/install-skills.py
+  --repo-root <repo>` entrypoint. It must use the supported installed lifecycle
+  bundle, with target-checkout fallback allowed only for the initial Ceratops
+  installation. Full installs run full source validation; explicit skill
+  installs validate only the selected skills.
+- Reserve full source validation for explicit broad validation,
+  validation-script changes, or concrete cross-surface uncertainty.
 - Re-open changed files and confirm source skills, manifest assignments, runtime
   payloads, docs, contracts, and metadata still align.
 
@@ -110,9 +119,9 @@ Infer missing inputs from current repo state before asking.
 - Every changed skill and shared file still points at the intended source of
   truth.
 - Runtime shared-section generation is updated through shared sources, manifest,
-  and renderer when those surfaces exist and changed.
-- Manifest, renderer, validation script, repo docs, and touched metadata remain
-  aligned when present.
+  and runtime builder when those surfaces exist and changed.
+- Manifest, runtime builder, validation script, repo docs, and touched metadata
+  remain aligned when present.
 - Ceratops skill-local icons match the repo-root icon and metadata icon paths
   are runtime-local.
 - Removed, merged, or renamed sections leave no stale assignment or stale

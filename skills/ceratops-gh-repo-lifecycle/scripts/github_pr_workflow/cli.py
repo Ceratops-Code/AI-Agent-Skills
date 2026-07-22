@@ -6,7 +6,7 @@ import argparse
 import sys
 from collections.abc import Callable
 
-from . import codex_review, merge, readiness, sync
+from . import codex_review, ensure_pr, merge, readiness, sync
 
 
 Command = Callable[[list[str] | None], int]
@@ -15,12 +15,12 @@ Command = Callable[[list[str] | None], int]
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m github_pr_workflow",
-        description="Validate, review, merge, and synchronize GitHub PR workflows.",
+        description="Ensure, validate, review, merge, and synchronize GitHub PR workflows.",
     )
     parser.add_argument(
         "command",
         nargs="?",
-        choices=("validate", "wait", "resolve", "merge", "sync"),
+        choices=("ensure-pr", "validate", "wait", "resolve", "merge", "sync"),
         help="workflow operation",
     )
     return parser
@@ -36,6 +36,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     command = arguments.pop(0)
     commands: dict[str, Command] = {
+        "ensure-pr": ensure_pr.main,
         "validate": readiness.main,
         "wait": lambda values: codex_review.main(["wait", *(values or [])]),
         "resolve": lambda values: codex_review.main(["resolve", *(values or [])]),

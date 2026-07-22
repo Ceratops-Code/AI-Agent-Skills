@@ -4,16 +4,13 @@ param(
     [string[]]$ApprovedBranch = @(),
     [string]$MainBranch = "main",
     [string]$ReleaseBranch = "release/local",
-    [string]$RemoteName = "origin",
-    [ValidateSet("none", "full")]
-    [string]$Validate = "full"
+    [string]$RemoteName = "origin"
 )
 
 # Skill-local helper for deterministic change-promotion work. It prepares the
-# reusable release branch, merges branches the agent has already reviewed and
-# approved, runs skill-local runtime installation and validation helpers when
-# available, checks pending local work, and emits one compact JSON summary on
-# success.
+# reusable release branch, merges approved branches, validates and installs the
+# promoted snapshot, checks pending local work, and emits one compact JSON
+# summary on success.
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
@@ -135,36 +132,17 @@ foreach ($branch in $ApprovedBranch) {
     $mergedBranches += $branch
 }
 
-$validation = "skipped"
-if ($Validate -ne "none") {
-    $validator = Join-Path $scriptRoot "validation\validate-skills-consistency.py"
-    if (-not (Test-Path -LiteralPath $validator -PathType Leaf)) {
-        throw "Missing skill consistency validator: $validator"
-    }
-    Invoke-QuietNative -FilePath "python" -Arguments @(
-        $validator,
-        "--repo-root",
-        $resolvedSkillsRepoRoot,
-        "--mode",
-        $Validate
-    )
-    $validation = $Validate
+$installScript = Join-Path $resolvedSkillsRepoRoot "scripts\install-skills.py"
+if (-not (Test-Path -LiteralPath $installScript -PathType Leaf)) {
+    throw "Missing repository skill installer: $installScript"
 }
-
-$runtimeInstall = "skipped_missing_installer"
-$installScript = Join-Path $scriptRoot "runtime\install-managed-skills.ps1"
-if (Test-Path -LiteralPath $installScript) {
-    Invoke-QuietNative -FilePath "powershell" -Arguments @(
-        "-NoProfile",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-File",
-        $installScript,
-        "-RepoRoot",
-        $resolvedSkillsRepoRoot
-    )
-    $runtimeInstall = "managed"
-}
+Invoke-QuietNative -FilePath "python" -Arguments @(
+    $installScript,
+    "--repo-root",
+    $resolvedSkillsRepoRoot
+)
+$validation = "full"
+$runtimeInstall = "managed"
 
 $pendingArgs = @(
     "-NoProfile",

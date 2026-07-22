@@ -9,7 +9,7 @@
 - [ ] `python -m pip install -r requirements-dev.txt`
 - [ ] `python -m yamllint .`
 - [ ] `python -m mypy`
-- [ ] `python skills/ceratops-skill-lifecycle/scripts/validation/validate-skills-consistency.py --mode full`
+- [ ] `python skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py --mode full`
 
 ## Release impact
 

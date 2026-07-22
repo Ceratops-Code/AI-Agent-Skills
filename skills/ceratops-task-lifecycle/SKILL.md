@@ -1,6 +1,6 @@
 ---
 name: ceratops-task-lifecycle
-description: Route Ceratops task execution, failed-fix-loop breaks, same-thread resume, new-thread handoff, closure checks, and ChatGPT web chat imports. Use closure-check when the user asks whether anything remains, whether we are done, or what remains. Use import-from-chatgpt when the user asks to fetch, import, transfer, continue, or take over a ChatGPT chat from chatgpt.com into Codex.
+description: Route Ceratops task execution, failed-fix-loop breaks, same-thread resume, new-thread handoff, and closure checks. Use closure-check when the user asks whether anything remains, whether we are done, or what remains.
 ---
 
 # Ceratops Task Lifecycle
@@ -8,10 +8,10 @@ description: Route Ceratops task execution, failed-fix-loop breaks, same-thread 
 ## Goal
 
 Route task execution, repeated-fix-loop breaks, interrupted-thread resume,
-thread handoff, closure check, and ChatGPT chat import work to the narrowest
-action reference. Keep one task-workflow skill instead of separate skill
-identities for staged execution, fix-loop break, same-thread resume, whole-task
-handoff, side-task handoff, closure assessment, and ChatGPT chat handoff.
+thread handoff, and closure-check work to the narrowest action reference. Keep
+one task-workflow skill instead of separate skill identities for staged
+execution, fix-loop break, same-thread resume, whole-task handoff, side-task
+handoff, and closure assessment.
 
 ## Context
 
@@ -23,14 +23,13 @@ handoff, side-task handoff, closure assessment, and ChatGPT chat handoff.
 - Create a whole-task new-thread handoff: `references/full-handoff.md`
 - Create a side-task new-thread handoff: `references/side-task-handoff.md`
 - Check whether required work remains: `references/closure-check.md`
-- Import a ChatGPT web chat into Codex: `references/import-from-chatgpt.md`
 
 ### Inputs To Capture
 
 - Target task, current thread state, desired completion state, and any
   user-stated action.
 - Whether the work is staged execution, fix-loop break, same-thread resume,
-  whole-task handoff, side-task handoff, closure check, or ChatGPT chat import.
+  whole-task handoff, side-task handoff, or closure check.
 - Current local or external entities that constrain the selected action.
 
 Infer missing inputs from recent thread context and local state before asking.
@@ -42,9 +41,8 @@ Infer missing inputs from recent thread context and local state before asking.
 - Use the selected action reference as the source of truth for workflow,
   evidence refresh, completion gate, and output contract.
 - Keep staged task execution, fix-loop break, same-thread resume, whole-task
-  handoff, side-task handoff, closure check, and ChatGPT chat import inside this
-  multi-action skill and its `references/` files; do not introduce alias skills
-  or old-name shims.
+  handoff, side-task handoff, and closure check inside this multi-action skill
+  and its `references/` files; do not introduce alias skills or old-name shims.
 - If action identity is ambiguous, choose the action that matches the user's
   immediate requested output or next state.
 
@@ -62,8 +60,6 @@ Infer missing inputs from recent thread context and local state before asking.
   discovered sub-issue into a different thread.
 - Use `closure-check` when the user asks whether anything is left to do at the
   end of a thread, session, or task.
-- Use `import-from-chatgpt` when the user asks to fetch, import, transfer,
-  continue, or take over a ChatGPT chat from `chatgpt.com` into Codex.
 
 ### Workflow
 
@@ -82,8 +78,6 @@ Infer missing inputs from recent thread context and local state before asking.
 - Select `closure-check` when the output should be a concise evidence-based
   answer about required work, blockers, retained state, unverified claims, and
   reasonable next actions.
-- Select `import-from-chatgpt` when the output should be a transcript handoff
-  extracted from a user-selected ChatGPT web chat.
 
 #### 2. Close From Action Evidence
 

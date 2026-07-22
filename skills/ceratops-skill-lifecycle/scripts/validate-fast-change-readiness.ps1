@@ -8,8 +8,9 @@ param(
     [string]$TargetPath
 )
 
-# Fast-change helper for ceratops-skill-lifecycle. It performs the small,
-# deterministic evidence bundle required before a direct release-branch edit:
+# Fast-change readiness helper for ceratops-skill-lifecycle. It performs the
+# small deterministic evidence bundle required before a direct release-branch
+# edit:
 # intended branch, clean worktree, target file existence, and targeted install
 # command availability. It does not prepare branches or mutate files.
 
@@ -89,10 +90,13 @@ if (-not (Test-Path -LiteralPath $skillFile -PathType Leaf)) {
     throw "SkillName must identify an existing source skill: $SkillName"
 }
 
-$installScript = Join-Path $resolvedSkillsRepoRoot "skills\ceratops-skill-lifecycle\scripts\runtime\install-managed-skills.ps1"
+$installScript = Join-Path $resolvedSkillsRepoRoot "scripts\install-skills.py"
 $repoRootForRelative = $resolvedSkillsRepoRoot.TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
 $relativeTarget = $resolvedTarget.Substring($repoRootForRelative.Length + 1).Replace("\", "/")
 $installAvailable = Test-Path -LiteralPath $installScript -PathType Leaf
+if (-not $installAvailable) {
+    throw "Missing repository skill installer: $installScript"
+}
 $result = [ordered]@{
     ok = $true
     branch = $currentBranch
@@ -101,7 +105,7 @@ $result = [ordered]@{
     target = $relativeTarget
     clean = $true
     install_command_available = $installAvailable
-    install_command = if ($installAvailable) { "skills/ceratops-skill-lifecycle/scripts/runtime/install-managed-skills.ps1 -Skill $SkillName" } else { $null }
+    install_command = if ($installAvailable) { "python `"$installScript`" --repo-root `"$resolvedSkillsRepoRoot`" --skill `"$SkillName`"" } else { $null }
 }
 
 $result | ConvertTo-Json -Compress

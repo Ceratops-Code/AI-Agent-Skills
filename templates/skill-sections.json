@@ -1,20 +1,22 @@
 {
+  "runtime_source_id": "Ceratops-Code/AI-Agent-Skills",
+  "validation_profile": "ceratops",
   "sections": {
     "core": "templates/sections/core.md",
     "multi-action-skill": "templates/sections/multi-action-skill.md"
   },
   "maintenance_workflows": {
     "shared_source_changes": [
-      "python skills/ceratops-skill-lifecycle/scripts/validation/validate-skills-consistency.py --mode sections"
+      "python skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py --mode sections"
     ],
     "skill_local_or_metadata_changes": [],
     "helper_runtime_changes": [],
     "runtime_generation_changes": [
-      "python skills/ceratops-skill-lifecycle/scripts/validation/validate-skills-consistency.py --mode sections"
+      "python skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py --mode sections"
     ],
     "contract_checker_changes": [],
-    "governance_full_validation": [
-      "python skills/ceratops-skill-lifecycle/scripts/validation/validate-skills-consistency.py --mode governance"
+    "source_full_validation": [
+      "python skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py --mode full"
     ],
     "new_skill_local_availability": [
       "$ceratops-skill-lifecycle"

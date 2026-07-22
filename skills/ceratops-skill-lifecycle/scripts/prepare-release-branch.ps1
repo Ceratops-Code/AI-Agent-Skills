@@ -111,8 +111,9 @@ $null = Invoke-Git @("merge", "--ff-only", $remoteMain)
 Assert-CleanWorktree "after fast-forwarding $MainBranch from $remoteMain"
 
 if (Test-RefExists "refs/heads/$ReleaseBranch") {
+    # Existing release commits are the authoritative unpublished batch. Branch
+    # preparation checks out that batch without merging current main into it.
     $null = Invoke-Git @("switch", $ReleaseBranch)
-    $null = Invoke-Git @("merge", "--ff-only", $MainBranch)
 } else {
     $null = Invoke-Git @("switch", "-c", $ReleaseBranch, $MainBranch)
 }

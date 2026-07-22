@@ -11,19 +11,14 @@ skills to synced `main`.
 ### Defaults
 
 - Default release branch: `release/local`
-- (D) Skill runtime installer:
-  `powershell -ExecutionPolicy Bypass -File
-  .\skills\ceratops-skill-lifecycle\scripts\runtime\install-managed-skills.ps1`
-- Installed Ceratops skill path: `$CODEX_HOME/skills/<skill-name>`
+- (D) Repository installer: `python scripts/install-skills.py`, which uses the
+  supported installed lifecycle bundle.
+- Installed managed skill path: `$CODEX_HOME/skills/<skill-name>`
 
-### Script Bundle
+### GitHub Lifecycle Handoffs
 
-- (D) Push and PR helper:
-  `skills/ceratops-skill-lifecycle/scripts/push-release-branch-and-ensure-pr.ps1
-  -SkillsRepoRoot <repo> -ReleaseBranch release/local -BaseBranch main
-  -RemoteName origin` from a source checkout, or
-  `scripts/push-release-branch-and-ensure-pr.ps1` from the installed skill
-  folder.
+- Push and PR publication: use `$ceratops-gh-repo-lifecycle` with the
+  `ensure-pr` action.
 - (D) Post-merge sync helper, run from
   `skills/ceratops-gh-repo-lifecycle/scripts` in a source checkout or `scripts`
   in the installed GH lifecycle skill folder:
@@ -66,9 +61,9 @@ asking.
 
 #### 2. Push and open or update PR
 
-- (D) Run `push-release-branch-and-ensure-pr.ps1`; it owns clean release-branch
-  verification, ahead-of-main verification, same-named remote push, PR
-  create-or-reuse behavior, and compact PR summary output.
+- Use `$ceratops-gh-repo-lifecycle` with the `ensure-pr` action; it owns clean
+  release-branch verification, ahead-of-main verification, same-named remote
+  push, PR create-or-update behavior, and compact PR summary output.
 
 #### 3. Merge PR
 
@@ -82,16 +77,18 @@ asking.
   release/local` to fetch/prune, switch to `main`, fast-forward from
   `origin/main`, align the reusable local release branch, and emit compact sync
   output.
-- (D) Run `powershell -ExecutionPolicy Bypass -File
-  .\skills\ceratops-skill-lifecycle\scripts\runtime\install-managed-skills.ps1`
-  from `main` so `$CODEX_HOME/skills` is rebuilt from the merged main snapshot.
+- (D) Run `python scripts/install-skills.py --repo-root <repo>` after restoring
+  `main`, so this source repository's managed skills are rebuilt from the
+  merged main snapshot and same-source stale runtime folders are removed.
 - Verify the skills repo checkout is clean on `main` and expected installed
-  skill folders have current `.ceratops-runtime-manifest.json` files.
+  skill folders have current `.runtime-manifest.json` files.
 
 ## Done When
 
 ### Completion Gate
 
+- PR publication was handled by `$ceratops-gh-repo-lifecycle` with the
+  `ensure-pr` action.
 - PR merge readiness and merge were handled by `$ceratops-gh-repo-lifecycle`
   with the `merge-pr` action.
 - The PR is merged or the exact blocker is reported.
