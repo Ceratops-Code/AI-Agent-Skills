@@ -192,17 +192,26 @@ def automations_inventory(automation_root: pathlib.Path) -> dict[str, object]:
     }
 
 
-def iter_agents(projects_root: pathlib.Path, codex_home: pathlib.Path) -> Iterable[pathlib.Path]:
-    global_agents = codex_home / "AGENTS.md"
-    if global_agents.exists():
-        yield global_agents
+def iter_project_agents(projects_root: pathlib.Path) -> Iterable[pathlib.Path]:
+    """Yield every project AGENTS file from root or nested repository paths."""
     if projects_root.exists():
         local_paths = {
             path.resolve()
             for path in projects_root.rglob("AGENTS.md")
-            if ".git" not in path.parts and path.resolve() != global_agents.resolve()
+            if ".git" not in path.parts
         }
         yield from sorted(local_paths)
+
+
+def iter_agents(projects_root: pathlib.Path, codex_home: pathlib.Path) -> Iterable[pathlib.Path]:
+    global_agents = codex_home / "AGENTS.md"
+    if global_agents.exists():
+        yield global_agents
+    yield from (
+        path
+        for path in iter_project_agents(projects_root)
+        if path != global_agents.resolve()
+    )
 
 
 def run_git(repo: pathlib.Path, *args: str) -> tuple[str | None, str | None]:
@@ -318,11 +327,19 @@ def repo_git_state(repo: pathlib.Path, kind: str) -> dict[str, object]:
 
 def git_inventory(automation_root: pathlib.Path, projects_root: pathlib.Path) -> dict[str, object]:
     """Collect compact Git/worktree state for the automation repo and AGENTS projects."""
-    targets = [("automation", automation_root)]
-    if projects_root.exists():
-        targets.extend(
-            ("project", path.parent) for path in sorted(projects_root.glob("*/AGENTS.md"))
-        )
+    candidates = [
+        ("automation", automation_root),
+        *(("project", path.parent) for path in iter_project_agents(projects_root)),
+    ]
+    targets: list[tuple[str, pathlib.Path]] = []
+    seen_roots: set[pathlib.Path] = set()
+    for kind, candidate in candidates:
+        top_level, _ = run_git(candidate, "rev-parse", "--show-toplevel")
+        root = pathlib.Path(top_level).resolve() if top_level else candidate.resolve()
+        if root in seen_roots:
+            continue
+        seen_roots.add(root)
+        targets.append((kind, root))
     items = [repo_git_state(path, kind) for kind, path in targets]
     return {
         "count": len(items),
