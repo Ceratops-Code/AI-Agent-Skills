@@ -57,6 +57,7 @@ cannot be identified.
   inspected evidence as implemented or still unimplemented; omit implemented
   controls unless needed to justify that no still-unimplemented proposal
   remains.
+- Merge recommendations that share the same producer and control.
 - When prompt-level savings cases exist, rank the top five evidence-backed
   cases, or all available cases when fewer exist, using only information
   available when each prompt was written; present them as

@@ -2,8 +2,9 @@
 
 ## Goal
 
-Give a concise, evidence-based answer about whether required work remains at
-the end of a thread, session, or task.
+At the end of a thread, session, or task, give a concise, evidence-based answer
+about whether required work remains and include the credit-savings analysis
+result.
 
 ## Context
 
@@ -86,13 +87,18 @@ before asking.
   questions, warnings, or deferred decisions.
 - Classify each as required, optional, superseded, or irrelevant.
 
-#### 5. Classify Closure State
+#### 5. Include Credit-Saving Analysis
+
+- Invoke `$ceratops-credit-savings-analysis` for the current thread, reuse fresh
+  closure evidence, and include its required result under `Credit savings`.
+
+#### 6. Classify Closure State
 
 - Classify relevant state as required remaining work, blocker, intentionally
   retained, optional cleanup, stale or out-of-scope, unverified, or no longer
   relevant.
 
-#### 6. Answer From Checked Evidence
+#### 7. Answer From Checked Evidence
 
 - Use the strongest closure claim justified by checked evidence.
 - Keep the answer concise and omit routine command logs or process narration.
@@ -106,6 +112,8 @@ before asking.
 - Uncommitted, unpushed, retained, stale, warning, forgotten-follow-up, and
   unverified states from any same-thread touched artifact are reported.
 - Any no-required-work-left claim is limited to evidence actually checked.
+- The `$ceratops-credit-savings-analysis` result or blocker is included under
+  `Credit savings`.
 - No mutation was performed unless explicitly requested.
 
 ### Output Contract
@@ -128,6 +136,7 @@ Then include only relevant concise items:
 - important unverified claims
 - relevant forgotten follow-ups
 - optional cleanup
+- `Credit savings`: the required `$ceratops-credit-savings-analysis` result
 
 Omit routine command logs and process narration.
 
