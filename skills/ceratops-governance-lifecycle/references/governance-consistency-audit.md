@@ -12,16 +12,18 @@ domain audits owned by other lifecycle actions.
 - (D) From this skill directory, run `python scripts/governance-snapshot.py
   --projects-root <projects-root>` before deep-reading.
 - (D) The helper exits zero with compact JSON using schema
-  `global-governance-consistency-audit/snapshot.v1`; nonzero execution or
+  `global-governance-consistency-audit/snapshot.v2`; nonzero execution or
   unreadable JSON blocks the audit.
 - Use helper output as cheap-pass evidence for automation metadata, AGENTS
   classification, Git/worktree state, automation ignore coverage, directly
-  referenced paths, and overlong `(D)` rule candidates.
+  referenced paths, structured rule-graph facts, and overlong `(D)` rule
+  candidates.
 
 ### Scope
 
-- Global `$CODEX_HOME/AGENTS.md` and project-root `AGENTS.md` files under the
-  selected projects root.
+- Global `$CODEX_HOME/AGENTS.md` and every project-local or nested `AGENTS.md`
+  under the selected projects root, evaluated through its complete applicable
+  global-to-local instruction stack.
 - Installed `$CODEX_HOME/automations/*/automation.toml`, automation repository
   control files relevant to generated or runtime artifacts, and helpers directly
   referenced by an in-scope control file.
@@ -69,6 +71,10 @@ when the projects root remains ambiguous.
 - Review config- and prompt-level credit waste without inferring actual usage or
   billing when saved local evidence is absent.
 - Do not treat portable variables or relative paths alone as contradictions.
+- Treat [rule-design.md](rule-design.md) as the only prose rule-graph standard;
+  helpers implement its closed syntax and audit prompts must not redefine it.
+- Treat accurate `self` statuses as approved non-blocking debt that remains
+  reportable until the underlying rule is corrected.
 
 ### Accepted Exceptions
 
@@ -93,7 +99,13 @@ when the projects root remains ambiguous.
 
 - Run the deterministic helper once and inventory files, schedules, model and
   effort, workspaces, prompt names, helper references, memory/alert contracts,
-  Git/worktree state, repeated text, and `(D)` rule-brevity candidates.
+  Git/worktree state, repeated text, rule IDs, metadata, statuses, histories,
+  relation edges and cycles, stack interaction, and `(D)` rule-brevity
+  candidates.
+- If history contains obsolete references, invalid fields, or exceeds its
+  deterministic limit, route the exact cleanup through `propose-rules-update`
+  before any other audit work. Apply it when authorized; otherwise stop and
+  report only the cleanup blocker.
 - Treat helper blockers, missing roots, parse failures, and inaccessible
   governing sources as explicit audit limits.
 
@@ -107,6 +119,18 @@ when the projects root remains ambiguous.
 
 ### 3. Review governance consistency
 
+- Accept deterministic findings for rule syntax, IDs, metadata placement,
+  targets, duplicates, size status, cycles, history references, and stack
+  legality. Review each rule body once for semantic rule form, enumeration, and
+  `self` accuracy without performing pairwise comparison.
+- Use focused semantic review to detect missing, unnecessary, mistyped,
+  misdirected, or incompatible relations and to assess `list-heavy`,
+  `overlaps`, `conflicts`, and non-override cycles. Keep unresolved review edges
+  as findings. Preserve the `CLOSE-01` and `REWORK-05` conflict until a manual
+  decision changes it.
+- Build relation candidates from sections, explicit ID references, semantic
+  similarity, deterministic findings, and direct neighbors. Deep-read only
+  those candidate pairs; do not compare every possible rule pair.
 - Check instruction bullets and explicit class labels against declared or
   inherited force definitions; report conflicting closure behavior as
   instruction-classification drift.
@@ -144,6 +168,9 @@ when the projects root remains ambiguous.
 ### 6. Close from aligned evidence
 
 - Recompare the action, automation prompt, and bundled helper before finishing.
+- Route each confirmed rule or relation defect through this lifecycle's
+  `propose-rules-update` action for the smallest exact advisory correction; do
+  not apply it during the audit.
 - Rank findings by severity and config/prompt-level credit recommendations by
   impact and safety.
 - Classify inaccessible thread context, absent usage evidence, and skipped
@@ -165,6 +192,8 @@ Report only:
 
 - findings ordered by severity, with conflicting artifacts, exact inconsistency,
   risk, and smallest credible change
+- approved `self` debt grouped by status and rule ID without treating it as a
+  blocking defect
 - a `Recommendations` section covering every finding and confirmed config- or
   prompt-level credit opportunity, or `None`
 - automation model fields changed, with automation id and old/new model

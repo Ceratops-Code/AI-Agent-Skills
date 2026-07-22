@@ -18,6 +18,15 @@ from collections import Counter
 from datetime import datetime, timezone
 from typing import Iterable
 
+from rule_graph import (
+    history_limit_findings,
+    load_history_references,
+    load_history_source,
+    parse_rule_source,
+    rule_source_summary,
+    validate_rule_stack,
+)
+
 
 D_RULE_CHAR_LIMIT = 220
 D_RULE_RE = re.compile(r"^\s*-\s+\(D\)\s+(.+)$")
@@ -188,7 +197,12 @@ def iter_agents(projects_root: pathlib.Path, codex_home: pathlib.Path) -> Iterab
     if global_agents.exists():
         yield global_agents
     if projects_root.exists():
-        yield from sorted(projects_root.glob("*/AGENTS.md"))
+        local_paths = {
+            path.resolve()
+            for path in projects_root.rglob("AGENTS.md")
+            if ".git" not in path.parts and path.resolve() != global_agents.resolve()
+        }
+        yield from sorted(local_paths)
 
 
 def run_git(repo: pathlib.Path, *args: str) -> tuple[str | None, str | None]:
@@ -327,6 +341,196 @@ def classify_force_definitions(text: str) -> dict[str, bool]:
     }
 
 
+def _path_is_within(path: pathlib.Path, parent: pathlib.Path) -> bool:
+    try:
+        path.resolve().relative_to(parent.resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def _history_inventory(
+    path: pathlib.Path,
+    current_rule_ids: set[str],
+    owned_rule_ids: set[str],
+) -> dict[str, object]:
+    history_path = path.with_name("AGENTS.history.json")
+    if not history_path.exists():
+        return {
+            "path": str(history_path),
+            "exists": False,
+            "findings": [{"code": "missing_rule_history"}],
+        }
+    try:
+        entries = load_history_source(history_path)
+    except (OSError, ValueError, json.JSONDecodeError) as error:
+        return {
+            "path": str(history_path),
+            "exists": True,
+            "findings": [
+                {"code": "invalid_rule_history", "detail": str(error)}
+            ],
+        }
+    findings = [
+        *load_history_references(entries, current_rule_ids),
+        *history_limit_findings(history_path, entries),
+    ]
+    for entry_index, entry in enumerate(entries):
+        if "*" in entry["rules"]:
+            continue
+        owned_references = {
+            str(value) for value in entry["rules"] if value != "*"
+        }
+        if owned_rule_ids and not owned_references.intersection(owned_rule_ids):
+            findings.append(
+                {
+                    "code": "history_entry_without_owned_rule",
+                    "entry": entry_index,
+                }
+            )
+    return {
+        "path": str(history_path),
+        "exists": True,
+        "entry_count": len(entries),
+        "findings": findings,
+    }
+
+
+def _touches_rules(item: dict[str, object], rule_ids: set[str]) -> bool:
+    values: set[str] = set()
+    for key in ("rule_id", "source", "target"):
+        value = item.get(key)
+        if isinstance(value, str):
+            values.add(value)
+    members = item.get("rules")
+    if isinstance(members, list):
+        values.update(str(value) for value in members)
+    return bool(values.intersection(rule_ids))
+
+
+def _compact_edges(edges: list[dict[str, object]]) -> list[dict[str, object]]:
+    compact = []
+    for edge in edges:
+        item = {
+            key: edge[key] for key in ("source", "relation", "target")
+        }
+        if edge.get("source_file") != edge.get("target_file"):
+            item["cross_scope"] = True
+        compact.append(item)
+    return compact
+
+
+def agents_rule_graph_inventory(
+    projects_root: pathlib.Path, codex_home: pathlib.Path
+) -> dict[str, object]:
+    """Validate every global-to-local AGENTS stack against one graph parser."""
+    paths = list(iter_agents(projects_root, codex_home))
+    global_path = (codex_home / "AGENTS.md").resolve()
+    parsed = {path.resolve(): parse_rule_source(path) for path in paths}
+    local_paths = sorted(path for path in parsed if path != global_path)
+    file_items: list[dict[str, object]] = []
+    stacks: list[dict[str, object]] = []
+
+    if global_path in parsed:
+        global_source = parsed[global_path]
+        global_ids = {record.rule_id for record in global_source.records}
+        global_summary = rule_source_summary(global_source)
+        global_summary["scope"] = "global"
+        global_summary["history"] = _history_inventory(
+            global_path, global_ids, global_ids
+        )
+        file_items.append(global_summary)
+        global_validation = validate_rule_stack(
+            [global_source], global_source=global_source.source
+        )
+        global_validation["edges"] = _compact_edges(global_validation["edges"])
+        global_validation["path"] = str(global_path)
+        global_validation["scope"] = "global"
+        stacks.append(global_validation)
+
+    for path in local_paths:
+        ancestor_paths = sorted(
+            (
+                candidate
+                for candidate in local_paths
+                if _path_is_within(path.parent, candidate.parent)
+            ),
+            key=lambda candidate: len(candidate.parts),
+        )
+        stack_sources = [parsed[candidate] for candidate in ancestor_paths]
+        if global_path in parsed:
+            stack_sources.insert(0, parsed[global_path])
+        current_ids = {
+            record.rule_id
+            for source in stack_sources
+            for record in source.records
+        }
+        local_summary = rule_source_summary(parsed[path])
+        local_summary["scope"] = "local"
+        local_ids = {record.rule_id for record in parsed[path].records}
+        local_summary["history"] = _history_inventory(
+            path, current_ids, local_ids
+        )
+        file_items.append(local_summary)
+
+        validation = validate_rule_stack(
+            stack_sources,
+            global_source=parsed[global_path].source
+            if global_path in parsed
+            else "",
+        )
+        validation["edges"] = [
+            edge
+            for edge in validation["edges"]
+            if edge.get("source_file") == parsed[path].source
+        ]
+        validation["relation_counts"] = dict(
+            sorted(
+                Counter(str(edge["relation"]) for edge in validation["edges"]).items()
+            )
+        )
+        validation["rule_count"] = len(local_ids)
+        validation["edges"] = _compact_edges(validation["edges"])
+        validation["cycles"] = [
+            cycle
+            for cycle in validation["cycles"]
+            if _touches_rules(cycle, local_ids)
+        ]
+        validation["findings"] = [
+            finding
+            for finding in validation["findings"]
+            if _touches_rules(finding, local_ids)
+        ]
+        validation["semantic_reviews"] = [
+            review
+            for review in validation["semantic_reviews"]
+            if _touches_rules(review, local_ids)
+        ]
+        validation["path"] = str(path)
+        validation["scope"] = "local-stack-delta"
+        validation["stack_paths"] = [source.source for source in stack_sources]
+        stacks.append(validation)
+
+    structural_finding_count = sum(
+        int(item["findings"]["count"]) + len(item["history"]["findings"])
+        for item in file_items
+    ) + sum(len(stack["findings"]) for stack in stacks)
+    return {
+        "standard": "references/rule-design.md",
+        "file_count": len(file_items),
+        "files": file_items,
+        "stacks": stacks,
+        "structural_finding_count": structural_finding_count,
+        "approved_debt_count": sum(
+            int(item["approved_debt"]["count"]) for item in file_items
+        ),
+        "semantic_review_count": sum(
+            len(stack["semantic_reviews"]) for stack in stacks
+        )
+        + sum(int(item["semantic_reviews"]["count"]) for item in file_items),
+    }
+
+
 def agents_inventory(projects_root: pathlib.Path, codex_home: pathlib.Path) -> dict[str, object]:
     items = []
     repeated_lines: Counter[str] = Counter()
@@ -337,7 +541,7 @@ def agents_inventory(projects_root: pathlib.Path, codex_home: pathlib.Path) -> d
     }
     for path in iter_agents(projects_root, codex_home):
         text = read_text(path)
-        lines = [line.strip() for line in text.splitlines()]
+        lines = text.splitlines()
         declared_force = classify_force_definitions(text)
         effective_force = {
             key: declared_force[key] or global_force[key]
@@ -345,8 +549,9 @@ def agents_inventory(projects_root: pathlib.Path, codex_home: pathlib.Path) -> d
         }
         label_counts: Counter[str] = Counter()
         instruction_bullets = 0
-        for line in lines:
-            if line.startswith("- "):
+        for raw_line in lines:
+            if raw_line.startswith("- "):
+                line = raw_line.strip()
                 instruction_bullets += 1
                 repeated_lines[line] += 1
                 d_rule_match = D_RULE_RE.match(line)
@@ -459,10 +664,13 @@ def d_rule_brevity_inventory(
 
 def build_snapshot(args: argparse.Namespace) -> dict[str, object]:
     return {
-        "schema": "global-governance-consistency-audit/snapshot.v1",
+        "schema": "global-governance-consistency-audit/snapshot.v2",
         "generated_at": utc_now(),
         "automations": automations_inventory(args.automation_root.resolve()),
         "agents": agents_inventory(args.projects_root.resolve(), args.codex_home.resolve()),
+        "agents_rule_graph": agents_rule_graph_inventory(
+            args.projects_root.resolve(), args.codex_home.resolve()
+        ),
         "git": git_inventory(args.automation_root.resolve(), args.projects_root.resolve()),
         "automation_gitignore": gitignore_inventory(args.automation_root.resolve()),
         "d_rule_brevity": d_rule_brevity_inventory(
