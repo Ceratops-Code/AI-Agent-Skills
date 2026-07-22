@@ -7,7 +7,6 @@
 - [SKILLS-ENF-02] Do not proceed with or claim completion for any action,
   decision, artifact, or response when an applicable instruction bullet is
   unmet, unverifiable, or in conflict; report the blocker or conflict instead.
-  - requires: SKILLS-ENF-01
   - overlaps: ENF-02
 
 Metadata: Project-specific rules for this skills repository.
@@ -26,7 +25,6 @@ Skills repo checkout and worktrees:
   in the same thread unless conflicting branch histories or explicit user
   direction require a new one, and do not place it inside the skills repo
   checkout.
-  - requires: FILE-02, FILE-03
   - self: exceeds-limit, list-heavy
 - [SKILLS-PREVIEW-01] Keep installed Ceratops skill folders generated from the
   skills repo checkout, not task worktrees. For unpublished local previews,
@@ -34,7 +32,6 @@ Skills repo checkout and worktrees:
   branches into the checkout's local `release/*` branch, and run
   `python scripts/install-skills.py` there instead of generating installed
   skills from task worktrees.
-  - requires: SKILLS-CHECKOUT-01, SKILLS-WORKTREE-01
   - self: list-heavy
 - [SKILLS-STAGE-01] Do not stage skill-source changes into a local `release/*`
   batch unless the task explicitly requests staging, shipping, or local preview
@@ -42,7 +39,6 @@ Skills repo checkout and worktrees:
   - limits: SKILLS-PREVIEW-01
 - [SKILLS-SHIP-01] Skills-repo changes must ship from `release/*`, never
   directly from task or feature branches.
-  - requires: SKILLS-CHECKOUT-01
 - [SKILLS-CREATE-01] New Ceratops skill creation is the only default-staging
   exception: `$ceratops-skill-lifecycle` create must finish with
   change-promotion and install verification unless the user opts out.
@@ -51,7 +47,6 @@ Skills repo checkout and worktrees:
   change-promotion or ship-to-remote. After shipping, restore the checkout from
   `origin/main`, reinstall managed skills from `main`, and report retained
   worktrees or release branches.
-  - requires: SKILLS-CHECKOUT-01, SKILLS-SHIP-01
   - self: list-heavy
 
 Instruction and skill maintenance:
@@ -60,18 +55,15 @@ Instruction and skill maintenance:
   including `AGENTS.md`, `automation.toml`, `SKILL.md`, skill manifests, shared
   sections, or helper contracts, re-open the relevant files from disk and use
   the current contents as the source of truth.
-  - requires: INST-05
   - self: list-heavy
 - [SKILLS-GOV-02] Treat recommendations about instruction, automation, skill,
   and helper-contract changes as advisory unless the user explicitly asks to
   apply a named change.
-  - requires: AUTH-07, AUTH-08
 - [SKILLS-PORT-01] In repo-tracked files intended for public sharing or GitHub,
   including `AGENTS.md`, `automation.toml`, `SKILL.md`, generated runtime
   skill files, scripts, docs, and examples, do not hardcode user-local absolute
   filesystem paths unless an external runtime explicitly requires them; use
   repo-relative paths or portable variables such as `$CODEX_HOME`.
-  - requires: FILE-04
   - self: list-heavy
 - [SKILLS-RUNTIME-01] For skill runtime workflows, invoke shared helpers through
   installed console commands, `python -m <module>` entrypoints, or scripts in
@@ -83,24 +75,19 @@ Instruction and skill maintenance:
   installed skill folder; when a helper is skill-local, run it from that skill
   folder or the corresponding source skill folder; stop as blocked if neither
   declared location contains it.
-  - requires: SKILLS-RUNTIME-01
 - [SKILLS-STYLE-01] Prefer concise, principle-based, machine-oriented wording;
   avoid example lists unless needed to disambiguate behavior.
   - overlaps: OUT-01, OUT-02
 - [SKILLS-VERIFY-01] After instruction edits, verify the changed diff or
   reopened section and confirm no new duplicate, contradiction, or dropped
   behavior was introduced.
-  - requires: INST-05
 - [SKILLS-AUTO-01] When an automation uses a script or helper, compare prompt
   and code before finishing and keep outcome, blocker, cleanup, alert, and
   memory paths aligned.
-  - requires: INST-06
   - self: list-heavy
 - [SKILLS-HELP-01] Put deterministic, testable, or procedural automation
   behavior in scripts or helpers rather than prompt text when helpers exist.
-  - requires: HELP-01
 - [SKILLS-CREDIT-01] When updating an automation, skill, instruction, or helper,
   assess whether the change could materially increase recurring or avoidable
   credit usage; if so, report that before treating the update as done.
-  - requires: CREDIT-05
   - self: list-heavy

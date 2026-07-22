@@ -46,13 +46,13 @@ deterministic; enumeration status requires focused semantic review.
 
 ## Relationships
 
-Use `requires` for a co-gate, `limits` when an independent guardrail narrows
-another rule, and `overrides` when a specific rule wins incompatible
-application. Do not introduce an unresolved interaction in a candidate.
+Use `limits` when an independent guardrail narrows another rule and `overrides`
+when a specific rule wins incompatible application. Do not introduce an
+unresolved interaction in a candidate.
 
-These three relations are directional from the declaring rule to the target.
-Detect every directed cycle. An `overrides` cycle is structurally invalid;
-`requires`, `limits`, and mixed cycles require focused semantic review.
+These relations are directional from the declaring rule to the target. Detect
+every directed cycle. An `overrides` cycle is structurally invalid; `limits`
+and mixed cycles require focused semantic review.
 
 Treat `overlaps` and `conflicts` as symmetric review edges declared once. They
 remain unresolved findings until semantic review selects a coherent outcome;

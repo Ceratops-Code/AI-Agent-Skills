@@ -29,12 +29,12 @@ RELATION_VALUE = re.compile(
     rf"{RULE_ID_PATTERN}(?:, {RULE_ID_PATTERN})*"
 )
 LEGACY_RELATION = re.compile(
-    rf"`(?:requires|limits|overrides|overlaps|conflicts) "
+    rf"`(?:limits|overrides|overlaps|conflicts) "
     rf"{RULE_ID_PATTERN}(?:, {RULE_ID_PATTERN})*`"
 )
 
-RELATION_KEYS = ("requires", "limits", "overrides", "overlaps", "conflicts")
-DIRECTIONAL_KEYS = ("requires", "limits", "overrides")
+RELATION_KEYS = ("limits", "overrides", "overlaps", "conflicts")
+DIRECTIONAL_KEYS = ("limits", "overrides")
 SYMMETRIC_KEYS = ("overlaps", "conflicts")
 SELF_KEY = "self"
 SELF_STATUSES = ("exceeds-limit", "list-heavy")
