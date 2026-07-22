@@ -26,6 +26,10 @@ RELATION = re.compile(
     r"`(?:requires|limits|overrides) "
     r"(?P<targets>[A-Z][A-Z0-9-]*(?:, [A-Z][A-Z0-9-]*)*)`"
 )
+METADATA_RELATION = re.compile(
+    r"^- (?:requires|limits|overrides): "
+    r"(?P<targets>[A-Z][A-Z0-9-]*(?:, [A-Z][A-Z0-9-]*)*)$"
+)
 
 
 def read_text(path: Path, label: str) -> str:
@@ -66,6 +70,10 @@ def parse_relations(text: str) -> dict[str, set[str]]:
         record = " ".join(parts)
         for match in RELATION.finditer(record):
             relations[rule_id].update(match.group("targets").split(", "))
+        for part in parts:
+            match = METADATA_RELATION.fullmatch(part)
+            if match:
+                relations[rule_id].update(match.group("targets").split(", "))
     return relations
 
 
