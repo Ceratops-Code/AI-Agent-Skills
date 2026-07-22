@@ -7,7 +7,7 @@ Reusable Ceratops skills for Codex and other `SKILL.md`-compatible agents.
 | Skill | Purpose |
 | --- | --- |
 | `ceratops-gh-repo-lifecycle` | Route GitHub repo lifecycle work across create-or-publish, contracts-review, health-audit, dependency-maintenance, ensure-pr, ship-change, and merge-pr actions. |
-| `ceratops-governance-lifecycle` | Route prompt optimization, advisory skill optimization, and regression-safe instruction updates across action references. |
+| `ceratops-governance-lifecycle` | Route prompt optimization, advisory skill optimization, regression-safe instruction updates, and cross-scope governance consistency audits across action references. |
 | `ceratops-credit-savings-analysis` | Analyze recent Codex runs for avoidable credit spend and recommend low-maintenance controls. |
 | `ceratops-skill-lifecycle` | Route skill lifecycle work across create, make-repo-compatible, update, skills-contract-review, skills-consistency-review, fast-change, change-promotion, and ship-to-remote actions. |
 | `ceratops-automation-run` | Run recurring automations with shared Ceratops alert, memory, and completion policy. |

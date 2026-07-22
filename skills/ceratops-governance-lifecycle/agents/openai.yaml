@@ -1,6 +1,6 @@
 interface:
   display_name: "Ceratops Governance Lifecycle"
-  short_description: "Optimize prompts, skills, and instructions"
+  short_description: "Optimize and audit Codex governance"
   icon_small: "./assets/ceratops-logo-500.png"
   icon_large: "./assets/ceratops-logo-500.png"
-  default_prompt: "Use $ceratops-governance-lifecycle to select and run the narrowest prompt, skill, or instruction governance action for this request: {{USER_REQUEST}}"
+  default_prompt: "Use $ceratops-governance-lifecycle to select and run the narrowest prompt, skill, instruction, or governance-audit action for this request: {{USER_REQUEST}}"

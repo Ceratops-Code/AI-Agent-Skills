@@ -1,14 +1,14 @@
 ---
 name: ceratops-governance-lifecycle
-description: Route Ceratops governance authoring work across prompt optimization, advisory skill optimization, and regression-safe instruction updates. Use when Codex should rewrite a rough prompt without executing it, recommend exact changes to existing skills without applying them, or diagnose, propose, and route approved changes to rules, skill instructions, automation prompts, helper contracts, policy lines, or interacting instruction scopes.
+description: Route Ceratops governance work across prompt optimization, advisory skill optimization, regression-safe instruction updates, and cross-scope governance consistency audits. Use when Codex should rewrite a rough prompt without executing it, recommend exact changes to existing skills without applying them, diagnose and route approved instruction changes, or audit alignment across AGENTS files, automations, directly referenced helpers, and governance owners.
 ---
 
 # Ceratops Governance Lifecycle
 
 ## Goal
 
-Route governance authoring work to the narrowest action reference while keeping
-prompt, skill, and instruction decisions in one capability surface.
+Route governance work to the narrowest action reference while keeping prompt,
+skill, instruction, and cross-scope audit decisions in one capability surface.
 
 ## Context
 
@@ -19,11 +19,13 @@ prompt, skill, and instruction decisions in one capability surface.
   `references/optimize-skill.md`
 - Design or apply an approved regression-safe instruction change:
   `references/propose-rules-update.md`
+- Audit cross-scope governance consistency:
+  `references/governance-consistency-audit.md`
 
 ### Inputs To Capture
 
 - Action intent and the target prompt, skill set, instruction stack, automation,
-  helper contract, or policy surface.
+  helper contract, policy surface, or governance scope.
 - Expected deliverable, strict constraints, current source text, and available
   regression or history evidence.
 - Whether the task is advisory-only or authorizes an exact mutation.
@@ -37,6 +39,8 @@ Infer missing inputs from current context and local sources before asking.
 - Use the selected action reference as the source of truth for inputs,
   constraints, helpers, workflow, completion, and output.
 - Keep prompt optimization and skill optimization non-mutating.
+- Keep governance consistency audits report-only except for mutations explicitly
+  authorized by the selected action.
 - For instruction updates, mutate only the exact artifacts the user authorized
   after the proposal action accepts the candidate.
 - Route approved skill-source mutations through `$ceratops-skill-lifecycle`.
@@ -46,12 +50,13 @@ Infer missing inputs from current context and local sources before asking.
 
 ### Boundaries
 
-- Use this skill for prompt optimization, advisory skill optimization, and
-  instruction-system change design or approved application.
+- Use this skill for prompt optimization, advisory skill optimization,
+  instruction-system change design or approved application, and cross-scope
+  governance consistency audits.
 - Use `$ceratops-skill-lifecycle` to create a skill or apply skill-source,
   metadata, manifest, helper, validation, or documentation changes.
-- Use the owning audit skill for repository, code, runtime, or governance
-  consistency audits.
+- Use the owning lifecycle audit for domain-specific repository, code, runtime,
+  GitHub, or skill-contract consistency.
 
 ### Workflow
 
@@ -64,6 +69,9 @@ Infer missing inputs from current context and local sources before asking.
 - Use `propose-rules-update` when the task changes or reviews durable rules,
   instructions, automation prompts, skill rules, helper contracts, or their
   interactions.
+- Use `governance-consistency-audit` when the task checks alignment across
+  AGENTS files, automations, directly referenced helpers, and delegated
+  governance owners.
 
 #### 2. Close from action evidence
 
