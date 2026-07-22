@@ -54,6 +54,10 @@ SECTIONS_END = "<!-- CERATOPS_SHARED_SECTIONS_END -->"
 NAME_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$")
 SKILL_REF_RE = re.compile(r"\$([a-z0-9]+(?:-[a-z0-9]+)+)(?![A-Za-z0-9_-])")
 README_SKILL_ROW_RE = re.compile(r"^\|\s*`(?P<name>[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?)`\s*\|", re.MULTILINE)
+ACTION_REFERENCES_HEADING = "### Action References"
+ACTION_REFERENCE_TOKEN_RE = re.compile(r"`(?P<path>references/[^`\s]+\.md)`")
+DIRECT_ACTION_REFERENCE_RE = re.compile(r"references/[a-z0-9]+(?:-[a-z0-9]+)*\.md")
+ACTION_TITLE_RE = re.compile(r"# .+ Action")
 ALLOWED_EXTERNAL_SKILL_REFS = {"skill-creator", "skill-name"}
 INTERFACE_FIELD_RE = re.compile(
     r"^\s*(display_name|short_description|icon_small|icon_large|default_prompt):\s*(.+?)\s*$",
@@ -579,6 +583,95 @@ def check_skill_nondeterministic_contract() -> list[str]:
     return errors
 
 
+def has_action_title(path: pathlib.Path) -> bool:
+    """Return whether a Markdown reference uses the reserved action title."""
+
+    lines = path.read_text(encoding="utf-8").splitlines()
+    return bool(lines and ACTION_TITLE_RE.fullmatch(lines[0]) is not None)
+
+
+def check_multi_action_skill_contract(
+    manifest: dict[str, object],
+    selected_skill_names: set[str] | None = None,
+) -> list[str]:
+    """Validate every manifest-declared multi-action index and action file."""
+
+    errors: list[str] = []
+    assignments = manifest.get("skills", {})
+    if not isinstance(assignments, dict):
+        return errors
+    multi_action_skill_names = sorted(
+        skill_name
+        for skill_name, section_names in assignments.items()
+        if isinstance(skill_name, str)
+        and isinstance(section_names, list)
+        and "multi-action-skill" in section_names
+        and (selected_skill_names is None or skill_name in selected_skill_names)
+    )
+    for skill_name in multi_action_skill_names:
+        skill_dir = SKILLS_DIR / skill_name
+        skill_path = skill_dir / "SKILL.md"
+        if not skill_path.is_file():
+            errors.append(f"{skill_name}: missing multi-action SKILL.md")
+            continue
+        skill_lines = skill_path.read_text(encoding="utf-8").splitlines()
+        heading_indexes = [
+            index for index, line in enumerate(skill_lines) if line == ACTION_REFERENCES_HEADING
+        ]
+        if len(heading_indexes) != 1:
+            errors.append(
+                f"{skill_name}: requires exactly one {ACTION_REFERENCES_HEADING} section"
+            )
+            continue
+        section_start = heading_indexes[0] + 1
+        section_end = next(
+            (
+                index
+                for index in range(section_start, len(skill_lines))
+                if re.match(r"^#{1,3}\s", skill_lines[index])
+            ),
+            len(skill_lines),
+        )
+        action_references = ACTION_REFERENCE_TOKEN_RE.findall(
+            "\n".join(skill_lines[section_start:section_end])
+        )
+        duplicates = sorted(
+            {path for path in action_references if action_references.count(path) > 1}
+        )
+        for action_reference in duplicates:
+            errors.append(f"{skill_name}: duplicate action reference {action_reference}")
+        if len(set(action_references)) < 2:
+            errors.append(f"{skill_name}: multi-action index requires at least two actions")
+
+        valid_references: set[str] = set()
+        for action_reference in action_references:
+            if DIRECT_ACTION_REFERENCE_RE.fullmatch(action_reference) is None:
+                errors.append(
+                    f"{skill_name}: action reference must be one direct references/*.md path: "
+                    f"{action_reference}"
+                )
+                continue
+            valid_references.add(action_reference)
+            action_path = skill_dir / pathlib.PurePosixPath(action_reference)
+            if not action_path.is_file():
+                errors.append(f"{skill_name}: missing action reference {action_reference}")
+                continue
+            if not has_action_title(action_path):
+                errors.append(
+                    f"{skill_name}: {action_reference} must be titled # <Action Name> Action"
+                )
+
+        action_files: set[str] = set()
+        references_dir = skill_dir / "references"
+        if references_dir.is_dir():
+            for action_path in references_dir.glob("*.md"):
+                if has_action_title(action_path):
+                    action_files.add(f"references/{action_path.name}")
+        for action_reference in sorted(action_files - valid_references):
+            errors.append(f"{skill_name}: unlisted action reference {action_reference}")
+    return errors
+
+
 def check_skill_scope_validator() -> list[str]:
     """Check objective multi-action skill rules without judging prose quality."""
 
@@ -595,7 +688,11 @@ def check_skill_scope_validator() -> list[str]:
             errors.append(f"{skill_name}: missing multi-action SKILL.md")
             continue
         multi_action_text = multi_action_path.read_text(encoding="utf-8")
-        actual_actions = {path.name for path in (skill_dir / "references").glob("*.md")}
+        actual_actions = {
+            path.name
+            for path in (skill_dir / "references").glob("*.md")
+            if has_action_title(path)
+        }
         unexpected_actions = sorted(actual_actions - set(expected_actions))
         for action_file in unexpected_actions:
             errors.append(f"{skill_name}: unexpected action reference references/{action_file}")
@@ -700,6 +797,7 @@ def check_source_governance_consistency(
 
     errors: list[str] = []
     errors.extend(check_repo_skill_refs(skill_names))
+    errors.extend(check_multi_action_skill_contract(manifest))
     if profile == PROFILE_CERATOPS:
         errors.extend(check_validation_command_surface())
         errors.extend(check_skill_contract_remediation_policy())
@@ -812,6 +910,7 @@ def check_selected_skills(
         errors.extend(check_skill(skill_dir_by_name[skill_name], readme_rows, manifest, skill_names, profile))
 
     errors.extend(check_runtime_payloads(manifest, skill_names, selected_skill_names))
+    errors.extend(check_multi_action_skill_contract(manifest, selected_skill_names))
     selected_dirs = [skill_dir_by_name[name] for name in sorted(selected_skill_names & skill_names)]
     errors.extend(check_secrets(selected_dirs))
     return errors
@@ -1026,6 +1125,7 @@ def main() -> int:
     errors.extend(check_source_installer(profile))
     if args.mode == "sections":
         errors.extend(check_section_sources(manifest, skill_dirs))
+        errors.extend(check_multi_action_skill_contract(manifest))
         if errors:
             print(f"errors: {len(errors)}", file=sys.stderr)
             for error in errors:

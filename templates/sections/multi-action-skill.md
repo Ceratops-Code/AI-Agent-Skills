@@ -2,6 +2,9 @@
 
 ## Multi-Action Skill Contract
 
+- List every supported action exactly once under `### Action References` in the
+  parent `SKILL.md`, map it to one direct `references/*.md` file titled
+  `# <Action Name> Action`, and reserve that title form for action files.
 - Load only the selected action reference unless the current action explicitly
   hands off to another action.
 - Read the selected action file under `references/` and follow its inputs,

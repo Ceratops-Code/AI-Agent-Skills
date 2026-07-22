@@ -100,7 +100,6 @@ before asking.
 
 #### 7. Answer From Checked Evidence
 
-- Use the strongest closure claim justified by checked evidence.
 - Keep the answer concise and omit routine command logs or process narration.
 
 ## Done When
@@ -111,21 +110,14 @@ before asking.
 - Required remaining work and blockers are not omitted.
 - Uncommitted, unpushed, retained, stale, warning, forgotten-follow-up, and
   unverified states from any same-thread touched artifact are reported.
-- Any no-required-work-left claim is limited to evidence actually checked.
+- A response that reports no unresolved items is supported by checked evidence.
 - The `$ceratops-credit-savings-analysis` result or blocker is included under
   `Credit savings`.
 - No mutation was performed unless explicitly requested.
 
 ### Output Contract
 
-First line must be exactly one of:
-
-- No required work left.
-- Required work remains.
-- Blocked.
-- Unclear from checked evidence.
-
-Then include only relevant concise items:
+Return only relevant concise bullets:
 
 - checked scope, only when it limits the answer
 - required next actions
@@ -137,6 +129,8 @@ Then include only relevant concise items:
 - relevant forgotten follow-ups
 - optional cleanup
 - `Credit savings`: the required `$ceratops-credit-savings-analysis` result
+
+If no listed item applies, return only `- No unresolved items.`
 
 Omit routine command logs and process narration.
 

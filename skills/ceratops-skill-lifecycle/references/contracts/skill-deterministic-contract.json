@@ -74,6 +74,7 @@
       "skill.runtime_payload_portability",
       "skill.runtime_source_ownership",
       "skill.shared_section_generation",
+      "skill.multi_action_contract",
       "skill.resource_layout",
       "skill.public_doc_alignment",
       "skill.private_path_and_secret_absence",
@@ -161,6 +162,20 @@
         "skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py:rendered_sections_block",
         "skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py:check_section_sources",
         "skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py:check_skill"
+      ]
+    },
+    {
+      "id": "skill.multi_action_contract",
+      "category": "source",
+      "deterministic_evidence": [
+        "templates/skill-sections.json multi-action-skill assignments",
+        "skills/<skill-name>/SKILL.md Action References",
+        "skills/<skill-name>/references/*.md action titles"
+      ],
+      "pass_condition": "Every skill assigned the multi-action-skill section has one complete Action References index with at least two unique direct references/*.md paths; every mapped file exists and uses an Action title, and every top-level reference with an Action title is indexed.",
+      "source_lines": [
+        "templates/sections/multi-action-skill.md:Multi-Action Skill Contract",
+        "skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py:check_multi_action_skill_contract"
       ]
     },
     {
