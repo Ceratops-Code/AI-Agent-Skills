@@ -1,0 +1,56 @@
+{
+  "version": 2,
+  "entries": [
+    {
+      "rules": [
+        "SKILLS-ENF-01",
+        "SKILLS-ENF-02",
+        "ENF-01",
+        "ENF-02"
+      ],
+      "decision": "Project-local instructions remain mandatory and closure-gating within the global instruction stack.",
+      "reason": "Repository-specific workflow rules must retain the same enforcement force as global instructions.",
+      "regression": "A local rule cannot be treated as optional or bypass completion blocking when applicable."
+    },
+    {
+      "rules": [
+        "SKILLS-CHECKOUT-01",
+        "SKILLS-WORKTREE-01",
+        "SKILLS-STAGE-01",
+        "FILE-02",
+        "FILE-03"
+      ],
+      "decision": "Skill development occurs in one thread-owned external worktree while the primary checkout remains a controlled main or release surface.",
+      "reason": "Separating development from release and runtime generation prevents branch-state drift and accidental staging.",
+      "regression": "Skill source must not be developed in the primary checkout or staged into release without explicit staging, shipping, or preview intent."
+    },
+    {
+      "rules": [
+        "SKILLS-PREVIEW-01",
+        "SKILLS-SHIP-01",
+        "SKILLS-CREATE-01",
+        "SKILLS-SHIP-02"
+      ],
+      "decision": "Installed previews and shipments are generated from the controlled checkout and release branch, with new-skill creation retaining its promotion exception.",
+      "reason": "Runtime copies must correspond to an intentional release state rather than an arbitrary task worktree.",
+      "regression": "Do not install from task worktrees, ship from feature branches, or lose post-shipment restoration and reinstall steps."
+    },
+    {
+      "rules": [
+        "SKILLS-GOV-01",
+        "SKILLS-GOV-02",
+        "SKILLS-PORT-01",
+        "SKILLS-RUNTIME-01",
+        "SKILLS-MAINT-01",
+        "SKILLS-STYLE-01",
+        "SKILLS-VERIFY-01",
+        "SKILLS-AUTO-01",
+        "SKILLS-HELP-01",
+        "SKILLS-CREDIT-01"
+      ],
+      "decision": "Repository governance uses current control sources, portable runtime paths, aligned helpers, targeted verification, and explicit credit-cost review.",
+      "reason": "These constraints keep public skill sources portable and generated or recurring behavior aligned with its executable owner.",
+      "regression": "Do not apply advisory changes implicitly, embed user-local paths, bypass declared helper locations, or finish with prompt/helper or credit-cost drift."
+    }
+  ]
+}

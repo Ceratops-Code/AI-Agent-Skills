@@ -24,20 +24,27 @@ Route approved skill-source mutations through `$ceratops-skill-lifecycle`
    relevant rule, single cause, or owning artifact exists.
 2. Inspect exact current text from every involved source. For global and local
    instructions, determine scope and precedence before evaluating interaction.
-3. Resolve structured history before drafting. For global rules, check
+3. Resolve the current rule graph and structured history before drafting. For
+   global rules, check
    `$CODEX_HOME/AGENTS.history.json`; for local rules, check
    `AGENTS.history.json` beside their `AGENTS.md`. From this skill directory,
    run `python scripts/rule_history.py lookup --history <history> --rules
-   <rules> ID...`, repeating both options for an interacting instruction stack.
-   Use the compact default for graph selection and add `--full` only when the
-   selected entries' causal or regression text is needed. Query relation targets
-   when adding a rule. If the applicable history does not exist, use targeted
-   source history and state that recorded behavioral history was unavailable.
+   <rules> ID...`, repeating both options in effective global-to-local order for
+   an interacting instruction stack.
+   The helper must parse the canonical metadata syntax and select every direct
+   directional or review-edge neighbor. Use the compact default for graph
+   selection and add `--full` only when selected causal or regression evidence
+   is needed. Obsolete references, invalid fields, or an over-limit history
+   block the remaining proposal workflow: apply the smallest authorized cleanup
+   first, rerun lookup, and only then continue. If history does not exist, use
+   targeted source history and state that recorded behavioral history was
+   unavailable.
 4. Compare a local correction with a structural or non-rule correction. Select
    by prevention of the failure, regression safety, behavioral scope, and
    complexity; textual minimality does not win automatically.
-5. Draft under the rule-design contract. Resolve interacting guidance inside
-   the candidate and identify every intentional behavior change.
+5. Draft under the rule-design contract. Resolve structural defects and every
+   affected semantic review state inside the candidate, and identify every
+   intentional behavior change.
 6. Replay the current failure and relevant recorded history. Reject a candidate
    that leaves the failed decision possible or regresses a recorded outcome.
 7. Report the selected correction, material alternative, regression result,
@@ -45,11 +52,15 @@ Route approved skill-source mutations through `$ceratops-skill-lifecycle`
 
 ## Applying an approved change
 
-Append history in each changed rule scope without modifying committed entries.
-Record later corrections or reinterpretations in a new entry, naming changed
-rules and direct relation neighbors. Record causal and regression evidence with
-validation. Run the source's rule checker when one exists; its history binding
-must reject unrecorded rule changes.
+Clean history before applying any other approved rule change. Keep decisions
+that still constrain current behavior; delete obsolete references, retracted or
+overridden outcomes, and entries with no regression value. Replace renamed IDs
+when their rationale remains active. Store only the decision-only fields defined
+by the rule-design contract, and compact history when its deterministic limit is
+reached. Name every deletion in the proposal so approval covers the exact
+durable history change. Run the source's rule checker; its history binding must
+reject unrecorded rule changes, obsolete references, invalid fields, and
+over-limit history.
 
 ## Iterative optimization
 
@@ -67,9 +78,11 @@ the controller did not report.
 
 ### Completion Gate
 
-A proposal is complete only when it prevents the current recorded failure and
-is better than the current state and material alternative. Otherwise change
-the intervention or report the unresolved decision point.
+A proposal is complete only when it prevents the current recorded failure,
+leaves the rule graph structurally valid, retains only applicable regression
+history within its size limits, and is better than the current state and
+material alternative.
+Otherwise change the intervention or report the unresolved decision point.
 
 ### Output Contract
 
