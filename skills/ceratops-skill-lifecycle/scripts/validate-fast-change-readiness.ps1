@@ -94,6 +94,9 @@ $installScript = Join-Path $resolvedSkillsRepoRoot "scripts\install-skills.py"
 $repoRootForRelative = $resolvedSkillsRepoRoot.TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
 $relativeTarget = $resolvedTarget.Substring($repoRootForRelative.Length + 1).Replace("\", "/")
 $installAvailable = Test-Path -LiteralPath $installScript -PathType Leaf
+if (-not $installAvailable) {
+    throw "Missing repository skill installer: $installScript"
+}
 $result = [ordered]@{
     ok = $true
     branch = $currentBranch
