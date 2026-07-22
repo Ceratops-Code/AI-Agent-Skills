@@ -86,8 +86,6 @@ when the projects root remains ambiguous.
   skill-contract, or GitHub contract audits.
 - Do not run expensive tooling, broad live checks, large test suites, or web
   research unless the cheap pass exposes a concrete decision that needs them.
-- Do not deep-read unrelated helpers, repositories, project threads, automation
-  memory, or generated result artifacts.
 
 ## Workflow
 

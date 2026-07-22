@@ -2,7 +2,6 @@
 
 ## Goal
 
-Produce the smallest safe behavioral correction, not the smallest text patch.
 Every confirmed failure must change the controlling instruction surface or its
 deterministic enforcement.
 
@@ -42,7 +41,7 @@ Route approved skill-source mutations through `$ceratops-skill-lifecycle`
 6. Replay the current failure and relevant recorded history. Reject a candidate
    that leaves the failed decision possible or regresses a recorded outcome.
 7. Report the selected correction, material alternative, regression result,
-   and uncertainty. Mutate only the exact authorized artifacts.
+   and uncertainty.
 
 ## Applying an approved change
 
@@ -68,10 +67,9 @@ the controller did not report.
 
 ### Completion Gate
 
-A proposal is complete only when it prevents the current recorded failure,
-preserves earlier recorded behavior unless intentionally superseded, and is
-better than the current state and material alternative. Otherwise change the
-intervention or report the unresolved decision point.
+A proposal is complete only when it prevents the current recorded failure and
+is better than the current state and material alternative. Otherwise change
+the intervention or report the unresolved decision point.
 
 ### Output Contract
 

@@ -34,19 +34,25 @@ Infer missing inputs from current context and local sources before asking.
 
 ## Constraints
 
+### Shared Action Rules
+
+- Preserve the target's intended meaning, purpose, constraints, and established
+  behavior except where the selected action explicitly permits an authorized
+  change.
+- Use only the action-scoped work and evidence needed to satisfy the selected
+  action's completion gate; do not inspect or change unrelated surfaces.
+- Do not mutate an artifact unless the selected action pre-authorizes that exact
+  mutation or the user authorizes the exact artifact and change.
+- Keep prompt optimization and skill optimization advisory-only: do not execute
+  the underlying task or mutate artifacts.
+- For skill optimization, rule updates, and governance audits, inspect companion
+  artifacts only when they govern the same behavior, evidence, or output
+  contract.
+
 ### Skill-Specific Rules
 
-- Use the selected action reference as the source of truth for inputs,
-  constraints, helpers, workflow, completion, and output.
-- Keep prompt optimization and skill optimization non-mutating.
-- Keep governance consistency audits report-only except for mutations explicitly
-  authorized by the selected action.
 - For instruction updates, mutate only the exact artifacts the user authorized
   after the proposal action accepts the candidate.
-- Route approved skill-source mutations through `$ceratops-skill-lifecycle`.
-- Keep cross-action handoffs inside this lifecycle skill.
-- Preserve each action's distinct intent boundary: prompt meaning, skill
-  purpose, or recorded governance behavior.
 
 ### Boundaries
 

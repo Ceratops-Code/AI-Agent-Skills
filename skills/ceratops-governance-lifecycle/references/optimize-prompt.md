@@ -22,7 +22,6 @@ Ask for the missing raw prompt only when none was provided.
 
 ### Skill-Specific Rules
 
-- Do not answer the raw prompt; rewrite it.
 - Do not change the target task, intent, audience, output target, terminology,
   placeholders, variables, examples, or strict constraints.
 - Add only assumptions or defaults that reduce execution ambiguity.
