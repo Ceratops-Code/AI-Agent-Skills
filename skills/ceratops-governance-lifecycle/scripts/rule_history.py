@@ -3,10 +3,12 @@
 
 Usage:
     python scripts/rule_history.py lookup \
-        --history HISTORY --rules RULES [--history ... --rules ...] ID...
+        --history HISTORY --rules RULES [--history ... --rules ...] \
+        [--full] ID...
 
 The helper is read-only. It gives the proposal workflow a targeted history view
-without loading unrelated entries or inferring graph neighbors manually.
+without loading unrelated entries or inferring graph neighbors manually. Lookup
+output is compact unless the caller explicitly requests full entry evidence.
 """
 
 from __future__ import annotations
@@ -21,6 +23,14 @@ from typing import Any
 
 
 VERSION = 2
+COMPACT_ENTRY_FIELDS = (
+    "id",
+    "date",
+    "relation_neighbors",
+    "related_global_rules",
+    "rules_sha256",
+    "global_rules_sha256",
+)
 RULE_START = re.compile(r"^- \[(?P<id>[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+)\] ")
 RELATION = re.compile(
     r"`(?:requires|limits|overrides) "
@@ -110,6 +120,20 @@ def load_history(path: Path) -> list[dict[str, Any]]:
     return entries
 
 
+def entry_view(entry: dict[str, Any], *, full: bool, consulted: set[str]) -> dict[str, Any]:
+    """Return full evidence only when the caller explicitly requests it."""
+    if full:
+        return entry
+    view = {key: entry[key] for key in COMPACT_ENTRY_FIELDS if key in entry}
+    affected = set(entry["rules"])
+    view["matched_rules"] = sorted(
+        consulted if "*" in affected else consulted.intersection(affected)
+    )
+    if "*" in affected:
+        view["wildcard"] = True
+    return view
+
+
 def command_lookup(args: argparse.Namespace) -> None:
     """Print only baseline or directly relevant history entries."""
     history_paths = [path.resolve() for path in args.history]
@@ -128,9 +152,13 @@ def command_lookup(args: argparse.Namespace) -> None:
                 raise ValueError("history entry rules must be a list")
             if "*" in affected or consulted.intersection(affected):
                 relevant.append(
-                    {"history": str(history_path), "entry": entry}
+                    {
+                        "history": str(history_path),
+                        "entry": entry_view(entry, full=args.full, consulted=consulted),
+                    }
                 )
     result = {
+        "detail": "full" if args.full else "compact",
         "requested": sorted(requested),
         "unknown": sorted(requested - set(graph)),
         "neighbors": sorted(neighbors),
@@ -150,6 +178,11 @@ def build_parser() -> argparse.ArgumentParser:
     lookup = commands.add_parser("lookup", help="query targeted rule history")
     lookup.add_argument("--history", type=Path, action="append", required=True)
     lookup.add_argument("--rules", type=Path, action="append", required=True)
+    lookup.add_argument(
+        "--full",
+        action="store_true",
+        help="include complete causal and regression evidence",
+    )
     lookup.add_argument("rule_ids", nargs="+")
     lookup.set_defaults(handler=command_lookup)
     return parser

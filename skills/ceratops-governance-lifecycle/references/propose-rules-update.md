@@ -30,9 +30,10 @@ Route approved skill-source mutations through `$ceratops-skill-lifecycle`
    `AGENTS.history.json` beside their `AGENTS.md`. From this skill directory,
    run `python scripts/rule_history.py lookup --history <history> --rules
    <rules> ID...`, repeating both options for an interacting instruction stack.
-   Query relation targets when adding a rule. If the applicable history does
-   not exist, use targeted source history and state that recorded behavioral
-   history was unavailable.
+   Use the compact default for graph selection and add `--full` only when the
+   selected entries' causal or regression text is needed. Query relation targets
+   when adding a rule. If the applicable history does not exist, use targeted
+   source history and state that recorded behavioral history was unavailable.
 4. Compare a local correction with a structural or non-rule correction. Select
    by prevention of the failure, regression safety, behavioral scope, and
    complexity; textual minimality does not win automatically.
@@ -45,10 +46,11 @@ Route approved skill-source mutations through `$ceratops-skill-lifecycle`
 
 ## Applying an approved change
 
-Append history in each changed rule scope, naming changed rules and direct
-relation neighbors. Record causal and regression evidence with validation. Run
-the source's rule checker when one exists; its history binding must reject
-unrecorded rule changes.
+Append history in each changed rule scope without modifying committed entries.
+Record later corrections or reinterpretations in a new entry, naming changed
+rules and direct relation neighbors. Record causal and regression evidence with
+validation. Run the source's rule checker when one exists; its history binding
+must reject unrecorded rule changes.
 
 ## Iterative optimization
 
