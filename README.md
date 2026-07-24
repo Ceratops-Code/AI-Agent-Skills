@@ -66,9 +66,10 @@ generated runtime, source, and docs. Each runtime manifest records schema,
 skill, source identity, source path, local source-repository root, validation
 profile, and installer version. Skill consistency review compares only parsed
 `INSTALLER_VERSION` values before the selected installed-skill check.
-The `global-skills-consistency-review` automation enumerates every direct
-manifest-backed skill under `$CODEX_HOME/skills` and invokes the single-skill
-action once per skill without repository deduplication.
+The `global-skills-consistency-review` automation uses the lifecycle runtime
+inventory helper to enumerate every direct manifest-backed skill under
+`$CODEX_HOME/skills`, then invokes the single-skill action once per valid entry
+without repository deduplication.
 
 ## Scripts
 
@@ -79,7 +80,7 @@ action once per skill without repository deduplication.
 | `skills/ceratops-skill-lifecycle/scripts/runtime/install-managed-skills.py` | Installed source-scoped runtime installer; full installs run full source validation and same-source stale cleanup, while targeted installs validate only selected skills and remove no stale folders. |
 | `skills/ceratops-skill-lifecycle/scripts/runtime/resolve-lifecycle-bundle.py` | Installed-first resolver with target-checkout fallback only for the initial Ceratops installation. |
 | `skills/ceratops-skill-lifecycle/scripts/runtime/synchronize-installers.py` | Copies the authoritative installer into an approved task worktree only when its parsed version is missing or lower, then runs full validation. |
-| `skills/ceratops-skill-lifecycle/scripts/runtime/skills-consistency-runtime-validator.py` | Discovers one repository's installed managed runtime, validates identity and installer versions, and compares every managed file with canonical builder output. |
+| `skills/ceratops-skill-lifecycle/scripts/runtime/skills-consistency-runtime-validator.py` | Inventories direct managed runtime manifests or validates one selected skill after deriving its source repository, including identity, installer version, and complete managed-file comparison. |
 | `skills/ceratops-skill-lifecycle/scripts/runtime/managed_runtime_builder.py` | Canonical managed-runtime builder used for installation and expected-tree generation. |
 | `skills/ceratops-gh-repo-lifecycle/scripts/github_contract_engine/` | Package CLI for contract schemas, consistency, source documents, org/repo validation, shared severity levels, and non-deterministic evidence. |
 | `skills/ceratops-gh-repo-lifecycle/scripts/github_pr_workflow/` | Package CLI for prepared-branch PR publication, PR readiness, Codex review wait/resolution, merge orchestration, live merge verification, and post-merge local sync. |

@@ -866,6 +866,7 @@ def check_validation_command_surface() -> list[str]:
     if (
         "compare_managed_tree" not in runtime_validator_text
         or '"--skill"' not in runtime_validator_text
+        or '"--inventory"' not in runtime_validator_text
         or '"--mode"' in runtime_validator_text
     ):
         errors.append("runtime validator must compare managed trees through one command")

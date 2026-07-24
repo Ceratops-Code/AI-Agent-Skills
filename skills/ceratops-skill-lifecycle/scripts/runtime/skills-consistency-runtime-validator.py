@@ -36,6 +36,8 @@ REQUIRED_FIELDS = {
     "validation_profile",
     "installer_version",
 }
+
+
 def default_runtime_root() -> pathlib.Path:
     """Return the direct personal runtime skills root."""
 
@@ -76,6 +78,40 @@ def read_manifest(skill_dir: pathlib.Path) -> tuple[Mapping[str, object] | None,
     return (value, None) if isinstance(value, Mapping) else (None, "manifest must be a JSON object")
 
 
+def routing_manifest_errors(
+    skill_dir: pathlib.Path,
+    manifest: Mapping[str, object],
+) -> list[str]:
+    """Return routing errors that block inventory or source-root derivation."""
+
+    errors: list[str] = []
+    missing = sorted(REQUIRED_FIELDS - set(manifest))
+    if missing:
+        return [f"runtime manifest missing {', '.join(missing)}"]
+    string_fields = ("skill", "runtime_source_id", "source_path", "source_repository_root")
+    invalid_strings = [
+        field
+        for field in string_fields
+        if not isinstance(manifest.get(field), str) or not str(manifest[field]).strip()
+    ]
+    if invalid_strings:
+        errors.append(f"runtime manifest has invalid {', '.join(invalid_strings)}")
+    if manifest.get("schema") != RUNTIME_MANIFEST_SCHEMA:
+        errors.append("unsupported runtime manifest schema")
+    if manifest.get("skill") != skill_dir.name:
+        errors.append(f"manifest skill identity is {manifest.get('skill')!r}")
+    if manifest.get("validation_profile") not in VALIDATION_PROFILES:
+        errors.append("unsupported runtime validation profile")
+    version = manifest.get("installer_version")
+    if not isinstance(version, int) or isinstance(version, bool) or version < 1:
+        errors.append("installer_version must be a positive integer")
+    source_root = manifest.get("source_repository_root")
+    if isinstance(source_root, str) and source_root.strip():
+        if not pathlib.Path(source_root).is_absolute():
+            errors.append("source_repository_root must be an absolute local path")
+    return errors
+
+
 def managed_directories(
     runtime_root: pathlib.Path,
     selected_skill: str | None = None,
@@ -90,6 +126,62 @@ def managed_directories(
     return sorted(
         path for path in runtime_root.iterdir() if path.is_dir() and (path / MANIFEST_NAME).is_file()
     )
+
+
+def runtime_inventory(runtime_root: pathlib.Path) -> dict[str, object]:
+    """Return compact direct-manifest inventory without auditing any skill."""
+
+    skills: list[dict[str, str]] = []
+    blockers: list[dict[str, object]] = []
+    for skill_dir in managed_directories(runtime_root):
+        manifest, error = read_manifest(skill_dir)
+        if manifest is None:
+            blockers.append(
+                {
+                    "directory": skill_dir.name,
+                    "errors": [f"unreadable runtime manifest: {error}"],
+                }
+            )
+            continue
+        errors = routing_manifest_errors(skill_dir, manifest)
+        if errors:
+            blockers.append({"directory": skill_dir.name, "errors": errors})
+            continue
+        skills.append(
+            {
+                "installed_path": str(skill_dir.resolve()),
+                "skill": str(manifest["skill"]),
+                "source_repository_root": str(manifest["source_repository_root"]),
+            }
+        )
+    return {
+        "blocked": len(blockers),
+        "blockers": blockers,
+        "managed": len(skills),
+        "skills": skills,
+        "status": "inventory",
+    }
+
+
+def repo_root_from_selected_manifest(
+    runtime_root: pathlib.Path,
+    selected_skill: str,
+) -> tuple[pathlib.Path | None, list[str]]:
+    """Derive one selected skill's source repository from its direct manifest."""
+
+    if pathlib.PurePath(selected_skill).name != selected_skill:
+        return None, ["selected skill must be one direct runtime directory name"]
+    skill_dir = runtime_root / selected_skill
+    manifest, error = read_manifest(skill_dir)
+    if manifest is None:
+        return None, [f"{selected_skill}: unreadable runtime manifest: {error}"]
+    errors = routing_manifest_errors(skill_dir, manifest)
+    if errors:
+        return None, [f"{selected_skill}: {message}" for message in errors]
+    try:
+        return pathlib.Path(str(manifest["source_repository_root"])).resolve(), []
+    except OSError as exc:
+        return None, [f"{selected_skill}: source_repository_root is unresolved: {exc}"]
 
 
 def source_context(
@@ -170,17 +262,9 @@ def discover_runtime(
                 root_matches = False
         if declared_source_id != source_id and skill_dir.name not in skill_names and not root_matches:
             continue
-        missing = sorted(REQUIRED_FIELDS - set(manifest))
-        if missing:
-            errors.append(f"{skill_dir.name}: runtime manifest missing {', '.join(missing)}")
-            continue
-        string_fields = ("skill", "runtime_source_id", "source_path", "source_repository_root")
-        invalid_strings = [field for field in string_fields if not isinstance(manifest.get(field), str) or not str(manifest[field]).strip()]
-        if invalid_strings:
-            errors.append(f"{skill_dir.name}: runtime manifest has invalid {', '.join(invalid_strings)}")
-            continue
-        if manifest.get("schema") != RUNTIME_MANIFEST_SCHEMA:
-            errors.append(f"{skill_dir.name}: unsupported runtime manifest schema")
+        manifest_errors = routing_manifest_errors(skill_dir, manifest)
+        if manifest_errors:
+            errors.extend(f"{skill_dir.name}: {message}" for message in manifest_errors)
             continue
         if manifest.get("runtime_source_id") != source_id:
             errors.append(f"{skill_dir.name}: runtime manifest belongs to another source")
@@ -188,12 +272,13 @@ def discover_runtime(
         if manifest.get("validation_profile") != source_profile:
             errors.append(f"{skill_dir.name}: runtime validation profile does not match source")
             continue
-        version = manifest.get("installer_version")
-        if not isinstance(version, int) or isinstance(version, bool) or version < 1:
-            errors.append(f"{skill_dir.name}: installer_version must be a positive integer")
+        try:
+            declared_root = pathlib.Path(str(manifest["source_repository_root"])).resolve()
+        except OSError as exc:
+            errors.append(f"{skill_dir.name}: source_repository_root is unresolved: {exc}")
             continue
-        if not pathlib.Path(str(manifest["source_repository_root"])).is_absolute():
-            errors.append(f"{skill_dir.name}: source_repository_root must be an absolute local path")
+        if declared_root != repo_root:
+            errors.append(f"{skill_dir.name}: source_repository_root does not match repository")
             continue
         records.append({"directory": skill_dir.name, **dict(manifest)})
 
@@ -317,12 +402,33 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description="Validate managed runtime skills for one source repository or selected skill."
     )
-    parser.add_argument("--repo-root", required=True, type=pathlib.Path)
+    parser.add_argument("--repo-root", type=pathlib.Path)
     parser.add_argument("--runtime-root", type=pathlib.Path)
     parser.add_argument("--skill", help="Validate only this direct manifest-backed runtime skill.")
+    parser.add_argument(
+        "--inventory",
+        action="store_true",
+        help="Emit compact direct-manifest inventory without auditing skills.",
+    )
     args = parser.parse_args()
-    repo_root = args.repo_root.resolve()
     runtime_root = (args.runtime_root or default_runtime_root()).resolve()
+    if args.inventory:
+        if args.repo_root is not None or args.skill is not None:
+            parser.error("--inventory cannot be combined with --repo-root or --skill")
+        print(json.dumps(runtime_inventory(runtime_root), sort_keys=True))
+        return 0
+    if args.repo_root is None and args.skill is None:
+        parser.error("--repo-root is required unless --skill or --inventory is used")
+    derivation_errors: list[str] = []
+    if args.repo_root is not None:
+        repo_root = args.repo_root.resolve()
+    else:
+        repo_root, derivation_errors = repo_root_from_selected_manifest(runtime_root, args.skill)
+        if repo_root is None:
+            print(f"errors: {len(derivation_errors)}", file=sys.stderr)
+            for error in derivation_errors:
+                print(error, file=sys.stderr)
+            return 1
     records, errors, source_manifest, source_id, skill_names = discover_runtime(
         repo_root,
         runtime_root,
