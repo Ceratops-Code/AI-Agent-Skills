@@ -88,8 +88,9 @@
     "skill_validation_command": "python skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py --mode skill --skill <skill-name>",
     "full_validation_command": "python skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py --mode full",
     "section_validation_command": "python skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py --mode sections",
-    "runtime_validation_command": "python skills/ceratops-skill-lifecycle/scripts/runtime/skills-consistency-runtime-validator.py --repo-root <repo-root> --skill <skill-name>",
-    "result_contract": "Exit 0 with an ok line when selected deterministic checks pass; nonzero with line-specific errors when they fail."
+    "runtime_validation_command": "python skills/ceratops-skill-lifecycle/scripts/runtime/skills-consistency-runtime-validator.py --skill <skill-name>",
+    "runtime_inventory_command": "python skills/ceratops-skill-lifecycle/scripts/runtime/skills-consistency-runtime-validator.py --inventory",
+    "result_contract": "Validation exits zero with compact JSON when selected deterministic checks pass and nonzero with line-specific errors when they fail; inventory exits zero with compact valid entries and malformed direct-manifest blockers."
   },
   "checks": [
     {
@@ -211,7 +212,7 @@
         "installed source_repository_root and installer_version",
         "selected install scope"
       ],
-      "pass_condition": "Full installation runs full source-repository validation before building; explicit skill installation validates only selected skills. Runtime manifests record schema, skill, runtime_source_id, source_path, source_repository_root, validation_profile, and installer_version. The builder preflights all selected targets, refuses unmanaged folders, links, invalid ownership, and same-name folders owned by another source; a full install removes only stale folders with the same runtime_source_id, while an explicit targeted install removes none. Runtime validation can select one direct manifest-backed skill and compare only its complete managed file tree with canonical builder output.",
+      "pass_condition": "Full installation runs full source-repository validation before building; explicit skill installation validates only selected skills. Runtime manifests record schema, skill, runtime_source_id, source_path, source_repository_root, validation_profile, and installer_version. The builder preflights all selected targets, refuses unmanaged folders, links, invalid ownership, and same-name folders owned by another source; a full install removes only stale folders with the same runtime_source_id, while an explicit targeted install removes none. Runtime inventory emits compact direct-manifest entries and blockers without auditing; selected runtime validation derives the source repository from the current manifest and compares only that skill's complete managed file tree with canonical builder output.",
       "source_lines": [
         "skills/ceratops-skill-lifecycle/scripts/runtime/resolve-lifecycle-bundle.py:resolve_bundle",
         "skills/ceratops-skill-lifecycle/scripts/runtime/install-managed-skills.py:main",

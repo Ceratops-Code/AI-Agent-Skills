@@ -15,8 +15,13 @@ installed-runtime surface.
   scripts/skills-consistency-source-validator.py --repo-root <repo-root>
   --mode skill --skill <skill-name>` from the lifecycle bundle.
 - (D) Managed runtime validator: `python
-  scripts/runtime/skills-consistency-runtime-validator.py --repo-root
-  <repo-root> --skill <skill-name>` from the installed lifecycle bundle.
+  scripts/runtime/skills-consistency-runtime-validator.py --skill
+  <skill-name>` from the installed lifecycle bundle; it derives the source
+  repository from the selected direct runtime manifest.
+- (D) Global inventory helper: `python
+  scripts/runtime/skills-consistency-runtime-validator.py --inventory` emits
+  compact JSON for every direct manifest-backed installed skill and malformed
+  direct-manifest blocker without auditing any skill.
 - (D) Installer synchronization when repair is authorized: `python
   scripts/runtime/synchronize-installers.py --target-repo-root
   <task-worktree>` from the installed lifecycle bundle.
@@ -48,9 +53,8 @@ Infer missing inputs from the repository and installed manifests before asking.
 
 ### Global Automation Caller
 
-- The `global-skills-consistency-review` automation owns direct installed-skill
-  discovery and invokes this action once per direct skill directory containing
-  `.runtime-manifest.json`.
+- The `global-skills-consistency-review` automation runs the global inventory
+  helper and invokes this action once per valid inventory entry.
 - The automation may aggregate results, but it must not deduplicate skills that
   share a source repository or make this action perform global discovery.
 - Report an unreadable direct runtime manifest as a blocker for that installed
