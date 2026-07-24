@@ -39,6 +39,9 @@ cannot be identified.
 - Treat preventable rework, duplicate investigation, broad reads, noisy output,
   oversized validation, stale checks, waits, reversions, and user corrections as
   candidate credit waste.
+- Treat avoidable model requests as candidate credit waste even when they do not
+  cause rework, including requests made unnecessary by applicable rules or
+  already-sufficient evidence.
 - Use credit-waste signals as prompts for analysis, not mandatory checks;
   inspect only categories visible in the selected evidence window.
 - Prefer the smallest durable control: wording, deterministic helper, preflight,
