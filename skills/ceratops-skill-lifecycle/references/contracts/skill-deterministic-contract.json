@@ -88,7 +88,7 @@
     "skill_validation_command": "python skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py --mode skill --skill <skill-name>",
     "full_validation_command": "python skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py --mode full",
     "section_validation_command": "python skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py --mode sections",
-    "runtime_validation_command": "python skills/ceratops-skill-lifecycle/scripts/runtime/skills-consistency-runtime-validator.py --repo-root <repo-root>",
+    "runtime_validation_command": "python skills/ceratops-skill-lifecycle/scripts/runtime/skills-consistency-runtime-validator.py --repo-root <repo-root> --skill <skill-name>",
     "result_contract": "Exit 0 with an ok line when selected deterministic checks pass; nonzero with line-specific errors when they fail."
   },
   "checks": [
@@ -113,7 +113,7 @@
         "authoritative installer template INSTALLER_VERSION",
         "installed runtime manifest installer_version"
       ],
-      "pass_condition": "Compatible repositories declare one positive integer INSTALLER_VERSION in scripts/install-skills.py; repository consistency compares only that value, updates missing or lower versions through task worktrees, retains same-version content differences, and runs full validation after synchronization.",
+      "pass_condition": "Compatible repositories declare one positive integer INSTALLER_VERSION in scripts/install-skills.py; selected-skill consistency compares only that value, updates missing or lower versions through task worktrees, retains same-version content differences, and runs full validation after synchronization.",
       "source_lines": [
         "skills/ceratops-skill-lifecycle/scripts/runtime/synchronize-installers.py:installer_version",
         "skills/ceratops-skill-lifecycle/scripts/runtime/skills-consistency-runtime-validator.py:discover_runtime",
@@ -211,7 +211,7 @@
         "installed source_repository_root and installer_version",
         "selected install scope"
       ],
-      "pass_condition": "Full installation runs full source-repository validation before building; explicit skill installation validates only selected skills. Runtime manifests record schema, skill, runtime_source_id, source_path, source_repository_root, validation_profile, and installer_version. The builder preflights all selected targets, refuses unmanaged folders, links, invalid ownership, and same-name folders owned by another source; a full install removes only stale folders with the same runtime_source_id, while an explicit targeted install removes none. Runtime validation discovers attributable manifests once and compares complete managed file trees with canonical builder output.",
+      "pass_condition": "Full installation runs full source-repository validation before building; explicit skill installation validates only selected skills. Runtime manifests record schema, skill, runtime_source_id, source_path, source_repository_root, validation_profile, and installer_version. The builder preflights all selected targets, refuses unmanaged folders, links, invalid ownership, and same-name folders owned by another source; a full install removes only stale folders with the same runtime_source_id, while an explicit targeted install removes none. Runtime validation can select one direct manifest-backed skill and compare only its complete managed file tree with canonical builder output.",
       "source_lines": [
         "skills/ceratops-skill-lifecycle/scripts/runtime/resolve-lifecycle-bundle.py:resolve_bundle",
         "skills/ceratops-skill-lifecycle/scripts/runtime/install-managed-skills.py:main",
@@ -278,7 +278,7 @@
         "skill deterministic and nondeterministic contract mappings",
         "multi-action lifecycle action references and command snippets"
       ],
-      "pass_condition": "Full source validation checks rename completeness, current-source skill references, README alignment, and profile-aware source governance; repository runtime checks validate attributable installed ownership and skill identity without one-time stale-term detectors.",
+      "pass_condition": "Full source validation checks rename completeness, current-source skill references, README alignment, and profile-aware source governance; selected runtime checks validate one direct manifest-backed skill's installed ownership and identity without one-time stale-term detectors.",
       "source_lines": [
         "skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py:check_source_governance_consistency",
         "skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py:check_skill_contract_remediation_policy",

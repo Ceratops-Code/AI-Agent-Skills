@@ -58,16 +58,17 @@ repo-code, PR readiness, artifact, release, and code-comment contracts plus the
 `contracts-review` action. `skills/ceratops-skill-lifecycle/references/` owns
 skill-design contracts and skill source-doc tracking. The
 `skills-contract-review` action refreshes those contracts against registered
-best-practice evidence; it does not audit skills or run the repository
-validator. The `skills-consistency-review` action audits one skills repository
-against the contracts and checks its coupled metadata, action references,
-automation consumers, helpers, installer, generated runtime, installed managed
-skills, and docs. Each runtime manifest records schema, skill, source identity,
-source path, local source-repository root, validation profile, and installer
-version. Repository consistency review compares only parsed
-`INSTALLER_VERSION` values before installed-skill checks.
-The `global-skills-consistency-review` automation discovers required source
-repositories and invokes the repo-scoped action once for each repository.
+best-practice evidence; it does not audit skills or run the source validator.
+The `skills-consistency-review` action audits one direct manifest-backed
+installed skill, regardless of its name, against the contracts and checks its
+coupled metadata, action references, automation consumers, helpers, installer,
+generated runtime, source, and docs. Each runtime manifest records schema,
+skill, source identity, source path, local source-repository root, validation
+profile, and installer version. Skill consistency review compares only parsed
+`INSTALLER_VERSION` values before the selected installed-skill check.
+The `global-skills-consistency-review` automation enumerates every direct
+manifest-backed skill under `$CODEX_HOME/skills` and invokes the single-skill
+action once per skill without repository deduplication.
 
 ## Scripts
 

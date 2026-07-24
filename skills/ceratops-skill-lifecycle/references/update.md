@@ -41,8 +41,9 @@ Infer missing inputs from current repo state before asking.
   `create`.
 - If the task is Ceratops skill-contract standards upkeep, return to the parent
   skill and select `skills-contract-review`.
-- If the task is repository skill consistency or contract compliance, return
-  to the parent skill and select `skills-consistency-review`.
+- If the task is manifest-backed installed-skill consistency or contract
+  compliance, return to the parent skill and select
+  `skills-consistency-review`.
 - If the task only promotes already-prepared committed changes, select
   `change-promotion`.
 

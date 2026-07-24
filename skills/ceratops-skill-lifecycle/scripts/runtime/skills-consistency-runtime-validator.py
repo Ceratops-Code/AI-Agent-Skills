@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Validate managed runtime skills for one source repository.
+"""Validate managed runtime skills for one source repository or selected skill.
 
 Discovery never descends into plugin caches or unmanaged skill folders.
 Repository identity filters well-formed manifests while malformed direct
 manifests remain visible because their owner cannot be trusted. Validation then
-compares each installed managed tree with the canonical builder output.
+compares each selected managed tree with the canonical builder output.
 """
 
 from __future__ import annotations
@@ -76,11 +76,17 @@ def read_manifest(skill_dir: pathlib.Path) -> tuple[Mapping[str, object] | None,
     return (value, None) if isinstance(value, Mapping) else (None, "manifest must be a JSON object")
 
 
-def managed_directories(runtime_root: pathlib.Path) -> list[pathlib.Path]:
-    """Return only direct runtime folders containing the managed manifest."""
+def managed_directories(
+    runtime_root: pathlib.Path,
+    selected_skill: str | None = None,
+) -> list[pathlib.Path]:
+    """Return selected direct runtime folders containing the managed manifest."""
 
     if not runtime_root.is_dir():
         return []
+    if selected_skill is not None:
+        selected = runtime_root / selected_skill
+        return [selected] if selected.is_dir() and (selected / MANIFEST_NAME).is_file() else []
     return sorted(
         path for path in runtime_root.iterdir() if path.is_dir() and (path / MANIFEST_NAME).is_file()
     )
@@ -121,13 +127,26 @@ def source_context(
 def discover_runtime(
     repo_root: pathlib.Path,
     runtime_root: pathlib.Path,
+    selected_skill: str | None = None,
 ) -> tuple[list[dict[str, object]], list[str], Mapping[str, object] | None, str | None, set[str]]:
-    """Discover repository-owned manifests and validate their identity fields."""
+    """Discover selected repository-owned manifests and validate identity fields."""
 
     errors: list[str] = []
     records: list[dict[str, object]] = []
     source_manifest, source_id, source_profile, skill_names, source_errors = source_context(repo_root)
     errors.extend(source_errors)
+    if selected_skill is not None:
+        if pathlib.PurePath(selected_skill).name != selected_skill:
+            errors.append("selected skill must be one direct runtime directory name")
+            skill_names = set()
+        elif selected_skill not in skill_names:
+            errors.append(f"{selected_skill}: source repository has no matching skill")
+            skill_names = set()
+        else:
+            skill_names = {selected_skill}
+        selected_manifest = runtime_root / selected_skill / MANIFEST_NAME
+        if not selected_manifest.is_file():
+            errors.append(f"{selected_skill}: direct runtime manifest is missing")
     authoritative_version = installer_version(TEMPLATE)
     if authoritative_version is None:
         errors.append("authoritative installer version is missing or invalid")
@@ -136,7 +155,7 @@ def discover_runtime(
     if source_version is None or source_version < authoritative_version:
         errors.append("source repository installer is missing or outdated")
 
-    for skill_dir in managed_directories(runtime_root):
+    for skill_dir in managed_directories(runtime_root, selected_skill):
         manifest, error = read_manifest(skill_dir)
         if manifest is None:
             errors.append(f"{skill_dir.name}: unreadable runtime manifest: {error}")
@@ -293,15 +312,22 @@ def validate_runtime(
 
 
 def main() -> int:
-    """Discover and validate one repository's installed managed runtime."""
+    """Discover and validate one repository or selected installed skill."""
 
-    parser = argparse.ArgumentParser(description="Validate managed runtime skills for one source repository.")
+    parser = argparse.ArgumentParser(
+        description="Validate managed runtime skills for one source repository or selected skill."
+    )
     parser.add_argument("--repo-root", required=True, type=pathlib.Path)
     parser.add_argument("--runtime-root", type=pathlib.Path)
+    parser.add_argument("--skill", help="Validate only this direct manifest-backed runtime skill.")
     args = parser.parse_args()
     repo_root = args.repo_root.resolve()
     runtime_root = (args.runtime_root or default_runtime_root()).resolve()
-    records, errors, source_manifest, source_id, skill_names = discover_runtime(repo_root, runtime_root)
+    records, errors, source_manifest, source_id, skill_names = discover_runtime(
+        repo_root,
+        runtime_root,
+        args.skill,
+    )
     if not errors and source_manifest is not None:
         errors.extend(
             validate_runtime(

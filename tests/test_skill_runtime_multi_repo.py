@@ -549,3 +549,38 @@ def test_repository_review_uses_only_attributable_direct_manifest_folders(tmp_pa
 
     assert stale.returncode == 1
     assert "managed file content differs: SKILL.md" in stale.stderr
+
+
+def test_selected_skill_review_does_not_audit_sibling_skills(tmp_path: pathlib.Path) -> None:
+    repo = tmp_path / "compatible"
+    install_root = tmp_path / "installed"
+    create_compatible_repo(repo, "example/compatible", ["alpha-tool", "beta-tool"])
+    assert run_builder(repo, install_root, "--remove-stale").returncode == 0
+    (install_root / "beta-tool" / "SKILL.md").write_text(
+        "stale\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+
+    selected = subprocess.run(
+        [
+            sys.executable,
+            str(RUNTIME_VALIDATOR),
+            "--repo-root",
+            str(repo),
+            "--runtime-root",
+            str(install_root),
+            "--skill",
+            "alpha-tool",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert selected.returncode == 0, selected.stderr
+    assert json.loads(selected.stdout) == {
+        "managed": 1,
+        "runtime_source_id": "example/compatible",
+        "status": "valid",
+    }
