@@ -16,6 +16,7 @@ import ast
 import json
 import pathlib
 import re
+import subprocess
 import sys
 from collections.abc import Mapping, Sequence
 from typing import cast
@@ -101,6 +102,7 @@ SECRET_PATTERNS = [
 ]
 TEXT_SUFFIXES = {".md", ".py", ".ps1", ".json", ".yml", ".yaml", ".toml", ".txt"}
 IGNORED_REPO_DIRS = {".git", "__pycache__", ".mypy_cache", ".pytest_cache", ".ruff_cache", "node_modules"}
+IGNORED_REPO_FALLBACK_DIRS = IGNORED_REPO_DIRS | {".venv"}
 GH_LIFECYCLE_ACTIONS = {
     "contracts-review.md": "python -m github_contract_engine validate consistency",
     "create-or-publish.md": "--surface all --subset create",
@@ -131,9 +133,9 @@ TASK_LIFECYCLE_ACTIONS = {
 
 
 def is_ignored_repo_path(path: pathlib.Path) -> bool:
-    """Return true for generated dependency/cache paths outside source review."""
+    """Return true for generated paths excluded by non-Git fallback discovery."""
 
-    return any(part in IGNORED_REPO_DIRS for part in path.relative_to(ROOT).parts)
+    return any(part in IGNORED_REPO_FALLBACK_DIRS for part in path.relative_to(ROOT).parts)
 
 
 def read_json(path: pathlib.Path) -> dict[str, object]:
@@ -336,6 +338,52 @@ def check_runtime_payloads(
     return errors
 
 
+def manifest_runtime_input_paths(
+    manifest: dict[str, object],
+    skill_dirs: Sequence[pathlib.Path],
+    selected_skill_names: set[str] | None = None,
+) -> list[pathlib.Path]:
+    """Return source paths copied into or rendered into managed runtime skills."""
+
+    skill_dir_by_name = {skill_dir.name: skill_dir for skill_dir in skill_dirs}
+    selected = set(skill_dir_by_name) if selected_skill_names is None else selected_skill_names
+    selected &= set(skill_dir_by_name)
+    paths = {skill_dir_by_name[name] for name in selected}
+
+    sections = manifest.get("sections", {})
+    assignments = manifest.get("skills", {})
+    if isinstance(sections, dict) and isinstance(assignments, dict):
+        for skill_name in selected:
+            section_names = assignments.get(skill_name, [])
+            if not isinstance(section_names, list):
+                continue
+            for section_name in section_names:
+                rel_path = sections.get(section_name)
+                if not isinstance(rel_path, str):
+                    continue
+                pure_path = pathlib.PurePath(rel_path)
+                if pure_path.is_absolute() or ".." in pure_path.parts:
+                    continue
+                path = ROOT / rel_path
+                if path.exists():
+                    paths.add(path)
+
+    payloads = manifest.get("runtime_payloads", {})
+    if isinstance(payloads, dict):
+        for skill_name in ("*", *sorted(selected)):
+            values = payloads.get(skill_name, [])
+            if not isinstance(values, list):
+                continue
+            for rel_path in values:
+                if not isinstance(rel_path, str):
+                    continue
+                pure_path = pathlib.PurePath(rel_path)
+                if pure_path.is_absolute() or ".." in pure_path.parts:
+                    continue
+                paths.update(ROOT.glob(rel_path))
+    return sorted(paths)
+
+
 def readme_skill_rows(readme_text: str) -> set[str]:
     """Return skill names documented in the README skill table."""
 
@@ -408,12 +456,72 @@ def check_skill_refs(path: pathlib.Path, text: str, skill_names: set[str]) -> li
     return errors
 
 
+def git_repo_source_files() -> list[pathlib.Path] | None:
+    """Return tracked and committable files when ``ROOT`` is a Git worktree."""
+
+    try:
+        top_level = subprocess.run(
+            ["git", "-C", str(ROOT), "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="surrogateescape",
+            check=False,
+        )
+    except OSError:
+        return None
+    if top_level.returncode != 0:
+        return None
+    try:
+        if pathlib.Path(top_level.stdout.strip()).resolve() != ROOT.resolve():
+            return None
+        listed = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(ROOT),
+                "ls-files",
+                "--cached",
+                "--others",
+                "--exclude-standard",
+                "-z",
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="surrogateescape",
+            check=False,
+        )
+    except OSError:
+        return None
+    if listed.returncode != 0:
+        return None
+    return sorted(
+        path
+        for rel_path in listed.stdout.split("\0")
+        if rel_path and (path := ROOT / rel_path).is_file()
+    )
+
+
+def iter_repo_source_files() -> list[pathlib.Path]:
+    """Return source candidates, honoring Git ignores when Git is available."""
+
+    git_files = git_repo_source_files()
+    if git_files is not None:
+        return git_files
+    return sorted(
+        path
+        for path in ROOT.rglob("*")
+        if path.is_file() and not is_ignored_repo_path(path)
+    )
+
+
 def check_retired_baseline_absent() -> list[str]:
     """Ensure the retired best-practice baseline artifact did not come back."""
 
     errors: list[str] = []
-    for path in ROOT.rglob("best-practice-baseline.md"):
-        if not path.is_file() or ".git" in path.parts:
+    for path in iter_repo_source_files():
+        if path.name != "best-practice-baseline.md":
             continue
         rel = path.relative_to(ROOT)
         errors.append(f"{rel}: retired best-practice baseline; use {SKILL_CONTRACT_DIR}")
@@ -460,13 +568,11 @@ def check_contract_source_lines() -> list[str]:
 def iter_repo_text_files() -> list[pathlib.Path]:
     """Return repo text files that can carry skill references or commands."""
 
-    files: list[pathlib.Path] = []
-    for path in ROOT.rglob("*"):
-        if not path.is_file() or is_ignored_repo_path(path):
-            continue
-        if path.suffix.lower() in TEXT_SUFFIXES:
-            files.append(path)
-    return sorted(files)
+    return [
+        path
+        for path in iter_repo_source_files()
+        if path.suffix.lower() in TEXT_SUFFIXES
+    ]
 
 
 def check_repo_skill_refs(skill_names: set[str]) -> list[str]:
@@ -915,8 +1021,12 @@ def check_selected_skills(
 
     errors.extend(check_runtime_payloads(manifest, skill_names, selected_skill_names))
     errors.extend(check_multi_action_skill_contract(manifest, selected_skill_names))
-    selected_dirs = [skill_dir_by_name[name] for name in sorted(selected_skill_names & skill_names)]
-    errors.extend(check_secrets(selected_dirs))
+    runtime_inputs = manifest_runtime_input_paths(
+        manifest,
+        skill_dirs,
+        selected_skill_names,
+    )
+    errors.extend(check_runtime_input_safety(runtime_inputs))
     return errors
 
 
@@ -1050,22 +1160,29 @@ def check_skill(
     return errors
 
 
-def check_secrets(search_roots: Sequence[pathlib.Path] | None = None) -> list[str]:
-    """Scan selected source roots for high-confidence secrets and private paths."""
+def check_runtime_input_safety(search_paths: Sequence[pathlib.Path]) -> list[str]:
+    """Scan only files that can enter a managed runtime skill."""
 
     errors: list[str] = []
-    for search_root in search_roots or (ROOT,):
-        for path in search_root.rglob("*"):
-            if not path.is_file() or is_ignored_repo_path(path):
-                continue
-            try:
-                text = path.read_text(encoding="utf-8")
-            except UnicodeDecodeError:
+    files: set[pathlib.Path] = set()
+    for search_path in search_paths:
+        candidates = (search_path,) if search_path.is_file() else search_path.rglob("*")
+        for path in candidates:
+            if not path.is_file():
                 continue
             rel = path.relative_to(ROOT)
-            for pattern in SECRET_PATTERNS:
-                if pattern.search(text):
-                    errors.append(f"{rel}: high-confidence secret or private path pattern")
+            if any(part in IGNORED_REPO_DIRS for part in rel.parts):
+                continue
+            files.add(path)
+    for path in sorted(files):
+        try:
+            text = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            continue
+        rel = path.relative_to(ROOT)
+        for pattern in SECRET_PATTERNS:
+            if pattern.search(text):
+                errors.append(f"{rel}: high-confidence secret or private path pattern")
     return errors
 
 
@@ -1216,7 +1333,11 @@ def main() -> int:
         errors.extend(check_skill(skill_dir, readme_rows, manifest, skill_names, profile))
     if profile == PROFILE_CERATOPS:
         errors.extend(check_contract_source_lines())
-    errors.extend(check_secrets())
+    errors.extend(
+        check_runtime_input_safety(
+            manifest_runtime_input_paths(manifest, skill_dirs)
+        )
+    )
     if profile == PROFILE_CERATOPS:
         errors.extend(check_retired_baseline_absent())
     errors.extend(

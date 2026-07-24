@@ -239,12 +239,12 @@
       "id": "skill.private_path_and_secret_absence",
       "category": "safety",
       "deterministic_evidence": [
-        "repo text files"
+        "manifest-backed runtime input files"
       ],
-      "pass_condition": "Repo-tracked text files do not contain high-confidence secret patterns or user-local absolute filesystem paths.",
+      "pass_condition": "Files copied into or rendered into managed runtime skills do not contain high-confidence secret patterns or user-local absolute filesystem paths.",
       "source_lines": [
         "skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py:SECRET_PATTERNS",
-        "skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py:check_secrets"
+        "skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py:check_runtime_input_safety"
       ]
     },
     {
