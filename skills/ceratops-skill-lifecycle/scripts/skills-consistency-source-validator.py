@@ -757,7 +757,11 @@ def check_validation_command_surface() -> list[str]:
     for field in ("source_repository_root", "installer_version"):
         if field not in builder_text or field not in runtime_validator_text:
             errors.append(f"runtime building and validation must both own manifest field {field}")
-    if "compare_managed_tree" not in runtime_validator_text or '"--mode"' in runtime_validator_text:
+    if (
+        "compare_managed_tree" not in runtime_validator_text
+        or '"--skill"' not in runtime_validator_text
+        or '"--mode"' in runtime_validator_text
+    ):
         errors.append("runtime validator must compare managed trees through one command")
     if RUNTIME_MANIFEST_SCHEMA not in bundle_resolver_text or "installed_bundle_supported" not in bundle_resolver_text:
         errors.append("lifecycle bundle resolver must enforce installed runtime capability before checkout fallback")

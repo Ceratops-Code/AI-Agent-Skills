@@ -33,9 +33,10 @@ Infer missing inputs from the contract files before asking.
 - Use this action only to maintain the skill source-doc registry and the two
   skill-design contracts.
 - Do not audit whether any source or installed skill satisfies the contracts;
-  use `skills-consistency-review` for repository compliance.
-- Do not run `skills-consistency-source-validator.py`; repository validation
-  belongs to `skills-consistency-review`.
+  use `skills-consistency-review` for manifest-backed installed-skill
+  compliance.
+- Do not run `skills-consistency-source-validator.py`; targeted skill
+  validation belongs to `skills-consistency-review`.
 - Do not inspect unrelated metadata, shared sections, runtime payloads,
   automation prompts, helpers, installers, or installed runtime copies.
 

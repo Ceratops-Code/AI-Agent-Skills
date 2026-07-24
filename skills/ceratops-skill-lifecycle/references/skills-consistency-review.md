@@ -2,9 +2,10 @@
 
 ## Goal
 
-Audit one Ceratops or Ceratops-compatible skills repository as a coupled
-source, contract-compliance, metadata, action-reference, automation-consumer,
-helper, installer, generated-runtime, and installed-runtime surface.
+Audit one direct manifest-backed installed skill, regardless of its name, as a
+coupled source, contract-compliance, metadata, action-reference,
+automation-consumer, helper, installer, generated-runtime, and
+installed-runtime surface.
 
 ## Context
 
@@ -12,11 +13,10 @@ helper, installer, generated-runtime, and installed-runtime surface.
 
 - (D) Source consistency validator: `python
   scripts/skills-consistency-source-validator.py --repo-root <repo-root>
-  --mode full` from the lifecycle bundle.
+  --mode skill --skill <skill-name>` from the lifecycle bundle.
 - (D) Managed runtime validator: `python
   scripts/runtime/skills-consistency-runtime-validator.py --repo-root
-  <repo-root>` from the installed lifecycle bundle when the repository is
-  expected to be installed.
+  <repo-root> --skill <skill-name>` from the installed lifecycle bundle.
 - (D) Installer synchronization when repair is authorized: `python
   scripts/runtime/synchronize-installers.py --target-repo-root
   <task-worktree>` from the installed lifecycle bundle.
@@ -35,24 +35,26 @@ helper, installer, generated-runtime, and installed-runtime surface.
 
 ### Inputs To Capture
 
-- Target repository root and its `runtime_source_id` and
+- Target direct installed skill directory and its `.runtime-manifest.json`;
+  derive the skill name, source repository root, `runtime_source_id`, and
   `validation_profile`.
 - Whether the review is report-only or includes approved source repairs.
-- Direct installed runtime root, normally `$CODEX_HOME/skills`, and whether the
-  repository is expected to be installed there.
+- Direct installed runtime root, normally `$CODEX_HOME/skills`.
 - Existing task worktree for any approved installer or source repair.
 - Installed automation prompts or repo-owned automation templates that invoke a
-  skill or action from the target repository.
+  skill or action from the target skill.
 
 Infer missing inputs from the repository and installed manifests before asking.
 
 ### Global Automation Caller
 
-- The `global-skills-consistency-review` automation owns required-repository
-  discovery and invokes this action once per repository.
-- The automation may aggregate results and must deduplicate unattributable
-  malformed-manifest blockers repeated across repository runs, but it must not
-  replace or narrow this action's repository checks.
+- The `global-skills-consistency-review` automation owns direct installed-skill
+  discovery and invokes this action once per direct skill directory containing
+  `.runtime-manifest.json`.
+- The automation may aggregate results, but it must not deduplicate skills that
+  share a source repository or make this action perform global discovery.
+- Report an unreadable direct runtime manifest as a blocker for that installed
+  skill without routing it through another skill's review.
 - Keep standards refresh out of the global consistency run unless it is
   separately and explicitly requested through `skills-contract-review`.
 
@@ -60,9 +62,12 @@ Infer missing inputs from the repository and installed manifests before asking.
 
 ### Boundaries
 
-- Use this action for one source repository and its attributable installed
-  runtime and automation consumers. Unreadable direct runtime manifests may be
-  reported as unattributable routing blockers during a global run.
+- Use this action for one direct installed skill containing a supported runtime
+  manifest and its attributable source and automation consumers. Eligibility
+  depends on the manifest schema and validation profile, never on a Ceratops
+  name prefix.
+- Do not discover or audit sibling installed skills. Global fan-out belongs
+  only to the automation caller.
 - Use `skills-contract-review` only when the standards contracts themselves
   require a best-practice refresh.
 - Exclude GitHub organization, repository, code, PR, artifact, registry, and
@@ -78,47 +83,49 @@ Infer missing inputs from the repository and installed manifests before asking.
 
 ### Skill-Specific Rules
 
-- Treat the target repository's `runtime_source_id`, `validation_profile`,
-  manifest assignments, source skill directories, and installer as its
-  identity and ownership surface.
+- Treat the selected runtime manifest's skill, `runtime_source_id`,
+  `validation_profile`, source path, source repository root, matching manifest
+  assignment, and installer as its identity and ownership surface.
 - Run deterministic validation before AI semantic contract validation.
 - Run deterministic source checks through
-  `skills-consistency-source-validator.py` and installed-runtime checks through
-  `skills-consistency-runtime-validator.py`.
+  `skills-consistency-source-validator.py --mode skill --skill <skill-name>`
+  and installed-runtime checks through
+  `skills-consistency-runtime-validator.py --skill <skill-name>`.
 - Validate every applicable non-deterministic contract check through
   evidence-backed AI validation.
-- Let the runtime validator discover attributable manifests before validating
-  their identities, installer versions, and complete managed file trees.
+- Let the runtime validator read the selected direct manifest before validating
+  its identity, installer version, and complete managed file tree.
 - Compare installers only by parsed integer `INSTALLER_VERSION`; retain
   same- or higher-version differences and synchronize missing or lower versions
   only through an approved task worktree.
-- Inventory only direct installed-skill directories containing
+- Accept only a direct installed-skill directory containing
   `.runtime-manifest.json`; do not descend into `.system`, plugin caches,
-  bundled providers, or unmanaged folders.
+  bundled providers, unmanaged folders, or sibling skills.
 - Deep-read only coupled surfaces needed to evaluate a contract check,
   identity collision, unresolved resource, stale reference, trigger conflict,
   helper contract, or source/runtime mismatch.
 - Record each non-deterministic check as `pass`, `fail`, `approved_drift`,
-  `blocked`, or `not_applicable` for every validated source skill.
+  `blocked`, or `not_applicable` for the selected source skill.
 
 ## Workflow
 
-### 1. Inventory the repository surface
+### 1. Resolve the selected skill surface
 
-- Read the section manifest and enumerate every source skill, action reference,
-  metadata file, runtime payload declaration, relevant helper and caller,
-  installer, validator, and public document.
+- Read the selected direct runtime manifest and resolve its source repository,
+  source skill, section-manifest assignment, action references, metadata,
+  runtime payloads, relevant helpers and callers, installer, validator, and
+  public documentation.
 - Find repo-owned automation templates and installed automation prompts that
-  explicitly invoke the repository's skills or actions.
-- Build an identity map from source skill names through metadata, action lists,
-  docs, runtime payloads, installed manifests, and automation consumers.
+  explicitly invoke the selected skill or its actions.
+- Build an identity map for the selected skill through metadata, action lists,
+  docs, runtime payloads, its installed manifest, and automation consumers.
 
 ### 2. Run deterministic contract checks
 
-- Resolve the validator from the target source checkout when present,
-  otherwise from the installed lifecycle bundle.
-- Run `--mode full --repo-root <repo-root>` so common and profile-specific
-  source checks execute together.
+- Resolve the validator from the target source checkout when present, otherwise
+  from the installed lifecycle bundle.
+- Run `--mode skill --skill <skill-name> --repo-root <repo-root>` so common and
+  profile-specific source checks execute only for the selected skill.
 - Map every validator finding to its deterministic contract check ID and owning
   source repair. Do not treat a passing validator as evidence for any
   non-deterministic check.
@@ -127,23 +134,21 @@ Infer missing inputs from the repository and installed manifests before asking.
 
 ### 3. Validate installer and runtime coherence
 
-- When the repository is expected to be installed, run the managed runtime
-  validator once; otherwise classify installed-runtime validation as not
-  applicable.
-- Reject malformed attributable manifests; compare manifest schema, skill,
+- Run the managed runtime validator once with `--skill <skill-name>`.
+- Reject a malformed selected manifest; compare manifest schema, skill,
   `runtime_source_id`, `source_path`, `source_repository_root`,
   `validation_profile`, and `installer_version` with source ownership.
-- Detect duplicate identities or source paths, unresolved source or local
-  resources, missing or stale installed skills, stale shared-section output,
-  frontmatter drift, source/runtime ownership conflicts, and stale cross-skill
-  references.
+- Detect unresolved source or local resources, a missing or stale installed
+  skill, stale shared-section output, frontmatter drift, source/runtime
+  ownership conflicts, and stale cross-skill references attributable to the
+  selected skill.
 - When an installer is missing or lower-version and repair is approved, run the
   synchronization helper in the task worktree and require successful full
   target-repository validation before continuing.
 
 ### 4. Validate non-deterministic contract compliance
 
-- Validate every source skill against every applicable check in
+- Validate the selected source skill against every applicable check in
   `skill-nondeterministic-contract.json`.
 - Check semantic agreement across trigger descriptions, metadata prompts,
   parent skill routing, action references, inputs, boundaries, workflow,
@@ -170,19 +175,19 @@ Infer missing inputs from the repository and installed manifests before asking.
   after an approved repair.
 - Revalidate only affected non-deterministic checks and coupled semantic
   surfaces.
-- Account for every deterministic and non-deterministic contract check and
-  every repository skill before completion.
+- Account for every deterministic and non-deterministic contract check for the
+  selected skill before completion.
 
 ## Done When
 
 ### Completion Gate
 
-- Every source skill is inventoried and evaluated against every applicable
-  deterministic and non-deterministic contract check.
-- Full source validation passes or every finding has an owning file and smallest
-  credible repair.
-- Runtime discovery precedes validation internally, and every attributable
-  installed manifest and managed file is checked or its blocker is named.
+- The selected source skill is inventoried and evaluated against every
+  applicable deterministic and non-deterministic contract check.
+- Targeted source validation passes or every finding has an owning file and
+  smallest credible repair.
+- The selected runtime manifest is read before validation, and every managed
+  file for that installed skill is checked or its blocker is named.
 - Skill text, action routing, metadata, automation consumers, helpers,
   installers, runtime payloads, installed runtime, docs, and validator claims
   agree or every mismatch is classified.
@@ -192,7 +197,7 @@ Infer missing inputs from the repository and installed manifests before asking.
 
 Report only:
 
-- target repository, profile, source-skill count, and installed managed count
+- target skill, installed path, source repository, profile, and managed count
 - deterministic contract and validation outcome
 - non-deterministic contract results by failed, blocked, approved-drift, or
   not-applicable check; omit passing detail

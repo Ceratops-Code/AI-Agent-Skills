@@ -1,6 +1,6 @@
 ---
 name: ceratops-skill-lifecycle
-description: Route Ceratops or compatible skill lifecycle work to action references for create, make-repo-compatible, update, skills-contract-review, skills-consistency-review, fast-change, change-promotion, and ship-to-remote work. Use when Codex should create a skill, make a skills repository Ceratops-compatible, update skill source or shared governance surfaces, refresh Ceratops skill-design contracts, audit one skills repository and its coupled runtime consumers, apply an explicit fast release-branch change, promote committed skill changes into a local release/runtime preview, or ship a staged skills batch through GitHub.
+description: Route Ceratops or compatible skill lifecycle work to action references for create, make-repo-compatible, update, skills-contract-review, skills-consistency-review, fast-change, change-promotion, and ship-to-remote work. Use when Codex should create a skill, make a skills repository Ceratops-compatible, update skill source or shared governance surfaces, refresh Ceratops skill-design contracts, audit one manifest-backed installed skill and its coupled source, apply an explicit fast release-branch change, promote committed skill changes into a local release/runtime preview, or ship a staged skills batch through GitHub.
 ---
 
 # Ceratops Skill Lifecycle
@@ -22,7 +22,7 @@ local promotion, and remote shipping.
 - Update an existing skill or shared maintenance surface: `references/update.md`
 - Refresh Ceratops skill-design contracts from current standards evidence:
   `references/skills-contract-review.md`
-- Audit one skills repository and its coupled runtime consumers:
+- Audit one manifest-backed installed skill and its coupled source:
   `references/skills-consistency-review.md`
 - Apply an explicit fast release-branch change: `references/fast-change.md`
 - Promote committed skill changes into a local release branch and runtime
@@ -32,7 +32,7 @@ local promotion, and remote shipping.
 
 ### Inputs To Capture
 
-- Target skill, repo, branch, release branch, installed runtime expectation,
+- Target skill, installed runtime manifest, repo, branch, release branch,
   action intent, and any explicitly requested staging or shipping step.
 - Which repo-owned surfaces are in scope: source skill folders,
   `agents/openai.yaml`, `templates/`, runtime payload declarations, validators,
@@ -82,7 +82,8 @@ Infer missing inputs from the current repo state before asking.
   `$ceratops-governance-lifecycle` action `optimize-skill`.
 - If the task is Ceratops skill-contract standards upkeep, use
   `references/skills-contract-review.md`.
-- If the task is repository skill consistency and contract compliance, use
+- If the task is manifest-backed installed-skill consistency and contract
+  compliance, use
   `references/skills-consistency-review.md`.
 - If the task is a general GitHub repo lifecycle operation, use
   `$ceratops-gh-repo-lifecycle`.
@@ -100,8 +101,9 @@ Infer missing inputs from the current repo state before asking.
   generation, validator, contract, helper, or doc surface must change.
 - Use `skills-contract-review` only to refresh the skill-design contracts
   against current registered best-practice evidence.
-- Use `skills-consistency-review` to audit one skills repository against those
-  contracts and its coupled source, automation, installer, and runtime surfaces.
+- Use `skills-consistency-review` to audit one manifest-backed installed skill
+  against those contracts and its coupled source, automation, installer, and
+  runtime surfaces.
 - Use `fast-change` only when the user explicitly asks for a known-safe direct
   release-branch edit and targeted runtime update.
 - Use `change-promotion` when committed task-worktree branches are ready to
