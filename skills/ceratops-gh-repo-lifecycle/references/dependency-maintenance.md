@@ -87,8 +87,7 @@ Infer missing inputs from local files and live GitHub state before asking.
 
 - Prioritize security and low-risk updates unless ordering constraints require
   otherwise.
-- Process already-open routine dependency PRs when in scope and low-risk;
-  classify routine PRs as retained when the task is security-only.
+- Process already-open routine dependency PRs when in scope and low-risk.
 - Inspect the diff, manifest changes, lockfile changes, transitive changes, CI
   impact, and release impact for each update.
 - Refresh lockfiles or generated dependency metadata using the project package
