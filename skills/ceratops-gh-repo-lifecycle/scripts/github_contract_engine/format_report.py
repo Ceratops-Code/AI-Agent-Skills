@@ -44,15 +44,46 @@ SENSITIVE_PATH_RE = re.compile(
     re.IGNORECASE,
 )
 RAW_OUTPUT_KEYS = {"raw_stdout", "raw_stderr", "validator_stderr"}
+AUTH_VALUE_RE = re.compile(r"\b(bearer|basic)\s+[^\s,;]+", re.IGNORECASE)
+CREDENTIAL_ASSIGNMENT_RE = re.compile(
+    r"\b(api[_ -]?key|authorization|client[_ -]?secret|cookie|credentials?|"
+    r"password|private[_ -]?key|secret|token)\b"
+    r"(\s*[:=]\s*)(\"[^\"]*\"|'[^']*'|[^\s,;]+)",
+    re.IGNORECASE,
+)
+GITHUB_TOKEN_RE = re.compile(
+    r"\b(?:gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,})\b"
+)
+PRIVATE_KEY_RE = re.compile(
+    r"-----BEGIN [^-]*PRIVATE KEY-----.*?-----END [^-]*PRIVATE KEY-----",
+    re.DOTALL,
+)
+URL_CREDENTIAL_RE = re.compile(r"(https?://)[^/\s:@]+:[^/\s@]+@", re.IGNORECASE)
 
 
 def _sensitive_key(name: str) -> bool:
     return name in SENSITIVE_KEYS or name.endswith(SENSITIVE_SUFFIXES)
 
 
+def _sanitize_text(value: str) -> str:
+    """Redact credential forms that may appear inside arbitrary error text."""
+
+    result = PRIVATE_KEY_RE.sub(REDACTED, value)
+    result = URL_CREDENTIAL_RE.sub(rf"\1{REDACTED}@", result)
+    result = AUTH_VALUE_RE.sub(
+        lambda match: f"{match.group(1)} {REDACTED}", result
+    )
+    result = GITHUB_TOKEN_RE.sub(REDACTED, result)
+    return CREDENTIAL_ASSIGNMENT_RE.sub(
+        lambda match: f"{match.group(1)}{match.group(2)}{REDACTED}", result
+    )
+
+
 def sanitize_for_output(value: Any, path: tuple[str, ...] = ()) -> Any:
     """Remove collected content and sensitive values at the stdout boundary."""
 
+    if isinstance(value, str):
+        return _sanitize_text(value)
     if isinstance(value, list):
         return [sanitize_for_output(item, path) for item in value]
     if not isinstance(value, dict):
