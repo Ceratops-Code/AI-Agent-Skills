@@ -177,6 +177,77 @@ def test_compatible_full_validation_accepts_arbitrary_skill_names(tmp_path: path
     assert result.stdout.strip() == "ok: 1"
 
 
+def test_full_validation_excludes_git_ignored_files(tmp_path: pathlib.Path) -> None:
+    repo = tmp_path / "compatible"
+    create_compatible_repo(repo, "example/compatible", ["alpha-tool"])
+    subprocess.run(
+        ["git", "init", "--quiet", str(repo)],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    (repo / ".gitignore").write_text(
+        ".venv/\nignored-output/\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    for ignored_dir in (repo / ".venv", repo / "ignored-output"):
+        ignored_dir.mkdir()
+        (ignored_dir / "generated.md").write_text(
+            "C:\\Users\\roman\\generated\nUse $" + "unknown-skill.\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+
+    result = subprocess.run(
+        [sys.executable, str(VALIDATOR), "--repo-root", str(repo), "--mode", "full"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "ok: 1"
+
+
+def test_full_validation_scans_manifest_runtime_inputs_only(tmp_path: pathlib.Path) -> None:
+    repo = tmp_path / "compatible"
+    create_compatible_repo(repo, "example/compatible", ["alpha-tool"])
+    runtime_input = repo / "runtime-note.md"
+    runtime_input.write_text(
+        "Generated from C:\\Users\\roman\\private-source.\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+
+    unlisted = subprocess.run(
+        [sys.executable, str(VALIDATOR), "--repo-root", str(repo), "--mode", "full"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert unlisted.returncode == 0, unlisted.stderr
+
+    manifest_path = repo / "templates" / "skill-sections.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["runtime_payloads"] = {"alpha-tool": ["runtime-note.md"]}
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+
+    listed = subprocess.run(
+        [sys.executable, str(VALIDATOR), "--repo-root", str(repo), "--mode", "full"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert listed.returncode == 1
+    assert "runtime-note.md: high-confidence secret or private path pattern" in listed.stderr
+
+
 def test_full_install_removes_only_same_source_stale_skills(tmp_path: pathlib.Path) -> None:
     repo_a = tmp_path / "repo-a"
     repo_b = tmp_path / "repo-b"
