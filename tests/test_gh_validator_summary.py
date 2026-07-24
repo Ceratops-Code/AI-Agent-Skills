@@ -558,7 +558,18 @@ class GHContractStateEngineTests(unittest.TestCase):
                     "path": "/organization/billing_email",
                     "actual": "private@example.com",
                     "expected": "owner@example.com",
-                }
+                },
+                {
+                    "path": "/api/repository",
+                    "source_error": {
+                        "message": (
+                            "request failed: Authorization: Bearer gho_"
+                            + "a" * 36
+                            + " password=hunter2 "
+                            + "https://user:pass@example.com/private"
+                        )
+                    },
+                },
             ],
         }
         safe = sanitize_for_output(report)
@@ -582,6 +593,9 @@ class GHContractStateEngineTests(unittest.TestCase):
         output = stream.getvalue()
         self.assertNotIn("secret-value", output)
         self.assertNotIn("private@example.com", output)
+        self.assertNotIn("hunter2", output)
+        self.assertNotIn("user:pass", output)
+        self.assertNotIn("gho_", output)
         self.assertEqual(json.loads(output), safe)
 
     def test_contract_entrypoints_use_sanitized_json_writer(self):

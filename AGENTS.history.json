@@ -37,6 +37,14 @@
     },
     {
       "rules": [
+        "SKILLS-BATCH-01"
+      ],
+      "decision": "A named release branch is the atomic batch for explicit promotion or shipping requests.",
+      "reason": "Per-commit confirmation contradicts the user's intended branch-level release workflow.",
+      "regression": "Do not ask whether to include committed changes already on the named release branch unless the user explicitly excluded them."
+    },
+    {
+      "rules": [
         "SKILLS-GOV-01",
         "SKILLS-GOV-02",
         "SKILLS-PORT-01",

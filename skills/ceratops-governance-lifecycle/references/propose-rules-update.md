@@ -45,8 +45,11 @@ Route approved skill-source mutations through `$ceratops-skill-lifecycle`
 5. Draft under the rule-design contract. Resolve structural defects and every
    affected semantic review state inside the candidate, and identify every
    intentional behavior change.
-6. Replay the current failure and relevant recorded history. Reject a candidate
-   that leaves the failed decision possible or regresses a recorded outcome.
+6. Before accepting a replacement, split, merge, or compression, map every
+   operative part of the current text, including named commands and examples,
+   to preserved candidate behavior or an intentional change reported for
+   approval; then replay the current failure and relevant recorded history,
+   rejecting any unaccounted or regressed behavior.
 7. Report the selected correction, material alternative, regression result,
    and uncertainty.
 

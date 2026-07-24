@@ -48,6 +48,10 @@ Skills repo checkout and worktrees:
   `origin/main`, reinstall managed skills from `main`, and report retained
   worktrees or release branches.
   - self: list-heavy
+- [SKILLS-BATCH-01] Treat an explicit request to promote or ship a named
+  `release/*` branch as authorization for every commit currently on that branch
+  unless the user explicitly excludes one; do not request per-commit inclusion
+  confirmation.
 
 Instruction and skill maintenance:
 
