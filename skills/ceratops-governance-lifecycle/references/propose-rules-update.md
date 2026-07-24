@@ -87,4 +87,5 @@ Otherwise change the intervention or report the unresolved decision point.
 ### Output Contract
 
 Report only the selected exact change, its decision and regression evidence,
-and unresolved impact.
+the disposition of every touched overlap or conflict, and unresolved impact;
+do not present a candidate with an unresolved relationship as accepted.
