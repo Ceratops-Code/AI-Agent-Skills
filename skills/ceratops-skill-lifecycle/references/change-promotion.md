@@ -83,8 +83,9 @@ Infer missing inputs from local repo state before asking.
   branches that passed the blocking review; it owns release-branch preparation,
   `git diff --check (git
   merge-base HEAD BRANCH) BRANCH`, fast-forward-only branch promotion,
-  profile-aware full validation, runtime installation, merged-work cleanup,
-  pending-work detection, and compact ready/not-ready output.
+  one merged-work cleanup and pending-work check after all approved branches
+  are promoted and before profile-aware full validation and runtime
+  installation, and compact ready/not-ready output.
 - The helper must stop unless the current release `HEAD` is an ancestor of each
   approved branch; rebase a divergent task branch onto the release branch in
   its task worktree before promotion.

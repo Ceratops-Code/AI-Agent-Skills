@@ -85,7 +85,7 @@ without repository deduplication.
 | `skills/ceratops-gh-repo-lifecycle/scripts/github_contract_engine/` | Package CLI for contract schemas, consistency, source documents, org/repo validation, shared severity levels, and non-deterministic evidence. |
 | `skills/ceratops-gh-repo-lifecycle/scripts/github_pr_workflow/` | Package CLI for prepared-branch PR publication, PR readiness, Codex review wait/resolution, merge orchestration, live merge verification, and post-merge local sync. |
 | `skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py` | Source validator for selected-skill, section, and full repository checks. |
-| `skills/ceratops-skill-lifecycle/scripts/promote-skill-branches-to-release-and-install.ps1` | Called by skill change-promotion to prepare `release/local`, merge reviewed branches, validate, install, clean merged work, and emit compact ready/not-ready JSON. |
+| `skills/ceratops-skill-lifecycle/scripts/promote-skill-branches-to-release-and-install.ps1` | Called by skill change-promotion to prepare `release/local`, fast-forward reviewed branches, clean merged work, reject other pending local work, then validate, install, and emit compact ready/not-ready JSON. |
 
 Lifecycle helpers suppress successful subcommand output and print only compact
 JSON on success. This repo keeps scripts only where they add reusable safety

@@ -856,6 +856,19 @@ def check_validation_command_surface() -> list[str]:
         errors.append("release promotion must not expose a validation selector")
     if "scripts\\install-skills.py" not in promotion_helper_text or '"python"' not in promotion_helper_text:
         errors.append("release promotion must install through the target repository Python installer")
+    pending_cleanup = '$pendingArgs += "-CleanMergedBranches"'
+    pending_call = 'Invoke-QuietNative -FilePath "powershell" -Arguments $pendingArgs'
+    fast_forward_call = 'Invoke-GitQuiet @("merge", "--ff-only", $branch)'
+    install_call = 'Invoke-QuietNative -FilePath "python" -Arguments @('
+    if promotion_helper_text.count(pending_cleanup) != 1 or promotion_helper_text.count(pending_call) != 1:
+        errors.append("release promotion must run one merged-work cleanup and pending-work check")
+    elif not (
+        promotion_helper_text.find(fast_forward_call)
+        < promotion_helper_text.find(pending_cleanup)
+        < promotion_helper_text.find(pending_call)
+        < promotion_helper_text.find(install_call)
+    ):
+        errors.append("release promotion must check pending work after fast-forwards and before installation")
     if (
         '"merge", "--ff-only"' not in promotion_helper_text
         or '"merge", "--no-edit"' in promotion_helper_text
