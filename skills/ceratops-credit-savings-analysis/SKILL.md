@@ -53,10 +53,10 @@ cannot be identified.
   instructions, skills, automations, or helpers, provide the exact proposed
   change before mutating; otherwise name the target artifact and target
   behavior.
-- Before reporting recommendations, classify candidate controls against
-  inspected evidence as implemented or still unimplemented; omit implemented
-  controls unless needed to justify that no still-unimplemented proposal
-  remains.
+- Before reporting findings, classify each recommended control against
+  inspected evidence as implemented or still unimplemented. Report every
+  confirmed finding; for implemented controls, state the status without
+  re-recommending the control.
 - Merge recommendations that share the same producer and control.
 - When prompt-level savings cases exist, rank the top five evidence-backed
   cases, or all available cases when fewer exist, using only information
@@ -104,13 +104,14 @@ cannot be identified.
 
 ### Output Contract
 
-Start with one of:
+Start with `Blocked: <specific missing evidence or target>.` when missing
+evidence prevents analysis. Otherwise start with both:
 
-- `No avoidable credit spend found in the inspected runs.`
-- `No still-unimplemented credit-savings proposals found in the inspected runs.`
-- `Found still-unimplemented credit-savings proposals.`
-- `Blocked: <specific missing evidence or target>.`
+- `Avoidable credit spend: found.` or
+  `Avoidable credit spend: none found.`
+- `Still-unimplemented controls: found.` or
+  `Still-unimplemented controls: none found.`
 
-Then report only findings with still-unimplemented recommendations, any required
-ranked prompt-level table, excluded ordinary failures, and important evidence
-limits.
+Then report every confirmed finding, any required ranked prompt-level table,
+excluded ordinary failures, and important evidence limits. For each finding,
+state whether its control is implemented or still unimplemented.
