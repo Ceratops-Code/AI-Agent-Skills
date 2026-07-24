@@ -20,8 +20,9 @@ release semantics.
 
 ### Inputs To Capture
 
-- GitHub owner or org, repo name, default branch, visibility, fork status, and
-  branch naming.
+- GitHub organization (not a personal account), repo name, default branch,
+  visibility, fork status, and branch naming. Default organization:
+  `Ceratops-Code`.
 - Maintainer merge policy, expected artifact type, release expectations, and
   missing inputs required by the GitHub repo, code repo, or artifact contracts.
 
