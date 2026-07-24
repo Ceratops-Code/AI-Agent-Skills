@@ -856,6 +856,11 @@ def check_validation_command_surface() -> list[str]:
         errors.append("release promotion must not expose a validation selector")
     if "scripts\\install-skills.py" not in promotion_helper_text or '"python"' not in promotion_helper_text:
         errors.append("release promotion must install through the target repository Python installer")
+    if (
+        '"merge", "--ff-only"' not in promotion_helper_text
+        or '"merge", "--no-edit"' in promotion_helper_text
+    ):
+        errors.append("release promotion must fast-forward approved branches and must not create merge commits")
     if "scripts\\install-skills.py" not in fast_change_readiness_text:
         errors.append("fast-change readiness must expose the target repository Python installer")
     if RUNTIME_MANIFEST_SCHEMA not in builder_text:
@@ -866,6 +871,7 @@ def check_validation_command_surface() -> list[str]:
     if (
         "compare_managed_tree" not in runtime_validator_text
         or '"--skill"' not in runtime_validator_text
+        or '"--inventory"' not in runtime_validator_text
         or '"--mode"' in runtime_validator_text
     ):
         errors.append("runtime validator must compare managed trees through one command")

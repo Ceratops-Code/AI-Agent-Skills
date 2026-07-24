@@ -8,9 +8,9 @@ param(
 )
 
 # Skill-local helper for deterministic change-promotion work. It prepares the
-# reusable release branch, merges approved branches, validates and installs the
-# promoted snapshot, checks pending local work, and emits one compact JSON
-# summary on success.
+# reusable release branch, fast-forwards approved branches, validates and
+# installs the promoted snapshot, checks pending local work, and emits one
+# compact JSON summary on success.
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
@@ -81,6 +81,19 @@ function Get-GitLines {
     return @($output)
 }
 
+function Test-GitSuccess {
+    param([string[]]$Arguments)
+
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        $null = & git -C $resolvedSkillsRepoRoot @Arguments *>$null
+        return $LASTEXITCODE -eq 0
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+}
+
 function Invoke-GitQuiet {
     param([string[]]$Arguments)
 
@@ -125,10 +138,16 @@ foreach ($branch in $ApprovedBranch) {
     if ([string]::IsNullOrWhiteSpace($base)) {
         throw "Could not find merge base for $branch."
     }
+    if (-not (Test-GitSuccess @("merge-base", "--is-ancestor", "HEAD", $branch))) {
+        throw (
+            "Approved branch '$branch' must be rebased onto '$ReleaseBranch' " +
+            "before promotion; refusing to create a merge commit."
+        )
+    }
 
     Invoke-GitQuiet @("diff", "--check", $base, $branch)
-    Invoke-GitQuiet @("merge", "--no-edit", $branch)
-    Assert-CleanWorktree "after merging $branch"
+    Invoke-GitQuiet @("merge", "--ff-only", $branch)
+    Assert-CleanWorktree "after fast-forwarding $branch"
     $mergedBranches += $branch
 }
 

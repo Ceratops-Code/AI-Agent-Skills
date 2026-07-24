@@ -637,8 +637,6 @@ def test_selected_skill_review_does_not_audit_sibling_skills(tmp_path: pathlib.P
         [
             sys.executable,
             str(RUNTIME_VALIDATOR),
-            "--repo-root",
-            str(repo),
             "--runtime-root",
             str(install_root),
             "--skill",
@@ -655,3 +653,40 @@ def test_selected_skill_review_does_not_audit_sibling_skills(tmp_path: pathlib.P
         "runtime_source_id": "example/compatible",
         "status": "valid",
     }
+
+
+def test_runtime_inventory_lists_direct_manifests_and_malformed_blockers(
+    tmp_path: pathlib.Path,
+) -> None:
+    repo = tmp_path / "compatible"
+    install_root = tmp_path / "installed"
+    create_compatible_repo(repo, "example/compatible", ["alpha-tool", "beta-tool"])
+    assert run_builder(repo, install_root, "--remove-stale").returncode == 0
+    malformed = install_root / "broken-tool"
+    malformed.mkdir()
+    (malformed / RUNTIME_MANIFEST).write_text("{\n", encoding="utf-8", newline="\n")
+    nested = install_root / "unmanaged-tool" / "nested-managed"
+    nested.mkdir(parents=True)
+    (nested / RUNTIME_MANIFEST).write_text("{}\n", encoding="utf-8", newline="\n")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(RUNTIME_VALIDATOR),
+            "--runtime-root",
+            str(install_root),
+            "--inventory",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    inventory = json.loads(result.stdout)
+    assert inventory["status"] == "inventory"
+    assert inventory["managed"] == 2
+    assert inventory["blocked"] == 1
+    assert [item["skill"] for item in inventory["skills"]] == ["alpha-tool", "beta-tool"]
+    assert inventory["blockers"][0]["directory"] == "broken-tool"
+    assert "unreadable runtime manifest" in inventory["blockers"][0]["errors"][0]

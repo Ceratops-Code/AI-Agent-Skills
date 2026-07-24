@@ -77,18 +77,21 @@ Infer missing inputs from local repo state before asking.
 
 #### 2. Stage the release branch
 
-- Before merging each requested task branch, run a blocking local code review
+- Before promoting each requested task branch, run a blocking local code review
   against current release branch state.
 - (D) Run `promote-skill-branches-to-release-and-install.ps1` with only
   branches that passed the blocking review; it owns release-branch preparation,
   `git diff --check (git
-  merge-base HEAD BRANCH) BRANCH`, branch merges, profile-aware full
-  validation, runtime installation, merged-work cleanup, pending-work
-  detection, and compact ready/not-ready output.
+  merge-base HEAD BRANCH) BRANCH`, fast-forward-only branch promotion,
+  profile-aware full validation, runtime installation, merged-work cleanup,
+  pending-work detection, and compact ready/not-ready output.
+- The helper must stop unless the current release `HEAD` is an ancestor of each
+  approved branch; rebase a divergent task branch onto the release branch in
+  its task worktree before promotion.
 - Stop if the installed lifecycle bundle lacks the promotion helper or the
   target repository lacks `scripts/install-skills.py`.
-- If the skills repo checkout is dirty before staging, stop instead of merging
-  into it blindly.
+- If the skills repo checkout is dirty before staging, stop instead of
+  promoting into it blindly.
 
 #### 3. Validate and install staged state
 
@@ -116,7 +119,7 @@ Infer missing inputs from local repo state before asking.
 ### Completion Gate
 
 - The skill repo checkout is on the intended local `release/*` branch.
-- Every branch merged into the staged branch had a clean blocking local code
+- Every branch promoted into the staged branch had a clean blocking local code
   review against the then-current release branch.
 - Requested task branches were staged; clean source worktrees and source
   branches already merged into the staged branch were removed, and unmerged or
