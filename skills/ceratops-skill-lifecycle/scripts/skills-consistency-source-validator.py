@@ -103,34 +103,6 @@ SECRET_PATTERNS = [
 TEXT_SUFFIXES = {".md", ".py", ".ps1", ".json", ".yml", ".yaml", ".toml", ".txt"}
 IGNORED_REPO_DIRS = {".git", "__pycache__", ".mypy_cache", ".pytest_cache", ".ruff_cache", "node_modules"}
 IGNORED_REPO_FALLBACK_DIRS = IGNORED_REPO_DIRS | {".venv"}
-GH_LIFECYCLE_ACTIONS = {
-    "codeql-disposition.md": "python -m github_contract_engine codeql-disposition",
-    "contracts-review.md": "python -m github_contract_engine validate consistency",
-    "create-or-publish.md": "--surface all --subset create",
-    "dependency-maintenance.md": "--select repo:dependency --select code:dependency",
-    "health-audit.md": "--surface all --subset health",
-    "ensure-pr.md": "python -m github_pr_workflow ensure-pr",
-    "merge-pr.md": "python -m github_pr_workflow merge",
-    "ship-change.md": "python -m github_pr_workflow ship",
-}
-SKILL_LIFECYCLE_ACTIONS = {
-    "create.md": "templates/skill-sections.json",
-    "make-repo-compatible.md": "ceratops-compatible",
-    "update.md": "runtime payloads",
-    "skills-contract-review.md": "skill-deterministic-contract.json",
-    "skills-consistency-review.md": "--repo-root",
-    "fast-change.md": "release/*",
-    "change-promotion.md": "promote-skill-branches-to-release-and-install.ps1",
-    "ship-to-remote.md": "python -m github_pr_workflow ship",
-}
-TASK_LIFECYCLE_ACTIONS = {
-    "execute-in-stages.md": "staged contingent execution",
-    "fixloop-break.md": "repeated failed fix loop",
-    "manual-resume.md": "same-thread task",
-    "full-handoff.md": "whole task in a new thread",
-    "side-task-handoff.md": "side task in a new thread",
-    "closure-check.md": "required work remains",
-}
 
 
 def is_ignored_repo_path(path: pathlib.Path) -> bool:
@@ -763,6 +735,11 @@ def check_multi_action_skill_contract(
             if not action_path.is_file():
                 errors.append(f"{skill_name}: missing action reference {action_reference}")
                 continue
+            action_text = action_path.read_text(encoding="utf-8")
+            if action_text.startswith("---"):
+                errors.append(
+                    f"{skill_name}: {action_reference} still looks like a standalone skill"
+                )
             if not has_action_title(action_path):
                 errors.append(
                     f"{skill_name}: {action_reference} must be titled # <Action Name> Action"
@@ -780,42 +757,9 @@ def check_multi_action_skill_contract(
 
 
 def check_skill_scope_validator() -> list[str]:
-    """Check objective multi-action skill rules without judging prose quality."""
+    """Check stable semantic boundaries not derivable from action indexes."""
 
     errors: list[str] = []
-    multi_action_specs = {
-        "ceratops-gh-repo-lifecycle": GH_LIFECYCLE_ACTIONS,
-        "ceratops-skill-lifecycle": SKILL_LIFECYCLE_ACTIONS,
-        "ceratops-task-lifecycle": TASK_LIFECYCLE_ACTIONS,
-    }
-    for skill_name, expected_actions in multi_action_specs.items():
-        skill_dir = SKILLS_DIR / skill_name
-        multi_action_path = skill_dir / "SKILL.md"
-        if not multi_action_path.is_file():
-            errors.append(f"{skill_name}: missing multi-action SKILL.md")
-            continue
-        multi_action_text = multi_action_path.read_text(encoding="utf-8")
-        actual_actions = {
-            path.name
-            for path in (skill_dir / "references").glob("*.md")
-            if has_action_title(path)
-        }
-        unexpected_actions = sorted(actual_actions - set(expected_actions))
-        for action_file in unexpected_actions:
-            errors.append(f"{skill_name}: unexpected action reference references/{action_file}")
-        for action_file, snippet in expected_actions.items():
-            action_rel = f"references/{action_file}"
-            action_path = skill_dir / action_rel
-            if action_rel not in multi_action_text:
-                errors.append(f"{skill_name}: multi-action skill does not list {action_rel}")
-            if not action_path.is_file():
-                errors.append(f"{skill_name}: missing action reference {action_rel}")
-                continue
-            action_text = action_path.read_text(encoding="utf-8")
-            if action_text.startswith("---"):
-                errors.append(f"{skill_name}: {action_rel} still looks like a standalone skill")
-            if snippet not in action_text:
-                errors.append(f"{skill_name}: {action_rel} missing expected scope command {snippet}")
     merge_text = (SKILLS_DIR / "ceratops-gh-repo-lifecycle" / "references" / "merge-pr.md").read_text(encoding="utf-8")
     if "python -m github_contract_engine validate repo" in merge_text:
         errors.append("ceratops-gh-repo-lifecycle: merge-pr action must not run repo/artifact contract validation")

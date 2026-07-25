@@ -3,9 +3,11 @@ from __future__ import annotations
 import json
 import os
 import pathlib
+import runpy
 import shutil
 import subprocess
 import sys
+from typing import Any
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 VALIDATOR = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "skills-consistency-source-validator.py"
@@ -18,6 +20,38 @@ RUNTIME_VALIDATOR = LIFECYCLE_SOURCE / "scripts" / "runtime" / "skills-consisten
 RUNTIME_MANIFEST = ".runtime-manifest.json"
 RUNTIME_MANIFEST_SCHEMA = "ceratops-runtime-skill.v3"
 INSTALLER_VERSION = 2
+
+
+def load_source_validator(skills_dir: pathlib.Path) -> dict[str, Any]:
+    """Load the source validator with an isolated skill tree for contract tests."""
+
+    validator = runpy.run_path(str(VALIDATOR))
+    check_contract = validator["check_multi_action_skill_contract"]
+    check_contract.__globals__["SKILLS_DIR"] = skills_dir
+    return validator
+
+
+def write_multi_action_skill(
+    skills_dir: pathlib.Path,
+    name: str,
+    action_references: list[str],
+    action_files: dict[str, str],
+) -> None:
+    """Write one minimal multi-action index and its declared reference files."""
+
+    skill_dir = skills_dir / name
+    references_dir = skill_dir / "references"
+    references_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "### Action References\n\n"
+        + "\n".join(f"- `{action_reference}`" for action_reference in action_references)
+        + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    for action_reference, content in action_files.items():
+        action_path = skill_dir / pathlib.PurePosixPath(action_reference)
+        action_path.write_text(content, encoding="utf-8", newline="\n")
 
 
 def add_skill(repo: pathlib.Path, name: str) -> None:
@@ -175,6 +209,85 @@ def test_compatible_full_validation_accepts_arbitrary_skill_names(tmp_path: path
 
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "ok: 1"
+
+
+def test_multi_action_membership_is_owned_by_the_skill_index(
+    tmp_path: pathlib.Path,
+) -> None:
+    skills_dir = tmp_path / "skills"
+    write_multi_action_skill(
+        skills_dir,
+        "ceratops-gh-repo-lifecycle",
+        ["references/merge-pr.md", "references/new-command.md"],
+        {
+            "references/merge-pr.md": "# Merge PR Action\n\nMerge the ready pull request.\n",
+            "references/new-command.md": "# New Command Action\n\nRun the new command.\n",
+        },
+    )
+    validator = load_source_validator(skills_dir)
+    manifest = {
+        "skills": {
+            "ceratops-gh-repo-lifecycle": ["multi-action-skill"],
+        }
+    }
+
+    assert validator["check_multi_action_skill_contract"](manifest) == []
+    assert validator["check_skill_scope_validator"]() == []
+
+
+def test_multi_action_contract_rejects_structural_drift(
+    tmp_path: pathlib.Path,
+) -> None:
+    skills_dir = tmp_path / "skills"
+    write_multi_action_skill(
+        skills_dir,
+        "example-lifecycle",
+        [
+            "references/first.md",
+            "references/first.md",
+            "references/missing.md",
+        ],
+        {
+            "references/first.md": "---\n# First Action\n",
+            "references/orphan.md": "# Orphan Action\n",
+        },
+    )
+    validator = load_source_validator(skills_dir)
+    manifest = {"skills": {"example-lifecycle": ["multi-action-skill"]}}
+
+    errors = validator["check_multi_action_skill_contract"](manifest)
+
+    assert "example-lifecycle: duplicate action reference references/first.md" in errors
+    assert "example-lifecycle: missing action reference references/missing.md" in errors
+    assert (
+        "example-lifecycle: references/first.md still looks like a standalone skill"
+        in errors
+    )
+    assert "example-lifecycle: unlisted action reference references/orphan.md" in errors
+
+
+def test_skill_scope_validator_retains_semantic_boundaries(
+    tmp_path: pathlib.Path,
+) -> None:
+    merge_path = (
+        tmp_path
+        / "skills"
+        / "ceratops-gh-repo-lifecycle"
+        / "references"
+        / "merge-pr.md"
+    )
+    merge_path.parent.mkdir(parents=True)
+    merge_path.write_text(
+        "# Merge PR Action\n\npython -m github_contract_engine validate repo\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    validator = load_source_validator(tmp_path / "skills")
+
+    assert validator["check_skill_scope_validator"]() == [
+        "ceratops-gh-repo-lifecycle: merge-pr action must not run repo/artifact "
+        "contract validation"
+    ]
 
 
 def test_full_validation_excludes_git_ignored_files(tmp_path: pathlib.Path) -> None:
