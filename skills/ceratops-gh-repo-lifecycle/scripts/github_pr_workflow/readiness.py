@@ -6,8 +6,8 @@ answers the merge-decision contract that needs fresh PR state close to the final
 action.
 
 Called by merge, ship, dependency-maintenance, and create/publish workflows when a PR
-merge decision is in scope. It reads GitHub PR metadata and local branch state;
-it does not mutate the repository or GitHub.
+merge decision is in scope. It reads GitHub PR metadata, applicable branch
+rules, and local branch state; it does not mutate the repository or GitHub.
 """
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ import json
 import pathlib
 import subprocess
 import sys
+import urllib.parse
 from dataclasses import asdict, dataclass
 from typing import Any
 
@@ -97,6 +98,38 @@ def gh_pr_view(selector: str | None, cwd: pathlib.Path) -> dict[str, Any]:
     if selector:
         args.append(selector)
     return json.loads(require_command(args, cwd))
+
+
+def required_approving_review_count(base_branch: str, cwd: pathlib.Path) -> int:
+    """Return the strongest pull-request approval rule applied to the branch."""
+
+    encoded_branch = urllib.parse.quote(base_branch, safe="")
+    raw_rules = json.loads(
+        require_command(
+            [
+                "gh",
+                "api",
+                f"repos/{{owner}}/{{repo}}/rules/branches/{encoded_branch}",
+            ],
+            cwd,
+        )
+    )
+    if not isinstance(raw_rules, list):
+        raise CommandError("GitHub branch rules response is not a list")
+    required_count = 0
+    for rule in raw_rules:
+        if not isinstance(rule, dict) or rule.get("type") != "pull_request":
+            continue
+        parameters = rule.get("parameters")
+        count = (
+            parameters.get("required_approving_review_count")
+            if isinstance(parameters, dict)
+            else None
+        )
+        if not isinstance(count, int) or isinstance(count, bool) or count < 0:
+            raise CommandError("GitHub pull-request rule has an invalid review count")
+        required_count = max(required_count, count)
+    return required_count
 
 
 def default_contract_path() -> pathlib.Path:
@@ -202,6 +235,12 @@ def pr_readiness(selector: str | None, cwd: pathlib.Path, *, allow_admin_review_
         add(findings, "WARN", "pr.mergeable", "PR mergeability needs a live re-check.", actual=mergeable)
 
     review_decision = pr_data.get("reviewDecision")
+    if review_decision in {None, ""}:
+        base_branch = pr_data.get("baseRefName")
+        if not isinstance(base_branch, str) or not base_branch:
+            raise CommandError("PR readiness did not return a base branch")
+        if required_approving_review_count(base_branch, cwd) > 0:
+            review_decision = "REVIEW_REQUIRED"
     if review_decision in {"APPROVED", None, ""}:
         add(findings, "PASS", "pr.review_decision", "No blocking review decision is present.", actual=review_decision)
     elif review_decision == "REVIEW_REQUIRED" and allow_admin_review_bypass:

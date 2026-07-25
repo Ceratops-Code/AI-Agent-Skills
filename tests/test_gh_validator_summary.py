@@ -890,6 +890,43 @@ class GHContractStateEngineTests(unittest.TestCase):
         self.assertEqual(status, 1)
         self.assertEqual(json.loads(stream.getvalue())["counts"]["ERROR"], 1)
 
+    def test_empty_review_decision_obeys_required_approval_rule(self):
+        pr_data = {
+            "number": 17,
+            "url": "https://example.test/pr/17",
+            "state": "OPEN",
+            "isDraft": False,
+            "mergeable": "MERGEABLE",
+            "reviewDecision": "",
+            "statusCheckRollup": [],
+            "headRefName": "release/local",
+            "headRefOid": "a" * 40,
+            "baseRefName": "main",
+            "autoMergeRequest": None,
+        }
+        with (
+            mock.patch.object(pr_validator, "gh_pr_view", return_value=pr_data),
+            mock.patch.object(
+                pr_validator,
+                "required_approving_review_count",
+                return_value=1,
+            ) as required_reviews,
+        ):
+            _, findings = pr_validator.pr_readiness(
+                "17",
+                pathlib.Path.cwd(),
+                allow_admin_review_bypass=True,
+            )
+
+        review = next(
+            finding
+            for finding in findings
+            if finding.check == "pr.review_decision"
+        )
+        self.assertEqual(review.level, "WARN")
+        self.assertEqual(review.actual, "REVIEW_REQUIRED")
+        required_reviews.assert_called_once_with("main", pathlib.Path.cwd())
+
     def test_merge_helper_revalidates_after_review_wait(self):
         text = (SCRIPTS / "github_pr_workflow" / "merge.py").read_text(
             encoding="utf-8"
