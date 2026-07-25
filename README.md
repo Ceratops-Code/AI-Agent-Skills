@@ -6,7 +6,7 @@ Reusable Ceratops skills for Codex and other `SKILL.md`-compatible agents.
 
 | Skill | Purpose |
 | --- | --- |
-| `ceratops-gh-repo-lifecycle` | Route GitHub repo lifecycle work across create-or-publish, contracts-review, health-audit, dependency-maintenance, ensure-pr, ship-change, and merge-pr actions. |
+| `ceratops-gh-repo-lifecycle` | Route GitHub repo lifecycle work across creation, contracts, CodeQL disposition, health, dependencies, PR shipping, and merge actions. |
 | `ceratops-governance-lifecycle` | Route prompt optimization, advisory skill optimization, regression-safe instruction updates, and cross-scope governance consistency audits across action references. |
 | `ceratops-credit-savings-analysis` | Analyze recent Codex runs for avoidable credit spend and recommend low-maintenance controls. |
 | `ceratops-skill-lifecycle` | Route skill lifecycle work across create, make-repo-compatible, update, skills-contract-review, skills-consistency-review, fast-change, change-promotion, and ship-to-remote actions. |
@@ -54,8 +54,8 @@ Reusable helper logic lives in skill-local lifecycle scripts under
 `skills/*/scripts/`, not in an installed Python package.
 Contract sources live inside their owning lifecycle skill.
 `skills/ceratops-gh-repo-lifecycle/references/` owns GitHub org, GitHub repo,
-repo-code, PR readiness, artifact, release, and code-comment contracts plus the
-`contracts-review` action. `skills/ceratops-skill-lifecycle/references/` owns
+repo-code, PR readiness, artifact, release, code-comment, and CodeQL disposition
+contracts. `skills/ceratops-skill-lifecycle/references/` owns
 skill-design contracts and skill source-doc tracking. The
 `skills-contract-review` action refreshes those contracts against registered
 best-practice evidence; it does not audit skills or run the source validator.
@@ -82,8 +82,8 @@ without repository deduplication.
 | `skills/ceratops-skill-lifecycle/scripts/runtime/synchronize-installers.py` | Copies the authoritative installer into an approved task worktree only when its parsed version is missing or lower, then runs full validation. |
 | `skills/ceratops-skill-lifecycle/scripts/runtime/skills-consistency-runtime-validator.py` | Inventories direct managed runtime manifests or validates one selected skill after deriving its source repository, including identity, installer version, and complete managed-file comparison. |
 | `skills/ceratops-skill-lifecycle/scripts/runtime/managed_runtime_builder.py` | Canonical managed-runtime builder used for installation and expected-tree generation. |
-| `skills/ceratops-gh-repo-lifecycle/scripts/github_contract_engine/` | Package CLI for contract schemas, consistency, source documents, org/repo validation, shared severity levels, and non-deterministic evidence. |
-| `skills/ceratops-gh-repo-lifecycle/scripts/github_pr_workflow/` | Package CLI for prepared-branch PR publication, PR readiness, Codex review wait/resolution, merge orchestration, live merge verification, and post-merge local sync. |
+| `skills/ceratops-gh-repo-lifecycle/scripts/github_contract_engine/` | Package CLI for contract evaluation, shared GitHub API access, sanitized evidence, and evidence-gated CodeQL disposition. |
+| `skills/ceratops-gh-repo-lifecycle/scripts/github_pr_workflow/` | Package CLI for individual PR operations and exact-commit, checkpointed end-to-end shipping with concurrent gates and reusable-branch restoration. |
 | `skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py` | Source validator for selected-skill, section, and full repository checks. |
 | `skills/ceratops-skill-lifecycle/scripts/promote-skill-branches-to-release-and-install.ps1` | Called by skill change-promotion to prepare `release/local`, fast-forward reviewed branches, clean merged work, reject other pending local work, then validate, install, and emit compact ready/not-ready JSON. |
 
@@ -145,6 +145,8 @@ python -m github_contract_engine validate repo --repo OWNER/REPO --select repo:d
 python -m github_contract_engine validate repo --repo OWNER/REPO --surface artifact --subset artifact --local-repo-path PATH
 python -m github_contract_engine validate repo --repo OWNER/REPO --surface all --subset health --local-repo-path PATH --summary-json --levels ERROR,WARN,NEEDS_AI_AGENT_REVIEW
 python -m github_pr_workflow validate --pr NUMBER_OR_URL --cwd PATH
+python -m github_pr_workflow ship --help
+python -m github_contract_engine codeql-disposition --help
 python -m github_contract_engine validate consistency
 Pop-Location
 python .\skills\ceratops-skill-lifecycle\scripts\skills-consistency-source-validator.py --mode full
@@ -295,14 +297,12 @@ same-source managed skill folders match that snapshot.
 When shipping a staged batch, reuse the same `release/local` branch name locally
 and remotely by default. Use
 `promote-skill-branches-to-release-and-install.ps1` for reviewed local
-branch staging, `$ceratops-gh-repo-lifecycle` ensure-pr for PR publication,
-`$ceratops-gh-repo-lifecycle` merge-pr for merge gates,
-`python -m github_pr_workflow sync --repo-root <repo> --align-branch
-release/local` after merge, and
+branch staging, `$ceratops-gh-repo-lifecycle` ship-change with
+`python -m github_pr_workflow ship --repo-root <repo> --head-branch
+release/local --reusable-head` for exact-commit PR publication, concurrent
+gates, merge, main sync, and reusable-branch restoration, and
 `python scripts/install-skills.py --repo-root <repo>` for the final runtime
-rebuild from `main`. GitHub may delete the remote
-`release/local` after merge; the next batch simply recreates that same remote
-branch from the current local `release/local`.
+rebuild from `main`. Skill installation remains outside the GitHub helper.
 
 Restart Codex after adding new skill folders if the app does not pick them up
 automatically.

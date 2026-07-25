@@ -27,6 +27,8 @@ applied.
   `python -m github_contract_engine collect --help`
 - (D) Source-doc registry checker:
   `python -m github_contract_engine check-source-docs --help`
+- (D) CodeQL evidence and dismissal gate:
+  `python -m github_contract_engine codeql-disposition --help`
 
 ### References
 
@@ -81,6 +83,8 @@ request before asking.
   repo-health work, or already-prepared skill shipping rather than contract
   upkeep, return to this multi-action skill and select the lifecycle action that
   owns the work.
+- If the task is dispositioning a current CodeQL alert rather than reviewing
+  the governing contract, select `codeql-disposition`.
 
 ### Skill-Specific Rules
 

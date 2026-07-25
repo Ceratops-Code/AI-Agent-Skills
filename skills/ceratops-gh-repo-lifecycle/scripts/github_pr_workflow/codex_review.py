@@ -7,10 +7,11 @@ import datetime as dt
 import json
 import pathlib
 import re
-import subprocess
 import sys
 import time
 from typing import Any
+
+from github_contract_engine.github_api import run_gh_graphql, run_json_command
 
 
 DEFAULT_CODEX_AUTHORS = ("chatgpt-codex-connector[bot]", "chatgpt-codex-connector")
@@ -21,51 +22,36 @@ class CommandError(RuntimeError):
     """Raised when GitHub CLI state cannot be fetched or mutated."""
 
 
-def run_gh(
-    args: list[str],
-    *,
-    stdin: str | None = None,
-    cwd: pathlib.Path | None = None,
-) -> str:
-    """Run a GitHub CLI command and return stdout, raising compact failures."""
-
-    completed = subprocess.run(
-        ["gh", *args],
-        cwd=cwd,
-        input=stdin,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        capture_output=True,
-        check=False,
-    )
-    if completed.returncode != 0:
-        detail = completed.stderr.strip() or completed.stdout.strip() or "command failed"
-        raise CommandError(f"gh {' '.join(args)}: {detail}")
-    return completed.stdout.strip()
-
-
 def gh_graphql(
     query: str,
     variables: dict[str, Any],
     *,
     cwd: pathlib.Path | None = None,
 ) -> dict[str, Any]:
-    """Run a GraphQL request through gh so existing auth and host config apply."""
+    """Use the contract engine's authenticated GitHub GraphQL client."""
 
-    payload = json.dumps({"query": query, "variables": variables}, separators=(",", ":"))
-    raw = run_gh(["api", "graphql", "--input", "-"], stdin=payload, cwd=cwd)
-    data = json.loads(raw or "{}")
-    if data.get("errors"):
-        raise CommandError(json.dumps(data["errors"], ensure_ascii=True))
+    result = run_gh_graphql(query, variables, "pull-request-review", cwd=cwd)
+    if not result.ok:
+        raise CommandError(result.message or "GitHub GraphQL request failed")
+    data = result.data
+    if not isinstance(data, dict):
+        raise CommandError("GitHub GraphQL returned an invalid response")
     return data
 
 
 def default_repo(cwd: pathlib.Path | None = None) -> str:
     """Return the current checkout repository in owner/name form."""
 
-    raw = run_gh(["repo", "view", "--json", "nameWithOwner"], cwd=cwd)
-    data = json.loads(raw or "{}")
+    result = run_json_command(
+        ["gh", "repo", "view", "--json", "nameWithOwner"],
+        "gh repo view",
+        cwd=cwd,
+    )
+    if not result.ok:
+        raise CommandError(result.message or "GitHub repository lookup failed")
+    data = result.data
+    if not isinstance(data, dict):
+        raise CommandError("GitHub repository lookup returned an invalid response")
     name = data.get("nameWithOwner")
     if not isinstance(name, str) or "/" not in name:
         raise CommandError("could not infer repository; pass --repo OWNER/REPO")

@@ -104,13 +104,14 @@ TEXT_SUFFIXES = {".md", ".py", ".ps1", ".json", ".yml", ".yaml", ".toml", ".txt"
 IGNORED_REPO_DIRS = {".git", "__pycache__", ".mypy_cache", ".pytest_cache", ".ruff_cache", "node_modules"}
 IGNORED_REPO_FALLBACK_DIRS = IGNORED_REPO_DIRS | {".venv"}
 GH_LIFECYCLE_ACTIONS = {
+    "codeql-disposition.md": "python -m github_contract_engine codeql-disposition",
     "contracts-review.md": "python -m github_contract_engine validate consistency",
     "create-or-publish.md": "--surface all --subset create",
     "dependency-maintenance.md": "--select repo:dependency --select code:dependency",
     "health-audit.md": "--surface all --subset health",
     "ensure-pr.md": "python -m github_pr_workflow ensure-pr",
     "merge-pr.md": "python -m github_pr_workflow merge",
-    "ship-change.md": "merge-pr",
+    "ship-change.md": "python -m github_pr_workflow ship",
 }
 SKILL_LIFECYCLE_ACTIONS = {
     "create.md": "templates/skill-sections.json",
@@ -120,7 +121,7 @@ SKILL_LIFECYCLE_ACTIONS = {
     "skills-consistency-review.md": "--repo-root",
     "fast-change.md": "release/*",
     "change-promotion.md": "promote-skill-branches-to-release-and-install.ps1",
-    "ship-to-remote.md": "ensure-pr",
+    "ship-to-remote.md": "python -m github_pr_workflow ship",
 }
 TASK_LIFECYCLE_ACTIONS = {
     "execute-in-stages.md": "staged contingent execution",
