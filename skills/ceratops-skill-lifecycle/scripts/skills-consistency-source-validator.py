@@ -40,6 +40,7 @@ RUNTIME_BUILDER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "ru
 RUNTIME_VALIDATOR = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "runtime" / "skills-consistency-runtime-validator.py"
 FAST_CHANGE_READINESS_HELPER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "validate-fast-change-readiness.ps1"
 PROMOTION_HELPER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "promote-skill-branches-to-release-and-install.ps1"
+PENDING_WORK_HELPER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "check-pending-release-work.ps1"
 VALIDATOR = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "skills-consistency-source-validator.py"
 WORKFLOW = ROOT / ".github" / "workflows" / "validate.yml"
 SKILL_DETERMINISTIC_CONTRACT = pathlib.Path("skills/ceratops-skill-lifecycle/references/contracts/skill-deterministic-contract.json")
@@ -780,6 +781,7 @@ def check_validation_command_surface() -> list[str]:
     runtime_validator_text = RUNTIME_VALIDATOR.read_text(encoding="utf-8") if RUNTIME_VALIDATOR.is_file() else ""
     fast_change_readiness_text = FAST_CHANGE_READINESS_HELPER.read_text(encoding="utf-8") if FAST_CHANGE_READINESS_HELPER.is_file() else ""
     promotion_helper_text = PROMOTION_HELPER.read_text(encoding="utf-8") if PROMOTION_HELPER.is_file() else ""
+    pending_work_helper_text = PENDING_WORK_HELPER.read_text(encoding="utf-8") if PENDING_WORK_HELPER.is_file() else ""
     readme_text = README.read_text(encoding="utf-8") if README.is_file() else ""
     workflow_text = WORKFLOW.read_text(encoding="utf-8") if WORKFLOW.is_file() else ""
 
@@ -802,18 +804,41 @@ def check_validation_command_surface() -> list[str]:
     if "scripts\\install-skills.py" not in promotion_helper_text or '"python"' not in promotion_helper_text:
         errors.append("release promotion must install through the target repository Python installer")
     pending_cleanup = '$pendingArgs += "-CleanMergedBranches"'
+    pending_approved_data = '$pendingArgs += "-ApprovedBranchData"'
     pending_call = 'Invoke-QuietNative -FilePath "powershell" -Arguments $pendingArgs'
     fast_forward_call = 'Invoke-GitQuiet @("merge", "--ff-only", $branch)'
+    installer_guard = 'if (-not (Test-Path -LiteralPath $installScript -PathType Leaf))'
     install_call = 'Invoke-QuietNative -FilePath "python" -Arguments @('
-    if promotion_helper_text.count(pending_cleanup) != 1 or promotion_helper_text.count(pending_call) != 1:
+    if (
+        promotion_helper_text.count(pending_cleanup) != 1
+        or promotion_helper_text.count(pending_approved_data) != 1
+        or promotion_helper_text.count(pending_call) != 1
+    ):
         errors.append("release promotion must run one merged-work cleanup and pending-work check")
     elif not (
         promotion_helper_text.find(fast_forward_call)
+        < promotion_helper_text.find(installer_guard)
+        < promotion_helper_text.find(pending_approved_data)
         < promotion_helper_text.find(pending_cleanup)
         < promotion_helper_text.find(pending_call)
         < promotion_helper_text.find(install_call)
     ):
-        errors.append("release promotion must check pending work after fast-forwards and before installation")
+        errors.append(
+            "release promotion must guard the installer and check approved pending work "
+            "after fast-forwards and before installation"
+        )
+    pending_scope_markers = (
+        "ApprovedBranchData",
+        "FromBase64String",
+        "Get-ApprovedBranchWorktreePath",
+        '"--format=%(worktreepath)"',
+    )
+    if (
+        any(marker not in pending_work_helper_text for marker in pending_scope_markers)
+        or '"worktree", "list"' in pending_work_helper_text
+        or '"--format=%(refname:short)"' in pending_work_helper_text
+    ):
+        errors.append("release pending-work checks must be limited to approved branches and their worktrees")
     if (
         '"merge", "--ff-only"' not in promotion_helper_text
         or '"merge", "--no-edit"' in promotion_helper_text
@@ -1156,7 +1181,7 @@ def main() -> int:
     global ROOT, SKILLS_DIR, README, SECTION_MANIFEST, CERATOPS_ICON_SOURCE
     global BOOTSTRAP_INSTALLER, RUNTIME_INSTALLER, BUNDLE_RESOLVER, INSTALLER_TEMPLATE
     global INSTALLER_SYNCHRONIZER, RUNTIME_BUILDER, RUNTIME_VALIDATOR, FAST_CHANGE_READINESS_HELPER
-    global PROMOTION_HELPER, VALIDATOR, WORKFLOW
+    global PROMOTION_HELPER, PENDING_WORK_HELPER, VALIDATOR, WORKFLOW
 
     parser = argparse.ArgumentParser(description="Validate Ceratops-compatible skill source and runtime-generation inputs.")
     parser.add_argument("--repo-root", type=pathlib.Path, help="Source skills repository root.")
@@ -1184,6 +1209,7 @@ def main() -> int:
         RUNTIME_VALIDATOR = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "runtime" / "skills-consistency-runtime-validator.py"
         FAST_CHANGE_READINESS_HELPER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "validate-fast-change-readiness.ps1"
         PROMOTION_HELPER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "promote-skill-branches-to-release-and-install.ps1"
+        PENDING_WORK_HELPER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "check-pending-release-work.ps1"
         VALIDATOR = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "skills-consistency-source-validator.py"
         WORKFLOW = ROOT / ".github" / "workflows" / "validate.yml"
 

@@ -8,9 +8,9 @@ param(
 )
 
 # Skill-local helper for deterministic change-promotion work. It prepares the
-# reusable release branch, fast-forwards approved branches, cleans merged work
-# and checks for other pending local work, then validates and installs the
-# promoted snapshot and emits one compact JSON summary on success.
+# reusable release branch, fast-forwards approved branches, checks and cleans
+# only those approved sources, then validates and installs the promoted snapshot
+# and emits one compact JSON summary on success.
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
@@ -169,6 +169,13 @@ $pendingArgs = @(
     "-ReleaseBranch",
     $ReleaseBranch
 )
+if ($ApprovedBranch.Count -gt 0) {
+    $approvedBranchData = [Convert]::ToBase64String(
+        [Text.Encoding]::UTF8.GetBytes(($ApprovedBranch -join "`n"))
+    )
+    $pendingArgs += "-ApprovedBranchData"
+    $pendingArgs += $approvedBranchData
+}
 $pendingArgs += "-CleanMergedBranches"
 Invoke-QuietNative -FilePath "powershell" -Arguments $pendingArgs
 
