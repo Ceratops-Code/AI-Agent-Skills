@@ -51,9 +51,6 @@
       "core",
       "multi-action-skill"
     ],
-    "ceratops-task-pause": [
-      "core"
-    ],
     "ceratops-task-lifecycle": [
       "core",
       "multi-action-skill"
