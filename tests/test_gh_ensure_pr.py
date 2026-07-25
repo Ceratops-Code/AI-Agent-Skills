@@ -183,7 +183,7 @@ class ShipTests(unittest.TestCase):
         self.assertEqual(result["ci"]["head_oid"], self.commit)
         self.assertEqual(result["codex"]["active_threads"], 0)
 
-    def test_ship_checkpoints_completed_phases_and_resumes_without_rework(self) -> None:
+    def test_ship_removes_only_its_successful_checkpoint(self) -> None:
         state = {
             "version": 1,
             "repository": "owner/repo",
@@ -196,6 +196,9 @@ class ShipTests(unittest.TestCase):
             repo_root = pathlib.Path(temporary_directory)
             args = self.args(repo_root)
             checkpoint = repo_root / "checkpoint.json"
+            checkpoint.write_text("checkpoint", encoding="utf-8")
+            unrelated_checkpoint = repo_root / "unrelated.json"
+            unrelated_checkpoint.write_text("unrelated", encoding="utf-8")
             with (
                 mock.patch.object(
                     ship, "_repository_name", return_value="owner/repo"
@@ -248,12 +251,13 @@ class ShipTests(unittest.TestCase):
                     },
                 ),
             ):
-                first = ship.ship(args)
-                second = ship.ship(args)
+                result = ship.ship(args)
+            checkpoint_removed = not checkpoint.exists()
+            unrelated_retained = unrelated_checkpoint.exists()
 
-        self.assertEqual(first["status"], "shipped")
+        self.assertEqual(result["status"], "shipped")
         self.assertEqual(
-            first["changes"],
+            result["changes"],
             [
                 "pr_ready",
                 "gates_passed",
@@ -262,11 +266,177 @@ class ShipTests(unittest.TestCase):
                 "synchronized",
             ],
         )
-        self.assertEqual(second["status"], "already_shipped")
+        self.assertTrue(checkpoint_removed)
+        self.assertTrue(unrelated_retained)
         ensure.assert_called_once()
         self.assertEqual(gates.call_count, 2)
         merge_pr.assert_called_once()
         self.assertEqual(merge_pr.call_args.args[0].wait_seconds, 0)
+        sync_main.assert_called_once()
+
+    def test_ship_retains_checkpoint_when_a_gate_fails(self) -> None:
+        state = {
+            "version": 1,
+            "repository": "owner/repo",
+            "commit": self.commit,
+            "head_branch": "release/local",
+            "base_branch": "main",
+            "phase": "pr_ready",
+            "pr": 17,
+            "url": "https://example.test/pr/17",
+        }
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            repo_root = pathlib.Path(temporary_directory)
+            args = self.args(repo_root)
+            checkpoint = repo_root / "checkpoint.json"
+            checkpoint.write_text("checkpoint", encoding="utf-8")
+            with (
+                mock.patch.object(
+                    ship, "_repository_name", return_value="owner/repo"
+                ),
+                mock.patch.object(ship, "_resolve_commit", return_value=self.commit),
+                mock.patch.object(
+                    ship,
+                    "_load_or_create_checkpoint",
+                    return_value=(checkpoint, state),
+                ),
+                mock.patch.object(
+                    ship,
+                    "_live_pr",
+                    return_value={
+                        "state": "OPEN",
+                        "headRefOid": self.commit,
+                    },
+                ),
+                mock.patch.object(
+                    ship,
+                    "run_parallel_gates",
+                    side_effect=ship.ShipError("gate failed"),
+                ),
+            ):
+                with self.assertRaisesRegex(ship.ShipError, "gate failed"):
+                    ship.ship(args)
+
+            self.assertTrue(checkpoint.exists())
+
+    def test_missing_completed_checkpoint_reconciles_exact_merged_pr(self) -> None:
+        merge_commit = "b" * 40
+        api_result = mock.Mock(
+            ok=True,
+            data=[
+                {
+                    "number": 17,
+                    "url": "https://example.test/pr/17",
+                    "state": "MERGED",
+                    "headRefOid": self.commit,
+                    "baseRefName": "main",
+                    "mergedAt": "2026-07-25T00:00:00Z",
+                    "mergeCommit": {"oid": merge_commit},
+                },
+                {
+                    "number": 16,
+                    "url": "https://example.test/pr/16",
+                    "state": "MERGED",
+                    "headRefOid": "c" * 40,
+                    "baseRefName": "main",
+                    "mergedAt": "2026-07-24T00:00:00Z",
+                    "mergeCommit": {"oid": "d" * 40},
+                },
+            ],
+            message=None,
+            status=200,
+        )
+        args = self.args(pathlib.Path.cwd())
+        with mock.patch.object(
+            ship, "run_json_command", return_value=api_result
+        ) as lookup:
+            state = ship._merged_pr_checkpoint(
+                args,
+                pathlib.Path.cwd(),
+                "owner/repo",
+                self.commit,
+            )
+
+        self.assertIsNotNone(state)
+        assert state is not None
+        self.assertEqual(state["phase"], "merged")
+        self.assertEqual(state["pr"], 17)
+        self.assertEqual(state["merge_commit"], merge_commit)
+        command = lookup.call_args.args[0]
+        self.assertIn("pr", command)
+        self.assertIn("list", command)
+        self.assertIn(self.commit, str(api_result.data))
+
+    def test_completed_retry_reconciles_syncs_and_removes_checkpoint(self) -> None:
+        merge_commit = "b" * 40
+        merged_state = {
+            "version": 1,
+            "repository": "owner/repo",
+            "commit": self.commit,
+            "head_branch": "release/local",
+            "base_branch": "main",
+            "phase": "merged",
+            "pr": 17,
+            "url": "https://example.test/pr/17",
+            "merged_at": "2026-07-25T00:00:00Z",
+            "merge_commit": merge_commit,
+        }
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            repo_root = pathlib.Path(temporary_directory)
+            args = self.args(repo_root)
+            checkpoint = repo_root / "checkpoint.json"
+            with (
+                mock.patch.object(
+                    ship, "_repository_name", return_value="owner/repo"
+                ),
+                mock.patch.object(ship, "_resolve_commit", return_value=self.commit),
+                mock.patch.object(
+                    ship, "_checkpoint_path", return_value=checkpoint
+                ),
+                mock.patch.object(
+                    ship,
+                    "_new_checkpoint",
+                    side_effect=ship.ShipError(
+                        "checkout is no longer on the shipped head"
+                    ),
+                ),
+                mock.patch.object(
+                    ship,
+                    "_merged_pr_checkpoint",
+                    return_value=merged_state,
+                ) as reconcile,
+                mock.patch.object(ship.ensure_pr, "ensure_pr") as ensure,
+                mock.patch.object(ship, "run_parallel_gates") as gates,
+                mock.patch.object(ship.merge, "merge_verified_pr") as merge_pr,
+                mock.patch.object(
+                    ship.sync,
+                    "sync_main",
+                    return_value={"head": merge_commit},
+                ) as sync_main,
+                mock.patch.object(
+                    ship,
+                    "restore_reusable_branch",
+                    return_value={
+                        "branch": "release/local",
+                        "status": "aligned",
+                        "head": merge_commit,
+                    },
+                ),
+            ):
+                result = ship.ship(args)
+            checkpoint_removed = not checkpoint.exists()
+
+        self.assertEqual(result["status"], "shipped")
+        self.assertEqual(
+            result["changes"], ["reusable_branch_aligned", "synchronized"]
+        )
+        self.assertTrue(checkpoint_removed)
+        reconcile.assert_called_once_with(
+            args, repo_root, "owner/repo", self.commit
+        )
+        ensure.assert_not_called()
+        gates.assert_not_called()
+        merge_pr.assert_not_called()
         sync_main.assert_called_once()
 
     def test_deleted_reusable_remote_branch_is_restored(self) -> None:
