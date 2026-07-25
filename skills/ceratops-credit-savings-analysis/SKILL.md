@@ -44,8 +44,9 @@ cannot be identified.
 - Treat preventable rework, duplicate investigation, broad reads, noisy output,
   oversized validation, stale checks, waits, reversions, and user corrections as
   candidate credit waste.
-- Count model calls avoidable through existing evidence or direct helper
-  composition, even when the work succeeds.
+- Count model calls avoidable through existing evidence, direct helper
+  composition, or same-pass draft-assess-revise work, even when the work
+  succeeds.
 - Use credit-waste signals as prompts for analysis, not mandatory checks;
   inspect only categories visible in the selected evidence window.
 - Prefer the smallest durable control: wording, deterministic helper, preflight,
@@ -60,10 +61,9 @@ cannot be identified.
   instructions, skills, automations, or helpers, provide the exact proposed
   change before mutating; otherwise name the target artifact and target
   behavior.
-- Before reporting findings, classify each recommended control against
-  inspected evidence as implemented or still unimplemented. Report every
-  confirmed finding; for implemented controls, state the status without
-  re-recommending the control.
+- Before reporting, classify each finding's control as implemented or still
+  unimplemented; omit implemented findings and report only still-unimplemented
+  findings.
 - When model-call evidence exists, classify every call as necessary, avoidable,
   or already fixed and map each control only to calls it directly prevents.
 - For each still-unimplemented control, compute `long-term average saving/run =
@@ -76,9 +76,9 @@ cannot be identified.
   evidence; state assumptions and a plausible range, use observations only as
   calibration, and test ROI at the range's low end.
 - Merge recommendations that share the same producer and control.
-- When prompt-level savings cases exist, rank the top five evidence-backed
-  cases, or all available cases when fewer exist, using only information
-  available when each prompt was written; present them as
+- When still-unimplemented prompt-level savings cases exist, rank the top five
+  evidence-backed cases, or all available cases when fewer exist, using only
+  information available when each prompt was written; present them as
   `Original prompt | What happened | Cheaper wording` and exclude
   hindsight-dependent rewrites.
 
@@ -125,17 +125,15 @@ cannot be identified.
 ### Output Contract
 
 Start with `Blocked: <specific missing evidence or target>.` when missing
-evidence prevents analysis. Otherwise start with both:
+evidence prevents analysis. Otherwise start with
+`Unimplemented avoidable spend: found.` or
+`Unimplemented avoidable spend: none found.`
 
-- `Avoidable credit spend: found.` or
-  `Avoidable credit spend: none found.`
-- `Still-unimplemented controls: found.` or
-  `Still-unimplemented controls: none found.`
-
-When model-call evidence exists, first show `Run | Model calls | Avoidable`,
-reconciled totals, and available token usage. For each still-unimplemented
-control, show `Control | Saved/affected run | Forecast rate | Added/run |
-Long-term average saving/run | One-time cost | Decision`. Then report every
-confirmed finding, any required ranked prompt-level table, excluded ordinary
-failures, and important evidence limits. For each finding, state whether its
-control is implemented or still unimplemented.
+When model-call evidence exists, first show
+`Run | Model calls | Unimplemented avoidable`, reconciled totals, and available
+token usage. For each still-unimplemented control, show
+`Control | Saved/affected run | Forecast rate | Added/run |
+Long-term average saving/run | One-time cost | Decision`. Then report only
+still-unimplemented findings, any required ranked prompt-level table, excluded
+ordinary failures, and important evidence limits. Do not mention implemented
+findings or controls.

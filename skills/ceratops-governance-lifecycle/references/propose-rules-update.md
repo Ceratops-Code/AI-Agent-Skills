@@ -39,15 +39,21 @@ Route approved skill-source mutations through `$ceratops-skill-lifecycle`
 4. Compare a local correction with a structural or non-rule correction. Select
    by prevention of the failure, regression safety, behavioral scope, and
    complexity; textual minimality does not win automatically.
-5. Draft under the rule-design contract. Resolve structural defects and every
-   affected semantic review state inside the candidate, and identify every
-   intentional behavior change.
-6. Before accepting a replacement, split, merge, or compression, map every
-   operative part of the current text, including named commands and examples,
-   to preserved candidate behavior or an intentional change reported for
-   approval; then replay the current failure and relevant recorded history,
-   rejecting any unaccounted or regressed behavior.
-7. Report the selected correction, material alternative, regression result,
+5. From steps 1-4, draft the best-supported candidate under the rule-design
+   contract using the shortest wording that changes only the explicitly
+   targeted behavior and preserves every other behavior and enforcement
+   strength. Keep deterministic procedure in its executable owner, resolve
+   structural defects and every affected semantic review state, and identify
+   each targeted change.
+6. Before presenting the candidate, map every operative part and its
+   enforcement strength, including named commands and examples, to unchanged
+   behavior or the explicitly targeted fix; replay the failure and applicable
+   history, rejecting any other behavior change or regression.
+7. In the same reasoning pass, compare the candidate with the original and
+   every recorded candidate and assessment. While any supported conclusion
+   identifies a concrete improvement, revise and repeat steps 5-6; then submit
+   the best candidate and its assessment to the iteration controller.
+8. Report the selected correction, material alternative, regression result,
    and uncertainty.
 
 ## Applying an approved change
@@ -62,15 +68,10 @@ invalid fields without treating historical rule IDs as current references.
 
 ## Iterative optimization
 
-Use `scripts/iteration_controller.py` when repeated optimization is requested or
-one-pass comparison remains materially uncertain. The controller owns numbering,
-artifact hashes, and stopping state; it does not judge semantic quality.
-
-For each issued iteration, produce one candidate and one assessment. Compare it
-with the original, champion, and regression evidence, then submit `improved` or
-`no-improvement`. Improvement resets the streak. Stop when the controller
-reports 200 iterations or ten consecutive non-improvements. Never claim state
-the controller did not report.
+- (D) Run `scripts/iteration_controller.py` for every proposal to record
+  iterations, retain the champion, and enforce stopping.
+- For each issued iteration, complete steps 5-7. After submission, post one
+  compact commentary status; do not repeat iteration logs in the final answer.
 
 ## Done When
 
