@@ -30,8 +30,9 @@ and proves the emitted output is sanitized.
 
 ### Inputs To Capture
 
-- Repository, open CodeQL alert number, exact full commit, requested
-  suppression or dismissal, and the test command that exercises the alert path.
+- Repository, CodeQL alert number whose most recent instance is open, exact
+  full commit, requested suppression or dismissal, and the test command that
+  exercises the alert path.
 - For dismissal, the GitHub reason, audit comment, and the user's explicit
   authorization for that alert and commit.
 
@@ -54,8 +55,8 @@ Infer alert identity and location from the live API. Do not infer authorization.
 
 ## Workflow
 
-1. Fetch the live alert and confirm it is open, produced by CodeQL, and its most
-   recent instance equals the requested full commit.
+1. Fetch the live alert and confirm it is produced by CodeQL and its most recent
+   instance is open at the requested full commit.
 2. Run the narrow test that exercises the reported source-to-sink path with
    unique sentinel credentials and capture the sanitized output.
 3. Write the compact evidence object and run the helper without a dismissal

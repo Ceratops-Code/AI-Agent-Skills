@@ -89,10 +89,6 @@ def validate_evidence(
     )
 
     _require(alert.get("number") == alert_number, "Live alert number drifted.")
-    _require(
-        alert.get("state") == "open",
-        "The current CodeQL alert must still be open for disposition.",
-    )
     tool = alert.get("tool") or {}
     _require(
         isinstance(tool, dict)
@@ -106,6 +102,10 @@ def validate_evidence(
         "Evidence rule does not match the current CodeQL alert.",
     )
     instance = alert.get("most_recent_instance") or {}
+    _require(
+        isinstance(instance, dict) and instance.get("state") == "open",
+        "The current CodeQL alert instance must still be open for disposition.",
+    )
     _require(
         isinstance(instance, dict) and instance.get("commit_sha") == commit,
         "The current alert instance is not tied to the requested commit.",

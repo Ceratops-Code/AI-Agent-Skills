@@ -615,10 +615,11 @@ class GHContractStateEngineTests(unittest.TestCase):
         sentinel = "CODEQL_SENTINEL_token_value"
         alert = {
             "number": 42,
-            "state": "open",
+            "state": None,
             "tool": {"name": "CodeQL"},
             "rule": {"id": "py/clear-text-logging-sensitive-data"},
             "most_recent_instance": {
+                "state": "open",
                 "commit_sha": commit,
                 "location": {
                     "path": "github_contract_engine/format_report.py",
@@ -682,6 +683,21 @@ class GHContractStateEngineTests(unittest.TestCase):
                 commit=commit,
                 disposition="suppression",
             )
+        alert_instance = alert["most_recent_instance"]
+        self.assertIsInstance(alert_instance, dict)
+        if isinstance(alert_instance, dict):
+            alert_instance["state"] = "fixed"
+        with self.assertRaisesRegex(
+            codeql_disposition.DispositionError, "instance must still be open"
+        ):
+            codeql_disposition.validate_evidence(
+                evidence,
+                alert,
+                repository="owner/repo",
+                alert_number=42,
+                commit=commit,
+                disposition="suppression",
+            )
 
     def test_codeql_dismissal_requires_explicit_authorization_before_patch(self):
         commit = "a" * 40
@@ -691,6 +707,7 @@ class GHContractStateEngineTests(unittest.TestCase):
             "tool": {"name": "CodeQL"},
             "rule": {"id": "py/clear-text-logging-sensitive-data"},
             "most_recent_instance": {
+                "state": "open",
                 "commit_sha": commit,
                 "location": {"path": "safe.py", "start_line": 10},
             },
