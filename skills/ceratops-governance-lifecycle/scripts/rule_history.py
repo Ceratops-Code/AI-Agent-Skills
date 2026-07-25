@@ -17,7 +17,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from rule_graph import load_graph, load_history_source
 
@@ -57,7 +57,7 @@ def command_lookup(args: argparse.Namespace) -> None:
     for history_path in history_paths:
         entries = load_history_source(history_path)
         for entry in entries:
-            affected = set(entry["rules"])
+            affected = set(cast(list[str], entry["rules"]))
             if args.full or "*" in affected or consulted.intersection(affected):
                 relevant.append(
                     {
