@@ -82,10 +82,11 @@ without repository deduplication.
 | `skills/ceratops-skill-lifecycle/scripts/runtime/synchronize-installers.py` | Copies the authoritative installer into an approved task worktree only when its parsed version is missing or lower, then runs full validation. |
 | `skills/ceratops-skill-lifecycle/scripts/runtime/skills-consistency-runtime-validator.py` | Inventories direct managed runtime manifests or validates one selected skill after deriving its source repository, including identity, installer version, and complete managed-file comparison. |
 | `skills/ceratops-skill-lifecycle/scripts/runtime/managed_runtime_builder.py` | Canonical managed-runtime builder used for installation and expected-tree generation. |
+| `skills/ceratops-credit-savings-analysis/scripts/model-call-ledger.py` | Writes sanitized per-call session evidence to a caller-selected file and emits only compact reconciliation data plus requested run slices. |
 | `skills/ceratops-gh-repo-lifecycle/scripts/github_contract_engine/` | Package CLI for contract evaluation, shared GitHub API access, sanitized evidence, and evidence-gated CodeQL disposition. |
 | `skills/ceratops-gh-repo-lifecycle/scripts/github_pr_workflow/` | Package CLI for individual PR operations and exact-commit, checkpointed end-to-end shipping with concurrent gates and reusable-branch restoration. |
 | `skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py` | Source validator for selected-skill, section, and full repository checks. |
-| `skills/ceratops-skill-lifecycle/scripts/promote-skill-branches-to-release-and-install.ps1` | Called by skill change-promotion to prepare `release/local`, fast-forward reviewed branches, check and clean only those approved sources, then validate, install, and emit compact ready/not-ready JSON. |
+| `skills/ceratops-skill-lifecycle/scripts/promote-skill-branches-to-release-and-install.ps1` | Called by skill change-promotion to prepare `release/local`, fast-forward reviewed branches, record their exact retention state, then validate, install, and emit compact ready/not-ready JSON. |
 
 Lifecycle helpers suppress successful subcommand output and print only compact
 JSON on success. This repo keeps scripts only where they add reusable safety

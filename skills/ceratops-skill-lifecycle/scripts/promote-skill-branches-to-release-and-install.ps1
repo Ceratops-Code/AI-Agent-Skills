@@ -8,9 +8,9 @@ param(
 )
 
 # Skill-local helper for deterministic change-promotion work. It prepares the
-# reusable release branch, fast-forwards approved branches, checks and cleans
-# only those approved sources, then validates and installs the promoted snapshot
-# and emits one compact JSON summary on success.
+# reusable release branch, fast-forwards and checks only approved branches,
+# retains their clean worktrees through remote review, then validates and
+# installs the promoted snapshot and emits one compact JSON summary on success.
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
@@ -31,7 +31,7 @@ if (-not (Test-Path -LiteralPath $pendingScript)) {
     throw "Missing helper: $pendingScript"
 }
 
-function Invoke-QuietNative {
+function Invoke-CapturedNative {
     param(
         [string]$FilePath,
         [string[]]$Arguments,
@@ -59,6 +59,20 @@ function Invoke-QuietNative {
         }
         throw "$FilePath failed: $($Arguments -join ' ')"
     }
+    return @($output)
+}
+
+function Invoke-QuietNative {
+    param(
+        [string]$FilePath,
+        [string[]]$Arguments,
+        [string]$WorkingDirectory = $resolvedSkillsRepoRoot
+    )
+
+    $null = Invoke-CapturedNative `
+        -FilePath $FilePath `
+        -Arguments $Arguments `
+        -WorkingDirectory $WorkingDirectory
 }
 
 function Get-GitLines {
@@ -156,6 +170,7 @@ if (-not (Test-Path -LiteralPath $installScript -PathType Leaf)) {
     throw "Missing repository skill installer: $installScript"
 }
 
+$headSha = (Get-GitLines @("rev-parse", "HEAD") | Select-Object -First 1).Trim()
 $pendingArgs = @(
     "-NoProfile",
     "-ExecutionPolicy",
@@ -167,17 +182,35 @@ $pendingArgs = @(
     "-MainBranch",
     $MainBranch,
     "-ReleaseBranch",
-    $ReleaseBranch
+    $ReleaseBranch,
+    "-PromotionCommit",
+    $headSha,
+    "-RecordPromotion"
 )
-if ($ApprovedBranch.Count -gt 0) {
+if ($mergedBranches.Count -gt 0) {
     $approvedBranchData = [Convert]::ToBase64String(
-        [Text.Encoding]::UTF8.GetBytes(($ApprovedBranch -join "`n"))
+        [Text.Encoding]::UTF8.GetBytes(($mergedBranches -join "`n"))
     )
     $pendingArgs += "-ApprovedBranchData"
     $pendingArgs += $approvedBranchData
 }
-$pendingArgs += "-CleanMergedBranches"
-Invoke-QuietNative -FilePath "powershell" -Arguments $pendingArgs
+$pendingOutput = @(Invoke-CapturedNative -FilePath "powershell" -Arguments $pendingArgs)
+$pendingJson = (
+    $pendingOutput |
+    Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } |
+    Select-Object -Last 1
+)
+if ([string]::IsNullOrWhiteSpace([string]$pendingJson)) {
+    throw "Pending-work helper returned no promotion result."
+}
+try {
+    $pendingResult = $pendingJson | ConvertFrom-Json
+} catch {
+    throw "Pending-work helper returned invalid promotion JSON."
+}
+if ($pendingResult.status -ne "ready") {
+    throw "Pending-work helper did not report ready promotion state."
+}
 
 Invoke-QuietNative -FilePath "python" -Arguments @(
     $installScript,
@@ -188,7 +221,6 @@ $validation = "full"
 $runtimeInstall = "managed"
 
 $currentBranch = (Get-GitLines @("branch", "--show-current") | Select-Object -First 1).Trim()
-$headSha = (Get-GitLines @("rev-parse", "HEAD") | Select-Object -First 1).Trim()
 Assert-CleanWorktree "before reporting ready state"
 
 [pscustomobject]@{
@@ -199,4 +231,6 @@ Assert-CleanWorktree "before reporting ready state"
     install = $runtimeInstall
     validation = $validation
     head = $headSha
+    retained_approved_branches = @($pendingResult.approved_branches)
+    promotion_record = $pendingResult.promotion_record
 } | ConvertTo-Json -Compress
