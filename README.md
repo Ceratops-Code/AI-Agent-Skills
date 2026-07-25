@@ -11,6 +11,7 @@ Reusable Ceratops skills for Codex and other `SKILL.md`-compatible agents.
 | `ceratops-credit-savings-analysis` | Analyze recent Codex runs for avoidable credit spend and recommend low-maintenance controls. |
 | `ceratops-skill-lifecycle` | Route skill lifecycle work across create, make-repo-compatible, update, skills-contract-review, skills-consistency-review, fast-change, change-promotion, and ship-to-remote actions. |
 | `ceratops-automation-run` | Run recurring automations with shared Ceratops alert, memory, and completion policy. |
+| `ceratops-task-pause` | Stop active same-thread execution at a resumable checkpoint without pause-induced reads or validation. |
 | `ceratops-task-lifecycle` | Route task execution, fix-loop break, same-thread resume, handoff, and closure-check work across action references. |
 | `ceratops-code-consistency-audit` | Audit merged refactors for contradictions, docs drift, comment sufficiency, stale follow-through, and merged-only edge cases. |
 

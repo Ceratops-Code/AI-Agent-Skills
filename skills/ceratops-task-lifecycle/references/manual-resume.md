@@ -10,6 +10,7 @@ cancellation, restart, or crash.
 ### Inputs To Capture
 
 - The current task goal and completion standard from the recent thread.
+- The latest `PAUSE_CHECKPOINT`, when present.
 - Any user statement about what changed since the stop.
 - The last clearly completed stage and the next likely stage.
 - The local repos, files, artifacts, PRs, images, or automations that were in
@@ -23,6 +24,14 @@ Infer missing inputs from the recent thread and local state before asking.
 
 - Treat recent thread context plus current local state as the primary sources of
   truth, even after a restart, unless local evidence forces a broader rebuild.
+- Treat the latest same-thread `PAUSE_CHECKPOINT` with `active_state: none` as
+  sufficient resume state when the user reports no intervening change.
+- On that checkpoint fast path, do not reread the thread, inspect local or
+  external state, recompute the plan, rerun checks, or restate the checkpoint
+  before executing `next_action`.
+- Fall back to recovery only when the checkpoint is absent or malformed,
+  `active_state` is not `none`, the user reports a change, or an active
+  instruction requires fresh evidence for the next action.
 - Assume nothing external changed unless the user says it did or local evidence
   suggests otherwise.
 - Do not restart the whole task from zero if the next justified stage can be
@@ -32,6 +41,8 @@ Infer missing inputs from the recent thread and local state before asking.
 - If the next viable option is complex, invasive, nonstandard, or
   high-maintenance, stop and ask before taking it.
 - Do not ask for credentials unless the resumed task actually requires them.
+- Do not add checks because execution was paused; retain checks already required
+  by the original task.
 
 ### Boundaries
 
@@ -43,6 +54,8 @@ Infer missing inputs from the recent thread and local state before asking.
 
 #### 1. Re-Anchor The Task
 
+- If the checkpoint fast path applies, skip this step and Step 2 and execute its
+  `next_action` immediately.
 - Read only the recent thread tail needed to recover the goal, the latest
   confirmed state, and any unfinished stage.
 - Restate the next justified stage internally before acting.
