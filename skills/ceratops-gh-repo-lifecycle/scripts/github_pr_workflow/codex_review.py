@@ -212,12 +212,10 @@ def wait_for_codex_threads(
     waited = 0.0
     last_pr: dict[str, Any] | None = None
     threads: list[dict[str, Any]] = []
-    deadline: dt.datetime | None = None
+    deadline = start + dt.timedelta(seconds=wait_seconds)
 
     while True:
         last_pr = fetch_pr(owner, name, number, cwd=cwd)
-        created_at = parse_utc(str(last_pr["createdAt"]))
-        deadline = created_at + dt.timedelta(seconds=wait_seconds)
         threads = active_codex_threads(last_pr, normalized_authors)
         if threads:
             break
@@ -238,7 +236,7 @@ def wait_for_codex_threads(
         "created_at": last_pr.get("createdAt"),
         "wait_seconds": wait_seconds,
         "interval_seconds": interval_seconds,
-        "deadline": deadline.isoformat() if deadline else None,
+        "deadline": deadline.isoformat(),
         "waited_seconds": round(waited, 3),
         "status": "found_active_codex_threads" if threads else "no_active_codex_threads",
         "active_codex_thread_count": len(threads),

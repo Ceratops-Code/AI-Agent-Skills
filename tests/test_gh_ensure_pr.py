@@ -95,6 +95,59 @@ class ShipTests(unittest.TestCase):
         self.assertEqual(result["pending"], 0)
         validate.assert_called_once()
 
+    def test_no_attached_checks_remain_pending(self) -> None:
+        finding = ship.readiness.Finding(
+            level="WARN",
+            check="pr.status_checks",
+            message="No status checks are attached to this PR.",
+        )
+
+        self.assertTrue(ship._transient_readiness(finding))
+
+    def test_admin_review_bypass_is_not_treated_as_pending(self) -> None:
+        bypassed = ship.readiness.Finding(
+            level="WARN",
+            check="pr.review_decision",
+            message="Required review is bypassable.",
+            actual="REVIEW_REQUIRED",
+        )
+        blocking = ship.readiness.Finding(
+            level="ERROR",
+            check="pr.review_decision",
+            message="PR still requires review.",
+            actual="REVIEW_REQUIRED",
+        )
+
+        self.assertFalse(ship._transient_readiness(bypassed))
+        self.assertTrue(ship._transient_readiness(blocking))
+
+    def test_codex_review_window_starts_with_the_current_invocation(self) -> None:
+        created_at = "2000-01-01T00:00:00Z"
+        pr_data = {
+            "number": 17,
+            "url": "https://example.test/pr/17",
+            "createdAt": created_at,
+            "headRefOid": self.commit,
+            "reviewThreads": [],
+        }
+        with mock.patch.object(
+            ship.codex_review, "fetch_pr", return_value=pr_data
+        ) as fetch:
+            result = ship.codex_review.wait_for_codex_threads(
+                "17",
+                "owner/repo",
+                wait_seconds=0,
+                interval_seconds=0,
+                authors=ship.codex_review.DEFAULT_CODEX_AUTHORS,
+                cwd=pathlib.Path.cwd(),
+            )
+
+        self.assertGreater(
+            ship.codex_review.parse_utc(result["deadline"]),
+            ship.codex_review.parse_utc(created_at),
+        )
+        fetch.assert_called_once()
+
     def test_parallel_gates_start_together(self) -> None:
         barrier = threading.Barrier(2)
 

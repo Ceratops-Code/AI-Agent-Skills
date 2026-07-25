@@ -221,10 +221,11 @@ def _load_or_create_checkpoint(
 def _transient_readiness(finding: readiness.Finding) -> bool:
     if finding.check == "pr.mergeable" and finding.level == WARN:
         return True
-    if finding.check == "pr.status_checks" and "pending" in finding.message.lower():
+    if finding.check == "pr.status_checks" and finding.level == WARN:
         return True
     if (
         finding.check == "pr.review_decision"
+        and finding.level == ERROR
         and finding.actual == "REVIEW_REQUIRED"
     ):
         return True
