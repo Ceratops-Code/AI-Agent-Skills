@@ -30,15 +30,12 @@ Route approved skill-source mutations through `$ceratops-skill-lifecycle`
    `AGENTS.history.json` beside their `AGENTS.md`. From this skill directory,
    run `python scripts/rule_history.py lookup --history <history> --rules
    <rules> ID...`, repeating both options in effective global-to-local order for
-   an interacting instruction stack.
-   The helper must parse the canonical metadata syntax and select every direct
-   directional or review-edge neighbor. Use the compact default for graph
-   selection and add `--full` only when selected causal or regression evidence
-   is needed. Obsolete references, invalid fields, or an over-limit history
-   block the remaining proposal workflow: apply the smallest authorized cleanup
-   first, rerun lookup, and only then continue. If history does not exist, use
-   targeted source history and state that recorded behavioral history was
-   unavailable.
+   an interacting instruction stack. Use compact lookup for current rules and
+   direct graph neighbors. Add `--full` when renamed or retired rules, a
+   supersession decision, or uncertain relevance requires the complete log.
+   Invalid fields block the remaining proposal workflow. If history does not
+   exist, use targeted source history and state that recorded decision history
+   was unavailable.
 4. Compare a local correction with a structural or non-rule correction. Select
    by prevention of the failure, regression safety, behavioral scope, and
    complexity; textual minimality does not win automatically.
@@ -55,15 +52,13 @@ Route approved skill-source mutations through `$ceratops-skill-lifecycle`
 
 ## Applying an approved change
 
-Clean history before applying any other approved rule change. Keep decisions
-that still constrain current behavior; delete obsolete references, retracted or
-overridden outcomes, and entries with no regression value. Replace renamed IDs
-when their rationale remains active. Store only the decision-only fields defined
-by the rule-design contract, and compact history when its deterministic limit is
-reached. Name every deletion in the proposal so approval covers the exact
-durable history change. Run the source's rule checker; its history binding must
-reject unrecorded rule changes, obsolete references, invalid fields, and
-over-limit history.
+Append one decision for each approved rule change using the decision-only fields
+defined by the rule-design contract. Preserve prior entries and identify an
+earlier decision in the new decision text only when its rationale is
+intentionally replaced or narrowed. Do not rewrite prior entries for rule
+renames, removals, or implementation evolution; append the new decision those
+changes represent. Run the source's rule and history checkers; they must reject
+invalid fields without treating historical rule IDs as current references.
 
 ## Iterative optimization
 
@@ -82,9 +77,8 @@ the controller did not report.
 ### Completion Gate
 
 A proposal is complete only when it prevents the current recorded failure,
-leaves the rule graph structurally valid, retains only applicable regression
-history within its size limits, and is better than the current state and
-material alternative.
+leaves the rule graph structurally valid, preserves the append-only decision
+log, and is better than the current state and material alternative.
 Otherwise change the intervention or report the unresolved decision point.
 
 ### Output Contract

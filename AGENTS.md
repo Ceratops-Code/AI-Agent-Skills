@@ -37,6 +37,7 @@ Skills repo checkout and worktrees:
   batch unless the task explicitly requests staging, shipping, or local preview
   sync.
   - limits: SKILLS-PREVIEW-01
+  - self: gate
 - [SKILLS-SHIP-01] Skills-repo changes must ship from `release/*`, never
   directly from task or feature branches.
 - [SKILLS-CREATE-01] New Ceratops skill creation is the only default-staging
@@ -63,6 +64,7 @@ Instruction and skill maintenance:
 - [SKILLS-GOV-02] Treat recommendations about instruction, automation, skill,
   and helper-contract changes as advisory unless the user explicitly asks to
   apply a named change.
+  - self: gate
 - [SKILLS-PORT-01] In repo-tracked files intended for public sharing or GitHub,
   including `AGENTS.md`, `automation.toml`, `SKILL.md`, generated runtime
   skill files, scripts, docs, and examples, do not hardcode user-local absolute

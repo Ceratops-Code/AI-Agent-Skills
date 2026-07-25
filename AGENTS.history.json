@@ -59,6 +59,14 @@
       "decision": "Repository governance uses current control sources, portable runtime paths, aligned helpers, targeted verification, and explicit credit-cost review.",
       "reason": "These constraints keep public skill sources portable and generated or recurring behavior aligned with its executable owner.",
       "regression": "Do not apply advisory changes implicitly, embed user-local paths, bypass declared helper locations, or finish with prompt/helper or credit-cost drift."
+    },
+    {
+      "rules": [
+        "*"
+      ],
+      "decision": "Make AGENTS.history.json an append-only decision log, preserve prior rationales, move live approval-gate classification to self: gate metadata in AGENTS.md, and retire current-state inventories, obsolete-reference cleanup, and destructive compaction.",
+      "reason": "Historical decisions remain facts after rules or implementations evolve, while current gate classification belongs with the rules it governs.",
+      "regression": "Do not delete, rewrite, merge, or compact earlier decisions merely to mirror current rules; append a new decision and identify an earlier decision only when its rationale is intentionally replaced or narrowed."
     }
   ]
 }
