@@ -266,6 +266,7 @@ class ShipTests(unittest.TestCase):
         ensure.assert_called_once()
         self.assertEqual(gates.call_count, 2)
         merge_pr.assert_called_once()
+        self.assertEqual(merge_pr.call_args.args[0].wait_seconds, 0)
         sync_main.assert_called_once()
 
     def test_deleted_reusable_remote_branch_is_restored(self) -> None:

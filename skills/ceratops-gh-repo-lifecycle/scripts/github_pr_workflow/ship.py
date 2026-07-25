@@ -521,7 +521,7 @@ def ship(args: argparse.Namespace) -> dict[str, Any]:
                 admin=args.admin,
                 auto=False,
                 delete_branch=args.delete_branch,
-                wait_seconds=args.review_wait_seconds,
+                wait_seconds=0,
                 interval_seconds=args.interval_seconds,
             ),
             expected_head=commit,
