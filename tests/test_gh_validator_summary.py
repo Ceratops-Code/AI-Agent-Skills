@@ -599,6 +599,16 @@ class GHContractStateEngineTests(unittest.TestCase):
         self.assertNotIn("user:pass", output)
         self.assertNotIn("gho_", output)
         self.assertEqual(json.loads(output), safe)
+        compact_stream = io.StringIO()
+        with contextlib.redirect_stdout(compact_stream):
+            write_json(report, compact=True)
+        compact_output = compact_stream.getvalue()
+        self.assertNotIn("secret-value", compact_output)
+        self.assertNotIn("private@example.com", compact_output)
+        self.assertNotIn("hunter2", compact_output)
+        self.assertNotIn("user:pass", compact_output)
+        self.assertNotIn("gho_", compact_output)
+        self.assertEqual(json.loads(compact_output), safe)
 
     def test_codeql_evidence_binds_alert_commit_trace_and_sanitized_output(self):
         commit = "a" * 40
