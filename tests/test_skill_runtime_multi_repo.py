@@ -303,7 +303,7 @@ def runtime_owner(install_root: pathlib.Path, skill_name: str) -> str:
     shutil.which("powershell") is None,
     reason="PowerShell lifecycle helper is unavailable",
 )
-def test_promotion_record_retains_only_until_terminal_cleanup(
+def test_promotion_records_are_collision_free_and_cleaned_terminally(
     tmp_path: pathlib.Path,
 ) -> None:
     repo = tmp_path / "AI-Agent-Skills"
@@ -345,10 +345,6 @@ def test_promotion_record_retains_only_until_terminal_cleanup(
     ).stdout.strip()
     assert run_git(repo, "branch", "release/local", promotion_commit).returncode == 0
 
-    record_directory = (
-        repo / ".git" / "codex" / "skill-lifecycle" / "promotions"
-    )
-    record = record_directory / "release__local.json"
     approved_branch_data = base64.b64encode(b"approved").decode("ascii")
     record_command = [
         "powershell",
@@ -375,10 +371,33 @@ def test_promotion_record_retains_only_until_terminal_cleanup(
         check=False,
     )
     assert retained.returncode == 0, retained.stderr
+    retained_payload = json.loads(retained.stdout)
+    record = pathlib.Path(retained_payload["promotion_record"])
     assert approved_worktree.is_dir()
     assert unrelated_worktree.is_dir()
     assert record.is_file()
-    assert json.loads(retained.stdout)["approved_branches"] == ["approved"]
+    assert retained_payload["approved_branches"] == ["approved"]
+
+    collision_branch = "release__local"
+    assert (
+        run_git(repo, "branch", collision_branch, promotion_commit).returncode == 0
+    )
+    collision_record_command = record_command.copy()
+    collision_record_command[
+        collision_record_command.index("release/local")
+    ] = collision_branch
+    collision_retained = subprocess.run(
+        collision_record_command,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert collision_retained.returncode == 0, collision_retained.stderr
+    collision_record = pathlib.Path(
+        json.loads(collision_retained.stdout)["promotion_record"]
+    )
+    assert collision_record != record
+    assert collision_record.is_file()
 
     cleanup_command = [
         *record_command[:-3],
@@ -396,6 +415,16 @@ def test_promotion_record_retains_only_until_terminal_cleanup(
     assert unrelated_worktree.is_dir()
     assert run_git(repo, "show-ref", "--verify", "refs/heads/unrelated").returncode == 0
     assert not record.exists()
+    assert collision_record.is_file()
+
+    collision_cleanup = subprocess.run(
+        [*collision_record_command[:-3], "-CleanMergedBranches"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert collision_cleanup.returncode == 0, collision_cleanup.stderr
+    assert not collision_record.exists()
 
 
 def install_bundle_manifest(

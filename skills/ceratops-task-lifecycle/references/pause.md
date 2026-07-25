@@ -37,10 +37,9 @@ Infer these inputs only from already-loaded same-thread context.
 
 ## Helper Contract
 
-- (D) Run
-  `python "$env:CODEX_HOME\skills\ceratops-task-lifecycle\scripts\pause_state.py"
-  capture --repo <worktree>` once, repeating `--repo` in the same call for each
-  in-scope local Git worktree.
+- (D) From the installed `ceratops-task-lifecycle` skill folder, run
+  `python scripts/pause_state.py capture --repo <worktree>` once, repeating
+  `--repo` in the same call for each in-scope local Git worktree.
 - (D) Use the returned token without decoding it. If the helper returns
   `UNAVAILABLE`, set `state_scope` and `state_token` to `unavailable`.
 

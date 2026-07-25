@@ -141,8 +141,18 @@ function Decode-ApprovedBranchData {
 
 function Get-PromotionRecordPath {
     $recordDirectory = Join-Path (Get-GitCommonDirectory) "codex\skill-lifecycle\promotions"
-    $releaseKey = $ReleaseBranch -replace "[^A-Za-z0-9._-]+", "__"
-    return Join-Path $recordDirectory "$releaseKey.json"
+    # Hash the full UTF-8 branch name so filesystem case folding and replaced
+    # punctuation cannot alias two release records.
+    $sha256 = [Security.Cryptography.SHA256]::Create()
+    try {
+        $releaseHash = $sha256.ComputeHash(
+            [Text.Encoding]::UTF8.GetBytes($ReleaseBranch)
+        )
+    } finally {
+        $sha256.Dispose()
+    }
+    $releaseKey = -join ($releaseHash | ForEach-Object { $_.ToString("x2") })
+    return Join-Path $recordDirectory "sha256-$releaseKey.json"
 }
 
 function Read-PromotionRecord {

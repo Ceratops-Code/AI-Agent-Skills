@@ -28,11 +28,12 @@ Infer missing inputs from the recent thread and local state before asking.
 - Treat the latest same-thread `PAUSE_CHECKPOINT` with `active_state: none`,
   `state_scope: local_git`, and a valid helper token as sufficient resume state
   when the user reports no intervening external change.
-- On that checkpoint fast path, run only
-  `python "$env:CODEX_HOME\skills\ceratops-task-lifecycle\scripts\pause_state.py"
-  verify <state_token>`. If it returns `UNCHANGED`, execute `next_action`
-  immediately without rereading the thread, inspecting files manually,
-  recomputing the plan, rerunning checks, or restating the checkpoint.
+- On that checkpoint fast path, from the installed
+  `ceratops-task-lifecycle` skill folder run only
+  `python scripts/pause_state.py verify <state_token>`. If it returns
+  `UNCHANGED`, execute `next_action` immediately without rereading the thread,
+  inspecting files manually, recomputing the plan, rerunning checks, or
+  restating the checkpoint.
 - Fall back to recovery only when the checkpoint is absent or malformed,
   `active_state` is not `none`, state validation is unavailable or changed, the
   user reports an external change, or an active instruction requires fresh
