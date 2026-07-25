@@ -190,6 +190,77 @@ def _new_checkpoint(
     }
 
 
+def _merged_pr_checkpoint(
+    args: argparse.Namespace,
+    repo_root: pathlib.Path,
+    repository: str,
+    commit: str,
+) -> dict[str, Any] | None:
+    """Reconstruct completed state only from a merged PR at the exact head."""
+
+    result = run_json_command(
+        [
+            "gh",
+            "pr",
+            "list",
+            "--repo",
+            repository,
+            "--head",
+            args.head_branch,
+            "--base",
+            args.base_branch,
+            "--state",
+            "merged",
+            "--limit",
+            "100",
+            "--json",
+            "number,url,state,headRefOid,baseRefName,mergedAt,mergeCommit",
+        ],
+        "gh pr list merged",
+        cwd=repo_root,
+    )
+    data = _require_api_data(result, "merged PR reconciliation")
+    if not isinstance(data, list):
+        raise ShipError("GitHub returned an invalid merged PR list.")
+    matches = [
+        item
+        for item in data
+        if isinstance(item, dict)
+        and item.get("state") == "MERGED"
+        and item.get("headRefOid") == commit
+        and item.get("baseRefName") == args.base_branch
+    ]
+    if not matches:
+        return None
+    if len(matches) > 1:
+        raise ShipError("Multiple merged PRs match the exact shipped commit.")
+    pr = matches[0]
+    merge_commit = pr.get("mergeCommit")
+    merge_oid = (
+        merge_commit.get("oid") if isinstance(merge_commit, dict) else None
+    )
+    if (
+        not isinstance(pr.get("number"), int)
+        or not isinstance(pr.get("url"), str)
+        or not isinstance(pr.get("mergedAt"), str)
+        or not isinstance(merge_oid, str)
+        or not FULL_SHA_RE.fullmatch(merge_oid)
+    ):
+        raise ShipError("GitHub returned incomplete merged PR state.")
+    return {
+        "version": 1,
+        "repository": repository,
+        "commit": commit,
+        "head_branch": args.head_branch,
+        "base_branch": args.base_branch,
+        "phase": "merged",
+        "pr": pr["number"],
+        "url": pr["url"],
+        "merged_at": pr["mergedAt"],
+        "merge_commit": merge_oid,
+    }
+
+
 def _load_or_create_checkpoint(
     args: argparse.Namespace,
     repo_root: pathlib.Path,
@@ -197,9 +268,18 @@ def _load_or_create_checkpoint(
     commit: str,
 ) -> tuple[pathlib.Path, dict[str, Any]]:
     path = _checkpoint_path(repo_root, repository, commit)
-    state = _read_checkpoint(path) if path.is_file() else _new_checkpoint(
-        args, repo_root, repository, commit
-    )
+    if path.is_file():
+        state = _read_checkpoint(path)
+    else:
+        try:
+            state = _new_checkpoint(args, repo_root, repository, commit)
+        except ShipError as original_error:
+            merged_state = _merged_pr_checkpoint(
+                args, repo_root, repository, commit
+            )
+            if merged_state is None:
+                raise original_error
+            state = merged_state
     expected = {
         "repository": repository,
         "commit": commit,

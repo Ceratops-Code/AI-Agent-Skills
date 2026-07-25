@@ -67,8 +67,9 @@ asking.
   checkpoints, concurrent CI/readiness and Codex review gates, exact-head
   merge, live verification, main synchronization, and safe reusable
   `release/local` restoration.
-- Resume the same commit checkpoint after interruption. Do not fall back to
-  separate ensure, merge, or sync commands.
+- Resume with the same full commit after interruption; incomplete work uses its
+  checkpoint, while completed work is reconstructed from the exact merged PR.
+  Do not fall back to separate ensure, merge, or sync commands.
 
 #### 3. Rebuild installed skills
 
