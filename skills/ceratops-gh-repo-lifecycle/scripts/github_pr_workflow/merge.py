@@ -24,9 +24,9 @@ def _validate_readiness(
     repo_root: pathlib.Path,
     *,
     allow_admin_review_bypass: bool,
-) -> None:
+) -> dict[str, object]:
     contract_path = readiness.default_contract_path().resolve()
-    _, findings = readiness.validate_readiness(
+    summary, findings = readiness.validate_readiness(
         pr,
         repo_root,
         contract_path,
@@ -40,6 +40,7 @@ def _validate_readiness(
             if finding.level == ERROR
         ]
         raise WorkflowError("PR readiness failed: " + "; ".join(failures[:8]))
+    return summary
 
 
 def _merge_working_directory(repo: str | None, repo_root: pathlib.Path) -> pathlib.Path:
@@ -51,39 +52,24 @@ def _merge_working_directory(repo: str | None, repo_root: pathlib.Path) -> pathl
     return repo_root
 
 
-def merge_pr(args: argparse.Namespace) -> dict[str, Any]:
-    """Run readiness, review wait, merge mutation, and live verification."""
+def merge_verified_pr(
+    args: argparse.Namespace, *, expected_head: str
+) -> dict[str, Any]:
+    """Merge one already-gated exact head and verify the live result."""
 
     repo_root = args.repo_root.expanduser().resolve(strict=True)
     if not repo_root.is_dir():
         raise WorkflowError(f"repository root is not a directory: {repo_root}")
 
-    _validate_readiness(
+    gh_args = [
+        "gh",
+        "pr",
+        "merge",
         args.pr,
-        repo_root,
-        allow_admin_review_bypass=args.admin,
-    )
-    review = codex_review.wait_for_codex_threads(
-        args.pr,
-        args.repo,
-        wait_seconds=args.wait_seconds,
-        interval_seconds=args.interval_seconds,
-        authors=codex_review.DEFAULT_CODEX_AUTHORS,
-        cwd=repo_root,
-    )
-    if review["active_codex_thread_count"]:
-        raise WorkflowError(
-            f"Codex review gate found {review['active_codex_thread_count']} active thread(s)."
-        )
-
-    # The PR head and checks can change during the review wait.
-    _validate_readiness(
-        args.pr,
-        repo_root,
-        allow_admin_review_bypass=args.admin,
-    )
-
-    gh_args = ["gh", "pr", "merge", args.pr, f"--{args.merge_method}"]
+        f"--{args.merge_method}",
+        "--match-head-commit",
+        expected_head,
+    ]
     if args.admin:
         gh_args.append("--admin")
     if args.auto:
@@ -101,11 +87,15 @@ def merge_pr(args: argparse.Namespace) -> dict[str, Any]:
         "view",
         args.pr,
         "--json",
-        "number,url,state,mergedAt,mergeCommit",
+        "number,url,state,headRefOid,mergedAt,mergeCommit",
     ]
     if args.repo:
         view_args.extend(["--repo", args.repo])
     pr_state = json.loads(require_output(view_args, cwd=working_directory))
+    if pr_state.get("headRefOid") != expected_head:
+        raise WorkflowError(
+            f"PR head changed from expected commit {expected_head!r}."
+        )
     if not args.auto and pr_state.get("state") != "MERGED":
         raise WorkflowError(
             f"PR merge was not verified; live state is {pr_state.get('state')}."
@@ -118,11 +108,53 @@ def merge_pr(args: argparse.Namespace) -> dict[str, Any]:
         "pr": pr_state.get("number"),
         "url": pr_state.get("url"),
         "state": pr_state.get("state"),
+        "head": pr_state.get("headRefOid"),
         "merged_at": pr_state.get("mergedAt"),
         "merge_commit": (
             merge_commit.get("oid") if isinstance(merge_commit, dict) else None
         ),
     }
+
+
+def merge_pr(args: argparse.Namespace) -> dict[str, Any]:
+    """Run readiness, review wait, merge mutation, and live verification."""
+
+    repo_root = args.repo_root.expanduser().resolve(strict=True)
+    if not repo_root.is_dir():
+        raise WorkflowError(f"repository root is not a directory: {repo_root}")
+
+    first_readiness = _validate_readiness(
+        args.pr,
+        repo_root,
+        allow_admin_review_bypass=args.admin,
+    )
+    review = codex_review.wait_for_codex_threads(
+        args.pr,
+        args.repo,
+        wait_seconds=args.wait_seconds,
+        interval_seconds=args.interval_seconds,
+        authors=codex_review.DEFAULT_CODEX_AUTHORS,
+        cwd=repo_root,
+    )
+    if review["active_codex_thread_count"]:
+        raise WorkflowError(
+            f"Codex review gate found {review['active_codex_thread_count']} active thread(s)."
+        )
+    if review.get("head_oid") != first_readiness.get("head_oid"):
+        raise WorkflowError("PR head changed during the Codex review wait.")
+
+    # The PR head and checks can change during the review wait.
+    final_readiness = _validate_readiness(
+        args.pr,
+        repo_root,
+        allow_admin_review_bypass=args.admin,
+    )
+    expected_head = final_readiness.get("head_oid")
+    if not isinstance(expected_head, str) or not expected_head:
+        raise WorkflowError("PR readiness did not return an exact head commit.")
+    if review.get("head_oid") != expected_head:
+        raise WorkflowError("PR head changed after the Codex review gate.")
+    return merge_verified_pr(args, expected_head=expected_head)
 
 
 def build_parser() -> argparse.ArgumentParser:

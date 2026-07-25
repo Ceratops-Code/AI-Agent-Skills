@@ -1,3 +1,4 @@
+import argparse
 import contextlib
 import io
 import json
@@ -18,6 +19,7 @@ sys.path.insert(0, str(SCRIPTS))
 from github_contract_engine import levels  # noqa: E402
 from github_contract_engine import schema_validation  # noqa: E402
 from github_contract_engine import github_api  # noqa: E402
+from github_contract_engine import codeql_disposition  # noqa: E402
 from github_contract_engine.collectors import registries  # noqa: E402
 from github_contract_engine.collectors.local_repository import (  # noqa: E402
     classify_repository,
@@ -597,9 +599,201 @@ class GHContractStateEngineTests(unittest.TestCase):
         self.assertNotIn("user:pass", output)
         self.assertNotIn("gho_", output)
         self.assertEqual(json.loads(output), safe)
+        compact_stream = io.StringIO()
+        with contextlib.redirect_stdout(compact_stream):
+            write_json(report, compact=True)
+        compact_output = compact_stream.getvalue()
+        self.assertNotIn("secret-value", compact_output)
+        self.assertNotIn("private@example.com", compact_output)
+        self.assertNotIn("hunter2", compact_output)
+        self.assertNotIn("user:pass", compact_output)
+        self.assertNotIn("gho_", compact_output)
+        self.assertEqual(json.loads(compact_output), safe)
+
+    def test_codeql_evidence_binds_alert_commit_trace_and_sanitized_output(self):
+        commit = "a" * 40
+        sentinel = "CODEQL_SENTINEL_token_value"
+        alert = {
+            "number": 42,
+            "state": None,
+            "tool": {"name": "CodeQL"},
+            "rule": {"id": "py/clear-text-logging-sensitive-data"},
+            "most_recent_instance": {
+                "state": "open",
+                "commit_sha": commit,
+                "location": {
+                    "path": "github_contract_engine/format_report.py",
+                    "start_line": 126,
+                },
+            },
+        }
+        evidence = {
+            "version": 1,
+            "repository": "owner/repo",
+            "alert_number": 42,
+            "commit_sha": commit,
+            "disposition": "suppression",
+            "rule_id": "py/clear-text-logging-sensitive-data",
+            "source_to_sink": {
+                "exercised": True,
+                "trace": [
+                    {
+                        "role": "source",
+                        "path": "tests/test_gh_validator_summary.py",
+                        "line": 1,
+                    },
+                    {
+                        "role": "sink",
+                        "path": "github_contract_engine/format_report.py",
+                        "line": 126,
+                    },
+                ],
+            },
+            "execution": {
+                "command": ["python", "-m", "unittest"],
+                "exit_code": 0,
+                "sentinel_credentials": {"token": sentinel},
+                "captured_output": '{"token":"<redacted>"}',
+            },
+        }
+
+        result = codeql_disposition.validate_evidence(
+            evidence,
+            alert,
+            repository="owner/repo",
+            alert_number=42,
+            commit=commit,
+            disposition="suppression",
+        )
+        self.assertTrue(result["sanitized"])
+        self.assertEqual(result["sentinel_count"], 1)
+
+        execution = evidence["execution"]
+        self.assertIsInstance(execution, dict)
+        if isinstance(execution, dict):
+            execution["captured_output"] = sentinel
+        with self.assertRaisesRegex(
+            codeql_disposition.DispositionError, "still contains a sentinel"
+        ):
+            codeql_disposition.validate_evidence(
+                evidence,
+                alert,
+                repository="owner/repo",
+                alert_number=42,
+                commit=commit,
+                disposition="suppression",
+            )
+        alert_instance = alert["most_recent_instance"]
+        self.assertIsInstance(alert_instance, dict)
+        if isinstance(alert_instance, dict):
+            alert_instance["state"] = "fixed"
+        with self.assertRaisesRegex(
+            codeql_disposition.DispositionError, "instance must still be open"
+        ):
+            codeql_disposition.validate_evidence(
+                evidence,
+                alert,
+                repository="owner/repo",
+                alert_number=42,
+                commit=commit,
+                disposition="suppression",
+            )
+
+    def test_codeql_dismissal_requires_explicit_authorization_before_patch(self):
+        commit = "a" * 40
+        alert = {
+            "number": 42,
+            "state": "open",
+            "tool": {"name": "CodeQL"},
+            "rule": {"id": "py/clear-text-logging-sensitive-data"},
+            "most_recent_instance": {
+                "state": "open",
+                "commit_sha": commit,
+                "location": {"path": "safe.py", "start_line": 10},
+            },
+        }
+        evidence = {
+            "version": 1,
+            "repository": "owner/repo",
+            "alert_number": 42,
+            "commit_sha": commit,
+            "disposition": "dismissal",
+            "rule_id": "py/clear-text-logging-sensitive-data",
+            "source_to_sink": {
+                "exercised": True,
+                "trace": [
+                    {"role": "source", "path": "test_safe.py", "line": 5},
+                    {"role": "sink", "path": "safe.py", "line": 10},
+                ],
+            },
+            "execution": {
+                "command": ["python", "-m", "unittest"],
+                "exit_code": 0,
+                "sentinel_credentials": {
+                    "password": "CODEQL_SENTINEL_password_value"
+                },
+                "captured_output": '{"password":"<redacted>"}',
+            },
+        }
+        args = argparse.Namespace(
+            repo="owner/repo",
+            alert_number=42,
+            commit=commit,
+            evidence=pathlib.Path("evidence.json"),
+            action="dismissal",
+            dismissed_reason="false positive",
+            dismissed_comment="Validated sanitizer path.",
+            authorize_dismissal=False,
+        )
+        with (
+            mock.patch.object(codeql_disposition, "load_json", return_value=evidence),
+            mock.patch.object(
+                codeql_disposition, "fetch_alert", return_value=alert
+            ),
+            mock.patch.object(codeql_disposition, "run_gh_api") as patch_alert,
+        ):
+            pending = codeql_disposition.disposition(args)
+
+        self.assertEqual(pending["status"], "authorization_required")
+        self.assertFalse(pending["mutated"])
+        patch_alert.assert_not_called()
+        args.authorize_dismissal = True
+        updated = json.loads(json.dumps(alert))
+        updated["state"] = "dismissed"
+        updated["dismissed_reason"] = "false positive"
+        with (
+            mock.patch.object(codeql_disposition, "load_json", return_value=evidence),
+            mock.patch.object(
+                codeql_disposition, "fetch_alert", return_value=alert
+            ),
+            mock.patch.object(
+                codeql_disposition,
+                "run_gh_api",
+                return_value=ApiResult(
+                    True,
+                    "PATCH",
+                    "/repos/owner/repo/code-scanning/alerts/42",
+                    data=updated,
+                ),
+            ) as patch_alert,
+        ):
+            result = codeql_disposition.disposition(args)
+
+        self.assertEqual(result["status"], "dismissed")
+        self.assertTrue(result["mutated"])
+        patch_alert.assert_called_once_with(
+            "PATCH",
+            "/repos/owner/repo/code-scanning/alerts/42",
+            {
+                "state": "dismissed",
+                "dismissed_reason": "false positive",
+                "dismissed_comment": "Validated sanitizer path.",
+            },
+        )
 
     def test_contract_entrypoints_use_sanitized_json_writer(self):
         entrypoints = (
+            "codeql_disposition.py",
             "collect_non_deterministic_evidence.py",
             "organization_validator.py",
             "repository_validator.py",
@@ -610,6 +804,17 @@ class GHContractStateEngineTests(unittest.TestCase):
             )
             self.assertIn("write_json(", text)
             self.assertNotIn("print(json.dumps(", text)
+
+    def test_codex_review_uses_the_existing_github_api_client(self):
+        text = (SCRIPTS / "github_pr_workflow" / "codex_review.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            "from github_contract_engine.github_api import "
+            "run_gh_graphql, run_json_command",
+            text,
+        )
+        self.assertNotIn("subprocess.run", text)
 
     def test_remediation_registry_covers_contract_actions(self):
         actions = {
@@ -689,17 +894,26 @@ class GHContractStateEngineTests(unittest.TestCase):
         text = (SCRIPTS / "github_pr_workflow" / "merge.py").read_text(
             encoding="utf-8"
         )
-        readiness_call = "    _validate_readiness("
+        merge_section = text[text.index("def merge_pr(") :]
+        readiness_call = "_validate_readiness("
         positions = [
             index
-            for index in range(len(text))
-            if text.startswith(readiness_call, index)
+            for index in range(len(merge_section))
+            if merge_section.startswith(readiness_call, index)
         ]
         self.assertEqual(len(positions), 2)
-        wait_position = text.index("review = codex_review.wait_for_codex_threads(")
+        wait_position = merge_section.index(
+            "review = codex_review.wait_for_codex_threads("
+        )
         self.assertLess(positions[0], wait_position)
         self.assertLess(wait_position, positions[1])
-        self.assertLess(positions[1], text.index('gh_args = ["gh", "pr", "merge"'))
+        self.assertLess(
+            positions[1],
+            merge_section.index(
+                "return merge_verified_pr(args, expected_head=expected_head)"
+            ),
+        )
+        self.assertIn('"--match-head-commit"', text)
 
         sync_text = (SCRIPTS / "github_pr_workflow" / "sync.py").read_text(
             encoding="utf-8"

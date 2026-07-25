@@ -116,14 +116,19 @@ def sanitize_for_output(value: Any, path: tuple[str, ...] = ()) -> Any:
     return result
 
 
-def write_json(payload: dict[str, Any]) -> None:
+def write_json(payload: dict[str, Any], *, compact: bool = False) -> None:
     """Write one sanitized JSON document without exposing collected secrets."""
 
     sanitized_payload = sanitize_for_output(payload)
+    if compact:
+        serialized = json.dumps(
+            sanitized_payload, separators=(",", ":"), sort_keys=True
+        )
+    else:
+        serialized = json.dumps(sanitized_payload, indent=2, sort_keys=True)
     # CodeQL cannot infer the custom recursive sanitizer. The adjacent
-    # regression test verifies that sensitive inputs do not reach stdout.
-    # codeql[py/clear-text-logging-sensitive-data]
-    sys.stdout.write(json.dumps(sanitized_payload, indent=2, sort_keys=True))
+    # regression test verifies both output modes before this single sink.
+    sys.stdout.write(serialized)  # codeql[py/clear-text-logging-sensitive-data]
     sys.stdout.write("\n")
 
 

@@ -112,7 +112,12 @@ def parse_error(stdout: str, stderr: str) -> tuple[int | None, str]:
 
 
 def run_gh_api(
-    method: str, endpoint: str, body: Any = None, *, paginate: bool = False
+    method: str,
+    endpoint: str,
+    body: Any = None,
+    *,
+    paginate: bool = False,
+    cwd: pathlib.Path | None = None,
 ) -> ApiResult:
     """Call `gh api`; pagination is merged into one list when possible."""
 
@@ -126,6 +131,7 @@ def run_gh_api(
     command.append(endpoint)
     process = subprocess.run(
         command,
+        cwd=cwd,
         input=json.dumps(body) if body is not None else None,
         text=True,
         encoding="utf-8",
@@ -173,11 +179,18 @@ def run_gh_api(
     )
 
 
-def run_gh_graphql(query: str, variables: dict[str, Any], label: str) -> ApiResult:
+def run_gh_graphql(
+    query: str,
+    variables: dict[str, Any],
+    label: str,
+    *,
+    cwd: pathlib.Path | None = None,
+) -> ApiResult:
     """Call GitHub GraphQL through the authenticated GitHub CLI."""
 
     process = subprocess.run(
         ["gh", "api", "graphql", "--input", "-"],
+        cwd=cwd,
         input=json.dumps({"query": query, "variables": variables}),
         text=True,
         encoding="utf-8",
@@ -195,19 +208,37 @@ def run_gh_graphql(query: str, variables: dict[str, Any], label: str) -> ApiResu
             raw_stdout=process.stdout,
             raw_stderr=process.stderr,
         )
+    data = json.loads(process.stdout) if process.stdout.strip() else None
+    if isinstance(data, dict) and data.get("errors"):
+        return ApiResult(
+            False,
+            "GRAPHQL",
+            label,
+            message=json.dumps(data["errors"], ensure_ascii=True),
+        )
     return ApiResult(
         True,
         "GRAPHQL",
         label,
-        data=json.loads(process.stdout) if process.stdout.strip() else None,
+        data=data,
     )
 
 
-def run_json_command(command: list[str], label: str) -> ApiResult:
+def run_json_command(
+    command: list[str],
+    label: str,
+    *,
+    cwd: pathlib.Path | None = None,
+) -> ApiResult:
     """Run a first-party CLI command whose stdout is JSON."""
 
     process = subprocess.run(
-        command, text=True, encoding="utf-8", errors="replace", capture_output=True
+        command,
+        cwd=cwd,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        capture_output=True,
     )
     if process.returncode:
         status, message = parse_error(process.stdout, process.stderr)

@@ -6,6 +6,7 @@ import argparse
 import sys
 from collections.abc import Callable
 
+from . import codeql_disposition
 from . import collect_non_deterministic_evidence
 from . import organization_validator
 from . import repository_validator
@@ -23,7 +24,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "command",
         nargs="?",
-        choices=("collect", "check-source-docs", "validate"),
+        choices=("collect", "check-source-docs", "codeql-disposition", "validate"),
         help="operation to run",
     )
     return parser
@@ -55,6 +56,7 @@ def main(argv: list[str] | None = None) -> int:
     direct: dict[str, Command] = {
         "collect": collect_non_deterministic_evidence.main,
         "check-source-docs": source_documents.main,
+        "codeql-disposition": codeql_disposition.main,
     }
     if command in direct:
         return direct[command](arguments)

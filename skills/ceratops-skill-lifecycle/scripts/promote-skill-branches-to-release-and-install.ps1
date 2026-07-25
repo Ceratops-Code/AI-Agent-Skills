@@ -8,9 +8,9 @@ param(
 )
 
 # Skill-local helper for deterministic change-promotion work. It prepares the
-# reusable release branch, fast-forwards approved branches, validates and
-# installs the promoted snapshot, checks pending local work, and emits one
-# compact JSON summary on success.
+# reusable release branch, fast-forwards approved branches, checks and cleans
+# only those approved sources, then validates and installs the promoted snapshot
+# and emits one compact JSON summary on success.
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
@@ -155,13 +155,6 @@ $installScript = Join-Path $resolvedSkillsRepoRoot "scripts\install-skills.py"
 if (-not (Test-Path -LiteralPath $installScript -PathType Leaf)) {
     throw "Missing repository skill installer: $installScript"
 }
-Invoke-QuietNative -FilePath "python" -Arguments @(
-    $installScript,
-    "--repo-root",
-    $resolvedSkillsRepoRoot
-)
-$validation = "full"
-$runtimeInstall = "managed"
 
 $pendingArgs = @(
     "-NoProfile",
@@ -176,8 +169,23 @@ $pendingArgs = @(
     "-ReleaseBranch",
     $ReleaseBranch
 )
+if ($ApprovedBranch.Count -gt 0) {
+    $approvedBranchData = [Convert]::ToBase64String(
+        [Text.Encoding]::UTF8.GetBytes(($ApprovedBranch -join "`n"))
+    )
+    $pendingArgs += "-ApprovedBranchData"
+    $pendingArgs += $approvedBranchData
+}
 $pendingArgs += "-CleanMergedBranches"
 Invoke-QuietNative -FilePath "powershell" -Arguments $pendingArgs
+
+Invoke-QuietNative -FilePath "python" -Arguments @(
+    $installScript,
+    "--repo-root",
+    $resolvedSkillsRepoRoot
+)
+$validation = "full"
+$runtimeInstall = "managed"
 
 $currentBranch = (Get-GitLines @("branch", "--show-current") | Select-Object -First 1).Trim()
 $headSha = (Get-GitLines @("rev-parse", "HEAD") | Select-Object -First 1).Trim()

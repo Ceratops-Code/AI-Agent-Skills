@@ -4,10 +4,17 @@
 
 Take an existing published repo from local changes to a verified merged result.
 Publish external artifacts only when the change affects a releasable package,
-image, module, binary, or other public artifact. Use the `merge-pr` action for
-final PR readiness and merge.
+image, module, binary, or other public artifact. Reuse the readiness and merge
+operations owned by `merge-pr` through the resume-safe ship helper.
 
 ## Context
+
+### Script Bundle
+
+- (D) Resume-safe ship helper:
+  `python -m github_pr_workflow ship --repo-root PATH --repo OWNER/REPO
+  --head-branch BRANCH --base-branch BRANCH --remote-name REMOTE
+  [--commit FULL_SHA] [--reusable-head]`.
 
 ### Inputs To Capture
 
@@ -85,16 +92,18 @@ Infer missing inputs from local files and live repo state before asking.
 #### 5. PR, CI, merge, and publish
 
 - Create or update a branch and commit intentionally.
-- Push the branch and create or update a PR with concise change and validation
-  evidence.
-- Wait for required CI, code scanning, and branch protection checks, and fix
-  in-scope failures.
-- When only PR finalization remains, continue with `merge-pr`.
-- After merge, run `python -m github_pr_workflow sync --repo-root PATH` from the
-  lifecycle skill's `scripts` folder to sync the local default branch, then
-  prune stale refs, remove temporary worktrees as soon as their branches are no
-  longer needed, and keep a safety branch or worktree only with an explicit
-  reason.
+- Run the deterministic ship helper. It checkpoints the repository and exact
+  head commit, ensures the PR, waits on CI/readiness and Codex review
+  concurrently, rechecks both gates at that commit, merges with an exact-head
+  precondition, synchronizes the local default branch, and emits only state
+  changes.
+- Pass `--reusable-head` only for a reusable release or integration head. The
+  helper aligns its local branch after merge and safely restores or aligns the
+  remote only when it is absent or still points at the shipped commit.
+- Resume with the same arguments and full commit after interruption; do not
+  create a second PR or bypass a failed checkpointed gate.
+- Remove temporary worktrees when their branches are no longer needed, and keep
+  a safety branch or worktree only with an explicit reason.
 - Publish and verify touched artifacts through the package manager, registry
   CLI, or registry API that owns the artifact surface.
 
@@ -102,7 +111,8 @@ Infer missing inputs from local files and live repo state before asking.
 
 ### Completion Gate
 
-- PR readiness and merge were handled through `merge-pr`.
+- PR publication, concurrent gates, exact-head merge, local synchronization,
+  and reusable-branch restoration were handled by the ship helper.
 - Changed workflow files use full-SHA action refs when the run touched GitHub
   Actions workflows or settings.
 - Local state is verified: default branch, worktree, remotes, refs, generated

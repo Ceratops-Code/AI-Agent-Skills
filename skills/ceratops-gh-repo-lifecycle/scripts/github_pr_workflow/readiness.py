@@ -89,6 +89,7 @@ def gh_pr_view(selector: str | None, cwd: pathlib.Path) -> dict[str, Any]:
         "reviewDecision",
         "statusCheckRollup",
         "headRefName",
+        "headRefOid",
         "baseRefName",
         "autoMergeRequest",
     ]
@@ -222,6 +223,7 @@ def pr_readiness(selector: str | None, cwd: pathlib.Path, *, allow_admin_review_
         "url": pr_data.get("url"),
         "base": pr_data.get("baseRefName"),
         "head": pr_data.get("headRefName"),
+        "head_oid": pr_data.get("headRefOid"),
     }
     return summary, findings
 

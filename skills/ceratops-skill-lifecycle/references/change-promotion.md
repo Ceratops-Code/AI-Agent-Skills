@@ -30,7 +30,8 @@ installed runtime only when this action is intentionally selected.
   -RemoteName origin` from the selected lifecycle bundle.
 - (D) Merged-work cleanup and pending local work check:
   `scripts/check-pending-release-work.ps1 -SkillsRepoRoot <repo>
-  -CleanMergedBranches` from the selected lifecycle bundle.
+  -ApprovedBranchData <approved-branch-payload> -CleanMergedBranches` from the
+  selected lifecycle bundle.
 
 ### Inputs To Capture
 
@@ -38,8 +39,7 @@ installed runtime only when this action is intentionally selected.
 - Skill repo checkout path and intended local `release/*` branch.
 - Whether the release branch should append more branches or be rebuilt manually
   before staging.
-- Any local worktree or branch with staged, unstaged, untracked, or committed
-  work not included in the intended release branch.
+- Dirty or unmerged state in the approved branches or their worktrees.
 - Local validation expectations for the staged batch.
 - Target repository compatibility manifest and selected lifecycle helper
   bundle.
@@ -61,11 +61,10 @@ Infer missing inputs from local repo state before asking.
 
 #### 1. Inspect source and skills repo state
 
-- Inspect source worktree branches, skill repo checkout branch, installed
-  managed skill-copy state when applicable, and duplicated installed copies when
-  that runtime exists.
-- Inspect remaining local worktrees and local branches before ship handoff so
-  non-staged work is not silently left behind.
+- Inspect approved source worktree branches, the skill repo checkout branch,
+  installed managed skill-copy state when applicable, and duplicated installed
+  copies when that runtime exists.
+- Do not inspect unrelated worktrees or branches during promotion.
 - Confirm each branch to stage is intentionally committed and available to the
   shared repo.
 - Refresh remote refs with `git fetch --prune origin` before judging remote
@@ -83,8 +82,9 @@ Infer missing inputs from local repo state before asking.
   branches that passed the blocking review; it owns release-branch preparation,
   `git diff --check (git
   merge-base HEAD BRANCH) BRANCH`, fast-forward-only branch promotion,
-  profile-aware full validation, runtime installation, merged-work cleanup,
-  pending-work detection, and compact ready/not-ready output.
+  one approved-source cleanup and pending-work check after all approved
+  branches are promoted and before profile-aware full validation and runtime
+  installation, and compact ready/not-ready output.
 - The helper must stop unless the current release `HEAD` is an ancestor of each
   approved branch; rebase a divergent task branch onto the release branch in
   its task worktree before promotion.
@@ -106,11 +106,10 @@ Infer missing inputs from local repo state before asking.
 
 #### 4. Report staged state
 
-- Before reporting a staged batch as ready, run merged-work cleanup with
+- Before reporting a staged batch as ready, run approved-source cleanup with
   `-CleanMergedBranches`.
-- If pending-work check reports other dirty worktree, untracked work, staged
-  work, unstaged work, or branch commits outside the release branch, stop before
-  shipping and ask whether to include, retain, or clean it.
+- If the pending-work check reports dirty or unmerged approved work, stop before
+  installation.
 - Report active local `release/*` branch, staged task branches, and blockers
   that still prevent shipping.
 
@@ -121,12 +120,11 @@ Infer missing inputs from local repo state before asking.
 - The skill repo checkout is on the intended local `release/*` branch.
 - Every branch promoted into the staged branch had a clean blocking local code
   review against the then-current release branch.
-- Requested task branches were staged; clean source worktrees and source
-  branches already merged into the staged branch were removed, and unmerged or
-  dirty sources remain unless cleanup was separately requested.
-- Pending local work check passed before ship handoff when available, or every
-  reported non-staged branch or worktree is covered by explicit user choice,
-  retention reason, or blocker.
+- Requested task branches were staged; their clean source worktrees and branches
+  already merged into the staged branch were removed, while dirty or unmerged
+  approved sources remain and block installation.
+- Unrelated local branches and worktrees were not inspected, modified, or
+  removed.
 - Installed skill copies are managed runtime outputs with fresh runtime
   manifests when the repo uses managed runtime copies.
 - Local validation batch passed or blocking failures were reported when

@@ -1,6 +1,6 @@
 ---
 name: ceratops-gh-repo-lifecycle
-description: Route Ceratops GitHub repository lifecycle work to action references for create-or-publish, contracts-review, health-audit, dependency-maintenance, ensure-pr, ship-change, and merge-pr work. Use when Codex should create or harden a repo, review GitHub/code/repo/org/PR/artifact contracts, audit or repair repo health, process dependency PRs or alerts, publish a prepared branch as a PR, ship local changes through GitHub, or finalize a ready PR.
+description: Route Ceratops GitHub repository lifecycle work to action references for create-or-publish, contracts-review, codeql-disposition, health-audit, dependency-maintenance, ensure-pr, ship-change, and merge-pr work. Use when Codex should create or harden a repo, review GitHub/code/repo/org/PR/artifact contracts, disposition a CodeQL alert, audit or repair repo health, process dependency PRs or alerts, publish a prepared branch as a PR, ship local changes through GitHub, or finalize a ready PR.
 ---
 
 # Ceratops GH Repo Lifecycle
@@ -10,7 +10,7 @@ description: Route Ceratops GitHub repository lifecycle work to action reference
 Route GitHub repository lifecycle work to the narrowest action reference, then
 follow that reference as the execution contract. Keep one live GitHub repo
 capability surface instead of separate skill identities for adjacent repo
-creation, health, dependency, shipping, and merge actions.
+creation, health, dependency, security disposition, shipping, and merge actions.
 
 ## Context
 
@@ -19,6 +19,8 @@ creation, health, dependency, shipping, and merge actions.
 - Create or publish a repo: `references/create-or-publish.md`
 - Review GitHub org, GitHub repo, PR readiness, repo-code, artifact, registry,
   and release contracts: `references/contracts-review.md`
+- Validate or apply a CodeQL alert disposition:
+  `references/codeql-disposition.md`
 - Audit or repair repo health: `references/health-audit.md`
 - Maintain dependency PRs or alerts: `references/dependency-maintenance.md`
 - Push a prepared branch and ensure its PR: `references/ensure-pr.md`
@@ -29,6 +31,8 @@ creation, health, dependency, shipping, and merge actions.
 
 - Target repo, local checkout, PR, branch, artifact, dependency queue, or
   creation request that identifies the action.
+- Current CodeQL alert, exact commit, and sanitizer-path evidence when a
+  suppression or dismissal is requested.
 - Whether the work is first publication, existing repo health, dependency
   maintenance, prepared-branch PR publication, local change shipping, or PR
   finalization.
@@ -44,22 +48,25 @@ repo data before asking.
 
 - Use the action references as the source of truth for scripts, readiness gates,
   cleanup rules, and output contracts.
-- Keep repo creation, contract review, repo health, dependency, PR publication,
-  shipping, and merge behavior inside this multi-action skill and its
-  `references/` files; do not introduce alias skills or old-name shims.
-- For PR finalization reached from a broader shipping or dependency action,
-  continue with `references/merge-pr.md` instead of duplicating merge gates.
+- Keep repo creation, contract review, CodeQL disposition, repo health,
+  dependency, PR publication, shipping, and merge behavior inside this
+  multi-action skill and its `references/` files; do not introduce alias skills
+  or old-name shims.
+- Use `references/merge-pr.md` for standalone PR finalization; broader shipping
+  must reuse its readiness and merge operations through the ship helper instead
+  of duplicating those gates.
 - Run broad repo or artifact health checks only when the selected action
   requires them or a concrete uncertainty makes them relevant.
 
 ### Boundaries
 
-- Use this skill for GitHub repo creation or publication, existing repo health,
-  dependency maintenance, local repo change shipping, and PR merge or auto-merge
-  decisions.
+- Use this skill for GitHub repo creation or publication, CodeQL disposition,
+  existing repo health, dependency maintenance, local repo change shipping, and
+  PR merge or auto-merge decisions.
 - If the task is skill creation, skill mutation, local skill release promotion,
   or staged skill remote shipping, use `$ceratops-skill-lifecycle`; accept its
-  explicit `ensure-pr` handoff for the GitHub publication step.
+  explicit `ship-change` handoff for GitHub publication, gates, merge, and
+  synchronization.
 - If the task is contract review rather than lifecycle execution, use
   `references/contracts-review.md`.
 - If the task is general GitHub triage with no Ceratops lifecycle action, use
@@ -73,6 +80,8 @@ repo data before asking.
   first-time hardening, or needs first artifact publication.
 - Use `contracts-review` when the task is explicit GitHub org, GitHub repo, PR
   readiness, repository-code, artifact, registry, or release contract upkeep.
+- Use `codeql-disposition` when a current CodeQL alert may be suppressed or
+  dismissed after exact sanitizer-path evidence.
 - Use `health-audit` when the repo exists and the main goal is validation,
   stale-state cleanup, or safe health repair.
 - Use `dependency-maintenance` when the main goal is dependency-bot PRs,

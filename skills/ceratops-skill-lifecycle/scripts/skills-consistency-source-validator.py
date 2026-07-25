@@ -40,6 +40,7 @@ RUNTIME_BUILDER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "ru
 RUNTIME_VALIDATOR = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "runtime" / "skills-consistency-runtime-validator.py"
 FAST_CHANGE_READINESS_HELPER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "validate-fast-change-readiness.ps1"
 PROMOTION_HELPER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "promote-skill-branches-to-release-and-install.ps1"
+PENDING_WORK_HELPER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "check-pending-release-work.ps1"
 VALIDATOR = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "skills-consistency-source-validator.py"
 WORKFLOW = ROOT / ".github" / "workflows" / "validate.yml"
 SKILL_DETERMINISTIC_CONTRACT = pathlib.Path("skills/ceratops-skill-lifecycle/references/contracts/skill-deterministic-contract.json")
@@ -103,33 +104,6 @@ SECRET_PATTERNS = [
 TEXT_SUFFIXES = {".md", ".py", ".ps1", ".json", ".yml", ".yaml", ".toml", ".txt"}
 IGNORED_REPO_DIRS = {".git", "__pycache__", ".mypy_cache", ".pytest_cache", ".ruff_cache", "node_modules"}
 IGNORED_REPO_FALLBACK_DIRS = IGNORED_REPO_DIRS | {".venv"}
-GH_LIFECYCLE_ACTIONS = {
-    "contracts-review.md": "python -m github_contract_engine validate consistency",
-    "create-or-publish.md": "--surface all --subset create",
-    "dependency-maintenance.md": "--select repo:dependency --select code:dependency",
-    "health-audit.md": "--surface all --subset health",
-    "ensure-pr.md": "python -m github_pr_workflow ensure-pr",
-    "merge-pr.md": "python -m github_pr_workflow merge",
-    "ship-change.md": "merge-pr",
-}
-SKILL_LIFECYCLE_ACTIONS = {
-    "create.md": "templates/skill-sections.json",
-    "make-repo-compatible.md": "ceratops-compatible",
-    "update.md": "runtime payloads",
-    "skills-contract-review.md": "skill-deterministic-contract.json",
-    "skills-consistency-review.md": "--repo-root",
-    "fast-change.md": "release/*",
-    "change-promotion.md": "promote-skill-branches-to-release-and-install.ps1",
-    "ship-to-remote.md": "ensure-pr",
-}
-TASK_LIFECYCLE_ACTIONS = {
-    "execute-in-stages.md": "staged contingent execution",
-    "fixloop-break.md": "repeated failed fix loop",
-    "manual-resume.md": "same-thread task",
-    "full-handoff.md": "whole task in a new thread",
-    "side-task-handoff.md": "side task in a new thread",
-    "closure-check.md": "required work remains",
-}
 
 
 def is_ignored_repo_path(path: pathlib.Path) -> bool:
@@ -762,6 +736,11 @@ def check_multi_action_skill_contract(
             if not action_path.is_file():
                 errors.append(f"{skill_name}: missing action reference {action_reference}")
                 continue
+            action_text = action_path.read_text(encoding="utf-8")
+            if action_text.startswith("---"):
+                errors.append(
+                    f"{skill_name}: {action_reference} still looks like a standalone skill"
+                )
             if not has_action_title(action_path):
                 errors.append(
                     f"{skill_name}: {action_reference} must be titled # <Action Name> Action"
@@ -779,42 +758,9 @@ def check_multi_action_skill_contract(
 
 
 def check_skill_scope_validator() -> list[str]:
-    """Check objective multi-action skill rules without judging prose quality."""
+    """Check stable semantic boundaries not derivable from action indexes."""
 
     errors: list[str] = []
-    multi_action_specs = {
-        "ceratops-gh-repo-lifecycle": GH_LIFECYCLE_ACTIONS,
-        "ceratops-skill-lifecycle": SKILL_LIFECYCLE_ACTIONS,
-        "ceratops-task-lifecycle": TASK_LIFECYCLE_ACTIONS,
-    }
-    for skill_name, expected_actions in multi_action_specs.items():
-        skill_dir = SKILLS_DIR / skill_name
-        multi_action_path = skill_dir / "SKILL.md"
-        if not multi_action_path.is_file():
-            errors.append(f"{skill_name}: missing multi-action SKILL.md")
-            continue
-        multi_action_text = multi_action_path.read_text(encoding="utf-8")
-        actual_actions = {
-            path.name
-            for path in (skill_dir / "references").glob("*.md")
-            if has_action_title(path)
-        }
-        unexpected_actions = sorted(actual_actions - set(expected_actions))
-        for action_file in unexpected_actions:
-            errors.append(f"{skill_name}: unexpected action reference references/{action_file}")
-        for action_file, snippet in expected_actions.items():
-            action_rel = f"references/{action_file}"
-            action_path = skill_dir / action_rel
-            if action_rel not in multi_action_text:
-                errors.append(f"{skill_name}: multi-action skill does not list {action_rel}")
-            if not action_path.is_file():
-                errors.append(f"{skill_name}: missing action reference {action_rel}")
-                continue
-            action_text = action_path.read_text(encoding="utf-8")
-            if action_text.startswith("---"):
-                errors.append(f"{skill_name}: {action_rel} still looks like a standalone skill")
-            if snippet not in action_text:
-                errors.append(f"{skill_name}: {action_rel} missing expected scope command {snippet}")
     merge_text = (SKILLS_DIR / "ceratops-gh-repo-lifecycle" / "references" / "merge-pr.md").read_text(encoding="utf-8")
     if "python -m github_contract_engine validate repo" in merge_text:
         errors.append("ceratops-gh-repo-lifecycle: merge-pr action must not run repo/artifact contract validation")
@@ -835,6 +781,7 @@ def check_validation_command_surface() -> list[str]:
     runtime_validator_text = RUNTIME_VALIDATOR.read_text(encoding="utf-8") if RUNTIME_VALIDATOR.is_file() else ""
     fast_change_readiness_text = FAST_CHANGE_READINESS_HELPER.read_text(encoding="utf-8") if FAST_CHANGE_READINESS_HELPER.is_file() else ""
     promotion_helper_text = PROMOTION_HELPER.read_text(encoding="utf-8") if PROMOTION_HELPER.is_file() else ""
+    pending_work_helper_text = PENDING_WORK_HELPER.read_text(encoding="utf-8") if PENDING_WORK_HELPER.is_file() else ""
     readme_text = README.read_text(encoding="utf-8") if README.is_file() else ""
     workflow_text = WORKFLOW.read_text(encoding="utf-8") if WORKFLOW.is_file() else ""
 
@@ -856,6 +803,42 @@ def check_validation_command_surface() -> list[str]:
         errors.append("release promotion must not expose a validation selector")
     if "scripts\\install-skills.py" not in promotion_helper_text or '"python"' not in promotion_helper_text:
         errors.append("release promotion must install through the target repository Python installer")
+    pending_cleanup = '$pendingArgs += "-CleanMergedBranches"'
+    pending_approved_data = '$pendingArgs += "-ApprovedBranchData"'
+    pending_call = 'Invoke-QuietNative -FilePath "powershell" -Arguments $pendingArgs'
+    fast_forward_call = 'Invoke-GitQuiet @("merge", "--ff-only", $branch)'
+    installer_guard = 'if (-not (Test-Path -LiteralPath $installScript -PathType Leaf))'
+    install_call = 'Invoke-QuietNative -FilePath "python" -Arguments @('
+    if (
+        promotion_helper_text.count(pending_cleanup) != 1
+        or promotion_helper_text.count(pending_approved_data) != 1
+        or promotion_helper_text.count(pending_call) != 1
+    ):
+        errors.append("release promotion must run one merged-work cleanup and pending-work check")
+    elif not (
+        promotion_helper_text.find(fast_forward_call)
+        < promotion_helper_text.find(installer_guard)
+        < promotion_helper_text.find(pending_approved_data)
+        < promotion_helper_text.find(pending_cleanup)
+        < promotion_helper_text.find(pending_call)
+        < promotion_helper_text.find(install_call)
+    ):
+        errors.append(
+            "release promotion must guard the installer and check approved pending work "
+            "after fast-forwards and before installation"
+        )
+    pending_scope_markers = (
+        "ApprovedBranchData",
+        "FromBase64String",
+        "Get-ApprovedBranchWorktreePath",
+        '"--format=%(worktreepath)"',
+    )
+    if (
+        any(marker not in pending_work_helper_text for marker in pending_scope_markers)
+        or '"worktree", "list"' in pending_work_helper_text
+        or '"--format=%(refname:short)"' in pending_work_helper_text
+    ):
+        errors.append("release pending-work checks must be limited to approved branches and their worktrees")
     if (
         '"merge", "--ff-only"' not in promotion_helper_text
         or '"merge", "--no-edit"' in promotion_helper_text
@@ -1198,7 +1181,7 @@ def main() -> int:
     global ROOT, SKILLS_DIR, README, SECTION_MANIFEST, CERATOPS_ICON_SOURCE
     global BOOTSTRAP_INSTALLER, RUNTIME_INSTALLER, BUNDLE_RESOLVER, INSTALLER_TEMPLATE
     global INSTALLER_SYNCHRONIZER, RUNTIME_BUILDER, RUNTIME_VALIDATOR, FAST_CHANGE_READINESS_HELPER
-    global PROMOTION_HELPER, VALIDATOR, WORKFLOW
+    global PROMOTION_HELPER, PENDING_WORK_HELPER, VALIDATOR, WORKFLOW
 
     parser = argparse.ArgumentParser(description="Validate Ceratops-compatible skill source and runtime-generation inputs.")
     parser.add_argument("--repo-root", type=pathlib.Path, help="Source skills repository root.")
@@ -1226,6 +1209,7 @@ def main() -> int:
         RUNTIME_VALIDATOR = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "runtime" / "skills-consistency-runtime-validator.py"
         FAST_CHANGE_READINESS_HELPER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "validate-fast-change-readiness.ps1"
         PROMOTION_HELPER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "promote-skill-branches-to-release-and-install.ps1"
+        PENDING_WORK_HELPER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "check-pending-release-work.ps1"
         VALIDATOR = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "skills-consistency-source-validator.py"
         WORKFLOW = ROOT / ".github" / "workflows" / "validate.yml"
 

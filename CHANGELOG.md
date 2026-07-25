@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Added exact-commit, checkpointed GitHub PR shipping with concurrent CI and
+  Codex-review gates, exact-head merge, local synchronization, and safe
+  reusable-branch restoration.
+- Added evidence-gated CodeQL disposition that requires sentinel source-to-sink
+  sanitizer proof and explicit authorization before alert dismissal.
 - Moved Ceratops skills to a copy-based runtime install model: source skills
   stay delta-only, the lifecycle renderer expands shared sections, and the
   versioned `scripts/install-skills.py` bootstrap installs managed runtime skill

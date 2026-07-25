@@ -17,13 +17,14 @@ skills to synced `main`.
 
 ### GitHub Lifecycle Handoffs
 
-- Push and PR publication: use `$ceratops-gh-repo-lifecycle` with the
-  `ensure-pr` action.
-- (D) Post-merge sync helper, run from
+- PR publication, gates, merge, synchronization, and reusable release-branch
+  restoration: use `$ceratops-gh-repo-lifecycle` with the `ship-change` action.
+- (D) Run its helper from
   `skills/ceratops-gh-repo-lifecycle/scripts` in a source checkout or `scripts`
   in the installed GH lifecycle skill folder:
-  `python -m github_pr_workflow sync --repo-root <repo> --main-branch main
-  --remote-name origin --align-branch release/local`.
+  `python -m github_pr_workflow ship --repo-root <repo>
+  --head-branch release/local --base-branch main --remote-name origin
+  --reusable-head`.
 
 ### Inputs To Capture
 
@@ -59,27 +60,23 @@ asking.
   `release/*` branch.
 - Confirm the release branch contains the intended staged skill commits.
 
-#### 2. Push and open or update PR
+#### 2. Ship the staged branch
 
-- Use `$ceratops-gh-repo-lifecycle` with the `ensure-pr` action; it owns clean
-  release-branch verification, ahead-of-main verification, same-named remote
-  push, PR create-or-update behavior, and compact PR summary output.
+- Use `$ceratops-gh-repo-lifecycle` with the `ship-change` action and its
+  deterministic helper. It owns clean release-branch publication, exact-commit
+  checkpoints, concurrent CI/readiness and Codex review gates, exact-head
+  merge, live verification, main synchronization, and safe reusable
+  `release/local` restoration.
+- Resume the same commit checkpoint after interruption. Do not fall back to
+  separate ensure, merge, or sync commands.
 
-#### 3. Merge PR
+#### 3. Rebuild installed skills
 
-- Use `$ceratops-gh-repo-lifecycle` with the `merge-pr` action for PR readiness,
-  merge or auto-merge, and remote PR branch cleanup.
-- Verify the live PR endpoint reports the PR merged before restoring `main`.
-
-#### 4. Restore main and rebuild installed skills
-
-- (D) Run `python -m github_pr_workflow sync --repo-root <repo> --align-branch
-  release/local` to fetch/prune, switch to `main`, fast-forward from
-  `origin/main`, align the reusable local release branch, and emit compact sync
-  output.
 - (D) Run `python scripts/install-skills.py --repo-root <repo>` after restoring
   `main`, so this source repository's managed skills are rebuilt from the
   merged main snapshot and same-source stale runtime folders are removed.
+- Keep installation in this skill lifecycle action; do not move it into the
+  GitHub ship helper.
 - Verify the skills repo checkout is clean on `main` and expected installed
   skill folders have current `.runtime-manifest.json` files.
 
@@ -87,10 +84,9 @@ asking.
 
 ### Completion Gate
 
-- PR publication was handled by `$ceratops-gh-repo-lifecycle` with the
-  `ensure-pr` action.
-- PR merge readiness and merge were handled by `$ceratops-gh-repo-lifecycle`
-  with the `merge-pr` action.
+- PR publication, gates, exact-head merge, main synchronization, and reusable
+  release-branch restoration were handled by `$ceratops-gh-repo-lifecycle`
+  with the `ship-change` action.
 - The PR is merged or the exact blocker is reported.
 - The skills repo checkout is on `main`, fast-forwarded from `origin/main`, and
   clean.
