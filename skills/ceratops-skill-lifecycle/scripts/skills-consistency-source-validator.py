@@ -803,29 +803,36 @@ def check_validation_command_surface() -> list[str]:
         errors.append("release promotion must not expose a validation selector")
     if "scripts\\install-skills.py" not in promotion_helper_text or '"python"' not in promotion_helper_text:
         errors.append("release promotion must install through the target repository Python installer")
-    pending_cleanup = '$pendingArgs += "-CleanMergedBranches"'
     pending_approved_data = '$pendingArgs += "-ApprovedBranchData"'
-    pending_call = 'Invoke-QuietNative -FilePath "powershell" -Arguments $pendingArgs'
+    pending_call = '$pendingOutput = @(Invoke-CapturedNative -FilePath "powershell" -Arguments $pendingArgs)'
     fast_forward_call = 'Invoke-GitQuiet @("merge", "--ff-only", $branch)'
     installer_guard = 'if (-not (Test-Path -LiteralPath $installScript -PathType Leaf))'
+    promotion_commit_arg = '"-PromotionCommit"'
+    record_promotion_arg = '"-RecordPromotion"'
     install_call = 'Invoke-QuietNative -FilePath "python" -Arguments @('
     if (
-        promotion_helper_text.count(pending_cleanup) != 1
-        or promotion_helper_text.count(pending_approved_data) != 1
+        promotion_helper_text.count(pending_approved_data) != 1
         or promotion_helper_text.count(pending_call) != 1
+        or promotion_helper_text.count(promotion_commit_arg) != 1
+        or promotion_helper_text.count(record_promotion_arg) != 1
+        or '$pendingArgs += "-CleanMergedBranches"' in promotion_helper_text
     ):
-        errors.append("release promotion must run one merged-work cleanup and pending-work check")
+        errors.append(
+            "release promotion must retain approved sources through one "
+            "promotion-record pending-work check"
+        )
     elif not (
         promotion_helper_text.find(fast_forward_call)
         < promotion_helper_text.find(installer_guard)
+        < promotion_helper_text.find(promotion_commit_arg)
+        < promotion_helper_text.find(record_promotion_arg)
         < promotion_helper_text.find(pending_approved_data)
-        < promotion_helper_text.find(pending_cleanup)
         < promotion_helper_text.find(pending_call)
         < promotion_helper_text.find(install_call)
     ):
         errors.append(
-            "release promotion must guard the installer and check approved pending work "
-            "after fast-forwards and before installation"
+            "release promotion must guard the installer, retain approved sources, "
+            "and check their pending work before installing"
         )
     pending_scope_markers = (
         "ApprovedBranchData",
@@ -839,6 +846,23 @@ def check_validation_command_surface() -> list[str]:
         or '"--format=%(refname:short)"' in pending_work_helper_text
     ):
         errors.append("release pending-work checks must be limited to approved branches and their worktrees")
+    promotion_retention_markers = (
+        "retained_approved_branches",
+        "promotion_record",
+        "PromotionCommit",
+        "RecordPromotion",
+        "Write-PromotionRecord",
+        "codex\\skill-lifecycle\\promotions",
+        "Remove-Item -LiteralPath $promotionRecordPath",
+    )
+    if any(
+        marker not in promotion_helper_text + pending_work_helper_text
+        for marker in promotion_retention_markers
+    ):
+        errors.append(
+            "release promotion must retain approved sources by exact promotion "
+            "commit and clean them only through the pending-work helper"
+        )
     if (
         '"merge", "--ff-only"' not in promotion_helper_text
         or '"merge", "--no-edit"' in promotion_helper_text

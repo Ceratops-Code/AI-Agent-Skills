@@ -21,7 +21,7 @@ from typing import Any
 
 
 VERSION = 1
-NO_IMPROVEMENT_LIMIT = 10
+NO_IMPROVEMENT_LIMIT = 3
 
 
 def file_hash(path: Path) -> str:

@@ -319,9 +319,13 @@ def wait_for_ci_gate(
     *,
     wait_seconds: int,
     interval_seconds: int,
-    allow_admin_review_bypass: bool,
 ) -> dict[str, Any]:
-    """Poll readiness until all blocking state for the exact PR head passes."""
+    """Wait for non-authorization readiness at one exact PR head.
+
+    Required review is returned as an authorization disposition instead of
+    being polled as transient CI state. The caller remains responsible for
+    obtaining explicit admin authorization before any bypassing merge.
+    """
 
     deadline = time.monotonic() + wait_seconds
     while True:
@@ -329,13 +333,18 @@ def wait_for_ci_gate(
             pr,
             repo_root,
             readiness.default_contract_path().resolve(),
-            allow_admin_review_bypass=allow_admin_review_bypass,
+            allow_admin_review_bypass=True,
         )
         if summary.get("head_oid") != expected_head:
             raise ShipError(
                 f"PR head {summary.get('head_oid')!r} does not match shipped "
                 f"commit {expected_head!r}."
             )
+        review_authorization_required = any(
+            finding.check == "pr.review_decision"
+            and finding.actual == "REVIEW_REQUIRED"
+            for finding in findings
+        )
         terminal = [
             finding
             for finding in findings
@@ -350,8 +359,12 @@ def wait_for_ci_gate(
         if not pending:
             return {
                 "pr": summary.get("number"),
+                "base": summary.get("base"),
                 "head_oid": summary.get("head_oid"),
                 "pending": 0,
+                "review_authorization_required": (
+                    review_authorization_required
+                ),
             }
         if time.monotonic() >= deadline:
             checks = sorted({finding.check for finding in pending})
@@ -380,7 +393,6 @@ def run_parallel_gates(
             commit,
             wait_seconds=ci_wait_seconds,
             interval_seconds=args.interval_seconds,
-            allow_admin_review_bypass=args.admin,
         )
         review_future = executor.submit(
             codex_review.wait_for_codex_threads,
@@ -401,13 +413,83 @@ def run_parallel_gates(
     active_count = int(review_result.get("active_codex_thread_count") or 0)
     if active_count:
         raise ShipError(f"Codex review gate found {active_count} active thread(s).")
+    unresolved_count = int(
+        review_result.get("unresolved_review_thread_count") or 0
+    )
+    base_branch = ci_result.get("base")
+    if unresolved_count:
+        if not isinstance(base_branch, str) or not base_branch:
+            raise ShipError(
+                "PR readiness did not return a base branch for unresolved "
+                "review-thread policy."
+            )
+        if readiness.review_thread_resolution_required(
+            base_branch, args.repo_root
+        ):
+            raise ShipError(
+                "GitHub branch rules require resolution of "
+                f"{unresolved_count} unresolved review thread(s)."
+            )
+    review_authorization_required = bool(
+        ci_result.get("review_authorization_required")
+    )
     return {
+        "disposition": (
+            "authorization_required"
+            if review_authorization_required and not args.admin
+            else (
+                "admin_authorized"
+                if review_authorization_required
+                else "passed"
+            )
+        ),
+        "authorization_required": (
+            review_authorization_required and not args.admin
+        ),
         "ci": ci_result,
         "codex": {
             "head_oid": review_result.get("head_oid"),
             "active_threads": active_count,
+            "unresolved_threads": unresolved_count,
         },
     }
+
+
+def _authorized_resume_argv(
+    args: argparse.Namespace,
+    *,
+    repo_root: pathlib.Path,
+    repository: str,
+    commit: str,
+) -> list[str]:
+    """Return an exact argument vector for the explicitly authorized resume."""
+
+    argv = [
+        "python",
+        "-m",
+        "github_pr_workflow",
+        "ship",
+        "--repo-root",
+        str(repo_root),
+        "--repo",
+        repository,
+        "--head-branch",
+        args.head_branch,
+        "--base-branch",
+        args.base_branch,
+        "--remote-name",
+        args.remote_name,
+        "--commit",
+        commit,
+        "--merge-method",
+        args.merge_method,
+        "--admin",
+    ]
+    if args.delete_branch:
+        argv.append("--delete-branch")
+    if args.reusable_head:
+        argv.append("--reusable-head")
+    return argv
 
 
 def _live_pr(
@@ -560,6 +642,7 @@ def ship(args: argparse.Namespace) -> dict[str, Any]:
             raise ShipError(f"Live PR state is {live.get('state')!r}, not OPEN.")
 
     if not _phase_at_least(state, "merged"):
+        gate_result: dict[str, Any]
         if not _phase_at_least(state, "gates_passed"):
             run_parallel_gates(
                 args,
@@ -571,7 +654,7 @@ def ship(args: argparse.Namespace) -> dict[str, Any]:
             )
             # The two waits can finish at different times. Re-read both gates
             # immediately before recording permission to merge.
-            run_parallel_gates(
+            gate_result = run_parallel_gates(
                 args,
                 pr,
                 repository,
@@ -579,11 +662,16 @@ def ship(args: argparse.Namespace) -> dict[str, Any]:
                 ci_wait_seconds=0,
                 review_wait_seconds=0,
             )
-            state["phase"] = "gates_passed"
+            state.update(
+                {
+                    "phase": "gates_passed",
+                    "gate_disposition": gate_result["disposition"],
+                }
+            )
             _write_checkpoint(checkpoint_path, state)
             changes.append("gates_passed")
         else:
-            run_parallel_gates(
+            gate_result = run_parallel_gates(
                 args,
                 pr,
                 repository,
@@ -591,6 +679,30 @@ def ship(args: argparse.Namespace) -> dict[str, Any]:
                 ci_wait_seconds=0,
                 review_wait_seconds=0,
             )
+            if state.get("gate_disposition") != gate_result["disposition"]:
+                state["gate_disposition"] = gate_result["disposition"]
+                _write_checkpoint(checkpoint_path, state)
+                changes.append("gate_disposition")
+
+        if gate_result["authorization_required"]:
+            return {
+                "status": "authorization_required",
+                "phase": state["phase"],
+                "repository": repository,
+                "commit": commit,
+                "pr": state.get("pr"),
+                "url": state.get("url"),
+                "gate_disposition": gate_result["disposition"],
+                "authorization_required": True,
+                "next_cwd": str(pathlib.Path.cwd().resolve()),
+                "next_argv": _authorized_resume_argv(
+                    args,
+                    repo_root=repo_root,
+                    repository=repository,
+                    commit=commit,
+                ),
+                "changes": changes,
+            }
 
         merge_result = merge.merge_verified_pr(
             argparse.Namespace(
@@ -659,10 +771,13 @@ def ship(args: argparse.Namespace) -> dict[str, Any]:
 
     return {
         "status": "shipped" if changes else "already_shipped",
+        "phase": state["phase"],
         "repository": repository,
         "commit": commit,
         "pr": state.get("pr"),
         "url": state.get("url"),
+        "gate_disposition": state.get("gate_disposition", "reconciled"),
+        "authorization_required": False,
         "merge_commit": state.get("merge_commit"),
         "synchronized_head": state.get("synchronized_head"),
         "changes": changes,

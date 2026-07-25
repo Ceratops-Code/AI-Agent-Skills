@@ -49,8 +49,10 @@ asking.
   `$ceratops-gh-repo-lifecycle` with the `ship-change` action.
 - Do not edit skill source here. This action only pushes, opens or updates the
   GitHub PR, merges, restores `main`, and rebuilds installed skills from `main`.
-- Do not delete local task worktrees, source branches, release branches,
-  packages, or artifacts unless the user explicitly requested cleanup.
+- Delete only approved clean task worktrees and source branches named by the
+  exact promotion record, and only after terminal successful shipping. Do not
+  delete unrelated worktrees, branches, release branches, packages, or
+  artifacts.
 
 ### Workflow
 
@@ -70,8 +72,22 @@ asking.
 - Resume with the same full commit after interruption; incomplete work uses its
   checkpoint, while completed work is reconstructed from the exact merged PR.
   Do not fall back to separate ensure, merge, or sync commands.
+- When `ship` returns `authorization_required`, preserve its result as the
+  complete handoff, request approval for its exact `next_argv`, and run that
+  vector in `next_cwd` directly after approval without rediscovery calls.
 
-#### 3. Rebuild installed skills
+#### 3. Clean promoted task sources
+
+- After `ship` returns `shipped` or `already_shipped`, run
+  `scripts/check-pending-release-work.ps1 -SkillsRepoRoot <repo>
+  -ReleaseBranch release/local -PromotionCommit <ship.commit>
+  -CleanMergedBranches` from the selected lifecycle bundle when promotion
+  reported retained approved sources.
+- The helper must consume only that exact promotion record, remove only its
+  clean merged worktrees and branches, and delete the record. Retain the record
+  and stop if shipping is incomplete or cleanup finds dirty or unmerged work.
+
+#### 4. Rebuild installed skills
 
 - (D) Run `python scripts/install-skills.py --repo-root <repo>` after restoring
   `main`, so this source repository's managed skills are rebuilt from the
@@ -91,6 +107,8 @@ asking.
 - The PR is merged or the exact blocker is reported.
 - The skills repo checkout is on `main`, fast-forwarded from `origin/main`, and
   clean.
+- Approved clean task worktrees and branches from the shipped promotion record
+  were removed; any blocked retained source is reported.
 - Installed skills were rebuilt from `main`.
 
 ### Output Contract

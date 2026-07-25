@@ -37,13 +37,11 @@ RELATION_KEYS = ("limits", "overrides", "overlaps", "conflicts")
 DIRECTIONAL_KEYS = ("limits", "overrides")
 SYMMETRIC_KEYS = ("overlaps", "conflicts")
 SELF_KEY = "self"
-SELF_STATUSES = ("exceeds-limit", "list-heavy")
+SELF_STATUSES = ("gate", "exceeds-limit", "list-heavy")
 METADATA_KEYS = (*RELATION_KEYS, SELF_KEY)
 METADATA_ORDER = {key: index for index, key in enumerate(METADATA_KEYS)}
 HISTORY_VERSION = 2
 HISTORY_ENTRY_KEYS = ("rules", "decision", "reason", "regression")
-HISTORY_MAX_BYTES = 8 * 1024
-HISTORY_MAX_ENTRIES = 20
 
 
 @dataclass
@@ -579,37 +577,19 @@ def rule_source_summary(source: ParsedRuleSource) -> dict[str, Any]:
         "path": source.source,
         "rule_count": len(source.records),
         "relation_counts": dict(sorted(relation_counts.items())),
+        "gates": sorted(
+            record.rule_id
+            for record in source.records
+            if "gate" in record.self_statuses
+        ),
         "findings": compact(source.findings),
         "approved_debt": compact(source.debts),
         "semantic_reviews": compact(source.semantic_reviews),
     }
 
 
-def load_history_references(
-    entries: list[dict[str, object]], current_rule_ids: set[str]
-) -> list[dict[str, object]]:
-    """Report history references that cannot constrain any current rule."""
-    findings: list[dict[str, object]] = []
-    for index, entry in enumerate(entries):
-        values = cast(list[object], entry["rules"])
-        obsolete = sorted(
-            str(value)
-            for value in values
-            if value != "*" and value not in current_rule_ids
-        )
-        if obsolete:
-            findings.append(
-                {
-                    "code": "obsolete_history_reference",
-                    "entry": index,
-                    "references": obsolete,
-                }
-            )
-    return findings
-
-
 def load_history_source(path: Path) -> list[dict[str, object]]:
-    """Load the canonical non-empty regression-memory history object."""
+    """Load the canonical non-empty append-only decision log."""
     resolved = path.resolve()
     if not resolved.is_file():
         raise ValueError(f"history does not exist: {resolved}")
@@ -655,7 +635,8 @@ def load_history_source(path: Path) -> list[dict[str, object]]:
         ]
         if invalid_rules:
             raise ValueError(
-                f"history entry {index} has invalid rule IDs: {invalid_rules}"
+                f"history entry {index} has invalid historical rule IDs: "
+                f"{invalid_rules}"
             )
         for field_name in HISTORY_ENTRY_KEYS[1:]:
             value = entry[field_name]
@@ -664,31 +645,6 @@ def load_history_source(path: Path) -> list[dict[str, object]]:
                     f"history entry {index} {field_name} must be non-empty text"
                 )
     return typed_entries
-
-
-def history_limit_findings(
-    path: Path, entries: list[dict[str, object]]
-) -> list[dict[str, object]]:
-    """Report deterministic triggers that require semantic history compaction."""
-    findings: list[dict[str, object]] = []
-    byte_count = path.resolve().stat().st_size
-    if byte_count > HISTORY_MAX_BYTES:
-        findings.append(
-            {
-                "code": "history_size_limit",
-                "bytes": byte_count,
-                "limit": HISTORY_MAX_BYTES,
-            }
-        )
-    if len(entries) > HISTORY_MAX_ENTRIES:
-        findings.append(
-            {
-                "code": "history_entry_limit",
-                "entries": len(entries),
-                "limit": HISTORY_MAX_ENTRIES,
-            }
-        )
-    return findings
 
 
 def load_graph(paths: list[Path]) -> tuple[dict[str, set[str]], set[str]]:

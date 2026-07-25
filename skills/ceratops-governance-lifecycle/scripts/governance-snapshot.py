@@ -19,8 +19,6 @@ from datetime import datetime, timezone
 from typing import Any, Iterable, cast
 
 from rule_graph import (
-    history_limit_findings,
-    load_history_references,
     load_history_source,
     parse_rule_source,
     rule_source_summary,
@@ -370,8 +368,6 @@ def _path_is_within(path: pathlib.Path, parent: pathlib.Path) -> bool:
 
 def _history_inventory(
     path: pathlib.Path,
-    current_rule_ids: set[str],
-    owned_rule_ids: set[str],
 ) -> dict[str, object]:
     history_path = path.with_name("AGENTS.history.json")
     if not history_path.exists():
@@ -390,29 +386,11 @@ def _history_inventory(
                 {"code": "invalid_rule_history", "detail": str(error)}
             ],
         }
-    findings = [
-        *load_history_references(entries, current_rule_ids),
-        *history_limit_findings(history_path, entries),
-    ]
-    for entry_index, entry in enumerate(entries):
-        rules = cast(list[object], entry["rules"])
-        if "*" in rules:
-            continue
-        owned_references = {
-            str(value) for value in rules if value != "*"
-        }
-        if owned_rule_ids and not owned_references.intersection(owned_rule_ids):
-            findings.append(
-                {
-                    "code": "history_entry_without_owned_rule",
-                    "entry": entry_index,
-                }
-            )
     return {
         "path": str(history_path),
         "exists": True,
         "entry_count": len(entries),
-        "findings": findings,
+        "findings": [],
     }
 
 
@@ -453,12 +431,9 @@ def agents_rule_graph_inventory(
 
     if global_path in parsed:
         global_source = parsed[global_path]
-        global_ids = {record.rule_id for record in global_source.records}
         global_summary = rule_source_summary(global_source)
         global_summary["scope"] = "global"
-        global_summary["history"] = _history_inventory(
-            global_path, global_ids, global_ids
-        )
+        global_summary["history"] = _history_inventory(global_path)
         file_items.append(global_summary)
         global_validation = validate_rule_stack(
             [global_source], global_source=global_source.source
@@ -480,17 +455,10 @@ def agents_rule_graph_inventory(
         stack_sources = [parsed[candidate] for candidate in ancestor_paths]
         if global_path in parsed:
             stack_sources.insert(0, parsed[global_path])
-        current_ids = {
-            record.rule_id
-            for source in stack_sources
-            for record in source.records
-        }
         local_summary = rule_source_summary(parsed[path])
         local_summary["scope"] = "local"
         local_ids = {record.rule_id for record in parsed[path].records}
-        local_summary["history"] = _history_inventory(
-            path, current_ids, local_ids
-        )
+        local_summary["history"] = _history_inventory(path)
         file_items.append(local_summary)
 
         validation = validate_rule_stack(
@@ -690,7 +658,7 @@ def d_rule_brevity_inventory(
 
 def build_snapshot(args: argparse.Namespace) -> dict[str, object]:
     return {
-        "schema": "global-governance-consistency-audit/snapshot.v2",
+        "schema": "global-governance-consistency-audit/snapshot.v3",
         "generated_at": utc_now(),
         "automations": automations_inventory(args.automation_root.resolve()),
         "agents": agents_inventory(args.projects_root.resolve(), args.codex_home.resolve()),

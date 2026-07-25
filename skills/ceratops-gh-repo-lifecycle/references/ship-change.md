@@ -95,14 +95,20 @@ Infer missing inputs from local files and live repo state before asking.
 - Run the deterministic ship helper. It retains repository-and-exact-commit
   checkpoints only while work is incomplete, reconciles a missing completed
   checkpoint from the exact merged PR, ensures the PR, waits on CI/readiness
-  and Codex review concurrently, rechecks both gates at that commit, merges
-  with an exact-head precondition, synchronizes the local default branch,
-  deletes the successful checkpoint, and emits only state changes.
+  and Codex review concurrently, and rechecks both gates at that commit. When
+  required review is the only remaining authorization boundary, it returns
+  `authorization_required` with exact authorized-resume arguments without
+  attempting a merge. The authorized resume rechecks once, merges with an
+  exact-head precondition, synchronizes the local default branch, deletes the
+  successful checkpoint, and emits only state changes.
 - Pass `--reusable-head` only for a reusable release or integration head. The
   helper aligns its local branch after merge and safely restores or aligns the
   remote only when it is absent or still points at the shipped commit.
 - Resume with the same arguments and full commit after interruption; do not
   create a second PR or bypass a failed checkpointed gate.
+- When the helper returns `authorization_required`, request authorization for
+  its exact `next_argv`; after approval, execute that vector in `next_cwd`
+  directly without separate help, PR, check, checkpoint, or planning calls.
 - Remove temporary worktrees when their branches are no longer needed, and keep
   a safety branch or worktree only with an explicit reason.
 - Publish and verify touched artifacts through the package manager, registry
@@ -113,7 +119,8 @@ Infer missing inputs from local files and live repo state before asking.
 ### Completion Gate
 
 - PR publication, concurrent gates, exact-head merge, local synchronization,
-  and reusable-branch restoration were handled by the ship helper.
+  reusable-branch restoration, or an exact authorization handoff were handled
+  by the ship helper.
 - Changed workflow files use full-SHA action refs when the run touched GitHub
   Actions workflows or settings.
 - Local state is verified: default branch, worktree, remotes, refs, generated

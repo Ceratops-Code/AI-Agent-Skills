@@ -39,6 +39,10 @@ A normative enumeration may name at most three members. For a larger set,
 state the common deciding property; when exact membership is operationally
 required, store the closed set in deterministic data or a helper.
 
+`self: gate` marks a rule that itself requires explicit user approval,
+confirmation, or choice before proceeding. Keep the current gate inventory in
+`AGENTS.md`, never in history.
+
 `self: exceeds-limit` and `self: list-heavy` are approved non-blocking debt,
 not structural failures. Their presence must match the current rule, remain an
 audit finding, and be removed when the underlying debt is fixed. Size status is
@@ -83,20 +87,29 @@ relations, and compatibility across the complete stack, not each file alone.
 
 Store local history beside its local rule source and query every applicable
 history in a cross-scope change. Revalidate current global and ancestor-local
-rules directly; do not store dates, hashes, or source snapshots in history.
+rules directly; do not store dates, hashes, source snapshots, current rule
+inventories, or gate inventories in history.
 
 Use a JSON history object with `version: 2` and an `entries` array. Each entry
-uses the decision-only schema owned by `scripts/rule_graph.py`: it names current
-rule IDs and states the decision, why it exists, and its regression boundary.
-History is regression memory, not an audit log: retain every decision and
-rationale that still constrains current behavior, and delete obsolete
-references, retracted or overridden outcomes, and entries with no remaining
-regression value. Resolve obsolete history before other governance work; do not
-continue with a report-only finding.
+uses the decision-only schema owned by `scripts/rule_graph.py`: `rules`,
+`decision`, `reason`, and `regression`. `rules` records historical rule IDs
+affected when the decision was made; it is not a current-rule inventory and
+must not be updated merely because rules are renamed or removed. Use `*` only
+when the cross-cutting grouping is itself part of the decision.
 
-When a history file exceeds 8 KiB or 20 entries, compact it before other
-governance work. Merge decisions only when their behavior, rationale, and
-regression boundary remain explicit; the compacted file must meet both limits.
+History is an append-only decision log, not a living summary. Preserve existing
+entries when rules or implementations evolve. For each rule change, append a
+decision that states what changed, why, what behavior remains intentional, what
+behavior is retired when applicable, and which earlier decisions it supersedes
+or narrows when their rationale was intentionally replaced. Identify any such
+earlier decision unambiguously in the new decision text. Do not rewrite, delete,
+merge, or compact earlier entries merely because current rules, identifiers, or
+implementations changed.
+
+Every entry must record rationale, a regression or failure boundary, behavior a
+future change must preserve, or the condition that would justify superseding
+the decision. Do not append current-state inventories or restatements without a
+decision and enduring rationale.
 
 ## Acceptance
 

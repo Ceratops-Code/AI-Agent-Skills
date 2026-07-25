@@ -12,7 +12,7 @@ domain audits owned by other lifecycle actions.
 - (D) From this skill directory, run `python scripts/governance-snapshot.py
   --projects-root <projects-root>` before deep-reading.
 - (D) The helper exits zero with compact JSON using schema
-  `global-governance-consistency-audit/snapshot.v2`; nonzero execution or
+  `global-governance-consistency-audit/snapshot.v3`; nonzero execution or
   unreadable JSON blocks the audit.
 - Use helper output as cheap-pass evidence for automation metadata, AGENTS
   classification, Git/worktree state, automation ignore coverage, directly
@@ -73,8 +73,9 @@ when the projects root remains ambiguous.
 - Do not treat portable variables or relative paths alone as contradictions.
 - Treat [rule-design.md](rule-design.md) as the only prose rule-graph standard;
   helpers implement its closed syntax and audit prompts must not redefine it.
-- Treat accurate `self` statuses as approved non-blocking debt that remains
-  reportable until the underlying rule is corrected.
+- Treat accurate `self: exceeds-limit` and `self: list-heavy` statuses as
+  approved non-blocking debt that remains reportable until the underlying rule
+  is corrected. Treat `self: gate` as current rule metadata, not debt.
 
 ### Accepted Exceptions
 
@@ -102,10 +103,9 @@ when the projects root remains ambiguous.
   Git/worktree state, repeated text, rule IDs, metadata, statuses, histories,
   relation edges and cycles, stack interaction, and `(D)` rule-brevity
   candidates.
-- If history contains obsolete references, invalid fields, or exceeds its
-  deterministic limit, route the exact cleanup through `propose-rules-update`
-  before any other audit work. Apply it when authorized; otherwise stop and
-  report only the cleanup blocker.
+- If history contains invalid fields, route the exact repair through
+  `propose-rules-update` before any other audit work. Apply it when authorized;
+  otherwise stop and report only the repair blocker.
 - Treat helper blockers, missing roots, parse failures, and inaccessible
   governing sources as explicit audit limits.
 
@@ -120,9 +120,9 @@ when the projects root remains ambiguous.
 ### 3. Review governance consistency
 
 - Accept deterministic findings for rule syntax, IDs, metadata placement,
-  targets, duplicates, size status, cycles, history references, and stack
-  legality. Review each rule body once for semantic rule form, enumeration, and
-  `self` accuracy without performing pairwise comparison.
+  targets, duplicates, size status, cycles, history schema, and stack legality.
+  Review each rule body once for semantic rule form, enumeration, gate
+  classification, and `self` accuracy without performing pairwise comparison.
 - Use focused semantic review to detect missing, unnecessary, mistyped,
   misdirected, or incompatible relations and to assess `list-heavy`,
   `overlaps`, `conflicts`, and non-override cycles. Keep unresolved review edges

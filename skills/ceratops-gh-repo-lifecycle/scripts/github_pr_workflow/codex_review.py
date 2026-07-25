@@ -195,6 +195,20 @@ def active_codex_threads(pr_data: dict[str, Any], authors: set[str]) -> list[dic
     return active
 
 
+def unresolved_review_threads(pr_data: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return unresolved thread identities, including outdated threads."""
+
+    return [
+        {
+            "id": thread.get("id"),
+            "path": thread.get("path"),
+            "is_outdated": bool(thread.get("isOutdated")),
+        }
+        for thread in pr_data.get("reviewThreads") or []
+        if not thread.get("isResolved")
+    ]
+
+
 def wait_for_codex_threads(
     selector: str,
     repo: str | None,
@@ -228,6 +242,7 @@ def wait_for_codex_threads(
             waited = (dt.datetime.now(dt.timezone.utc) - start).total_seconds()
 
     assert last_pr is not None
+    unresolved_threads = unresolved_review_threads(last_pr)
     return {
         "repo": f"{owner}/{name}",
         "pr": number,
@@ -241,6 +256,8 @@ def wait_for_codex_threads(
         "status": "found_active_codex_threads" if threads else "no_active_codex_threads",
         "active_codex_thread_count": len(threads),
         "active_codex_threads": threads,
+        "unresolved_review_thread_count": len(unresolved_threads),
+        "unresolved_review_threads": unresolved_threads,
     }
 
 

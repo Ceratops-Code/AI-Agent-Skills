@@ -28,10 +28,12 @@ installed runtime only when this action is intentionally selected.
   `scripts/prepare-release-branch.ps1
   -SkillsRepoRoot <repo> -MainBranch main -ReleaseBranch release/local
   -RemoteName origin` from the selected lifecycle bundle.
-- (D) Merged-work cleanup and pending local work check:
+- (D) Approved-source check and terminal cleanup:
   `scripts/check-pending-release-work.ps1 -SkillsRepoRoot <repo>
-  -ApprovedBranchData <approved-branch-payload> -CleanMergedBranches` from the
-  selected lifecycle bundle.
+  -ApprovedBranchData <approved-branch-payload>
+  -PromotionCommit <promoted-head> -RecordPromotion` during promotion, then
+  `-PromotionCommit <promoted-head> -CleanMergedBranches` only after terminal
+  remote shipping.
 
 ### Inputs To Capture
 
@@ -82,9 +84,9 @@ Infer missing inputs from local repo state before asking.
   branches that passed the blocking review; it owns release-branch preparation,
   `git diff --check (git
   merge-base HEAD BRANCH) BRANCH`, fast-forward-only branch promotion,
-  one approved-source cleanup and pending-work check after all approved
-  branches are promoted and before profile-aware full validation and runtime
-  installation, and compact ready/not-ready output.
+  one approved-source pending-work check and exact promotion retention record
+  after all approved branches are promoted and before profile-aware full
+  validation and runtime installation, and compact ready/not-ready output.
 - The helper must stop unless the current release `HEAD` is an ancestor of each
   approved branch; rebase a divergent task branch onto the release branch in
   its task worktree before promotion.
@@ -106,8 +108,9 @@ Infer missing inputs from local repo state before asking.
 
 #### 4. Report staged state
 
-- Before reporting a staged batch as ready, run approved-source cleanup with
-  `-CleanMergedBranches`.
+- Retain clean approved task worktrees and branches through remote review;
+  report the exact promotion commit and retention record needed for terminal
+  cleanup.
 - If the pending-work check reports dirty or unmerged approved work, stop before
   installation.
 - Report active local `release/*` branch, staged task branches, and blockers
@@ -121,8 +124,8 @@ Infer missing inputs from local repo state before asking.
 - Every branch promoted into the staged branch had a clean blocking local code
   review against the then-current release branch.
 - Requested task branches were staged; their clean source worktrees and branches
-  already merged into the staged branch were removed, while dirty or unmerged
-  approved sources remain and block installation.
+  were retained by exact promotion commit for terminal remote-shipping cleanup,
+  while dirty or unmerged approved sources block installation.
 - Unrelated local branches and worktrees were not inspected, modified, or
   removed.
 - Installed skill copies are managed runtime outputs with fresh runtime

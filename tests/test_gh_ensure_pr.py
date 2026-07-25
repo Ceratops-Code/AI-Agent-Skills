@@ -89,11 +89,13 @@ class ShipTests(unittest.TestCase):
                 self.commit,
                 wait_seconds=0,
                 interval_seconds=0,
-                allow_admin_review_bypass=False,
             )
 
         self.assertEqual(result["pending"], 0)
         validate.assert_called_once()
+        self.assertTrue(
+            validate.call_args.kwargs["allow_admin_review_bypass"]
+        )
 
     def test_no_attached_checks_remain_pending(self) -> None:
         finding = ship.readiness.Finding(
@@ -120,6 +122,23 @@ class ShipTests(unittest.TestCase):
 
         self.assertFalse(ship._transient_readiness(bypassed))
         self.assertTrue(ship._transient_readiness(blocking))
+        with mock.patch.object(
+            ship.readiness,
+            "validate_readiness",
+            return_value=(
+                {"head_oid": self.commit, "number": 17},
+                [bypassed],
+            ),
+        ):
+            result = ship.wait_for_ci_gate(
+                "17",
+                pathlib.Path.cwd(),
+                self.commit,
+                wait_seconds=0,
+                interval_seconds=0,
+            )
+
+        self.assertTrue(result["review_authorization_required"])
 
     def test_codex_review_window_starts_with_the_current_invocation(self) -> None:
         created_at = "2000-01-01T00:00:00Z"
@@ -153,7 +172,10 @@ class ShipTests(unittest.TestCase):
 
         def ci_gate(*args, **kwargs):
             barrier.wait(timeout=2)
-            return {"head_oid": self.commit}
+            return {
+                "head_oid": self.commit,
+                "review_authorization_required": False,
+            }
 
         def review_gate(*args, **kwargs):
             barrier.wait(timeout=2)
@@ -182,6 +204,49 @@ class ShipTests(unittest.TestCase):
 
         self.assertEqual(result["ci"]["head_oid"], self.commit)
         self.assertEqual(result["codex"]["active_threads"], 0)
+        self.assertEqual(result["disposition"], "passed")
+
+    def test_parallel_gates_enforce_required_thread_resolution(self) -> None:
+        args = self.args(pathlib.Path.cwd())
+        with (
+            mock.patch.object(
+                ship,
+                "wait_for_ci_gate",
+                return_value={
+                    "base": "main",
+                    "head_oid": self.commit,
+                    "review_authorization_required": False,
+                },
+            ),
+            mock.patch.object(
+                ship.codex_review,
+                "wait_for_codex_threads",
+                return_value={
+                    "head_oid": self.commit,
+                    "active_codex_thread_count": 0,
+                    "unresolved_review_thread_count": 2,
+                },
+            ),
+            mock.patch.object(
+                ship.readiness,
+                "review_thread_resolution_required",
+                return_value=True,
+            ) as resolution_required,
+        ):
+            with self.assertRaisesRegex(
+                ship.ShipError,
+                "require resolution of 2 unresolved review thread",
+            ):
+                ship.run_parallel_gates(
+                    args,
+                    "17",
+                    "owner/repo",
+                    self.commit,
+                    ci_wait_seconds=0,
+                    review_wait_seconds=0,
+                )
+
+        resolution_required.assert_called_once_with("main", args.repo_root)
 
     def test_ship_removes_only_its_successful_checkpoint(self) -> None:
         state = {
@@ -226,7 +291,14 @@ class ShipTests(unittest.TestCase):
                         "headRefOid": self.commit,
                     },
                 ),
-                mock.patch.object(ship, "run_parallel_gates") as gates,
+                mock.patch.object(
+                    ship,
+                    "run_parallel_gates",
+                    return_value={
+                        "disposition": "passed",
+                        "authorization_required": False,
+                    },
+                ) as gates,
                 mock.patch.object(
                     ship.merge,
                     "merge_verified_pr",
@@ -273,6 +345,150 @@ class ShipTests(unittest.TestCase):
         merge_pr.assert_called_once()
         self.assertEqual(merge_pr.call_args.args[0].wait_seconds, 0)
         sync_main.assert_called_once()
+
+    def test_ship_returns_exact_authorization_handoff_after_gates(self) -> None:
+        state = {
+            "version": 1,
+            "repository": "owner/repo",
+            "commit": self.commit,
+            "head_branch": "release/local",
+            "base_branch": "main",
+            "phase": "pr_ready",
+            "pr": 17,
+            "url": "https://example.test/pr/17",
+        }
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            repo_root = pathlib.Path(temporary_directory)
+            args = self.args(repo_root)
+            checkpoint = repo_root / "checkpoint.json"
+            checkpoint.write_text("checkpoint", encoding="utf-8")
+            with (
+                mock.patch.object(
+                    ship, "_repository_name", return_value="owner/repo"
+                ),
+                mock.patch.object(ship, "_resolve_commit", return_value=self.commit),
+                mock.patch.object(
+                    ship,
+                    "_load_or_create_checkpoint",
+                    return_value=(checkpoint, state),
+                ),
+                mock.patch.object(ship, "_write_checkpoint") as write_checkpoint,
+                mock.patch.object(
+                    ship,
+                    "_live_pr",
+                    return_value={
+                        "state": "OPEN",
+                        "headRefOid": self.commit,
+                    },
+                ),
+                mock.patch.object(
+                    ship,
+                    "run_parallel_gates",
+                    return_value={
+                        "disposition": "authorization_required",
+                        "authorization_required": True,
+                    },
+                ) as gates,
+                mock.patch.object(ship.merge, "merge_verified_pr") as merge_pr,
+                mock.patch.object(ship.sync, "sync_main") as sync_main,
+            ):
+                result = ship.ship(args)
+            checkpoint_retained = checkpoint.exists()
+
+        self.assertEqual(result["status"], "authorization_required")
+        self.assertEqual(result["phase"], "gates_passed")
+        self.assertTrue(result["authorization_required"])
+        self.assertEqual(result["next_cwd"], str(pathlib.Path.cwd().resolve()))
+        self.assertIn("--admin", result["next_argv"])
+        self.assertEqual(
+            result["next_argv"][result["next_argv"].index("--commit") + 1],
+            self.commit,
+        )
+        self.assertEqual(gates.call_count, 2)
+        self.assertTrue(checkpoint_retained)
+        write_checkpoint.assert_called_once()
+        merge_pr.assert_not_called()
+        sync_main.assert_not_called()
+
+    def test_authorized_resume_rechecks_once_then_completes(self) -> None:
+        merge_commit = "b" * 40
+        state = {
+            "version": 1,
+            "repository": "owner/repo",
+            "commit": self.commit,
+            "head_branch": "release/local",
+            "base_branch": "main",
+            "phase": "gates_passed",
+            "pr": 17,
+            "url": "https://example.test/pr/17",
+            "gate_disposition": "authorization_required",
+        }
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            repo_root = pathlib.Path(temporary_directory)
+            args = self.args(repo_root)
+            args.admin = True
+            checkpoint = repo_root / "checkpoint.json"
+            checkpoint.write_text("checkpoint", encoding="utf-8")
+            with (
+                mock.patch.object(
+                    ship, "_repository_name", return_value="owner/repo"
+                ),
+                mock.patch.object(ship, "_resolve_commit", return_value=self.commit),
+                mock.patch.object(
+                    ship,
+                    "_load_or_create_checkpoint",
+                    return_value=(checkpoint, state),
+                ),
+                mock.patch.object(ship, "_write_checkpoint"),
+                mock.patch.object(
+                    ship,
+                    "_live_pr",
+                    return_value={
+                        "state": "OPEN",
+                        "headRefOid": self.commit,
+                    },
+                ),
+                mock.patch.object(
+                    ship,
+                    "run_parallel_gates",
+                    return_value={
+                        "disposition": "admin_authorized",
+                        "authorization_required": False,
+                    },
+                ) as gates,
+                mock.patch.object(
+                    ship.merge,
+                    "merge_verified_pr",
+                    return_value={
+                        "status": "merged",
+                        "merged_at": "2026-07-25T00:00:00Z",
+                        "merge_commit": merge_commit,
+                    },
+                ) as merge_pr,
+                mock.patch.object(
+                    ship.sync,
+                    "sync_main",
+                    return_value={"head": merge_commit},
+                ),
+                mock.patch.object(
+                    ship,
+                    "restore_reusable_branch",
+                    return_value={
+                        "branch": "release/local",
+                        "status": "aligned",
+                        "head": merge_commit,
+                    },
+                ),
+            ):
+                result = ship.ship(args)
+
+        self.assertEqual(result["status"], "shipped")
+        self.assertEqual(result["phase"], "synchronized")
+        self.assertEqual(result["gate_disposition"], "admin_authorized")
+        self.assertFalse(result["authorization_required"])
+        gates.assert_called_once()
+        merge_pr.assert_called_once()
+        self.assertTrue(merge_pr.call_args.args[0].admin)
 
     def test_ship_retains_checkpoint_when_a_gate_fails(self) -> None:
         state = {

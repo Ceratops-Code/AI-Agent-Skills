@@ -17,10 +17,15 @@ materially reduce recurrence.
 
 - Target thread or session. Use the current thread unless the user names a
   concrete thread title, thread id, or session file.
-- Window under review. Use the user's `last N runs`; otherwise use visible
-  recent context or the last five assistant runs.
+- Window under review: the user's last `N` completed runs, or the full thread
+  when `N` is omitted.
 - Evidence source: visible context, `$CODEX_HOME/session_index.jsonl`,
   `$CODEX_HOME/sessions/`, or `$CODEX_HOME/archived_sessions/`.
+- (D) For session evidence, run `python scripts/model-call-ledger.py
+  --session PATH --evidence-output LEDGER_PATH [--last-runs N]
+  [--include-run TURN_ID]`; it writes every completed run and model call to the
+  sanitized ledger, emits only the run reconciliation summary, and includes
+  full call details only for explicitly requested runs.
 - Whether the task is analysis-only or the user explicitly asked to apply a
   named control change.
 
@@ -39,9 +44,9 @@ cannot be identified.
 - Treat preventable rework, duplicate investigation, broad reads, noisy output,
   oversized validation, stale checks, waits, reversions, and user corrections as
   candidate credit waste.
-- Treat avoidable model requests as candidate credit waste even when they do not
-  cause rework, including requests made unnecessary by applicable rules or
-  already-sufficient evidence.
+- Count model calls avoidable through existing evidence, direct helper
+  composition, or same-pass draft-assess-revise work, even when the work
+  succeeds.
 - Use credit-waste signals as prompts for analysis, not mandatory checks;
   inspect only categories visible in the selected evidence window.
 - Prefer the smallest durable control: wording, deterministic helper, preflight,
@@ -56,14 +61,24 @@ cannot be identified.
   instructions, skills, automations, or helpers, provide the exact proposed
   change before mutating; otherwise name the target artifact and target
   behavior.
-- Before reporting findings, classify each recommended control against
-  inspected evidence as implemented or still unimplemented. Report every
-  confirmed finding; for implemented controls, state the status without
-  re-recommending the control.
+- Before reporting, classify each finding's control as implemented or still
+  unimplemented; omit implemented findings and report only still-unimplemented
+  findings.
+- When model-call evidence exists, classify every call as necessary, avoidable,
+  or already fixed and map each control only to calls it directly prevents.
+- For each still-unimplemented control, compute `long-term average saving/run =
+  affected-run rate x saved/affected run - added/run` and estimate its one-time
+  cost separately. Reject non-positive average savings or costs unlikely to be
+  recovered during the control's expected lifetime unless correctness or safety
+  requires the control. When the user supplies a horizon, also compute net
+  savings over it.
+- Estimate affected-run frequency from triggering conditions and comparable
+  evidence; state assumptions and a plausible range, use observations only as
+  calibration, and test ROI at the range's low end.
 - Merge recommendations that share the same producer and control.
-- When prompt-level savings cases exist, rank the top five evidence-backed
-  cases, or all available cases when fewer exist, using only information
-  available when each prompt was written; present them as
+- When still-unimplemented prompt-level savings cases exist, rank the top five
+  evidence-backed cases, or all available cases when fewer exist, using only
+  information available when each prompt was written; present them as
   `Original prompt | What happened | Cheaper wording` and exclude
   hindsight-dependent rewrites.
 
@@ -98,7 +113,9 @@ cannot be identified.
 
 ### Completion Gate
 
-- The inspected window and evidence source are stated.
+- The inspected window and evidence source are stated; when model-call evidence
+  exists, every call is reconciled in the evidence ledger and every completed
+  run appears in the compact run table.
 - Each finding ties to a concrete episode, cause, earliest prevention point,
   recommendation type, and expected impact.
 - Ordinary model failures that could be confused with avoidable credit spend are
@@ -108,13 +125,15 @@ cannot be identified.
 ### Output Contract
 
 Start with `Blocked: <specific missing evidence or target>.` when missing
-evidence prevents analysis. Otherwise start with both:
+evidence prevents analysis. Otherwise start with
+`Unimplemented avoidable spend: found.` or
+`Unimplemented avoidable spend: none found.`
 
-- `Avoidable credit spend: found.` or
-  `Avoidable credit spend: none found.`
-- `Still-unimplemented controls: found.` or
-  `Still-unimplemented controls: none found.`
-
-Then report every confirmed finding, any required ranked prompt-level table,
-excluded ordinary failures, and important evidence limits. For each finding,
-state whether its control is implemented or still unimplemented.
+When model-call evidence exists, first show
+`Run | Model calls | Unimplemented avoidable`, reconciled totals, and available
+token usage. For each still-unimplemented control, show
+`Control | Saved/affected run | Forecast rate | Added/run |
+Long-term average saving/run | One-time cost | Decision`. Then report only
+still-unimplemented findings, any required ranked prompt-level table, excluded
+ordinary failures, and important evidence limits. Do not mention implemented
+findings or controls.
