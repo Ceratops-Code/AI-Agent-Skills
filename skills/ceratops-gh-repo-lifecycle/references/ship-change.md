@@ -92,10 +92,11 @@ Infer missing inputs from local files and live repo state before asking.
 #### 5. PR, CI, merge, and publish
 
 - Create or update a branch and commit intentionally.
-- Run the deterministic ship helper. It checkpoints the repository and exact
-  head commit, ensures the PR, waits on CI/readiness and Codex review
-  concurrently, rechecks both gates at that commit, merges with an exact-head
-  precondition, synchronizes the local default branch, and emits only state
+- Run the deterministic ship helper. It retains repository-and-exact-commit
+  checkpoints only while work is incomplete, ensures the PR, waits on
+  CI/readiness and Codex review concurrently, rechecks both gates at that
+  commit, merges with an exact-head precondition, synchronizes the local
+  default branch, deletes the successful checkpoint, and emits only state
   changes.
 - Pass `--reusable-head` only for a reusable release or integration head. The
   helper aligns its local branch after merge and safely restores or aligns the

@@ -568,6 +568,15 @@ def ship(args: argparse.Namespace) -> dict[str, Any]:
         _write_checkpoint(checkpoint_path, state)
         changes.append("synchronized")
 
+    # Remove only this exact completed checkpoint; every earlier failure path
+    # leaves its checkpoint available for resumption.
+    try:
+        checkpoint_path.unlink(missing_ok=True)
+    except OSError as exc:
+        raise ShipError(
+            f"Could not remove successful ship checkpoint {checkpoint_path}: {exc}"
+        ) from exc
+
     return {
         "status": "shipped" if changes else "already_shipped",
         "repository": repository,

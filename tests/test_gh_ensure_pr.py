@@ -183,7 +183,7 @@ class ShipTests(unittest.TestCase):
         self.assertEqual(result["ci"]["head_oid"], self.commit)
         self.assertEqual(result["codex"]["active_threads"], 0)
 
-    def test_ship_checkpoints_completed_phases_and_resumes_without_rework(self) -> None:
+    def test_ship_removes_only_its_successful_checkpoint(self) -> None:
         state = {
             "version": 1,
             "repository": "owner/repo",
@@ -196,6 +196,9 @@ class ShipTests(unittest.TestCase):
             repo_root = pathlib.Path(temporary_directory)
             args = self.args(repo_root)
             checkpoint = repo_root / "checkpoint.json"
+            checkpoint.write_text("checkpoint", encoding="utf-8")
+            unrelated_checkpoint = repo_root / "unrelated.json"
+            unrelated_checkpoint.write_text("unrelated", encoding="utf-8")
             with (
                 mock.patch.object(
                     ship, "_repository_name", return_value="owner/repo"
@@ -248,12 +251,13 @@ class ShipTests(unittest.TestCase):
                     },
                 ),
             ):
-                first = ship.ship(args)
-                second = ship.ship(args)
+                result = ship.ship(args)
+            checkpoint_removed = not checkpoint.exists()
+            unrelated_retained = unrelated_checkpoint.exists()
 
-        self.assertEqual(first["status"], "shipped")
+        self.assertEqual(result["status"], "shipped")
         self.assertEqual(
-            first["changes"],
+            result["changes"],
             [
                 "pr_ready",
                 "gates_passed",
@@ -262,12 +266,58 @@ class ShipTests(unittest.TestCase):
                 "synchronized",
             ],
         )
-        self.assertEqual(second["status"], "already_shipped")
+        self.assertTrue(checkpoint_removed)
+        self.assertTrue(unrelated_retained)
         ensure.assert_called_once()
         self.assertEqual(gates.call_count, 2)
         merge_pr.assert_called_once()
         self.assertEqual(merge_pr.call_args.args[0].wait_seconds, 0)
         sync_main.assert_called_once()
+
+    def test_ship_retains_checkpoint_when_a_gate_fails(self) -> None:
+        state = {
+            "version": 1,
+            "repository": "owner/repo",
+            "commit": self.commit,
+            "head_branch": "release/local",
+            "base_branch": "main",
+            "phase": "pr_ready",
+            "pr": 17,
+            "url": "https://example.test/pr/17",
+        }
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            repo_root = pathlib.Path(temporary_directory)
+            args = self.args(repo_root)
+            checkpoint = repo_root / "checkpoint.json"
+            checkpoint.write_text("checkpoint", encoding="utf-8")
+            with (
+                mock.patch.object(
+                    ship, "_repository_name", return_value="owner/repo"
+                ),
+                mock.patch.object(ship, "_resolve_commit", return_value=self.commit),
+                mock.patch.object(
+                    ship,
+                    "_load_or_create_checkpoint",
+                    return_value=(checkpoint, state),
+                ),
+                mock.patch.object(
+                    ship,
+                    "_live_pr",
+                    return_value={
+                        "state": "OPEN",
+                        "headRefOid": self.commit,
+                    },
+                ),
+                mock.patch.object(
+                    ship,
+                    "run_parallel_gates",
+                    side_effect=ship.ShipError("gate failed"),
+                ),
+            ):
+                with self.assertRaisesRegex(ship.ShipError, "gate failed"):
+                    ship.ship(args)
+
+            self.assertTrue(checkpoint.exists())
 
     def test_deleted_reusable_remote_branch_is_restored(self) -> None:
         with (
