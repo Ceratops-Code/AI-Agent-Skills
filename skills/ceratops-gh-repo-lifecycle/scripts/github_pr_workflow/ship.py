@@ -359,6 +359,7 @@ def wait_for_ci_gate(
         if not pending:
             return {
                 "pr": summary.get("number"),
+                "base": summary.get("base"),
                 "head_oid": summary.get("head_oid"),
                 "pending": 0,
                 "review_authorization_required": (
@@ -412,6 +413,23 @@ def run_parallel_gates(
     active_count = int(review_result.get("active_codex_thread_count") or 0)
     if active_count:
         raise ShipError(f"Codex review gate found {active_count} active thread(s).")
+    unresolved_count = int(
+        review_result.get("unresolved_review_thread_count") or 0
+    )
+    base_branch = ci_result.get("base")
+    if unresolved_count:
+        if not isinstance(base_branch, str) or not base_branch:
+            raise ShipError(
+                "PR readiness did not return a base branch for unresolved "
+                "review-thread policy."
+            )
+        if readiness.review_thread_resolution_required(
+            base_branch, args.repo_root
+        ):
+            raise ShipError(
+                "GitHub branch rules require resolution of "
+                f"{unresolved_count} unresolved review thread(s)."
+            )
     review_authorization_required = bool(
         ci_result.get("review_authorization_required")
     )
@@ -432,6 +450,7 @@ def run_parallel_gates(
         "codex": {
             "head_oid": review_result.get("head_oid"),
             "active_threads": active_count,
+            "unresolved_threads": unresolved_count,
         },
     }
 

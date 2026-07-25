@@ -100,8 +100,10 @@ def gh_pr_view(selector: str | None, cwd: pathlib.Path) -> dict[str, Any]:
     return json.loads(require_command(args, cwd))
 
 
-def required_approving_review_count(base_branch: str, cwd: pathlib.Path) -> int:
-    """Return the strongest pull-request approval rule applied to the branch."""
+def pull_request_rule_parameters(
+    base_branch: str, cwd: pathlib.Path
+) -> list[dict[str, Any]]:
+    """Return every pull-request rule parameter set applied to the branch."""
 
     encoded_branch = urllib.parse.quote(base_branch, safe="")
     raw_rules = json.loads(
@@ -116,20 +118,38 @@ def required_approving_review_count(base_branch: str, cwd: pathlib.Path) -> int:
     )
     if not isinstance(raw_rules, list):
         raise CommandError("GitHub branch rules response is not a list")
-    required_count = 0
+    parameters_list: list[dict[str, Any]] = []
     for rule in raw_rules:
         if not isinstance(rule, dict) or rule.get("type") != "pull_request":
             continue
         parameters = rule.get("parameters")
-        count = (
-            parameters.get("required_approving_review_count")
-            if isinstance(parameters, dict)
-            else None
-        )
+        if not isinstance(parameters, dict):
+            raise CommandError("GitHub pull-request rule has invalid parameters")
+        parameters_list.append(parameters)
+    return parameters_list
+
+
+def required_approving_review_count(base_branch: str, cwd: pathlib.Path) -> int:
+    """Return the strongest pull-request approval rule applied to the branch."""
+
+    required_count = 0
+    for parameters in pull_request_rule_parameters(base_branch, cwd):
+        count = parameters.get("required_approving_review_count")
         if not isinstance(count, int) or isinstance(count, bool) or count < 0:
             raise CommandError("GitHub pull-request rule has an invalid review count")
         required_count = max(required_count, count)
     return required_count
+
+
+def review_thread_resolution_required(
+    base_branch: str, cwd: pathlib.Path
+) -> bool:
+    """Return whether an applied branch rule requires every thread resolved."""
+
+    return any(
+        parameters.get("required_review_thread_resolution") is True
+        for parameters in pull_request_rule_parameters(base_branch, cwd)
+    )
 
 
 def default_contract_path() -> pathlib.Path:

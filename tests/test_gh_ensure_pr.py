@@ -206,6 +206,48 @@ class ShipTests(unittest.TestCase):
         self.assertEqual(result["codex"]["active_threads"], 0)
         self.assertEqual(result["disposition"], "passed")
 
+    def test_parallel_gates_enforce_required_thread_resolution(self) -> None:
+        args = self.args(pathlib.Path.cwd())
+        with (
+            mock.patch.object(
+                ship,
+                "wait_for_ci_gate",
+                return_value={
+                    "base": "main",
+                    "head_oid": self.commit,
+                    "review_authorization_required": False,
+                },
+            ),
+            mock.patch.object(
+                ship.codex_review,
+                "wait_for_codex_threads",
+                return_value={
+                    "head_oid": self.commit,
+                    "active_codex_thread_count": 0,
+                    "unresolved_review_thread_count": 2,
+                },
+            ),
+            mock.patch.object(
+                ship.readiness,
+                "review_thread_resolution_required",
+                return_value=True,
+            ) as resolution_required,
+        ):
+            with self.assertRaisesRegex(
+                ship.ShipError,
+                "require resolution of 2 unresolved review thread",
+            ):
+                ship.run_parallel_gates(
+                    args,
+                    "17",
+                    "owner/repo",
+                    self.commit,
+                    ci_wait_seconds=0,
+                    review_wait_seconds=0,
+                )
+
+        resolution_required.assert_called_once_with("main", args.repo_root)
+
     def test_ship_removes_only_its_successful_checkpoint(self) -> None:
         state = {
             "version": 1,
