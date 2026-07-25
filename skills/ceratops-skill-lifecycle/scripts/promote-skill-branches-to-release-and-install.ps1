@@ -9,8 +9,9 @@ param(
 
 # Skill-local helper for deterministic change-promotion work. It prepares the
 # reusable release branch, fast-forwards and checks only approved branches,
-# retains their clean worktrees through remote review, then validates and
-# installs the promoted snapshot and emits one compact JSON summary on success.
+# type-checks the assembled release candidate, retains approved clean worktrees
+# through remote review, then validates and installs the promoted snapshot and
+# emits one compact JSON summary on success.
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
@@ -169,6 +170,8 @@ $installScript = Join-Path $resolvedSkillsRepoRoot "scripts\install-skills.py"
 if (-not (Test-Path -LiteralPath $installScript -PathType Leaf)) {
     throw "Missing repository skill installer: $installScript"
 }
+
+Invoke-QuietNative -FilePath "python" -Arguments @("-m", "mypy")
 
 $headSha = (Get-GitLines @("rev-parse", "HEAD") | Select-Object -First 1).Trim()
 $pendingArgs = @(

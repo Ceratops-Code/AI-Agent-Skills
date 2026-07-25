@@ -807,9 +807,13 @@ def check_validation_command_surface() -> list[str]:
     pending_call = '$pendingOutput = @(Invoke-CapturedNative -FilePath "powershell" -Arguments $pendingArgs)'
     fast_forward_call = 'Invoke-GitQuiet @("merge", "--ff-only", $branch)'
     installer_guard = 'if (-not (Test-Path -LiteralPath $installScript -PathType Leaf))'
+    mypy_call = 'Invoke-QuietNative -FilePath "python" -Arguments @("-m", "mypy")'
     promotion_commit_arg = '"-PromotionCommit"'
     record_promotion_arg = '"-RecordPromotion"'
-    install_call = 'Invoke-QuietNative -FilePath "python" -Arguments @('
+    install_call = (
+        'Invoke-QuietNative -FilePath "python" -Arguments @(\n'
+        "    $installScript,"
+    )
     if (
         promotion_helper_text.count(pending_approved_data) != 1
         or promotion_helper_text.count(pending_call) != 1
@@ -824,6 +828,7 @@ def check_validation_command_surface() -> list[str]:
     elif not (
         promotion_helper_text.find(fast_forward_call)
         < promotion_helper_text.find(installer_guard)
+        < promotion_helper_text.find(mypy_call)
         < promotion_helper_text.find(promotion_commit_arg)
         < promotion_helper_text.find(record_promotion_arg)
         < promotion_helper_text.find(pending_approved_data)
@@ -831,8 +836,8 @@ def check_validation_command_surface() -> list[str]:
         < promotion_helper_text.find(install_call)
     ):
         errors.append(
-            "release promotion must guard the installer, retain approved sources, "
-            "and check their pending work before installing"
+            "release promotion must guard the installer, run mypy, retain approved "
+            "sources, and check their pending work before installing"
         )
     pending_scope_markers = (
         "ApprovedBranchData",
