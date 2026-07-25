@@ -69,6 +69,32 @@ class ShipTests(unittest.TestCase):
             interval_seconds=0,
         )
 
+    def test_passing_mergeability_is_not_treated_as_pending(self) -> None:
+        findings = [
+            ship.readiness.Finding(
+                level="PASS",
+                check="pr.mergeable",
+                message="PR is mergeable.",
+                actual="MERGEABLE",
+            )
+        ]
+        with mock.patch.object(
+            ship.readiness,
+            "validate_readiness",
+            return_value=({"head_oid": self.commit, "number": 17}, findings),
+        ) as validate:
+            result = ship.wait_for_ci_gate(
+                "17",
+                pathlib.Path.cwd(),
+                self.commit,
+                wait_seconds=0,
+                interval_seconds=0,
+                allow_admin_review_bypass=False,
+            )
+
+        self.assertEqual(result["pending"], 0)
+        validate.assert_called_once()
+
     def test_parallel_gates_start_together(self) -> None:
         barrier = threading.Barrier(2)
 

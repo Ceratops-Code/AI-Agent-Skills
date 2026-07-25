@@ -19,7 +19,7 @@ import time
 from typing import Any
 
 from github_contract_engine.github_api import run_json_command
-from github_contract_engine.levels import ERROR
+from github_contract_engine.levels import ERROR, WARN
 
 from . import codex_review, ensure_pr, merge, readiness, sync
 from .command import CommandError, require_output, require_success
@@ -219,7 +219,7 @@ def _load_or_create_checkpoint(
 
 
 def _transient_readiness(finding: readiness.Finding) -> bool:
-    if finding.check == "pr.mergeable" and finding.level != ERROR:
+    if finding.check == "pr.mergeable" and finding.level == WARN:
         return True
     if finding.check == "pr.status_checks" and "pending" in finding.message.lower():
         return True
