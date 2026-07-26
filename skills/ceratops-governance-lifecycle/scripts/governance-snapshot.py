@@ -190,28 +190,6 @@ def automations_inventory(automation_root: pathlib.Path) -> dict[str, object]:
     }
 
 
-def iter_project_agents(projects_root: pathlib.Path) -> Iterable[pathlib.Path]:
-    """Yield every project AGENTS file from root or nested repository paths."""
-    if projects_root.exists():
-        local_paths = {
-            path.resolve()
-            for path in projects_root.rglob("AGENTS.md")
-            if ".git" not in path.parts
-        }
-        yield from sorted(local_paths)
-
-
-def iter_agents(projects_root: pathlib.Path, codex_home: pathlib.Path) -> Iterable[pathlib.Path]:
-    global_agents = codex_home / "AGENTS.md"
-    if global_agents.exists():
-        yield global_agents
-    yield from (
-        path
-        for path in iter_project_agents(projects_root)
-        if path != global_agents.resolve()
-    )
-
-
 def run_git(repo: pathlib.Path, *args: str) -> tuple[str | None, str | None]:
     """Run a bounded read-only Git probe and return compact output or an error."""
     try:
@@ -229,6 +207,73 @@ def run_git(repo: pathlib.Path, *args: str) -> tuple[str | None, str | None]:
     if result.returncode != 0:
         return None, (result.stderr or result.stdout).strip()[:240]
     return result.stdout.rstrip("\r\n"), None
+
+
+def git_ignore_excludes(path: pathlib.Path) -> bool:
+    """Use the containing worktree's Git ignore resolution when one exists."""
+    git_root, _ = run_git(path.parent, "rev-parse", "--show-toplevel")
+    if not git_root:
+        return False
+    try:
+        result = subprocess.run(
+            [
+                "git",
+                "-C",
+                git_root,
+                "check-ignore",
+                "--quiet",
+                "--",
+                str(path),
+            ],
+            capture_output=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError(f"git ignore check failed for {path}: {exc}") from exc
+    if result.returncode not in {0, 1}:
+        detail = (result.stderr or result.stdout).decode(
+            "utf-8", errors="replace"
+        ).strip()
+        raise RuntimeError(
+            f"git ignore check failed for {path}: {detail[:240]}"
+        )
+    return result.returncode == 0
+
+
+def iter_project_agents(projects_root: pathlib.Path) -> Iterable[pathlib.Path]:
+    """Yield owned AGENTS sources after tmp and Git-ignore exclusions."""
+    if not projects_root.exists():
+        return
+    resolved_root = projects_root.resolve()
+    local_paths: set[pathlib.Path] = set()
+    for path in projects_root.rglob("AGENTS.md"):
+        resolved = path.resolve()
+        try:
+            relative = resolved.relative_to(resolved_root)
+        except ValueError:
+            continue
+        if ".git" in relative.parts:
+            continue
+        if relative.parts and relative.parts[0].casefold() == "tmp":
+            continue
+        if git_ignore_excludes(resolved):
+            continue
+        local_paths.add(resolved)
+    yield from sorted(local_paths)
+
+
+def iter_agents(
+    projects_root: pathlib.Path, codex_home: pathlib.Path
+) -> Iterable[pathlib.Path]:
+    global_agents = codex_home / "AGENTS.md"
+    if global_agents.exists():
+        yield global_agents
+    yield from (
+        path
+        for path in iter_project_agents(projects_root)
+        if path != global_agents.resolve()
+    )
 
 
 def parse_worktrees(output: str) -> list[dict[str, object]]:

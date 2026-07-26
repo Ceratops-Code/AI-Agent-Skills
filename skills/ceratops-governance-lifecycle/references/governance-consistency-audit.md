@@ -14,6 +14,9 @@ domain audits owned by other lifecycle actions.
 - (D) The helper exits zero with compact JSON using schema
   `global-governance-consistency-audit/snapshot.v3`; nonzero execution or
   unreadable JSON blocks the audit.
+- (D) Project AGENTS discovery always excludes the projects-root `tmp` tree;
+  for every other candidate, the containing Git worktree's ignore resolution
+  is the only exclusion source.
 - Use helper output as cheap-pass evidence for automation metadata, AGENTS
   classification, Git/worktree state, automation ignore coverage, directly
   referenced paths, structured rule-graph facts, and overlong `(D)` rule
@@ -22,8 +25,9 @@ domain audits owned by other lifecycle actions.
 ### Scope
 
 - Global `$CODEX_HOME/AGENTS.md` and every project-local or nested `AGENTS.md`
-  under the selected projects root, evaluated through its complete applicable
-  global-to-local instruction stack.
+  under the selected projects root that is outside the root `tmp` tree and not
+  excluded by its containing Git worktree's ignore rules, evaluated through
+  its complete applicable global-to-local instruction stack.
 - Installed `$CODEX_HOME/automations/*/automation.toml`, automation repository
   control files relevant to generated or runtime artifacts, and helpers directly
   referenced by an in-scope control file.
