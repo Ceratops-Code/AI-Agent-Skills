@@ -21,8 +21,9 @@ materially reduce recurrence.
   runs when specified, or the full thread only when no boundary is stated.
 - Resolve the selected session record through
   `$CODEX_HOME/session_index.jsonl`, `$CODEX_HOME/sessions/`, or
-  `$CODEX_HOME/archived_sessions/`. Visible context may identify scope but is
-  not analysis evidence.
+  `$CODEX_HOME/archived_sessions/`. Use only its selected-run rows for semantic
+  evidence the ledger omits, and sanitize that evidence before recording or
+  reporting. Visible context may identify scope but is not analysis evidence.
 - (D) For non-closure analysis, run `python scripts/model-call-ledger.py
   --session PATH --evidence-output LEDGER_PATH [--last-runs N]
   [--include-run TURN_ID]`; it writes every completed run and model call to the
@@ -106,10 +107,10 @@ blocked; do not fall back to visible context.
    checks, corrections, retries, and final state.
 2. Mark each avoidable spend episode and the earliest point it could have been
    prevented or detected.
-3. Review ledger-recorded command, tool, and file-read choices for avoidable
-   output volume, unnecessary file reads, repeated polling, and oversized
-   validation; count only when a narrower command, selector, path, section, or
-   existing evidence would have been sufficient.
+3. Review ledger-reconciled command, tool, and file-read choices with only the
+   selected session rows needed to classify necessity, outcome, and narrower
+   alternatives; count only when a narrower command, selector, path, section,
+   or existing evidence would have been sufficient.
 4. Identify the producer or workflow choice that allowed the spend: prompt,
    rule, skill, automation, helper, validation, tool choice, workflow habit, or
    external dependency.

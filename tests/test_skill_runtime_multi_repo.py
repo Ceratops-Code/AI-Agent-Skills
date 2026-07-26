@@ -403,6 +403,9 @@ def test_closure_snapshot_composes_only_named_local_state(
     assert run_git(repo, "push", "-u", "origin", "main").returncode == 0
     assert run_git(repo, "branch", "release/local").returncode == 0
     assert run_git(repo, "push", "origin", "release/local").returncode == 0
+    (repo / "local.txt").write_text("local\n", encoding="utf-8", newline="\n")
+    assert run_git(repo, "add", "local.txt").returncode == 0
+    assert run_git(repo, "commit", "-m", "local").returncode == 0
     assert (
         run_git(
             repo,
@@ -454,6 +457,12 @@ def test_closure_snapshot_composes_only_named_local_state(
     assert result["schema"] == "ceratops-closure-snapshot.v1"
     assert result["repo"]["branch"] == "main"
     assert result["repo"]["clean"] is True
+    assert result["repo"]["tracking"] == {
+        "status": "tracked",
+        "ref": "origin/main",
+        "ahead": 1,
+        "behind": 0,
+    }
     assert result["release"]["ahead"] == 1
     assert result["release"]["behind"] == 0
     assert result["task"]["branch"] == "codex/closure-test"

@@ -105,6 +105,29 @@ def divergence(repo: pathlib.Path, upstream: str, local: str) -> dict[str, int]:
     return {"ahead": int(parts[1]), "behind": int(parts[0])}
 
 
+def branch_tracking(repo: pathlib.Path, branch: str) -> dict[str, Any]:
+    """Report current-branch upstream divergence or why it is unavailable."""
+
+    if not branch:
+        return {"status": "detached"}
+    upstream_result = run_git(
+        repo,
+        "rev-parse",
+        "--abbrev-ref",
+        "--symbolic-full-name",
+        "@{upstream}",
+        allowed_codes=(0, 128),
+    )
+    if upstream_result.returncode != 0:
+        return {"status": "unavailable"}
+    upstream = validate_name(upstream_result.stdout, "current branch upstream")
+    return {
+        "status": "tracked",
+        "ref": upstream,
+        **divergence(repo, upstream, branch),
+    }
+
+
 def registered_worktree(repo: pathlib.Path, branch: str) -> pathlib.Path:
     """Resolve the exact worktree registered for one named local branch."""
 
@@ -194,13 +217,15 @@ def main(argv: list[str] | None = None) -> int:
             git_text(repo, "remote", "get-url", remote)
             run_git(repo, "fetch", "--prune", remote)
 
+        current_branch = git_text(repo, "branch", "--show-current")
         result: dict[str, Any] = {
             "schema": SCHEMA,
             "repo": {
                 "path": str(repo),
-                "branch": git_text(repo, "branch", "--show-current"),
+                "branch": current_branch,
                 "head": git_head(repo),
                 "clean": git_clean(repo),
+                "tracking": branch_tracking(repo, current_branch),
             },
         }
 
