@@ -1606,13 +1606,15 @@ def test_installer_synchronization_compares_only_version(tmp_path: pathlib.Path)
     assert target.read_bytes() == INSTALLER_TEMPLATE.read_bytes()
 
 
-def test_installer_version_history_requires_changed_behavior_for_a_new_version(
+def test_installer_version_producer_assigns_versions_without_model_repair(
     tmp_path: pathlib.Path,
 ) -> None:
     validator = runpy.run_path(str(VALIDATOR))
     fingerprint = validator["installer_behavior_fingerprint"]
     check_history = validator["check_installer_version_history"]
+    synchronize = validator["synchronize_authoritative_installer_version"]
     template = tmp_path / "install-skills-template.py"
+    bootstrap = tmp_path / "install-skills.py"
     history = tmp_path / "installer-version-history.json"
     template.write_text(
         '"""Bootstrap documentation."""\n'
@@ -1623,6 +1625,7 @@ def test_installer_version_history_requires_changed_behavior_for_a_new_version(
         encoding="utf-8",
         newline="\n",
     )
+    bootstrap.write_text("stale\n", encoding="utf-8", newline="\n")
     baseline = fingerprint(template)
     assert isinstance(baseline, str)
     history.write_text(
@@ -1636,9 +1639,44 @@ def test_installer_version_history_requires_changed_behavior_for_a_new_version(
         encoding="utf-8",
         newline="\n",
     )
-    check_history.__globals__["INSTALLER_TEMPLATE"] = template
-    check_history.__globals__["INSTALLER_VERSION_HISTORY"] = history
+    synchronize.__globals__["INSTALLER_TEMPLATE"] = template
+    synchronize.__globals__["INSTALLER_VERSION_HISTORY"] = history
+    synchronize.__globals__["BOOTSTRAP_INSTALLER"] = bootstrap
+
+    synchronize()
     assert check_history() == []
+    assert bootstrap.read_bytes() == template.read_bytes()
+
+    template.write_text(
+        template.read_text(encoding="utf-8").replace(
+            "INSTALLER_VERSION = 4", "INSTALLER_VERSION = 9"
+        ),
+        encoding="utf-8",
+        newline="\n",
+    )
+    synchronize()
+    assert "INSTALLER_VERSION = 4" in template.read_text(encoding="utf-8")
+    assert len(json.loads(history.read_text(encoding="utf-8"))["versions"]) == 1
+    assert fingerprint(template) == baseline
+    assert check_history() == []
+
+    template.write_text(
+        template.read_text(encoding="utf-8").replace('print("first")', 'print("changed")'),
+        encoding="utf-8",
+        newline="\n",
+    )
+    changed = fingerprint(template)
+    assert isinstance(changed, str)
+    assert changed != baseline
+    synchronize()
+    assert "INSTALLER_VERSION = 5" in template.read_text(encoding="utf-8")
+    assert [entry["version"] for entry in json.loads(history.read_text(encoding="utf-8"))["versions"]] == [4, 5]
+    assert bootstrap.read_bytes() == template.read_bytes()
+    assert check_history() == []
+
+    before = (template.read_bytes(), history.read_bytes(), bootstrap.read_bytes())
+    synchronize()
+    assert (template.read_bytes(), history.read_bytes(), bootstrap.read_bytes()) == before
 
     template.write_text(
         template.read_text(encoding="utf-8")
@@ -1647,90 +1685,23 @@ def test_installer_version_history_requires_changed_behavior_for_a_new_version(
         encoding="utf-8",
         newline="\n",
     )
-    assert fingerprint(template) == baseline
+    synchronize()
+    assert "INSTALLER_VERSION = 5" in template.read_text(encoding="utf-8")
+    assert len(json.loads(history.read_text(encoding="utf-8"))["versions"]) == 2
     assert check_history() == []
 
     template.write_text(
-        template.read_text(encoding="utf-8").replace(
-            "INSTALLER_VERSION = 4", "INSTALLER_VERSION = 5"
-        ),
-        encoding="utf-8",
-        newline="\n",
-    )
-    assert fingerprint(template) == baseline
-    history.write_text(
-        json.dumps(
-            {
-                "schema": "ceratops-installer-version-history.v1",
-                "versions": [
-                    {"version": 4, "behavior_sha256": baseline},
-                    {"version": 5, "behavior_sha256": baseline},
-                ],
-            }
-        )
-        + "\n",
-        encoding="utf-8",
-        newline="\n",
-    )
-    assert any("identical executable behavior" in error for error in check_history())
-
-    history.write_text(
-        json.dumps(
-            {
-                "schema": "ceratops-installer-version-history.v1",
-                "versions": [{"version": 5, "behavior_sha256": baseline}],
-            }
-        )
-        + "\n",
-        encoding="utf-8",
-        newline="\n",
-    )
-    assert any("retain version 4 as its baseline" in error for error in check_history())
-
-    template.write_text(
         template.read_text(encoding="utf-8")
-        .replace("INSTALLER_VERSION = 5", "INSTALLER_VERSION = 4")
-        .replace('print("first")', 'print("changed")'),
+        .replace("INSTALLER_VERSION = 5", "INSTALLER_VERSION = 2")
+        .replace('print("changed")', 'print("first")'),
         encoding="utf-8",
         newline="\n",
     )
-    history.write_text(
-        json.dumps(
-            {
-                "schema": "ceratops-installer-version-history.v1",
-                "versions": [{"version": 4, "behavior_sha256": baseline}],
-            }
-        )
-        + "\n",
-        encoding="utf-8",
-        newline="\n",
-    )
-    assert any("behavior changed without" in error for error in check_history())
-
-    changed = fingerprint(template)
-    assert isinstance(changed, str)
-    assert changed != baseline
-    template.write_text(
-        template.read_text(encoding="utf-8").replace(
-            "INSTALLER_VERSION = 4", "INSTALLER_VERSION = 5"
-        ),
-        encoding="utf-8",
-        newline="\n",
-    )
-    history.write_text(
-        json.dumps(
-            {
-                "schema": "ceratops-installer-version-history.v1",
-                "versions": [
-                    {"version": 4, "behavior_sha256": baseline},
-                    {"version": 5, "behavior_sha256": changed},
-                ],
-            }
-        )
-        + "\n",
-        encoding="utf-8",
-        newline="\n",
-    )
+    synchronize()
+    history_entries = json.loads(history.read_text(encoding="utf-8"))["versions"]
+    assert [entry["version"] for entry in history_entries] == [4, 5, 6]
+    assert history_entries[-1]["behavior_sha256"] == baseline
+    assert "INSTALLER_VERSION = 6" in template.read_text(encoding="utf-8")
     assert check_history() == []
 
 

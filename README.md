@@ -87,7 +87,7 @@ without repository deduplication.
 | `skills/ceratops-governance-lifecycle/scripts/apply_rules_update.py` | Applies one approved coupled rules/history request with stale-text checks, shared validation, rollback, and compact output. |
 | `skills/ceratops-gh-repo-lifecycle/scripts/github_contract_engine/` | Package CLI for compact local audit snapshots, contract evaluation, shared GitHub API access, sanitized evidence, and evidence-gated CodeQL disposition. |
 | `skills/ceratops-gh-repo-lifecycle/scripts/github_pr_workflow/` | Package CLI for individual PR operations, caller-adapted dependency queues, and exact-commit checkpointed shipping with concurrent gates, reusable-branch restoration, and terminal same-PR checkpoint cleanup. |
-| `skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py` | Source validator for selected-skill, section, and full repository checks. |
+| `skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py` | Source validator plus deterministic authoritative installer-version synchronization. |
 | `skills/ceratops-skill-lifecycle/scripts/promote-skill-branches-to-release-and-install.ps1` | Called by skill change-promotion to prepare `release/local`, fast-forward reviewed branches, type-check the assembled candidate, record its exact retention state, then validate, install, and emit compact ready/not-ready JSON. |
 | `skills/ceratops-skill-lifecycle/scripts/manage-pending-release-work.ps1` | Records exact promoted sources, performs cleanup-only checks, or terminally installs and verifies synchronized runtime before approved-source cleanup. |
 

@@ -161,8 +161,18 @@ def installer_behavior_fingerprint(path: pathlib.Path) -> str | None:
     """Hash executable installer behavior while ignoring version metadata and docstrings."""
 
     try:
-        module = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    except (OSError, SyntaxError, UnicodeError):
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return None
+    return installer_behavior_fingerprint_text(text, str(path))
+
+
+def installer_behavior_fingerprint_text(text: str, filename: str) -> str | None:
+    """Hash executable behavior from installer text."""
+
+    try:
+        module = ast.parse(text, filename=filename)
+    except SyntaxError:
         return None
     for owner in ast.walk(module):
         if not isinstance(owner, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -180,49 +190,49 @@ def installer_behavior_fingerprint(path: pathlib.Path) -> str | None:
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
-def check_installer_version_history() -> list[str]:
-    """Bind every authoritative installer version to unique executable behavior."""
+def installer_version_history_entries() -> list[tuple[int, str]]:
+    """Read contiguous behavior history from the enforced version-4 baseline."""
 
     try:
         history = read_json(INSTALLER_VERSION_HISTORY)
-    except (OSError, json.JSONDecodeError, UnicodeError):
-        return ["authoritative installer version history must be readable JSON"]
+    except (OSError, json.JSONDecodeError, UnicodeError) as exc:
+        raise ValueError("authoritative installer version history must be readable JSON") from exc
     if history.get("schema") != "ceratops-installer-version-history.v1":
-        return ["authoritative installer version history has an unsupported schema"]
+        raise ValueError("authoritative installer version history has an unsupported schema")
     entries = history.get("versions")
     if not isinstance(entries, list) or not entries:
-        return ["authoritative installer version history must declare at least one version"]
+        raise ValueError("authoritative installer version history must declare at least one version")
 
-    errors: list[str] = []
-    previous_version = 0
-    fingerprints: dict[str, int] = {}
     parsed_entries: list[tuple[int, str]] = []
     for index, entry in enumerate(entries):
         if not isinstance(entry, dict):
-            errors.append(f"authoritative installer version history entry {index} must be an object")
-            continue
+            raise ValueError(f"authoritative installer version history entry {index} must be an object")
         version = entry.get("version")
         fingerprint = entry.get("behavior_sha256")
-        if not isinstance(version, int) or isinstance(version, bool) or version <= previous_version:
-            errors.append("authoritative installer history versions must be positive and strictly increasing")
-            continue
-        previous_version = version
-        if not isinstance(fingerprint, str) or re.fullmatch(r"[0-9a-f]{64}", fingerprint) is None:
-            errors.append(f"authoritative installer history version {version} has an invalid behavior_sha256")
-            continue
-        if fingerprint in fingerprints:
-            errors.append(
-                "authoritative installer versions "
-                f"{fingerprints[fingerprint]} and {version} have identical executable behavior"
+        expected_version = INSTALLER_VERSION_HISTORY_BASELINE + index
+        if not isinstance(version, int) or isinstance(version, bool) or version != expected_version:
+            raise ValueError(
+                "authoritative installer history versions must be contiguous from "
+                f"version {INSTALLER_VERSION_HISTORY_BASELINE}"
             )
-        fingerprints[fingerprint] = version
+        if not isinstance(fingerprint, str) or re.fullmatch(r"[0-9a-f]{64}", fingerprint) is None:
+            raise ValueError(
+                f"authoritative installer history version {version} has an invalid behavior_sha256"
+            )
+        if parsed_entries and parsed_entries[-1][1] == fingerprint:
+            raise ValueError("adjacent authoritative installer versions must have different behavior")
         parsed_entries.append((version, fingerprint))
+    return parsed_entries
 
-    if parsed_entries and parsed_entries[0][0] != INSTALLER_VERSION_HISTORY_BASELINE:
-        errors.append(
-            "authoritative installer version history must retain "
-            f"version {INSTALLER_VERSION_HISTORY_BASELINE} as its baseline"
-        )
+
+def check_installer_version_history() -> list[str]:
+    """Verify deterministic producer output as a corruption backstop."""
+
+    try:
+        parsed_entries = installer_version_history_entries()
+    except ValueError as exc:
+        return [str(exc)]
+    errors: list[str] = []
     current_version = installer_version(INSTALLER_TEMPLATE)
     current_fingerprint = installer_behavior_fingerprint(INSTALLER_TEMPLATE)
     if current_version is None or current_fingerprint is None:
@@ -232,6 +242,89 @@ def check_installer_version_history() -> list[str]:
     if parsed_entries and parsed_entries[-1][1] != current_fingerprint:
         errors.append("authoritative installer behavior changed without a new version history entry")
     return errors
+
+
+INSTALLER_VERSION_LINE_RE = re.compile(
+    r"^(?P<prefix>[ \t]*INSTALLER_VERSION[ \t]*=[ \t]*)"
+    r"\d+(?P<suffix>[ \t]*(?:#.*)?(?:\r?\n|$))",
+    re.MULTILINE,
+)
+
+
+def replace_installer_version(text: str, version: int) -> str:
+    """Set one literal installer-version line while preserving surrounding text."""
+
+    matches = list(INSTALLER_VERSION_LINE_RE.finditer(text))
+    if len(matches) != 1:
+        raise ValueError("authoritative installer must contain one writable INSTALLER_VERSION line")
+    match = matches[0]
+    replacement = f"{match.group('prefix')}{version}{match.group('suffix')}"
+    return f"{text[:match.start()]}{replacement}{text[match.end():]}"
+
+
+def write_coupled_installer_state(changes: Mapping[pathlib.Path, bytes]) -> None:
+    """Write coupled producer outputs and restore all originals after a write failure."""
+
+    originals = {path: path.read_bytes() for path in changes}
+    try:
+        for path, payload in changes.items():
+            path.write_bytes(payload)
+    except OSError as exc:
+        try:
+            for path, payload in originals.items():
+                path.write_bytes(payload)
+        except OSError as rollback_exc:
+            raise RuntimeError("installer-version synchronization failed and rollback was incomplete") from rollback_exc
+        raise RuntimeError("installer-version synchronization failed; original files were restored") from exc
+
+
+def synchronize_authoritative_installer_version() -> None:
+    """Assign the correct version and update all authoritative installer outputs."""
+
+    entries = installer_version_history_entries()
+    template_bytes = INSTALLER_TEMPLATE.read_bytes()
+    try:
+        template_text = template_bytes.decode("utf-8")
+    except UnicodeError as exc:
+        raise ValueError("authoritative installer template must be UTF-8") from exc
+    fingerprint = installer_behavior_fingerprint_text(template_text, str(INSTALLER_TEMPLATE))
+    if fingerprint is None:
+        raise ValueError("authoritative installer template must be valid Python")
+
+    latest_version, latest_fingerprint = entries[-1]
+    expected_version = latest_version
+    if fingerprint != latest_fingerprint:
+        expected_version += 1
+        entries.append((expected_version, fingerprint))
+    synchronized_text = replace_installer_version(template_text, expected_version)
+    synchronized_bytes = synchronized_text.encode("utf-8")
+    if installer_behavior_fingerprint_text(synchronized_text, str(INSTALLER_TEMPLATE)) != fingerprint:
+        raise RuntimeError("installer-version synchronization changed executable behavior")
+
+    newline = "\r\n" if b"\r\n" in INSTALLER_VERSION_HISTORY.read_bytes() else "\n"
+    history_text = json.dumps(
+        {
+            "schema": "ceratops-installer-version-history.v1",
+            "versions": [
+                {"version": version, "behavior_sha256": behavior_sha256}
+                for version, behavior_sha256 in entries
+            ],
+        },
+        indent=2,
+    )
+    history_bytes = f"{history_text}\n".replace("\n", newline).encode("utf-8")
+    candidates = {
+        INSTALLER_TEMPLATE: synchronized_bytes,
+        INSTALLER_VERSION_HISTORY: history_bytes,
+        BOOTSTRAP_INSTALLER: synchronized_bytes,
+    }
+    changes = {
+        path: payload
+        for path, payload in candidates.items()
+        if path.read_bytes() != payload
+    }
+    if changes:
+        write_coupled_installer_state(changes)
 
 
 def parse_frontmatter(path: pathlib.Path) -> tuple[dict[str, str], str]:
@@ -1415,8 +1508,13 @@ def main() -> int:
     parser.add_argument("--repo-root", type=pathlib.Path, help="Source skills repository root.")
     parser.add_argument("--mode", choices=["skill", "sections", "full"], default="full", help="Use skill for selected-skill installation, sections for shared-source changes, or full for source-repository validation.")
     parser.add_argument("--skill", action="append", help="Source skill to validate in skill mode; repeat for multiple skills.")
+    parser.add_argument("--sync-installer-version", action="store_true", help="Deterministically synchronize authoritative installer version state.")
     args = parser.parse_args()
     selected_skill_names = set(args.skill or [])
+    if args.sync_installer_version and args.repo_root is None:
+        parser.error("--sync-installer-version requires --repo-root")
+    if args.sync_installer_version and (args.mode != "full" or selected_skill_names):
+        parser.error("--sync-installer-version cannot be combined with skill or section validation")
     if args.mode == "skill" and not selected_skill_names:
         parser.error("--mode skill requires at least one --skill")
     if args.mode != "skill" and selected_skill_names:
@@ -1452,6 +1550,17 @@ def main() -> int:
     errors.extend(check_repo_manifest_identity(manifest))
     profile = validation_profile(manifest)
     skill_dirs = sorted(p for p in SKILLS_DIR.iterdir() if p.is_dir()) if SKILLS_DIR.is_dir() else []
+    if args.sync_installer_version:
+        if profile != PROFILE_CERATOPS:
+            print("--sync-installer-version requires the ceratops validation profile", file=sys.stderr)
+            return 1
+        try:
+            synchronize_authoritative_installer_version()
+        except (OSError, RuntimeError, ValueError) as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+        print("OK")
+        return 0
     if args.mode == "skill":
         errors.extend(check_selected_skills(manifest, skill_dirs, selected_skill_names, profile))
         if errors:
