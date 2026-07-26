@@ -445,15 +445,15 @@ def build_classified_summary(
     if extra_runs:
         raise LedgerError(f"classified run is outside the window: {extra_runs[0]}")
 
-    totals = Counter()
-    control_totals = Counter()
-    summarized_runs = []
+    totals: Counter[str] = Counter()
+    control_totals: Counter[tuple[str, str]] = Counter()
+    summarized_runs: list[dict[str, Any]] = []
     for turn_id, ledger_run in ledger_runs.items():
         raw_groups = classified_runs[turn_id].get("groups")
         if not isinstance(raw_groups, list) or not raw_groups:
             raise LedgerError(f"classified run has no groups: {turn_id}")
         assigned: dict[int, str] = {}
-        category_counts = Counter()
+        category_counts: Counter[str] = Counter()
         for group in raw_groups:
             if not isinstance(group, dict):
                 raise LedgerError(f"classification group is not an object: {turn_id}")
@@ -463,6 +463,7 @@ def build_classified_summary(
                     f"unsupported classification category in run: {turn_id}"
                 )
             control = group.get("control")
+            control_name: str | None = None
             if category == "necessary":
                 if control not in (None, ""):
                     raise LedgerError(
@@ -472,6 +473,8 @@ def build_classified_summary(
                 raise LedgerError(
                     f"avoidable calls must name their controlling fix: {turn_id}"
                 )
+            else:
+                control_name = control.strip()
             raw_indices = group.get("indices")
             if not isinstance(raw_indices, list) or not raw_indices:
                 raise LedgerError(
@@ -495,7 +498,8 @@ def build_classified_summary(
                 category_counts[category] += 1
                 totals[category] += 1
                 if category != "necessary":
-                    control_totals[(category, control.strip())] += 1
+                    assert control_name is not None
+                    control_totals[(category, control_name)] += 1
 
         expected = set(range(1, ledger_run["model_calls"] + 1))
         missing_calls = sorted(expected - assigned.keys())
