@@ -1075,8 +1075,12 @@
       "id": "organization.immutable_releases",
       "endpoint": "/orgs/${org_login}/settings/immutable-releases",
       "method": "GET",
+      "source_lines": [
+        "contract-source-docs.json:github.rest.orgs",
+        "contract-source-docs.json:github.concepts.immutable_releases"
+      ],
       "desired": {
-        "enforced_repositories": "none"
+        "enforced_repositories": "all"
       },
       "assertions": [
         {
@@ -1091,9 +1095,13 @@
       "id": "organization.immutable_releases_selected_repositories",
       "endpoint": "/orgs/${org_login}/settings/immutable-releases/repositories",
       "method": "GET",
+      "source_lines": [
+        "contract-source-docs.json:github.rest.orgs",
+        "contract-source-docs.json:github.concepts.immutable_releases"
+      ],
       "desired": {
         "status": 409,
-        "message_contains": "Immutable releases not enforced for any repositories"
+        "message_contains": "Immutable releases enforced for all repositories"
       },
       "assertions": [
         {

@@ -45,21 +45,21 @@
     },
     {
       "id": "ND.org.webhook-and-integration-intent",
-      "applies_when": "Organization webhooks, Actions secrets or variables, Dependabot secrets, private registries, or GitHub Apps affect behavior.",
+      "applies_when": "Organization webhooks, Actions secrets or variables, Dependabot secrets, or private registries affect behavior.",
       "review_required": "Confirm each integration is still used, scoped to the correct repositories, and has a real owner; confirm hidden secret values with that owner when needed.",
-      "evidence_keys": ["api.organization.webhooks", "api.actions.secrets", "api.actions.variables"]
+      "evidence_keys": ["api.organization.webhooks", "api.actions.secrets", "api.actions.variables", "api.dependabot.secrets", "api.private_registries.configurations"]
     },
     {
       "id": "ND.org.actions-policy-fit",
       "applies_when": "Actions policy, runner groups, selected actions, OIDC templates, retention, fork approval, or hosted compute settings differ or are unavailable.",
       "review_required": "Confirm required workflows remain possible while unwanted action, runner, trigger, OIDC, retention, and fork exposure is prevented; classify preview and plan-limited controls.",
-      "evidence_keys": ["api.actions.permissions", "api.actions.workflow_permissions", "api.actions.artifact_log_retention", "api.actions.oidc_subject_claim_template", "api.organization.rulesets"]
+      "evidence_keys": ["api.actions.permissions", "api.actions.selected_actions", "api.actions.workflow_permissions", "api.actions.artifact_log_retention", "api.actions.fork_pr_contributor_approval", "api.actions.oidc_subject_claim_template", "api.actions.runner_groups", "api.actions.runners", "api.organization.rulesets", "api.hosted_compute.network_configurations"]
     },
     {
       "id": "ND.org.security-configuration-intent",
-      "applies_when": "Code-security configurations, defaults, security managers, dependency submission, or paid security surfaces are present or missing.",
+      "applies_when": "Code-security configurations, defaults, security managers, or paid security surfaces are present or missing.",
       "review_required": "Confirm the security posture is intentional, no-extra-cost features are enabled when available, and paid requirements are classified rather than silently required.",
-      "evidence_keys": ["api.code_security.configurations", "api.code_security.configuration_defaults"]
+      "evidence_keys": ["api.code_security.configurations", "api.code_security.configuration_defaults", "api.organization.security_managers"]
     },
     {
       "id": "ND.org.dependabot-private-registry-fit",
@@ -81,9 +81,15 @@
     },
     {
       "id": "ND.org.moderation-and-community-fit",
-      "applies_when": "Blocked users, interaction limits, issue types or fields, banners, or reported-content policy differ or are unavailable.",
+      "applies_when": "Blocked users, interaction limits, issue types or fields, or banners differ or are unavailable.",
       "review_required": "Confirm moderation state, intake fields, and announcement text are intentional and not stale incident response.",
-      "evidence_keys": ["api.organization.blocked_users", "api.organization.interaction_limits", "api.organization.issue_types"]
+      "evidence_keys": ["api.organization.blocked_users", "api.organization.interaction_limits", "api.organization.issue_types", "api.organization.issue_fields", "api.organization.announcement_banner"]
+    },
+    {
+      "id": "ND.org.immutable-release-policy-fit",
+      "applies_when": "Organization immutable-release enforcement is enabled, unavailable, or differs from contract expectations.",
+      "review_required": "Confirm the enforcement scope matches the organization's release and artifact policy before changing it.",
+      "evidence_keys": ["api.organization.immutable_releases", "api.organization.immutable_releases_selected_repositories"]
     },
     {
       "id": "ND.org.ruleset-and-token-request-fit",

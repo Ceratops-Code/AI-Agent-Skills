@@ -252,6 +252,15 @@
       "url": "https://docs.github.com/en/rest/releases"
     },
     {
+      "id": "github.concepts.immutable_releases",
+      "scope": [
+        "org",
+        "repo",
+        "artifact"
+      ],
+      "url": "https://docs.github.com/en/code-security/concepts/supply-chain-security/immutable-releases"
+    },
+    {
       "id": "github.packages.registry",
       "scope": [
         "artifact"

@@ -50,7 +50,7 @@
     {
       "id": "ND.skill.role-based-structure",
       "applies_when": "Every skill source review.",
-      "review_required": "Confirm the skill satisfies the common skill content roles directly or through clearly routed shared sections, helpers, references, or assets.",
+      "review_required": "Confirm the skill satisfies each applicable common skill content role directly or through clearly routed shared sections, helpers, references, or assets.",
       "evidence_keys": ["skill.SKILL.md", "skill.references", "templates.skill-sections"]
     },
     {
@@ -97,7 +97,7 @@
     },
     {
       "id": "ND.skill.openai-example-comparison",
-      "applies_when": "An explicit skill-design refresh or ambiguous high-quality-skill decision is in scope.",
+      "applies_when": "An explicit skill-design refresh leaves a concrete high-quality-skill decision unresolved after registered official evidence.",
       "review_required": "Compare two or three relevant installed OpenAI skill examples and record the concrete pattern borrowed or rejected.",
       "evidence_keys": ["skill-source-docs.json", "installed_openai_skill_examples"]
     }
