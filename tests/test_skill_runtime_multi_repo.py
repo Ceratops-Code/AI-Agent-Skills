@@ -212,10 +212,38 @@ def test_model_call_ledger_closure_mode_is_artifact_free(
         {
             "timestamp": "2026-07-25T00:00:05Z",
             "type": "turn_context",
-            "payload": {"turn_id": "incomplete-turn"},
+            "payload": {"turn_id": "turn-2"},
         },
         {
             "timestamp": "2026-07-25T00:00:06Z",
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "assistant",
+                "phase": "final_answer",
+            },
+        },
+        {
+            "timestamp": "2026-07-25T00:00:07Z",
+            "type": "event_msg",
+            "payload": {
+                "type": "token_count",
+                "info": {
+                    "last_token_usage": {
+                        "input_tokens": 25,
+                        "output_tokens": 2,
+                        "total_tokens": 27,
+                    }
+                },
+            },
+        },
+        {
+            "timestamp": "2026-07-25T00:00:08Z",
+            "type": "turn_context",
+            "payload": {"turn_id": "incomplete-turn"},
+        },
+        {
+            "timestamp": "2026-07-25T00:00:09Z",
             "type": "event_msg",
             "payload": {
                 "type": "token_count",
@@ -256,16 +284,40 @@ def test_model_call_ledger_closure_mode_is_artifact_free(
     assert "sentinel-secret" not in closure.stdout
     summary = json.loads(closure.stdout)
     assert summary["schema"] == "ceratops-model-call-ledger-closure.v1"
-    assert summary["totals"]["runs"] == 1
-    assert summary["totals"]["model_calls"] == 2
-    assert [run["turn_id"] for run in summary["runs"]] == ["turn-1"]
+    assert summary["totals"]["runs"] == 2
+    assert summary["totals"]["model_calls"] == 3
+    assert [run["turn_id"] for run in summary["runs"]] == ["turn-1", "turn-2"]
     assert [call["index"] for call in summary["runs"][0]["calls"]] == [1, 2]
     assert "tokens" not in summary["runs"][0]["calls"][0]
+
+    bounded = subprocess.run(
+        [
+            sys.executable,
+            str(MODEL_CALL_LEDGER),
+            "--closure",
+            "--session",
+            str(session),
+            "--last-runs",
+            "1",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert bounded.returncode == 0, bounded.stderr
+    bounded_summary = json.loads(bounded.stdout)
+    assert bounded_summary["window"] == {
+        "mode": "last_runs",
+        "requested_runs": 1,
+        "completed_runs": 1,
+    }
+    assert bounded_summary["totals"]["model_calls"] == 1
+    assert [run["turn_id"] for run in bounded_summary["runs"]] == ["turn-2"]
+
     after = sorted(path.relative_to(codex_home) for path in codex_home.rglob("*"))
     assert after == before
 
     invalid_cases = [
-        (["--last-runs", "1"], "--closure requires the full thread"),
         (["--include-run", "turn-1"], "--closure includes every completed run"),
         (
             ["--evidence-output", str(tmp_path / "unexpected.json")],

@@ -17,8 +17,8 @@ materially reduce recurrence.
 
 - Target thread or session. Use the current thread unless the user names a
   concrete thread title, thread id, or session file.
-- Window under review: the user's last `N` completed runs, or the full thread
-  when `N` is omitted.
+- Window under review: the user's explicit boundary, the last `N` completed
+  runs when specified, or the full thread only when no boundary is stated.
 - Resolve the selected session record through
   `$CODEX_HOME/session_index.jsonl`, `$CODEX_HOME/sessions/`, or
   `$CODEX_HOME/archived_sessions/`. Visible context may identify scope but is
@@ -29,9 +29,9 @@ materially reduce recurrence.
   sanitized ledger, emits only the run reconciliation summary, and includes
   full call details only for explicitly requested runs.
 - (D) For closure analysis, run `python scripts/model-call-ledger.py --closure
-  --thread-id ID`, or pass `--session PATH` when the thread ID is unavailable;
-  it emits one sanitized full-thread call inventory and creates no evidence
-  artifact.
+  --thread-id ID [--last-runs N]`, or pass `--session PATH` when the thread ID
+  is unavailable; it emits one sanitized selected-window call inventory and
+  creates no evidence artifact.
 - Whether the task is analysis-only or the user explicitly asked to apply a
   named control change.
 

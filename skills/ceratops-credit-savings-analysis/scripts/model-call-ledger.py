@@ -4,9 +4,9 @@
 The ledger groups automatic continuations by turn ID, includes only completed
 runs, and fingerprints tool arguments instead of reproducing potentially
 sensitive command text. Ordinary mode writes detailed evidence to a
-caller-selected file. Closure mode emits the minimum sanitized full-thread call
-inventory in one invocation and creates no cleanup artifact. The model remains
-responsible for deciding whether a call was necessary or avoidable.
+caller-selected file. Closure mode emits the minimum sanitized selected-window
+call inventory in one invocation and creates no cleanup artifact. The model
+remains responsible for deciding whether a call was necessary or avoidable.
 """
 
 from __future__ import annotations
@@ -386,7 +386,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--closure",
         action="store_true",
-        help="emit every completed call without creating an evidence artifact",
+        help=(
+            "emit selected completed calls without creating an evidence "
+            "artifact"
+        ),
     )
     return parser
 
@@ -400,8 +403,6 @@ def main(argv: list[str] | None = None) -> int:
         if args.closure:
             if args.evidence_output is not None:
                 raise LedgerError("--closure does not accept --evidence-output")
-            if args.last_runs is not None:
-                raise LedgerError("--closure requires the full thread")
             if args.include_run:
                 raise LedgerError("--closure includes every completed run")
         else:
@@ -419,7 +420,7 @@ def main(argv: list[str] | None = None) -> int:
         ledger = build_ledger(
             load_rows(session),
             session=session,
-            last_runs=None if args.closure else args.last_runs,
+            last_runs=args.last_runs,
         )
         if args.closure:
             result = build_closure_summary(ledger)
