@@ -220,7 +220,11 @@ def build_ledger(
         if row_type != "event_msg" or payload.get("type") != "token_count":
             continue
         usage = token_usage(payload)
-        if sum(usage.values()) == 0:
+        # Total-only events are delayed context accounting, not model responses.
+        if not any(
+            usage.get(field, 0) > 0
+            for field in ("input_tokens", "output_tokens", "reasoning_output_tokens")
+        ):
             pending_actions = []
             continue
         calls = runs[active_turn]["calls"]
