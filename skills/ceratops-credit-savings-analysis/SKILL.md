@@ -62,10 +62,11 @@ cannot be identified.
   change before mutating; otherwise name the target artifact and target
   behavior.
 - Before reporting, classify each finding's control as implemented or still
-  unimplemented; omit implemented findings and report only still-unimplemented
-  findings.
-- When model-call evidence exists, classify every call as necessary, avoidable,
-  or already fixed and map each control only to calls it directly prevents.
+  unimplemented; expose both call counts in the run table, but omit detailed
+  implemented findings and recommendations.
+- When model-call evidence exists, classify every call as necessary, avoidable
+  with an implemented fix, or avoidable with an unimplemented fix, and map each
+  fix only to calls it directly prevents.
 - For each still-unimplemented control, compute `long-term average saving/run =
   affected-run rate x saved/affected run - added/run` and estimate its one-time
   cost separately. Reject non-positive average savings or costs unlikely to be
@@ -130,10 +131,10 @@ evidence prevents analysis. Otherwise start with
 `Unimplemented avoidable spend: none found.`
 
 When model-call evidence exists, first show
-`Run | Model calls | Unimplemented avoidable`, reconciled totals, and available
-token usage. For each still-unimplemented control, show
+`Run | Model Calls | Avoidable Calls with Implemented Fix |
+Avoidable Calls with Unimplemented Fix`, reconciled totals, and available token
+usage. For each still-unimplemented control, show
 `Control | Saved/affected run | Forecast rate | Added/run |
 Long-term average saving/run | One-time cost | Decision`. Then report only
-still-unimplemented findings, any required ranked prompt-level table, excluded
-ordinary failures, and important evidence limits. Do not mention implemented
-findings or controls.
+still-unimplemented findings in detail, any required ranked prompt-level table,
+excluded ordinary failures, and important evidence limits.

@@ -110,6 +110,42 @@ def _write_checkpoint(path: pathlib.Path, state: dict[str, Any]) -> None:
     os.replace(temporary, path)
 
 
+def _remove_completed_pr_checkpoints(
+    current_checkpoint: pathlib.Path,
+    repository: str,
+    pr: int | str,
+) -> int:
+    """Remove only terminal checkpoints proven to belong to one completed PR."""
+
+    directory = current_checkpoint.parent
+    if not directory.is_dir():
+        return 0
+    removed = 0
+    for path in directory.glob("*.json"):
+        should_remove = path == current_checkpoint
+        if not should_remove:
+            try:
+                candidate = _read_checkpoint(path)
+            except ShipError:
+                continue
+            should_remove = (
+                candidate.get("repository") == repository
+                and candidate.get("pr") == pr
+            )
+        if not should_remove:
+            continue
+        existed = path.is_file()
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as exc:
+            raise ShipError(
+                f"Could not remove successful PR checkpoint {path}: {exc}"
+            ) from exc
+        if existed:
+            removed += 1
+    return removed
+
+
 def _find_incomplete_commit(
     repo_root: pathlib.Path, repository: str, head_branch: str
 ) -> str | None:
@@ -760,14 +796,14 @@ def ship(args: argparse.Namespace) -> dict[str, Any]:
         _write_checkpoint(checkpoint_path, state)
         changes.append("synchronized")
 
-    # Remove only this exact completed checkpoint; every earlier failure path
-    # leaves its checkpoint available for resumption.
-    try:
-        checkpoint_path.unlink(missing_ok=True)
-    except OSError as exc:
-        raise ShipError(
-            f"Could not remove successful ship checkpoint {checkpoint_path}: {exc}"
-        ) from exc
+    completed_pr = state.get("pr")
+    if not isinstance(completed_pr, (int, str)):
+        raise ShipError("Synchronized ship state is missing its PR identity.")
+    removed_checkpoints = _remove_completed_pr_checkpoints(
+        checkpoint_path,
+        repository,
+        completed_pr,
+    )
 
     return {
         "status": "shipped" if changes else "already_shipped",
@@ -780,6 +816,7 @@ def ship(args: argparse.Namespace) -> dict[str, Any]:
         "authorization_required": False,
         "merge_commit": state.get("merge_commit"),
         "synchronized_head": state.get("synchronized_head"),
+        "removed_checkpoints": removed_checkpoints,
         "changes": changes,
     }
 

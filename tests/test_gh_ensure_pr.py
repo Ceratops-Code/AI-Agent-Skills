@@ -248,7 +248,7 @@ class ShipTests(unittest.TestCase):
 
         resolution_required.assert_called_once_with("main", args.repo_root)
 
-    def test_ship_removes_only_its_successful_checkpoint(self) -> None:
+    def test_ship_removes_only_completed_same_pr_checkpoints(self) -> None:
         state = {
             "version": 1,
             "repository": "owner/repo",
@@ -262,8 +262,32 @@ class ShipTests(unittest.TestCase):
             args = self.args(repo_root)
             checkpoint = repo_root / "checkpoint.json"
             checkpoint.write_text("checkpoint", encoding="utf-8")
+            same_pr_checkpoint = repo_root / "same-pr.json"
+            same_pr_checkpoint.write_text(
+                json.dumps(
+                    {
+                        **state,
+                        "commit": "c" * 40,
+                        "phase": "pr_ready",
+                        "pr": 17,
+                    }
+                ),
+                encoding="utf-8",
+            )
             unrelated_checkpoint = repo_root / "unrelated.json"
-            unrelated_checkpoint.write_text("unrelated", encoding="utf-8")
+            unrelated_checkpoint.write_text(
+                json.dumps(
+                    {
+                        **state,
+                        "commit": "d" * 40,
+                        "phase": "pr_ready",
+                        "pr": 99,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            unidentifiable_checkpoint = repo_root / "unidentifiable.json"
+            unidentifiable_checkpoint.write_text("invalid", encoding="utf-8")
             with (
                 mock.patch.object(
                     ship, "_repository_name", return_value="owner/repo"
@@ -325,7 +349,9 @@ class ShipTests(unittest.TestCase):
             ):
                 result = ship.ship(args)
             checkpoint_removed = not checkpoint.exists()
+            same_pr_removed = not same_pr_checkpoint.exists()
             unrelated_retained = unrelated_checkpoint.exists()
+            unidentifiable_retained = unidentifiable_checkpoint.exists()
 
         self.assertEqual(result["status"], "shipped")
         self.assertEqual(
@@ -339,7 +365,10 @@ class ShipTests(unittest.TestCase):
             ],
         )
         self.assertTrue(checkpoint_removed)
+        self.assertTrue(same_pr_removed)
         self.assertTrue(unrelated_retained)
+        self.assertTrue(unidentifiable_retained)
+        self.assertEqual(result["removed_checkpoints"], 2)
         ensure.assert_called_once()
         self.assertEqual(gates.call_count, 2)
         merge_pr.assert_called_once()

@@ -312,7 +312,19 @@ def test_promotion_records_are_collision_free_and_cleaned_terminally(
     assert run_git(repo, "config", "user.email", "test@example.invalid").returncode == 0
     assert run_git(repo, "config", "user.name", "Test Agent").returncode == 0
     (repo / "README.md").write_text("base\n", encoding="utf-8", newline="\n")
-    assert run_git(repo, "add", "README.md").returncode == 0
+    (repo / "scripts").mkdir()
+    (repo / "scripts" / "install-skills.py").write_text(
+        "import os, pathlib\n"
+        "record = pathlib.Path(os.environ['EXPECTED_PROMOTION_RECORD'])\n"
+        "worktree = pathlib.Path(os.environ['EXPECTED_APPROVED_WORKTREE'])\n"
+        "if not record.is_file() or not worktree.is_dir():\n"
+        "    raise SystemExit('cleanup ran before installation')\n"
+        "with pathlib.Path(os.environ['FINALIZER_TEST_LOG']).open('a') as log:\n"
+        "    log.write('install\\n')\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    assert run_git(repo, "add", ".").returncode == 0
     assert run_git(repo, "commit", "-m", "base").returncode == 0
     assert run_git(repo, "branch", "-M", "main").returncode == 0
     assert run_git(repo, "branch", "approved").returncode == 0
@@ -399,17 +411,78 @@ def test_promotion_records_are_collision_free_and_cleaned_terminally(
     assert collision_record != record
     assert collision_record.is_file()
 
+    bundle_scripts = tmp_path / "bundle" / "scripts"
+    (bundle_scripts / "runtime").mkdir(parents=True)
+    finalizer_helper = bundle_scripts / PENDING_RELEASE_WORK.name
+    shutil.copy2(PENDING_RELEASE_WORK, finalizer_helper)
+    (bundle_scripts / "runtime" / "skills-consistency-runtime-validator.py").write_text(
+        "import os, pathlib\n"
+        "record = pathlib.Path(os.environ['EXPECTED_PROMOTION_RECORD'])\n"
+        "worktree = pathlib.Path(os.environ['EXPECTED_APPROVED_WORKTREE'])\n"
+        "if not record.is_file() or not worktree.is_dir():\n"
+        "    raise SystemExit('cleanup ran before runtime validation')\n"
+        "with pathlib.Path(os.environ['FINALIZER_TEST_LOG']).open('a') as log:\n"
+        "    log.write('runtime\\n')\n"
+        "if os.environ.get('FAIL_RUNTIME') == '1':\n"
+        "    raise SystemExit('requested runtime failure')\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    assert run_git(repo, "reset", "--hard", promotion_commit).returncode == 0
+    finalizer_log = tmp_path / "finalizer.log"
+    finalizer_env = {
+        **os.environ,
+        "EXPECTED_APPROVED_WORKTREE": str(approved_worktree),
+        "EXPECTED_PROMOTION_RECORD": str(record),
+        "FINALIZER_TEST_LOG": str(finalizer_log),
+    }
     cleanup_command = [
-        *record_command[:-3],
-        "-CleanMergedBranches",
+        "powershell",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(finalizer_helper),
+        "-SkillsRepoRoot",
+        str(repo),
+        "-ReleaseBranch",
+        "release/local",
+        "-PromotionCommit",
+        promotion_commit,
+        "-FinalizeShippedRelease",
     ]
+    failed = subprocess.run(
+        cleanup_command,
+        capture_output=True,
+        text=True,
+        check=False,
+        env={**finalizer_env, "FAIL_RUNTIME": "1"},
+    )
+    assert failed.returncode != 0
+    assert approved_worktree.is_dir()
+    assert run_git(repo, "show-ref", "--verify", "refs/heads/approved").returncode == 0
+    assert record.is_file()
+    assert finalizer_log.read_text(encoding="utf-8").splitlines() == [
+        "install",
+        "runtime",
+    ]
+    finalizer_log.unlink()
+
     cleaned = subprocess.run(
         cleanup_command,
         capture_output=True,
         text=True,
         check=False,
+        env=finalizer_env,
     )
     assert cleaned.returncode == 0, cleaned.stderr
+    cleaned_payload = json.loads(cleaned.stdout)
+    assert cleaned_payload["install"] == "managed"
+    assert cleaned_payload["runtime_validation"] == "full"
+    assert finalizer_log.read_text(encoding="utf-8").splitlines() == [
+        "install",
+        "runtime",
+    ]
     assert not approved_worktree.exists()
     assert run_git(repo, "show-ref", "--verify", "refs/heads/approved").returncode != 0
     assert unrelated_worktree.is_dir()

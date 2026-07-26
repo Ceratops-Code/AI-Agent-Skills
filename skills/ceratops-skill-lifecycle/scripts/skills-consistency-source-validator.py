@@ -868,6 +868,45 @@ def check_validation_command_surface() -> list[str]:
             "release promotion must retain approved sources by exact promotion "
             "commit and clean them only through the pending-work helper"
         )
+    terminal_finalizer_markers = (
+        "$FinalizeShippedRelease",
+        "Assert-SynchronizedCheckout",
+        "scripts\\install-skills.py",
+        "skills-consistency-runtime-validator.py",
+        '$result["install"] = "managed"',
+        '$result["runtime_validation"] = "full"',
+    )
+    terminal_install_call = (
+        'Invoke-QuietNative -FilePath "python" -Arguments @(\n'
+        "        $installScript,"
+    )
+    terminal_runtime_call = (
+        'Invoke-QuietNative -FilePath "python" -Arguments @(\n'
+        "        $runtimeValidator,"
+    )
+    terminal_cleanup_loop = "foreach ($candidate in $cleanupCandidates)"
+    terminal_record_cleanup = "Remove-Item -LiteralPath $promotionRecordPath"
+    if (
+        any(
+            marker not in pending_work_helper_text
+            for marker in terminal_finalizer_markers
+        )
+        or "-FinalizeShippedRelease" not in readme_text
+    ):
+        errors.append(
+            "terminal release finalization must install and validate runtime "
+            "through the pending-work helper"
+        )
+    elif not (
+        pending_work_helper_text.find(terminal_install_call)
+        < pending_work_helper_text.find(terminal_runtime_call)
+        < pending_work_helper_text.find(terminal_cleanup_loop)
+        < pending_work_helper_text.find(terminal_record_cleanup)
+    ):
+        errors.append(
+            "terminal release finalization must validate before approved-source "
+            "and promotion-record cleanup"
+        )
     if (
         '"merge", "--ff-only"' not in promotion_helper_text
         or '"merge", "--no-edit"' in promotion_helper_text
