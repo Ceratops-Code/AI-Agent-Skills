@@ -102,12 +102,15 @@ targeted local state before asking.
 
 - Invoke `$ceratops-credit-savings-analysis` for the current thread, reuse fresh
   closure evidence, and include its required result under `Credit savings`.
-- Obtain model-call evidence in one `model-call-ledger.py --closure
+- Obtain model-call inventory in one `model-call-ledger.py --closure
   [--last-runs N]` invocation. For a prior-closure boundary, set `N` to the
   completed runs strictly after that closure; exclude the boundary and active
   runs. Omit `--last-runs` only when the user states no boundary, use the
   current thread ID when available or its exact session path otherwise, and
   create no temporary ledger.
+- (D) Before reporting, run the same helper once more for the same source and
+  window with `--classifications PATH`; use its validated category totals,
+  then remove the caller-owned classification file.
 - Treat the ledger as evidence, not analysis. A zero-finding result is invalid
   unless selected session rows support dismissal of every visible candidate
   signal and every required result category; report an analysis blocker when
@@ -136,6 +139,8 @@ targeted local state before asking.
 - A completed `$ceratops-credit-savings-analysis` result or its blocker is
   included under `Credit savings`; ledger evidence alone does not satisfy this
   gate.
+- The credit analysis used category totals validated by the existing ledger
+  helper; an unvalidated classification is a blocker.
 - No mutation was performed unless explicitly requested.
 
 ### Output Contract

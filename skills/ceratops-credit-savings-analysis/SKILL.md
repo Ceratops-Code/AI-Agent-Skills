@@ -33,6 +33,10 @@ materially reduce recurrence.
   --thread-id ID [--last-runs N]`, or pass `--session PATH` when the thread ID
   is unavailable; it emits one sanitized selected-window call inventory and
   creates no evidence artifact.
+- (D) Before reporting, rerun `model-call-ledger.py` for the same source and
+  window with `--classifications CLASSIFICATIONS_PATH`; the existing helper
+  must reject missing, duplicate, or multiply classified calls and emit only
+  validated per-run category totals.
 - Whether the task is analysis-only or the user explicitly asked to apply a
   named control change.
 
@@ -61,6 +65,10 @@ blocked; do not fall back to visible context.
   validation gate, then docs.
 - For repeated stage commands, propose a narrow helper that runs the sequence
   and emits only the decision payload.
+- Do not recommend altering the governance lifecycle's required
+  proposal-iteration controller solely to reduce model calls; treat its
+  required iterations as intentional workflow cost and count only avoidable
+  work outside them.
 - For unnecessary file reads, propose targeted paths, sections, selectors, or
   evidence reuse.
 - Do not propose broad best-practice refreshes, large instruction rewrites, or
@@ -125,6 +133,9 @@ blocked; do not fall back to visible context.
 - The inspected window and ledger evidence mode are stated; every model call is
   reconciled in the ledger and every completed run appears in the compact run
   table.
+- The existing ledger helper validated the final classifications against the
+  exact selected source and window; inventory evidence alone does not satisfy
+  this gate.
 - Each finding ties to a concrete episode, cause, earliest prevention point,
   recommendation type, and expected impact.
 - Ordinary model failures that could be confused with avoidable credit spend are

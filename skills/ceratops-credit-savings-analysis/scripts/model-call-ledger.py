@@ -5,8 +5,10 @@ The ledger groups automatic continuations by turn ID, includes only completed
 runs, and fingerprints tool arguments instead of reproducing potentially
 sensitive command text. Ordinary mode writes detailed evidence to a
 caller-selected file. Closure mode emits the minimum sanitized selected-window
-call inventory in one invocation and creates no cleanup artifact. The model
-remains responsible for deciding whether a call was necessary or avoidable.
+call inventory in one invocation and creates no cleanup artifact. The same
+helper validates a caller-owned classification file before reporting, while the
+model remains responsible for deciding whether a call was necessary or
+avoidable.
 """
 
 from __future__ import annotations
@@ -25,6 +27,13 @@ from typing import Any
 SCHEMA = "ceratops-model-call-ledger.v1"
 SUMMARY_SCHEMA = "ceratops-model-call-ledger-summary.v1"
 CLOSURE_SCHEMA = "ceratops-model-call-ledger-closure.v1"
+CLASSIFICATIONS_SCHEMA = "ceratops-model-call-classifications.v1"
+CLASSIFIED_SUMMARY_SCHEMA = "ceratops-model-call-classified-summary.v1"
+CLASSIFICATION_CATEGORIES = (
+    "necessary",
+    "avoidable_implemented",
+    "avoidable_unimplemented",
+)
 TOKEN_FIELDS = (
     "input_tokens",
     "cached_input_tokens",
@@ -307,6 +316,7 @@ def build_summary(
     return {
         "schema": SUMMARY_SCHEMA,
         "evidence_schema": ledger["schema"],
+        "classification_input": classification_input_contract(),
         "evidence_output": str(evidence_output),
         "window": ledger["window"],
         "totals": ledger["totals"],
@@ -330,6 +340,7 @@ def build_closure_summary(ledger: dict[str, Any]) -> dict[str, Any]:
     return {
         "schema": CLOSURE_SCHEMA,
         "evidence_schema": ledger["schema"],
+        "classification_input": classification_input_contract(),
         "session": ledger["session"],
         "window": ledger["window"],
         "totals": ledger["totals"],
@@ -349,6 +360,194 @@ def build_closure_summary(ledger: dict[str, Any]) -> dict[str, Any]:
                 ],
             }
             for run in ledger["runs"]
+        ],
+    }
+
+
+def classification_input_contract() -> dict[str, Any]:
+    """Describe the compact caller-owned classification file shape."""
+
+    return {
+        "schema": CLASSIFICATIONS_SCHEMA,
+        "categories": list(CLASSIFICATION_CATEGORIES),
+        "shape": {
+            "schema": CLASSIFICATIONS_SCHEMA,
+            "session": "<exact ledger session>",
+            "runs": [
+                {
+                    "turn_id": "<selected turn ID>",
+                    "groups": [
+                        {
+                            "category": "<category>",
+                            "control": "<required for avoidable categories>",
+                            "indices": ["<one or more call indices>"],
+                        }
+                    ],
+                }
+            ],
+        },
+    }
+
+
+def load_classifications(path: pathlib.Path) -> dict[str, Any]:
+    """Load caller judgment without accepting malformed or partial JSON."""
+
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise LedgerError(f"could not read classifications: {exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise LedgerError("classifications are not valid JSON") from exc
+    if not isinstance(value, dict):
+        raise LedgerError("classifications must be a JSON object")
+    return value
+
+
+def build_classified_summary(
+    ledger: dict[str, Any],
+    classifications: dict[str, Any],
+) -> dict[str, Any]:
+    """Require every selected call to have exactly one supported classification."""
+
+    if classifications.get("schema") != CLASSIFICATIONS_SCHEMA:
+        raise LedgerError(
+            f"classifications schema must be {CLASSIFICATIONS_SCHEMA}"
+        )
+    try:
+        classified_session = pathlib.Path(
+            str(classifications.get("session") or "")
+        ).expanduser().resolve(strict=True)
+        ledger_session = pathlib.Path(ledger["session"]).resolve(strict=True)
+    except OSError as exc:
+        raise LedgerError(f"could not resolve classified session: {exc}") from exc
+    if classified_session != ledger_session:
+        raise LedgerError("classifications session does not match the ledger")
+
+    raw_runs = classifications.get("runs")
+    if not isinstance(raw_runs, list):
+        raise LedgerError("classifications must contain a runs list")
+    classified_runs: dict[str, dict[str, Any]] = {}
+    for raw_run in raw_runs:
+        if not isinstance(raw_run, dict):
+            raise LedgerError("each classified run must be an object")
+        turn_id = raw_run.get("turn_id")
+        if not isinstance(turn_id, str) or not turn_id:
+            raise LedgerError("each classified run needs a turn_id")
+        if turn_id in classified_runs:
+            raise LedgerError(f"duplicate classified run: {turn_id}")
+        classified_runs[turn_id] = raw_run
+
+    ledger_runs = {run["turn_id"]: run for run in ledger["runs"]}
+    missing_runs = sorted(ledger_runs.keys() - classified_runs.keys())
+    extra_runs = sorted(classified_runs.keys() - ledger_runs.keys())
+    if missing_runs:
+        raise LedgerError(f"missing classified run: {missing_runs[0]}")
+    if extra_runs:
+        raise LedgerError(f"classified run is outside the window: {extra_runs[0]}")
+
+    totals = Counter()
+    control_totals = Counter()
+    summarized_runs = []
+    for turn_id, ledger_run in ledger_runs.items():
+        raw_groups = classified_runs[turn_id].get("groups")
+        if not isinstance(raw_groups, list) or not raw_groups:
+            raise LedgerError(f"classified run has no groups: {turn_id}")
+        assigned: dict[int, str] = {}
+        category_counts = Counter()
+        for group in raw_groups:
+            if not isinstance(group, dict):
+                raise LedgerError(f"classification group is not an object: {turn_id}")
+            category = group.get("category")
+            if category not in CLASSIFICATION_CATEGORIES:
+                raise LedgerError(
+                    f"unsupported classification category in run: {turn_id}"
+                )
+            control = group.get("control")
+            if category == "necessary":
+                if control not in (None, ""):
+                    raise LedgerError(
+                        f"necessary calls must not name a control: {turn_id}"
+                    )
+            elif not isinstance(control, str) or not control.strip():
+                raise LedgerError(
+                    f"avoidable calls must name their controlling fix: {turn_id}"
+                )
+            raw_indices = group.get("indices")
+            if not isinstance(raw_indices, list) or not raw_indices:
+                raise LedgerError(
+                    f"classification group has no call indices: {turn_id}"
+                )
+            for index in raw_indices:
+                if (
+                    not isinstance(index, int)
+                    or isinstance(index, bool)
+                    or index < 1
+                    or index > ledger_run["model_calls"]
+                ):
+                    raise LedgerError(
+                        f"classified call index is outside run {turn_id}"
+                    )
+                if index in assigned:
+                    raise LedgerError(
+                        f"call {index} is classified more than once in run {turn_id}"
+                    )
+                assigned[index] = category
+                category_counts[category] += 1
+                totals[category] += 1
+                if category != "necessary":
+                    control_totals[(category, control.strip())] += 1
+
+        expected = set(range(1, ledger_run["model_calls"] + 1))
+        missing_calls = sorted(expected - assigned.keys())
+        if missing_calls:
+            raise LedgerError(
+                f"call {missing_calls[0]} is unclassified in run {turn_id}"
+            )
+        summarized_runs.append(
+            {
+                "turn_id": turn_id,
+                "started_at": ledger_run["started_at"],
+                "model_calls": ledger_run["model_calls"],
+                "necessary": category_counts["necessary"],
+                "avoidable_with_implemented_fix": category_counts[
+                    "avoidable_implemented"
+                ],
+                "avoidable_with_unimplemented_fix": category_counts[
+                    "avoidable_unimplemented"
+                ],
+            }
+        )
+
+    model_calls = ledger["totals"]["model_calls"]
+    classified_calls = sum(totals.values())
+    if classified_calls != model_calls:
+        raise LedgerError(
+            f"classified call total {classified_calls} does not match {model_calls}"
+        )
+    return {
+        "schema": CLASSIFIED_SUMMARY_SCHEMA,
+        "evidence_schema": ledger["schema"],
+        "classification_schema": CLASSIFICATIONS_SCHEMA,
+        "session": ledger["session"],
+        "window": ledger["window"],
+        "totals": {
+            "model_calls": model_calls,
+            "necessary": totals["necessary"],
+            "avoidable_with_implemented_fix": totals[
+                "avoidable_implemented"
+            ],
+            "avoidable_with_unimplemented_fix": totals[
+                "avoidable_unimplemented"
+            ],
+            **{
+                field: ledger["totals"][field]
+                for field in TOKEN_FIELDS
+            },
+        },
+        "runs": summarized_runs,
+        "controls": [
+            {"category": category, "control": control, "model_calls": count}
+            for (category, control), count in sorted(control_totals.items())
         ],
     }
 
@@ -381,6 +580,14 @@ def build_parser() -> argparse.ArgumentParser:
     source.add_argument("--session", type=pathlib.Path)
     source.add_argument("--thread-id")
     parser.add_argument("--evidence-output", type=pathlib.Path)
+    parser.add_argument(
+        "--classifications",
+        type=pathlib.Path,
+        help=(
+            "validate one caller-owned classification file against the exact "
+            "selected session window"
+        ),
+    )
     parser.add_argument("--last-runs", type=positive_int)
     parser.add_argument("--include-run", action="append", default=[])
     parser.add_argument(
@@ -400,7 +607,16 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
-        if args.closure:
+        if args.classifications is not None:
+            if args.evidence_output is not None:
+                raise LedgerError(
+                    "--classifications does not accept --evidence-output"
+                )
+            if args.include_run:
+                raise LedgerError(
+                    "--classifications validates every completed run"
+                )
+        elif args.closure:
             if args.evidence_output is not None:
                 raise LedgerError("--closure does not accept --evidence-output")
             if args.include_run:
@@ -422,7 +638,15 @@ def main(argv: list[str] | None = None) -> int:
             session=session,
             last_runs=args.last_runs,
         )
-        if args.closure:
+        if args.classifications is not None:
+            classification_path = args.classifications.expanduser().resolve(
+                strict=True
+            )
+            result = build_classified_summary(
+                ledger,
+                load_classifications(classification_path),
+            )
+        elif args.closure:
             result = build_closure_summary(ledger)
         else:
             if args.evidence_output is None:
