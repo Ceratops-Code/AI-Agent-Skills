@@ -108,6 +108,10 @@ targeted local state before asking.
   runs. Omit `--last-runs` only when the user states no boundary, use the
   current thread ID when available or its exact session path otherwise, and
   create no temporary ledger.
+- Treat the ledger as evidence, not analysis. A zero-finding result is invalid
+  unless selected session rows support dismissal of every visible candidate
+  signal and every required result category; report an analysis blocker when
+  that semantic review is incomplete.
 
 #### 6. Classify Closure State
 
@@ -129,8 +133,9 @@ targeted local state before asking.
   unverified states from the selected window and carried boundary state are
   reported.
 - A response that reports no unresolved items is supported by checked evidence.
-- The `$ceratops-credit-savings-analysis` result or blocker is included under
-  `Credit savings`.
+- A completed `$ceratops-credit-savings-analysis` result or its blocker is
+  included under `Credit savings`; ledger evidence alone does not satisfy this
+  gate.
 - No mutation was performed unless explicitly requested.
 
 ### Output Contract

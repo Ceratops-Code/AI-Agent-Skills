@@ -129,6 +129,9 @@ blocked; do not fall back to visible context.
   recommendation type, and expected impact.
 - Ordinary model failures that could be confused with avoidable credit spend are
   explicitly excluded.
+- A zero-finding result is invalid when based only on ledger counts or
+  fingerprints; selected session rows must support dismissal of every visible
+  candidate signal and every required output category.
 - Any missing evidence or target-thread blocker is stated.
 
 ### Output Contract

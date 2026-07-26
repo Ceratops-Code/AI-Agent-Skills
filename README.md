@@ -85,7 +85,7 @@ without repository deduplication.
 | `skills/ceratops-credit-savings-analysis/scripts/model-call-ledger.py` | Writes ordinary sanitized session evidence to a caller-selected file, or emits one artifact-free full-thread call inventory for closure analysis. |
 | `skills/ceratops-task-lifecycle/scripts/closure_snapshot.py` | Emits one compact non-destructive snapshot for explicitly named closure repo, release, task-worktree, and temporary-file targets. |
 | `skills/ceratops-governance-lifecycle/scripts/apply_rules_update.py` | Applies one approved coupled rules/history request with stale-text checks, shared validation, rollback, and compact output. |
-| `skills/ceratops-gh-repo-lifecycle/scripts/github_contract_engine/` | Package CLI for contract evaluation, shared GitHub API access, sanitized evidence, and evidence-gated CodeQL disposition. |
+| `skills/ceratops-gh-repo-lifecycle/scripts/github_contract_engine/` | Package CLI for compact local audit snapshots, contract evaluation, shared GitHub API access, sanitized evidence, and evidence-gated CodeQL disposition. |
 | `skills/ceratops-gh-repo-lifecycle/scripts/github_pr_workflow/` | Package CLI for individual PR operations and exact-commit, checkpointed end-to-end shipping with concurrent gates, reusable-branch restoration, and terminal same-PR checkpoint cleanup. |
 | `skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py` | Source validator for selected-skill, section, and full repository checks. |
 | `skills/ceratops-skill-lifecycle/scripts/promote-skill-branches-to-release-and-install.ps1` | Called by skill change-promotion to prepare `release/local`, fast-forward reviewed branches, type-check the assembled candidate, record its exact retention state, then validate, install, and emit compact ready/not-ready JSON. |
@@ -142,6 +142,7 @@ setting:
 
 ```powershell
 Push-Location .\skills\ceratops-gh-repo-lifecycle\scripts
+python -m github_contract_engine audit-snapshot --repo-root ..\..\..
 python -m github_contract_engine validate org --org ORG --subset all
 python -m github_contract_engine validate repo --repo OWNER/REPO --surface repo --subset settings --local-repo-path PATH
 python -m github_contract_engine validate repo --repo OWNER/REPO --surface code --subset content --local-repo-path PATH

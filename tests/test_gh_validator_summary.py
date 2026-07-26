@@ -21,6 +21,11 @@ from github_contract_engine import levels  # noqa: E402
 from github_contract_engine import schema_validation  # noqa: E402
 from github_contract_engine import github_api  # noqa: E402
 from github_contract_engine import codeql_disposition  # noqa: E402
+from github_contract_engine import audit_snapshot  # noqa: E402
+from github_contract_engine.operations import (  # noqa: E402
+    TOP_LEVEL_COMMANDS,
+    VALIDATION_TARGETS,
+)
 from github_contract_engine.collectors import registries  # noqa: E402
 from github_contract_engine.collectors.local_repository import (  # noqa: E402
     classify_repository,
@@ -75,6 +80,50 @@ class GHContractStateEngineTests(unittest.TestCase):
         )
         with self.assertRaises(ValueError):
             levels.parse_levels("NEEDS_" + "REVIEW")
+
+    def test_audit_snapshot_compacts_local_contract_discovery(self):
+        snapshot = audit_snapshot.build_snapshot(ROOT)
+        self.assertEqual(
+            snapshot["schema"], "ceratops-github-contract-audit-snapshot.v1"
+        )
+        self.assertEqual(
+            snapshot["commands"]["top_level"], list(TOP_LEVEL_COMMANDS)
+        )
+        self.assertEqual(
+            snapshot["commands"]["validation_targets"],
+            list(VALIDATION_TARGETS),
+        )
+        self.assertGreaterEqual(len(snapshot["contracts"]), 10)
+        self.assertTrue(
+            all("check_ids" in contract for contract in snapshot["contracts"])
+        )
+        self.assertTrue(
+            all(
+                "missing_source_lines" in contract
+                for contract in snapshot["contracts"]
+            )
+        )
+        self.assertEqual(
+            [document["path"] for document in snapshot["repo_docs"]],
+            ["README.md", "CONTRIBUTING.md", "CHANGELOG.md"],
+        )
+        self.assertNotIn(str(ROOT), json.dumps(snapshot))
+
+    def test_audit_snapshot_reports_a_compact_incompatible_root_blocker(self):
+        stream = io.StringIO()
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            with contextlib.redirect_stdout(stream):
+                status = audit_snapshot.main(
+                    ["--repo-root", temporary_directory]
+                )
+        self.assertEqual(status, 1)
+        self.assertEqual(
+            json.loads(stream.getvalue()),
+            {
+                "error": "selected root is not a compatible skills checkout",
+                "status": "blocked",
+            },
+        )
 
     def test_local_path_scan_distinguishes_regex_syntax_from_windows_paths(self):
         rule = next(
