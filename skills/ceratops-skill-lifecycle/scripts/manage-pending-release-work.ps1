@@ -160,42 +160,17 @@ function Get-WorktreeStatus {
     return $status
 }
 
-function Test-IsRegisteredWorktreePath {
-    param([string]$WorktreePath)
-
-    $normalizedTarget = [IO.Path]::GetFullPath($WorktreePath).TrimEnd(
-        [IO.Path]::DirectorySeparatorChar,
-        [IO.Path]::AltDirectorySeparatorChar
-    )
-    foreach ($line in Get-GitLines @("worktree", "list", "--porcelain")) {
-        if (-not $line.StartsWith("worktree ", [StringComparison]::Ordinal)) {
-            continue
-        }
-        $registeredPath = $line.Substring("worktree ".Length)
-        $normalizedRegistered = [IO.Path]::GetFullPath($registeredPath).TrimEnd(
-            [IO.Path]::DirectorySeparatorChar,
-            [IO.Path]::AltDirectorySeparatorChar
-        )
-        if (
-            $normalizedRegistered.Equals(
-                $normalizedTarget,
-                [StringComparison]::OrdinalIgnoreCase
-            )
-        ) {
-            return $true
-        }
-    }
-    return $false
-}
-
 function Remove-ApprovedWorktreeCompletely {
     param(
+        [string]$BranchName,
         [string]$WorktreePath,
         [string]$ExpectedRoot
     )
 
     Invoke-Git @("worktree", "remove", $WorktreePath)
-    if (Test-IsRegisteredWorktreePath $WorktreePath) {
+    if (-not [string]::IsNullOrWhiteSpace(
+        (Get-ApprovedBranchWorktreePath -BranchName $BranchName)
+    )) {
         throw "Git still registers removed worktree path $WorktreePath."
     }
     if (Test-Path -LiteralPath $WorktreePath) {
@@ -563,6 +538,7 @@ if ($findings.Count -eq 0) {
     foreach ($candidate in $cleanupCandidates) {
         if (-not [string]::IsNullOrWhiteSpace($candidate.Path)) {
             Remove-ApprovedWorktreeCompletely `
+                -BranchName $candidate.Branch `
                 -WorktreePath $candidate.Path `
                 -ExpectedRoot $expectedWorktreeRoot
             Remove-MergedBranch $candidate.Branch
