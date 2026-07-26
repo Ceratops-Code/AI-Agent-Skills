@@ -933,7 +933,16 @@ def test_promotion_records_are_collision_free_and_cleaned_terminally(
     (repo / "README.md").write_text("base\n", encoding="utf-8", newline="\n")
     (repo / "scripts").mkdir()
     (repo / "scripts" / "install-skills.py").write_text(
-        "import os, pathlib\n"
+        "import os, pathlib, shutil\n"
+        "active_bundle_value = os.environ.get('FINALIZER_ACTIVE_BUNDLE')\n"
+        "if active_bundle_value:\n"
+        "    active_bundle = pathlib.Path(active_bundle_value)\n"
+        "    previous_bundle = active_bundle.with_name(\n"
+        "        active_bundle.name + '-previous'\n"
+        "    )\n"
+        "    active_bundle.rename(previous_bundle)\n"
+        "    shutil.copytree(previous_bundle, active_bundle)\n"
+        "    shutil.rmtree(previous_bundle)\n"
         "record = pathlib.Path(os.environ['EXPECTED_PROMOTION_RECORD'])\n"
         "worktree = pathlib.Path(os.environ['EXPECTED_APPROVED_WORKTREE'])\n"
         "if not record.is_file() or not worktree.is_dir():\n"
@@ -1088,6 +1097,7 @@ def test_promotion_records_are_collision_free_and_cleaned_terminally(
         **os.environ,
         "EXPECTED_APPROVED_WORKTREE": str(approved_worktree),
         "EXPECTED_PROMOTION_RECORD": str(record),
+        "FINALIZER_ACTIVE_BUNDLE": str(bundle_scripts.parent),
         "FINALIZER_TEST_LOG": str(finalizer_log),
     }
     cleanup_command = [
@@ -1111,6 +1121,7 @@ def test_promotion_records_are_collision_free_and_cleaned_terminally(
         text=True,
         check=False,
         env={**finalizer_env, "FAIL_RUNTIME": "1"},
+        cwd=bundle_scripts.parent,
     )
     assert failed.returncode != 0
     assert approved_worktree.is_dir()
@@ -1128,6 +1139,7 @@ def test_promotion_records_are_collision_free_and_cleaned_terminally(
         text=True,
         check=False,
         env=finalizer_env,
+        cwd=bundle_scripts.parent,
     )
     assert cleaned.returncode == 0, cleaned.stderr
     cleaned_payload = json.loads(cleaned.stdout)

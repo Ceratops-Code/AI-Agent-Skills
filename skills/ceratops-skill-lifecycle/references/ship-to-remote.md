@@ -90,6 +90,10 @@ asking.
   this source repository's managed skills from `main`, validate the installed
   runtime, then remove only clean merged worktrees and branches from the exact
   promotion record and consume that record.
+- Before rebuilding runtime, the helper must move the parent process's native
+  working directory to the source repository root so Windows can replace an
+  active installed bundle, then restore the prior directory only when it still
+  exists.
 - Treat successful `install` and `runtime_validation` fields as the managed
   rebuild and runtime-verification result. Retain the record and sources when
   synchronization, installation, validation, or cleanup is blocked.

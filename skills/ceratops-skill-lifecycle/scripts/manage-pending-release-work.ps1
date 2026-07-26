@@ -311,16 +311,31 @@ function Invoke-TerminalRuntimeValidation {
     if (-not (Test-Path -LiteralPath $runtimeValidator -PathType Leaf)) {
         throw "Missing runtime validator: $runtimeValidator"
     }
-    Invoke-QuietNative -FilePath "python" -Arguments @(
-        $installScript,
-        "--repo-root",
-        $resolvedSkillsRepoRoot
-    )
-    Invoke-QuietNative -FilePath "python" -Arguments @(
-        $runtimeValidator,
-        "--repo-root",
-        $resolvedSkillsRepoRoot
-    )
+    # PowerShell's location stack does not reliably move the native Windows
+    # process directory. Move it outside the installed bundle before the
+    # installer replaces that bundle, then restore it only when still valid.
+    $previousNativeWorkingDirectory = [Environment]::CurrentDirectory
+    try {
+        [Environment]::CurrentDirectory = $resolvedSkillsRepoRoot
+        Invoke-QuietNative -FilePath "python" -Arguments @(
+            $installScript,
+            "--repo-root",
+            $resolvedSkillsRepoRoot
+        )
+        Invoke-QuietNative -FilePath "python" -Arguments @(
+            $runtimeValidator,
+            "--repo-root",
+            $resolvedSkillsRepoRoot
+        )
+    } finally {
+        if (
+            Test-Path `
+                -LiteralPath $previousNativeWorkingDirectory `
+                -PathType Container
+        ) {
+            [Environment]::CurrentDirectory = $previousNativeWorkingDirectory
+        }
+    }
 }
 
 $findings = @()

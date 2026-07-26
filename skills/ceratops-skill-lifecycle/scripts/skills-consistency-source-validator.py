@@ -1135,16 +1135,19 @@ def check_validation_command_surface() -> list[str]:
         "Assert-SynchronizedCheckout",
         "scripts\\install-skills.py",
         "skills-consistency-runtime-validator.py",
+        "[Environment]::CurrentDirectory = $resolvedSkillsRepoRoot",
         '$result["install"] = "managed"',
         '$result["runtime_validation"] = "full"',
     )
-    terminal_install_call = (
-        'Invoke-QuietNative -FilePath "python" -Arguments @(\n'
-        "        $installScript,"
+    terminal_install_call = re.search(
+        r'Invoke-QuietNative -FilePath "python" -Arguments @\(\s*'
+        r"\$installScript,",
+        manage_pending_helper_text,
     )
-    terminal_runtime_call = (
-        'Invoke-QuietNative -FilePath "python" -Arguments @(\n'
-        "        $runtimeValidator,"
+    terminal_runtime_call = re.search(
+        r'Invoke-QuietNative -FilePath "python" -Arguments @\(\s*'
+        r"\$runtimeValidator,",
+        manage_pending_helper_text,
     )
     terminal_cleanup_loop = "foreach ($candidate in $cleanupCandidates)"
     terminal_record_cleanup = "Remove-Item -LiteralPath $promotionRecordPath"
@@ -1160,8 +1163,10 @@ def check_validation_command_surface() -> list[str]:
             "through the pending-release manager"
         )
     elif not (
-        manage_pending_helper_text.find(terminal_install_call)
-        < manage_pending_helper_text.find(terminal_runtime_call)
+        terminal_install_call is not None
+        and terminal_runtime_call is not None
+        and terminal_install_call.start()
+        < terminal_runtime_call.start()
         < manage_pending_helper_text.find(terminal_cleanup_loop)
         < manage_pending_helper_text.find(terminal_record_cleanup)
     ):
