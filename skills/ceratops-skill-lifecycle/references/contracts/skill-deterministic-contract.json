@@ -112,10 +112,12 @@
       "deterministic_evidence": [
         "scripts/install-skills.py INSTALLER_VERSION",
         "authoritative installer template INSTALLER_VERSION",
+        "authoritative installer behavior history",
         "installed runtime manifest installer_version"
       ],
-      "pass_condition": "Compatible repositories declare one positive integer INSTALLER_VERSION in scripts/install-skills.py; selected-skill consistency compares only that value, updates missing or lower versions through task worktrees, retains same-version content differences, and runs full validation after synchronization.",
+      "pass_condition": "The authoritative installer history binds every INSTALLER_VERSION to one unique executable-behavior fingerprint; validation rejects changed behavior without a new version and rejects a new version without changed behavior. Compatible repositories declare one positive integer INSTALLER_VERSION in scripts/install-skills.py; selected-skill consistency compares only that value, updates missing or lower versions through task worktrees, retains same-version content differences, and runs full validation after synchronization.",
       "source_lines": [
+        "skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py:check_installer_version_history",
         "skills/ceratops-skill-lifecycle/scripts/runtime/synchronize-installers.py:installer_version",
         "skills/ceratops-skill-lifecycle/scripts/runtime/skills-consistency-runtime-validator.py:discover_runtime",
         "skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py:check_source_installer"

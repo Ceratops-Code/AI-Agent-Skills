@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import hashlib
 import json
 import pathlib
 import re
@@ -35,6 +36,8 @@ BOOTSTRAP_INSTALLER = ROOT / "scripts" / "install-skills.py"
 RUNTIME_INSTALLER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "runtime" / "install-managed-skills.py"
 BUNDLE_RESOLVER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "runtime" / "resolve-lifecycle-bundle.py"
 INSTALLER_TEMPLATE = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "templates" / "install-skills-template.py"
+INSTALLER_VERSION_HISTORY = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "templates" / "installer-version-history.json"
+INSTALLER_VERSION_HISTORY_BASELINE = 4
 INSTALLER_SYNCHRONIZER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "runtime" / "synchronize-installers.py"
 RUNTIME_BUILDER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "runtime" / "managed_runtime_builder.py"
 RUNTIME_VALIDATOR = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "runtime" / "skills-consistency-runtime-validator.py"
@@ -145,6 +148,92 @@ def installer_version(path: pathlib.Path) -> int | None:
     return versions[0] if len(versions) == 1 and versions[0] > 0 else None
 
 
+def is_installer_version_assignment(node: ast.stmt) -> bool:
+    """Return whether a statement assigns the installer version metadata."""
+
+    if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+        return False
+    targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+    return any(isinstance(target, ast.Name) and target.id == "INSTALLER_VERSION" for target in targets)
+
+
+def installer_behavior_fingerprint(path: pathlib.Path) -> str | None:
+    """Hash executable installer behavior while ignoring version metadata and docstrings."""
+
+    try:
+        module = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    except (OSError, SyntaxError, UnicodeError):
+        return None
+    for owner in ast.walk(module):
+        if not isinstance(owner, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if isinstance(owner, ast.Module):
+            owner.body = [node for node in owner.body if not is_installer_version_assignment(node)]
+        if (
+            owner.body
+            and isinstance(owner.body[0], ast.Expr)
+            and isinstance(owner.body[0].value, ast.Constant)
+            and isinstance(owner.body[0].value.value, str)
+        ):
+            del owner.body[0]
+    normalized = ast.dump(module, include_attributes=False)
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def check_installer_version_history() -> list[str]:
+    """Bind every authoritative installer version to unique executable behavior."""
+
+    try:
+        history = read_json(INSTALLER_VERSION_HISTORY)
+    except (OSError, json.JSONDecodeError, UnicodeError):
+        return ["authoritative installer version history must be readable JSON"]
+    if history.get("schema") != "ceratops-installer-version-history.v1":
+        return ["authoritative installer version history has an unsupported schema"]
+    entries = history.get("versions")
+    if not isinstance(entries, list) or not entries:
+        return ["authoritative installer version history must declare at least one version"]
+
+    errors: list[str] = []
+    previous_version = 0
+    fingerprints: dict[str, int] = {}
+    parsed_entries: list[tuple[int, str]] = []
+    for index, entry in enumerate(entries):
+        if not isinstance(entry, dict):
+            errors.append(f"authoritative installer version history entry {index} must be an object")
+            continue
+        version = entry.get("version")
+        fingerprint = entry.get("behavior_sha256")
+        if not isinstance(version, int) or isinstance(version, bool) or version <= previous_version:
+            errors.append("authoritative installer history versions must be positive and strictly increasing")
+            continue
+        previous_version = version
+        if not isinstance(fingerprint, str) or re.fullmatch(r"[0-9a-f]{64}", fingerprint) is None:
+            errors.append(f"authoritative installer history version {version} has an invalid behavior_sha256")
+            continue
+        if fingerprint in fingerprints:
+            errors.append(
+                "authoritative installer versions "
+                f"{fingerprints[fingerprint]} and {version} have identical executable behavior"
+            )
+        fingerprints[fingerprint] = version
+        parsed_entries.append((version, fingerprint))
+
+    if parsed_entries and parsed_entries[0][0] != INSTALLER_VERSION_HISTORY_BASELINE:
+        errors.append(
+            "authoritative installer version history must retain "
+            f"version {INSTALLER_VERSION_HISTORY_BASELINE} as its baseline"
+        )
+    current_version = installer_version(INSTALLER_TEMPLATE)
+    current_fingerprint = installer_behavior_fingerprint(INSTALLER_TEMPLATE)
+    if current_version is None or current_fingerprint is None:
+        return errors
+    if parsed_entries and parsed_entries[-1][0] != current_version:
+        errors.append("authoritative installer version must match the newest history version")
+    if parsed_entries and parsed_entries[-1][1] != current_fingerprint:
+        errors.append("authoritative installer behavior changed without a new version history entry")
+    return errors
+
+
 def parse_frontmatter(path: pathlib.Path) -> tuple[dict[str, str], str]:
     """Parse the simple YAML frontmatter format used by source skills."""
 
@@ -204,6 +293,7 @@ def check_source_installer(profile: str) -> list[str]:
         errors.append("authoritative installer template must declare one positive integer INSTALLER_VERSION")
     elif source_version is not None and source_version != template_version:
         errors.append("repo installer and authoritative template INSTALLER_VERSION values must match")
+    errors.extend(check_installer_version_history())
     return errors
 
 
@@ -1317,6 +1407,7 @@ def main() -> int:
 
     global ROOT, SKILLS_DIR, README, SECTION_MANIFEST, CERATOPS_ICON_SOURCE
     global BOOTSTRAP_INSTALLER, RUNTIME_INSTALLER, BUNDLE_RESOLVER, INSTALLER_TEMPLATE
+    global INSTALLER_VERSION_HISTORY
     global INSTALLER_SYNCHRONIZER, RUNTIME_BUILDER, RUNTIME_VALIDATOR, FAST_CHANGE_READINESS_HELPER
     global PROMOTION_HELPER, MANAGE_PENDING_RELEASE_HELPER, VALIDATOR, WORKFLOW
 
@@ -1341,6 +1432,7 @@ def main() -> int:
         RUNTIME_INSTALLER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "runtime" / "install-managed-skills.py"
         BUNDLE_RESOLVER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "runtime" / "resolve-lifecycle-bundle.py"
         INSTALLER_TEMPLATE = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "templates" / "install-skills-template.py"
+        INSTALLER_VERSION_HISTORY = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "templates" / "installer-version-history.json"
         INSTALLER_SYNCHRONIZER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "runtime" / "synchronize-installers.py"
         RUNTIME_BUILDER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "runtime" / "managed_runtime_builder.py"
         RUNTIME_VALIDATOR = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "runtime" / "skills-consistency-runtime-validator.py"

@@ -1606,6 +1606,134 @@ def test_installer_synchronization_compares_only_version(tmp_path: pathlib.Path)
     assert target.read_bytes() == INSTALLER_TEMPLATE.read_bytes()
 
 
+def test_installer_version_history_requires_changed_behavior_for_a_new_version(
+    tmp_path: pathlib.Path,
+) -> None:
+    validator = runpy.run_path(str(VALIDATOR))
+    fingerprint = validator["installer_behavior_fingerprint"]
+    check_history = validator["check_installer_version_history"]
+    template = tmp_path / "install-skills-template.py"
+    history = tmp_path / "installer-version-history.json"
+    template.write_text(
+        '"""Bootstrap documentation."""\n'
+        "INSTALLER_VERSION = 4\n"
+        "def main():\n"
+        '    """Run the bootstrap."""\n'
+        '    print("first")\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    baseline = fingerprint(template)
+    assert isinstance(baseline, str)
+    history.write_text(
+        json.dumps(
+            {
+                "schema": "ceratops-installer-version-history.v1",
+                "versions": [{"version": 4, "behavior_sha256": baseline}],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    check_history.__globals__["INSTALLER_TEMPLATE"] = template
+    check_history.__globals__["INSTALLER_VERSION_HISTORY"] = history
+    assert check_history() == []
+
+    template.write_text(
+        template.read_text(encoding="utf-8")
+        .replace("Bootstrap documentation.", "Updated bootstrap documentation.")
+        .replace("Run the bootstrap.", "Run the documented bootstrap."),
+        encoding="utf-8",
+        newline="\n",
+    )
+    assert fingerprint(template) == baseline
+    assert check_history() == []
+
+    template.write_text(
+        template.read_text(encoding="utf-8").replace(
+            "INSTALLER_VERSION = 4", "INSTALLER_VERSION = 5"
+        ),
+        encoding="utf-8",
+        newline="\n",
+    )
+    assert fingerprint(template) == baseline
+    history.write_text(
+        json.dumps(
+            {
+                "schema": "ceratops-installer-version-history.v1",
+                "versions": [
+                    {"version": 4, "behavior_sha256": baseline},
+                    {"version": 5, "behavior_sha256": baseline},
+                ],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    assert any("identical executable behavior" in error for error in check_history())
+
+    history.write_text(
+        json.dumps(
+            {
+                "schema": "ceratops-installer-version-history.v1",
+                "versions": [{"version": 5, "behavior_sha256": baseline}],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    assert any("retain version 4 as its baseline" in error for error in check_history())
+
+    template.write_text(
+        template.read_text(encoding="utf-8")
+        .replace("INSTALLER_VERSION = 5", "INSTALLER_VERSION = 4")
+        .replace('print("first")', 'print("changed")'),
+        encoding="utf-8",
+        newline="\n",
+    )
+    history.write_text(
+        json.dumps(
+            {
+                "schema": "ceratops-installer-version-history.v1",
+                "versions": [{"version": 4, "behavior_sha256": baseline}],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    assert any("behavior changed without" in error for error in check_history())
+
+    changed = fingerprint(template)
+    assert isinstance(changed, str)
+    assert changed != baseline
+    template.write_text(
+        template.read_text(encoding="utf-8").replace(
+            "INSTALLER_VERSION = 4", "INSTALLER_VERSION = 5"
+        ),
+        encoding="utf-8",
+        newline="\n",
+    )
+    history.write_text(
+        json.dumps(
+            {
+                "schema": "ceratops-installer-version-history.v1",
+                "versions": [
+                    {"version": 4, "behavior_sha256": baseline},
+                    {"version": 5, "behavior_sha256": changed},
+                ],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    assert check_history() == []
+
+
 def test_repository_review_uses_only_attributable_direct_manifest_folders(tmp_path: pathlib.Path) -> None:
     repo = tmp_path / "compatible"
     other_repo = tmp_path / "other-compatible"
