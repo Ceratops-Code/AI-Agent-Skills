@@ -26,8 +26,9 @@ targeted local state before asking.
 
 ### Skill-Specific Rules
 
-- Advisory by default; do not mutate state unless the user explicitly asks for
-  that exact action.
+- Closure invocation authorizes only helper-validated cleanup of task-created
+  temporary artifacts inside the verified task temp root; remain advisory and
+  ask before any other mutation.
 - For an `incremental closure`, scope new work and credit analysis to completed
   runs after the previous completed closure and carry forward only unresolved
   or intentionally retained boundary state; otherwise scope from the beginning
@@ -87,8 +88,11 @@ targeted local state before asking.
   evidence, run `python scripts/closure_snapshot.py --repo PATH
   [--fetch-remote NAME] [--release-branch BRANCH
   --release-upstream REF] [--task-worktree PATH --task-branch BRANCH]
-  [--temp-root PATH]`; it checks only the named targets and emits one compact
-  non-destructive snapshot.
+  [--temp-root PATH] [--cleanup-temp PATH]`; it snapshots only named targets,
+  removes only exact temporary artifacts that its safety contract validates
+  under `--temp-root`, and emits compact cleanup evidence.
+- Pass `--cleanup-temp` only for an exact artifact that selected-thread evidence
+  proves this task created; otherwise omit it and report the cleanup.
 - Do not rerun facts reported by the snapshot. Query goal state only when
   same-thread evidence shows a goal was created or active, and run additional
   diagnostics only for snapshot state that remains unresolved.
@@ -126,8 +130,12 @@ targeted local state before asking.
   reported.
 - A response that reports no unresolved items is supported by checked evidence.
 - A completed `$ceratops-credit-savings-analysis` result or its blocker is
-  included under `Credit savings`.
-- No mutation was performed unless explicitly requested.
+  included under `Credit savings`; ledger evidence alone does not satisfy this
+  gate.
+- The credit analysis used category totals validated by the existing ledger
+  helper; an unvalidated classification is a blocker.
+- No mutation occurred except helper-validated task-temp cleanup, unless the
+  user explicitly requested another exact action.
 
 ### Output Contract
 
@@ -142,7 +150,7 @@ Return only relevant concise bullets:
 - stale or out-of-scope state
 - important unverified claims
 - relevant forgotten follow-ups
-- optional cleanup
+- optional cleanup that was unsafe or unauthorized to perform
 - `Credit savings`: the required `$ceratops-credit-savings-analysis` result
 
 If no listed item applies, return only `- No unresolved items.`
