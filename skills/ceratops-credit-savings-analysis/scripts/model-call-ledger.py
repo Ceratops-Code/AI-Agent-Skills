@@ -3,7 +3,9 @@
 
 The ledger groups automatic continuations by turn ID, includes only completed
 runs, and fingerprints tool arguments instead of reproducing potentially
-sensitive command text. It is evidence for credit analysis; the model remains
+sensitive command text. Ordinary mode writes detailed evidence to a
+caller-selected file. Closure mode emits the minimum sanitized full-thread call
+inventory in one invocation and creates no cleanup artifact. The model remains
 responsible for deciding whether a call was necessary or avoidable.
 """
 
@@ -12,14 +14,17 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import pathlib
 import sys
+import uuid
 from collections import Counter
 from typing import Any
 
 
 SCHEMA = "ceratops-model-call-ledger.v1"
 SUMMARY_SCHEMA = "ceratops-model-call-ledger-summary.v1"
+CLOSURE_SCHEMA = "ceratops-model-call-ledger-closure.v1"
 TOKEN_FIELDS = (
     "input_tokens",
     "cached_input_tokens",
@@ -65,6 +70,42 @@ def load_rows(path: pathlib.Path) -> list[dict[str, Any]]:
     except OSError as exc:
         raise LedgerError(f"could not read session: {exc}") from exc
     return rows
+
+
+def canonical_thread_id(value: str) -> str:
+    """Validate a thread ID before using it in a bounded filename lookup."""
+
+    try:
+        return str(uuid.UUID(value))
+    except ValueError as exc:
+        raise LedgerError("thread ID must be a UUID") from exc
+
+
+def resolve_thread_session(thread_id: str) -> pathlib.Path:
+    """Resolve one exact active or archived session below the Codex home."""
+
+    configured_home = os.environ.get("CODEX_HOME")
+    codex_home = (
+        pathlib.Path(configured_home).expanduser()
+        if configured_home
+        else pathlib.Path.home() / ".codex"
+    )
+    canonical_id = canonical_thread_id(thread_id)
+    matches: set[pathlib.Path] = set()
+    for root_name in ("sessions", "archived_sessions"):
+        root = codex_home / root_name
+        if not root.is_dir():
+            continue
+        matches.update(
+            candidate.resolve()
+            for candidate in root.rglob(f"*{canonical_id}.jsonl")
+            if candidate.is_file()
+        )
+    if not matches:
+        raise LedgerError(f"session not found for thread ID: {canonical_id}")
+    if len(matches) > 1:
+        raise LedgerError(f"multiple sessions found for thread ID: {canonical_id}")
+    return matches.pop()
 
 
 def stable_payload(value: Any) -> str:
@@ -279,6 +320,35 @@ def build_summary(
     }
 
 
+def build_closure_summary(ledger: dict[str, Any]) -> dict[str, Any]:
+    """Emit all completed calls without per-call token or temporary-file noise."""
+
+    return {
+        "schema": CLOSURE_SCHEMA,
+        "evidence_schema": ledger["schema"],
+        "session": ledger["session"],
+        "window": ledger["window"],
+        "totals": ledger["totals"],
+        "repeated_tool_calls": ledger["repeated_tool_calls"],
+        "runs": [
+            {
+                "turn_id": run["turn_id"],
+                "started_at": run["started_at"],
+                "model_calls": run["model_calls"],
+                "tokens": run["tokens"],
+                "calls": [
+                    {
+                        "index": call["index"],
+                        "actions": call["actions"],
+                    }
+                    for call in run["calls"]
+                ],
+            }
+            for run in ledger["runs"]
+        ],
+    }
+
+
 def write_evidence(path: pathlib.Path, ledger: dict[str, Any]) -> None:
     """Write sanitized call evidence only to the caller-authorized path."""
 
@@ -298,39 +368,73 @@ def build_parser() -> argparse.ArgumentParser:
     """Build the public deterministic evidence and summary command."""
 
     parser = argparse.ArgumentParser(
-        description="Write full model-call evidence and emit a compact summary."
+        description=(
+            "Write full model-call evidence, or emit one artifact-free closure "
+            "inventory."
+        )
     )
-    parser.add_argument("--session", required=True, type=pathlib.Path)
-    parser.add_argument("--evidence-output", required=True, type=pathlib.Path)
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument("--session", type=pathlib.Path)
+    source.add_argument("--thread-id")
+    parser.add_argument("--evidence-output", type=pathlib.Path)
     parser.add_argument("--last-runs", type=positive_int)
     parser.add_argument("--include-run", action="append", default=[])
+    parser.add_argument(
+        "--closure",
+        action="store_true",
+        help="emit every completed call without creating an evidence artifact",
+    )
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Write full sanitized evidence while keeping stdout decision-sized."""
+    """Run ordinary evidence mode or the single-call closure path."""
 
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
     try:
-        session = args.session.expanduser().resolve(strict=True)
-        evidence_output = args.evidence_output.expanduser().resolve()
-        if evidence_output == session:
-            raise LedgerError("evidence output must not overwrite the session")
+        if args.closure:
+            if args.evidence_output is not None:
+                raise LedgerError("--closure does not accept --evidence-output")
+            if args.last_runs is not None:
+                raise LedgerError("--closure requires the full thread")
+            if args.include_run:
+                raise LedgerError("--closure includes every completed run")
+        else:
+            if args.thread_id is not None:
+                raise LedgerError("--thread-id requires --closure")
+            if args.evidence_output is None:
+                raise LedgerError("ordinary mode requires --evidence-output")
+
+        if args.thread_id is not None:
+            session = resolve_thread_session(args.thread_id)
+        else:
+            if args.session is None:
+                raise LedgerError("session path is required")
+            session = args.session.expanduser().resolve(strict=True)
         ledger = build_ledger(
             load_rows(session),
             session=session,
-            last_runs=args.last_runs,
+            last_runs=None if args.closure else args.last_runs,
         )
-        summary = build_summary(
-            ledger,
-            evidence_output=evidence_output,
-            include_runs=args.include_run,
-        )
-        write_evidence(evidence_output, ledger)
+        if args.closure:
+            result = build_closure_summary(ledger)
+        else:
+            if args.evidence_output is None:
+                raise LedgerError("ordinary mode requires --evidence-output")
+            evidence_output = args.evidence_output.expanduser().resolve()
+            if evidence_output == session:
+                raise LedgerError("evidence output must not overwrite the session")
+            result = build_summary(
+                ledger,
+                evidence_output=evidence_output,
+                include_runs=args.include_run,
+            )
+            write_evidence(evidence_output, ledger)
     except (LedgerError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
-    print(json.dumps(summary, separators=(",", ":")))
+    print(json.dumps(result, separators=(",", ":")))
     return 0
 
 

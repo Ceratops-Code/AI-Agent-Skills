@@ -135,6 +135,177 @@ def test_model_call_ledger_keeps_full_evidence_out_of_stdout(
     assert len(json.loads(selected.stdout)["selected_runs"][0]["calls"]) == 2
 
 
+def test_model_call_ledger_closure_mode_is_artifact_free(
+    tmp_path: pathlib.Path,
+) -> None:
+    thread_id = "019f9b47-678b-7e93-9fb7-acefa2453eeb"
+    codex_home = tmp_path / "codex-home"
+    session = (
+        codex_home
+        / "sessions"
+        / "2026"
+        / "07"
+        / "26"
+        / f"rollout-2026-07-26T00-56-15-{thread_id}.jsonl"
+    )
+    session.parent.mkdir(parents=True)
+    rows = [
+        {
+            "timestamp": "2026-07-25T00:00:00Z",
+            "type": "turn_context",
+            "payload": {"turn_id": "turn-1"},
+        },
+        {
+            "timestamp": "2026-07-25T00:00:01Z",
+            "type": "response_item",
+            "payload": {
+                "type": "function_call",
+                "name": "shell_command",
+                "arguments": '{"credential":"sentinel-secret"}',
+            },
+        },
+        {
+            "timestamp": "2026-07-25T00:00:02Z",
+            "type": "event_msg",
+            "payload": {
+                "type": "token_count",
+                "info": {
+                    "last_token_usage": {
+                        "input_tokens": 10,
+                        "output_tokens": 1,
+                        "total_tokens": 11,
+                    }
+                },
+            },
+        },
+        {
+            "timestamp": "2026-07-25T00:00:03Z",
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "assistant",
+                "phase": "final_answer",
+            },
+        },
+        {
+            "timestamp": "2026-07-25T00:00:04Z",
+            "type": "event_msg",
+            "payload": {
+                "type": "token_count",
+                "info": {
+                    "last_token_usage": {
+                        "input_tokens": 20,
+                        "output_tokens": 2,
+                        "total_tokens": 22,
+                    }
+                },
+            },
+        },
+        {
+            "timestamp": "2026-07-25T00:00:05Z",
+            "type": "turn_context",
+            "payload": {"turn_id": "incomplete-turn"},
+        },
+        {
+            "timestamp": "2026-07-25T00:00:06Z",
+            "type": "event_msg",
+            "payload": {
+                "type": "token_count",
+                "info": {
+                    "last_token_usage": {
+                        "input_tokens": 30,
+                        "output_tokens": 3,
+                        "total_tokens": 33,
+                    }
+                },
+            },
+        },
+    ]
+    session.write_text(
+        "".join(json.dumps(row) + "\n" for row in rows),
+        encoding="utf-8",
+        newline="\n",
+    )
+    before = sorted(path.relative_to(codex_home) for path in codex_home.rglob("*"))
+    environment = os.environ.copy()
+    environment["CODEX_HOME"] = str(codex_home)
+
+    closure = subprocess.run(
+        [
+            sys.executable,
+            str(MODEL_CALL_LEDGER),
+            "--closure",
+            "--thread-id",
+            thread_id,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=environment,
+    )
+
+    assert closure.returncode == 0, closure.stderr
+    assert "sentinel-secret" not in closure.stdout
+    summary = json.loads(closure.stdout)
+    assert summary["schema"] == "ceratops-model-call-ledger-closure.v1"
+    assert summary["totals"]["runs"] == 1
+    assert summary["totals"]["model_calls"] == 2
+    assert [run["turn_id"] for run in summary["runs"]] == ["turn-1"]
+    assert [call["index"] for call in summary["runs"][0]["calls"]] == [1, 2]
+    assert "tokens" not in summary["runs"][0]["calls"][0]
+    after = sorted(path.relative_to(codex_home) for path in codex_home.rglob("*"))
+    assert after == before
+
+    invalid_cases = [
+        (["--last-runs", "1"], "--closure requires the full thread"),
+        (["--include-run", "turn-1"], "--closure includes every completed run"),
+        (
+            ["--evidence-output", str(tmp_path / "unexpected.json")],
+            "--closure does not accept --evidence-output",
+        ),
+    ]
+    for extra_arguments, expected_error in invalid_cases:
+        invalid = subprocess.run(
+            [
+                sys.executable,
+                str(MODEL_CALL_LEDGER),
+                "--closure",
+                "--session",
+                str(session),
+                *extra_arguments,
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert invalid.returncode == 2
+        assert expected_error in invalid.stderr
+    assert not (tmp_path / "unexpected.json").exists()
+
+    archived_session = (
+        codex_home
+        / "archived_sessions"
+        / f"rollout-2026-07-26T00-56-15-{thread_id}.jsonl"
+    )
+    archived_session.parent.mkdir()
+    shutil.copy2(session, archived_session)
+    ambiguous = subprocess.run(
+        [
+            sys.executable,
+            str(MODEL_CALL_LEDGER),
+            "--closure",
+            "--thread-id",
+            thread_id,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=environment,
+    )
+    assert ambiguous.returncode == 2
+    assert "multiple sessions found for thread ID" in ambiguous.stderr
+
+
 def run_git(repo: pathlib.Path, *args: str) -> subprocess.CompletedProcess[str]:
     """Run one isolated test-repository Git command."""
 

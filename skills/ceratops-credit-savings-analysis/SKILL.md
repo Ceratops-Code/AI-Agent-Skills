@@ -26,6 +26,10 @@ materially reduce recurrence.
   [--include-run TURN_ID]`; it writes every completed run and model call to the
   sanitized ledger, emits only the run reconciliation summary, and includes
   full call details only for explicitly requested runs.
+- (D) For closure analysis, run `python scripts/model-call-ledger.py --closure
+  --thread-id ID`, or pass `--session PATH` when the thread ID is unavailable;
+  it emits one sanitized full-thread call inventory and creates no evidence
+  artifact.
 - Whether the task is analysis-only or the user explicitly asked to apply a
   named control change.
 

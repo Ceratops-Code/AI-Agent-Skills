@@ -91,6 +91,9 @@ before asking.
 
 - Invoke `$ceratops-credit-savings-analysis` for the current thread, reuse fresh
   closure evidence, and include its required result under `Credit savings`.
+- Obtain model-call evidence in one `model-call-ledger.py --closure` invocation,
+  using the current thread ID when available or its exact session path
+  otherwise; do not create a temporary ledger for closure analysis.
 
 #### 6. Classify Closure State
 
