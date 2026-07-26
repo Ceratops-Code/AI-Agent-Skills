@@ -58,13 +58,31 @@ Route approved skill-source mutations through `$ceratops-skill-lifecycle`
 
 ## Applying an approved change
 
+Before applying an approved rule mutation, complete workflow step 6 against the
+exact current text. The deterministic helper validates mechanical application;
+it does not prove semantic equivalence. The model remains responsible for
+mapping every operative part of the old text, including commands and examples,
+to preserved behavior or an explicitly approved change.
+
+- (D) For every approved rule mutation, create one request that names the
+  effective global-to-local instruction stack, each target rules and companion
+  history source, each exact expected-old and replacement text, and every
+  approved history append; then run `python scripts/apply_rules_update.py
+  --request <path>`.
+- (D) The helper must require each expected-old text to occur exactly once,
+  construct and validate every candidate before replacing a target, reuse the
+  rule-graph and history validators, preserve encoding and line endings, cover
+  every changed rule ID in the approved append-only history operations, protect
+  coupled writes with rollback, reopen and revalidate the result, and emit only
+  `OK` or one compact actionable error.
+
 Append one decision for each approved rule change using the decision-only fields
 defined by the rule-design contract. Preserve prior entries and identify an
 earlier decision in the new decision text only when its rationale is
 intentionally replaced or narrowed. Do not rewrite prior entries for rule
 renames, removals, or implementation evolution; append the new decision those
-changes represent. Run the source's rule and history checkers; they must reject
-invalid fields without treating historical rule IDs as current references.
+changes represent. Historical rule IDs remain valid history references without
+being current-rule references.
 
 ## Iterative optimization
 
