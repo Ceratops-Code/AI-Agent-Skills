@@ -29,6 +29,7 @@ MANAGE_PENDING_RELEASE_WORK = (
     LIFECYCLE_SOURCE / "scripts" / "manage-pending-release-work.ps1"
 )
 MODEL_CALL_LEDGER = ROOT / "skills" / "ceratops-credit-savings-analysis" / "scripts" / "model-call-ledger.py"
+CLOSURE_SNAPSHOT = ROOT / "skills" / "ceratops-task-lifecycle" / "scripts" / "closure_snapshot.py"
 RUNTIME_MANIFEST = ".runtime-manifest.json"
 RUNTIME_MANIFEST_SCHEMA = "ceratops-runtime-skill.v3"
 INSTALLER_VERSION = 4
@@ -322,6 +323,107 @@ def run_git(repo: pathlib.Path, *args: str) -> subprocess.CompletedProcess[str]:
         text=True,
         check=False,
     )
+
+
+def test_closure_snapshot_composes_only_named_local_state(
+    tmp_path: pathlib.Path,
+) -> None:
+    remote = tmp_path / "remote.git"
+    repo = tmp_path / "repo"
+    task_worktree = tmp_path / "task-worktree"
+    temp_root = tmp_path / "retained-temp"
+    repo.mkdir()
+    temp_root.mkdir()
+    (temp_root / "one.txt").write_text("one\n", encoding="utf-8", newline="\n")
+    (temp_root / "two.txt").write_text("two\n", encoding="utf-8", newline="\n")
+
+    assert run_git(tmp_path, "init", "--bare", str(remote)).returncode == 0
+    assert run_git(repo, "init", "-b", "main").returncode == 0
+    assert run_git(repo, "config", "user.name", "Closure Test").returncode == 0
+    assert (
+        run_git(repo, "config", "user.email", "closure@example.invalid").returncode
+        == 0
+    )
+    (repo / "README.md").write_text("base\n", encoding="utf-8", newline="\n")
+    assert run_git(repo, "add", "README.md").returncode == 0
+    assert run_git(repo, "commit", "-m", "base").returncode == 0
+    assert run_git(repo, "remote", "add", "origin", str(remote)).returncode == 0
+    assert run_git(repo, "push", "-u", "origin", "main").returncode == 0
+    assert run_git(repo, "branch", "release/local").returncode == 0
+    assert run_git(repo, "push", "origin", "release/local").returncode == 0
+    assert (
+        run_git(
+            repo,
+            "worktree",
+            "add",
+            "-b",
+            "codex/closure-test",
+            str(task_worktree),
+            "release/local",
+        ).returncode
+        == 0
+    )
+    (task_worktree / "task.txt").write_text(
+        "task\n", encoding="utf-8", newline="\n"
+    )
+    assert run_git(task_worktree, "add", "task.txt").returncode == 0
+    assert run_git(task_worktree, "commit", "-m", "task").returncode == 0
+    assert (
+        run_git(repo, "branch", "-f", "release/local", "codex/closure-test").returncode
+        == 0
+    )
+
+    snapshot = subprocess.run(
+        [
+            sys.executable,
+            str(CLOSURE_SNAPSHOT),
+            "--repo",
+            str(repo),
+            "--fetch-remote",
+            "origin",
+            "--release-branch",
+            "release/local",
+            "--release-upstream",
+            "origin/release/local",
+            "--task-worktree",
+            str(task_worktree),
+            "--task-branch",
+            "codex/closure-test",
+            "--temp-root",
+            str(temp_root),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert snapshot.returncode == 0, snapshot.stderr
+    result = json.loads(snapshot.stdout)
+    assert result["schema"] == "ceratops-closure-snapshot.v1"
+    assert result["repo"]["branch"] == "main"
+    assert result["repo"]["clean"] is True
+    assert result["release"]["ahead"] == 1
+    assert result["release"]["behind"] == 0
+    assert result["task"]["branch"] == "codex/closure-test"
+    assert result["task"]["clean"] is True
+    assert result["task"]["staged_in_release"] is True
+    assert result["temp"]["files"] == 2
+
+    invalid = subprocess.run(
+        [
+            sys.executable,
+            str(CLOSURE_SNAPSHOT),
+            "--repo",
+            str(repo),
+            "--release-branch",
+            "release/local",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert invalid.returncode == 2
+    assert "must be provided together" in invalid.stderr
 
 
 def load_source_validator(skills_dir: pathlib.Path) -> dict[str, Any]:

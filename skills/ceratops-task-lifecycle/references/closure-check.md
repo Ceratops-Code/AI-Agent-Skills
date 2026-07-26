@@ -80,6 +80,15 @@ before asking.
   retained state, stale state, warnings, unverified claims, and touched git
   repos' branch, cleanliness, staged/unstaged/untracked state, and unpushed
   commits.
+- (D) For each touched local Git repository that needs refreshed closure
+  evidence, run `python scripts/closure_snapshot.py --repo PATH
+  [--fetch-remote NAME] [--release-branch BRANCH
+  --release-upstream REF] [--task-worktree PATH --task-branch BRANCH]
+  [--temp-root PATH]`; it checks only the named targets and emits one compact
+  non-destructive snapshot.
+- Do not rerun facts reported by the snapshot. Query goal state only when
+  same-thread evidence shows a goal was created or active, and run additional
+  diagnostics only for snapshot state that remains unresolved.
 
 #### 4. Scan Relevant Thread Follow-Ups
 
