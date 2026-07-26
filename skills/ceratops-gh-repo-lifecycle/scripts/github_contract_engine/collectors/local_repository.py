@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import fnmatch
 import json
+import os
 import pathlib
 import re
 import subprocess
@@ -88,7 +89,17 @@ ARTIFACT_DETECTOR_WHEN = {
     "repo.has_pages == true",
     "no_artifact_detectors_match && release_assets_count == 0 && no_publish_workflow_detected",
 }
-COLLECTION_KEYS = {"regex_patterns", "ignore_paths"}
+COLLECTION_KEYS = {
+    "ignore_paths",
+    "ignore_windows_path_prefixes",
+    "regex_patterns",
+}
+WINDOWS_PATH_PREFIX_DEFAULTS = {
+    "%ProgramFiles%": ("ProgramFiles", r"C:\Program Files"),
+    "%ProgramFiles(x86)%": ("ProgramFiles(x86)", r"C:\Program Files (x86)"),
+    "%SystemRoot%": ("SystemRoot", r"C:\Windows"),
+}
+WINDOWS_PATH_BOUNDARIES = frozenset("\\/\"'`,;)]}\r\n\t")
 
 
 def path_matches(paths: list[str], patterns: list[str]) -> bool:
@@ -142,8 +153,48 @@ def _readable_text(path: pathlib.Path) -> bool:
     )
 
 
+def _walk_candidates(root: pathlib.Path) -> list[pathlib.Path]:
+    return list(root.rglob("*"))
+
+
+def _local_candidates(
+    root: pathlib.Path,
+) -> tuple[list[pathlib.Path], str | None]:
+    """Use Git's tracked/ignore model, with a visible fallback on inventory failure."""
+
+    if not (root / ".git").exists():
+        return _walk_candidates(root), None
+    result = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(root),
+            "ls-files",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+            "-z",
+        ],
+        check=False,
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        detail = os.fsdecode(result.stderr).strip() or f"exit {result.returncode}"
+        return (
+            _walk_candidates(root),
+            f"git visible-file inventory failed: {detail[:240]}",
+        )
+    relative_paths = [
+        pathlib.Path(os.fsdecode(raw_path))
+        for raw_path in result.stdout.split(b"\0")
+        if raw_path
+    ]
+    relative_paths.sort(key=lambda path: path.as_posix())
+    return [root / relative_path for relative_path in relative_paths], None
+
+
 def scan_local(path: str | None) -> dict[str, Any]:
-    """Read bounded in-repository text without following symlinks or build trees."""
+    """Read bounded visible text without following symlinks or ignored trees."""
 
     if not path:
         return {
@@ -165,7 +216,10 @@ def scan_local(path: str | None) -> dict[str, Any]:
     files: list[str] = []
     texts: dict[str, str] = {}
     errors: list[str] = []
-    for candidate in root.rglob("*"):
+    candidates, inventory_error = _local_candidates(root)
+    if inventory_error:
+        errors.append(inventory_error)
+    for candidate in candidates:
         relative = candidate.relative_to(root)
         if (
             any(part in SKIP_DIRS for part in relative.parts)
@@ -187,6 +241,37 @@ def scan_local(path: str | None) -> dict[str, Any]:
         "texts": texts,
         "errors": errors,
     }
+
+
+def _expanded_windows_path_prefix(value: str) -> str:
+    if value == "$CODEX_HOME":
+        return os.environ.get("CODEX_HOME") or str(pathlib.Path.home() / ".codex")
+    environment = WINDOWS_PATH_PREFIX_DEFAULTS.get(value)
+    if environment is None:
+        return value
+    variable, fallback = environment
+    return os.environ.get(variable) or fallback
+
+
+def _collapse_source_backslashes(value: str) -> str:
+    while "\\\\" in value:
+        value = value.replace("\\\\", "\\")
+    return value
+
+
+def _has_ignored_windows_prefix(
+    text: str, start: int, configured_prefixes: list[str]
+) -> bool:
+    candidate = _collapse_source_backslashes(text[start:]).casefold()
+    for configured in configured_prefixes:
+        prefix = _collapse_source_backslashes(
+            _expanded_windows_path_prefix(configured)
+        ).rstrip("\\/").casefold()
+        if not prefix or not candidate.startswith(prefix):
+            continue
+        if len(candidate) == len(prefix) or candidate[len(prefix)] in WINDOWS_PATH_BOUNDARIES:
+            return True
+    return False
 
 
 def _workflow_files(local: dict[str, Any]) -> dict[str, str]:
@@ -622,18 +707,27 @@ def collect_local_repository(
     workflow_text = "\n".join(workflows.values())
     scans: dict[str, Any] = {}
     for rule in rules:
-        patterns = rule.get("collection", {}).get("regex_patterns")
+        collection = rule.get("collection", {})
+        patterns = collection.get("regex_patterns")
         if not patterns:
             continue
-        ignored = set(rule.get("collection", {}).get("ignore_paths", []))
+        ignored = set(collection.get("ignore_paths", []))
+        ignored_windows_prefixes = collection.get(
+            "ignore_windows_path_prefixes", []
+        )
         matches: list[dict[str, str]] = []
         for pattern in patterns:
             regex = re.compile(pattern)
-            matches.extend(
-                {"path": name, "pattern": pattern}
-                for name, text in local["texts"].items()
-                if name not in ignored and regex.search(text)
-            )
+            for name, text in local["texts"].items():
+                if name in ignored:
+                    continue
+                if any(
+                    not _has_ignored_windows_prefix(
+                        text, match.start(), ignored_windows_prefixes
+                    )
+                    for match in regex.finditer(text)
+                ):
+                    matches.append({"path": name, "pattern": pattern})
         scans[rule["id"]] = {"matches": matches}
     permission_names = ("id-token", "attestations", "artifact-metadata", "packages")
     return {

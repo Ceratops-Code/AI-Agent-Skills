@@ -2,6 +2,7 @@ import argparse
 import contextlib
 import io
 import json
+import os
 import pathlib
 import subprocess
 import sys
@@ -89,7 +90,7 @@ class GHContractStateEngineTests(unittest.TestCase):
             local = collect_local_repository(temporary_directory, [rule])
             self.assertEqual(local["scans"][rule["id"]]["matches"], [])
 
-            windows_path = "C:" + chr(92) + "repo"
+            windows_path = "D:" + chr(92) + "work"
             fixture.write_text(f"ROOT = {windows_path!r}\n", encoding="utf-8")
             local = collect_local_repository(temporary_directory, [rule])
             self.assertEqual(
@@ -134,6 +135,146 @@ class GHContractStateEngineTests(unittest.TestCase):
                     "pip": ["requirements-dev.txt"],
                     "uv": ["pyproject.toml", "uv.lock"],
                 },
+            )
+
+    def test_local_path_scan_ignores_configured_windows_roots(self):
+        rule = next(
+            item
+            for item in self.contracts["code"]["checks"]
+            if item["id"] == "stale_state.local_path_references"
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = pathlib.Path(temporary_directory)
+            excluded = root / "excluded.py"
+            excluded.write_text(
+                "\n".join(
+                    [
+                        r'REPO = "C:\repo\fixture"',
+                        r'REPOS = "C:\repos\project"',
+                        r'PROGRAMS = "C:\Program Files\Git"',
+                        r'PROGRAMS_X86 = "C:\Program Files (x86)\Tool"',
+                        r'WINDOWS = "C:\WINDOWS\System32\tool.exe"',
+                        r'PROJECTS = "c:\\CODEXPROJECTS\\repo"',
+                        r'CODEX = "C:\Users\runner\.codex\skills"',
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            retained = root / "retained.py"
+            retained.write_text(
+                "\n".join(
+                    [
+                        r'NEAR_PREFIX = "C:\ReposBackup\project"',
+                        r'OTHER_DRIVE_ROOT = "D:\work\project"',
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "CODEX_HOME": r"C:\Users\runner\.codex",
+                    "ProgramFiles": r"C:\Program Files",
+                    "ProgramFiles(x86)": r"C:\Program Files (x86)",
+                    "SystemRoot": r"C:\Windows",
+                },
+                clear=False,
+            ):
+                local = collect_local_repository(temporary_directory, [rule])
+            self.assertEqual(
+                local["scans"][rule["id"]]["matches"],
+                [
+                    {
+                        "path": "retained.py",
+                        "pattern": rule["collection"]["regex_patterns"][0],
+                    }
+                ],
+            )
+
+    def test_local_scan_uses_git_visible_file_inventory(self):
+        rule = next(
+            item
+            for item in self.contracts["code"]["checks"]
+            if item["id"] == "stale_state.local_path_references"
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = pathlib.Path(temporary_directory)
+            subprocess.run(
+                ["git", "init", "--quiet", str(root)],
+                check=True,
+                capture_output=True,
+            )
+            (root / ".gitignore").write_text(
+                "ignored/\nignored.txt\ntracked.txt\n", encoding="utf-8"
+            )
+            (root / "ignored").mkdir()
+            (root / "ignored" / "nested.txt").write_text(
+                r"D:\ignored", encoding="utf-8"
+            )
+            (root / "ignored.txt").write_text(r"D:\ignored", encoding="utf-8")
+            (root / "visible.txt").write_text(r"D:\visible", encoding="utf-8")
+            (root / "tracked.txt").write_text(r"D:\tracked", encoding="utf-8")
+            subprocess.run(
+                ["git", "-C", str(root), "add", "-f", "tracked.txt"],
+                check=True,
+                capture_output=True,
+            )
+
+            local = collect_local_repository(temporary_directory, [rule])
+
+            self.assertNotIn("ignored.txt", local["files"])
+            self.assertNotIn("ignored/nested.txt", local["files"])
+            self.assertIn("visible.txt", local["files"])
+            self.assertIn("tracked.txt", local["files"])
+            self.assertEqual(
+                local["scans"][rule["id"]]["matches"],
+                [
+                    {
+                        "path": "tracked.txt",
+                        "pattern": rule["collection"]["regex_patterns"][0],
+                    },
+                    {
+                        "path": "visible.txt",
+                        "pattern": rule["collection"]["regex_patterns"][0],
+                    },
+                ],
+            )
+
+    def test_local_scan_falls_back_when_git_inventory_fails(self):
+        rule = next(
+            item
+            for item in self.contracts["code"]["checks"]
+            if item["id"] == "stale_state.local_path_references"
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = pathlib.Path(temporary_directory)
+            (root / ".git").mkdir()
+            (root / "visible.txt").write_text(r"D:\visible", encoding="utf-8")
+            failed_inventory = subprocess.CompletedProcess(
+                args=["git", "ls-files"],
+                returncode=1,
+                stdout=b"",
+                stderr=b"blocked",
+            )
+            with mock.patch(
+                "github_contract_engine.collectors.local_repository.subprocess.run",
+                return_value=failed_inventory,
+            ):
+                local = collect_local_repository(temporary_directory, [rule])
+
+            self.assertIn("visible.txt", local["files"])
+            self.assertEqual(
+                local["scans"][rule["id"]]["matches"],
+                [
+                    {
+                        "path": "visible.txt",
+                        "pattern": rule["collection"]["regex_patterns"][0],
+                    }
+                ],
+            )
+            self.assertEqual(
+                local["errors"],
+                ["git visible-file inventory failed: blocked"],
             )
 
     def test_private_node_app_with_docker_publish_is_not_an_npm_artifact(self):

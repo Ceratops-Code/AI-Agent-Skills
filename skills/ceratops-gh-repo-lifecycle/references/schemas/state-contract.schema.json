@@ -170,6 +170,7 @@
       "properties": {
         "regex_patterns": { "type": "array", "items": { "type": "string" } },
         "ignore_paths": { "type": "array", "items": { "type": "string" } },
+        "ignore_windows_path_prefixes": { "type": "array", "items": { "type": "string" } },
         "report_open_prs_older_than_days": { "type": "number" },
         "ignored_branch_names": { "type": "array", "items": { "type": "string" } },
         "retained_branch_name_patterns": { "type": "array", "items": { "type": "string" } },
