@@ -825,6 +825,7 @@ class DependencyFinalizationTests(unittest.TestCase):
             live,
         )
 
+        assert blocker is not None
         self.assertEqual(blocker["check"], "preflight_head")
         self.assertIn("run a new preflight and approval", blocker["message"])
 
