@@ -1078,6 +1078,33 @@ def test_promotion_records_are_collision_free_and_cleaned_terminally(
     (bundle_scripts / "runtime").mkdir(parents=True)
     finalizer_helper = bundle_scripts / MANAGE_PENDING_RELEASE_WORK.name
     shutil.copy2(MANAGE_PENDING_RELEASE_WORK, finalizer_helper)
+    # Reproduce Git's successful deregistration with ignored dependency
+    # content left behind without adding a production-only test mode.
+    finalizer_text = finalizer_helper.read_text(encoding="utf-8")
+    remove_call = '    Invoke-Git @("worktree", "remove", $WorktreePath)\n'
+    assert finalizer_text.count(remove_call) == 1
+    finalizer_helper.write_text(
+        finalizer_text.replace(
+            remove_call,
+            remove_call
+            + "    if (-not [string]::IsNullOrWhiteSpace($env:RESIDUAL_INJECTION_LOG)) {\n"
+            + '        $residual = Join-Path $WorktreePath "node_modules"\n'
+            + "        $null = New-Item -ItemType Directory -Force -Path $residual\n"
+            + "        [IO.File]::WriteAllText(\n"
+            + '            (Join-Path $residual "residual.txt"),\n'
+            + '            "residual",\n'
+            + "            [Text.UTF8Encoding]::new($false)\n"
+            + "        )\n"
+            + "        [IO.File]::AppendAllText(\n"
+            + "            $env:RESIDUAL_INJECTION_LOG,\n"
+            + '            "residual-created`n",\n'
+            + "            [Text.UTF8Encoding]::new($false)\n"
+            + "        )\n"
+            + "    }\n",
+        ),
+        encoding="utf-8",
+        newline="\n",
+    )
     (bundle_scripts / "runtime" / "skills-consistency-runtime-validator.py").write_text(
         "import os, pathlib\n"
         "record = pathlib.Path(os.environ['EXPECTED_PROMOTION_RECORD'])\n"
@@ -1133,12 +1160,17 @@ def test_promotion_records_are_collision_free_and_cleaned_terminally(
     ]
     finalizer_log.unlink()
 
+    residual_injection_log = tmp_path / "residual-injection.log"
+    cleanup_env = {
+        **finalizer_env,
+        "RESIDUAL_INJECTION_LOG": str(residual_injection_log),
+    }
     cleaned = subprocess.run(
         cleanup_command,
         capture_output=True,
         text=True,
         check=False,
-        env=finalizer_env,
+        env=cleanup_env,
         cwd=bundle_scripts.parent,
     )
     assert cleaned.returncode == 0, cleaned.stderr
@@ -1148,6 +1180,9 @@ def test_promotion_records_are_collision_free_and_cleaned_terminally(
     assert finalizer_log.read_text(encoding="utf-8").splitlines() == [
         "install",
         "runtime",
+    ]
+    assert residual_injection_log.read_text(encoding="utf-8").splitlines() == [
+        "residual-created"
     ]
     assert not approved_worktree.exists()
     assert run_git(repo, "show-ref", "--verify", "refs/heads/approved").returncode != 0

@@ -14,8 +14,9 @@ param(
 # ship-to-remote after terminal shipping. It checks only approved branches
 # supplied as base64-encoded, newline-delimited UTF-8 data or one exact
 # promotion record.
-# With -CleanMergedBranches, it removes clean approved task worktrees and
-# branches already reachable from the release branch, then deletes only the
+# With -CleanMergedBranches, it completely removes clean approved task
+# worktrees, including residual filesystem content after Git deregistration,
+# and branches already reachable from the release branch, then deletes only the
 # consumed promotion record. -FinalizeShippedRelease first verifies synchronized
 # main/release state, installs and validates runtime, then performs that cleanup.
 # Unrelated branches and worktrees are never enumerated. -RecordPromotion
@@ -157,6 +158,55 @@ function Get-WorktreeStatus {
         throw "git failed: status --porcelain in $WorktreePath"
     }
     return $status
+}
+
+function Test-IsRegisteredWorktreePath {
+    param([string]$WorktreePath)
+
+    $normalizedTarget = [IO.Path]::GetFullPath($WorktreePath).TrimEnd(
+        [IO.Path]::DirectorySeparatorChar,
+        [IO.Path]::AltDirectorySeparatorChar
+    )
+    foreach ($line in Get-GitLines @("worktree", "list", "--porcelain")) {
+        if (-not $line.StartsWith("worktree ", [StringComparison]::Ordinal)) {
+            continue
+        }
+        $registeredPath = $line.Substring("worktree ".Length)
+        $normalizedRegistered = [IO.Path]::GetFullPath($registeredPath).TrimEnd(
+            [IO.Path]::DirectorySeparatorChar,
+            [IO.Path]::AltDirectorySeparatorChar
+        )
+        if (
+            $normalizedRegistered.Equals(
+                $normalizedTarget,
+                [StringComparison]::OrdinalIgnoreCase
+            )
+        ) {
+            return $true
+        }
+    }
+    return $false
+}
+
+function Remove-ApprovedWorktreeCompletely {
+    param(
+        [string]$WorktreePath,
+        [string]$ExpectedRoot
+    )
+
+    Invoke-Git @("worktree", "remove", $WorktreePath)
+    if (Test-IsRegisteredWorktreePath $WorktreePath) {
+        throw "Git still registers removed worktree path $WorktreePath."
+    }
+    if (Test-Path -LiteralPath $WorktreePath) {
+        if (-not (Test-PathWithin -Path $WorktreePath -Parent $ExpectedRoot)) {
+            throw "Residual worktree path moved outside $ExpectedRoot."
+        }
+        Remove-Item -LiteralPath $WorktreePath -Recurse -Force
+    }
+    if (Test-Path -LiteralPath $WorktreePath) {
+        throw "Removed worktree directory still exists: $WorktreePath"
+    }
 }
 
 function Get-GitCommonDirectory {
@@ -512,7 +562,9 @@ if ($findings.Count -eq 0) {
     }
     foreach ($candidate in $cleanupCandidates) {
         if (-not [string]::IsNullOrWhiteSpace($candidate.Path)) {
-            Invoke-Git @("worktree", "remove", $candidate.Path)
+            Remove-ApprovedWorktreeCompletely `
+                -WorktreePath $candidate.Path `
+                -ExpectedRoot $expectedWorktreeRoot
             Remove-MergedBranch $candidate.Branch
             $removed += [pscustomobject]@{
                 Kind = "merged_worktree_branch"
