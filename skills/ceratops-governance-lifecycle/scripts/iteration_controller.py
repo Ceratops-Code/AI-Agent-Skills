@@ -5,6 +5,8 @@ The controller makes no model calls and makes no semantic quality judgment. It
 owns numbering, source hashes, pending submissions, artifact records, and stop
 conditions so the agent cannot legitimately claim unrecorded work. State is
 written atomically and existing state is never overwritten by `init`.
+`finalize` removes only a completed run's verified controller artifacts and
+state while preserving its original and regression inputs.
 """
 
 from __future__ import annotations
@@ -196,6 +198,97 @@ def command_status(args: argparse.Namespace) -> None:
     print(json.dumps(public_status(state), separators=(",", ":")))
 
 
+def finalization_targets(
+    state_path: Path, state: dict[str, Any]
+) -> tuple[Path, dict[Path, str]]:
+    """Preflight the exact recorded artifacts owned by one completed run."""
+    if state.get("complete") is not True:
+        raise ValueError("refusing to finalize incomplete state")
+    if state.get("pending") is not None:
+        raise ValueError("refusing to finalize state with a pending iteration")
+    records = state.get("records")
+    if not isinstance(records, list):
+        raise ValueError("state records must be a list")
+
+    artifact_dir_path = state_path.parent / "iterations"
+    if artifact_dir_path.is_symlink():
+        raise ValueError(
+            f"refusing symlinked artifact directory: {artifact_dir_path}"
+        )
+    artifact_dir = artifact_dir_path.resolve()
+    targets: dict[Path, str] = {}
+    for record in records:
+        if not isinstance(record, dict):
+            raise ValueError("state record must be an object")
+        iteration = record.get("iteration")
+        if (
+            not isinstance(iteration, int)
+            or isinstance(iteration, bool)
+            or iteration < 1
+        ):
+            raise ValueError("state record has invalid iteration")
+        for field in ("candidate", "assessment"):
+            raw_path = record.get(field)
+            expected_hash = record.get(f"{field}_sha256")
+            if not isinstance(raw_path, str) or not raw_path:
+                raise ValueError(f"state record has invalid {field} path")
+            if (
+                not isinstance(expected_hash, str)
+                or len(expected_hash) != 64
+                or any(
+                    character not in "0123456789abcdef"
+                    for character in expected_hash
+                )
+            ):
+                raise ValueError(f"state record has invalid {field} hash")
+            expected_path = (
+                artifact_dir / f"{iteration:03d}-{field}.md"
+            ).resolve()
+            if Path(raw_path).resolve() != expected_path:
+                raise ValueError(
+                    f"recorded {field} path is outside controller ownership"
+                )
+            if expected_path in targets:
+                raise ValueError("state records duplicate an artifact path")
+            targets[expected_path] = expected_hash
+
+    if artifact_dir_path.exists():
+        if not artifact_dir_path.is_dir():
+            raise ValueError(
+                f"artifact path is not a directory: {artifact_dir_path}"
+            )
+        expected_names = {path.name for path in targets}
+        for child in artifact_dir_path.iterdir():
+            if (
+                child.name not in expected_names
+                or child.is_symlink()
+                or not child.is_file()
+            ):
+                raise ValueError(f"unexpected artifact directory entry: {child}")
+        for target, expected_hash in targets.items():
+            if target.exists() and file_hash(target) != expected_hash:
+                raise ValueError(
+                    f"recorded artifact changed after submission: {target}"
+                )
+    return artifact_dir_path, targets
+
+
+def command_finalize(args: argparse.Namespace) -> None:
+    """Remove one completed run's verified artifacts and state."""
+    state_path = Path(os.path.abspath(args.state))
+    if state_path.is_symlink():
+        raise ValueError(f"refusing symlinked state: {state_path}")
+    state = load_state(state_path)
+    artifact_dir, targets = finalization_targets(state_path, state)
+    for target in targets:
+        if target.exists():
+            target.unlink()
+    if artifact_dir.exists():
+        artifact_dir.rmdir()
+    state_path.unlink()
+    print("OK")
+
+
 def positive_int(value: str) -> int:
     """Parse a strictly positive command-line integer."""
     parsed = int(value)
@@ -235,6 +328,12 @@ def build_parser() -> argparse.ArgumentParser:
     status = commands.add_parser("status", help="report recorded progress")
     status.add_argument("--state", type=Path, required=True)
     status.set_defaults(handler=command_status)
+
+    finalize = commands.add_parser(
+        "finalize", help="remove completed run state and artifacts"
+    )
+    finalize.add_argument("--state", type=Path, required=True)
+    finalize.set_defaults(handler=command_finalize)
     return parser
 
 

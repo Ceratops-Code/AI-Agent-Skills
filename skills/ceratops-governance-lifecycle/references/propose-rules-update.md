@@ -88,6 +88,14 @@ being current-rule references.
 
 - (D) Run `scripts/iteration_controller.py` for every proposal to record
   iterations, retain the champion, and enforce stopping.
+- (D) Before final output, after the accepted proposal or approved mutation no
+  longer needs controller artifacts, run `python
+  scripts/iteration_controller.py finalize --state <path>`. Finalization must
+  require complete state, delete only that state and its recorded candidate and
+  assessment files under the sibling `iterations/` directory, remove that
+  directory only when empty, preserve original and regression inputs, reject
+  unexpected paths or contents before deletion, and emit only `OK` or one
+  compact actionable error.
 - For each issued iteration, complete steps 5-7. After submission, post one
   compact commentary status; do not repeat iteration logs in the final answer.
 
