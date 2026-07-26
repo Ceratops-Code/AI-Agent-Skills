@@ -62,6 +62,7 @@ SKIP_DIRS = {
 DEPENDABOT_PATTERNS = {
     "npm": ["package.json"],
     "pip": ["pyproject.toml", "setup.cfg", "setup.py", "requirements*.txt"],
+    "uv": ["uv.lock"],
     "docker": ["Dockerfile", "**/Dockerfile"],
     "github-actions": [".github/workflows/*.yml", ".github/workflows/*.yaml"],
     "gomod": ["go.mod"],
@@ -107,6 +108,30 @@ def matching_paths(paths: list[str], patterns: list[str]) -> list[str]:
             if fnmatch.fnmatch(path, pattern)
         }
     )
+
+
+def _dependabot_ecosystems(paths: list[str]) -> dict[str, list[str]]:
+    """Infer Dependabot ecosystems without double-counting uv projects as pip."""
+
+    ecosystems = {
+        name: matching_paths(paths, patterns)
+        for name, patterns in DEPENDABOT_PATTERNS.items()
+        if path_matches(paths, patterns)
+    }
+    if "uv" not in ecosystems:
+        return ecosystems
+
+    if "pyproject.toml" in paths:
+        ecosystems["uv"] = sorted({*ecosystems["uv"], "pyproject.toml"})
+
+    pip_paths = [
+        path for path in ecosystems.get("pip", []) if path != "pyproject.toml"
+    ]
+    if pip_paths:
+        ecosystems["pip"] = pip_paths
+    else:
+        ecosystems.pop("pip", None)
+    return ecosystems
 
 
 def _readable_text(path: pathlib.Path) -> bool:
@@ -657,11 +682,7 @@ def collect_local_repository(
                 ),
                 None,
             ),
-            "ecosystems": {
-                name: matching_paths(local["files"], patterns)
-                for name, patterns in DEPENDABOT_PATTERNS.items()
-                if path_matches(local["files"], patterns)
-            },
+            "ecosystems": _dependabot_ecosystems(local["files"]),
         },
         "manifests": _manifest_facts(local),
         "git": _git_state(local, default_branch),

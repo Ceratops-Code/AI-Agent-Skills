@@ -102,6 +102,40 @@ class GHContractStateEngineTests(unittest.TestCase):
                 ],
             )
 
+    def test_dependabot_ecosystems_distinguish_uv_and_pip_manifests(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = pathlib.Path(temporary_directory)
+            (root / "pyproject.toml").write_text(
+                '[project]\nname = "demo"\n',
+                encoding="utf-8",
+            )
+
+            pip_only = collect_local_repository(temporary_directory, [])
+            self.assertEqual(
+                pip_only["dependabot"]["ecosystems"],
+                {"pip": ["pyproject.toml"]},
+            )
+
+            (root / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+            uv_only = collect_local_repository(temporary_directory, [])
+            self.assertEqual(
+                uv_only["dependabot"]["ecosystems"],
+                {"uv": ["pyproject.toml", "uv.lock"]},
+            )
+
+            (root / "requirements-dev.txt").write_text(
+                "pytest\n",
+                encoding="utf-8",
+            )
+            mixed = collect_local_repository(temporary_directory, [])
+            self.assertEqual(
+                mixed["dependabot"]["ecosystems"],
+                {
+                    "pip": ["requirements-dev.txt"],
+                    "uv": ["pyproject.toml", "uv.lock"],
+                },
+            )
+
     def test_private_node_app_with_docker_publish_is_not_an_npm_artifact(self):
         local = {
             "files": [
@@ -889,6 +923,46 @@ class GHContractStateEngineTests(unittest.TestCase):
             )
         self.assertEqual(status, 1)
         self.assertEqual(json.loads(stream.getvalue())["counts"]["ERROR"], 1)
+
+    def test_pr_readiness_matches_github_check_conclusions(self):
+        cases = {
+            "SUCCESS": "PASS",
+            "SKIPPED": "PASS",
+            "NEUTRAL": "PASS",
+            "FAILURE": "ERROR",
+            "STARTUP_FAILURE": "ERROR",
+        }
+        for conclusion, expected_level in cases.items():
+            with self.subTest(conclusion=conclusion):
+                findings: list[pr_validator.Finding] = []
+                pr_validator.status_rollup_findings(
+                    {
+                        "statusCheckRollup": [
+                            {
+                                "name": "CodeQL",
+                                "status": "COMPLETED",
+                                "conclusion": conclusion,
+                            }
+                        ]
+                    },
+                    findings,
+                )
+                self.assertEqual(findings[0].level, expected_level)
+
+        pending: list[pr_validator.Finding] = []
+        pr_validator.status_rollup_findings(
+            {
+                "statusCheckRollup": [
+                    {
+                        "name": "CodeQL",
+                        "status": "IN_PROGRESS",
+                        "conclusion": None,
+                    }
+                ]
+            },
+            pending,
+        )
+        self.assertEqual(pending[0].level, "WARN")
 
     def test_empty_review_decision_obeys_required_approval_rule(self):
         pr_data = {

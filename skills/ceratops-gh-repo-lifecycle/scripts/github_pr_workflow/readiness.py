@@ -215,7 +215,9 @@ def status_rollup_findings(pr_data: dict[str, Any], findings: list[Finding]) -> 
         conclusion = item.get("conclusion")
         status = item.get("status")
         state = item.get("state")
-        if conclusion in {"FAILURE", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "NEUTRAL", "STALE"} or state in {"FAILURE", "ERROR"}:
+        # GitHub treats SUCCESS, SKIPPED, and NEUTRAL as successful required
+        # checks. Keep completed failures distinct from incomplete checks.
+        if conclusion in {"FAILURE", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STALE", "STARTUP_FAILURE"} or state in {"FAILURE", "ERROR"}:
             failed.append(name)
         elif status in {"IN_PROGRESS", "QUEUED", "PENDING", "WAITING"} or state in {"PENDING", "EXPECTED"} or (conclusion is None and state != "SUCCESS"):
             pending.append(name)
