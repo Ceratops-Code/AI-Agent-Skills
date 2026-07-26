@@ -102,8 +102,9 @@ targeted local state before asking.
 
 - Invoke `$ceratops-credit-savings-analysis` for the current thread, reuse fresh
   closure evidence, and include its required result under `Credit savings`.
-- Obtain model-call inventory in one `model-call-ledger.py --closure
-  [--last-runs N]` invocation. For a prior-closure boundary, set `N` to the
+- Obtain model-call inventory in one `model-call-ledger.py
+  (--thread-id THREAD_ID | --session SESSION) --closure [--last-runs N]`
+  invocation. For a prior-closure boundary, set `N` to the
   completed runs strictly after that closure; exclude the boundary and active
   runs. Omit `--last-runs` only when the user states no boundary, use the
   current thread ID when available or its exact session path otherwise, and
