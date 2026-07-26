@@ -380,7 +380,7 @@ def classification_input_contract() -> dict[str, Any]:
                         {
                             "category": "<category>",
                             "control": "<required for avoidable categories>",
-                            "indices": ["<one or more call indices>"],
+                            "indices": [1],
                         }
                     ],
                 }
