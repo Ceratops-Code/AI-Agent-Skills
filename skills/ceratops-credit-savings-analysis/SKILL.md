@@ -17,8 +17,9 @@ materially reduce recurrence.
 
 - Target thread or session. Use the current thread unless the user names a
   concrete thread title, thread id, or session file.
-- Window under review: the user's explicit boundary, the last `N` completed
-  runs when specified, or the full thread only when no boundary is stated.
+- Window under review: an `incremental closure` beginning after the previous
+  completed closure, another user-stated boundary, the last `N` completed runs
+  when specified, or the full thread when no boundary is stated.
 - Resolve the selected session record through
   `$CODEX_HOME/session_index.jsonl`, `$CODEX_HOME/sessions/`, or
   `$CODEX_HOME/archived_sessions/`. Use only its selected-run rows for semantic
@@ -29,10 +30,16 @@ materially reduce recurrence.
   [--include-run TURN_ID]`; it writes every completed run and model call to the
   sanitized ledger, emits only the run reconciliation summary, and includes
   full call details only for explicitly requested runs.
-- (D) For closure analysis, run `python scripts/model-call-ledger.py --closure
-  --thread-id ID [--last-runs N]`, or pass `--session PATH` when the thread ID
-  is unavailable; it emits one sanitized selected-window call inventory and
-  creates no evidence artifact.
+- (D) For closure analysis, run `python scripts/model-call-ledger.py
+  (--thread-id THREAD_ID | --session SESSION) --closure [--last-runs N]`.
+  For an `incremental closure`, set `N` to the completed runs strictly after
+  the previous completed closure and exclude the boundary and active runs;
+  omit `--last-runs` only for a full-thread closure. The helper emits one
+  sanitized selected-window call inventory and creates no evidence artifact.
+- (D) Before reporting, rerun `model-call-ledger.py` for the same source and
+  window with `--classifications CLASSIFICATIONS_PATH`; the existing helper
+  must reject missing, duplicate, or multiply classified calls and emit only
+  validated per-run category totals.
 - Whether the task is analysis-only or the user explicitly asked to apply a
   named control change.
 
@@ -55,12 +62,20 @@ blocked; do not fall back to visible context.
 - Count model calls avoidable through existing evidence, direct helper
   composition, or same-pass draft-assess-revise work, even when the work
   succeeds.
+- When a question was answerable from fresh sufficient selected-session context,
+  treat file reads and commands used only to rediscover or reconfirm that
+  context as candidate avoidable spend; exclude actions required by an active
+  freshness, verification, safety, or workflow gate.
 - Use credit-waste signals as prompts for analysis, not mandatory checks;
   inspect only categories visible in the selected evidence window.
 - Prefer the smallest durable control: wording, deterministic helper, preflight,
   validation gate, then docs.
 - For repeated stage commands, propose a narrow helper that runs the sequence
   and emits only the decision payload.
+- Do not recommend altering the governance lifecycle's required
+  proposal-iteration controller solely to reduce model calls; treat its
+  required iterations as intentional workflow cost and count only avoidable
+  work outside them.
 - For unnecessary file reads, propose targeted paths, sections, selectors, or
   evidence reuse.
 - Do not propose broad best-practice refreshes, large instruction rewrites, or
@@ -75,12 +90,14 @@ blocked; do not fall back to visible context.
 - Classify every model call as necessary, avoidable with an implemented fix, or
   avoidable with an unimplemented fix, and map each fix only to calls it
   directly prevents.
-- For each still-unimplemented control, compute `long-term average saving/run =
-  affected-run rate x saved/affected run - added/run` and estimate its one-time
-  cost separately. Reject non-positive average savings or costs unlikely to be
-  recovered during the control's expected lifetime unless correctness or safety
-  requires the control. When the user supplies a horizon, also compute net
-  savings over it.
+- For each still-unimplemented control, compute `estimated calls saving by fix
+  per affected run = calls saved per affected run - additional calls per
+  affected run for the implemented fix`; use the estimated percent of affected
+  similar runs to evaluate long-term savings, and estimate one-time cost
+  separately. Reject non-positive savings or costs unlikely to be recovered
+  during the control's expected lifetime unless correctness or safety requires
+  the control. When the user supplies a horizon, also compute net savings over
+  it.
 - Estimate affected-run frequency from triggering conditions and comparable
   evidence; state assumptions and a plausible range, use observations only as
   calibration, and test ROI at the range's low end.
@@ -107,10 +124,13 @@ blocked; do not fall back to visible context.
    checks, corrections, retries, and final state.
 2. Mark each avoidable spend episode and the earliest point it could have been
    prevented or detected.
-3. Review ledger-reconciled command, tool, and file-read choices with only the
-   selected session rows needed to classify necessity, outcome, and narrower
-   alternatives; count only when a narrower command, selector, path, section,
-   or existing evidence would have been sufficient.
+3. For each question followed by file reads or commands, compare those actions
+   with fresh sufficient selected-session context available when the question
+   was asked; count actions used only to rediscover or reconfirm that context
+   as avoidable unless an active freshness, verification, safety, or workflow
+   gate required them. Review other ledger-reconciled command, tool, and
+   file-read choices only when a narrower command, selector, path, section, or
+   existing evidence would have been sufficient.
 4. Identify the producer or workflow choice that allowed the spend: prompt,
    rule, skill, automation, helper, validation, tool choice, workflow habit, or
    external dependency.
@@ -125,10 +145,16 @@ blocked; do not fall back to visible context.
 - The inspected window and ledger evidence mode are stated; every model call is
   reconciled in the ledger and every completed run appears in the compact run
   table.
+- The existing ledger helper validated the final classifications against the
+  exact selected source and window; inventory evidence alone does not satisfy
+  this gate.
 - Each finding ties to a concrete episode, cause, earliest prevention point,
   recommendation type, and expected impact.
 - Ordinary model failures that could be confused with avoidable credit spend are
   explicitly excluded.
+- A zero-finding result is invalid when based only on ledger counts or
+  fingerprints; selected session rows must support dismissal of every visible
+  candidate signal and every required output category.
 - Any missing evidence or target-thread blocker is stated.
 
 ### Output Contract
@@ -138,11 +164,18 @@ evidence prevents analysis. Otherwise start with
 `Unimplemented avoidable spend: found.` or
 `Unimplemented avoidable spend: none found.`
 
-First show
-`Run | Model Calls | Avoidable Calls with Implemented Fix |
-Avoidable Calls with Unimplemented Fix`, reconciled totals, and available token
-usage. For each still-unimplemented control, show
-`Control | Saved/affected run | Forecast rate | Added/run |
-Long-term average saving/run | One-time cost | Decision`. Then report only
-still-unimplemented findings in detail, any required ranked prompt-level table,
-excluded ordinary failures, and important evidence limits.
+First show this exact run table:
+`Completed run | Total model calls |
+Avoidable calls - Fix Implemented |
+Avoidable calls - Fix Unimplemented |
+Token usage (input/cached input/output/reasoning output/total)`.
+Use each run's `started_at` date/time, not its turn ID, for `Completed run`, and
+include a totals row. For each still-unimplemented control, show this exact
+control table:
+`Proposed control | Calls saved per affected run |
+Est. Percent of Affected Similar Runs |
+Additional Calls per Affected Run for Implemented Fix |
+Est. Calls Saving by Fix per Affected Run |
+One-time implementation cost (model calls) | Recommendation`.
+Then report only still-unimplemented findings in detail, any required ranked
+prompt-level table, excluded ordinary failures, and important evidence limits.

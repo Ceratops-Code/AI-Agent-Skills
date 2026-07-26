@@ -334,6 +334,15 @@
           "/Users/",
           "/home/[^/]+/"
         ],
+        "ignore_windows_path_prefixes": [
+          "C:\\repo",
+          "C:\\repos",
+          "%ProgramFiles%",
+          "%ProgramFiles(x86)%",
+          "%SystemRoot%",
+          "$CODEX_HOME",
+          "C:\\CodexProjects"
+        ],
         "ignore_paths": [
           "skills/ceratops-gh-repo-lifecycle/references/contracts/code-repo-deterministic-contract.json"
         ]

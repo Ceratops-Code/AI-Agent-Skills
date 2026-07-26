@@ -1,0 +1,9 @@
+{
+  "schema": "ceratops-installer-version-history.v1",
+  "versions": [
+    {
+      "version": 4,
+      "behavior_sha256": "9729c35ceaa4de25f0360abd010a0108b709fa437e47fb06eac4ad9316eb8387"
+    }
+  ]
+}

@@ -82,12 +82,12 @@ without repository deduplication.
 | `skills/ceratops-skill-lifecycle/scripts/runtime/synchronize-installers.py` | Copies the authoritative installer into an approved task worktree only when its parsed version is missing or lower, then runs full validation. |
 | `skills/ceratops-skill-lifecycle/scripts/runtime/skills-consistency-runtime-validator.py` | Inventories direct managed runtime manifests or validates one selected skill after deriving its source repository, including identity, installer version, and complete managed-file comparison. |
 | `skills/ceratops-skill-lifecycle/scripts/runtime/managed_runtime_builder.py` | Canonical managed-runtime builder used for installation and expected-tree generation. |
-| `skills/ceratops-credit-savings-analysis/scripts/model-call-ledger.py` | Writes ordinary sanitized session evidence to a caller-selected file, or emits one artifact-free full-thread call inventory for closure analysis. |
-| `skills/ceratops-task-lifecycle/scripts/closure_snapshot.py` | Emits one compact non-destructive snapshot for explicitly named closure repo, release, task-worktree, and temporary-file targets. |
+| `skills/ceratops-credit-savings-analysis/scripts/model-call-ledger.py` | Writes sanitized session evidence, emits artifact-free closure inventories, and validates caller classifications against every selected model call. |
+| `skills/ceratops-task-lifecycle/scripts/closure_snapshot.py` | Emits one compact snapshot for explicitly named closure targets and optionally removes exact task-created files validated inside the task temp root. |
 | `skills/ceratops-governance-lifecycle/scripts/apply_rules_update.py` | Applies one approved coupled rules/history request with stale-text checks, shared validation, rollback, and compact output. |
-| `skills/ceratops-gh-repo-lifecycle/scripts/github_contract_engine/` | Package CLI for contract evaluation, shared GitHub API access, sanitized evidence, and evidence-gated CodeQL disposition. |
-| `skills/ceratops-gh-repo-lifecycle/scripts/github_pr_workflow/` | Package CLI for individual PR operations and exact-commit, checkpointed end-to-end shipping with concurrent gates, reusable-branch restoration, and terminal same-PR checkpoint cleanup. |
-| `skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py` | Source validator for selected-skill, section, and full repository checks. |
+| `skills/ceratops-gh-repo-lifecycle/scripts/github_contract_engine/` | Package CLI for compact local audit snapshots, contract evaluation, shared GitHub API access, sanitized evidence, and evidence-gated CodeQL disposition. |
+| `skills/ceratops-gh-repo-lifecycle/scripts/github_pr_workflow/` | Package CLI for individual PR operations, caller-adapted dependency queues, and exact-commit checkpointed shipping with concurrent gates, reusable-branch restoration, and terminal same-PR checkpoint cleanup. |
+| `skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py` | Source validator plus deterministic authoritative installer-version synchronization. |
 | `skills/ceratops-skill-lifecycle/scripts/promote-skill-branches-to-release-and-install.ps1` | Called by skill change-promotion to prepare `release/local`, fast-forward reviewed branches, type-check the assembled candidate, record its exact retention state, then validate, install, and emit compact ready/not-ready JSON. |
 | `skills/ceratops-skill-lifecycle/scripts/manage-pending-release-work.ps1` | Records exact promoted sources, performs cleanup-only checks, or terminally installs and verifies synchronized runtime before approved-source cleanup. |
 
@@ -142,6 +142,7 @@ setting:
 
 ```powershell
 Push-Location .\skills\ceratops-gh-repo-lifecycle\scripts
+python -m github_contract_engine audit-snapshot --repo-root ..\..\..
 python -m github_contract_engine validate org --org ORG --subset all
 python -m github_contract_engine validate repo --repo OWNER/REPO --surface repo --subset settings --local-repo-path PATH
 python -m github_contract_engine validate repo --repo OWNER/REPO --surface code --subset content --local-repo-path PATH

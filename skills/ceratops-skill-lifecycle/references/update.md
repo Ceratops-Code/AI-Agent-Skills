@@ -94,6 +94,10 @@ Infer missing inputs from current repo state before asking.
 
 #### 4. Run needed checks
 
+- When the authoritative installer may have changed, run `python
+  skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py
+  --repo-root <repo> --sync-installer-version`; this deterministic producer owns
+  the template version, behavior history, and repository bootstrap copy.
 - If shared section files or `templates/skill-sections.json` changed, run the
   manifest's shared-source check path.
 - Do not run validation solely because skill-local text, metadata, or docs

@@ -1,18 +1,21 @@
 #!/usr/bin/env python3
-"""Build the compact deterministic inventory for governance consistency audits.
+"""Build deterministic inventory evidence for governance consistency audits.
 
-The helper is read-only. It inventories only declared governance surfaces and
-emits one JSON document consumed by the governance lifecycle audit action.
+The default mode is read-only and emits the complete snapshot. Evidence mode
+atomically writes that snapshot to one caller-selected path and emits only the
+compact decision payload consumed by the governance lifecycle audit action.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import pathlib
 import re
 import subprocess
+import tempfile
 import tomllib
 from collections import Counter
 from datetime import datetime, timezone
@@ -190,28 +193,6 @@ def automations_inventory(automation_root: pathlib.Path) -> dict[str, object]:
     }
 
 
-def iter_project_agents(projects_root: pathlib.Path) -> Iterable[pathlib.Path]:
-    """Yield every project AGENTS file from root or nested repository paths."""
-    if projects_root.exists():
-        local_paths = {
-            path.resolve()
-            for path in projects_root.rglob("AGENTS.md")
-            if ".git" not in path.parts
-        }
-        yield from sorted(local_paths)
-
-
-def iter_agents(projects_root: pathlib.Path, codex_home: pathlib.Path) -> Iterable[pathlib.Path]:
-    global_agents = codex_home / "AGENTS.md"
-    if global_agents.exists():
-        yield global_agents
-    yield from (
-        path
-        for path in iter_project_agents(projects_root)
-        if path != global_agents.resolve()
-    )
-
-
 def run_git(repo: pathlib.Path, *args: str) -> tuple[str | None, str | None]:
     """Run a bounded read-only Git probe and return compact output or an error."""
     try:
@@ -229,6 +210,73 @@ def run_git(repo: pathlib.Path, *args: str) -> tuple[str | None, str | None]:
     if result.returncode != 0:
         return None, (result.stderr or result.stdout).strip()[:240]
     return result.stdout.rstrip("\r\n"), None
+
+
+def git_ignore_excludes(path: pathlib.Path) -> bool:
+    """Use the containing worktree's Git ignore resolution when one exists."""
+    git_root, _ = run_git(path.parent, "rev-parse", "--show-toplevel")
+    if not git_root:
+        return False
+    try:
+        result = subprocess.run(
+            [
+                "git",
+                "-C",
+                git_root,
+                "check-ignore",
+                "--quiet",
+                "--",
+                str(path),
+            ],
+            capture_output=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError(f"git ignore check failed for {path}: {exc}") from exc
+    if result.returncode not in {0, 1}:
+        detail = (result.stderr or result.stdout).decode(
+            "utf-8", errors="replace"
+        ).strip()
+        raise RuntimeError(
+            f"git ignore check failed for {path}: {detail[:240]}"
+        )
+    return result.returncode == 0
+
+
+def iter_project_agents(projects_root: pathlib.Path) -> Iterable[pathlib.Path]:
+    """Yield owned AGENTS sources after tmp and Git-ignore exclusions."""
+    if not projects_root.exists():
+        return
+    resolved_root = projects_root.resolve()
+    local_paths: set[pathlib.Path] = set()
+    for path in projects_root.rglob("AGENTS.md"):
+        resolved = path.resolve()
+        try:
+            relative = resolved.relative_to(resolved_root)
+        except ValueError:
+            continue
+        if ".git" in relative.parts:
+            continue
+        if relative.parts and relative.parts[0].casefold() == "tmp":
+            continue
+        if git_ignore_excludes(resolved):
+            continue
+        local_paths.add(resolved)
+    yield from sorted(local_paths)
+
+
+def iter_agents(
+    projects_root: pathlib.Path, codex_home: pathlib.Path
+) -> Iterable[pathlib.Path]:
+    global_agents = codex_home / "AGENTS.md"
+    if global_agents.exists():
+        yield global_agents
+    yield from (
+        path
+        for path in iter_project_agents(projects_root)
+        if path != global_agents.resolve()
+    )
 
 
 def parse_worktrees(output: str) -> list[dict[str, object]]:
@@ -675,19 +723,128 @@ def build_snapshot(args: argparse.Namespace) -> dict[str, object]:
     }
 
 
+def render_json(payload: dict[str, object], pretty: bool) -> str:
+    """Render stable JSON for stdout, evidence files, and state fingerprints."""
+    return json.dumps(
+        payload,
+        indent=2 if pretty else None,
+        sort_keys=True,
+        separators=None if pretty else (",", ":"),
+    )
+
+
+def snapshot_state_sha256(snapshot: dict[str, object]) -> str:
+    """Hash inventoried state while excluding the intentionally volatile time."""
+    stable_snapshot = dict(snapshot)
+    stable_snapshot.pop("generated_at", None)
+    serialized = render_json(stable_snapshot, pretty=False).encode("utf-8")
+    return hashlib.sha256(serialized).hexdigest()
+
+
+def write_evidence(
+    evidence_output: pathlib.Path,
+    snapshot: dict[str, object],
+    pretty: bool,
+) -> pathlib.Path:
+    """Atomically replace only the caller-selected evidence file.
+
+    The caller owns the path, its retention window, and cleanup. A sibling
+    temporary file prevents partial evidence if serialization or writing fails.
+    """
+    resolved_output = evidence_output.expanduser().resolve()
+    resolved_output.parent.mkdir(parents=True, exist_ok=True)
+    evidence_text = render_json(snapshot, pretty=pretty) + "\n"
+    temporary_path: pathlib.Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            newline="\n",
+            dir=resolved_output.parent,
+            prefix=f".{resolved_output.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temporary_path = pathlib.Path(handle.name)
+            handle.write(evidence_text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_path, resolved_output)
+    except BaseException:
+        if temporary_path is not None:
+            temporary_path.unlink(missing_ok=True)
+        raise
+    return resolved_output
+
+
+def build_decision_payload(
+    snapshot: dict[str, object],
+    evidence_path: pathlib.Path,
+) -> dict[str, object]:
+    """Reduce full evidence to the counts needed to select later deep reads."""
+    automations = cast(dict[str, Any], snapshot["automations"])
+    agents = cast(dict[str, Any], snapshot["agents"])
+    rule_graph = cast(dict[str, Any], snapshot["agents_rule_graph"])
+    git = cast(dict[str, Any], snapshot["git"])
+    automation_gitignore = cast(
+        dict[str, Any],
+        snapshot["automation_gitignore"],
+    )
+    d_rule_brevity = cast(dict[str, Any], snapshot["d_rule_brevity"])
+    return {
+        "schema": "global-governance-consistency-audit/decision.v1",
+        "evidence_path": str(evidence_path),
+        "evidence_schema": snapshot["schema"],
+        "state_sha256": snapshot_state_sha256(snapshot),
+        "counts": {
+            "automations": automations["count"],
+            "duplicate_schedules": len(automations["duplicate_schedules"]),
+            "agents": agents["count"],
+            "repeated_rule_lines": len(agents["repeated_rule_lines"]),
+            "structural_findings": rule_graph["structural_finding_count"],
+            "semantic_reviews": rule_graph["semantic_review_count"],
+            "approved_debt": rule_graph["approved_debt_count"],
+            "git_repositories": git["count"],
+            "dirty_git": git["dirty_count"],
+            "misplaced_worktrees": git["misplaced_worktree_count"],
+            "automation_gitignore_missing": len(
+                automation_gitignore["missing_expected_entries"]
+            ),
+            "d_rule_brevity_candidates": d_rule_brevity["candidate_count"],
+        },
+    }
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--codex-home", type=pathlib.Path, default=default_codex_home())
     parser.add_argument("--automation-root", type=pathlib.Path, default=default_codex_home() / "automations")
     parser.add_argument("--projects-root", type=pathlib.Path, required=True)
+    parser.add_argument(
+        "--evidence-output",
+        type=pathlib.Path,
+        help=(
+            "Atomically write full snapshot evidence to this path and emit "
+            "only the compact decision payload."
+        ),
+    )
     parser.add_argument("--pretty", action="store_true")
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
-    payload = build_snapshot(args)
-    print(json.dumps(payload, indent=2 if args.pretty else None, sort_keys=True, separators=None if args.pretty else (",", ":")))
+    snapshot = build_snapshot(args)
+    if args.evidence_output is None:
+        payload = snapshot
+    else:
+        evidence_path = write_evidence(
+            args.evidence_output,
+            snapshot,
+            pretty=args.pretty,
+        )
+        payload = build_decision_payload(snapshot, evidence_path)
+    print(render_json(payload, pretty=args.pretty))
     return 0
 
 

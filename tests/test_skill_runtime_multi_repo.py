@@ -640,13 +640,12 @@ def runtime_owner(install_root: pathlib.Path, skill_name: str) -> str:
     return str(data["runtime_source_id"])
 
 
-@pytest.mark.skipif(
-    shutil.which("powershell") is None,
-    reason="PowerShell lifecycle helper is unavailable",
-)
-def test_promotion_helper_owns_release_branch_preparation(
+def prepare_promotion_test_repo(
     tmp_path: pathlib.Path,
-) -> None:
+    mypy_config: tuple[str, str] | None,
+) -> tuple[pathlib.Path, str, pathlib.Path, dict[str, str]]:
+    """Create one isolated promotion repository with an approved branch."""
+
     remote = tmp_path / "remote.git"
     seed = tmp_path / "seed"
     repo = tmp_path / "AI-Agent-Skills"
@@ -656,17 +655,21 @@ def test_promotion_helper_owns_release_branch_preparation(
     assert run_git(seed, "config", "user.email", "test@example.invalid").returncode == 0
     assert run_git(seed, "config", "user.name", "Test Agent").returncode == 0
     (seed / "dummy.py").write_text("value: int = 1\n", encoding="utf-8", newline="\n")
-    (seed / "mypy.ini").write_text(
-        "[mypy]\nfiles = dummy.py\n",
-        encoding="utf-8",
-        newline="\n",
-    )
+    if mypy_config is not None:
+        config_name, config_text = mypy_config
+        (seed / config_name).write_text(
+            config_text,
+            encoding="utf-8",
+            newline="\n",
+        )
     (seed / "README.md").write_text("base\n", encoding="utf-8", newline="\n")
     (seed / "scripts").mkdir()
     (seed / "scripts" / "install-skills.py").write_text(
         "import os, pathlib\n"
-        "pathlib.Path(os.environ['PROMOTION_TEST_LOG']).write_text("
-        "'installed\\n', encoding='utf-8')\n",
+        "INSTALLER_VERSION = 4\n"
+        "with pathlib.Path(os.environ['PROMOTION_TEST_LOG']).open("
+        "'a', encoding='utf-8') as log:\n"
+        "    log.write('installed\\n')\n",
         encoding="utf-8",
         newline="\n",
     )
@@ -694,8 +697,16 @@ def test_promotion_helper_owns_release_branch_preparation(
     log = tmp_path / "promotion.log"
     environment = os.environ.copy()
     environment["PROMOTION_TEST_LOG"] = str(log)
+    return repo, approved_head, log, environment
 
-    promoted = subprocess.run(
+
+def run_promotion_helper(
+    repo: pathlib.Path,
+    environment: dict[str, str],
+) -> subprocess.CompletedProcess[str]:
+    """Run the promotion helper against an isolated repository."""
+
+    return subprocess.run(
         [
             "powershell",
             "-NoProfile",
@@ -720,6 +731,20 @@ def test_promotion_helper_owns_release_branch_preparation(
         env=environment,
     )
 
+
+@pytest.mark.skipif(
+    shutil.which("powershell") is None,
+    reason="PowerShell lifecycle helper is unavailable",
+)
+def test_promotion_helper_owns_release_branch_preparation(
+    tmp_path: pathlib.Path,
+) -> None:
+    repo, approved_head, log, environment = prepare_promotion_test_repo(
+        tmp_path,
+        ("mypy.ini", "[mypy]\nfiles = dummy.py\n"),
+    )
+    promoted = run_promotion_helper(repo, environment)
+
     assert promoted.returncode == 0, promoted.stderr
     result = json.loads(promoted.stdout)
     assert result["status"] == "ready"
@@ -731,6 +756,166 @@ def test_promotion_helper_owns_release_branch_preparation(
     assert log.read_text(encoding="utf-8") == "installed\n"
     assert run_git(repo, "branch", "--show-current").stdout.strip() == "release/local"
     assert run_git(repo, "status", "--porcelain").stdout == ""
+
+
+@pytest.mark.skipif(
+    shutil.which("powershell") is None,
+    reason="PowerShell lifecycle helper is unavailable",
+)
+def test_promotion_bootstraps_changed_lifecycle_before_full_install(
+    tmp_path: pathlib.Path,
+) -> None:
+    repo, _, log, environment = prepare_promotion_test_repo(
+        tmp_path,
+        ("mypy.ini", "[mypy]\nfiles = dummy.py\n"),
+    )
+    source_installer = (
+        repo
+        / "skills"
+        / "ceratops-skill-lifecycle"
+        / "scripts"
+        / "runtime"
+        / "install-managed-skills.py"
+    )
+    source_installer.parent.mkdir(parents=True)
+    source_installer.write_text(
+        "import os, pathlib\n"
+        "with pathlib.Path(os.environ['PROMOTION_TEST_LOG']).open("
+        "'a', encoding='utf-8') as log:\n"
+        "    log.write('lifecycle\\n')\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    assert run_git(repo, "add", str(source_installer)).returncode == 0
+    assert run_git(repo, "commit", "-m", "change lifecycle").returncode == 0
+
+    promoted = run_promotion_helper(repo, environment)
+
+    assert promoted.returncode == 0, promoted.stderr
+    assert log.read_text(encoding="utf-8") == "lifecycle\ninstalled\n"
+
+
+@pytest.mark.skipif(
+    shutil.which("powershell") is None,
+    reason="PowerShell lifecycle helper is unavailable",
+)
+def test_promotion_restores_lifecycle_runtime_when_full_install_fails(
+    tmp_path: pathlib.Path,
+) -> None:
+    repo, _, log, environment = prepare_promotion_test_repo(
+        tmp_path,
+        ("mypy.ini", "[mypy]\nfiles = dummy.py\n"),
+    )
+    codex_home = tmp_path / "codex"
+    installed_lifecycle = (
+        codex_home / "skills" / "ceratops-skill-lifecycle"
+    )
+    installed_lifecycle.mkdir(parents=True)
+    (installed_lifecycle / "runtime.txt").write_text(
+        "prior\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    environment["CODEX_HOME"] = str(codex_home)
+
+    source_installer = (
+        repo
+        / "skills"
+        / "ceratops-skill-lifecycle"
+        / "scripts"
+        / "runtime"
+        / "install-managed-skills.py"
+    )
+    source_installer.parent.mkdir(parents=True)
+    source_installer.write_text(
+        "import os, pathlib, shutil\n"
+        "target = pathlib.Path(os.environ['CODEX_HOME']) / 'skills' / "
+        "'ceratops-skill-lifecycle'\n"
+        "if target.exists():\n"
+        "    shutil.rmtree(target)\n"
+        "target.mkdir(parents=True)\n"
+        "(target / 'runtime.txt').write_text('staged\\n', encoding='utf-8')\n"
+        "with pathlib.Path(os.environ['PROMOTION_TEST_LOG']).open("
+        "'a', encoding='utf-8') as log:\n"
+        "    log.write('lifecycle\\n')\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    install_script = repo / "scripts" / "install-skills.py"
+    install_script.write_text(
+        "import os, pathlib\n"
+        "INSTALLER_VERSION = 4\n"
+        "with pathlib.Path(os.environ['PROMOTION_TEST_LOG']).open("
+        "'a', encoding='utf-8') as log:\n"
+        "    log.write('install-failed\\n')\n"
+        "raise SystemExit('requested full install failure')\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    assert run_git(
+        repo,
+        "add",
+        str(source_installer),
+        str(install_script),
+    ).returncode == 0
+    assert run_git(repo, "commit", "-m", "change lifecycle").returncode == 0
+
+    promoted = run_promotion_helper(repo, environment)
+
+    assert promoted.returncode != 0
+    assert (installed_lifecycle / "runtime.txt").read_text(
+        encoding="utf-8"
+    ) == "prior\n"
+    assert log.read_text(encoding="utf-8") == (
+        "lifecycle\ninstall-failed\n"
+    )
+    rollback_parent = tmp_path / "tmp" / repo.name
+    assert not rollback_parent.exists() or not any(rollback_parent.iterdir())
+
+
+@pytest.mark.skipif(
+    shutil.which("powershell") is None,
+    reason="PowerShell lifecycle helper is unavailable",
+)
+@pytest.mark.parametrize(
+    ("mypy_config", "classification", "config_files"),
+    [
+        (None, "mypy_scope_missing", '"config_files":[]'),
+        (
+            ("pyproject.toml", "[project]\nname = 'fixture'\n"),
+            "mypy_scope_missing",
+            '"config_files":[]',
+        ),
+        (
+            ("mypy.ini", "[mypy]\n"),
+            "mypy_scope_mismatch",
+            '"config_files":["mypy.ini"]',
+        ),
+        (
+            ("mypy.ini", "[mypy]\nfiles = missing.py\n"),
+            "mypy_failed",
+            '"config_files":["mypy.ini"]',
+        ),
+    ],
+)
+def test_promotion_helper_classifies_mypy_failures(
+    tmp_path: pathlib.Path,
+    mypy_config: tuple[str, str] | None,
+    classification: str,
+    config_files: str,
+) -> None:
+    repo, _, log, environment = prepare_promotion_test_repo(
+        tmp_path,
+        mypy_config,
+    )
+
+    promoted = run_promotion_helper(repo, environment)
+
+    assert promoted.returncode != 0
+    assert f'"classification":"{classification}"' in promoted.stderr
+    assert '"command":"python -m mypy"' in promoted.stderr
+    assert config_files in promoted.stderr
+    assert not log.exists()
 
 
 @pytest.mark.skipif(
@@ -1003,6 +1188,57 @@ def test_compatible_full_validation_accepts_arbitrary_skill_names(tmp_path: path
 
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "ok: 1"
+
+
+def test_source_validator_rejects_consecutive_name_hyphens(tmp_path: pathlib.Path) -> None:
+    repo = tmp_path / "compatible"
+    create_compatible_repo(repo, "example/compatible", ["alpha--tool"])
+
+    result = subprocess.run(
+        [sys.executable, str(VALIDATOR), "--repo-root", str(repo), "--mode", "full"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "alpha--tool: invalid directory name" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("length", "expected_error"),
+    [
+        (39, "description is too short"),
+        (40, None),
+        (1024, None),
+        (1025, "description exceeds 1024 characters"),
+    ],
+)
+def test_source_validator_enforces_description_boundaries(
+    tmp_path: pathlib.Path,
+    length: int,
+    expected_error: str | None,
+) -> None:
+    repo = tmp_path / "compatible"
+    create_compatible_repo(repo, "example/compatible", ["alpha-tool"])
+    skill_md = repo / "skills" / "alpha-tool" / "SKILL.md"
+    lines = skill_md.read_text(encoding="utf-8").splitlines()
+    seed = "Manage alpha tool workflows safely across compatible repositories. "
+    lines[2] = f"description: {(seed * (length // len(seed) + 1))[:length]}"
+    skill_md.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
+
+    result = subprocess.run(
+        [sys.executable, str(VALIDATOR), "--repo-root", str(repo), "--mode", "full"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    if expected_error is None:
+        assert result.returncode == 0, result.stderr
+    else:
+        assert result.returncode == 1
+        assert expected_error in result.stderr
 
 
 def test_multi_action_membership_is_owned_by_the_skill_index(
@@ -1446,6 +1682,114 @@ def test_installer_synchronization_compares_only_version(tmp_path: pathlib.Path)
     assert updated.returncode == 0, updated.stderr
     assert json.loads(updated.stdout)["status"] == "updated"
     assert target.read_bytes() == INSTALLER_TEMPLATE.read_bytes()
+
+
+def test_installer_behavior_fingerprint_is_python_version_stable() -> None:
+    validator = runpy.run_path(str(VALIDATOR))
+    fingerprint = validator["installer_behavior_fingerprint"]
+
+    assert fingerprint(INSTALLER_TEMPLATE) == (
+        "9729c35ceaa4de25f0360abd010a0108b709fa437e47fb06eac4ad9316eb8387"
+    )
+
+
+def test_installer_version_producer_assigns_versions_without_model_repair(
+    tmp_path: pathlib.Path,
+) -> None:
+    validator = runpy.run_path(str(VALIDATOR))
+    fingerprint = validator["installer_behavior_fingerprint"]
+    check_history = validator["check_installer_version_history"]
+    synchronize = validator["synchronize_authoritative_installer_version"]
+    template = tmp_path / "install-skills-template.py"
+    bootstrap = tmp_path / "install-skills.py"
+    history = tmp_path / "installer-version-history.json"
+    template.write_text(
+        '"""Bootstrap documentation."""\n'
+        "INSTALLER_VERSION = 4\n"
+        "def main():\n"
+        '    """Run the bootstrap."""\n'
+        '    print("first")\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    bootstrap.write_text("stale\n", encoding="utf-8", newline="\n")
+    baseline = fingerprint(template)
+    assert isinstance(baseline, str)
+    history.write_text(
+        json.dumps(
+            {
+                "schema": "ceratops-installer-version-history.v1",
+                "versions": [{"version": 4, "behavior_sha256": baseline}],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    synchronize.__globals__["INSTALLER_TEMPLATE"] = template
+    synchronize.__globals__["INSTALLER_VERSION_HISTORY"] = history
+    synchronize.__globals__["BOOTSTRAP_INSTALLER"] = bootstrap
+
+    synchronize()
+    assert check_history() == []
+    assert bootstrap.read_bytes() == template.read_bytes()
+
+    template.write_text(
+        template.read_text(encoding="utf-8").replace(
+            "INSTALLER_VERSION = 4", "INSTALLER_VERSION = 9"
+        ),
+        encoding="utf-8",
+        newline="\n",
+    )
+    synchronize()
+    assert "INSTALLER_VERSION = 4" in template.read_text(encoding="utf-8")
+    assert len(json.loads(history.read_text(encoding="utf-8"))["versions"]) == 1
+    assert fingerprint(template) == baseline
+    assert check_history() == []
+
+    template.write_text(
+        template.read_text(encoding="utf-8").replace('print("first")', 'print("changed")'),
+        encoding="utf-8",
+        newline="\n",
+    )
+    changed = fingerprint(template)
+    assert isinstance(changed, str)
+    assert changed != baseline
+    synchronize()
+    assert "INSTALLER_VERSION = 5" in template.read_text(encoding="utf-8")
+    assert [entry["version"] for entry in json.loads(history.read_text(encoding="utf-8"))["versions"]] == [4, 5]
+    assert bootstrap.read_bytes() == template.read_bytes()
+    assert check_history() == []
+
+    before = (template.read_bytes(), history.read_bytes(), bootstrap.read_bytes())
+    synchronize()
+    assert (template.read_bytes(), history.read_bytes(), bootstrap.read_bytes()) == before
+
+    template.write_text(
+        template.read_text(encoding="utf-8")
+        .replace("Bootstrap documentation.", "Updated bootstrap documentation.")
+        .replace("Run the bootstrap.", "Run the documented bootstrap."),
+        encoding="utf-8",
+        newline="\n",
+    )
+    synchronize()
+    assert "INSTALLER_VERSION = 5" in template.read_text(encoding="utf-8")
+    assert len(json.loads(history.read_text(encoding="utf-8"))["versions"]) == 2
+    assert check_history() == []
+
+    template.write_text(
+        template.read_text(encoding="utf-8")
+        .replace("INSTALLER_VERSION = 5", "INSTALLER_VERSION = 2")
+        .replace('print("changed")', 'print("first")'),
+        encoding="utf-8",
+        newline="\n",
+    )
+    synchronize()
+    history_entries = json.loads(history.read_text(encoding="utf-8"))["versions"]
+    assert [entry["version"] for entry in history_entries] == [4, 5, 6]
+    assert history_entries[-1]["behavior_sha256"] == baseline
+    assert "INSTALLER_VERSION = 6" in template.read_text(encoding="utf-8")
+    assert check_history() == []
 
 
 def test_repository_review_uses_only_attributable_direct_manifest_folders(tmp_path: pathlib.Path) -> None:

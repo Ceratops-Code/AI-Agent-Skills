@@ -112,10 +112,13 @@
       "deterministic_evidence": [
         "scripts/install-skills.py INSTALLER_VERSION",
         "authoritative installer template INSTALLER_VERSION",
+        "authoritative installer behavior history",
         "installed runtime manifest installer_version"
       ],
-      "pass_condition": "Compatible repositories declare one positive integer INSTALLER_VERSION in scripts/install-skills.py; selected-skill consistency compares only that value, updates missing or lower versions through task worktrees, retains same-version content differences, and runs full validation after synchronization.",
+      "pass_condition": "The authoritative installer-version producer retains the current version when executable behavior is unchanged and assigns exactly the next version when behavior changes; it updates the behavior history and repository bootstrap copy together. Validation treats mismatched or malformed producer output as corruption. Compatible repositories declare one positive integer INSTALLER_VERSION in scripts/install-skills.py; selected-skill consistency compares only that value, updates missing or lower versions through task worktrees, retains same-version content differences, and runs full validation after synchronization.",
       "source_lines": [
+        "skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py:synchronize_authoritative_installer_version",
+        "skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py:check_installer_version_history",
         "skills/ceratops-skill-lifecycle/scripts/runtime/synchronize-installers.py:installer_version",
         "skills/ceratops-skill-lifecycle/scripts/runtime/skills-consistency-runtime-validator.py:discover_runtime",
         "skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py:check_source_installer"
@@ -129,8 +132,9 @@
         "source SKILL.md frontmatter",
         "source SKILL.md section and subsection structure"
       ],
-      "pass_condition": "Source skill frontmatter contains only name and description, frontmatter name matches the directory, description is present, and the body contains a Markdown H2 section structure; the ceratops profile additionally requires Boundaries and Output Contract subsections.",
+      "pass_condition": "Source skill frontmatter contains only name and description; name matches the directory, contains 1 to 64 lowercase ASCII letters, digits, or hyphens, does not start or end with a hyphen, and contains no consecutive hyphens; description contains 40 to 1024 characters; the body contains a Markdown H2 section structure; the ceratops profile additionally requires Boundaries and Output Contract subsections.",
       "source_lines": [
+        "skill-source-docs.json:open_agent_skills.specification",
         "skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py:parse_frontmatter",
         "skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py:check_skill"
       ]

@@ -10,9 +10,9 @@ result.
 
 ### Inputs To Capture
 
-- The user-stated closure boundary, or the beginning of the thread when none
-  is stated; the authorized work scope; and any unresolved or intentionally
-  retained state at the boundary.
+- Closure mode: full-thread, or `incremental closure` beginning after the
+  previous completed closure; the authorized work scope; and any unresolved or
+  intentionally retained state at the boundary.
 - Completed actions, directly touched artifacts, and claims already made.
 - Touched repos, worktrees, branches, commits, PRs, automation folders,
   generated or runtime artifacts, active goals, failed commands, and warnings.
@@ -26,11 +26,13 @@ targeted local state before asking.
 
 ### Skill-Specific Rules
 
-- Advisory by default; do not mutate state unless the user explicitly asks for
-  that exact action.
-- When the user states a closure boundary, scope new work and credit analysis
-  to that window and carry forward only unresolved or intentionally retained
-  boundary state; otherwise scope from the beginning of the thread.
+- Closure invocation authorizes only helper-validated cleanup of task-created
+  temporary artifacts inside the verified task temp root; remain advisory and
+  ask before any other mutation.
+- For an `incremental closure`, scope new work and credit analysis to completed
+  runs after the previous completed closure and carry forward only unresolved
+  or intentionally retained boundary state; otherwise scope from the beginning
+  of the thread.
 - When closure follows a mutating or multi-entity task, classify touched,
   discovered, or plausibly affected artifacts, external entities, and side
   effects as active, intentionally retained, stale-in-scope, stale-out-of-scope,
@@ -86,8 +88,11 @@ targeted local state before asking.
   evidence, run `python scripts/closure_snapshot.py --repo PATH
   [--fetch-remote NAME] [--release-branch BRANCH
   --release-upstream REF] [--task-worktree PATH --task-branch BRANCH]
-  [--temp-root PATH]`; it checks only the named targets and emits one compact
-  non-destructive snapshot.
+  [--temp-root PATH] [--cleanup-temp PATH]`; it snapshots only named targets,
+  removes only exact temporary artifacts that its safety contract validates
+  under `--temp-root`, and emits compact cleanup evidence.
+- Pass `--cleanup-temp` only for an exact artifact that selected-thread evidence
+  proves this task created; otherwise omit it and report the cleanup.
 - Do not rerun facts reported by the snapshot. Query goal state only when
   same-thread evidence shows a goal was created or active, and run additional
   diagnostics only for snapshot state that remains unresolved.
@@ -100,14 +105,9 @@ targeted local state before asking.
 
 #### 5. Include Credit-Saving Analysis
 
-- Invoke `$ceratops-credit-savings-analysis` for the current thread, reuse fresh
-  closure evidence, and include its required result under `Credit savings`.
-- Obtain model-call evidence in one `model-call-ledger.py --closure
-  [--last-runs N]` invocation. For a prior-closure boundary, set `N` to the
-  completed runs strictly after that closure; exclude the boundary and active
-  runs. Omit `--last-runs` only when the user states no boundary, use the
-  current thread ID when available or its exact session path otherwise, and
-  create no temporary ledger.
+- Invoke `$ceratops-credit-savings-analysis` for the current thread and selected
+  closure window, reuse fresh closure evidence, and include its completed result
+  or blocker under `Credit savings`.
 
 #### 6. Classify Closure State
 
@@ -129,15 +129,20 @@ targeted local state before asking.
   unverified states from the selected window and carried boundary state are
   reported.
 - A response that reports no unresolved items is supported by checked evidence.
-- The `$ceratops-credit-savings-analysis` result or blocker is included under
-  `Credit savings`.
-- No mutation was performed unless explicitly requested.
+- A completed `$ceratops-credit-savings-analysis` result or its blocker is
+  included under `Credit savings`; ledger evidence alone does not satisfy this
+  gate.
+- The credit analysis used category totals validated by the existing ledger
+  helper; an unvalidated classification is a blocker.
+- No mutation occurred except helper-validated task-temp cleanup, unless the
+  user explicitly requested another exact action.
 
 ### Output Contract
 
 Return only relevant concise bullets:
 
-- checked scope, only when it limits the answer
+- checked scope, labeled `Incremental closure` when that mode applies, only when
+  it limits the answer
 - required next actions
 - blockers
 - uncommitted or unpushed changes
@@ -145,7 +150,7 @@ Return only relevant concise bullets:
 - stale or out-of-scope state
 - important unverified claims
 - relevant forgotten follow-ups
-- optional cleanup
+- optional cleanup that was unsafe or unauthorized to perform
 - `Credit savings`: the required `$ceratops-credit-savings-analysis` result
 
 If no listed item applies, return only `- No unresolved items.`

@@ -6,7 +6,15 @@ import argparse
 import sys
 from collections.abc import Callable
 
-from . import codex_review, ensure_pr, merge, readiness, ship, sync
+from . import (
+    codex_review,
+    dependency_queue,
+    ensure_pr,
+    merge,
+    readiness,
+    ship,
+    sync,
+)
 
 
 Command = Callable[[list[str] | None], int]
@@ -16,8 +24,8 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m github_pr_workflow",
         description=(
-            "Ensure, validate, review, merge, synchronize, or resume GitHub PR "
-            "workflows."
+            "Ensure, validate, review, merge, synchronize, resume, or process "
+            "dependency-queue GitHub PR workflows."
         ),
     )
     parser.add_argument(
@@ -31,6 +39,8 @@ def _parser() -> argparse.ArgumentParser:
             "merge",
             "sync",
             "ship",
+            "dependency-preflight",
+            "dependency-finalize",
         ),
         help="workflow operation",
     )
@@ -54,6 +64,12 @@ def main(argv: list[str] | None = None) -> int:
         "merge": merge.main,
         "sync": sync.main,
         "ship": ship.main,
+        "dependency-preflight": lambda values: dependency_queue.main(
+            ["preflight", *(values or [])]
+        ),
+        "dependency-finalize": lambda values: dependency_queue.main(
+            ["finalize", *(values or [])]
+        ),
     }
     if command not in commands:
         parser.error(f"unknown command: {command}")

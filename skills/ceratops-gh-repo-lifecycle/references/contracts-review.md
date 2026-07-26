@@ -17,6 +17,8 @@ applied.
   source checkout or `scripts` in the installed skill folder.
 - (D) GH contract consistency check:
   `python -m github_contract_engine validate consistency`
+- (D) Compact local contract-audit snapshot:
+  `python -m github_contract_engine audit-snapshot --repo-root <skills-repo>`
 - (D) Org contract checker:
   `python -m github_contract_engine validate org --help`
 - (D) GitHub, code, and artifact contract checker:
@@ -115,9 +117,13 @@ request before asking.
 
 ### 1. Inspect Local Contract State
 
-- Inspect current repo branch, worktree state, this action's `references/`, the
-  contract checker scripts, repo docs that describe contract structure, and
-  installed automation prompt when this run came from automation.
+- Run `python -m github_contract_engine audit-snapshot --repo-root
+  <skills-repo>` once and use its compact result for local branch and worktree
+  state, source-registry and contract inventory, checker command inventory,
+  repo-doc reference counts, and relevant contract history. Do not repeat local
+  discovery already reconciled by the snapshot; inspect only semantic deltas
+  and evidence outside its contract.
+- Inspect the installed automation prompt when this run came from automation.
 - Check GitHub auth, local git auth, and installed tooling before asking for
   credentials.
 - Run `python -m github_contract_engine validate consistency` before manual

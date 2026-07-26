@@ -410,6 +410,69 @@ def wait_for_ci_gate(
         time.sleep(max(0, interval_seconds))
 
 
+def _review_thread_ids(
+    review_result: dict[str, Any], key: str
+) -> list[str]:
+    """Return compact exact IDs from a review-gate thread collection."""
+
+    threads = review_result.get(key)
+    if not isinstance(threads, list):
+        return []
+    return [
+        thread_id
+        for thread in threads
+        if isinstance(thread, dict)
+        and isinstance((thread_id := thread.get("id")), str)
+        and thread_id
+    ]
+
+
+def _enforce_review_thread_gate(
+    args: argparse.Namespace,
+    review_result: dict[str, Any],
+    commit: str,
+    *,
+    base_branch: object,
+) -> tuple[int, int]:
+    """Reject blocking review state at one exact head and return gate counts."""
+
+    if review_result.get("head_oid") != commit:
+        raise ShipError(
+            f"Codex review head {review_result.get('head_oid')!r} does not "
+            f"match shipped commit {commit!r}."
+        )
+    active_count = int(review_result.get("active_codex_thread_count") or 0)
+    if active_count:
+        thread_ids = _review_thread_ids(
+            review_result, "active_codex_threads"
+        )
+        detail = f": {', '.join(thread_ids)}" if thread_ids else ""
+        raise ShipError(
+            f"Codex review gate found {active_count} active thread(s){detail}."
+        )
+    unresolved_count = int(
+        review_result.get("unresolved_review_thread_count") or 0
+    )
+    if unresolved_count:
+        if not isinstance(base_branch, str) or not base_branch:
+            raise ShipError(
+                "PR readiness did not return a base branch for unresolved "
+                "review-thread policy."
+            )
+        if readiness.review_thread_resolution_required(
+            base_branch, args.repo_root
+        ):
+            thread_ids = _review_thread_ids(
+                review_result, "unresolved_review_threads"
+            )
+            detail = f": {', '.join(thread_ids)}" if thread_ids else ""
+            raise ShipError(
+                "GitHub branch rules require resolution of "
+                f"{unresolved_count} unresolved review thread(s){detail}."
+            )
+    return active_count, unresolved_count
+
+
 def run_parallel_gates(
     args: argparse.Namespace,
     pr: str,
@@ -420,6 +483,22 @@ def run_parallel_gates(
     review_wait_seconds: int,
 ) -> dict[str, Any]:
     """Wait on independent CI/readiness and Codex-review reads concurrently."""
+
+    if ci_wait_seconds > 0 or review_wait_seconds > 0:
+        preflight = codex_review.wait_for_codex_threads(
+            pr,
+            repository,
+            wait_seconds=0,
+            interval_seconds=args.interval_seconds,
+            authors=codex_review.DEFAULT_CODEX_AUTHORS,
+            cwd=args.repo_root,
+        )
+        _enforce_review_thread_gate(
+            args,
+            preflight,
+            commit,
+            base_branch=args.base_branch,
+        )
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
         ci_future = executor.submit(
@@ -441,31 +520,13 @@ def run_parallel_gates(
         )
         ci_result = ci_future.result()
         review_result = review_future.result()
-    if review_result.get("head_oid") != commit:
-        raise ShipError(
-            f"Codex review head {review_result.get('head_oid')!r} does not "
-            f"match shipped commit {commit!r}."
-        )
-    active_count = int(review_result.get("active_codex_thread_count") or 0)
-    if active_count:
-        raise ShipError(f"Codex review gate found {active_count} active thread(s).")
-    unresolved_count = int(
-        review_result.get("unresolved_review_thread_count") or 0
-    )
     base_branch = ci_result.get("base")
-    if unresolved_count:
-        if not isinstance(base_branch, str) or not base_branch:
-            raise ShipError(
-                "PR readiness did not return a base branch for unresolved "
-                "review-thread policy."
-            )
-        if readiness.review_thread_resolution_required(
-            base_branch, args.repo_root
-        ):
-            raise ShipError(
-                "GitHub branch rules require resolution of "
-                f"{unresolved_count} unresolved review thread(s)."
-            )
+    active_count, unresolved_count = _enforce_review_thread_gate(
+        args,
+        review_result,
+        commit,
+        base_branch=base_branch,
+    )
     review_authorization_required = bool(
         ci_result.get("review_authorization_required")
     )

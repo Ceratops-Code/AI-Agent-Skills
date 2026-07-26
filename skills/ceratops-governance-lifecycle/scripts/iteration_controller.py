@@ -90,8 +90,30 @@ def public_status(state: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def open_iteration(
+    state_path: Path, state: dict[str, Any]
+) -> dict[str, Any]:
+    """Create one pending iteration in state and return its public payload."""
+    iteration = state["next_iteration"]
+    token = secrets.token_hex(12)
+    artifact_dir = state_path.parent / "iterations"
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    pending = {
+        "iteration": iteration,
+        "token": token,
+        "candidate": str(
+            (artifact_dir / f"{iteration:03d}-candidate.md").resolve()
+        ),
+        "assessment": str(
+            (artifact_dir / f"{iteration:03d}-assessment.md").resolve()
+        ),
+    }
+    state["pending"] = pending
+    return pending
+
+
 def command_init(args: argparse.Namespace) -> None:
-    """Create state bound to immutable original and regression inputs."""
+    """Create immutable run state and optionally open iteration one."""
     state_path = args.state.resolve()
     if state_path.exists():
         raise ValueError(f"refusing to overwrite existing state: {state_path}")
@@ -118,8 +140,12 @@ def command_init(args: argparse.Namespace) -> None:
         "complete": False,
         "stop_reason": None,
     }
+    pending = open_iteration(state_path, state) if args.open_first else None
     save_state(state_path, state)
-    print("OK")
+    if pending:
+        print(json.dumps(pending, separators=(",", ":")))
+    else:
+        print("OK")
 
 
 def command_next(args: argparse.Namespace) -> None:
@@ -132,20 +158,9 @@ def command_next(args: argparse.Namespace) -> None:
         return
     if state["pending"]:
         raise ValueError("an iteration is already pending")
-    iteration = state["next_iteration"]
-    token = secrets.token_hex(12)
-    artifact_dir = state_path.parent / "iterations"
-    artifact_dir.mkdir(parents=True, exist_ok=True)
-    candidate = artifact_dir / f"{iteration:03d}-candidate.md"
-    assessment = artifact_dir / f"{iteration:03d}-assessment.md"
-    state["pending"] = {
-        "iteration": iteration,
-        "token": token,
-        "candidate": str(candidate.resolve()),
-        "assessment": str(assessment.resolve()),
-    }
+    pending = open_iteration(state_path, state)
     save_state(state_path, state)
-    print(json.dumps(state["pending"], separators=(",", ":")))
+    print(json.dumps(pending, separators=(",", ":")))
 
 
 def command_submit(args: argparse.Namespace) -> None:
@@ -307,6 +322,11 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--original", type=Path, required=True)
     init.add_argument("--regressions", type=Path)
     init.add_argument("--max-iterations", type=positive_int, default=200)
+    init.add_argument(
+        "--open-first",
+        action="store_true",
+        help="open iteration one and emit its pending payload",
+    )
     init.set_defaults(handler=command_init)
 
     next_iteration = commands.add_parser("next", help="open one iteration")

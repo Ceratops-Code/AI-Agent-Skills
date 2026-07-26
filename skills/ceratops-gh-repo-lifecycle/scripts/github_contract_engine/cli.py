@@ -6,11 +6,13 @@ import argparse
 import sys
 from collections.abc import Callable
 
+from . import audit_snapshot
 from . import codeql_disposition
 from . import collect_non_deterministic_evidence
 from . import organization_validator
 from . import repository_validator
 from . import source_documents
+from .operations import TOP_LEVEL_COMMANDS, VALIDATION_TARGETS
 
 
 Command = Callable[[list[str] | None], int]
@@ -24,7 +26,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "command",
         nargs="?",
-        choices=("collect", "check-source-docs", "codeql-disposition", "validate"),
+        choices=TOP_LEVEL_COMMANDS,
         help="operation to run",
     )
     return parser
@@ -38,7 +40,7 @@ def _validation_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "target",
         nargs="?",
-        choices=("org", "repo", "consistency"),
+        choices=VALIDATION_TARGETS,
         help="validation target",
     )
     return parser
@@ -54,6 +56,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     command = arguments.pop(0)
     direct: dict[str, Command] = {
+        "audit-snapshot": audit_snapshot.main,
         "collect": collect_non_deterministic_evidence.main,
         "check-source-docs": source_documents.main,
         "codeql-disposition": codeql_disposition.main,

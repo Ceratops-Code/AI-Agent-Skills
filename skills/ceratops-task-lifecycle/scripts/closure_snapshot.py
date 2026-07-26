@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""Emit one compact non-destructive snapshot for named closure targets.
+"""Snapshot named closure targets and optionally remove exact safe temp files.
 
-The caller owns target selection. This helper never discovers unrelated
-branches or worktrees, never cleans caller data, and refreshes a remote only
+The caller owns target selection and task-created provenance. Cleanup is
+restricted to explicitly named regular files below a standard task temp root;
+the helper rejects path escapes and reparse points before removing anything.
+It never discovers unrelated branches or worktrees and refreshes a remote only
 when that remote is named explicitly.
 """
 
@@ -10,7 +12,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import pathlib
+import stat
 import subprocess
 import sys
 from typing import Any
@@ -173,11 +177,155 @@ def temp_snapshot(path: pathlib.Path) -> dict[str, Any]:
     }
 
 
+def is_reparse_point(status: os.stat_result) -> bool:
+    """Detect Windows reparse points without weakening other platforms."""
+
+    attributes = getattr(status, "st_file_attributes", 0)
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    return bool(attributes & reparse_flag)
+
+
+def validate_cleanup_root(path: pathlib.Path) -> pathlib.Path:
+    """Require one real standard task temp root without link indirection."""
+
+    if not path.is_absolute():
+        raise SnapshotError(f"cleanup temp root must be absolute: {path}")
+    lexical = pathlib.Path(os.path.abspath(path))
+    try:
+        status = lexical.lstat()
+        resolved = lexical.resolve(strict=True)
+    except OSError as exc:
+        raise SnapshotError(f"cleanup temp root is unavailable: {lexical}") from exc
+    if (
+        not stat.S_ISDIR(status.st_mode)
+        or is_reparse_point(status)
+        or lexical.is_symlink()
+        or os.path.normcase(str(lexical)) != os.path.normcase(str(resolved))
+    ):
+        raise SnapshotError(f"cleanup temp root is not a real directory: {lexical}")
+    if (
+        resolved.parent.parent.name.casefold() != "tmp"
+        or not resolved.parent.name
+        or not resolved.name
+    ):
+        raise SnapshotError(
+            f"cleanup temp root must match <base>/tmp/<project>/<thread>: {resolved}"
+        )
+    return resolved
+
+
+def validate_cleanup_target(
+    root: pathlib.Path,
+    target: pathlib.Path,
+) -> tuple[pathlib.Path, str] | None:
+    """Validate one exact regular file below the cleanup root."""
+
+    if not target.is_absolute():
+        raise SnapshotError(f"cleanup target must be absolute: {target}")
+    lexical = pathlib.Path(os.path.abspath(target))
+    try:
+        relative = lexical.relative_to(root)
+    except ValueError as exc:
+        raise SnapshotError(f"cleanup target escapes temp root: {lexical}") from exc
+    if not relative.parts:
+        raise SnapshotError("cleanup target cannot be the temp root")
+
+    current = lexical.parent
+    while current != root:
+        try:
+            parent_status = current.lstat()
+        except FileNotFoundError:
+            return None
+        if not stat.S_ISDIR(parent_status.st_mode) or is_reparse_point(parent_status):
+            raise SnapshotError(f"cleanup target has an unsafe parent: {current}")
+        current = current.parent
+
+    try:
+        status = lexical.lstat()
+    except FileNotFoundError:
+        return None
+    if (
+        not stat.S_ISREG(status.st_mode)
+        or is_reparse_point(status)
+        or lexical.is_symlink()
+    ):
+        raise SnapshotError(f"cleanup target is not a safe regular file: {lexical}")
+    return lexical, relative.as_posix()
+
+
+def cleanup_temp_targets(
+    root_path: pathlib.Path,
+    target_paths: list[pathlib.Path],
+) -> dict[str, Any]:
+    """Prevalidate every exact target, then remove files and empty parents."""
+
+    root = validate_cleanup_root(root_path)
+    validated: list[tuple[pathlib.Path, str]] = []
+    missing: list[str] = []
+    seen: set[pathlib.Path] = set()
+    for target_path in target_paths:
+        lexical = pathlib.Path(os.path.abspath(target_path))
+        if lexical in seen:
+            raise SnapshotError(f"duplicate cleanup target: {lexical}")
+        seen.add(lexical)
+        validated_target = validate_cleanup_target(root, target_path)
+        if validated_target is None:
+            try:
+                missing.append(lexical.relative_to(root).as_posix())
+            except ValueError as exc:
+                raise SnapshotError(
+                    f"cleanup target escapes temp root: {lexical}"
+                ) from exc
+        else:
+            validated.append(validated_target)
+
+    removed: list[str] = []
+    candidate_directories: set[pathlib.Path] = set()
+    for target_file, relative in validated:
+        try:
+            target_file.unlink()
+        except OSError as exc:
+            raise SnapshotError(f"cleanup failed after removing {len(removed)} files") from exc
+        removed.append(relative)
+        parent = target_file.parent
+        while parent != root:
+            candidate_directories.add(parent)
+            parent = parent.parent
+
+    removed_directories = 0
+    for directory in sorted(
+        candidate_directories,
+        key=lambda candidate: len(candidate.parts),
+        reverse=True,
+    ):
+        try:
+            directory.rmdir()
+        except OSError:
+            continue
+        removed_directories += 1
+
+    root_removed = False
+    try:
+        root.rmdir()
+    except OSError:
+        pass
+    else:
+        root_removed = True
+
+    return {
+        "requested": len(target_paths),
+        "removed": sorted(removed),
+        "missing": sorted(missing),
+        "empty_directories_removed": removed_directories,
+        "temp_root_removed": root_removed,
+    }
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the explicit closure-target command."""
 
     parser = argparse.ArgumentParser(
-        description="Emit one compact non-destructive closure snapshot."
+        description="Snapshot named closure targets and optionally clean safe temp files."
     )
     parser.add_argument("--repo", required=True, type=pathlib.Path)
     parser.add_argument("--fetch-remote")
@@ -186,6 +334,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--task-worktree", type=pathlib.Path)
     parser.add_argument("--task-branch")
     parser.add_argument("--temp-root", type=pathlib.Path)
+    parser.add_argument(
+        "--cleanup-temp",
+        action="append",
+        default=[],
+        type=pathlib.Path,
+        help="Exact task-created regular file to remove; repeat as needed.",
+    )
     return parser
 
 
@@ -204,6 +359,8 @@ def main(argv: list[str] | None = None) -> int:
             )
         if args.task_branch and not args.release_branch:
             raise SnapshotError("task worktree checks require --release-branch")
+        if args.cleanup_temp and not args.temp_root:
+            raise SnapshotError("--cleanup-temp requires --temp-root")
 
         repo = resolve_directory(args.repo, "repo")
         repository_root = pathlib.Path(
@@ -265,6 +422,12 @@ def main(argv: list[str] | None = None) -> int:
                     repo, task_head, args.release_branch
                 ),
             }
+
+        if args.cleanup_temp:
+            result["cleanup"] = cleanup_temp_targets(
+                args.temp_root,
+                args.cleanup_temp,
+            )
 
         if args.temp_root:
             result["temp"] = temp_snapshot(args.temp_root)

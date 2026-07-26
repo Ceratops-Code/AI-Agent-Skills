@@ -86,8 +86,12 @@ being current-rule references.
 
 ## Iterative optimization
 
-- (D) Run `scripts/iteration_controller.py` for every proposal to record
-  iterations, retain the champion, and enforce stopping.
+- (D) For every proposal, run `python scripts/iteration_controller.py init
+  --state <path> --original <path> [--regressions <path>]
+  [--max-iterations <count>] --open-first` to initialize state and open
+  iteration 1; use `python scripts/iteration_controller.py next --state
+  <path>` only for later iterations. The controller must record iterations,
+  retain the champion, and enforce stopping.
 - (D) Before final output, after the accepted proposal or approved mutation no
   longer needs controller artifacts, run `python
   scripts/iteration_controller.py finalize --state <path>`. Finalization must

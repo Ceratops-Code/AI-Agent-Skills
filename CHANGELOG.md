@@ -21,7 +21,7 @@
   artifact contracts now live under `ceratops-gh-repo-lifecycle` as
   `contracts-review`; skill consistency, governance, and skill-design contracts
   now live under `ceratops-skill-lifecycle` as
-  `skills-consistency-and-contract-review`.
+  `skills-consistency-review`.
 - Retired the standalone `ceratops-contract-review` and
   `ceratops-skills-consistency-audit` skill folders, moving their contracts,
   validators, and source-doc registries into the owning lifecycle skills.
