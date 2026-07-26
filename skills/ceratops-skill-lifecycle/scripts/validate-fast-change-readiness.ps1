@@ -89,6 +89,10 @@ $skillFile = Join-Path $skillRoot "SKILL.md"
 if (-not (Test-Path -LiteralPath $skillFile -PathType Leaf)) {
     throw "SkillName must identify an existing source skill: $SkillName"
 }
+$resolvedSkillRoot = (Resolve-Path -LiteralPath $skillRoot).Path
+if (-not (Test-PathWithin -Path $resolvedTarget -Parent $resolvedSkillRoot)) {
+    throw "TargetPath must stay inside selected skill root: $TargetPath"
+}
 
 $installScript = Join-Path $resolvedSkillsRepoRoot "scripts\install-skills.py"
 $repoRootForRelative = $resolvedSkillsRepoRoot.TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)

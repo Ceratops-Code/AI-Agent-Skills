@@ -25,6 +25,9 @@ PROMOTION_HELPER = (
     / "scripts"
     / "promote-skill-branches-to-release-and-install.ps1"
 )
+FAST_CHANGE_READINESS = (
+    LIFECYCLE_SOURCE / "scripts" / "validate-fast-change-readiness.ps1"
+)
 MANAGE_PENDING_RELEASE_WORK = (
     LIFECYCLE_SOURCE / "scripts" / "manage-pending-release-work.ps1"
 )
@@ -375,6 +378,91 @@ def run_git(repo: pathlib.Path, *args: str) -> subprocess.CompletedProcess[str]:
         text=True,
         check=False,
     )
+
+
+@pytest.mark.skipif(
+    shutil.which("powershell") is None,
+    reason="PowerShell lifecycle helper is unavailable",
+)
+def test_fast_change_readiness_limits_target_to_selected_skill(
+    tmp_path: pathlib.Path,
+) -> None:
+    repo = tmp_path / "AI-Agent-Skills"
+    repo.mkdir()
+    assert run_git(repo, "init", "-b", "release/local").returncode == 0
+    assert run_git(repo, "config", "user.email", "test@example.invalid").returncode == 0
+    assert run_git(repo, "config", "user.name", "Test Agent").returncode == 0
+    for skill_name in ("alpha-tool", "beta-tool"):
+        skill_root = repo / "skills" / skill_name
+        (skill_root / "scripts").mkdir(parents=True)
+        (skill_root / "SKILL.md").write_text(
+            f"---\nname: {skill_name}\ndescription: Test skill.\n---\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        (skill_root / "scripts" / "helper.ps1").write_text(
+            "Write-Output 'OK'\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+    (repo / "scripts").mkdir()
+    (repo / "scripts" / "install-skills.py").write_text(
+        "raise SystemExit(0)\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    assert run_git(repo, "add", ".").returncode == 0
+    assert run_git(repo, "commit", "-m", "base").returncode == 0
+
+    accepted = subprocess.run(
+        [
+            "powershell",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(FAST_CHANGE_READINESS),
+            "-SkillsRepoRoot",
+            str(repo),
+            "-ReleaseBranch",
+            "release/local",
+            "-SkillName",
+            "alpha-tool",
+            "-TargetPath",
+            str(repo / "skills" / "alpha-tool" / "scripts" / "helper.ps1"),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert accepted.returncode == 0, accepted.stderr
+    assert json.loads(accepted.stdout)["target"] == (
+        "skills/alpha-tool/scripts/helper.ps1"
+    )
+
+    rejected = subprocess.run(
+        [
+            "powershell",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(FAST_CHANGE_READINESS),
+            "-SkillsRepoRoot",
+            str(repo),
+            "-ReleaseBranch",
+            "release/local",
+            "-SkillName",
+            "alpha-tool",
+            "-TargetPath",
+            str(repo / "skills" / "beta-tool" / "SKILL.md"),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert rejected.returncode != 0
+    assert "TargetPath must stay inside selected skill root" in rejected.stderr
 
 
 def test_closure_snapshot_composes_only_named_local_state(
