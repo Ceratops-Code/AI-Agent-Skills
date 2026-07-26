@@ -1684,6 +1684,15 @@ def test_installer_synchronization_compares_only_version(tmp_path: pathlib.Path)
     assert target.read_bytes() == INSTALLER_TEMPLATE.read_bytes()
 
 
+def test_installer_behavior_fingerprint_is_python_version_stable() -> None:
+    validator = runpy.run_path(str(VALIDATOR))
+    fingerprint = validator["installer_behavior_fingerprint"]
+
+    assert fingerprint(INSTALLER_TEMPLATE) == (
+        "9729c35ceaa4de25f0360abd010a0108b709fa437e47fb06eac4ad9316eb8387"
+    )
+
+
 def test_installer_version_producer_assigns_versions_without_model_repair(
     tmp_path: pathlib.Path,
 ) -> None:

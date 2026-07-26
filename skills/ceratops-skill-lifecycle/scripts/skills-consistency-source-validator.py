@@ -19,7 +19,7 @@ import pathlib
 import re
 import subprocess
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import cast
 
 
@@ -186,7 +186,11 @@ def installer_behavior_fingerprint_text(text: str, filename: str) -> str | None:
             and isinstance(owner.body[0].value.value, str)
         ):
             del owner.body[0]
-    normalized = ast.dump(module, include_attributes=False)
+    dump = cast(Callable[..., str], ast.dump)
+    try:
+        normalized = dump(module, include_attributes=False, show_empty=True)
+    except TypeError:
+        normalized = dump(module, include_attributes=False)
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
