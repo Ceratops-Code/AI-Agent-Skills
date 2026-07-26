@@ -666,8 +666,10 @@ def prepare_promotion_test_repo(
     (seed / "scripts").mkdir()
     (seed / "scripts" / "install-skills.py").write_text(
         "import os, pathlib\n"
-        "pathlib.Path(os.environ['PROMOTION_TEST_LOG']).write_text("
-        "'installed\\n', encoding='utf-8')\n",
+        "INSTALLER_VERSION = 4\n"
+        "with pathlib.Path(os.environ['PROMOTION_TEST_LOG']).open("
+        "'a', encoding='utf-8') as log:\n"
+        "    log.write('installed\\n')\n",
         encoding="utf-8",
         newline="\n",
     )
@@ -754,6 +756,43 @@ def test_promotion_helper_owns_release_branch_preparation(
     assert log.read_text(encoding="utf-8") == "installed\n"
     assert run_git(repo, "branch", "--show-current").stdout.strip() == "release/local"
     assert run_git(repo, "status", "--porcelain").stdout == ""
+
+
+@pytest.mark.skipif(
+    shutil.which("powershell") is None,
+    reason="PowerShell lifecycle helper is unavailable",
+)
+def test_promotion_bootstraps_changed_lifecycle_before_full_install(
+    tmp_path: pathlib.Path,
+) -> None:
+    repo, _, log, environment = prepare_promotion_test_repo(
+        tmp_path,
+        ("mypy.ini", "[mypy]\nfiles = dummy.py\n"),
+    )
+    source_installer = (
+        repo
+        / "skills"
+        / "ceratops-skill-lifecycle"
+        / "scripts"
+        / "runtime"
+        / "install-managed-skills.py"
+    )
+    source_installer.parent.mkdir(parents=True)
+    source_installer.write_text(
+        "import os, pathlib\n"
+        "with pathlib.Path(os.environ['PROMOTION_TEST_LOG']).open("
+        "'a', encoding='utf-8') as log:\n"
+        "    log.write('lifecycle\\n')\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    assert run_git(repo, "add", str(source_installer)).returncode == 0
+    assert run_git(repo, "commit", "-m", "change lifecycle").returncode == 0
+
+    promoted = run_promotion_helper(repo, environment)
+
+    assert promoted.returncode == 0, promoted.stderr
+    assert log.read_text(encoding="utf-8") == "lifecycle\ninstalled\n"
 
 
 @pytest.mark.skipif(

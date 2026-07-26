@@ -831,6 +831,14 @@ def check_validation_command_surface() -> list[str]:
         'Invoke-QuietNative -FilePath "python" -Arguments @(\n'
         "    $installScript,"
     )
+    lifecycle_bootstrap_markers = (
+        "function Invoke-LifecycleSourceBootstrap",
+        'Get-GitLines @(\n            "diff",\n            "--name-only",',
+        "$sourceRuntimeInstaller",
+        'Get-RepositoryInstallerVersion $InstallerScript',
+        '"--skill",\n        "ceratops-skill-lifecycle"',
+    )
+    lifecycle_bootstrap_call = "\nInvoke-LifecycleSourceBootstrap `\n"
     if (
         promotion_helper_text.count(pending_approved_data) != 1
         or promotion_helper_text.count(pending_call) != 1
@@ -847,11 +855,12 @@ def check_validation_command_surface() -> list[str]:
         for marker in (
             *mypy_failure_classifications,
             *mypy_failure_output,
+            *lifecycle_bootstrap_markers,
         )
     ):
         errors.append(
             "release promotion must classify repository-configured mypy "
-            "failures and emit compact blocking JSON"
+            "failures and conditionally bootstrap changed lifecycle sources"
         )
     elif not (
         promotion_helper_text.find(fast_forward_call)
@@ -861,12 +870,13 @@ def check_validation_command_surface() -> list[str]:
         < promotion_helper_text.find(record_promotion_arg)
         < promotion_helper_text.find(pending_approved_data)
         < promotion_helper_text.find(pending_call)
+        < promotion_helper_text.find(lifecycle_bootstrap_call)
         < promotion_helper_text.find(install_call)
     ):
         errors.append(
             "release promotion must guard the installer, run classified mypy, "
-            "retain approved sources, and manage pending release work before "
-            "installing"
+            "retain approved sources, and bootstrap changed lifecycle sources "
+            "between pending-release recording and full installation"
         )
     release_preparation_markers = (
         'Invoke-GitQuiet @("fetch", "--prune", $RemoteName)',

@@ -82,8 +82,9 @@ Infer missing inputs from local repo state before asking.
   merge-base HEAD BRANCH) BRANCH`, fast-forward-only branch promotion,
   repository-configured mypy validation, one approved-source pending-release
   manager call and exact promotion retention record after all approved branches
-  are promoted and before profile-aware full validation and runtime
-  installation, and compact ready/not-ready output.
+  are promoted, a targeted source-bundle lifecycle install when lifecycle
+  sources changed, then profile-aware full validation and runtime installation,
+  and compact ready/not-ready output.
 - The helper must stop unless the current release `HEAD` is an ancestor of each
   approved branch; rebase a divergent task branch onto the release branch in
   its task worktree before promotion.

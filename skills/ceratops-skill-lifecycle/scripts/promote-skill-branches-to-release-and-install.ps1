@@ -124,6 +124,63 @@ function Invoke-PromotionMypy {
     exit 1
 }
 
+function Get-RepositoryInstallerVersion {
+    param([string]$InstallerScript)
+
+    $installerText = Get-Content -LiteralPath $InstallerScript -Raw
+    $versionMatch = [regex]::Match(
+        $installerText,
+        "(?m)^INSTALLER_VERSION\s*=\s*(\d+)\s*$"
+    )
+    if (-not $versionMatch.Success) {
+        throw "Repository installer does not declare INSTALLER_VERSION."
+    }
+    return [int]$versionMatch.Groups[1].Value
+}
+
+function Invoke-LifecycleSourceBootstrap {
+    param(
+        [string]$ReleaseStartSha,
+        [string]$PromotionHeadSha,
+        [string]$InstallerScript
+    )
+
+    # A lifecycle validator cannot validate its own replacement. When this
+    # promotion changed lifecycle sources, install only that managed skill from
+    # the staged source bundle before the ordinary installed-bundle full pass.
+    $lifecycleSourcePath = "skills/ceratops-skill-lifecycle"
+    $changedLifecyclePaths = @(
+        Get-GitLines @(
+            "diff",
+            "--name-only",
+            $ReleaseStartSha,
+            $PromotionHeadSha,
+            "--",
+            $lifecycleSourcePath
+        )
+    )
+    if ($changedLifecyclePaths.Count -eq 0) {
+        return
+    }
+
+    $sourceRuntimeInstaller = Join-Path `
+        $resolvedSkillsRepoRoot `
+        "$lifecycleSourcePath\scripts\runtime\install-managed-skills.py"
+    if (-not (Test-Path -LiteralPath $sourceRuntimeInstaller -PathType Leaf)) {
+        throw "Missing staged lifecycle runtime installer: $sourceRuntimeInstaller"
+    }
+    $installerVersion = Get-RepositoryInstallerVersion $InstallerScript
+    Invoke-QuietNative -FilePath "python" -Arguments @(
+        $sourceRuntimeInstaller,
+        "--repo-root",
+        $resolvedSkillsRepoRoot,
+        "--installer-version",
+        [string]$installerVersion,
+        "--skill",
+        "ceratops-skill-lifecycle"
+    )
+}
+
 function Get-GitLines {
     param([string[]]$Arguments)
 
@@ -221,6 +278,8 @@ if (Test-RefExists "refs/heads/$ReleaseBranch") {
 Assert-CleanWorktree "after preparing $ReleaseBranch"
 Assert-BranchCheckedOut $ReleaseBranch
 
+$releaseStartSha = (Get-GitLines @("rev-parse", "HEAD") |
+    Select-Object -First 1).Trim()
 $mergedBranches = @()
 foreach ($branch in $ApprovedBranch) {
     if ([string]::IsNullOrWhiteSpace($branch)) {
@@ -298,6 +357,10 @@ if ($managePendingResult.status -ne "ready") {
     throw "Pending-release manager did not report ready promotion state."
 }
 
+Invoke-LifecycleSourceBootstrap `
+    -ReleaseStartSha $releaseStartSha `
+    -PromotionHeadSha $headSha `
+    -InstallerScript $installScript
 Invoke-QuietNative -FilePath "python" -Arguments @(
     $installScript,
     "--repo-root",
