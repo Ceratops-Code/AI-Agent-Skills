@@ -206,6 +206,49 @@ class ShipTests(unittest.TestCase):
         self.assertEqual(result["codex"]["active_threads"], 0)
         self.assertEqual(result["disposition"], "passed")
 
+    def test_parallel_gates_preflight_required_unresolved_threads(self) -> None:
+        args = self.args(pathlib.Path.cwd())
+        preflight = {
+            "head_oid": self.commit,
+            "active_codex_thread_count": 0,
+            "active_codex_threads": [],
+            "unresolved_review_thread_count": 2,
+            "unresolved_review_threads": [
+                {"id": "PRRT_old_1", "is_outdated": True},
+                {"id": "PRRT_old_2", "is_outdated": True},
+            ],
+        }
+        with (
+            mock.patch.object(
+                ship.codex_review,
+                "wait_for_codex_threads",
+                return_value=preflight,
+            ) as review_wait,
+            mock.patch.object(ship, "wait_for_ci_gate") as ci_wait,
+            mock.patch.object(
+                ship.readiness,
+                "review_thread_resolution_required",
+                return_value=True,
+            ) as resolution_required,
+        ):
+            with self.assertRaisesRegex(
+                ship.ShipError,
+                "PRRT_old_1, PRRT_old_2",
+            ):
+                ship.run_parallel_gates(
+                    args,
+                    "17",
+                    "owner/repo",
+                    self.commit,
+                    ci_wait_seconds=30,
+                    review_wait_seconds=30,
+                )
+
+        review_wait.assert_called_once()
+        self.assertEqual(review_wait.call_args.kwargs["wait_seconds"], 0)
+        resolution_required.assert_called_once_with("main", args.repo_root)
+        ci_wait.assert_not_called()
+
     def test_parallel_gates_enforce_required_thread_resolution(self) -> None:
         args = self.args(pathlib.Path.cwd())
         with (
