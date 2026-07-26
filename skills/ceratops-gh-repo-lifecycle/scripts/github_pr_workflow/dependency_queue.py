@@ -1,4 +1,4 @@
-"""Prepare and finalize caller-scoped Dependabot maintenance campaigns."""
+"""Prepare and finalize caller-scoped Dependabot dependency queues."""
 
 from __future__ import annotations
 
@@ -34,7 +34,7 @@ from .dependency_evidence import (
 from .dependency_finalization import finalize
 
 def preflight(args: argparse.Namespace) -> int:
-    """Build a non-mutating campaign gate from the caller's complete snapshot."""
+    """Build a non-mutating queue gate from the caller's complete snapshot."""
 
     workspace_root = args.workspace_root.resolve()
     checkout_overrides = parse_checkout_overrides(args.checkout)

@@ -19,15 +19,15 @@ first.
 - (D) PR readiness contract check, run from the same folder:
   `python -m github_pr_workflow validate
   --pr NUMBER_OR_URL --cwd PATH`
-- (D) Campaign preflight, when the caller owns a complete queue-snapshot
+- (D) Dependency-queue preflight, when the caller owns a complete snapshot
   adapter: `python -m github_pr_workflow dependency-preflight --org ORG
   --snapshot-helper PATH --snapshot PATH --output PATH
   --workspace-root PATH [--checkout OWNER/REPO=PATH]`
-- (D) Campaign finalization: `python -m github_pr_workflow
+- (D) Dependency-queue finalization: `python -m github_pr_workflow
   dependency-finalize --snapshot-helper PATH --sync-helper PATH
   --preflight PATH --snapshot PATH --sync-output PATH --output PATH
   [--approved-pr PR] [--admin]`
-- Campaign preflight owns batched PR projection and registry, dependency-tree,
+- Queue preflight owns batched PR projection and registry, dependency-tree,
   engine/API, and exact-CI evidence. Finalization owns bounded readiness waits,
   live revalidation, blocker fingerprints, merge delegation, snapshot refresh,
   checkout sync, and bounded results.
@@ -66,7 +66,7 @@ Infer missing inputs from local files and live GitHub state before asking.
   credentials.
 - Build an update queue from live dependency-bot PRs, alerts, alert-linked
   update PRs, and local manifests; classify each update by risk.
-- When a caller supplies a complete queue-snapshot adapter, use campaign
+- When a caller supplies a complete queue-snapshot adapter, use queue
   preflight as the queue and pre-edit evidence gate; a blocked, missing, or
   invalid result blocks repository edits and approved-PR finalization.
 - Treat Dependabot or Renovate PRs as first-class queue items even when no
@@ -90,8 +90,8 @@ Infer missing inputs from local files and live GitHub state before asking.
 - Route ready dependency PR merge or auto-merge finalization through the
   `merge-pr` action; it owns PR readiness, Codex review gate, merge, and
   post-merge cleanup.
-- For a caller-scoped multi-PR campaign, pass every model-approved PR to one
-  campaign finalization call; it must reuse `merge-pr` semantics rather than
+- For a caller-scoped multi-PR queue, pass every model-approved PR to one
+  queue finalization call; it must reuse `merge-pr` semantics rather than
   duplicating or weakening those gates.
 - Include live repo dependency selection only when the queue changes or
   explicitly verifies GitHub dependency/security posture.
@@ -144,7 +144,7 @@ Infer missing inputs from local files and live GitHub state before asking.
 - Every dependency-bot PR and dependency alert in the inspected scope is
   resolved, merged, blocked, out of scope, or intentionally retained with a
   concrete reason.
-- Caller-scoped campaigns have a valid finalization result whose refreshed
+- Caller-scoped queues have a valid finalization result whose refreshed
   queue and checkout-sync state account for every approved PR and blocker.
 - Local state is verified: default branch, worktree, remotes, refs, lockfiles,
   generated files, temp paths, caches, credentials, and retained branches.

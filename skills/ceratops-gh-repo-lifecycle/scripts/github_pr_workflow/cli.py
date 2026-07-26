@@ -8,7 +8,7 @@ from collections.abc import Callable
 
 from . import (
     codex_review,
-    dependency_campaign,
+    dependency_queue,
     ensure_pr,
     merge,
     readiness,
@@ -25,7 +25,7 @@ def _parser() -> argparse.ArgumentParser:
         prog="python -m github_pr_workflow",
         description=(
             "Ensure, validate, review, merge, synchronize, resume, or process "
-            "dependency-campaign GitHub PR workflows."
+            "dependency-queue GitHub PR workflows."
         ),
     )
     parser.add_argument(
@@ -64,10 +64,10 @@ def main(argv: list[str] | None = None) -> int:
         "merge": merge.main,
         "sync": sync.main,
         "ship": ship.main,
-        "dependency-preflight": lambda values: dependency_campaign.main(
+        "dependency-preflight": lambda values: dependency_queue.main(
             ["preflight", *(values or [])]
         ),
-        "dependency-finalize": lambda values: dependency_campaign.main(
+        "dependency-finalize": lambda values: dependency_queue.main(
             ["finalize", *(values or [])]
         ),
     }

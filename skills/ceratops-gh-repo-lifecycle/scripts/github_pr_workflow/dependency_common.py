@@ -1,4 +1,4 @@
-"""Shared data, process, snapshot, and checkout contracts for dependency campaigns."""
+"""Shared data, process, snapshot, and checkout contracts for dependency queues."""
 
 from __future__ import annotations
 
