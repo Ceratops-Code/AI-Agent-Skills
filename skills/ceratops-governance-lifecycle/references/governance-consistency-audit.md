@@ -10,10 +10,16 @@ domain audits owned by other lifecycle actions.
 ### Deterministic Helper Contract
 
 - (D) From this skill directory, run `python scripts/governance-snapshot.py
-  --projects-root <projects-root>` before deep-reading.
-- (D) The helper exits zero with compact JSON using schema
-  `global-governance-consistency-audit/snapshot.v3`; nonzero execution or
-  unreadable JSON blocks the audit.
+  --projects-root <projects-root> --evidence-output <task-temp-file>` before
+  deep-reading.
+- (D) With `--evidence-output`, the helper atomically writes the complete
+  `global-governance-consistency-audit/snapshot.v3` evidence and emits only
+  `global-governance-consistency-audit/decision.v1` with the evidence path,
+  stable state fingerprint, and decision-cluster counts; nonzero execution,
+  unreadable JSON, or unreadable evidence blocks the audit.
+- Reuse the evidence file for later audit decisions until an inventoried
+  surface changes; query it instead of rerunning the helper, refresh only after
+  such a change, and remove the task-temporary evidence before closing.
 - (D) Project AGENTS discovery always excludes the projects-root `tmp` tree;
   for every other candidate, the containing Git worktree's ignore resolution
   is the only exclusion source.
