@@ -20,11 +20,19 @@ LIFECYCLE_SOURCE = ROOT / "skills" / "ceratops-skill-lifecycle"
 INSTALLER_TEMPLATE = LIFECYCLE_SOURCE / "scripts" / "templates" / "install-skills-template.py"
 INSTALLER_SYNCHRONIZER = LIFECYCLE_SOURCE / "scripts" / "runtime" / "synchronize-installers.py"
 RUNTIME_VALIDATOR = LIFECYCLE_SOURCE / "scripts" / "runtime" / "skills-consistency-runtime-validator.py"
-PENDING_RELEASE_WORK = LIFECYCLE_SOURCE / "scripts" / "check-pending-release-work.ps1"
+PROMOTION_HELPER = (
+    LIFECYCLE_SOURCE
+    / "scripts"
+    / "promote-skill-branches-to-release-and-install.ps1"
+)
+MANAGE_PENDING_RELEASE_WORK = (
+    LIFECYCLE_SOURCE / "scripts" / "manage-pending-release-work.ps1"
+)
 MODEL_CALL_LEDGER = ROOT / "skills" / "ceratops-credit-savings-analysis" / "scripts" / "model-call-ledger.py"
+CLOSURE_SNAPSHOT = ROOT / "skills" / "ceratops-task-lifecycle" / "scripts" / "closure_snapshot.py"
 RUNTIME_MANIFEST = ".runtime-manifest.json"
 RUNTIME_MANIFEST_SCHEMA = "ceratops-runtime-skill.v3"
-INSTALLER_VERSION = 3
+INSTALLER_VERSION = 4
 
 
 def test_model_call_ledger_keeps_full_evidence_out_of_stdout(
@@ -135,6 +143,229 @@ def test_model_call_ledger_keeps_full_evidence_out_of_stdout(
     assert len(json.loads(selected.stdout)["selected_runs"][0]["calls"]) == 2
 
 
+def test_model_call_ledger_closure_mode_is_artifact_free(
+    tmp_path: pathlib.Path,
+) -> None:
+    thread_id = "019f9b47-678b-7e93-9fb7-acefa2453eeb"
+    codex_home = tmp_path / "codex-home"
+    session = (
+        codex_home
+        / "sessions"
+        / "2026"
+        / "07"
+        / "26"
+        / f"rollout-2026-07-26T00-56-15-{thread_id}.jsonl"
+    )
+    session.parent.mkdir(parents=True)
+    rows = [
+        {
+            "timestamp": "2026-07-25T00:00:00Z",
+            "type": "turn_context",
+            "payload": {"turn_id": "turn-1"},
+        },
+        {
+            "timestamp": "2026-07-25T00:00:01Z",
+            "type": "response_item",
+            "payload": {
+                "type": "function_call",
+                "name": "shell_command",
+                "arguments": '{"credential":"sentinel-secret"}',
+            },
+        },
+        {
+            "timestamp": "2026-07-25T00:00:02Z",
+            "type": "event_msg",
+            "payload": {
+                "type": "token_count",
+                "info": {
+                    "last_token_usage": {
+                        "input_tokens": 10,
+                        "output_tokens": 1,
+                        "total_tokens": 11,
+                    }
+                },
+            },
+        },
+        {
+            "timestamp": "2026-07-25T00:00:03Z",
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "assistant",
+                "phase": "final_answer",
+            },
+        },
+        {
+            "timestamp": "2026-07-25T00:00:04Z",
+            "type": "event_msg",
+            "payload": {
+                "type": "token_count",
+                "info": {
+                    "last_token_usage": {
+                        "input_tokens": 20,
+                        "output_tokens": 2,
+                        "total_tokens": 22,
+                    }
+                },
+            },
+        },
+        {
+            "timestamp": "2026-07-25T00:00:05Z",
+            "type": "turn_context",
+            "payload": {"turn_id": "turn-2"},
+        },
+        {
+            "timestamp": "2026-07-25T00:00:06Z",
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "assistant",
+                "phase": "final_answer",
+            },
+        },
+        {
+            "timestamp": "2026-07-25T00:00:07Z",
+            "type": "event_msg",
+            "payload": {
+                "type": "token_count",
+                "info": {
+                    "last_token_usage": {
+                        "input_tokens": 25,
+                        "output_tokens": 2,
+                        "total_tokens": 27,
+                    }
+                },
+            },
+        },
+        {
+            "timestamp": "2026-07-25T00:00:08Z",
+            "type": "turn_context",
+            "payload": {"turn_id": "incomplete-turn"},
+        },
+        {
+            "timestamp": "2026-07-25T00:00:09Z",
+            "type": "event_msg",
+            "payload": {
+                "type": "token_count",
+                "info": {
+                    "last_token_usage": {
+                        "input_tokens": 30,
+                        "output_tokens": 3,
+                        "total_tokens": 33,
+                    }
+                },
+            },
+        },
+    ]
+    session.write_text(
+        "".join(json.dumps(row) + "\n" for row in rows),
+        encoding="utf-8",
+        newline="\n",
+    )
+    before = sorted(path.relative_to(codex_home) for path in codex_home.rglob("*"))
+    environment = os.environ.copy()
+    environment["CODEX_HOME"] = str(codex_home)
+
+    closure = subprocess.run(
+        [
+            sys.executable,
+            str(MODEL_CALL_LEDGER),
+            "--closure",
+            "--thread-id",
+            thread_id,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=environment,
+    )
+
+    assert closure.returncode == 0, closure.stderr
+    assert "sentinel-secret" not in closure.stdout
+    summary = json.loads(closure.stdout)
+    assert summary["schema"] == "ceratops-model-call-ledger-closure.v1"
+    assert summary["totals"]["runs"] == 2
+    assert summary["totals"]["model_calls"] == 3
+    assert [run["turn_id"] for run in summary["runs"]] == ["turn-1", "turn-2"]
+    assert [call["index"] for call in summary["runs"][0]["calls"]] == [1, 2]
+    assert "tokens" not in summary["runs"][0]["calls"][0]
+
+    bounded = subprocess.run(
+        [
+            sys.executable,
+            str(MODEL_CALL_LEDGER),
+            "--closure",
+            "--session",
+            str(session),
+            "--last-runs",
+            "1",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert bounded.returncode == 0, bounded.stderr
+    bounded_summary = json.loads(bounded.stdout)
+    assert bounded_summary["window"] == {
+        "mode": "last_runs",
+        "requested_runs": 1,
+        "completed_runs": 1,
+    }
+    assert bounded_summary["totals"]["model_calls"] == 1
+    assert [run["turn_id"] for run in bounded_summary["runs"]] == ["turn-2"]
+
+    after = sorted(path.relative_to(codex_home) for path in codex_home.rglob("*"))
+    assert after == before
+
+    invalid_cases = [
+        (["--include-run", "turn-1"], "--closure includes every completed run"),
+        (
+            ["--evidence-output", str(tmp_path / "unexpected.json")],
+            "--closure does not accept --evidence-output",
+        ),
+    ]
+    for extra_arguments, expected_error in invalid_cases:
+        invalid = subprocess.run(
+            [
+                sys.executable,
+                str(MODEL_CALL_LEDGER),
+                "--closure",
+                "--session",
+                str(session),
+                *extra_arguments,
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert invalid.returncode == 2
+        assert expected_error in invalid.stderr
+    assert not (tmp_path / "unexpected.json").exists()
+
+    archived_session = (
+        codex_home
+        / "archived_sessions"
+        / f"rollout-2026-07-26T00-56-15-{thread_id}.jsonl"
+    )
+    archived_session.parent.mkdir()
+    shutil.copy2(session, archived_session)
+    ambiguous = subprocess.run(
+        [
+            sys.executable,
+            str(MODEL_CALL_LEDGER),
+            "--closure",
+            "--thread-id",
+            thread_id,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=environment,
+    )
+    assert ambiguous.returncode == 2
+    assert "multiple sessions found for thread ID" in ambiguous.stderr
+
+
 def run_git(repo: pathlib.Path, *args: str) -> subprocess.CompletedProcess[str]:
     """Run one isolated test-repository Git command."""
 
@@ -144,6 +375,116 @@ def run_git(repo: pathlib.Path, *args: str) -> subprocess.CompletedProcess[str]:
         text=True,
         check=False,
     )
+
+
+def test_closure_snapshot_composes_only_named_local_state(
+    tmp_path: pathlib.Path,
+) -> None:
+    remote = tmp_path / "remote.git"
+    repo = tmp_path / "repo"
+    task_worktree = tmp_path / "task-worktree"
+    temp_root = tmp_path / "retained-temp"
+    repo.mkdir()
+    temp_root.mkdir()
+    (temp_root / "one.txt").write_text("one\n", encoding="utf-8", newline="\n")
+    (temp_root / "two.txt").write_text("two\n", encoding="utf-8", newline="\n")
+
+    assert run_git(tmp_path, "init", "--bare", str(remote)).returncode == 0
+    assert run_git(repo, "init", "-b", "main").returncode == 0
+    assert run_git(repo, "config", "user.name", "Closure Test").returncode == 0
+    assert (
+        run_git(repo, "config", "user.email", "closure@example.invalid").returncode
+        == 0
+    )
+    (repo / "README.md").write_text("base\n", encoding="utf-8", newline="\n")
+    assert run_git(repo, "add", "README.md").returncode == 0
+    assert run_git(repo, "commit", "-m", "base").returncode == 0
+    assert run_git(repo, "remote", "add", "origin", str(remote)).returncode == 0
+    assert run_git(repo, "push", "-u", "origin", "main").returncode == 0
+    assert run_git(repo, "branch", "release/local").returncode == 0
+    assert run_git(repo, "push", "origin", "release/local").returncode == 0
+    (repo / "local.txt").write_text("local\n", encoding="utf-8", newline="\n")
+    assert run_git(repo, "add", "local.txt").returncode == 0
+    assert run_git(repo, "commit", "-m", "local").returncode == 0
+    assert (
+        run_git(
+            repo,
+            "worktree",
+            "add",
+            "-b",
+            "codex/closure-test",
+            str(task_worktree),
+            "release/local",
+        ).returncode
+        == 0
+    )
+    (task_worktree / "task.txt").write_text(
+        "task\n", encoding="utf-8", newline="\n"
+    )
+    assert run_git(task_worktree, "add", "task.txt").returncode == 0
+    assert run_git(task_worktree, "commit", "-m", "task").returncode == 0
+    assert (
+        run_git(repo, "branch", "-f", "release/local", "codex/closure-test").returncode
+        == 0
+    )
+
+    snapshot = subprocess.run(
+        [
+            sys.executable,
+            str(CLOSURE_SNAPSHOT),
+            "--repo",
+            str(repo),
+            "--fetch-remote",
+            "origin",
+            "--release-branch",
+            "release/local",
+            "--release-upstream",
+            "origin/release/local",
+            "--task-worktree",
+            str(task_worktree),
+            "--task-branch",
+            "codex/closure-test",
+            "--temp-root",
+            str(temp_root),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert snapshot.returncode == 0, snapshot.stderr
+    result = json.loads(snapshot.stdout)
+    assert result["schema"] == "ceratops-closure-snapshot.v1"
+    assert result["repo"]["branch"] == "main"
+    assert result["repo"]["clean"] is True
+    assert result["repo"]["tracking"] == {
+        "status": "tracked",
+        "ref": "origin/main",
+        "ahead": 1,
+        "behind": 0,
+    }
+    assert result["release"]["ahead"] == 1
+    assert result["release"]["behind"] == 0
+    assert result["task"]["branch"] == "codex/closure-test"
+    assert result["task"]["clean"] is True
+    assert result["task"]["staged_in_release"] is True
+    assert result["temp"]["files"] == 2
+
+    invalid = subprocess.run(
+        [
+            sys.executable,
+            str(CLOSURE_SNAPSHOT),
+            "--repo",
+            str(repo),
+            "--release-branch",
+            "release/local",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert invalid.returncode == 2
+    assert "must be provided together" in invalid.stderr
 
 
 def load_source_validator(skills_dir: pathlib.Path) -> dict[str, Any]:
@@ -303,6 +644,99 @@ def runtime_owner(install_root: pathlib.Path, skill_name: str) -> str:
     shutil.which("powershell") is None,
     reason="PowerShell lifecycle helper is unavailable",
 )
+def test_promotion_helper_owns_release_branch_preparation(
+    tmp_path: pathlib.Path,
+) -> None:
+    remote = tmp_path / "remote.git"
+    seed = tmp_path / "seed"
+    repo = tmp_path / "AI-Agent-Skills"
+    assert run_git(tmp_path, "init", "--bare", str(remote)).returncode == 0
+    seed.mkdir()
+    assert run_git(seed, "init").returncode == 0
+    assert run_git(seed, "config", "user.email", "test@example.invalid").returncode == 0
+    assert run_git(seed, "config", "user.name", "Test Agent").returncode == 0
+    (seed / "dummy.py").write_text("value: int = 1\n", encoding="utf-8", newline="\n")
+    (seed / "mypy.ini").write_text(
+        "[mypy]\nfiles = dummy.py\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    (seed / "README.md").write_text("base\n", encoding="utf-8", newline="\n")
+    (seed / "scripts").mkdir()
+    (seed / "scripts" / "install-skills.py").write_text(
+        "import os, pathlib\n"
+        "pathlib.Path(os.environ['PROMOTION_TEST_LOG']).write_text("
+        "'installed\\n', encoding='utf-8')\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    assert run_git(seed, "add", ".").returncode == 0
+    assert run_git(seed, "commit", "-m", "base").returncode == 0
+    assert run_git(seed, "branch", "-M", "main").returncode == 0
+    assert run_git(seed, "remote", "add", "origin", str(remote)).returncode == 0
+    assert run_git(seed, "push", "-u", "origin", "main").returncode == 0
+    assert (
+        run_git(remote, "symbolic-ref", "HEAD", "refs/heads/main").returncode
+        == 0
+    )
+    assert run_git(tmp_path, "clone", str(remote), str(repo)).returncode == 0
+    assert run_git(repo, "config", "user.email", "test@example.invalid").returncode == 0
+    assert run_git(repo, "config", "user.name", "Test Agent").returncode == 0
+    assert run_git(repo, "switch", "-c", "approved").returncode == 0
+    (repo / "README.md").write_text(
+        "base\napproved\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    assert run_git(repo, "add", "README.md").returncode == 0
+    assert run_git(repo, "commit", "-m", "approved change").returncode == 0
+    approved_head = run_git(repo, "rev-parse", "HEAD").stdout.strip()
+    log = tmp_path / "promotion.log"
+    environment = os.environ.copy()
+    environment["PROMOTION_TEST_LOG"] = str(log)
+
+    promoted = subprocess.run(
+        [
+            "powershell",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(PROMOTION_HELPER),
+            "-SkillsRepoRoot",
+            str(repo),
+            "-ApprovedBranch",
+            "approved",
+            "-MainBranch",
+            "main",
+            "-ReleaseBranch",
+            "release/local",
+            "-RemoteName",
+            "origin",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=environment,
+    )
+
+    assert promoted.returncode == 0, promoted.stderr
+    result = json.loads(promoted.stdout)
+    assert result["status"] == "ready"
+    assert result["release_branch"] == "release/local"
+    assert result["merged_branches"] == ["approved"]
+    assert result["head"] == approved_head
+    assert result["retained_approved_branches"] == ["approved"]
+    assert pathlib.Path(result["promotion_record"]).is_file()
+    assert log.read_text(encoding="utf-8") == "installed\n"
+    assert run_git(repo, "branch", "--show-current").stdout.strip() == "release/local"
+    assert run_git(repo, "status", "--porcelain").stdout == ""
+
+
+@pytest.mark.skipif(
+    shutil.which("powershell") is None,
+    reason="PowerShell lifecycle helper is unavailable",
+)
 def test_promotion_records_are_collision_free_and_cleaned_terminally(
     tmp_path: pathlib.Path,
 ) -> None:
@@ -312,7 +746,19 @@ def test_promotion_records_are_collision_free_and_cleaned_terminally(
     assert run_git(repo, "config", "user.email", "test@example.invalid").returncode == 0
     assert run_git(repo, "config", "user.name", "Test Agent").returncode == 0
     (repo / "README.md").write_text("base\n", encoding="utf-8", newline="\n")
-    assert run_git(repo, "add", "README.md").returncode == 0
+    (repo / "scripts").mkdir()
+    (repo / "scripts" / "install-skills.py").write_text(
+        "import os, pathlib\n"
+        "record = pathlib.Path(os.environ['EXPECTED_PROMOTION_RECORD'])\n"
+        "worktree = pathlib.Path(os.environ['EXPECTED_APPROVED_WORKTREE'])\n"
+        "if not record.is_file() or not worktree.is_dir():\n"
+        "    raise SystemExit('cleanup ran before installation')\n"
+        "with pathlib.Path(os.environ['FINALIZER_TEST_LOG']).open('a') as log:\n"
+        "    log.write('install\\n')\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    assert run_git(repo, "add", ".").returncode == 0
     assert run_git(repo, "commit", "-m", "base").returncode == 0
     assert run_git(repo, "branch", "-M", "main").returncode == 0
     assert run_git(repo, "branch", "approved").returncode == 0
@@ -352,7 +798,7 @@ def test_promotion_records_are_collision_free_and_cleaned_terminally(
         "-ExecutionPolicy",
         "Bypass",
         "-File",
-        str(PENDING_RELEASE_WORK),
+        str(MANAGE_PENDING_RELEASE_WORK),
         "-SkillsRepoRoot",
         str(repo),
         "-ReleaseBranch",
@@ -378,6 +824,41 @@ def test_promotion_records_are_collision_free_and_cleaned_terminally(
     assert record.is_file()
     assert retained_payload["approved_branches"] == ["approved"]
 
+    (approved_worktree / "README.md").write_text(
+        "base\napproved\nlater retained commit\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    assert run_git(approved_worktree, "add", "README.md").returncode == 0
+    assert (
+        run_git(approved_worktree, "commit", "-m", "later retained change").returncode
+        == 0
+    )
+    (approved_worktree / "README.md").write_text(
+        "base\napproved\nlater retained commit\nuncommitted retained work\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    assert run_git(repo, "branch", "approved-next", promotion_commit).returncode == 0
+    next_record_command = record_command.copy()
+    next_record_command[
+        next_record_command.index(approved_branch_data)
+    ] = base64.b64encode(b"approved-next").decode("ascii")
+    next_retained = subprocess.run(
+        next_record_command,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert next_retained.returncode == 0, next_retained.stderr
+    next_payload = json.loads(next_retained.stdout)
+    assert next_payload["approved_branches"] == ["approved", "approved-next"]
+    assert pathlib.Path(next_payload["promotion_record"]) == record
+    assert (
+        run_git(approved_worktree, "reset", "--hard", promotion_commit).returncode
+        == 0
+    )
+
     collision_branch = "release__local"
     assert (
         run_git(repo, "branch", collision_branch, promotion_commit).returncode == 0
@@ -399,17 +880,78 @@ def test_promotion_records_are_collision_free_and_cleaned_terminally(
     assert collision_record != record
     assert collision_record.is_file()
 
+    bundle_scripts = tmp_path / "bundle" / "scripts"
+    (bundle_scripts / "runtime").mkdir(parents=True)
+    finalizer_helper = bundle_scripts / MANAGE_PENDING_RELEASE_WORK.name
+    shutil.copy2(MANAGE_PENDING_RELEASE_WORK, finalizer_helper)
+    (bundle_scripts / "runtime" / "skills-consistency-runtime-validator.py").write_text(
+        "import os, pathlib\n"
+        "record = pathlib.Path(os.environ['EXPECTED_PROMOTION_RECORD'])\n"
+        "worktree = pathlib.Path(os.environ['EXPECTED_APPROVED_WORKTREE'])\n"
+        "if not record.is_file() or not worktree.is_dir():\n"
+        "    raise SystemExit('cleanup ran before runtime validation')\n"
+        "with pathlib.Path(os.environ['FINALIZER_TEST_LOG']).open('a') as log:\n"
+        "    log.write('runtime\\n')\n"
+        "if os.environ.get('FAIL_RUNTIME') == '1':\n"
+        "    raise SystemExit('requested runtime failure')\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    assert run_git(repo, "reset", "--hard", promotion_commit).returncode == 0
+    finalizer_log = tmp_path / "finalizer.log"
+    finalizer_env = {
+        **os.environ,
+        "EXPECTED_APPROVED_WORKTREE": str(approved_worktree),
+        "EXPECTED_PROMOTION_RECORD": str(record),
+        "FINALIZER_TEST_LOG": str(finalizer_log),
+    }
     cleanup_command = [
-        *record_command[:-3],
-        "-CleanMergedBranches",
+        "powershell",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(finalizer_helper),
+        "-SkillsRepoRoot",
+        str(repo),
+        "-ReleaseBranch",
+        "release/local",
+        "-PromotionCommit",
+        promotion_commit,
+        "-FinalizeShippedRelease",
     ]
+    failed = subprocess.run(
+        cleanup_command,
+        capture_output=True,
+        text=True,
+        check=False,
+        env={**finalizer_env, "FAIL_RUNTIME": "1"},
+    )
+    assert failed.returncode != 0
+    assert approved_worktree.is_dir()
+    assert run_git(repo, "show-ref", "--verify", "refs/heads/approved").returncode == 0
+    assert record.is_file()
+    assert finalizer_log.read_text(encoding="utf-8").splitlines() == [
+        "install",
+        "runtime",
+    ]
+    finalizer_log.unlink()
+
     cleaned = subprocess.run(
         cleanup_command,
         capture_output=True,
         text=True,
         check=False,
+        env=finalizer_env,
     )
     assert cleaned.returncode == 0, cleaned.stderr
+    cleaned_payload = json.loads(cleaned.stdout)
+    assert cleaned_payload["install"] == "managed"
+    assert cleaned_payload["runtime_validation"] == "full"
+    assert finalizer_log.read_text(encoding="utf-8").splitlines() == [
+        "install",
+        "runtime",
+    ]
     assert not approved_worktree.exists()
     assert run_git(repo, "show-ref", "--verify", "refs/heads/approved").returncode != 0
     assert unrelated_worktree.is_dir()

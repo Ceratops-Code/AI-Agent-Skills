@@ -17,20 +17,28 @@ materially reduce recurrence.
 
 - Target thread or session. Use the current thread unless the user names a
   concrete thread title, thread id, or session file.
-- Window under review: the user's last `N` completed runs, or the full thread
-  when `N` is omitted.
-- Evidence source: visible context, `$CODEX_HOME/session_index.jsonl`,
-  `$CODEX_HOME/sessions/`, or `$CODEX_HOME/archived_sessions/`.
-- (D) For session evidence, run `python scripts/model-call-ledger.py
+- Window under review: the user's explicit boundary, the last `N` completed
+  runs when specified, or the full thread only when no boundary is stated.
+- Resolve the selected session record through
+  `$CODEX_HOME/session_index.jsonl`, `$CODEX_HOME/sessions/`, or
+  `$CODEX_HOME/archived_sessions/`. Use only its selected-run rows for semantic
+  evidence the ledger omits, and sanitize that evidence before recording or
+  reporting. Visible context may identify scope but is not analysis evidence.
+- (D) For non-closure analysis, run `python scripts/model-call-ledger.py
   --session PATH --evidence-output LEDGER_PATH [--last-runs N]
   [--include-run TURN_ID]`; it writes every completed run and model call to the
   sanitized ledger, emits only the run reconciliation summary, and includes
   full call details only for explicitly requested runs.
+- (D) For closure analysis, run `python scripts/model-call-ledger.py --closure
+  --thread-id ID [--last-runs N]`, or pass `--session PATH` when the thread ID
+  is unavailable; it emits one sanitized selected-window call inventory and
+  creates no evidence artifact.
 - Whether the task is analysis-only or the user explicitly asked to apply a
   named control change.
 
 Ask for the missing title, id, or session file only when the target thread
-cannot be identified.
+cannot be identified. If the selected session record cannot be resolved, stop
+blocked; do not fall back to visible context.
 
 ## Constraints
 
@@ -62,10 +70,11 @@ cannot be identified.
   change before mutating; otherwise name the target artifact and target
   behavior.
 - Before reporting, classify each finding's control as implemented or still
-  unimplemented; omit implemented findings and report only still-unimplemented
-  findings.
-- When model-call evidence exists, classify every call as necessary, avoidable,
-  or already fixed and map each control only to calls it directly prevents.
+  unimplemented; expose both call counts in the run table, but omit detailed
+  implemented findings and recommendations.
+- Classify every model call as necessary, avoidable with an implemented fix, or
+  avoidable with an unimplemented fix, and map each fix only to calls it
+  directly prevents.
 - For each still-unimplemented control, compute `long-term average saving/run =
   affected-run rate x saved/affected run - added/run` and estimate its one-time
   cost separately. Reject non-positive average savings or costs unlikely to be
@@ -98,10 +107,10 @@ cannot be identified.
    checks, corrections, retries, and final state.
 2. Mark each avoidable spend episode and the earliest point it could have been
    prevented or detected.
-3. Review visible command, tool, and file-read choices for avoidable output
-   volume, unnecessary file reads, repeated polling, and oversized validation;
-   count only when a narrower command, selector, path, section, or existing
-   evidence would have been sufficient.
+3. Review ledger-reconciled command, tool, and file-read choices with only the
+   selected session rows needed to classify necessity, outcome, and narrower
+   alternatives; count only when a narrower command, selector, path, section,
+   or existing evidence would have been sufficient.
 4. Identify the producer or workflow choice that allowed the spend: prompt,
    rule, skill, automation, helper, validation, tool choice, workflow habit, or
    external dependency.
@@ -113,9 +122,9 @@ cannot be identified.
 
 ### Completion Gate
 
-- The inspected window and evidence source are stated; when model-call evidence
-  exists, every call is reconciled in the evidence ledger and every completed
-  run appears in the compact run table.
+- The inspected window and ledger evidence mode are stated; every model call is
+  reconciled in the ledger and every completed run appears in the compact run
+  table.
 - Each finding ties to a concrete episode, cause, earliest prevention point,
   recommendation type, and expected impact.
 - Ordinary model failures that could be confused with avoidable credit spend are
@@ -129,11 +138,11 @@ evidence prevents analysis. Otherwise start with
 `Unimplemented avoidable spend: found.` or
 `Unimplemented avoidable spend: none found.`
 
-When model-call evidence exists, first show
-`Run | Model calls | Unimplemented avoidable`, reconciled totals, and available
-token usage. For each still-unimplemented control, show
+First show
+`Run | Model Calls | Avoidable Calls with Implemented Fix |
+Avoidable Calls with Unimplemented Fix`, reconciled totals, and available token
+usage. For each still-unimplemented control, show
 `Control | Saved/affected run | Forecast rate | Added/run |
 Long-term average saving/run | One-time cost | Decision`. Then report only
-still-unimplemented findings, any required ranked prompt-level table, excluded
-ordinary failures, and important evidence limits. Do not mention implemented
-findings or controls.
+still-unimplemented findings in detail, any required ranked prompt-level table,
+excluded ordinary failures, and important evidence limits.

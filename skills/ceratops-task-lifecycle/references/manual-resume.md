@@ -2,16 +2,14 @@
 
 ## Goal
 
-Resume a same-thread task from current local state after a manual pause,
-cancellation, restart, or crash.
+Resume a same-thread task from current state after interruption, restart, or
+crash.
 
 ## Context
 
 ### Inputs To Capture
 
 - The current task goal and completion standard from the recent thread.
-- The latest `PAUSE_CHECKPOINT`, when present.
-- Its `state_scope` and opaque `state_token`.
 - Any user statement about what changed since the stop.
 - The last clearly completed stage and the next likely stage.
 - The local repos, files, artifacts, PRs, images, or automations that were in
@@ -25,19 +23,8 @@ Infer missing inputs from the recent thread and local state before asking.
 
 - Treat recent thread context plus current local state as the primary sources of
   truth, even after a restart, unless local evidence forces a broader rebuild.
-- Treat the latest same-thread `PAUSE_CHECKPOINT` with `active_state: none`,
-  `state_scope: local_git`, and a valid helper token as sufficient resume state
-  when the user reports no intervening external change.
-- On that checkpoint fast path, from the installed
-  `ceratops-task-lifecycle` skill folder run only
-  `python scripts/pause_state.py verify <state_token>`. If it returns
-  `UNCHANGED`, execute `next_action` immediately without rereading the thread,
-  inspecting files manually, recomputing the plan, rerunning checks, or
-  restating the checkpoint.
-- Fall back to recovery only when the checkpoint is absent or malformed,
-  `active_state` is not `none`, state validation is unavailable or changed, the
-  user reports an external change, or an active instruction requires fresh
-  evidence for the next action.
+- If interruption occurred during or immediately after a tool call, verify that
+  action's affected state before continuing.
 - Assume nothing external changed unless the user says it did or local evidence
   suggests otherwise.
 - Do not restart the whole task from zero if the next justified stage can be
@@ -47,29 +34,24 @@ Infer missing inputs from the recent thread and local state before asking.
 - If the next viable option is complex, invasive, nonstandard, or
   high-maintenance, stop and ask before taking it.
 - Do not ask for credentials unless the resumed task actually requires them.
-- Do not add checks because execution was paused; retain checks already required
-  by the original task.
+- Do not add checks because execution was interrupted; retain checks already
+  required by the original task.
 
 ### Boundaries
 
 - Use this action only when the work stays in the current thread and Codex
-  should resume from current local state after a manual stop, pause, restart, or
-  crash.
+  should resume from current state after interruption, restart, or crash.
 
 ### Workflow
 
 #### 1. Re-Anchor The Task
 
-- If the checkpoint fast path applies, run its single helper verification. On
-  `UNCHANGED`, skip the rest of this step and Step 2 and execute `next_action`.
 - Read only the recent thread tail needed to recover the goal, the latest
   confirmed state, and any unfinished stage.
 - Restate the next justified stage internally before acting.
 
 #### 2. Refresh Narrow Local State
 
-- If helper verification returns `CHANGED`, inspect only the reported worktree
-  or worktrees before continuing.
 - Inspect only the touched or plausibly affected local state: git status,
   changed files, generated outputs, temp paths, local installs, or runtime
   state.

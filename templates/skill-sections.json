@@ -10,7 +10,9 @@
       "python skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py --mode sections"
     ],
     "skill_local_or_metadata_changes": [],
-    "helper_runtime_changes": [],
+    "helper_runtime_changes": [
+      "python skills/ceratops-governance-lifecycle/scripts/apply_rules_update.py --help"
+    ],
     "runtime_generation_changes": [
       "python skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py --mode sections"
     ],

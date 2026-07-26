@@ -68,7 +68,9 @@ asking.
   deterministic helper. It owns clean release-branch publication, exact-commit
   checkpoints, concurrent CI/readiness and Codex review gates, exact-head
   merge, live verification, main synchronization, and safe reusable
-  `release/local` restoration.
+  `release/local` restoration. Terminal success removes the exact checkpoint
+  and older valid checkpoints for the same repository and PR while retaining
+  unrelated or unidentifiable checkpoints.
 - Resume with the same full commit after interruption; incomplete work uses its
   checkpoint, while completed work is reconstructed from the exact merged PR.
   Do not fall back to separate ensure, merge, or sync commands.
@@ -76,26 +78,23 @@ asking.
   complete handoff, request approval for its exact `next_argv`, and run that
   vector in `next_cwd` directly after approval without rediscovery calls.
 
-#### 3. Clean promoted task sources
+#### 3. Finalize the shipped release
 
 - After `ship` returns `shipped` or `already_shipped`, run
-  `scripts/check-pending-release-work.ps1 -SkillsRepoRoot <repo>
+  `scripts/manage-pending-release-work.ps1 -SkillsRepoRoot <repo>
   -ReleaseBranch release/local -PromotionCommit <ship.commit>
-  -CleanMergedBranches` from the selected lifecycle bundle when promotion
-  reported retained approved sources.
-- The helper must consume only that exact promotion record, remove only its
-  clean merged worktrees and branches, and delete the record. Retain the record
-  and stop if shipping is incomplete or cleanup finds dirty or unmerged work.
-
-#### 4. Rebuild installed skills
-
-- (D) Run `python scripts/install-skills.py --repo-root <repo>` after restoring
-  `main`, so this source repository's managed skills are rebuilt from the
-  merged main snapshot and same-source stale runtime folders are removed.
-- Keep installation in this skill lifecycle action; do not move it into the
-  GitHub ship helper.
-- Verify the skills repo checkout is clean on `main` and expected installed
-  skill folders have current `.runtime-manifest.json` files.
+  -FinalizeShippedRelease` from the selected lifecycle bundle when promotion
+  reported retained approved sources; omit `-PromotionCommit` when no promotion
+  record exists.
+- The helper must verify a clean synchronized `main` and release branch, rebuild
+  this source repository's managed skills from `main`, validate the installed
+  runtime, then remove only clean merged worktrees and branches from the exact
+  promotion record and consume that record.
+- Treat successful `install` and `runtime_validation` fields as the managed
+  rebuild and runtime-verification result. Retain the record and sources when
+  synchronization, installation, validation, or cleanup is blocked.
+- Keep installation and runtime verification in this skill lifecycle helper;
+  do not move them into the GitHub ship helper.
 
 ## Done When
 
@@ -109,7 +108,7 @@ asking.
   clean.
 - Approved clean task worktrees and branches from the shipped promotion record
   were removed; any blocked retained source is reported.
-- Installed skills were rebuilt from `main`.
+- Installed skills were rebuilt and runtime-verified from `main`.
 
 ### Output Contract
 

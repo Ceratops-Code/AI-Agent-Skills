@@ -10,16 +10,17 @@ result.
 
 ### Inputs To Capture
 
-- The complete same-thread work history from the beginning of the thread and
-  the authorized work scope.
+- The user-stated closure boundary, or the beginning of the thread when none
+  is stated; the authorized work scope; and any unresolved or intentionally
+  retained state at the boundary.
 - Completed actions, directly touched artifacts, and claims already made.
 - Touched repos, worktrees, branches, commits, PRs, automation folders,
   generated or runtime artifacts, active goals, failed commands, and warnings.
 - Thread-raised proposals, findings, questions, warnings, deferred decisions,
   and follow-ups that may still affect closure.
 
-Infer missing inputs from complete same-thread context and targeted local state
-before asking.
+Infer missing inputs from the selected window, carried boundary state, and
+targeted local state before asking.
 
 ## Constraints
 
@@ -27,8 +28,9 @@ before asking.
 
 - Advisory by default; do not mutate state unless the user explicitly asks for
   that exact action.
-- Scope the check from the beginning of the thread across the current thread's
-  authorized work and every directly touched artifact.
+- When the user states a closure boundary, scope new work and credit analysis
+  to that window and carry forward only unresolved or intentionally retained
+  boundary state; otherwise scope from the beginning of the thread.
 - When closure follows a mutating or multi-entity task, classify touched,
   discovered, or plausibly affected artifacts, external entities, and side
   effects as active, intentionally retained, stale-in-scope, stale-out-of-scope,
@@ -58,11 +60,11 @@ before asking.
 
 #### 1. Establish Closure Scope
 
-- From the beginning of the thread, identify all completed actions, artifacts
+- From the selected closure window, identify completed actions, artifacts
   actually touched, retained state, deferred follow-ups, and claims actually
   made.
-- Treat every same-thread touched artifact, retained state, deferred follow-up,
-  and claim as part of the closure scope.
+- Include pre-window state only when it was unresolved or intentionally
+  retained at the selected boundary.
 
 #### 2. Identify Evidence Targets
 
@@ -80,6 +82,15 @@ before asking.
   retained state, stale state, warnings, unverified claims, and touched git
   repos' branch, cleanliness, staged/unstaged/untracked state, and unpushed
   commits.
+- (D) For each touched local Git repository that needs refreshed closure
+  evidence, run `python scripts/closure_snapshot.py --repo PATH
+  [--fetch-remote NAME] [--release-branch BRANCH
+  --release-upstream REF] [--task-worktree PATH --task-branch BRANCH]
+  [--temp-root PATH]`; it checks only the named targets and emits one compact
+  non-destructive snapshot.
+- Do not rerun facts reported by the snapshot. Query goal state only when
+  same-thread evidence shows a goal was created or active, and run additional
+  diagnostics only for snapshot state that remains unresolved.
 
 #### 4. Scan Relevant Thread Follow-Ups
 
@@ -91,6 +102,12 @@ before asking.
 
 - Invoke `$ceratops-credit-savings-analysis` for the current thread, reuse fresh
   closure evidence, and include its required result under `Credit savings`.
+- Obtain model-call evidence in one `model-call-ledger.py --closure
+  [--last-runs N]` invocation. For a prior-closure boundary, set `N` to the
+  completed runs strictly after that closure; exclude the boundary and active
+  runs. Omit `--last-runs` only when the user states no boundary, use the
+  current thread ID when available or its exact session path otherwise, and
+  create no temporary ledger.
 
 #### 6. Classify Closure State
 
@@ -109,7 +126,8 @@ before asking.
 - The checked closure scope is clear.
 - Required remaining work and blockers are not omitted.
 - Uncommitted, unpushed, retained, stale, warning, forgotten-follow-up, and
-  unverified states from any same-thread touched artifact are reported.
+  unverified states from the selected window and carried boundary state are
+  reported.
 - A response that reports no unresolved items is supported by checked evidence.
 - The `$ceratops-credit-savings-analysis` result or blocker is included under
   `Credit savings`.

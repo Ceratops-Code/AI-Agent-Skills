@@ -6,7 +6,8 @@ param(
     [string]$ReleaseBranch = "release/local",
     [string]$PromotionCommit = "",
     [switch]$RecordPromotion,
-    [switch]$CleanMergedBranches
+    [switch]$CleanMergedBranches,
+    [switch]$FinalizeShippedRelease
 )
 
 # Skill-local helper called by change-promotion before installation and by
@@ -15,9 +16,13 @@ param(
 # promotion record.
 # With -CleanMergedBranches, it removes clean approved task worktrees and
 # branches already reachable from the release branch, then deletes only the
-# consumed promotion record. Unrelated branches and worktrees are never
-# enumerated. -RecordPromotion atomically advances the release branch's exact
-# commit while retaining the union of approved sources already in that batch.
+# consumed promotion record. -FinalizeShippedRelease first verifies synchronized
+# main/release state, installs and validates runtime, then performs that cleanup.
+# Unrelated branches and worktrees are never enumerated. -RecordPromotion
+# validates newly supplied sources and atomically advances the release branch's
+# exact commit while carrying forward previously recorded sources. Retained
+# worktrees are rechecked before terminal cleanup, so later local edits cannot
+# block an otherwise independent promotion.
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
@@ -30,6 +35,50 @@ if ([string]::IsNullOrWhiteSpace($SkillsRepoRoot)) {
 }
 
 $resolvedSkillsRepoRoot = (Resolve-Path -LiteralPath $SkillsRepoRoot).Path
+function Invoke-CapturedNative {
+    param(
+        [string]$FilePath,
+        [string[]]$Arguments,
+        [string]$WorkingDirectory = $resolvedSkillsRepoRoot
+    )
+
+    Push-Location -LiteralPath $WorkingDirectory
+    try {
+        $previousErrorActionPreference = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = "Continue"
+            $output = & $FilePath @Arguments 2>&1
+            $exitCode = $LASTEXITCODE
+        } finally {
+            $ErrorActionPreference = $previousErrorActionPreference
+        }
+    } finally {
+        Pop-Location
+    }
+
+    if ($exitCode -ne 0) {
+        $tail = @($output | Select-Object -Last 8) -join "`n"
+        if (-not [string]::IsNullOrWhiteSpace($tail)) {
+            throw "$FilePath failed: $($Arguments -join ' ')`n$tail"
+        }
+        throw "$FilePath failed: $($Arguments -join ' ')"
+    }
+    return @($output)
+}
+
+function Invoke-QuietNative {
+    param(
+        [string]$FilePath,
+        [string[]]$Arguments,
+        [string]$WorkingDirectory = $resolvedSkillsRepoRoot
+    )
+
+    $null = Invoke-CapturedNative `
+        -FilePath $FilePath `
+        -Arguments $Arguments `
+        -WorkingDirectory $WorkingDirectory
+}
+
 function Invoke-Git {
     param([string[]]$Arguments)
 
@@ -223,15 +272,80 @@ function Get-ApprovedBranchWorktreePath {
     return $worktreePath
 }
 
+function Assert-SynchronizedCheckout {
+    $currentBranch = (
+        Get-GitLines @("branch", "--show-current") |
+        Select-Object -First 1
+    ).Trim()
+    $head = (Get-GitLines @("rev-parse", "HEAD") | Select-Object -First 1).Trim()
+    $mainHead = (
+        Get-GitLines @("rev-parse", $MainBranch) |
+        Select-Object -First 1
+    ).Trim()
+    $releaseHead = (
+        Get-GitLines @("rev-parse", $ReleaseBranch) |
+        Select-Object -First 1
+    ).Trim()
+    $status = @(Get-WorktreeStatus $resolvedSkillsRepoRoot)
+    if (
+        $currentBranch -ne $MainBranch -or
+        $head -ne $mainHead -or
+        $releaseHead -ne $mainHead -or
+        $status.Count -gt 0
+    ) {
+        throw (
+            "FinalizeShippedRelease requires a clean checkout on synchronized " +
+            "$MainBranch with $ReleaseBranch aligned to the same commit."
+        )
+    }
+}
+
+function Invoke-TerminalRuntimeValidation {
+    $installScript = Join-Path $resolvedSkillsRepoRoot "scripts\install-skills.py"
+    $runtimeValidator = Join-Path `
+        $PSScriptRoot `
+        "runtime\skills-consistency-runtime-validator.py"
+    if (-not (Test-Path -LiteralPath $installScript -PathType Leaf)) {
+        throw "Missing repository skill installer: $installScript"
+    }
+    if (-not (Test-Path -LiteralPath $runtimeValidator -PathType Leaf)) {
+        throw "Missing runtime validator: $runtimeValidator"
+    }
+    Invoke-QuietNative -FilePath "python" -Arguments @(
+        $installScript,
+        "--repo-root",
+        $resolvedSkillsRepoRoot
+    )
+    Invoke-QuietNative -FilePath "python" -Arguments @(
+        $runtimeValidator,
+        "--repo-root",
+        $resolvedSkillsRepoRoot
+    )
+}
+
 $findings = @()
 $removed = @()
+$cleanupCandidates = @()
 $expectedWorktreeRoot = Get-ExpectedWorktreeRoot
 $approvedBranches = @()
 $approvedBranchSet = @{}
 $promotionRecordPath = ""
+$shouldCleanMergedBranches = $CleanMergedBranches -or $FinalizeShippedRelease
 
-if ($RecordPromotion -and $CleanMergedBranches) {
-    throw "RecordPromotion and CleanMergedBranches are mutually exclusive."
+if ($RecordPromotion -and $shouldCleanMergedBranches) {
+    throw (
+        "RecordPromotion cannot be combined with CleanMergedBranches or " +
+        "FinalizeShippedRelease."
+    )
+}
+if ($CleanMergedBranches -and $FinalizeShippedRelease) {
+    throw "CleanMergedBranches and FinalizeShippedRelease are mutually exclusive."
+}
+if (
+    $FinalizeShippedRelease -and
+    -not [string]::IsNullOrWhiteSpace($ApprovedBranchData)
+) {
+    throw "FinalizeShippedRelease accepts approved branches only from a promotion record."
 }
 if (
     -not $RecordPromotion -and
@@ -249,6 +363,10 @@ if (
 
 Invoke-Git @("rev-parse", "--verify", $ReleaseBranch)
 $requestedBranches = @(Decode-ApprovedBranchData)
+$requestedBranchSet = @{}
+foreach ($requestedBranch in $requestedBranches) {
+    $requestedBranchSet[$requestedBranch] = $true
+}
 $retainedBranches = @()
 if ($RecordPromotion -or -not [string]::IsNullOrWhiteSpace($PromotionCommit)) {
     $promotionRecordPath = Get-PromotionRecordPath
@@ -304,8 +422,15 @@ foreach ($branchName in $approvedBranches) {
     }
     $worktreePath = Get-ApprovedBranchWorktreePath $branchName
     $worktreeIsClean = $true
+    $isRetainedOnlyPromotionBranch = (
+        $RecordPromotion -and
+        -not $requestedBranchSet.ContainsKey($branchName)
+    )
 
-    if (-not [string]::IsNullOrWhiteSpace($worktreePath)) {
+    if (
+        -not $isRetainedOnlyPromotionBranch -and
+        -not [string]::IsNullOrWhiteSpace($worktreePath)
+    ) {
         $worktreePath = (Resolve-Path -LiteralPath $worktreePath).Path
         if (
             -not (Test-Path -LiteralPath $expectedWorktreeRoot -PathType Container) -or
@@ -332,7 +457,10 @@ foreach ($branchName in $approvedBranches) {
         }
     }
 
-    if (-not (Test-GitSuccess @("merge-base", "--is-ancestor", $branchName, $ReleaseBranch))) {
+    if (
+        -not $isRetainedOnlyPromotionBranch -and
+        -not (Test-GitSuccess @("merge-base", "--is-ancestor", $branchName, $ReleaseBranch))
+    ) {
         $aheadText = (
             Get-GitLines @("rev-list", "--count", "$ReleaseBranch..$branchName") |
             Select-Object -First 1
@@ -347,28 +475,13 @@ foreach ($branchName in $approvedBranches) {
         continue
     }
 
-    if (-not $CleanMergedBranches -or -not $worktreeIsClean) {
+    if (-not $shouldCleanMergedBranches -or -not $worktreeIsClean) {
         continue
     }
 
-    if (-not [string]::IsNullOrWhiteSpace($worktreePath)) {
-        Invoke-Git @("worktree", "remove", $worktreePath)
-        Remove-MergedBranch $branchName
-        $removed += [pscustomobject]@{
-            Kind = "merged_worktree_branch"
-            Branch = $branchName
-            Path = $worktreePath
-            Detail = "removed; merged into $ReleaseBranch"
-        }
-        continue
-    }
-
-    Remove-MergedBranch $branchName
-    $removed += [pscustomobject]@{
-        Kind = "merged_branch"
+    $cleanupCandidates += [pscustomobject]@{
         Branch = $branchName
-        Path = ""
-        Detail = "removed; merged into $ReleaseBranch"
+        Path = $worktreePath
     }
 }
 
@@ -378,8 +491,33 @@ if ($findings.Count -eq 0) {
             -RecordPath $promotionRecordPath `
             -Branches $approvedBranches
     }
+    if ($FinalizeShippedRelease) {
+        Assert-SynchronizedCheckout
+        Invoke-TerminalRuntimeValidation
+    }
+    foreach ($candidate in $cleanupCandidates) {
+        if (-not [string]::IsNullOrWhiteSpace($candidate.Path)) {
+            Invoke-Git @("worktree", "remove", $candidate.Path)
+            Remove-MergedBranch $candidate.Branch
+            $removed += [pscustomobject]@{
+                Kind = "merged_worktree_branch"
+                Branch = $candidate.Branch
+                Path = $candidate.Path
+                Detail = "removed; merged into $ReleaseBranch"
+            }
+            continue
+        }
+
+        Remove-MergedBranch $candidate.Branch
+        $removed += [pscustomobject]@{
+            Kind = "merged_branch"
+            Branch = $candidate.Branch
+            Path = ""
+            Detail = "removed; merged into $ReleaseBranch"
+        }
+    }
     if (
-        $CleanMergedBranches -and
+        $shouldCleanMergedBranches -and
         -not [string]::IsNullOrWhiteSpace($promotionRecordPath)
     ) {
         Remove-Item -LiteralPath $promotionRecordPath
@@ -391,12 +529,17 @@ if ($findings.Count -eq 0) {
     ) {
         $reportedPromotionRecord = $promotionRecordPath
     }
-    [pscustomobject]@{
+    $result = [ordered]@{
         status = "ready"
         approved_branches = $approvedBranches
         removed = @($removed | ForEach-Object { $_.Branch })
         promotion_record = $reportedPromotionRecord
-    } | ConvertTo-Json -Compress -Depth 4
+    }
+    if ($FinalizeShippedRelease) {
+        $result["install"] = "managed"
+        $result["runtime_validation"] = "full"
+    }
+    [pscustomobject]$result | ConvertTo-Json -Compress -Depth 4
     exit 0
 }
 

@@ -1,24 +1,23 @@
 ---
 name: ceratops-task-lifecycle
-description: Route Ceratops task execution, pause, same-thread resume, failed-fix-loop breaks, new-thread handoff, and closure checks. Use pause only when the user explicitly invokes it during ongoing work. Use closure-check when the user asks whether anything remains, whether we are done, or what remains.
+description: Route Ceratops task execution, same-thread resume, failed-fix-loop breaks, new-thread handoff, and closure checks. Use manual-resume when an interrupted current-thread task should continue from current state. Use closure-check when the user asks whether anything remains, whether we are done, or what remains.
 ---
 
 # Ceratops Task Lifecycle
 
 ## Goal
 
-Route task execution, pause, repeated-fix-loop breaks, interrupted-thread
-resume, thread handoff, and closure-check work to the narrowest action
-reference. Keep one task-workflow skill instead of separate skill identities
-for staged execution, pause, fix-loop break, same-thread resume, whole-task
-handoff, side-task handoff, and closure assessment.
+Route task execution, repeated-fix-loop breaks, interrupted-thread resume,
+thread handoff, and closure-check work to the narrowest action reference. Keep
+one task-workflow skill instead of separate skill identities for staged
+execution, fix-loop break, same-thread resume, whole-task handoff, side-task
+handoff, and closure assessment.
 
 ## Context
 
 ### Action References
 
 - Execute a substantial task in stages: `references/execute-in-stages.md`
-- Pause active same-thread execution: `references/pause.md`
 - Break a repeated failed fix loop: `references/fixloop-break.md`
 - Resume an interrupted current-thread task: `references/manual-resume.md`
 - Create a whole-task new-thread handoff: `references/full-handoff.md`
@@ -29,8 +28,8 @@ handoff, side-task handoff, and closure assessment.
 
 - Target task, current thread state, desired completion state, and any
   user-stated action.
-- Whether the work is staged execution, pause, fix-loop break, same-thread
-  resume, whole-task handoff, side-task handoff, or closure check.
+- Whether the work is staged execution, fix-loop break, same-thread resume,
+  whole-task handoff, side-task handoff, or closure check.
 - Current local or external entities that constrain the selected action.
 
 Infer missing inputs from recent thread context and local state before asking.
@@ -41,10 +40,9 @@ Infer missing inputs from recent thread context and local state before asking.
 
 - Use the selected action reference as the source of truth for workflow,
   evidence refresh, completion gate, and output contract.
-- Keep staged task execution, pause, fix-loop break, same-thread resume,
-  whole-task handoff, side-task handoff, and closure check inside this
-  multi-action skill and its `references/` files; do not introduce alias skills
-  or old-name shims.
+- Keep staged task execution, fix-loop break, same-thread resume, whole-task
+  handoff, side-task handoff, and closure check inside this multi-action skill
+  and its `references/` files; do not introduce alias skills or old-name shims.
 - If action identity is ambiguous, choose the action that matches the user's
   immediate requested output or next state.
 
@@ -52,11 +50,10 @@ Infer missing inputs from recent thread context and local state before asking.
 
 - Use `execute-in-stages` for substantial tasks with multiple justified stages
   or multiple plausible solution paths.
-- Use `pause` only when the user explicitly invokes it during ongoing work.
 - Use `fixloop-break` when repeated attempts have failed or the user explicitly
   invokes a fix-loop break.
 - Use `manual-resume` only when the work stays in the current thread and should
-  resume from current local state after a manual stop, pause, restart, or crash.
+  resume from current state after interruption, restart, or crash.
 - Use `full-handoff` only when the user wants to move the whole task into a
   different thread.
 - Use `side-task-handoff` only when the user wants to spin off a newly
@@ -70,8 +67,6 @@ Infer missing inputs from recent thread context and local state before asking.
 
 - Select `execute-in-stages` when the task should be handled end to end with
   diagnosis, simplest credible fix, justified stage progression, and closure.
-- Select `pause` when the user explicitly requests an immediate same-thread
-  checkpoint and execution stop.
 - Select `fixloop-break` when repeated fixes have not solved the same symptom
   and another code change would be unjustified without failure-loop analysis.
 - Select `manual-resume` when the task was interrupted in this thread and should

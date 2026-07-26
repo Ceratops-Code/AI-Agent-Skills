@@ -338,7 +338,7 @@ def parse_rule_source(path: Path) -> ParsedRuleSource:
     resolved = path.resolve()
     if not resolved.is_file():
         raise ValueError(f"rules does not exist: {resolved}")
-    text = resolved.read_text(encoding="utf-8")
+    text = resolved.read_text(encoding="utf-8-sig")
     if not text.strip():
         raise ValueError(f"rules is empty: {resolved}")
     return parse_rule_text(text, str(resolved))
@@ -393,6 +393,10 @@ def validate_rule_stack(
     findings: list[dict[str, object]] = []
     semantic_reviews: list[dict[str, object]] = []
     records_by_id: dict[str, RuleRecord] = {}
+    source_order = {
+        source.source: index
+        for index, source in enumerate(sources)
+    }
     all_records = [record for source in sources for record in source.records]
     for record in all_records:
         prior = records_by_id.get(record.rule_id)
@@ -447,10 +451,14 @@ def validate_rule_stack(
                         }
                     )
                     continue
-                if record.source == global_source and target_record.source != global_source:
+                if (
+                    target_record.source != record.source
+                    and source_order[target_record.source]
+                    > source_order[record.source]
+                ):
                     findings.append(
                         {
-                            "code": "global_relation_targets_local",
+                            "code": "relation_targets_descendant",
                             "rule_id": record.rule_id,
                             "relation": relation,
                             "target": target,
@@ -588,14 +596,10 @@ def rule_source_summary(source: ParsedRuleSource) -> dict[str, Any]:
     }
 
 
-def load_history_source(path: Path) -> list[dict[str, object]]:
-    """Load the canonical non-empty append-only decision log."""
-    resolved = path.resolve()
-    if not resolved.is_file():
-        raise ValueError(f"history does not exist: {resolved}")
-    text = resolved.read_text(encoding="utf-8")
+def parse_history_text(text: str) -> list[dict[str, object]]:
+    """Validate canonical append-only decision-log text."""
     if not text.strip():
-        raise ValueError(f"history is empty: {resolved}")
+        raise ValueError("history is empty")
     data = json.loads(text)
     if not isinstance(data, dict):
         raise ValueError("history root must be an object")
@@ -645,6 +649,18 @@ def load_history_source(path: Path) -> list[dict[str, object]]:
                     f"history entry {index} {field_name} must be non-empty text"
                 )
     return typed_entries
+
+
+def load_history_source(path: Path) -> list[dict[str, object]]:
+    """Load the canonical non-empty append-only decision log."""
+    resolved = path.resolve()
+    if not resolved.is_file():
+        raise ValueError(f"history does not exist: {resolved}")
+    text = resolved.read_text(encoding="utf-8-sig")
+    try:
+        return parse_history_text(text)
+    except ValueError as error:
+        raise ValueError(f"{resolved}: {error}") from error
 
 
 def load_graph(paths: list[Path]) -> tuple[dict[str, set[str]], set[str]]:
