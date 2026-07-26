@@ -92,12 +92,14 @@ blocked; do not fall back to visible context.
   directly prevents.
 - For each still-unimplemented control, compute `estimated calls saving by fix
   per affected run = calls saved per affected run - additional calls per
-  affected run for the implemented fix`; use the estimated percent of affected
-  similar runs to evaluate long-term savings, and estimate one-time cost
-  separately. Reject non-positive savings or costs unlikely to be recovered
-  during the control's expected lifetime unless correctness or safety requires
-  the control. When the user supplies a horizon, also compute net savings over
-  it.
+  affected run for the implemented fix`, then compute `estimated calls saving
+  by fix per similar run = estimated calls saving by fix per affected run *
+  estimated percent of affected similar runs expressed as a proportion`; rate
+  `new complexity introduced by fix` as Low, Medium, or High based on added
+  implementation and maintenance burden, and estimate one-time cost separately.
+  Reject non-positive savings or costs unlikely to be recovered during the
+  control's expected lifetime unless correctness or safety requires the control.
+  When the user supplies a horizon, also compute net savings over it.
 - Estimate affected-run frequency from triggering conditions and comparable
   evidence; state assumptions and a plausible range, use observations only as
   calibration, and test ROI at the range's low end.
@@ -175,7 +177,8 @@ control table:
 `Proposed control | Calls saved per affected run |
 Est. Percent of Affected Similar Runs |
 Additional Calls per Affected Run for Implemented Fix |
-Est. Calls Saving by Fix per Affected Run |
+Est. Calls Saving by Fix per Similar Run |
+New Complexity Introduced by Fix |
 One-time implementation cost (model calls) | Recommendation`.
 Then report only still-unimplemented findings in detail, any required ranked
 prompt-level table, excluded ordinary failures, and important evidence limits.
