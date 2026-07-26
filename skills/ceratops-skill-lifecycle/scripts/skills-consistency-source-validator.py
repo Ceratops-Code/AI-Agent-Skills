@@ -815,7 +815,16 @@ def check_validation_command_surface() -> list[str]:
     pending_call = "$managePendingOutput = @("
     fast_forward_call = 'Invoke-GitQuiet @("merge", "--ff-only", $branch)'
     installer_guard = 'if (-not (Test-Path -LiteralPath $installScript -PathType Leaf))'
-    mypy_call = 'Invoke-QuietNative -FilePath "python" -Arguments @("-m", "mypy")'
+    mypy_call = "\nInvoke-PromotionMypy\n"
+    mypy_failure_classifications = (
+        '"mypy_scope_missing"',
+        '"mypy_scope_mismatch"',
+        '"mypy_failed"',
+    )
+    mypy_failure_output = (
+        "[Console]::Error.WriteLine($payload)",
+        "exit 1",
+    )
     promotion_commit_arg = '"-PromotionCommit"'
     record_promotion_arg = '"-RecordPromotion"'
     install_call = (
@@ -833,6 +842,17 @@ def check_validation_command_surface() -> list[str]:
             "release promotion must retain approved sources through one "
             "promotion-record pending-release manager call"
         )
+    elif any(
+        marker not in promotion_helper_text
+        for marker in (
+            *mypy_failure_classifications,
+            *mypy_failure_output,
+        )
+    ):
+        errors.append(
+            "release promotion must classify repository-configured mypy "
+            "failures and emit compact blocking JSON"
+        )
     elif not (
         promotion_helper_text.find(fast_forward_call)
         < promotion_helper_text.find(installer_guard)
@@ -844,8 +864,9 @@ def check_validation_command_surface() -> list[str]:
         < promotion_helper_text.find(install_call)
     ):
         errors.append(
-            "release promotion must guard the installer, run mypy, retain approved "
-            "sources, and manage pending release work before installing"
+            "release promotion must guard the installer, run classified mypy, "
+            "retain approved sources, and manage pending release work before "
+            "installing"
         )
     release_preparation_markers = (
         'Invoke-GitQuiet @("fetch", "--prune", $RemoteName)',

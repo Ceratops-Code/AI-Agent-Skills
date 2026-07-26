@@ -75,6 +75,55 @@ function Invoke-QuietNative {
         -WorkingDirectory $WorkingDirectory
 }
 
+function Invoke-PromotionMypy {
+    # Preserve repository-configured mypy validation while turning its one
+    # predictable configuration failure into a compact decision payload.
+    try {
+        Invoke-QuietNative -FilePath "python" -Arguments @("-m", "mypy")
+        return
+    } catch {
+        $failureMessage = [string]$_.Exception.Message
+    }
+
+    $configMarkers = [ordered]@{
+        "mypy.ini" = "(?m)^\s*\[mypy\]\s*(?:[#;].*)?$"
+        ".mypy.ini" = "(?m)^\s*\[mypy\]\s*(?:[#;].*)?$"
+        "pyproject.toml" = "(?m)^\s*\[tool\.mypy\]\s*(?:#.*)?$"
+        "setup.cfg" = "(?m)^\s*\[mypy\]\s*(?:[#;].*)?$"
+    }
+    $configFiles = @(
+        foreach ($candidate in $configMarkers.Keys) {
+            $candidatePath = Join-Path $resolvedSkillsRepoRoot $candidate
+            if (Test-Path -LiteralPath $candidatePath -PathType Leaf) {
+                $candidateText = Get-Content -LiteralPath $candidatePath -Raw
+                if ($candidateText -match $configMarkers[$candidate]) {
+                    $candidate
+                }
+            }
+        }
+    )
+    if ($failureMessage -match "Missing target module, package, files, or command") {
+        $classification = if ($configFiles.Count -eq 0) {
+            "mypy_scope_missing"
+        } else {
+            "mypy_scope_mismatch"
+        }
+    } else {
+        $classification = "mypy_failed"
+    }
+    $outputTail = @($failureMessage -split "\r?\n" | Select-Object -Last 8) -join "`n"
+    $payload = [ordered]@{
+        status = "blocked"
+        blocker = "promotion_mypy"
+        classification = $classification
+        command = "python -m mypy"
+        config_files = $configFiles
+        output_tail = $outputTail
+    } | ConvertTo-Json -Compress
+    [Console]::Error.WriteLine($payload)
+    exit 1
+}
+
 function Get-GitLines {
     param([string[]]$Arguments)
 
@@ -201,7 +250,7 @@ if (-not (Test-Path -LiteralPath $installScript -PathType Leaf)) {
     throw "Missing repository skill installer: $installScript"
 }
 
-Invoke-QuietNative -FilePath "python" -Arguments @("-m", "mypy")
+Invoke-PromotionMypy
 
 $headSha = (Get-GitLines @("rev-parse", "HEAD") | Select-Object -First 1).Trim()
 $managePendingArgs = @(

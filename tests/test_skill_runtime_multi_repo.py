@@ -640,13 +640,12 @@ def runtime_owner(install_root: pathlib.Path, skill_name: str) -> str:
     return str(data["runtime_source_id"])
 
 
-@pytest.mark.skipif(
-    shutil.which("powershell") is None,
-    reason="PowerShell lifecycle helper is unavailable",
-)
-def test_promotion_helper_owns_release_branch_preparation(
+def prepare_promotion_test_repo(
     tmp_path: pathlib.Path,
-) -> None:
+    mypy_config: tuple[str, str] | None,
+) -> tuple[pathlib.Path, str, pathlib.Path, dict[str, str]]:
+    """Create one isolated promotion repository with an approved branch."""
+
     remote = tmp_path / "remote.git"
     seed = tmp_path / "seed"
     repo = tmp_path / "AI-Agent-Skills"
@@ -656,11 +655,13 @@ def test_promotion_helper_owns_release_branch_preparation(
     assert run_git(seed, "config", "user.email", "test@example.invalid").returncode == 0
     assert run_git(seed, "config", "user.name", "Test Agent").returncode == 0
     (seed / "dummy.py").write_text("value: int = 1\n", encoding="utf-8", newline="\n")
-    (seed / "mypy.ini").write_text(
-        "[mypy]\nfiles = dummy.py\n",
-        encoding="utf-8",
-        newline="\n",
-    )
+    if mypy_config is not None:
+        config_name, config_text = mypy_config
+        (seed / config_name).write_text(
+            config_text,
+            encoding="utf-8",
+            newline="\n",
+        )
     (seed / "README.md").write_text("base\n", encoding="utf-8", newline="\n")
     (seed / "scripts").mkdir()
     (seed / "scripts" / "install-skills.py").write_text(
@@ -694,8 +695,16 @@ def test_promotion_helper_owns_release_branch_preparation(
     log = tmp_path / "promotion.log"
     environment = os.environ.copy()
     environment["PROMOTION_TEST_LOG"] = str(log)
+    return repo, approved_head, log, environment
 
-    promoted = subprocess.run(
+
+def run_promotion_helper(
+    repo: pathlib.Path,
+    environment: dict[str, str],
+) -> subprocess.CompletedProcess[str]:
+    """Run the promotion helper against an isolated repository."""
+
+    return subprocess.run(
         [
             "powershell",
             "-NoProfile",
@@ -720,6 +729,20 @@ def test_promotion_helper_owns_release_branch_preparation(
         env=environment,
     )
 
+
+@pytest.mark.skipif(
+    shutil.which("powershell") is None,
+    reason="PowerShell lifecycle helper is unavailable",
+)
+def test_promotion_helper_owns_release_branch_preparation(
+    tmp_path: pathlib.Path,
+) -> None:
+    repo, approved_head, log, environment = prepare_promotion_test_repo(
+        tmp_path,
+        ("mypy.ini", "[mypy]\nfiles = dummy.py\n"),
+    )
+    promoted = run_promotion_helper(repo, environment)
+
     assert promoted.returncode == 0, promoted.stderr
     result = json.loads(promoted.stdout)
     assert result["status"] == "ready"
@@ -731,6 +754,51 @@ def test_promotion_helper_owns_release_branch_preparation(
     assert log.read_text(encoding="utf-8") == "installed\n"
     assert run_git(repo, "branch", "--show-current").stdout.strip() == "release/local"
     assert run_git(repo, "status", "--porcelain").stdout == ""
+
+
+@pytest.mark.skipif(
+    shutil.which("powershell") is None,
+    reason="PowerShell lifecycle helper is unavailable",
+)
+@pytest.mark.parametrize(
+    ("mypy_config", "classification", "config_files"),
+    [
+        (None, "mypy_scope_missing", '"config_files":[]'),
+        (
+            ("pyproject.toml", "[project]\nname = 'fixture'\n"),
+            "mypy_scope_missing",
+            '"config_files":[]',
+        ),
+        (
+            ("mypy.ini", "[mypy]\n"),
+            "mypy_scope_mismatch",
+            '"config_files":["mypy.ini"]',
+        ),
+        (
+            ("mypy.ini", "[mypy]\nfiles = missing.py\n"),
+            "mypy_failed",
+            '"config_files":["mypy.ini"]',
+        ),
+    ],
+)
+def test_promotion_helper_classifies_mypy_failures(
+    tmp_path: pathlib.Path,
+    mypy_config: tuple[str, str] | None,
+    classification: str,
+    config_files: str,
+) -> None:
+    repo, _, log, environment = prepare_promotion_test_repo(
+        tmp_path,
+        mypy_config,
+    )
+
+    promoted = run_promotion_helper(repo, environment)
+
+    assert promoted.returncode != 0
+    assert f'"classification":"{classification}"' in promoted.stderr
+    assert '"command":"python -m mypy"' in promoted.stderr
+    assert config_files in promoted.stderr
+    assert not log.exists()
 
 
 @pytest.mark.skipif(
