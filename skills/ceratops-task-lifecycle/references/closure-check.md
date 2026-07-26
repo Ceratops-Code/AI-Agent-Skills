@@ -10,9 +10,9 @@ result.
 
 ### Inputs To Capture
 
-- The user-stated closure boundary, or the beginning of the thread when none
-  is stated; the authorized work scope; and any unresolved or intentionally
-  retained state at the boundary.
+- Closure mode: full-thread, or `incremental closure` beginning after the
+  previous completed closure; the authorized work scope; and any unresolved or
+  intentionally retained state at the boundary.
 - Completed actions, directly touched artifacts, and claims already made.
 - Touched repos, worktrees, branches, commits, PRs, automation folders,
   generated or runtime artifacts, active goals, failed commands, and warnings.
@@ -28,9 +28,10 @@ targeted local state before asking.
 
 - Advisory by default; do not mutate state unless the user explicitly asks for
   that exact action.
-- When the user states a closure boundary, scope new work and credit analysis
-  to that window and carry forward only unresolved or intentionally retained
-  boundary state; otherwise scope from the beginning of the thread.
+- For an `incremental closure`, scope new work and credit analysis to completed
+  runs after the previous completed closure and carry forward only unresolved
+  or intentionally retained boundary state; otherwise scope from the beginning
+  of the thread.
 - When closure follows a mutating or multi-entity task, classify touched,
   discovered, or plausibly affected artifacts, external entities, and side
   effects as active, intentionally retained, stale-in-scope, stale-out-of-scope,
@@ -100,22 +101,9 @@ targeted local state before asking.
 
 #### 5. Include Credit-Saving Analysis
 
-- Invoke `$ceratops-credit-savings-analysis` for the current thread, reuse fresh
-  closure evidence, and include its required result under `Credit savings`.
-- Obtain model-call inventory in one `model-call-ledger.py
-  (--thread-id THREAD_ID | --session SESSION) --closure [--last-runs N]`
-  invocation. For a prior-closure boundary, set `N` to the
-  completed runs strictly after that closure; exclude the boundary and active
-  runs. Omit `--last-runs` only when the user states no boundary, use the
-  current thread ID when available or its exact session path otherwise, and
-  create no temporary ledger.
-- (D) Before reporting, run the same helper once more for the same source and
-  window with `--classifications PATH`; use its validated category totals,
-  then remove the caller-owned classification file.
-- Treat the ledger as evidence, not analysis. A zero-finding result is invalid
-  unless selected session rows support dismissal of every visible candidate
-  signal and every required result category; report an analysis blocker when
-  that semantic review is incomplete.
+- Invoke `$ceratops-credit-savings-analysis` for the current thread and selected
+  closure window, reuse fresh closure evidence, and include its completed result
+  or blocker under `Credit savings`.
 
 #### 6. Classify Closure State
 
@@ -138,17 +126,15 @@ targeted local state before asking.
   reported.
 - A response that reports no unresolved items is supported by checked evidence.
 - A completed `$ceratops-credit-savings-analysis` result or its blocker is
-  included under `Credit savings`; ledger evidence alone does not satisfy this
-  gate.
-- The credit analysis used category totals validated by the existing ledger
-  helper; an unvalidated classification is a blocker.
+  included under `Credit savings`.
 - No mutation was performed unless explicitly requested.
 
 ### Output Contract
 
 Return only relevant concise bullets:
 
-- checked scope, only when it limits the answer
+- checked scope, labeled `Incremental closure` when that mode applies, only when
+  it limits the answer
 - required next actions
 - blockers
 - uncommitted or unpushed changes
