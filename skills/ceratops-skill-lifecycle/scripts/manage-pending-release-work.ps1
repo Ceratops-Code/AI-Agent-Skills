@@ -457,7 +457,10 @@ foreach ($branchName in $approvedBranches) {
         }
     }
 
-    if (-not (Test-GitSuccess @("merge-base", "--is-ancestor", $branchName, $ReleaseBranch))) {
+    if (
+        -not $isRetainedOnlyPromotionBranch -and
+        -not (Test-GitSuccess @("merge-base", "--is-ancestor", $branchName, $ReleaseBranch))
+    ) {
         $aheadText = (
             Get-GitLines @("rev-list", "--count", "$ReleaseBranch..$branchName") |
             Select-Object -First 1

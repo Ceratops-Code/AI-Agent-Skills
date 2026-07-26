@@ -662,7 +662,17 @@ def test_promotion_records_are_collision_free_and_cleaned_terminally(
     assert retained_payload["approved_branches"] == ["approved"]
 
     (approved_worktree / "README.md").write_text(
-        "base\napproved\nuncommitted retained work\n",
+        "base\napproved\nlater retained commit\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    assert run_git(approved_worktree, "add", "README.md").returncode == 0
+    assert (
+        run_git(approved_worktree, "commit", "-m", "later retained change").returncode
+        == 0
+    )
+    (approved_worktree / "README.md").write_text(
+        "base\napproved\nlater retained commit\nuncommitted retained work\n",
         encoding="utf-8",
         newline="\n",
     )
@@ -681,7 +691,10 @@ def test_promotion_records_are_collision_free_and_cleaned_terminally(
     next_payload = json.loads(next_retained.stdout)
     assert next_payload["approved_branches"] == ["approved", "approved-next"]
     assert pathlib.Path(next_payload["promotion_record"]) == record
-    assert run_git(approved_worktree, "checkout", "--", "README.md").returncode == 0
+    assert (
+        run_git(approved_worktree, "reset", "--hard", promotion_commit).returncode
+        == 0
+    )
 
     collision_branch = "release__local"
     assert (
