@@ -20,7 +20,14 @@ LIFECYCLE_SOURCE = ROOT / "skills" / "ceratops-skill-lifecycle"
 INSTALLER_TEMPLATE = LIFECYCLE_SOURCE / "scripts" / "templates" / "install-skills-template.py"
 INSTALLER_SYNCHRONIZER = LIFECYCLE_SOURCE / "scripts" / "runtime" / "synchronize-installers.py"
 RUNTIME_VALIDATOR = LIFECYCLE_SOURCE / "scripts" / "runtime" / "skills-consistency-runtime-validator.py"
-PENDING_RELEASE_WORK = LIFECYCLE_SOURCE / "scripts" / "check-pending-release-work.ps1"
+PROMOTION_HELPER = (
+    LIFECYCLE_SOURCE
+    / "scripts"
+    / "promote-skill-branches-to-release-and-install.ps1"
+)
+MANAGE_PENDING_RELEASE_WORK = (
+    LIFECYCLE_SOURCE / "scripts" / "manage-pending-release-work.ps1"
+)
 MODEL_CALL_LEDGER = ROOT / "skills" / "ceratops-credit-savings-analysis" / "scripts" / "model-call-ledger.py"
 RUNTIME_MANIFEST = ".runtime-manifest.json"
 RUNTIME_MANIFEST_SCHEMA = "ceratops-runtime-skill.v3"
@@ -474,6 +481,99 @@ def runtime_owner(install_root: pathlib.Path, skill_name: str) -> str:
     shutil.which("powershell") is None,
     reason="PowerShell lifecycle helper is unavailable",
 )
+def test_promotion_helper_owns_release_branch_preparation(
+    tmp_path: pathlib.Path,
+) -> None:
+    remote = tmp_path / "remote.git"
+    seed = tmp_path / "seed"
+    repo = tmp_path / "AI-Agent-Skills"
+    assert run_git(tmp_path, "init", "--bare", str(remote)).returncode == 0
+    seed.mkdir()
+    assert run_git(seed, "init").returncode == 0
+    assert run_git(seed, "config", "user.email", "test@example.invalid").returncode == 0
+    assert run_git(seed, "config", "user.name", "Test Agent").returncode == 0
+    (seed / "dummy.py").write_text("value: int = 1\n", encoding="utf-8", newline="\n")
+    (seed / "mypy.ini").write_text(
+        "[mypy]\nfiles = dummy.py\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    (seed / "README.md").write_text("base\n", encoding="utf-8", newline="\n")
+    (seed / "scripts").mkdir()
+    (seed / "scripts" / "install-skills.py").write_text(
+        "import os, pathlib\n"
+        "pathlib.Path(os.environ['PROMOTION_TEST_LOG']).write_text("
+        "'installed\\n', encoding='utf-8')\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    assert run_git(seed, "add", ".").returncode == 0
+    assert run_git(seed, "commit", "-m", "base").returncode == 0
+    assert run_git(seed, "branch", "-M", "main").returncode == 0
+    assert run_git(seed, "remote", "add", "origin", str(remote)).returncode == 0
+    assert run_git(seed, "push", "-u", "origin", "main").returncode == 0
+    assert (
+        run_git(remote, "symbolic-ref", "HEAD", "refs/heads/main").returncode
+        == 0
+    )
+    assert run_git(tmp_path, "clone", str(remote), str(repo)).returncode == 0
+    assert run_git(repo, "config", "user.email", "test@example.invalid").returncode == 0
+    assert run_git(repo, "config", "user.name", "Test Agent").returncode == 0
+    assert run_git(repo, "switch", "-c", "approved").returncode == 0
+    (repo / "README.md").write_text(
+        "base\napproved\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    assert run_git(repo, "add", "README.md").returncode == 0
+    assert run_git(repo, "commit", "-m", "approved change").returncode == 0
+    approved_head = run_git(repo, "rev-parse", "HEAD").stdout.strip()
+    log = tmp_path / "promotion.log"
+    environment = os.environ.copy()
+    environment["PROMOTION_TEST_LOG"] = str(log)
+
+    promoted = subprocess.run(
+        [
+            "powershell",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(PROMOTION_HELPER),
+            "-SkillsRepoRoot",
+            str(repo),
+            "-ApprovedBranch",
+            "approved",
+            "-MainBranch",
+            "main",
+            "-ReleaseBranch",
+            "release/local",
+            "-RemoteName",
+            "origin",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=environment,
+    )
+
+    assert promoted.returncode == 0, promoted.stderr
+    result = json.loads(promoted.stdout)
+    assert result["status"] == "ready"
+    assert result["release_branch"] == "release/local"
+    assert result["merged_branches"] == ["approved"]
+    assert result["head"] == approved_head
+    assert result["retained_approved_branches"] == ["approved"]
+    assert pathlib.Path(result["promotion_record"]).is_file()
+    assert log.read_text(encoding="utf-8") == "installed\n"
+    assert run_git(repo, "branch", "--show-current").stdout.strip() == "release/local"
+    assert run_git(repo, "status", "--porcelain").stdout == ""
+
+
+@pytest.mark.skipif(
+    shutil.which("powershell") is None,
+    reason="PowerShell lifecycle helper is unavailable",
+)
 def test_promotion_records_are_collision_free_and_cleaned_terminally(
     tmp_path: pathlib.Path,
 ) -> None:
@@ -535,7 +635,7 @@ def test_promotion_records_are_collision_free_and_cleaned_terminally(
         "-ExecutionPolicy",
         "Bypass",
         "-File",
-        str(PENDING_RELEASE_WORK),
+        str(MANAGE_PENDING_RELEASE_WORK),
         "-SkillsRepoRoot",
         str(repo),
         "-ReleaseBranch",
@@ -584,8 +684,8 @@ def test_promotion_records_are_collision_free_and_cleaned_terminally(
 
     bundle_scripts = tmp_path / "bundle" / "scripts"
     (bundle_scripts / "runtime").mkdir(parents=True)
-    finalizer_helper = bundle_scripts / PENDING_RELEASE_WORK.name
-    shutil.copy2(PENDING_RELEASE_WORK, finalizer_helper)
+    finalizer_helper = bundle_scripts / MANAGE_PENDING_RELEASE_WORK.name
+    shutil.copy2(MANAGE_PENDING_RELEASE_WORK, finalizer_helper)
     (bundle_scripts / "runtime" / "skills-consistency-runtime-validator.py").write_text(
         "import os, pathlib\n"
         "record = pathlib.Path(os.environ['EXPECTED_PROMOTION_RECORD'])\n"

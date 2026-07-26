@@ -7,11 +7,11 @@ param(
     [string]$RemoteName = "origin"
 )
 
-# Skill-local helper for deterministic change-promotion work. It prepares the
-# reusable release branch, fast-forwards and checks only approved branches,
-# type-checks the assembled release candidate, retains approved clean worktrees
-# through remote review, then validates and installs the promoted snapshot and
-# emits one compact JSON summary on success.
+# Skill-local helper for deterministic change-promotion work. It refreshes main,
+# prepares the reusable release branch, fast-forwards and checks only approved
+# branches, type-checks the assembled candidate, retains approved clean
+# worktrees through remote review, then validates and installs the promoted
+# snapshot and emits one compact JSON summary on success.
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
@@ -19,17 +19,16 @@ $ErrorActionPreference = "Stop"
 if ([string]::IsNullOrWhiteSpace($SkillsRepoRoot)) {
     $SkillsRepoRoot = (Get-Location).Path
 }
+if ([string]::IsNullOrWhiteSpace($RemoteName)) {
+    throw "RemoteName must not be empty."
+}
 
 $resolvedSkillsRepoRoot = (Resolve-Path -LiteralPath $SkillsRepoRoot).Path
 $scriptRoot = $PSScriptRoot
-$prepareScript = Join-Path $scriptRoot "prepare-release-branch.ps1"
-$pendingScript = Join-Path $scriptRoot "check-pending-release-work.ps1"
+$managePendingScript = Join-Path $scriptRoot "manage-pending-release-work.ps1"
 
-if (-not (Test-Path -LiteralPath $prepareScript)) {
-    throw "Missing helper: $prepareScript"
-}
-if (-not (Test-Path -LiteralPath $pendingScript)) {
-    throw "Missing helper: $pendingScript"
+if (-not (Test-Path -LiteralPath $managePendingScript)) {
+    throw "Missing helper: $managePendingScript"
 }
 
 function Invoke-CapturedNative {
@@ -124,23 +123,54 @@ function Assert-CleanWorktree {
     }
 }
 
-Invoke-QuietNative -FilePath "powershell" -Arguments @(
-    "-NoProfile",
-    "-ExecutionPolicy",
-    "Bypass",
-    "-File",
-    $prepareScript,
-    "-SkillsRepoRoot",
-    $resolvedSkillsRepoRoot,
-    "-MainBranch",
-    $MainBranch,
-    "-ReleaseBranch",
-    $ReleaseBranch,
-    "-RemoteName",
-    $RemoteName
-)
+function Test-RefExists {
+    param([string]$RefName)
 
-Assert-CleanWorktree "after release branch preparation"
+    return Test-GitSuccess @("show-ref", "--verify", "--quiet", $RefName)
+}
+
+function Assert-BranchCheckedOut {
+    param([string]$BranchName)
+
+    $currentBranch = Get-GitLines @("branch", "--show-current") |
+        Select-Object -First 1
+    if ($null -eq $currentBranch) {
+        $currentBranch = ""
+    } else {
+        $currentBranch = $currentBranch.Trim()
+    }
+    if ($currentBranch -ne $BranchName) {
+        throw "Expected branch '$BranchName' after release preparation, got '$currentBranch'."
+    }
+}
+
+$remoteMainRef = "refs/remotes/$RemoteName/$MainBranch"
+$remoteMain = "$RemoteName/$MainBranch"
+
+$null = Get-GitLines @("rev-parse", "--is-inside-work-tree")
+Assert-CleanWorktree "before switching branches"
+$null = Get-GitLines @("remote", "get-url", $RemoteName)
+Invoke-GitQuiet @("fetch", "--prune", $RemoteName)
+if (-not (Test-RefExists "refs/heads/$MainBranch")) {
+    throw "Missing local main branch '$MainBranch'."
+}
+if (-not (Test-RefExists $remoteMainRef)) {
+    throw "Missing remote main branch '$remoteMain'."
+}
+
+Invoke-GitQuiet @("switch", $MainBranch)
+Assert-CleanWorktree "after switching to $MainBranch"
+Invoke-GitQuiet @("merge", "--ff-only", $remoteMain)
+Assert-CleanWorktree "after fast-forwarding $MainBranch from $remoteMain"
+if (Test-RefExists "refs/heads/$ReleaseBranch") {
+    # Existing release commits are the authoritative unpublished batch. Branch
+    # preparation checks out that batch without merging current main into it.
+    Invoke-GitQuiet @("switch", $ReleaseBranch)
+} else {
+    Invoke-GitQuiet @("switch", "-c", $ReleaseBranch, $MainBranch)
+}
+Assert-CleanWorktree "after preparing $ReleaseBranch"
+Assert-BranchCheckedOut $ReleaseBranch
 
 $mergedBranches = @()
 foreach ($branch in $ApprovedBranch) {
@@ -174,12 +204,12 @@ if (-not (Test-Path -LiteralPath $installScript -PathType Leaf)) {
 Invoke-QuietNative -FilePath "python" -Arguments @("-m", "mypy")
 
 $headSha = (Get-GitLines @("rev-parse", "HEAD") | Select-Object -First 1).Trim()
-$pendingArgs = @(
+$managePendingArgs = @(
     "-NoProfile",
     "-ExecutionPolicy",
     "Bypass",
     "-File",
-    $pendingScript,
+    $managePendingScript,
     "-SkillsRepoRoot",
     $resolvedSkillsRepoRoot,
     "-MainBranch",
@@ -194,25 +224,29 @@ if ($mergedBranches.Count -gt 0) {
     $approvedBranchData = [Convert]::ToBase64String(
         [Text.Encoding]::UTF8.GetBytes(($mergedBranches -join "`n"))
     )
-    $pendingArgs += "-ApprovedBranchData"
-    $pendingArgs += $approvedBranchData
+    $managePendingArgs += "-ApprovedBranchData"
+    $managePendingArgs += $approvedBranchData
 }
-$pendingOutput = @(Invoke-CapturedNative -FilePath "powershell" -Arguments $pendingArgs)
-$pendingJson = (
-    $pendingOutput |
+$managePendingOutput = @(
+    Invoke-CapturedNative `
+        -FilePath "powershell" `
+        -Arguments $managePendingArgs
+)
+$managePendingJson = (
+    $managePendingOutput |
     Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } |
     Select-Object -Last 1
 )
-if ([string]::IsNullOrWhiteSpace([string]$pendingJson)) {
-    throw "Pending-work helper returned no promotion result."
+if ([string]::IsNullOrWhiteSpace([string]$managePendingJson)) {
+    throw "Pending-release manager returned no promotion result."
 }
 try {
-    $pendingResult = $pendingJson | ConvertFrom-Json
+    $managePendingResult = $managePendingJson | ConvertFrom-Json
 } catch {
-    throw "Pending-work helper returned invalid promotion JSON."
+    throw "Pending-release manager returned invalid promotion JSON."
 }
-if ($pendingResult.status -ne "ready") {
-    throw "Pending-work helper did not report ready promotion state."
+if ($managePendingResult.status -ne "ready") {
+    throw "Pending-release manager did not report ready promotion state."
 }
 
 Invoke-QuietNative -FilePath "python" -Arguments @(
@@ -234,6 +268,6 @@ Assert-CleanWorktree "before reporting ready state"
     install = $runtimeInstall
     validation = $validation
     head = $headSha
-    retained_approved_branches = @($pendingResult.approved_branches)
-    promotion_record = $pendingResult.promotion_record
+    retained_approved_branches = @($managePendingResult.approved_branches)
+    promotion_record = $managePendingResult.promotion_record
 } | ConvertTo-Json -Compress

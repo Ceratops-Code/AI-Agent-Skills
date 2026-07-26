@@ -81,7 +81,7 @@ asking.
 #### 3. Finalize the shipped release
 
 - After `ship` returns `shipped` or `already_shipped`, run
-  `scripts/check-pending-release-work.ps1 -SkillsRepoRoot <repo>
+  `scripts/manage-pending-release-work.ps1 -SkillsRepoRoot <repo>
   -ReleaseBranch release/local -PromotionCommit <ship.commit>
   -FinalizeShippedRelease` from the selected lifecycle bundle when promotion
   reported retained approved sources; omit `-PromotionCommit` when no promotion

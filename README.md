@@ -87,7 +87,7 @@ without repository deduplication.
 | `skills/ceratops-gh-repo-lifecycle/scripts/github_pr_workflow/` | Package CLI for individual PR operations and exact-commit, checkpointed end-to-end shipping with concurrent gates, reusable-branch restoration, and terminal same-PR checkpoint cleanup. |
 | `skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py` | Source validator for selected-skill, section, and full repository checks. |
 | `skills/ceratops-skill-lifecycle/scripts/promote-skill-branches-to-release-and-install.ps1` | Called by skill change-promotion to prepare `release/local`, fast-forward reviewed branches, type-check the assembled candidate, record its exact retention state, then validate, install, and emit compact ready/not-ready JSON. |
-| `skills/ceratops-skill-lifecycle/scripts/check-pending-release-work.ps1` | Records exact promoted sources, performs cleanup-only checks, or terminally installs and verifies synchronized runtime before approved-source cleanup. |
+| `skills/ceratops-skill-lifecycle/scripts/manage-pending-release-work.ps1` | Records exact promoted sources, performs cleanup-only checks, or terminally installs and verifies synchronized runtime before approved-source cleanup. |
 
 Lifecycle helpers suppress successful subcommand output and print only compact
 JSON on success. This repo keeps scripts only where they add reusable safety
@@ -303,7 +303,7 @@ branch staging, `$ceratops-gh-repo-lifecycle` ship-change with
 `python -m github_pr_workflow ship --repo-root <repo> --head-branch
 release/local --reusable-head` for exact-commit PR publication, concurrent
 gates, merge, main sync, reusable-branch restoration, and same-PR checkpoint
-cleanup, then `check-pending-release-work.ps1 -FinalizeShippedRelease` for the
+cleanup, then `manage-pending-release-work.ps1 -FinalizeShippedRelease` for the
 final runtime rebuild, verification, and approved-source cleanup from `main`.
 Skill installation remains outside the GitHub helper.
 

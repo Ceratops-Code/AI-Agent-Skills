@@ -40,7 +40,7 @@ RUNTIME_BUILDER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "ru
 RUNTIME_VALIDATOR = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "runtime" / "skills-consistency-runtime-validator.py"
 FAST_CHANGE_READINESS_HELPER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "validate-fast-change-readiness.ps1"
 PROMOTION_HELPER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "promote-skill-branches-to-release-and-install.ps1"
-PENDING_WORK_HELPER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "check-pending-release-work.ps1"
+MANAGE_PENDING_RELEASE_HELPER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "manage-pending-release-work.ps1"
 VALIDATOR = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "skills-consistency-source-validator.py"
 WORKFLOW = ROOT / ".github" / "workflows" / "validate.yml"
 SKILL_DETERMINISTIC_CONTRACT = pathlib.Path("skills/ceratops-skill-lifecycle/references/contracts/skill-deterministic-contract.json")
@@ -781,7 +781,11 @@ def check_validation_command_surface() -> list[str]:
     runtime_validator_text = RUNTIME_VALIDATOR.read_text(encoding="utf-8") if RUNTIME_VALIDATOR.is_file() else ""
     fast_change_readiness_text = FAST_CHANGE_READINESS_HELPER.read_text(encoding="utf-8") if FAST_CHANGE_READINESS_HELPER.is_file() else ""
     promotion_helper_text = PROMOTION_HELPER.read_text(encoding="utf-8") if PROMOTION_HELPER.is_file() else ""
-    pending_work_helper_text = PENDING_WORK_HELPER.read_text(encoding="utf-8") if PENDING_WORK_HELPER.is_file() else ""
+    manage_pending_helper_text = (
+        MANAGE_PENDING_RELEASE_HELPER.read_text(encoding="utf-8")
+        if MANAGE_PENDING_RELEASE_HELPER.is_file()
+        else ""
+    )
     readme_text = README.read_text(encoding="utf-8") if README.is_file() else ""
     workflow_text = WORKFLOW.read_text(encoding="utf-8") if WORKFLOW.is_file() else ""
 
@@ -803,8 +807,8 @@ def check_validation_command_surface() -> list[str]:
         errors.append("release promotion must not expose a validation selector")
     if "scripts\\install-skills.py" not in promotion_helper_text or '"python"' not in promotion_helper_text:
         errors.append("release promotion must install through the target repository Python installer")
-    pending_approved_data = '$pendingArgs += "-ApprovedBranchData"'
-    pending_call = '$pendingOutput = @(Invoke-CapturedNative -FilePath "powershell" -Arguments $pendingArgs)'
+    pending_approved_data = '$managePendingArgs += "-ApprovedBranchData"'
+    pending_call = "$managePendingOutput = @("
     fast_forward_call = 'Invoke-GitQuiet @("merge", "--ff-only", $branch)'
     installer_guard = 'if (-not (Test-Path -LiteralPath $installScript -PathType Leaf))'
     mypy_call = 'Invoke-QuietNative -FilePath "python" -Arguments @("-m", "mypy")'
@@ -819,11 +823,11 @@ def check_validation_command_surface() -> list[str]:
         or promotion_helper_text.count(pending_call) != 1
         or promotion_helper_text.count(promotion_commit_arg) != 1
         or promotion_helper_text.count(record_promotion_arg) != 1
-        or '$pendingArgs += "-CleanMergedBranches"' in promotion_helper_text
+        or '$managePendingArgs += "-CleanMergedBranches"' in promotion_helper_text
     ):
         errors.append(
             "release promotion must retain approved sources through one "
-            "promotion-record pending-work check"
+            "promotion-record pending-release manager call"
         )
     elif not (
         promotion_helper_text.find(fast_forward_call)
@@ -837,7 +841,34 @@ def check_validation_command_surface() -> list[str]:
     ):
         errors.append(
             "release promotion must guard the installer, run mypy, retain approved "
-            "sources, and check their pending work before installing"
+            "sources, and manage pending release work before installing"
+        )
+    release_preparation_markers = (
+        'Invoke-GitQuiet @("fetch", "--prune", $RemoteName)',
+        'Invoke-GitQuiet @("switch", $MainBranch)',
+        'Invoke-GitQuiet @("merge", "--ff-only", $remoteMain)',
+        'if (Test-RefExists "refs/heads/$ReleaseBranch")',
+        "Assert-BranchCheckedOut $ReleaseBranch",
+    )
+    if any(
+        marker not in promotion_helper_text
+        for marker in release_preparation_markers
+    ):
+        errors.append(
+            "release promotion must own remote refresh, main synchronization, "
+            "and release-branch preparation"
+        )
+    elif not (
+        promotion_helper_text.find(release_preparation_markers[0])
+        < promotion_helper_text.find(release_preparation_markers[1])
+        < promotion_helper_text.find(release_preparation_markers[2])
+        < promotion_helper_text.find(release_preparation_markers[3])
+        < promotion_helper_text.find(release_preparation_markers[4])
+        < promotion_helper_text.find(fast_forward_call)
+    ):
+        errors.append(
+            "release promotion must prepare the synchronized release branch "
+            "before staging approved branches"
         )
     pending_scope_markers = (
         "ApprovedBranchData",
@@ -846,11 +877,11 @@ def check_validation_command_surface() -> list[str]:
         '"--format=%(worktreepath)"',
     )
     if (
-        any(marker not in pending_work_helper_text for marker in pending_scope_markers)
-        or '"worktree", "list"' in pending_work_helper_text
-        or '"--format=%(refname:short)"' in pending_work_helper_text
+        any(marker not in manage_pending_helper_text for marker in pending_scope_markers)
+        or '"worktree", "list"' in manage_pending_helper_text
+        or '"--format=%(refname:short)"' in manage_pending_helper_text
     ):
-        errors.append("release pending-work checks must be limited to approved branches and their worktrees")
+        errors.append("pending-release management must be limited to approved branches and their worktrees")
     promotion_retention_markers = (
         "retained_approved_branches",
         "promotion_record",
@@ -861,12 +892,12 @@ def check_validation_command_surface() -> list[str]:
         "Remove-Item -LiteralPath $promotionRecordPath",
     )
     if any(
-        marker not in promotion_helper_text + pending_work_helper_text
+        marker not in promotion_helper_text + manage_pending_helper_text
         for marker in promotion_retention_markers
     ):
         errors.append(
             "release promotion must retain approved sources by exact promotion "
-            "commit and clean them only through the pending-work helper"
+            "commit and clean them only through the pending-release manager"
         )
     terminal_finalizer_markers = (
         "$FinalizeShippedRelease",
@@ -888,20 +919,20 @@ def check_validation_command_surface() -> list[str]:
     terminal_record_cleanup = "Remove-Item -LiteralPath $promotionRecordPath"
     if (
         any(
-            marker not in pending_work_helper_text
+            marker not in manage_pending_helper_text
             for marker in terminal_finalizer_markers
         )
         or "-FinalizeShippedRelease" not in readme_text
     ):
         errors.append(
             "terminal release finalization must install and validate runtime "
-            "through the pending-work helper"
+            "through the pending-release manager"
         )
     elif not (
-        pending_work_helper_text.find(terminal_install_call)
-        < pending_work_helper_text.find(terminal_runtime_call)
-        < pending_work_helper_text.find(terminal_cleanup_loop)
-        < pending_work_helper_text.find(terminal_record_cleanup)
+        manage_pending_helper_text.find(terminal_install_call)
+        < manage_pending_helper_text.find(terminal_runtime_call)
+        < manage_pending_helper_text.find(terminal_cleanup_loop)
+        < manage_pending_helper_text.find(terminal_record_cleanup)
     ):
         errors.append(
             "terminal release finalization must validate before approved-source "
@@ -1249,7 +1280,7 @@ def main() -> int:
     global ROOT, SKILLS_DIR, README, SECTION_MANIFEST, CERATOPS_ICON_SOURCE
     global BOOTSTRAP_INSTALLER, RUNTIME_INSTALLER, BUNDLE_RESOLVER, INSTALLER_TEMPLATE
     global INSTALLER_SYNCHRONIZER, RUNTIME_BUILDER, RUNTIME_VALIDATOR, FAST_CHANGE_READINESS_HELPER
-    global PROMOTION_HELPER, PENDING_WORK_HELPER, VALIDATOR, WORKFLOW
+    global PROMOTION_HELPER, MANAGE_PENDING_RELEASE_HELPER, VALIDATOR, WORKFLOW
 
     parser = argparse.ArgumentParser(description="Validate Ceratops-compatible skill source and runtime-generation inputs.")
     parser.add_argument("--repo-root", type=pathlib.Path, help="Source skills repository root.")
@@ -1277,7 +1308,7 @@ def main() -> int:
         RUNTIME_VALIDATOR = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "runtime" / "skills-consistency-runtime-validator.py"
         FAST_CHANGE_READINESS_HELPER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "validate-fast-change-readiness.ps1"
         PROMOTION_HELPER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "promote-skill-branches-to-release-and-install.ps1"
-        PENDING_WORK_HELPER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "check-pending-release-work.ps1"
+        MANAGE_PENDING_RELEASE_HELPER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "manage-pending-release-work.ps1"
         VALIDATOR = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "skills-consistency-source-validator.py"
         WORKFLOW = ROOT / ".github" / "workflows" / "validate.yml"
 
