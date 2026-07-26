@@ -48,6 +48,37 @@ def preflight_pr_index(preflight_result: dict[str, Any]) -> dict[tuple[str, int]
     return index
 
 
+def preflight_approved_head(approved_item: dict[str, Any]) -> str | None:
+    """Return the exact PR head whose dependency evidence was approved."""
+
+    pr = approved_item.get("pr")
+    live = pr.get("live") if isinstance(pr, dict) else None
+    head = live.get("head_oid") if isinstance(live, dict) else None
+    return head if isinstance(head, str) and head else None
+
+
+def head_binding_blocker(
+    repo: str,
+    number: int,
+    approved_head: str,
+    live: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Block live dependency content that differs from preflight approval."""
+
+    live_head = live.get("head_oid")
+    if live_head == approved_head:
+        return None
+    return {
+        "repo": repo,
+        "pr": number,
+        "check": "preflight_head",
+        "message": (
+            f"PR head changed from preflight-approved commit {approved_head!r} "
+            f"to {live_head!r}; run a new preflight and approval"
+        ),
+    }
+
+
 def fetch_repo_policy(repo: str) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     completed = run_command(["gh", "repo", "view", repo, "--json", REPO_FIELDS])
     if completed.returncode != 0:
@@ -183,6 +214,7 @@ def merge_pr(
     checkout: pathlib.Path,
     method: str,
     *,
+    expected_head: str,
     admin: bool,
     wait_seconds: int,
     interval_seconds: int,
@@ -198,6 +230,8 @@ def merge_pr(
         repo,
         "--repo-root",
         str(checkout),
+        "--expected-head",
+        expected_head,
         "--merge-method",
         method,
         "--delete-branch",
@@ -323,6 +357,17 @@ def finalize(args: argparse.Namespace) -> int:
             blockers.append(blocker)
             results.append({**blocker, "status": "blocked"})
             continue
+        approved_head = preflight_approved_head(approved_item)
+        if approved_head is None:
+            blocker = {
+                "repo": repo,
+                "pr": number,
+                "check": "preflight_head",
+                "message": "preflight approval is missing an exact PR head",
+            }
+            blockers.append(blocker)
+            results.append({**blocker, "status": "blocked"})
+            continue
         repository = approved_item["repository"]
         if repository.get("archived") or repository.get("requires_report_only"):
             blocker = {
@@ -361,6 +406,13 @@ def finalize(args: argparse.Namespace) -> int:
             results.append({**live_blocker, "status": "blocked"})
             continue
         assert live is not None
+        head_blocker = head_binding_blocker(
+            repo, number, approved_head, live
+        )
+        if head_blocker:
+            blockers.append(head_blocker)
+            results.append({**head_blocker, "status": "blocked"})
+            continue
         reasons = readiness_reasons(live, policy, args.admin)
         current_fingerprint = fingerprint(repo, number, live, policy, args.admin, reasons)
         if reasons and previous.get(key) == current_fingerprint:
@@ -396,6 +448,14 @@ def finalize(args: argparse.Namespace) -> int:
                 live = None
                 break
             assert live is not None
+            head_blocker = head_binding_blocker(
+                repo, number, approved_head, live
+            )
+            if head_blocker:
+                blockers.append(head_blocker)
+                results.append({**head_blocker, "status": "blocked"})
+                live = None
+                break
             reasons = readiness_reasons(live, policy, args.admin)
             current_fingerprint = fingerprint(repo, number, live, policy, args.admin, reasons)
         if live is None:
@@ -440,6 +500,7 @@ def finalize(args: argparse.Namespace) -> int:
             number,
             pathlib.Path(str(checkout_path)),
             method,
+            expected_head=approved_head,
             admin=args.admin,
             wait_seconds=args.wait_seconds,
             interval_seconds=args.interval_seconds,

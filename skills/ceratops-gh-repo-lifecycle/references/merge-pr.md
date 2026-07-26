@@ -16,7 +16,7 @@ detected before merge.
   source checkout or `scripts` in the installed skill folder.
 - (D) Validate and merge helper:
   `python -m github_pr_workflow merge --pr NUMBER_OR_URL --repo-root PATH
-  --repo OWNER/REPO [--admin] [--delete-branch]
+  --repo OWNER/REPO [--expected-head SHA] [--admin] [--delete-branch]
   [--merge-method merge|squash|rebase]`.
 - (D) Post-merge sync helper:
   `python -m github_pr_workflow sync --repo-root PATH --main-branch main

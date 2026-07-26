@@ -14,7 +14,12 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 GH_SCRIPTS = ROOT / "skills" / "ceratops-gh-repo-lifecycle" / "scripts"
 sys.path.insert(0, str(GH_SCRIPTS))
 
-from github_pr_workflow import ensure_pr, merge, ship  # noqa: E402
+from github_pr_workflow import (  # noqa: E402
+    dependency_finalization,
+    ensure_pr,
+    merge,
+    ship,
+)
 
 
 class EnsurePrTests(unittest.TestCase):
@@ -775,6 +780,77 @@ class ShipTests(unittest.TestCase):
             command[command.index("--match-head-commit") + 1], self.commit
         )
         self.assertEqual(result["status"], "merged")
+
+
+class DependencyFinalizationTests(unittest.TestCase):
+    def test_dependency_merge_passes_the_preflight_approved_head(self) -> None:
+        approved_head = "a" * 40
+        completed = argparse.Namespace(
+            returncode=0,
+            stdout='{"status":"merged"}',
+            stderr="",
+        )
+        with mock.patch.object(
+            dependency_finalization,
+            "run_command",
+            return_value=completed,
+        ) as run:
+            result, error = dependency_finalization.merge_pr(
+                "owner/repo",
+                17,
+                pathlib.Path.cwd(),
+                "merge",
+                expected_head=approved_head,
+                admin=False,
+                wait_seconds=0,
+                interval_seconds=1,
+            )
+
+        command = run.call_args.args[0]
+        self.assertEqual(
+            command[command.index("--expected-head") + 1],
+            approved_head,
+        )
+        self.assertEqual(result, {"status": "merged"})
+        self.assertIsNone(error)
+
+    def test_dependency_head_binding_requires_new_preflight(self) -> None:
+        approved_head = "a" * 40
+        live = {"head_oid": "b" * 40}
+
+        blocker = dependency_finalization.head_binding_blocker(
+            "owner/repo",
+            17,
+            approved_head,
+            live,
+        )
+
+        self.assertEqual(blocker["check"], "preflight_head")
+        self.assertIn("run a new preflight and approval", blocker["message"])
+
+    def test_merge_rejects_a_head_other_than_the_external_approval(self) -> None:
+        args = argparse.Namespace(
+            repo_root=pathlib.Path.cwd(),
+            repo="owner/repo",
+            pr="17",
+            merge_method="merge",
+            expected_head="a" * 40,
+            admin=False,
+            auto=False,
+            delete_branch=False,
+            wait_seconds=0,
+            interval_seconds=1,
+        )
+        with mock.patch.object(
+            merge,
+            "_validate_readiness",
+            return_value={"head_oid": "b" * 40},
+        ):
+            with self.assertRaisesRegex(
+                merge.WorkflowError,
+                "externally approved commit",
+            ):
+                merge.merge_pr(args)
 
 
 if __name__ == "__main__":

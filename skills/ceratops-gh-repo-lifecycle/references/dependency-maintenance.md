@@ -28,9 +28,9 @@ first.
   --preflight PATH --snapshot PATH --sync-output PATH --output PATH
   [--approved-pr PR] [--admin]`
 - Queue preflight owns batched PR projection and registry, dependency-tree,
-  engine/API, and exact-CI evidence. Finalization owns bounded readiness waits,
-  live revalidation, blocker fingerprints, merge delegation, snapshot refresh,
-  checkout sync, and bounded results.
+  engine/API, and exact-CI evidence. Finalization owns preflight-approved head
+  binding, bounded readiness waits, live revalidation, blocker fingerprints,
+  merge delegation, snapshot refresh, checkout sync, and bounded results.
 
 ### Inputs To Capture
 

@@ -128,6 +128,15 @@ def merge_pr(args: argparse.Namespace) -> dict[str, Any]:
         repo_root,
         allow_admin_review_bypass=args.admin,
     )
+    externally_expected_head = getattr(args, "expected_head", None)
+    if (
+        externally_expected_head is not None
+        and first_readiness.get("head_oid") != externally_expected_head
+    ):
+        raise WorkflowError(
+            "PR head changed from externally approved commit "
+            f"{externally_expected_head!r}."
+        )
     review = codex_review.wait_for_codex_threads(
         args.pr,
         args.repo,
@@ -152,6 +161,14 @@ def merge_pr(args: argparse.Namespace) -> dict[str, Any]:
     expected_head = final_readiness.get("head_oid")
     if not isinstance(expected_head, str) or not expected_head:
         raise WorkflowError("PR readiness did not return an exact head commit.")
+    if (
+        externally_expected_head is not None
+        and expected_head != externally_expected_head
+    ):
+        raise WorkflowError(
+            "PR head changed from externally approved commit "
+            f"{externally_expected_head!r}."
+        )
     if review.get("head_oid") != expected_head:
         raise WorkflowError("PR head changed after the Codex review gate.")
     return merge_verified_pr(args, expected_head=expected_head)
@@ -167,6 +184,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--pr", required=True)
     parser.add_argument("--repo-root", type=pathlib.Path, default=pathlib.Path.cwd())
     parser.add_argument("--repo")
+    parser.add_argument(
+        "--expected-head",
+        help="exact head already approved by an external preflight",
+    )
     parser.add_argument(
         "--merge-method", choices=("merge", "squash", "rebase"), default="merge"
     )

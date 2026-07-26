@@ -138,11 +138,114 @@ function Get-RepositoryInstallerVersion {
     return [int]$versionMatch.Groups[1].Value
 }
 
+function Get-DefaultRuntimeSkillsRoot {
+    # Match the Python runtime installer's default while making the rollback
+    # target explicit for both bootstrap and full-install commands.
+    if (-not [string]::IsNullOrWhiteSpace($env:CODEX_HOME)) {
+        $codexHome = $env:CODEX_HOME
+        if (-not [IO.Path]::IsPathRooted($codexHome)) {
+            $codexHome = Join-Path $resolvedSkillsRepoRoot $codexHome
+        }
+    } else {
+        $codexHome = Join-Path (
+            [Environment]::GetFolderPath(
+                [Environment+SpecialFolder]::UserProfile
+            )
+        ) ".codex"
+    }
+    return [IO.Path]::GetFullPath((Join-Path $codexHome "skills"))
+}
+
+function New-LifecycleRuntimeRollback {
+    param([string]$RuntimeSkillsRoot)
+
+    # Keep the recoverable snapshot under the repository's declared task-temp
+    # hierarchy and reject filesystem indirection before copying runtime state.
+    $projectName = Split-Path -Leaf $resolvedSkillsRepoRoot
+    $projectParent = Split-Path -Parent $resolvedSkillsRepoRoot
+    $rollbackParent = Join-Path (
+        Join-Path $projectParent "tmp"
+    ) $projectName
+    $rollbackRoot = Join-Path $rollbackParent (
+        "promotion-runtime-rollback-$([guid]::NewGuid().ToString('N'))"
+    )
+    $installedPath = Join-Path `
+        $RuntimeSkillsRoot `
+        "ceratops-skill-lifecycle"
+    $backupPath = Join-Path $rollbackRoot "ceratops-skill-lifecycle"
+    $hadPriorRuntime = Test-Path -LiteralPath $installedPath
+
+    $null = New-Item -ItemType Directory -Force -Path $rollbackRoot
+    try {
+        if ($hadPriorRuntime) {
+            if (-not (Test-Path -LiteralPath $installedPath -PathType Container)) {
+                throw "Installed lifecycle runtime is not a directory: $installedPath"
+            }
+            $installedItem = Get-Item -LiteralPath $installedPath -Force
+            if (
+                ($installedItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0
+            ) {
+                throw "Refusing to snapshot a reparse-point lifecycle runtime: $installedPath"
+            }
+            Copy-Item `
+                -LiteralPath $installedPath `
+                -Destination $backupPath `
+                -Recurse
+        }
+    } catch {
+        Remove-Item -LiteralPath $rollbackRoot -Recurse -Force
+        throw
+    }
+
+    return [pscustomobject]@{
+        RuntimeSkillsRoot = $RuntimeSkillsRoot
+        InstalledPath = $installedPath
+        BackupRoot = $rollbackRoot
+        BackupPath = $backupPath
+        HadPriorRuntime = $hadPriorRuntime
+    }
+}
+
+function Remove-LifecycleRuntimeRollback {
+    param([pscustomobject]$Rollback)
+
+    if (Test-Path -LiteralPath $Rollback.BackupRoot) {
+        Remove-Item -LiteralPath $Rollback.BackupRoot -Recurse -Force
+    }
+}
+
+function Restore-LifecycleRuntimeRollback {
+    param([pscustomobject]$Rollback)
+
+    # The target and backup paths are created by New-LifecycleRuntimeRollback;
+    # retain the backup and emit its exact path if recovery cannot complete.
+    try {
+        if (Test-Path -LiteralPath $Rollback.InstalledPath) {
+            Remove-Item `
+                -LiteralPath $Rollback.InstalledPath `
+                -Recurse `
+                -Force
+        }
+        if ($Rollback.HadPriorRuntime) {
+            Move-Item `
+                -LiteralPath $Rollback.BackupPath `
+                -Destination $Rollback.InstalledPath
+        }
+        Remove-LifecycleRuntimeRollback $Rollback
+    } catch {
+        throw (
+            "Lifecycle runtime rollback failed; recoverable state remains at " +
+            "$($Rollback.BackupRoot): $($_.Exception.Message)"
+        )
+    }
+}
+
 function Invoke-LifecycleSourceBootstrap {
     param(
         [string]$ReleaseStartSha,
         [string]$PromotionHeadSha,
-        [string]$InstallerScript
+        [string]$InstallerScript,
+        [string]$RuntimeSkillsRoot
     )
 
     # A lifecycle validator cannot validate its own replacement. When this
@@ -160,7 +263,7 @@ function Invoke-LifecycleSourceBootstrap {
         )
     )
     if ($changedLifecyclePaths.Count -eq 0) {
-        return
+        return $null
     }
 
     $sourceRuntimeInstaller = Join-Path `
@@ -170,15 +273,25 @@ function Invoke-LifecycleSourceBootstrap {
         throw "Missing staged lifecycle runtime installer: $sourceRuntimeInstaller"
     }
     $installerVersion = Get-RepositoryInstallerVersion $InstallerScript
-    Invoke-QuietNative -FilePath "python" -Arguments @(
-        $sourceRuntimeInstaller,
-        "--repo-root",
-        $resolvedSkillsRepoRoot,
-        "--installer-version",
-        [string]$installerVersion,
-        "--skill",
-        "ceratops-skill-lifecycle"
-    )
+    $rollback = New-LifecycleRuntimeRollback $RuntimeSkillsRoot
+    try {
+        Invoke-QuietNative -FilePath "python" -Arguments @(
+            $sourceRuntimeInstaller,
+            "--repo-root",
+            $resolvedSkillsRepoRoot,
+            "--install-root",
+            $RuntimeSkillsRoot,
+            "--installer-version",
+            [string]$installerVersion,
+            "--skill",
+            "ceratops-skill-lifecycle"
+        )
+    } catch {
+        $bootstrapFailure = $_
+        Restore-LifecycleRuntimeRollback $rollback
+        throw $bootstrapFailure
+    }
+    return $rollback
 }
 
 function Get-GitLines {
@@ -357,15 +470,30 @@ if ($managePendingResult.status -ne "ready") {
     throw "Pending-release manager did not report ready promotion state."
 }
 
-Invoke-LifecycleSourceBootstrap `
+$runtimeSkillsRoot = Get-DefaultRuntimeSkillsRoot
+$lifecycleRollback = Invoke-LifecycleSourceBootstrap `
     -ReleaseStartSha $releaseStartSha `
     -PromotionHeadSha $headSha `
-    -InstallerScript $installScript
-Invoke-QuietNative -FilePath "python" -Arguments @(
-    $installScript,
-    "--repo-root",
-    $resolvedSkillsRepoRoot
-)
+    -InstallerScript $installScript `
+    -RuntimeSkillsRoot $runtimeSkillsRoot
+try {
+    Invoke-QuietNative -FilePath "python" -Arguments @(
+        $installScript,
+        "--repo-root",
+        $resolvedSkillsRepoRoot,
+        "--install-root",
+        $runtimeSkillsRoot
+    )
+} catch {
+    $installFailure = $_
+    if ($null -ne $lifecycleRollback) {
+        Restore-LifecycleRuntimeRollback $lifecycleRollback
+    }
+    throw $installFailure
+}
+if ($null -ne $lifecycleRollback) {
+    Remove-LifecycleRuntimeRollback $lifecycleRollback
+}
 $validation = "full"
 $runtimeInstall = "managed"
 

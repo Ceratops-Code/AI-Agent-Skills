@@ -799,6 +799,84 @@ def test_promotion_bootstraps_changed_lifecycle_before_full_install(
     shutil.which("powershell") is None,
     reason="PowerShell lifecycle helper is unavailable",
 )
+def test_promotion_restores_lifecycle_runtime_when_full_install_fails(
+    tmp_path: pathlib.Path,
+) -> None:
+    repo, _, log, environment = prepare_promotion_test_repo(
+        tmp_path,
+        ("mypy.ini", "[mypy]\nfiles = dummy.py\n"),
+    )
+    codex_home = tmp_path / "codex"
+    installed_lifecycle = (
+        codex_home / "skills" / "ceratops-skill-lifecycle"
+    )
+    installed_lifecycle.mkdir(parents=True)
+    (installed_lifecycle / "runtime.txt").write_text(
+        "prior\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    environment["CODEX_HOME"] = str(codex_home)
+
+    source_installer = (
+        repo
+        / "skills"
+        / "ceratops-skill-lifecycle"
+        / "scripts"
+        / "runtime"
+        / "install-managed-skills.py"
+    )
+    source_installer.parent.mkdir(parents=True)
+    source_installer.write_text(
+        "import os, pathlib, shutil\n"
+        "target = pathlib.Path(os.environ['CODEX_HOME']) / 'skills' / "
+        "'ceratops-skill-lifecycle'\n"
+        "if target.exists():\n"
+        "    shutil.rmtree(target)\n"
+        "target.mkdir(parents=True)\n"
+        "(target / 'runtime.txt').write_text('staged\\n', encoding='utf-8')\n"
+        "with pathlib.Path(os.environ['PROMOTION_TEST_LOG']).open("
+        "'a', encoding='utf-8') as log:\n"
+        "    log.write('lifecycle\\n')\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    install_script = repo / "scripts" / "install-skills.py"
+    install_script.write_text(
+        "import os, pathlib\n"
+        "INSTALLER_VERSION = 4\n"
+        "with pathlib.Path(os.environ['PROMOTION_TEST_LOG']).open("
+        "'a', encoding='utf-8') as log:\n"
+        "    log.write('install-failed\\n')\n"
+        "raise SystemExit('requested full install failure')\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    assert run_git(
+        repo,
+        "add",
+        str(source_installer),
+        str(install_script),
+    ).returncode == 0
+    assert run_git(repo, "commit", "-m", "change lifecycle").returncode == 0
+
+    promoted = run_promotion_helper(repo, environment)
+
+    assert promoted.returncode != 0
+    assert (installed_lifecycle / "runtime.txt").read_text(
+        encoding="utf-8"
+    ) == "prior\n"
+    assert log.read_text(encoding="utf-8") == (
+        "lifecycle\ninstall-failed\n"
+    )
+    rollback_parent = tmp_path / "tmp" / repo.name
+    assert not rollback_parent.exists() or not any(rollback_parent.iterdir())
+
+
+@pytest.mark.skipif(
+    shutil.which("powershell") is None,
+    reason="PowerShell lifecycle helper is unavailable",
+)
 @pytest.mark.parametrize(
     ("mypy_config", "classification", "config_files"),
     [
