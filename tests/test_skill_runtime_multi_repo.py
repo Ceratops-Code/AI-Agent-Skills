@@ -661,6 +661,28 @@ def test_promotion_records_are_collision_free_and_cleaned_terminally(
     assert record.is_file()
     assert retained_payload["approved_branches"] == ["approved"]
 
+    (approved_worktree / "README.md").write_text(
+        "base\napproved\nuncommitted retained work\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    assert run_git(repo, "branch", "approved-next", promotion_commit).returncode == 0
+    next_record_command = record_command.copy()
+    next_record_command[
+        next_record_command.index(approved_branch_data)
+    ] = base64.b64encode(b"approved-next").decode("ascii")
+    next_retained = subprocess.run(
+        next_record_command,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert next_retained.returncode == 0, next_retained.stderr
+    next_payload = json.loads(next_retained.stdout)
+    assert next_payload["approved_branches"] == ["approved", "approved-next"]
+    assert pathlib.Path(next_payload["promotion_record"]) == record
+    assert run_git(approved_worktree, "checkout", "--", "README.md").returncode == 0
+
     collision_branch = "release__local"
     assert (
         run_git(repo, "branch", collision_branch, promotion_commit).returncode == 0

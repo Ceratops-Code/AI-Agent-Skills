@@ -19,8 +19,10 @@ param(
 # consumed promotion record. -FinalizeShippedRelease first verifies synchronized
 # main/release state, installs and validates runtime, then performs that cleanup.
 # Unrelated branches and worktrees are never enumerated. -RecordPromotion
-# atomically advances the release branch's exact commit while retaining the
-# union of approved sources already in that batch.
+# validates newly supplied sources and atomically advances the release branch's
+# exact commit while carrying forward previously recorded sources. Retained
+# worktrees are rechecked before terminal cleanup, so later local edits cannot
+# block an otherwise independent promotion.
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
@@ -361,6 +363,10 @@ if (
 
 Invoke-Git @("rev-parse", "--verify", $ReleaseBranch)
 $requestedBranches = @(Decode-ApprovedBranchData)
+$requestedBranchSet = @{}
+foreach ($requestedBranch in $requestedBranches) {
+    $requestedBranchSet[$requestedBranch] = $true
+}
 $retainedBranches = @()
 if ($RecordPromotion -or -not [string]::IsNullOrWhiteSpace($PromotionCommit)) {
     $promotionRecordPath = Get-PromotionRecordPath
@@ -416,8 +422,15 @@ foreach ($branchName in $approvedBranches) {
     }
     $worktreePath = Get-ApprovedBranchWorktreePath $branchName
     $worktreeIsClean = $true
+    $isRetainedOnlyPromotionBranch = (
+        $RecordPromotion -and
+        -not $requestedBranchSet.ContainsKey($branchName)
+    )
 
-    if (-not [string]::IsNullOrWhiteSpace($worktreePath)) {
+    if (
+        -not $isRetainedOnlyPromotionBranch -and
+        -not [string]::IsNullOrWhiteSpace($worktreePath)
+    ) {
         $worktreePath = (Resolve-Path -LiteralPath $worktreePath).Path
         if (
             -not (Test-Path -LiteralPath $expectedWorktreeRoot -PathType Container) -or
