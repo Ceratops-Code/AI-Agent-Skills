@@ -31,7 +31,7 @@ MANAGE_PENDING_RELEASE_WORK = (
 MODEL_CALL_LEDGER = ROOT / "skills" / "ceratops-credit-savings-analysis" / "scripts" / "model-call-ledger.py"
 RUNTIME_MANIFEST = ".runtime-manifest.json"
 RUNTIME_MANIFEST_SCHEMA = "ceratops-runtime-skill.v3"
-INSTALLER_VERSION = 3
+INSTALLER_VERSION = 4
 
 
 def test_model_call_ledger_keeps_full_evidence_out_of_stdout(
