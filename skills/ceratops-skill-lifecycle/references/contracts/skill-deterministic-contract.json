@@ -129,8 +129,9 @@
         "source SKILL.md frontmatter",
         "source SKILL.md section and subsection structure"
       ],
-      "pass_condition": "Source skill frontmatter contains only name and description, frontmatter name matches the directory, description is present, and the body contains a Markdown H2 section structure; the ceratops profile additionally requires Boundaries and Output Contract subsections.",
+      "pass_condition": "Source skill frontmatter contains only name and description; name matches the directory, contains 1 to 64 lowercase ASCII letters, digits, or hyphens, does not start or end with a hyphen, and contains no consecutive hyphens; description contains 40 to 1024 characters; the body contains a Markdown H2 section structure; the ceratops profile additionally requires Boundaries and Output Contract subsections.",
       "source_lines": [
+        "skill-source-docs.json:open_agent_skills.specification",
         "skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py:parse_frontmatter",
         "skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py:check_skill"
       ]

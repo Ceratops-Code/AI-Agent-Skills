@@ -53,9 +53,13 @@ REQUIRED_CONTRACT_FILES = [
 SECTIONS_START = "<!-- CERATOPS_SHARED_SECTIONS_START -->"
 SECTIONS_END = "<!-- CERATOPS_SHARED_SECTIONS_END -->"
 
-NAME_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$")
+SKILL_NAME_PATTERN = r"(?![a-z0-9-]*--)[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?"
+NAME_RE = re.compile(rf"^{SKILL_NAME_PATTERN}$")
 SKILL_REF_RE = re.compile(r"\$([a-z0-9]+(?:-[a-z0-9]+)+)(?![A-Za-z0-9_-])")
-README_SKILL_ROW_RE = re.compile(r"^\|\s*`(?P<name>[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?)`\s*\|", re.MULTILINE)
+README_SKILL_ROW_RE = re.compile(
+    rf"^\|\s*`(?P<name>{SKILL_NAME_PATTERN})`\s*\|",
+    re.MULTILINE,
+)
 ACTION_REFERENCES_HEADING = "### Action References"
 ACTION_REFERENCE_TOKEN_RE = re.compile(r"`(?P<path>references/[^`\s]+\.md)`")
 DIRECT_ACTION_REFERENCE_RE = re.compile(r"references/[a-z0-9]+(?:-[a-z0-9]+)*\.md")
@@ -1175,8 +1179,11 @@ def check_skill(
         errors.append(f"{name}: frontmatter must contain only name and description")
     if frontmatter.get("name") != name:
         errors.append(f"{name}: frontmatter name does not match directory")
-    if len(frontmatter.get("description", "")) < 40:
+    description = frontmatter.get("description", "")
+    if len(description) < 40:
         errors.append(f"{name}: description is too short")
+    if len(description) > 1024:
+        errors.append(f"{name}: description exceeds 1024 characters")
     if "TODO" in skill_md.read_text(encoding="utf-8"):
         errors.append(f"{name}: contains TODO placeholder")
     if "publish-github-registry" in skill_md.read_text(encoding="utf-8"):

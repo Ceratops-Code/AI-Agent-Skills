@@ -1005,6 +1005,57 @@ def test_compatible_full_validation_accepts_arbitrary_skill_names(tmp_path: path
     assert result.stdout.strip() == "ok: 1"
 
 
+def test_source_validator_rejects_consecutive_name_hyphens(tmp_path: pathlib.Path) -> None:
+    repo = tmp_path / "compatible"
+    create_compatible_repo(repo, "example/compatible", ["alpha--tool"])
+
+    result = subprocess.run(
+        [sys.executable, str(VALIDATOR), "--repo-root", str(repo), "--mode", "full"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "alpha--tool: invalid directory name" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("length", "expected_error"),
+    [
+        (39, "description is too short"),
+        (40, None),
+        (1024, None),
+        (1025, "description exceeds 1024 characters"),
+    ],
+)
+def test_source_validator_enforces_description_boundaries(
+    tmp_path: pathlib.Path,
+    length: int,
+    expected_error: str | None,
+) -> None:
+    repo = tmp_path / "compatible"
+    create_compatible_repo(repo, "example/compatible", ["alpha-tool"])
+    skill_md = repo / "skills" / "alpha-tool" / "SKILL.md"
+    lines = skill_md.read_text(encoding="utf-8").splitlines()
+    seed = "Manage alpha tool workflows safely across compatible repositories. "
+    lines[2] = f"description: {(seed * (length // len(seed) + 1))[:length]}"
+    skill_md.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
+
+    result = subprocess.run(
+        [sys.executable, str(VALIDATOR), "--repo-root", str(repo), "--mode", "full"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    if expected_error is None:
+        assert result.returncode == 0, result.stderr
+    else:
+        assert result.returncode == 1
+        assert expected_error in result.stderr
+
+
 def test_multi_action_membership_is_owned_by_the_skill_index(
     tmp_path: pathlib.Path,
 ) -> None:
