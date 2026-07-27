@@ -14,6 +14,9 @@ globally stack-unique ID, uses the parser's canonical metadata syntax, and may
 reference only IDs available in its effective global-to-local instruction
 stack. Nested local files extend the stack of their ancestors.
 
+Reuse a section's rule-ID namespace when it fits; add another only for a
+distinct concern, and split the section only if it becomes too broad or long.
+
 Use one sentence when one condition determines one required behavior:
 
 ```text
@@ -114,8 +117,10 @@ decision and enduring rationale.
 ## Acceptance
 
 State the required invariant. Add a negative boundary only when it excludes a
-distinct plausible failure not excluded by the invariant. Apply broad override
-policy without repeating local user-override clauses.
+distinct plausible failure not excluded by the invariant. Do not add any
+rule-local user-override clause, including `unless the user explicitly...`;
+apply the broad override policy instead. The parser must reject that phrase
+case-insensitively in a rule body.
 
 Evaluate both local and structural intervention. Accept a candidate only when
 it prevents the current failure and relevant recorded failures without
