@@ -102,14 +102,48 @@ class ShipTests(unittest.TestCase):
             validate.call_args.kwargs["allow_admin_review_bypass"]
         )
 
-    def test_no_attached_checks_remain_pending(self) -> None:
-        finding = ship.readiness.Finding(
-            level="WARN",
-            check="pr.status_checks",
-            message="No status checks are attached to this PR.",
+    def test_no_attached_checks_are_advisory(self) -> None:
+        findings: list[ship.readiness.Finding] = []
+        ship.readiness.status_rollup_findings(
+            {"statusCheckRollup": []},
+            findings,
+        )
+        with mock.patch.object(
+            ship.readiness,
+            "validate_readiness",
+            return_value=(
+                {"head_oid": self.commit, "number": 17},
+                findings,
+            ),
+        ) as validate:
+            result = ship.wait_for_ci_gate(
+                "17",
+                pathlib.Path.cwd(),
+                self.commit,
+                wait_seconds=0,
+                interval_seconds=0,
+            )
+
+        self.assertFalse(ship._transient_readiness(findings[0]))
+        self.assertEqual(result["pending"], 0)
+        validate.assert_called_once()
+
+    def test_attached_pending_checks_remain_transient(self) -> None:
+        findings: list[ship.readiness.Finding] = []
+        ship.readiness.status_rollup_findings(
+            {
+                "statusCheckRollup": [
+                    {
+                        "name": "CI",
+                        "status": "IN_PROGRESS",
+                        "conclusion": None,
+                    }
+                ]
+            },
+            findings,
         )
 
-        self.assertTrue(ship._transient_readiness(finding))
+        self.assertTrue(ship._transient_readiness(findings[0]))
 
     def test_admin_review_bypass_is_not_treated_as_pending(self) -> None:
         bypassed = ship.readiness.Finding(
@@ -610,6 +644,62 @@ class ShipTests(unittest.TestCase):
                 with self.assertRaisesRegex(ship.ShipError, "gate failed"):
                     ship.ship(args)
 
+            self.assertTrue(checkpoint.exists())
+
+    def test_ship_stops_when_final_gate_reread_finds_pending_checks(self) -> None:
+        state = {
+            "version": 1,
+            "repository": "owner/repo",
+            "commit": self.commit,
+            "head_branch": "release/local",
+            "base_branch": "main",
+            "phase": "pr_ready",
+            "pr": 17,
+            "url": "https://example.test/pr/17",
+        }
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            repo_root = pathlib.Path(temporary_directory)
+            args = self.args(repo_root)
+            checkpoint = repo_root / "checkpoint.json"
+            checkpoint.write_text("checkpoint", encoding="utf-8")
+            with (
+                mock.patch.object(
+                    ship, "_repository_name", return_value="owner/repo"
+                ),
+                mock.patch.object(ship, "_resolve_commit", return_value=self.commit),
+                mock.patch.object(
+                    ship,
+                    "_load_or_create_checkpoint",
+                    return_value=(checkpoint, state),
+                ),
+                mock.patch.object(
+                    ship,
+                    "_live_pr",
+                    return_value={
+                        "state": "OPEN",
+                        "headRefOid": self.commit,
+                    },
+                ),
+                mock.patch.object(
+                    ship,
+                    "run_parallel_gates",
+                    side_effect=[
+                        {
+                            "disposition": "passed",
+                            "authorization_required": False,
+                        },
+                        ship.ShipError("pending checks appeared"),
+                    ],
+                ) as gates,
+                mock.patch.object(ship.merge, "merge_verified_pr") as merge_pr,
+            ):
+                with self.assertRaisesRegex(
+                    ship.ShipError, "pending checks appeared"
+                ):
+                    ship.ship(args)
+
+            self.assertEqual(gates.call_count, 2)
+            merge_pr.assert_not_called()
             self.assertTrue(checkpoint.exists())
 
     def test_missing_completed_checkpoint_reconciles_exact_merged_pr(self) -> None:

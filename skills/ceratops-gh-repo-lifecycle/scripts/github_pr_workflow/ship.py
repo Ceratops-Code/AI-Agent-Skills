@@ -338,7 +338,10 @@ def _transient_readiness(finding: readiness.Finding) -> bool:
     if finding.check == "pr.mergeable" and finding.level == WARN:
         return True
     if finding.check == "pr.status_checks" and finding.level == WARN:
-        return True
+        # Only concrete pending checks consume the CI wait. An empty rollup is
+        # advisory; the parallel review window and final gate re-read still
+        # protect against checks that attach after PR creation.
+        return isinstance(finding.actual, list) and bool(finding.actual)
     if (
         finding.check == "pr.review_decision"
         and finding.level == ERROR

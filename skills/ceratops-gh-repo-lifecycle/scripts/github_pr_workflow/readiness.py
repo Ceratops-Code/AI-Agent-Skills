@@ -64,6 +64,25 @@ query(
 }
 """
 
+PASSING_CHECK_CONCLUSIONS = frozenset({"SUCCESS", "SKIPPED", "NEUTRAL"})
+FAILING_CHECK_CONCLUSIONS = frozenset(
+    {
+        "FAILURE",
+        "TIMED_OUT",
+        "CANCELLED",
+        "ACTION_REQUIRED",
+        "STALE",
+        "STARTUP_FAILURE",
+    }
+)
+PENDING_CHECK_STATUSES = frozenset(
+    {"IN_PROGRESS", "PENDING", "QUEUED", "REQUESTED", "WAITING"}
+)
+KNOWN_CHECK_STATUSES = PENDING_CHECK_STATUSES | {"COMPLETED"}
+PENDING_CONTEXT_STATES = frozenset({"PENDING", "EXPECTED"})
+FAILING_CONTEXT_STATES = frozenset({"FAILURE", "ERROR"})
+KNOWN_CONTEXT_STATES = PENDING_CONTEXT_STATES | FAILING_CONTEXT_STATES | {"SUCCESS"}
+
 
 class CommandError(RuntimeError):
     """Raised when a required local command fails."""
@@ -398,9 +417,9 @@ def add(
 def status_rollup_findings(pr_data: dict[str, Any], findings: list[Finding]) -> None:
     """Classify the visible status checks attached to the PR."""
 
-    raw_rollup = pr_data.get("statusCheckRollup") or []
+    raw_rollup = pr_data.get("statusCheckRollup")
     if not isinstance(raw_rollup, list):
-        add(findings, "WARN", "pr.status_checks", "Could not parse status-check rollup.", actual=type(raw_rollup).__name__)
+        add(findings, "ERROR", "pr.status_checks", "Could not parse status-check rollup.", actual=type(raw_rollup).__name__)
         return
     if not raw_rollup:
         add(findings, "WARN", "pr.status_checks", "No status checks are attached to this PR.")
@@ -409,21 +428,69 @@ def status_rollup_findings(pr_data: dict[str, Any], findings: list[Finding]) -> 
     failed: list[str] = []
     pending: list[str] = []
     passed: list[str] = []
-    for item in raw_rollup:
+    for index, item in enumerate(raw_rollup):
         if not isinstance(item, dict):
-            continue
+            add(
+                findings,
+                "ERROR",
+                "pr.status_checks",
+                "Could not parse a status-check entry.",
+                actual=f"item {index}: {type(item).__name__}",
+            )
+            return
         name = str(item.get("name") or item.get("context") or item.get("workflowName") or "unnamed-check")
         conclusion = item.get("conclusion")
         status = item.get("status")
         state = item.get("state")
+        fields = {
+            "conclusion": conclusion,
+            "status": status,
+            "state": state,
+        }
+        if any(
+            value is not None and not isinstance(value, str)
+            for value in fields.values()
+        ):
+            add(
+                findings,
+                "ERROR",
+                "pr.status_checks",
+                "Status-check entry has invalid field types.",
+                actual=name,
+            )
+            return
+        if (
+            conclusion is not None
+            and conclusion
+            not in PASSING_CHECK_CONCLUSIONS | FAILING_CHECK_CONCLUSIONS
+        ) or (status is not None and status not in KNOWN_CHECK_STATUSES) or (
+            state is not None and state not in KNOWN_CONTEXT_STATES
+        ):
+            add(
+                findings,
+                "ERROR",
+                "pr.status_checks",
+                "Status-check entry has unknown state.",
+                actual=name,
+            )
+            return
         # GitHub treats SUCCESS, SKIPPED, and NEUTRAL as successful required
         # checks. Keep completed failures distinct from incomplete checks.
-        if conclusion in {"FAILURE", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STALE", "STARTUP_FAILURE"} or state in {"FAILURE", "ERROR"}:
+        if conclusion in FAILING_CHECK_CONCLUSIONS or state in FAILING_CONTEXT_STATES:
             failed.append(name)
-        elif status in {"IN_PROGRESS", "QUEUED", "PENDING", "WAITING"} or state in {"PENDING", "EXPECTED"} or (conclusion is None and state != "SUCCESS"):
+        elif status in PENDING_CHECK_STATUSES or state in PENDING_CONTEXT_STATES:
             pending.append(name)
-        else:
+        elif conclusion in PASSING_CHECK_CONCLUSIONS or state == "SUCCESS":
             passed.append(name)
+        else:
+            add(
+                findings,
+                "ERROR",
+                "pr.status_checks",
+                "Status-check entry has no terminal or pending state.",
+                actual=name,
+            )
+            return
 
     if failed:
         add(findings, "ERROR", "pr.status_checks", "One or more status checks are failing.", actual=failed)

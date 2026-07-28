@@ -1162,6 +1162,39 @@ class GHContractStateEngineTests(unittest.TestCase):
         )
         self.assertEqual(pending[0].level, "WARN")
 
+    def test_unparseable_status_rollup_is_an_error(self):
+        malformed_rollups = (
+            None,
+            {},
+            "",
+            0,
+            False,
+            [None],
+            [
+                {
+                    "name": "CI",
+                    "status": "UNKNOWN",
+                    "conclusion": None,
+                }
+            ],
+            [
+                {
+                    "name": "CI",
+                    "status": "COMPLETED",
+                    "conclusion": None,
+                }
+            ],
+        )
+        for raw_rollup in malformed_rollups:
+            with self.subTest(raw_rollup=raw_rollup):
+                findings: list[pr_validator.Finding] = []
+                pr_validator.status_rollup_findings(
+                    {"statusCheckRollup": raw_rollup},
+                    findings,
+                )
+
+                self.assertEqual(findings[0].level, "ERROR")
+
     def test_empty_review_decision_obeys_required_approval_rule(self):
         pr_data = {
             "number": 17,
