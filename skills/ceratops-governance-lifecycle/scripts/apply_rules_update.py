@@ -177,6 +177,7 @@ def validate_stack_texts(
     texts: dict[Path, str],
     *,
     label: str,
+    allow_findings: bool = False,
 ) -> tuple[list[ParsedRuleSource], dict[str, Any], set[str]]:
     """Run the shared source and graph validators over one effective stack."""
     parsed = [
@@ -184,11 +185,11 @@ def validate_stack_texts(
         for path in stack_paths
     ]
     for source in parsed:
-        if source.findings:
+        if source.findings and not allow_findings:
             raise ApplicationError(finding_text(label, source.findings[0]))
     validation = validate_rule_stack(parsed, global_source=str(stack_paths[0]))
     findings = cast(list[dict[str, object]], validation["findings"])
-    if findings:
+    if findings and not allow_findings:
         raise ApplicationError(finding_text(label, findings[0]))
     reviews = [
         *(
@@ -331,6 +332,9 @@ def prepare(request: dict[str, Any]) -> PreparedUpdate:
         stack_paths,
         {path: source.text for path, source in rule_sources.items()},
         label="invalid current rule stack",
+        # Candidate validation remains strict, so a transaction can proceed
+        # from an invalid baseline only when it resolves every finding.
+        allow_findings=True,
     )
 
     replacement_values = request["rule_replacements"]
