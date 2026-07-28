@@ -116,11 +116,14 @@ decision and enduring rationale.
 
 ## Acceptance
 
-State the required invariant. Add a negative boundary only when it excludes a
-distinct plausible failure not excluded by the invariant. Do not add any
-rule-local user-override clause, including `unless the user explicitly...`;
-apply the broad override policy instead. The parser must reject that phrase
-case-insensitively in a rule body.
+State the required invariant. Add a negative boundary or exception only when it
+changes the decision for a distinct, verifiable case not already governed by
+the invariant or another applicable rule or relation.
+
+Express authorization as a positive gate. Do not add any rule-local
+user-override clause, including `unless the user explicitly...`; apply the broad
+override policy instead. The parser must reject that phrase case-insensitively
+in a rule body.
 
 Evaluate both local and structural intervention. Accept a candidate only when
 it prevents the current failure and relevant recorded failures without
