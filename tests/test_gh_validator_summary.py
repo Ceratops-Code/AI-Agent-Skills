@@ -1163,7 +1163,7 @@ class GHContractStateEngineTests(unittest.TestCase):
         self.assertEqual(pending[0].level, "WARN")
 
     def test_unparseable_status_rollup_is_an_error(self):
-        malformed_rollups = (
+        malformed_rollups: tuple[object, ...] = (
             None,
             {},
             "",
