@@ -26,8 +26,8 @@ Use one sentence when one condition determines one required behavior:
 Use the strongest unambiguous wording that accurately expresses the intended
 rule.
 
-Add an exception or relationship only when it changes the decision. Keep
-scenarios outside governing instructions and use them as regression evidence.
+Add a relation only when it changes the decision. Keep scenarios outside
+governing instructions and use them as regression evidence.
 
 Place metadata immediately after the rule body. Use only the parser's closed
 metadata-key and value sets, canonical order, indentation, separators, and ID
