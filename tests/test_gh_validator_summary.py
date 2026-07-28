@@ -1040,6 +1040,14 @@ class GHContractStateEngineTests(unittest.TestCase):
         )
         self.assertNotIn("subprocess.run", text)
 
+    def test_pr_readiness_uses_graphql_rules_only(self):
+        text = (SCRIPTS / "github_pr_workflow" / "readiness.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("run_gh_graphql", text)
+        self.assertNotIn("/rules/branches/", text)
+        self.assertNotIn("urllib.parse", text)
+
     def test_remediation_registry_covers_contract_actions(self):
         actions = {
             check["remediation_action"]
@@ -1190,6 +1198,263 @@ class GHContractStateEngineTests(unittest.TestCase):
         self.assertEqual(review.level, "WARN")
         self.assertEqual(review.actual, "REVIEW_REQUIRED")
         required_reviews.assert_called_once_with("main", pathlib.Path.cwd())
+
+    def test_pr_rule_graphql_paginates_exact_ref_and_aggregates_policies(self):
+        cwd = pathlib.Path.cwd()
+        classic = {
+            "requiresApprovingReviews": True,
+            "requiredApprovingReviewCount": 1,
+            "requiresConversationResolution": False,
+        }
+        page_one = {
+            "data": {
+                "repository": {
+                    "ref": {
+                        "name": "release/1.x",
+                        "branchProtectionRule": classic,
+                        "rules": {
+                            "nodes": [
+                                {
+                                    "type": "REQUIRED_STATUS_CHECKS",
+                                    "parameters": {
+                                        "__typename": "RequiredStatusChecksParameters"
+                                    },
+                                },
+                                {
+                                    "type": "PULL_REQUEST",
+                                    "parameters": {
+                                        "__typename": "PullRequestParameters",
+                                        "requiredApprovingReviewCount": 2,
+                                        "requiredReviewThreadResolution": False,
+                                    },
+                                },
+                            ],
+                            "pageInfo": {
+                                "hasNextPage": True,
+                                "endCursor": "cursor-1",
+                            },
+                        },
+                    }
+                }
+            }
+        }
+        page_two = {
+            "data": {
+                "repository": {
+                    "ref": {
+                        "name": "release/1.x",
+                        "branchProtectionRule": classic,
+                        "rules": {
+                            "nodes": [
+                                {
+                                    "type": "PULL_REQUEST",
+                                    "parameters": {
+                                        "__typename": "PullRequestParameters",
+                                        "requiredApprovingReviewCount": 1,
+                                        "requiredReviewThreadResolution": True,
+                                    },
+                                }
+                            ],
+                            "pageInfo": {
+                                "hasNextPage": False,
+                                "endCursor": "cursor-2",
+                            },
+                        },
+                    }
+                }
+            }
+        }
+        with (
+            mock.patch.object(
+                pr_validator,
+                "require_command",
+                return_value=json.dumps({"nameWithOwner": "owner/repo"}),
+            ) as repo_view,
+            mock.patch.object(
+                pr_validator,
+                "run_gh_graphql",
+                side_effect=[
+                    ApiResult(
+                        ok=True,
+                        method="GRAPHQL",
+                        endpoint="pull-request-rules",
+                        data=page_one,
+                    ),
+                    ApiResult(
+                        ok=True,
+                        method="GRAPHQL",
+                        endpoint="pull-request-rules",
+                        data=page_two,
+                    ),
+                ],
+            ) as graphql,
+        ):
+            parameters = pr_validator.pull_request_rule_parameters(
+                "release/1.x", cwd
+            )
+
+        self.assertEqual(
+            parameters,
+            [
+                {
+                    "required_approving_review_count": 1,
+                    "required_review_thread_resolution": False,
+                },
+                {
+                    "required_approving_review_count": 2,
+                    "required_review_thread_resolution": False,
+                },
+                {
+                    "required_approving_review_count": 1,
+                    "required_review_thread_resolution": True,
+                },
+            ],
+        )
+        repo_view.assert_called_once_with(
+            ["gh", "repo", "view", "--json", "nameWithOwner"], cwd
+        )
+        self.assertEqual(graphql.call_count, 2)
+        self.assertEqual(
+            graphql.call_args_list[0].args[1],
+            {
+                "owner": "owner",
+                "name": "repo",
+                "qualifiedName": "refs/heads/release/1.x",
+                "cursor": None,
+            },
+        )
+        self.assertEqual(graphql.call_args_list[1].args[1]["cursor"], "cursor-1")
+        with mock.patch.object(
+            pr_validator,
+            "pull_request_rule_parameters",
+            return_value=parameters,
+        ):
+            self.assertEqual(
+                pr_validator.required_approving_review_count("release/1.x", cwd),
+                2,
+            )
+            self.assertTrue(
+                pr_validator.review_thread_resolution_required(
+                    "release/1.x", cwd
+                )
+            )
+
+    def test_pr_rule_graphql_reports_no_policy_as_zero_requirements(self):
+        cwd = pathlib.Path.cwd()
+        response = {
+            "data": {
+                "repository": {
+                    "ref": {
+                        "name": "main",
+                        "branchProtectionRule": None,
+                        "rules": {
+                            "nodes": [],
+                            "pageInfo": {
+                                "hasNextPage": False,
+                                "endCursor": None,
+                            },
+                        },
+                    }
+                }
+            }
+        }
+        with (
+            mock.patch.object(
+                pr_validator,
+                "require_command",
+                return_value=json.dumps({"nameWithOwner": "owner/repo"}),
+            ),
+            mock.patch.object(
+                pr_validator,
+                "run_gh_graphql",
+                return_value=ApiResult(
+                    ok=True,
+                    method="GRAPHQL",
+                    endpoint="pull-request-rules",
+                    data=response,
+                ),
+            ),
+        ):
+            parameters = pr_validator.pull_request_rule_parameters("main", cwd)
+
+        self.assertEqual(parameters, [])
+        with mock.patch.object(
+            pr_validator,
+            "pull_request_rule_parameters",
+            return_value=parameters,
+        ):
+            self.assertEqual(
+                pr_validator.required_approving_review_count("main", cwd), 0
+            )
+            self.assertFalse(
+                pr_validator.review_thread_resolution_required("main", cwd)
+            )
+
+    def test_pr_rule_graphql_fails_closed_on_api_error(self):
+        with (
+            mock.patch.object(
+                pr_validator,
+                "require_command",
+                return_value=json.dumps({"nameWithOwner": "owner/repo"}),
+            ),
+            mock.patch.object(
+                pr_validator,
+                "run_gh_graphql",
+                return_value=ApiResult(
+                    ok=False,
+                    method="GRAPHQL",
+                    endpoint="pull-request-rules",
+                    status=403,
+                    message="forbidden",
+                ),
+            ),
+            self.assertRaisesRegex(pr_validator.CommandError, "forbidden"),
+        ):
+            pr_validator.pull_request_rule_parameters(
+                "main", pathlib.Path.cwd()
+            )
+
+    def test_pr_rule_graphql_fails_closed_when_pagination_does_not_advance(self):
+        response = {
+            "data": {
+                "repository": {
+                    "ref": {
+                        "name": "main",
+                        "branchProtectionRule": None,
+                        "rules": {
+                            "nodes": [],
+                            "pageInfo": {
+                                "hasNextPage": True,
+                                "endCursor": None,
+                            },
+                        },
+                    }
+                }
+            }
+        }
+        with (
+            mock.patch.object(
+                pr_validator,
+                "require_command",
+                return_value=json.dumps({"nameWithOwner": "owner/repo"}),
+            ),
+            mock.patch.object(
+                pr_validator,
+                "run_gh_graphql",
+                return_value=ApiResult(
+                    ok=True,
+                    method="GRAPHQL",
+                    endpoint="pull-request-rules",
+                    data=response,
+                ),
+            ),
+            self.assertRaisesRegex(
+                pr_validator.CommandError, "pagination did not advance"
+            ),
+        ):
+            pr_validator.pull_request_rule_parameters(
+                "main", pathlib.Path.cwd()
+            )
 
     def test_merge_helper_revalidates_after_review_wait(self):
         text = (SCRIPTS / "github_pr_workflow" / "merge.py").read_text(

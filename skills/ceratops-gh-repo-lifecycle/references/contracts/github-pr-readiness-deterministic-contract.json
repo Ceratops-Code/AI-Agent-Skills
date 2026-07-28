@@ -3,6 +3,8 @@
   "surface": "pr",
   "description": "Deterministic live GitHub pull-request readiness checks used immediately before merge or auto-merge decisions.",
   "source_docs": [
+    "contract-source-docs.json:github.graphql.git.ref_rules",
+    "contract-source-docs.json:github.graphql.repos.pull_request_parameters",
     "contract-source-docs.json:github.rest.pulls",
     "contract-source-docs.json:github.cli.pr_merge",
     "contract-source-docs.json:github.concepts.merge_queue"
@@ -21,7 +23,13 @@
       "statusCheckRollup",
       "headRefName",
       "baseRefName",
-      "autoMergeRequest"
+      "autoMergeRequest",
+      "ref.rules.type",
+      "ref.rules.parameters.requiredApprovingReviewCount",
+      "ref.rules.parameters.requiredReviewThreadResolution",
+      "ref.branchProtectionRule.requiresApprovingReviews",
+      "ref.branchProtectionRule.requiredApprovingReviewCount",
+      "ref.branchProtectionRule.requiresConversationResolution"
     ]
   },
   "checks": [
