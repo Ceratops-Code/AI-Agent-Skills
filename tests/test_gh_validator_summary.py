@@ -1063,6 +1063,57 @@ class GHContractStateEngineTests(unittest.TestCase):
         )
         self.assertEqual(actions, set(HANDLERS))
 
+    def test_merge_settings_require_and_remediate_merge_commit_availability(
+        self,
+    ):
+        rule = next(
+            check
+            for check in self.contracts["repo"]["checks"]
+            if check["id"] == "repo.merge_settings"
+        )
+        assertion = next(
+            item
+            for item in rule["assertions"]
+            if item["path"] == "/repository/repo/allow_merge_commit"
+        )
+        self.assertEqual(
+            assertion,
+            {
+                "path": "/repository/repo/allow_merge_commit",
+                "operator": "equal",
+                "expected": True,
+                "level": "WARN",
+            },
+        )
+
+        with mock.patch(
+            "github_contract_engine.remediations.repository.run_gh_api",
+            return_value=ApiResult(
+                True,
+                "PATCH",
+                "/repos/owner/repo",
+                status=200,
+            ),
+        ) as update_repository:
+            results = HANDLERS["repository.update_settings"](
+                [
+                    {
+                        **rule,
+                        "_mismatch_paths": [
+                            "/repository/repo/allow_merge_commit"
+                        ],
+                    }
+                ],
+                {"owner": "owner", "repo": "repo"},
+            )
+
+        update_repository.assert_called_once_with(
+            "PATCH",
+            "/repos/owner/repo",
+            {"allow_merge_commit": True},
+        )
+        self.assertTrue(results[0]["ok"])
+
     def test_consistency_validator_passes(self):
         process = subprocess.run(
             [
