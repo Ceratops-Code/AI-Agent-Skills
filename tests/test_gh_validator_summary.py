@@ -37,6 +37,7 @@ from github_contract_engine.collectors.repository import (  # noqa: E402
     stale_release_candidates,
 )
 from github_contract_engine.collect_observed_states import (  # noqa: E402
+    _artifact_state,
     _fetch_all,
     state_producer,
 )
@@ -608,6 +609,51 @@ class GHContractStateEngineTests(unittest.TestCase):
         self.assertTrue(state["pypi"]["all_resolved"])
         self.assertEqual(state["pypi"]["packages"]["demo"]["name"], "demo")
 
+    def test_powershell_gallery_resolution_requires_matching_entry(self):
+        parameters = {
+            "artifact_contracts": [
+                {
+                    "artifact_type": "powershell_gallery_module",
+                    "registry": "powershellgallery.com",
+                    "package_or_image_name": "DemoModule",
+                }
+            ]
+        }
+        rules = [{"assertions": [{"path": "/artifact/live_metadata/all_resolved"}]}]
+
+        for body, expected in (
+            (b"<feed></feed>", False),
+            (b"<feed><entry></entry></feed>", True),
+        ):
+            with self.subTest(entry_present=expected):
+                response = mock.MagicMock()
+                response.read.return_value = body
+                response.__enter__.return_value = response
+                with mock.patch.object(
+                    registries.urllib.request, "urlopen", return_value=response
+                ):
+                    state = registries.collect_registries(
+                        parameters,
+                        {},
+                        ["powershell_gallery_module"],
+                        rules,
+                    )
+
+                metadata = state["powershell_gallery"]["packages"]["DemoModule"]
+                self.assertEqual(metadata["ok"], expected)
+                self.assertTrue(metadata["query_succeeded"])
+                self.assertEqual(metadata["entry_present"], expected)
+                self.assertEqual(
+                    state["powershell_gallery"]["all_resolved"], expected
+                )
+                artifact = _artifact_state(
+                    parameters,
+                    {"types": {"artifact_surface": ["powershell_gallery_module"]}},
+                    {},
+                    state,
+                )
+                self.assertEqual(artifact["live_metadata"]["all_resolved"], expected)
+
     def test_ghcr_metadata_verifies_the_named_package(self):
         parameters = {
             "owner": "owner",
@@ -1040,6 +1086,14 @@ class GHContractStateEngineTests(unittest.TestCase):
         )
         self.assertNotIn("subprocess.run", text)
 
+    def test_pr_readiness_uses_graphql_rules_only(self):
+        text = (SCRIPTS / "github_pr_workflow" / "readiness.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("run_gh_graphql", text)
+        self.assertNotIn("/rules/branches/", text)
+        self.assertNotIn("urllib.parse", text)
+
     def test_remediation_registry_covers_contract_actions(self):
         actions = {
             check["remediation_action"]
@@ -1054,6 +1108,57 @@ class GHContractStateEngineTests(unittest.TestCase):
             if check.get("remediation_action")
         )
         self.assertEqual(actions, set(HANDLERS))
+
+    def test_merge_settings_require_and_remediate_merge_commit_availability(
+        self,
+    ):
+        rule = next(
+            check
+            for check in self.contracts["repo"]["checks"]
+            if check["id"] == "repo.merge_settings"
+        )
+        assertion = next(
+            item
+            for item in rule["assertions"]
+            if item["path"] == "/repository/repo/allow_merge_commit"
+        )
+        self.assertEqual(
+            assertion,
+            {
+                "path": "/repository/repo/allow_merge_commit",
+                "operator": "equal",
+                "expected": True,
+                "level": "WARN",
+            },
+        )
+
+        with mock.patch(
+            "github_contract_engine.remediations.repository.run_gh_api",
+            return_value=ApiResult(
+                True,
+                "PATCH",
+                "/repos/owner/repo",
+                status=200,
+            ),
+        ) as update_repository:
+            results = HANDLERS["repository.update_settings"](
+                [
+                    {
+                        **rule,
+                        "_mismatch_paths": [
+                            "/repository/repo/allow_merge_commit"
+                        ],
+                    }
+                ],
+                {"owner": "owner", "repo": "repo"},
+            )
+
+        update_repository.assert_called_once_with(
+            "PATCH",
+            "/repos/owner/repo",
+            {"allow_merge_commit": True},
+        )
+        self.assertTrue(results[0]["ok"])
 
     def test_consistency_validator_passes(self):
         process = subprocess.run(
@@ -1154,6 +1259,39 @@ class GHContractStateEngineTests(unittest.TestCase):
         )
         self.assertEqual(pending[0].level, "WARN")
 
+    def test_unparseable_status_rollup_is_an_error(self):
+        malformed_rollups: tuple[object, ...] = (
+            None,
+            {},
+            "",
+            0,
+            False,
+            [None],
+            [
+                {
+                    "name": "CI",
+                    "status": "UNKNOWN",
+                    "conclusion": None,
+                }
+            ],
+            [
+                {
+                    "name": "CI",
+                    "status": "COMPLETED",
+                    "conclusion": None,
+                }
+            ],
+        )
+        for raw_rollup in malformed_rollups:
+            with self.subTest(raw_rollup=raw_rollup):
+                findings: list[pr_validator.Finding] = []
+                pr_validator.status_rollup_findings(
+                    {"statusCheckRollup": raw_rollup},
+                    findings,
+                )
+
+                self.assertEqual(findings[0].level, "ERROR")
+
     def test_empty_review_decision_obeys_required_approval_rule(self):
         pr_data = {
             "number": 17,
@@ -1191,6 +1329,263 @@ class GHContractStateEngineTests(unittest.TestCase):
         self.assertEqual(review.actual, "REVIEW_REQUIRED")
         required_reviews.assert_called_once_with("main", pathlib.Path.cwd())
 
+    def test_pr_rule_graphql_paginates_exact_ref_and_aggregates_policies(self):
+        cwd = pathlib.Path.cwd()
+        classic = {
+            "requiresApprovingReviews": True,
+            "requiredApprovingReviewCount": 1,
+            "requiresConversationResolution": False,
+        }
+        page_one = {
+            "data": {
+                "repository": {
+                    "ref": {
+                        "name": "release/1.x",
+                        "branchProtectionRule": classic,
+                        "rules": {
+                            "nodes": [
+                                {
+                                    "type": "REQUIRED_STATUS_CHECKS",
+                                    "parameters": {
+                                        "__typename": "RequiredStatusChecksParameters"
+                                    },
+                                },
+                                {
+                                    "type": "PULL_REQUEST",
+                                    "parameters": {
+                                        "__typename": "PullRequestParameters",
+                                        "requiredApprovingReviewCount": 2,
+                                        "requiredReviewThreadResolution": False,
+                                    },
+                                },
+                            ],
+                            "pageInfo": {
+                                "hasNextPage": True,
+                                "endCursor": "cursor-1",
+                            },
+                        },
+                    }
+                }
+            }
+        }
+        page_two = {
+            "data": {
+                "repository": {
+                    "ref": {
+                        "name": "release/1.x",
+                        "branchProtectionRule": classic,
+                        "rules": {
+                            "nodes": [
+                                {
+                                    "type": "PULL_REQUEST",
+                                    "parameters": {
+                                        "__typename": "PullRequestParameters",
+                                        "requiredApprovingReviewCount": 1,
+                                        "requiredReviewThreadResolution": True,
+                                    },
+                                }
+                            ],
+                            "pageInfo": {
+                                "hasNextPage": False,
+                                "endCursor": "cursor-2",
+                            },
+                        },
+                    }
+                }
+            }
+        }
+        with (
+            mock.patch.object(
+                pr_validator,
+                "require_command",
+                return_value=json.dumps({"nameWithOwner": "owner/repo"}),
+            ) as repo_view,
+            mock.patch.object(
+                pr_validator,
+                "run_gh_graphql",
+                side_effect=[
+                    ApiResult(
+                        ok=True,
+                        method="GRAPHQL",
+                        endpoint="pull-request-rules",
+                        data=page_one,
+                    ),
+                    ApiResult(
+                        ok=True,
+                        method="GRAPHQL",
+                        endpoint="pull-request-rules",
+                        data=page_two,
+                    ),
+                ],
+            ) as graphql,
+        ):
+            parameters = pr_validator.pull_request_rule_parameters(
+                "release/1.x", cwd
+            )
+
+        self.assertEqual(
+            parameters,
+            [
+                {
+                    "required_approving_review_count": 1,
+                    "required_review_thread_resolution": False,
+                },
+                {
+                    "required_approving_review_count": 2,
+                    "required_review_thread_resolution": False,
+                },
+                {
+                    "required_approving_review_count": 1,
+                    "required_review_thread_resolution": True,
+                },
+            ],
+        )
+        repo_view.assert_called_once_with(
+            ["gh", "repo", "view", "--json", "nameWithOwner"], cwd
+        )
+        self.assertEqual(graphql.call_count, 2)
+        self.assertEqual(
+            graphql.call_args_list[0].args[1],
+            {
+                "owner": "owner",
+                "name": "repo",
+                "qualifiedName": "refs/heads/release/1.x",
+                "cursor": None,
+            },
+        )
+        self.assertEqual(graphql.call_args_list[1].args[1]["cursor"], "cursor-1")
+        with mock.patch.object(
+            pr_validator,
+            "pull_request_rule_parameters",
+            return_value=parameters,
+        ):
+            self.assertEqual(
+                pr_validator.required_approving_review_count("release/1.x", cwd),
+                2,
+            )
+            self.assertTrue(
+                pr_validator.review_thread_resolution_required(
+                    "release/1.x", cwd
+                )
+            )
+
+    def test_pr_rule_graphql_reports_no_policy_as_zero_requirements(self):
+        cwd = pathlib.Path.cwd()
+        response = {
+            "data": {
+                "repository": {
+                    "ref": {
+                        "name": "main",
+                        "branchProtectionRule": None,
+                        "rules": {
+                            "nodes": [],
+                            "pageInfo": {
+                                "hasNextPage": False,
+                                "endCursor": None,
+                            },
+                        },
+                    }
+                }
+            }
+        }
+        with (
+            mock.patch.object(
+                pr_validator,
+                "require_command",
+                return_value=json.dumps({"nameWithOwner": "owner/repo"}),
+            ),
+            mock.patch.object(
+                pr_validator,
+                "run_gh_graphql",
+                return_value=ApiResult(
+                    ok=True,
+                    method="GRAPHQL",
+                    endpoint="pull-request-rules",
+                    data=response,
+                ),
+            ),
+        ):
+            parameters = pr_validator.pull_request_rule_parameters("main", cwd)
+
+        self.assertEqual(parameters, [])
+        with mock.patch.object(
+            pr_validator,
+            "pull_request_rule_parameters",
+            return_value=parameters,
+        ):
+            self.assertEqual(
+                pr_validator.required_approving_review_count("main", cwd), 0
+            )
+            self.assertFalse(
+                pr_validator.review_thread_resolution_required("main", cwd)
+            )
+
+    def test_pr_rule_graphql_fails_closed_on_api_error(self):
+        with (
+            mock.patch.object(
+                pr_validator,
+                "require_command",
+                return_value=json.dumps({"nameWithOwner": "owner/repo"}),
+            ),
+            mock.patch.object(
+                pr_validator,
+                "run_gh_graphql",
+                return_value=ApiResult(
+                    ok=False,
+                    method="GRAPHQL",
+                    endpoint="pull-request-rules",
+                    status=403,
+                    message="forbidden",
+                ),
+            ),
+            self.assertRaisesRegex(pr_validator.CommandError, "forbidden"),
+        ):
+            pr_validator.pull_request_rule_parameters(
+                "main", pathlib.Path.cwd()
+            )
+
+    def test_pr_rule_graphql_fails_closed_when_pagination_does_not_advance(self):
+        response = {
+            "data": {
+                "repository": {
+                    "ref": {
+                        "name": "main",
+                        "branchProtectionRule": None,
+                        "rules": {
+                            "nodes": [],
+                            "pageInfo": {
+                                "hasNextPage": True,
+                                "endCursor": None,
+                            },
+                        },
+                    }
+                }
+            }
+        }
+        with (
+            mock.patch.object(
+                pr_validator,
+                "require_command",
+                return_value=json.dumps({"nameWithOwner": "owner/repo"}),
+            ),
+            mock.patch.object(
+                pr_validator,
+                "run_gh_graphql",
+                return_value=ApiResult(
+                    ok=True,
+                    method="GRAPHQL",
+                    endpoint="pull-request-rules",
+                    data=response,
+                ),
+            ),
+            self.assertRaisesRegex(
+                pr_validator.CommandError, "pagination did not advance"
+            ),
+        ):
+            pr_validator.pull_request_rule_parameters(
+                "main", pathlib.Path.cwd()
+            )
+
     def test_merge_helper_revalidates_after_review_wait(self):
         text = (SCRIPTS / "github_pr_workflow" / "merge.py").read_text(
             encoding="utf-8"
@@ -1219,11 +1614,15 @@ class GHContractStateEngineTests(unittest.TestCase):
         sync_text = (SCRIPTS / "github_pr_workflow" / "sync.py").read_text(
             encoding="utf-8"
         )
-        first_clean = sync_text.index('_assert_clean(repo_root, "before syncing main")')
+        first_clean = sync_text.index(
+            '_assert_clean(worktree, f"before synchronization in {worktree}")'
+        )
         fetch = sync_text.index('"fetch", "--prune", args.remote_name')
         switch = sync_text.index('"switch", args.main_branch')
         fast_forward = sync_text.index('"--ff-only"')
-        second_clean = sync_text.index('_assert_clean(repo_root, f"after fast-forwarding')
+        second_clean = sync_text.index(
+            '_assert_clean(main_worktree, f"after fast-forwarding'
+        )
         align = sync_text.index('"branch", "-f", branch, args.main_branch')
         self.assertLess(first_clean, fetch)
         self.assertLess(fetch, switch)

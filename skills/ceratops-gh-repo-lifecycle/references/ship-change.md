@@ -100,10 +100,10 @@ Infer missing inputs from local files and live repo state before asking.
   commit. When required review is the only remaining authorization boundary, it
   returns `authorization_required` with exact authorized-resume arguments
   without attempting a merge. The authorized resume rechecks once, merges with
-  an exact-head precondition, synchronizes the local default branch, deletes
-  the exact successful checkpoint and older valid checkpoints for the same
-  repository and PR, retains unrelated or unidentifiable checkpoints, and
-  emits only state changes.
+  an exact-head precondition, synchronizes the local default branch in its clean
+  owning worktree when present, deletes the exact successful checkpoint and
+  older valid checkpoints for the same repository and PR, retains unrelated or
+  unidentifiable checkpoints, and emits only state changes.
 - Pass `--reusable-head` only for a reusable release or integration head. The
   helper aligns its local branch after merge and safely restores or aligns the
   remote only when it is absent or still points at the shipped commit.

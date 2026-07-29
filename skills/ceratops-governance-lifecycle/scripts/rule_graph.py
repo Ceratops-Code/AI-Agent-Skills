@@ -32,6 +32,9 @@ LEGACY_RELATION = re.compile(
     rf"`(?:limits|overrides|overlaps|conflicts) "
     rf"{RULE_ID_PATTERN}(?:, {RULE_ID_PATTERN})*`"
 )
+RULE_LOCAL_USER_OVERRIDE = re.compile(
+    r"\bunless\s+the\s+user\s+explicitly\b", re.IGNORECASE
+)
 
 RELATION_KEYS = ("limits", "overrides", "overlaps", "conflicts")
 DIRECTIONAL_KEYS = ("limits", "overrides")
@@ -285,6 +288,18 @@ def parse_rule_text(text: str, source: str) -> ParsedRuleSource:
                     record.line,
                     rule_id=record.rule_id,
                     detail=legacy_match.group(0),
+                )
+            )
+
+        # Broad user-override policy is centralized; local escape clauses are
+        # structural errors even when capitalization or line wrapping differs.
+        if RULE_LOCAL_USER_OVERRIDE.search(" ".join(record.body_lines)):
+            findings.append(
+                _finding(
+                    "rule_local_user_override",
+                    source,
+                    record.line,
+                    rule_id=record.rule_id,
                 )
             )
 

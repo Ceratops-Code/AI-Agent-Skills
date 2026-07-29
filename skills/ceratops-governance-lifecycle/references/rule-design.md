@@ -14,6 +14,9 @@ globally stack-unique ID, uses the parser's canonical metadata syntax, and may
 reference only IDs available in its effective global-to-local instruction
 stack. Nested local files extend the stack of their ancestors.
 
+Reuse a section's rule-ID namespace when it fits; add another only for a
+distinct concern, and split the section only if it becomes too broad or long.
+
 Use one sentence when one condition determines one required behavior:
 
 ```text
@@ -23,8 +26,8 @@ Use one sentence when one condition determines one required behavior:
 Use the strongest unambiguous wording that accurately expresses the intended
 rule.
 
-Add an exception or relationship only when it changes the decision. Keep
-scenarios outside governing instructions and use them as regression evidence.
+Add a relation only when it changes the decision. Keep scenarios outside
+governing instructions and use them as regression evidence.
 
 Place metadata immediately after the rule body. Use only the parser's closed
 metadata-key and value sets, canonical order, indentation, separators, and ID
@@ -61,8 +64,7 @@ and mixed cycles require focused semantic review.
 Treat `overlaps` and `conflicts` as symmetric review edges declared once. They
 remain unresolved findings until semantic review selects a coherent outcome;
 do not change involved behavior without resolving the edge or recording the
-manual decision to retain it. Keep the current `CLOSE-01` and `REWORK-05`
-conflict as a finding until that decision is made.
+manual decision to retain it.
 
 Merge coextensive guidance into one rule. Keep independently reusable behavior
 separate and express only the directional relationship needed to interpret it.
@@ -113,9 +115,14 @@ decision and enduring rationale.
 
 ## Acceptance
 
-State the required invariant. Add a negative boundary only when it excludes a
-distinct plausible failure not excluded by the invariant. Apply broad override
-policy without repeating local user-override clauses.
+State the required invariant. Add a negative boundary or exception only when it
+changes the decision for a distinct, verifiable case not already governed by
+the invariant or another applicable rule or relation.
+
+Express authorization as a positive gate. Do not add any rule-local
+user-override clause, including `unless the user explicitly...`; apply the broad
+override policy instead. The parser must reject that phrase case-insensitively
+in a rule body.
 
 Evaluate both local and structural intervention. Accept a candidate only when
 it prevents the current failure and relevant recorded failures without

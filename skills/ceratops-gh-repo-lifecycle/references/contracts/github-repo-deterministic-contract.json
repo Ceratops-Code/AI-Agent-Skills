@@ -505,6 +505,12 @@
           "operator": "equal",
           "expected": true,
           "level": "WARN"
+        },
+        {
+          "path": "/repository/repo/allow_merge_commit",
+          "operator": "equal",
+          "expected": true,
+          "level": "WARN"
         }
       ],
       "remediation_action": "repository.update_settings"

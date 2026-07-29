@@ -17,16 +17,71 @@ import json
 import pathlib
 import subprocess
 import sys
-import urllib.parse
 from dataclasses import asdict, dataclass
 from typing import Any
 
+from github_contract_engine.github_api import run_gh_graphql
 from github_contract_engine.levels import ERROR, count_by_level
 
 
 SCRIPTS_DIR = pathlib.Path(__file__).resolve().parent.parent
 SKILL_DIR = SCRIPTS_DIR.parent
 ROOT = SKILL_DIR.parent.parent if SKILL_DIR.parent.name == "skills" else SKILL_DIR
+
+PULL_REQUEST_RULES_QUERY = """
+query(
+  $owner: String!
+  $name: String!
+  $qualifiedName: String!
+  $cursor: String
+) {
+  repository(owner: $owner, name: $name) {
+    ref(qualifiedName: $qualifiedName) {
+      name
+      branchProtectionRule {
+        requiresApprovingReviews
+        requiredApprovingReviewCount
+        requiresConversationResolution
+      }
+      rules(first: 100, after: $cursor) {
+        nodes {
+          type
+          parameters {
+            __typename
+            ... on PullRequestParameters {
+              requiredApprovingReviewCount
+              requiredReviewThreadResolution
+            }
+          }
+        }
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+      }
+    }
+  }
+}
+"""
+
+PASSING_CHECK_CONCLUSIONS = frozenset({"SUCCESS", "SKIPPED", "NEUTRAL"})
+FAILING_CHECK_CONCLUSIONS = frozenset(
+    {
+        "FAILURE",
+        "TIMED_OUT",
+        "CANCELLED",
+        "ACTION_REQUIRED",
+        "STALE",
+        "STARTUP_FAILURE",
+    }
+)
+PENDING_CHECK_STATUSES = frozenset(
+    {"IN_PROGRESS", "PENDING", "QUEUED", "REQUESTED", "WAITING"}
+)
+KNOWN_CHECK_STATUSES = PENDING_CHECK_STATUSES | {"COMPLETED"}
+PENDING_CONTEXT_STATES = frozenset({"PENDING", "EXPECTED"})
+FAILING_CONTEXT_STATES = frozenset({"FAILURE", "ERROR"})
+KNOWN_CONTEXT_STATES = PENDING_CONTEXT_STATES | FAILING_CONTEXT_STATES | {"SUCCESS"}
 
 
 class CommandError(RuntimeError):
@@ -100,32 +155,197 @@ def gh_pr_view(selector: str | None, cwd: pathlib.Path) -> dict[str, Any]:
     return json.loads(require_command(args, cwd))
 
 
+def current_repository(cwd: pathlib.Path) -> tuple[str, str]:
+    """Return the current checkout repository as an owner/name pair."""
+
+    try:
+        payload = json.loads(
+            require_command(["gh", "repo", "view", "--json", "nameWithOwner"], cwd)
+        )
+    except json.JSONDecodeError as exc:
+        raise CommandError(
+            "GitHub repository lookup returned invalid JSON"
+        ) from exc
+    if not isinstance(payload, dict):
+        raise CommandError("GitHub repository lookup returned an invalid response")
+    name_with_owner = payload.get("nameWithOwner")
+    if not isinstance(name_with_owner, str):
+        raise CommandError("GitHub repository lookup omitted nameWithOwner")
+    owner, separator, name = name_with_owner.partition("/")
+    if separator != "/" or not owner or not name or "/" in name:
+        raise CommandError("GitHub repository identity must use owner/name")
+    return owner, name
+
+
+def gh_graphql(
+    query: str,
+    variables: dict[str, Any],
+    cwd: pathlib.Path,
+) -> dict[str, Any]:
+    """Run one authenticated GraphQL read and fail closed on invalid output."""
+
+    try:
+        result = run_gh_graphql(
+            query,
+            variables,
+            "pull-request-rules",
+            cwd=cwd,
+        )
+    except (json.JSONDecodeError, OSError) as exc:
+        raise CommandError(f"GitHub GraphQL request failed: {exc}") from exc
+    if not result.ok:
+        raise CommandError(result.message or "GitHub GraphQL request failed")
+    if not isinstance(result.data, dict):
+        raise CommandError("GitHub GraphQL returned an invalid response")
+    return result.data
+
+
+def normalized_rule_parameters(
+    count: object,
+    thread_resolution: object,
+    *,
+    source: str,
+) -> dict[str, Any]:
+    """Validate and normalize one pull-request rule parameter set."""
+
+    if not isinstance(count, int) or isinstance(count, bool) or count < 0:
+        raise CommandError(
+            f"GitHub {source} has an invalid approving-review count"
+        )
+    if not isinstance(thread_resolution, bool):
+        raise CommandError(
+            f"GitHub {source} has an invalid thread-resolution requirement"
+        )
+    return {
+        "required_approving_review_count": count,
+        "required_review_thread_resolution": thread_resolution,
+    }
+
+
+def classic_rule_parameters(raw_rule: object) -> dict[str, Any] | None:
+    """Normalize classic branch protection when the exact ref has one."""
+
+    if raw_rule is None:
+        return None
+    if not isinstance(raw_rule, dict):
+        raise CommandError("GitHub classic branch protection is invalid")
+    requires_approvals = raw_rule.get("requiresApprovingReviews")
+    if not isinstance(requires_approvals, bool):
+        raise CommandError(
+            "GitHub classic branch protection omitted approval policy"
+        )
+    count = raw_rule.get("requiredApprovingReviewCount")
+    if count is None:
+        count = 0
+    if isinstance(count, int) and not isinstance(count, bool):
+        count = max(count, int(requires_approvals))
+    return normalized_rule_parameters(
+        count,
+        raw_rule.get("requiresConversationResolution"),
+        source="classic branch protection",
+    )
+
+
+def ruleset_rule_parameters(raw_rule: object) -> dict[str, Any] | None:
+    """Normalize an applicable ruleset rule, ignoring non-PR rule types."""
+
+    if not isinstance(raw_rule, dict):
+        raise CommandError("GitHub applicable branch rule is invalid")
+    rule_type = raw_rule.get("type")
+    if not isinstance(rule_type, str):
+        raise CommandError("GitHub applicable branch rule omitted its type")
+    if rule_type != "PULL_REQUEST":
+        return None
+    parameters = raw_rule.get("parameters")
+    if (
+        not isinstance(parameters, dict)
+        or parameters.get("__typename") != "PullRequestParameters"
+    ):
+        raise CommandError("GitHub pull-request rule has invalid parameters")
+    return normalized_rule_parameters(
+        parameters.get("requiredApprovingReviewCount"),
+        parameters.get("requiredReviewThreadResolution"),
+        source="pull-request rule",
+    )
+
+
 def pull_request_rule_parameters(
     base_branch: str, cwd: pathlib.Path
 ) -> list[dict[str, Any]]:
-    """Return every pull-request rule parameter set applied to the branch."""
+    """Return all active PR rules applied to the exact base ref."""
 
-    encoded_branch = urllib.parse.quote(base_branch, safe="")
-    raw_rules = json.loads(
-        require_command(
-            [
-                "gh",
-                "api",
-                f"repos/{{owner}}/{{repo}}/rules/branches/{encoded_branch}",
-            ],
+    if not base_branch:
+        raise CommandError("GitHub base branch is empty")
+    owner, name = current_repository(cwd)
+    qualified_name = f"refs/heads/{base_branch}"
+    parameters_list: list[dict[str, Any]] = []
+    cursor: str | None = None
+    seen_cursors: set[str] = set()
+    classic_policy: object = None
+    first_page = True
+    while True:
+        payload = gh_graphql(
+            PULL_REQUEST_RULES_QUERY,
+            {
+                "owner": owner,
+                "name": name,
+                "qualifiedName": qualified_name,
+                "cursor": cursor,
+            },
             cwd,
         )
-    )
-    if not isinstance(raw_rules, list):
-        raise CommandError("GitHub branch rules response is not a list")
-    parameters_list: list[dict[str, Any]] = []
-    for rule in raw_rules:
-        if not isinstance(rule, dict) or rule.get("type") != "pull_request":
-            continue
-        parameters = rule.get("parameters")
-        if not isinstance(parameters, dict):
-            raise CommandError("GitHub pull-request rule has invalid parameters")
-        parameters_list.append(parameters)
+        data = payload.get("data")
+        if not isinstance(data, dict):
+            raise CommandError("GitHub GraphQL response omitted data")
+        repository = data.get("repository")
+        if not isinstance(repository, dict):
+            raise CommandError("GitHub GraphQL response omitted the repository")
+        ref = repository.get("ref")
+        if not isinstance(ref, dict) or ref.get("name") != base_branch:
+            raise CommandError(
+                f"GitHub GraphQL response omitted base ref {qualified_name}"
+            )
+
+        raw_classic_policy = ref.get("branchProtectionRule")
+        if first_page:
+            classic_policy = raw_classic_policy
+            normalized_classic = classic_rule_parameters(raw_classic_policy)
+            if normalized_classic is not None:
+                parameters_list.append(normalized_classic)
+            first_page = False
+        elif raw_classic_policy != classic_policy:
+            raise CommandError(
+                "GitHub branch protection changed during paginated rule lookup"
+            )
+
+        rules = ref.get("rules")
+        if not isinstance(rules, dict):
+            raise CommandError("GitHub GraphQL response omitted applicable rules")
+        nodes = rules.get("nodes")
+        if not isinstance(nodes, list):
+            raise CommandError("GitHub applicable rules response is not a list")
+        for raw_rule in nodes:
+            normalized_rule = ruleset_rule_parameters(raw_rule)
+            if normalized_rule is not None:
+                parameters_list.append(normalized_rule)
+
+        page_info = rules.get("pageInfo")
+        if not isinstance(page_info, dict):
+            raise CommandError("GitHub applicable rules omitted pagination state")
+        has_next_page = page_info.get("hasNextPage")
+        if not isinstance(has_next_page, bool):
+            raise CommandError("GitHub applicable rules have invalid pagination state")
+        if not has_next_page:
+            break
+        next_cursor = page_info.get("endCursor")
+        if (
+            not isinstance(next_cursor, str)
+            or not next_cursor
+            or next_cursor in seen_cursors
+        ):
+            raise CommandError("GitHub applicable rules pagination did not advance")
+        seen_cursors.add(next_cursor)
+        cursor = next_cursor
     return parameters_list
 
 
@@ -197,9 +417,9 @@ def add(
 def status_rollup_findings(pr_data: dict[str, Any], findings: list[Finding]) -> None:
     """Classify the visible status checks attached to the PR."""
 
-    raw_rollup = pr_data.get("statusCheckRollup") or []
+    raw_rollup = pr_data.get("statusCheckRollup")
     if not isinstance(raw_rollup, list):
-        add(findings, "WARN", "pr.status_checks", "Could not parse status-check rollup.", actual=type(raw_rollup).__name__)
+        add(findings, "ERROR", "pr.status_checks", "Could not parse status-check rollup.", actual=type(raw_rollup).__name__)
         return
     if not raw_rollup:
         add(findings, "WARN", "pr.status_checks", "No status checks are attached to this PR.")
@@ -208,21 +428,69 @@ def status_rollup_findings(pr_data: dict[str, Any], findings: list[Finding]) -> 
     failed: list[str] = []
     pending: list[str] = []
     passed: list[str] = []
-    for item in raw_rollup:
+    for index, item in enumerate(raw_rollup):
         if not isinstance(item, dict):
-            continue
+            add(
+                findings,
+                "ERROR",
+                "pr.status_checks",
+                "Could not parse a status-check entry.",
+                actual=f"item {index}: {type(item).__name__}",
+            )
+            return
         name = str(item.get("name") or item.get("context") or item.get("workflowName") or "unnamed-check")
         conclusion = item.get("conclusion")
         status = item.get("status")
         state = item.get("state")
+        fields = {
+            "conclusion": conclusion,
+            "status": status,
+            "state": state,
+        }
+        if any(
+            value is not None and not isinstance(value, str)
+            for value in fields.values()
+        ):
+            add(
+                findings,
+                "ERROR",
+                "pr.status_checks",
+                "Status-check entry has invalid field types.",
+                actual=name,
+            )
+            return
+        if (
+            conclusion is not None
+            and conclusion
+            not in PASSING_CHECK_CONCLUSIONS | FAILING_CHECK_CONCLUSIONS
+        ) or (status is not None and status not in KNOWN_CHECK_STATUSES) or (
+            state is not None and state not in KNOWN_CONTEXT_STATES
+        ):
+            add(
+                findings,
+                "ERROR",
+                "pr.status_checks",
+                "Status-check entry has unknown state.",
+                actual=name,
+            )
+            return
         # GitHub treats SUCCESS, SKIPPED, and NEUTRAL as successful required
         # checks. Keep completed failures distinct from incomplete checks.
-        if conclusion in {"FAILURE", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STALE", "STARTUP_FAILURE"} or state in {"FAILURE", "ERROR"}:
+        if conclusion in FAILING_CHECK_CONCLUSIONS or state in FAILING_CONTEXT_STATES:
             failed.append(name)
-        elif status in {"IN_PROGRESS", "QUEUED", "PENDING", "WAITING"} or state in {"PENDING", "EXPECTED"} or (conclusion is None and state != "SUCCESS"):
+        elif status in PENDING_CHECK_STATUSES or state in PENDING_CONTEXT_STATES:
             pending.append(name)
-        else:
+        elif conclusion in PASSING_CHECK_CONCLUSIONS or state == "SUCCESS":
             passed.append(name)
+        else:
+            add(
+                findings,
+                "ERROR",
+                "pr.status_checks",
+                "Status-check entry has no terminal or pending state.",
+                actual=name,
+            )
+            return
 
     if failed:
         add(findings, "ERROR", "pr.status_checks", "One or more status checks are failing.", actual=failed)

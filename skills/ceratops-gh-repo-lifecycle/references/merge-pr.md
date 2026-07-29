@@ -127,8 +127,10 @@ before asking.
   refs still exist at the expected post-merge commit and restore them if GitHub
   auto-deleted the remote head.
 - (D) Use `python -m github_pr_workflow sync --repo-root PATH` for local
-  default-branch sync when a local checkout is in scope; pass `--align-branch`
-  only for reusable local branches that should move to the synced main commit.
+  default-branch sync when a local checkout is in scope. It uses the clean
+  worktree that already owns the default branch instead of checking that branch
+  out twice. Pass `--align-branch` only for reusable local branches that should
+  move to the synced main commit.
 - Prune stale refs safely and keep a clearly named safety branch only when
   needed.
 

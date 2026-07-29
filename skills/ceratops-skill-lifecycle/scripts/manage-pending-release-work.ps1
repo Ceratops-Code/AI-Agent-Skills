@@ -14,8 +14,9 @@ param(
 # ship-to-remote after terminal shipping. It checks only approved branches
 # supplied as base64-encoded, newline-delimited UTF-8 data or one exact
 # promotion record.
-# With -CleanMergedBranches, it removes clean approved task worktrees and
-# branches already reachable from the release branch, then deletes only the
+# With -CleanMergedBranches, it completely removes clean approved task
+# worktrees, including residual filesystem content after Git deregistration,
+# and branches already reachable from the release branch, then deletes only the
 # consumed promotion record. -FinalizeShippedRelease first verifies synchronized
 # main/release state, installs and validates runtime, then performs that cleanup.
 # Unrelated branches and worktrees are never enumerated. -RecordPromotion
@@ -157,6 +158,30 @@ function Get-WorktreeStatus {
         throw "git failed: status --porcelain in $WorktreePath"
     }
     return $status
+}
+
+function Remove-ApprovedWorktreeCompletely {
+    param(
+        [string]$BranchName,
+        [string]$WorktreePath,
+        [string]$ExpectedRoot
+    )
+
+    Invoke-Git @("worktree", "remove", $WorktreePath)
+    if (-not [string]::IsNullOrWhiteSpace(
+        (Get-ApprovedBranchWorktreePath -BranchName $BranchName)
+    )) {
+        throw "Git still registers removed worktree path $WorktreePath."
+    }
+    if (Test-Path -LiteralPath $WorktreePath) {
+        if (-not (Test-PathWithin -Path $WorktreePath -Parent $ExpectedRoot)) {
+            throw "Residual worktree path moved outside $ExpectedRoot."
+        }
+        Remove-Item -LiteralPath $WorktreePath -Recurse -Force
+    }
+    if (Test-Path -LiteralPath $WorktreePath) {
+        throw "Removed worktree directory still exists: $WorktreePath"
+    }
 }
 
 function Get-GitCommonDirectory {
@@ -311,16 +336,31 @@ function Invoke-TerminalRuntimeValidation {
     if (-not (Test-Path -LiteralPath $runtimeValidator -PathType Leaf)) {
         throw "Missing runtime validator: $runtimeValidator"
     }
-    Invoke-QuietNative -FilePath "python" -Arguments @(
-        $installScript,
-        "--repo-root",
-        $resolvedSkillsRepoRoot
-    )
-    Invoke-QuietNative -FilePath "python" -Arguments @(
-        $runtimeValidator,
-        "--repo-root",
-        $resolvedSkillsRepoRoot
-    )
+    # PowerShell's location stack does not reliably move the native Windows
+    # process directory. Move it outside the installed bundle before the
+    # installer replaces that bundle, then restore it only when still valid.
+    $previousNativeWorkingDirectory = [Environment]::CurrentDirectory
+    try {
+        [Environment]::CurrentDirectory = $resolvedSkillsRepoRoot
+        Invoke-QuietNative -FilePath "python" -Arguments @(
+            $installScript,
+            "--repo-root",
+            $resolvedSkillsRepoRoot
+        )
+        Invoke-QuietNative -FilePath "python" -Arguments @(
+            $runtimeValidator,
+            "--repo-root",
+            $resolvedSkillsRepoRoot
+        )
+    } finally {
+        if (
+            Test-Path `
+                -LiteralPath $previousNativeWorkingDirectory `
+                -PathType Container
+        ) {
+            [Environment]::CurrentDirectory = $previousNativeWorkingDirectory
+        }
+    }
 }
 
 $findings = @()
@@ -497,7 +537,10 @@ if ($findings.Count -eq 0) {
     }
     foreach ($candidate in $cleanupCandidates) {
         if (-not [string]::IsNullOrWhiteSpace($candidate.Path)) {
-            Invoke-Git @("worktree", "remove", $candidate.Path)
+            Remove-ApprovedWorktreeCompletely `
+                -BranchName $candidate.Branch `
+                -WorktreePath $candidate.Path `
+                -ExpectedRoot $expectedWorktreeRoot
             Remove-MergedBranch $candidate.Branch
             $removed += [pscustomobject]@{
                 Kind = "merged_worktree_branch"

@@ -1,6 +1,6 @@
 ---
 name: ceratops-governance-lifecycle
-description: Route Ceratops governance work across prompt optimization, advisory skill optimization, regression-safe instruction updates, and cross-scope governance consistency audits. Use when Codex should rewrite a rough prompt without executing it, recommend exact changes to existing skills without applying them, diagnose and route approved instruction changes, or audit alignment across AGENTS files, automations, directly referenced helpers, and governance owners.
+description: Route Ceratops governance work across prompt optimization, advisory skill optimization, regression-safe instruction updates, and cross-scope governance consistency audits. Use when Codex should rewrite a rough prompt as the requested deliverable or an execution preflight, recommend exact changes to existing skills without applying them, diagnose and route approved instruction changes, or audit alignment across AGENTS files, automations, directly referenced helpers, and governance owners.
 ---
 
 # Ceratops Governance Lifecycle
@@ -43,8 +43,10 @@ Infer missing inputs from current context and local sources before asking.
   action's completion gate; do not inspect or change unrelated surfaces.
 - Do not mutate an artifact unless the selected action pre-authorizes that exact
   mutation or the user authorizes the exact artifact and change.
-- Keep prompt optimization and skill optimization advisory-only: do not execute
-  the underlying task or mutate artifacts.
+- Keep skill optimization and prompt-rewrite deliverables advisory-only: do
+  not execute the underlying task or mutate artifacts.
+- In `execution-preflight` mode, keep the optimized prompt internal and resume
+  the calling task.
 - For skill optimization, rule updates, and governance audits, inspect companion
   artifacts only when they govern the same behavior, evidence, or output
   contract.
@@ -68,8 +70,8 @@ Infer missing inputs from current context and local sources before asking.
 
 #### 1. Classify the action
 
-- Use `optimize-prompt` when the deliverable is a rewritten prompt and the task
-  must not be executed.
+- Use `optimize-prompt` for a prompt-rewrite deliverable or an
+  `execution-preflight`.
 - Use `optimize-skill` when the deliverable is an exact advisory skill-change
   proposal and files must remain unchanged.
 - Use `propose-rules-update` when the task changes or reviews durable rules,

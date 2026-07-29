@@ -25,6 +25,9 @@ PROMOTION_HELPER = (
     / "scripts"
     / "promote-skill-branches-to-release-and-install.ps1"
 )
+FAST_CHANGE_READINESS = (
+    LIFECYCLE_SOURCE / "scripts" / "validate-fast-change-readiness.ps1"
+)
 MANAGE_PENDING_RELEASE_WORK = (
     LIFECYCLE_SOURCE / "scripts" / "manage-pending-release-work.ps1"
 )
@@ -375,6 +378,91 @@ def run_git(repo: pathlib.Path, *args: str) -> subprocess.CompletedProcess[str]:
         text=True,
         check=False,
     )
+
+
+@pytest.mark.skipif(
+    shutil.which("powershell") is None,
+    reason="PowerShell lifecycle helper is unavailable",
+)
+def test_fast_change_readiness_limits_target_to_selected_skill(
+    tmp_path: pathlib.Path,
+) -> None:
+    repo = tmp_path / "AI-Agent-Skills"
+    repo.mkdir()
+    assert run_git(repo, "init", "-b", "release/local").returncode == 0
+    assert run_git(repo, "config", "user.email", "test@example.invalid").returncode == 0
+    assert run_git(repo, "config", "user.name", "Test Agent").returncode == 0
+    for skill_name in ("alpha-tool", "beta-tool"):
+        skill_root = repo / "skills" / skill_name
+        (skill_root / "scripts").mkdir(parents=True)
+        (skill_root / "SKILL.md").write_text(
+            f"---\nname: {skill_name}\ndescription: Test skill.\n---\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        (skill_root / "scripts" / "helper.ps1").write_text(
+            "Write-Output 'OK'\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+    (repo / "scripts").mkdir()
+    (repo / "scripts" / "install-skills.py").write_text(
+        "raise SystemExit(0)\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    assert run_git(repo, "add", ".").returncode == 0
+    assert run_git(repo, "commit", "-m", "base").returncode == 0
+
+    accepted = subprocess.run(
+        [
+            "powershell",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(FAST_CHANGE_READINESS),
+            "-SkillsRepoRoot",
+            str(repo),
+            "-ReleaseBranch",
+            "release/local",
+            "-SkillName",
+            "alpha-tool",
+            "-TargetPath",
+            str(repo / "skills" / "alpha-tool" / "scripts" / "helper.ps1"),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert accepted.returncode == 0, accepted.stderr
+    assert json.loads(accepted.stdout)["target"] == (
+        "skills/alpha-tool/scripts/helper.ps1"
+    )
+
+    rejected = subprocess.run(
+        [
+            "powershell",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(FAST_CHANGE_READINESS),
+            "-SkillsRepoRoot",
+            str(repo),
+            "-ReleaseBranch",
+            "release/local",
+            "-SkillName",
+            "alpha-tool",
+            "-TargetPath",
+            str(repo / "skills" / "beta-tool" / "SKILL.md"),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert rejected.returncode != 0
+    assert "TargetPath must stay inside selected skill root" in rejected.stderr
 
 
 def test_closure_snapshot_composes_only_named_local_state(
@@ -933,7 +1021,16 @@ def test_promotion_records_are_collision_free_and_cleaned_terminally(
     (repo / "README.md").write_text("base\n", encoding="utf-8", newline="\n")
     (repo / "scripts").mkdir()
     (repo / "scripts" / "install-skills.py").write_text(
-        "import os, pathlib\n"
+        "import os, pathlib, shutil\n"
+        "active_bundle_value = os.environ.get('FINALIZER_ACTIVE_BUNDLE')\n"
+        "if active_bundle_value:\n"
+        "    active_bundle = pathlib.Path(active_bundle_value)\n"
+        "    previous_bundle = active_bundle.with_name(\n"
+        "        active_bundle.name + '-previous'\n"
+        "    )\n"
+        "    active_bundle.rename(previous_bundle)\n"
+        "    shutil.copytree(previous_bundle, active_bundle)\n"
+        "    shutil.rmtree(previous_bundle)\n"
         "record = pathlib.Path(os.environ['EXPECTED_PROMOTION_RECORD'])\n"
         "worktree = pathlib.Path(os.environ['EXPECTED_APPROVED_WORKTREE'])\n"
         "if not record.is_file() or not worktree.is_dir():\n"
@@ -1069,6 +1166,33 @@ def test_promotion_records_are_collision_free_and_cleaned_terminally(
     (bundle_scripts / "runtime").mkdir(parents=True)
     finalizer_helper = bundle_scripts / MANAGE_PENDING_RELEASE_WORK.name
     shutil.copy2(MANAGE_PENDING_RELEASE_WORK, finalizer_helper)
+    # Reproduce Git's successful deregistration with ignored dependency
+    # content left behind without adding a production-only test mode.
+    finalizer_text = finalizer_helper.read_text(encoding="utf-8")
+    remove_call = '    Invoke-Git @("worktree", "remove", $WorktreePath)\n'
+    assert finalizer_text.count(remove_call) == 1
+    finalizer_helper.write_text(
+        finalizer_text.replace(
+            remove_call,
+            remove_call
+            + "    if (-not [string]::IsNullOrWhiteSpace($env:RESIDUAL_INJECTION_LOG)) {\n"
+            + '        $residual = Join-Path $WorktreePath "node_modules"\n'
+            + "        $null = New-Item -ItemType Directory -Force -Path $residual\n"
+            + "        [IO.File]::WriteAllText(\n"
+            + '            (Join-Path $residual "residual.txt"),\n'
+            + '            "residual",\n'
+            + "            [Text.UTF8Encoding]::new($false)\n"
+            + "        )\n"
+            + "        [IO.File]::AppendAllText(\n"
+            + "            $env:RESIDUAL_INJECTION_LOG,\n"
+            + '            "residual-created`n",\n'
+            + "            [Text.UTF8Encoding]::new($false)\n"
+            + "        )\n"
+            + "    }\n",
+        ),
+        encoding="utf-8",
+        newline="\n",
+    )
     (bundle_scripts / "runtime" / "skills-consistency-runtime-validator.py").write_text(
         "import os, pathlib\n"
         "record = pathlib.Path(os.environ['EXPECTED_PROMOTION_RECORD'])\n"
@@ -1088,6 +1212,7 @@ def test_promotion_records_are_collision_free_and_cleaned_terminally(
         **os.environ,
         "EXPECTED_APPROVED_WORKTREE": str(approved_worktree),
         "EXPECTED_PROMOTION_RECORD": str(record),
+        "FINALIZER_ACTIVE_BUNDLE": str(bundle_scripts.parent),
         "FINALIZER_TEST_LOG": str(finalizer_log),
     }
     cleanup_command = [
@@ -1111,6 +1236,7 @@ def test_promotion_records_are_collision_free_and_cleaned_terminally(
         text=True,
         check=False,
         env={**finalizer_env, "FAIL_RUNTIME": "1"},
+        cwd=bundle_scripts.parent,
     )
     assert failed.returncode != 0
     assert approved_worktree.is_dir()
@@ -1122,12 +1248,18 @@ def test_promotion_records_are_collision_free_and_cleaned_terminally(
     ]
     finalizer_log.unlink()
 
+    residual_injection_log = tmp_path / "residual-injection.log"
+    cleanup_env = {
+        **finalizer_env,
+        "RESIDUAL_INJECTION_LOG": str(residual_injection_log),
+    }
     cleaned = subprocess.run(
         cleanup_command,
         capture_output=True,
         text=True,
         check=False,
-        env=finalizer_env,
+        env=cleanup_env,
+        cwd=bundle_scripts.parent,
     )
     assert cleaned.returncode == 0, cleaned.stderr
     cleaned_payload = json.loads(cleaned.stdout)
@@ -1136,6 +1268,9 @@ def test_promotion_records_are_collision_free_and_cleaned_terminally(
     assert finalizer_log.read_text(encoding="utf-8").splitlines() == [
         "install",
         "runtime",
+    ]
+    assert residual_injection_log.read_text(encoding="utf-8").splitlines() == [
+        "residual-created"
     ]
     assert not approved_worktree.exists()
     assert run_git(repo, "show-ref", "--verify", "refs/heads/approved").returncode != 0

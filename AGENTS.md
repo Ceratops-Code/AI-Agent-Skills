@@ -1,3 +1,7 @@
+# AI Agent Skills
+
+Project-specific rules for this skills repository.
+
 ## Instruction enforcement
 
 - [SKILLS-ENF-01] All instruction bullets in this file are mandatory,
@@ -9,9 +13,7 @@
   unmet, unverifiable, or in conflict; report the blocker or conflict instead.
   - overlaps: ENF-02
 
-Metadata: Project-specific rules for this skills repository.
-
-Skills repo checkout and worktrees:
+## Skills repo checkout and worktrees
 
 - [SKILLS-CHECKOUT-01] The primary skills repo checkout used to generate
   installed Ceratops skill copies must stay on local `main` tracking
@@ -22,10 +24,9 @@ Skills repo checkout and worktrees:
   in the skills repo checkout during create, update, audit, or repair work. For
   any task that modifies skills, work in one thread-owned git worktree, name it
   after the thread rather than a subtask, reuse it for follow-on skill changes
-  in the same thread unless conflicting branch histories or explicit user
-  direction require a new one, and do not place it inside the skills repo
-  checkout.
-  - self: exceeds-limit, list-heavy
+  in the same thread unless conflicting branch histories require a new one,
+  and do not place it inside the skills repo checkout.
+  - self: list-heavy
 - [SKILLS-PREVIEW-01] Keep installed Ceratops skill folders generated from the
   skills repo checkout, not task worktrees. For unpublished local previews,
   refresh remote refs with `git fetch --prune origin`, merge ready worktree
@@ -33,8 +34,8 @@ Skills repo checkout and worktrees:
   `python scripts/install-skills.py` there instead of generating installed
   skills from task worktrees.
   - self: list-heavy
-- [SKILLS-STAGE-01] Do not stage skill-source changes into a local `release/*`
-  batch unless the task explicitly requests staging, shipping, or local preview
+- [SKILLS-STAGE-01] Stage skill-source changes into a local `release/*` batch
+  only when the task explicitly requests staging, shipping, or local preview
   sync.
   - limits: SKILLS-PREVIEW-01
   - self: gate
@@ -42,7 +43,7 @@ Skills repo checkout and worktrees:
   directly from task or feature branches.
 - [SKILLS-CREATE-01] New Ceratops skill creation is the only default-staging
   exception: `$ceratops-skill-lifecycle` create must finish with
-  change-promotion and install verification unless the user opts out.
+  change-promotion and install verification.
   - overrides: SKILLS-STAGE-01
 - [SKILLS-SHIP-02] For staging or shipping, use `$ceratops-skill-lifecycle`
   change-promotion or ship-to-remote. After shipping, restore the checkout from
@@ -50,11 +51,10 @@ Skills repo checkout and worktrees:
   worktrees or release branches.
   - self: list-heavy
 - [SKILLS-BATCH-01] Treat an explicit request to promote or ship a named
-  `release/*` branch as authorization for every commit currently on that branch
-  unless the user explicitly excludes one; do not request per-commit inclusion
-  confirmation.
+  `release/*` branch as authorization for every commit currently on that
+  branch; do not request per-commit inclusion confirmation.
 
-Instruction and skill maintenance:
+## Instruction and skill maintenance
 
 - [SKILLS-GOV-01] Before proposing or editing a repository control surface,
   including `AGENTS.md`, `automation.toml`, `SKILL.md`, skill manifests, shared
@@ -62,8 +62,7 @@ Instruction and skill maintenance:
   the current contents as the source of truth.
   - self: list-heavy
 - [SKILLS-GOV-02] Treat recommendations about instruction, automation, skill,
-  and helper-contract changes as advisory unless the user explicitly asks to
-  apply a named change.
+  and helper-contract changes as advisory.
   - self: gate
 - [SKILLS-PORT-01] In repo-tracked files intended for public sharing or GitHub,
   including `AGENTS.md`, `automation.toml`, `SKILL.md`, generated runtime

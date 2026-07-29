@@ -34,9 +34,14 @@ skill and select `update`.
 
 - Use this action only when the user explicitly asks for a fast direct skill
   change.
-- If the change touches shared sections, templates, runtime generation,
-  validation logic, contracts, helper scripts, or multiple skills, select
-  `update`.
+- Limit fast-change to one existing file inside one selected existing skill.
+  Non-executable skill text qualifies after exact readback. A helper qualifies
+  only when the change restores already-contracted behavior, changes no
+  dependency, interface, persistent state, or side-effect scope, and has one
+  safe targeted parse or behavior check.
+- Select `update` when the change needs another source file or skill, touches a
+  shared, generated, or validation surface, changes a helper boundary named
+  above, or lacks the required targeted helper check.
 - If the change creates a new skill, select `create`.
 
 ### Workflow
@@ -47,7 +52,9 @@ skill and select `update`.
    exists, stop instead of hand-rolling release branch setup.
 3. (D) Validate fast-change readiness for the intended branch, clean worktree,
    target file, and targeted install command evidence; stop on helper failure.
-4. Patch the target source file and inspect the diff.
+4. Patch the target source file and inspect the diff. Reopen changed
+   non-executable text and confirm the exact intended result without a
+   repository test. For a helper, run only its identified safe targeted check.
 5. Commit the release-branch change.
 6. Update only the affected runtime skill copy through `python
    scripts/install-skills.py --repo-root <repo> --skill <skill-name>` in the

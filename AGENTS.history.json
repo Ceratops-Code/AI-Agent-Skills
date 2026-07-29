@@ -67,6 +67,46 @@
       "decision": "Make AGENTS.history.json an append-only decision log, preserve prior rationales, move live approval-gate classification to self: gate metadata in AGENTS.md, and retire current-state inventories, obsolete-reference cleanup, and destructive compaction.",
       "reason": "Historical decisions remain facts after rules or implementations evolve, while current gate classification belongs with the rules it governs.",
       "regression": "Do not delete, rewrite, merge, or compact earlier decisions merely to mirror current rules; append a new decision and identify an earlier decision only when its rationale is intentionally replaced or narrowed."
+    },
+    {
+      "rules": [
+        "SKILLS-WORKTREE-01"
+      ],
+      "decision": "Remove user direction as a rule-local worktree exception while retaining conflicting branch histories as the condition for a new thread worktree.",
+      "reason": "The global authorization rule owns user overrides, while branch-history incompatibility remains an operational condition.",
+      "regression": "Reuse the thread worktree for follow-on skill changes unless branch histories conflict."
+    },
+    {
+      "rules": [
+        "SKILLS-STAGE-01"
+      ],
+      "decision": "Express local release staging as a positive authorization gate.",
+      "reason": "Positive gate wording preserves the required explicit staging, shipping, or preview intent without a redundant exception form.",
+      "regression": "Do not stage skill-source changes into a release batch without the named task intent."
+    },
+    {
+      "rules": [
+        "SKILLS-CREATE-01"
+      ],
+      "decision": "Remove the rule-local user opt-out clause from the default new-skill promotion workflow.",
+      "reason": "The global authorization rule owns explicit user overrides.",
+      "regression": "New Ceratops skill creation still completes promotion and install verification by default."
+    },
+    {
+      "rules": [
+        "SKILLS-BATCH-01"
+      ],
+      "decision": "Remove the rule-local user exclusion clause from named release-branch authorization.",
+      "reason": "The global authorization rule owns explicit user overrides without weakening branch-level batch authorization.",
+      "regression": "A named release-branch request authorizes its current commits without per-commit confirmation."
+    },
+    {
+      "rules": [
+        "SKILLS-GOV-02"
+      ],
+      "decision": "Keep governance recommendations advisory without a rule-local user-authorization clause.",
+      "reason": "Global authorization and advisory-turn rules already govern when a proposed change may be applied.",
+      "regression": "Recommendations alone must not mutate instruction, automation, skill, or helper-contract state."
     }
   ]
 }
