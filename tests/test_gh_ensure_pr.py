@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import pathlib
+import subprocess
 import sys
 import tempfile
 import threading
@@ -19,6 +20,7 @@ from github_pr_workflow import (  # noqa: E402
     ensure_pr,
     merge,
     ship,
+    sync,
 )
 
 
@@ -50,6 +52,285 @@ class EnsurePrTests(unittest.TestCase):
                 )
 
         self.assertEqual(probe.call_count, 3)
+
+
+class SyncTests(unittest.TestCase):
+    @staticmethod
+    def git(repo_root: pathlib.Path, *args: str) -> str:
+        completed = subprocess.run(
+            ["git", "-C", str(repo_root), *args],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
+        if completed.returncode:
+            raise AssertionError(completed.stderr.strip())
+        return completed.stdout.strip()
+
+    def assert_dirty_worktree_blocks(
+        self,
+        *,
+        branch_owners: dict[str, str],
+        align_branch: list[str],
+        dirty_owner: str,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = pathlib.Path(temporary_directory)
+            worktrees: dict[str, pathlib.Path] = {}
+            for owner in sorted({"caller", *branch_owners.values()}):
+                worktree = root / owner
+                worktree.mkdir()
+                worktrees[owner] = worktree
+            dirty_worktree = worktrees[dirty_owner]
+
+            def status_output(command: list[str], *, cwd: pathlib.Path) -> str:
+                self.assertEqual(command[-2:], ["status", "--porcelain"])
+                return "dirty" if cwd == dirty_worktree else ""
+
+            with (
+                mock.patch.object(
+                    sync,
+                    "_branch_worktrees",
+                    return_value={
+                        branch: worktrees[owner]
+                        for branch, owner in branch_owners.items()
+                    },
+                ),
+                mock.patch.object(
+                    sync,
+                    "require_output",
+                    side_effect=status_output,
+                ),
+                mock.patch.object(sync, "require_success") as run,
+                self.assertRaisesRegex(sync.SyncError, "worktree is dirty"),
+            ):
+                sync.sync_main(
+                    argparse.Namespace(
+                        repo_root=worktrees["caller"],
+                        main_branch="main",
+                        remote_name="origin",
+                        align_branch=align_branch,
+                    )
+                )
+
+            run.assert_not_called()
+
+    def assert_stale_worktree_blocks(
+        self,
+        *,
+        branch_owners: dict[str, str],
+        align_branch: list[str],
+        stale_owner: str,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = pathlib.Path(temporary_directory)
+            worktrees = {
+                owner: root / owner
+                for owner in {"caller", *branch_owners.values()}
+            }
+            for owner, worktree in worktrees.items():
+                if owner != stale_owner:
+                    worktree.mkdir()
+
+            with (
+                mock.patch.object(
+                    sync,
+                    "_branch_worktrees",
+                    return_value={
+                        branch: worktrees[owner]
+                        for branch, owner in branch_owners.items()
+                    },
+                ),
+                mock.patch.object(sync, "require_output") as output,
+                mock.patch.object(sync, "require_success") as run,
+                self.assertRaisesRegex(sync.SyncError, "is unavailable"),
+            ):
+                sync.sync_main(
+                    argparse.Namespace(
+                        repo_root=worktrees["caller"],
+                        main_branch="main",
+                        remote_name="origin",
+                        align_branch=align_branch,
+                    )
+                )
+
+            output.assert_not_called()
+            run.assert_not_called()
+
+    def test_sync_uses_existing_main_and_aligned_branch_worktrees(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = pathlib.Path(temporary_directory)
+            remote = root / "remote.git"
+            main_worktree = root / "main"
+            ship_worktree = root / "ship"
+            publisher = root / "publisher"
+
+            self.git(root, "init", "--bare", str(remote))
+            self.git(root, "init", "-b", "main", str(main_worktree))
+            self.git(main_worktree, "config", "user.email", "test@example.invalid")
+            self.git(main_worktree, "config", "user.name", "Sync Test")
+            self.git(main_worktree, "commit", "--allow-empty", "-m", "base")
+            self.git(main_worktree, "remote", "add", "origin", str(remote))
+            self.git(main_worktree, "push", "-u", "origin", "main")
+            self.git(remote, "symbolic-ref", "HEAD", "refs/heads/main")
+            self.git(main_worktree, "branch", "ship")
+            self.git(main_worktree, "worktree", "add", str(ship_worktree), "ship")
+            self.git(ship_worktree, "config", "user.email", "test@example.invalid")
+            self.git(ship_worktree, "config", "user.name", "Sync Test")
+            self.git(ship_worktree, "commit", "--allow-empty", "-m", "ship")
+
+            self.git(root, "clone", str(remote), str(publisher))
+            self.git(publisher, "config", "user.email", "test@example.invalid")
+            self.git(publisher, "config", "user.name", "Sync Test")
+            self.git(publisher, "commit", "--allow-empty", "-m", "merged")
+            self.git(publisher, "push", "origin", "main")
+            expected_head = self.git(publisher, "rev-parse", "HEAD")
+
+            result = sync.sync_main(
+                argparse.Namespace(
+                    repo_root=ship_worktree,
+                    main_branch="main",
+                    remote_name="origin",
+                    align_branch=["ship"],
+                )
+            )
+
+            self.assertEqual(result["head"], expected_head)
+            self.assertEqual(result["aligned_branches"], ["ship"])
+            self.assertEqual(self.git(main_worktree, "rev-parse", "main"), expected_head)
+            self.assertEqual(self.git(ship_worktree, "rev-parse", "ship"), expected_head)
+            self.assertEqual(
+                self.git(ship_worktree, "branch", "--show-current"),
+                "ship",
+            )
+
+    def test_sync_preserves_switch_path_when_main_is_not_checked_out(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            repo_root = pathlib.Path(temporary_directory)
+            with (
+                mock.patch.object(
+                    sync,
+                    "_branch_worktrees",
+                    return_value={"ship": repo_root},
+                ),
+                mock.patch.object(sync, "_assert_clean"),
+                mock.patch.object(sync, "require_success") as run,
+                mock.patch.object(sync, "require_output", return_value="a" * 40),
+            ):
+                sync.sync_main(
+                    argparse.Namespace(
+                        repo_root=repo_root,
+                        main_branch="main",
+                        remote_name="origin",
+                        align_branch=["ship"],
+                    )
+                )
+
+        commands = [call.args[0] for call in run.call_args_list]
+        self.assertIn(sync._git(repo_root, "switch", "main"), commands)
+        self.assertIn(
+            sync._git(repo_root, "branch", "-f", "ship", "main"),
+            commands,
+        )
+        self.assertNotIn(
+            sync._git(repo_root, "switch", "-C", "ship", "main"),
+            commands,
+        )
+
+    def test_dirty_separate_main_worktree_blocks_before_fetch(self) -> None:
+        self.assert_dirty_worktree_blocks(
+            branch_owners={"main": "main"},
+            align_branch=[],
+            dirty_owner="main",
+        )
+
+    def test_dirty_separate_align_worktree_blocks_before_fetch(self) -> None:
+        self.assert_dirty_worktree_blocks(
+            branch_owners={
+                "main": "caller",
+                "release/local": "release",
+            },
+            align_branch=["release/local"],
+            dirty_owner="release",
+        )
+
+    def test_duplicate_branch_worktree_ownership_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = pathlib.Path(temporary_directory)
+            first = root / "first"
+            second = root / "second"
+            first.mkdir()
+            second.mkdir()
+            porcelain = (
+                f"worktree {first}\0branch refs/heads/main\0\0"
+                f"worktree {second}\0branch refs/heads/main\0\0"
+            )
+            with (
+                mock.patch.object(sync, "require_output", return_value=porcelain),
+                self.assertRaisesRegex(
+                    sync.SyncError,
+                    "checked out in multiple worktrees",
+                ),
+            ):
+                sync._branch_worktrees(first)
+
+    def test_unrelated_stale_worktree_does_not_block_sync(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            main_worktree = pathlib.Path(temporary_directory)
+            stale_worktree = main_worktree / "missing"
+            head = "a" * 40
+            porcelain = (
+                f"worktree {stale_worktree}\0branch refs/heads/unrelated\0\0"
+                f"worktree {main_worktree}\0branch refs/heads/main\0\0"
+            )
+
+            def command_output(command: list[str], *, cwd: pathlib.Path) -> str:
+                if command[-4:] == ["worktree", "list", "--porcelain", "-z"]:
+                    return porcelain
+                if command[-2:] == ["status", "--porcelain"]:
+                    return ""
+                if command[-2:] == ["rev-parse", "main"]:
+                    return head
+                raise AssertionError(command)
+
+            with (
+                mock.patch.object(
+                    sync,
+                    "require_output",
+                    side_effect=command_output,
+                ),
+                mock.patch.object(sync, "require_success") as run,
+            ):
+                result = sync.sync_main(
+                    argparse.Namespace(
+                        repo_root=main_worktree,
+                        main_branch="main",
+                        remote_name="origin",
+                        align_branch=[],
+                    )
+                )
+
+            self.assertEqual(result["head"], head)
+            self.assertEqual(run.call_count, 2)
+
+    def test_stale_selected_main_worktree_blocks_before_fetch(self) -> None:
+        self.assert_stale_worktree_blocks(
+            branch_owners={"main": "missing"},
+            align_branch=[],
+            stale_owner="missing",
+        )
+
+    def test_stale_selected_align_worktree_blocks_before_fetch(self) -> None:
+        self.assert_stale_worktree_blocks(
+            branch_owners={
+                "main": "caller",
+                "release/local": "missing",
+            },
+            align_branch=["release/local"],
+            stale_owner="missing",
+        )
 
 
 class ShipTests(unittest.TestCase):
