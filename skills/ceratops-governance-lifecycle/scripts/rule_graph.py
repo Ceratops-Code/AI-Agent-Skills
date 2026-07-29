@@ -40,7 +40,12 @@ RELATION_KEYS = ("limits", "overrides", "overlaps", "conflicts")
 DIRECTIONAL_KEYS = ("limits", "overrides")
 SYMMETRIC_KEYS = ("overlaps", "conflicts")
 SELF_KEY = "self"
-SELF_STATUSES = ("gate", "exceeds-limit", "list-heavy")
+SELF_STATUSES = (
+    "gate",
+    "exceeds-limit",
+    "list-heavy",
+    "list-heavy approved",
+)
 METADATA_KEYS = (*RELATION_KEYS, SELF_KEY)
 METADATA_ORDER = {key: index for index, key in enumerate(METADATA_KEYS)}
 HISTORY_VERSION = 2
@@ -243,6 +248,16 @@ def parse_rule_text(text: str, source: str) -> ParsedRuleSource:
                             detail=", ".join(unknown),
                         )
                     )
+                if {"list-heavy", "list-heavy approved"}.issubset(statuses):
+                    findings.append(
+                        _finding(
+                            "conflicting_self_statuses",
+                            source,
+                            line_number,
+                            rule_id=current.rule_id,
+                            detail="list-heavy, list-heavy approved",
+                        )
+                    )
                 current.self_statuses = statuses
             continue
 
@@ -336,14 +351,15 @@ def parse_rule_text(text: str, source: str) -> ParsedRuleSource:
             )
 
         if "list-heavy" in record.self_statuses:
-            debt = _finding(
-                "list-heavy",
-                source,
-                record.line,
-                rule_id=record.rule_id,
-            )
-            debts.append(debt)
-            semantic_reviews.append(debt)
+            if "list-heavy approved" not in record.self_statuses:
+                semantic_reviews.append(
+                    _finding(
+                        "list-heavy",
+                        source,
+                        record.line,
+                        rule_id=record.rule_id,
+                    )
+                )
 
     return ParsedRuleSource(source, records, findings, debts, semantic_reviews)
 

@@ -14,7 +14,8 @@ skill, instruction, and cross-scope audit decisions in one capability surface.
 
 ### Action References
 
-- Optimize a raw prompt without executing it: `references/optimize-prompt.md`
+- Optimize a raw prompt as a deliverable or execution preflight:
+  `references/optimize-prompt.md`
 - Propose advisory-only improvements to existing skills:
   `references/optimize-skill.md`
 - Design or apply an approved regression-safe instruction change:
@@ -68,20 +69,7 @@ Infer missing inputs from current context and local sources before asking.
 
 ### Workflow
 
-#### 1. Classify the action
-
-- Use `optimize-prompt` for a prompt-rewrite deliverable or an
-  `execution-preflight`.
-- Use `optimize-skill` when the deliverable is an exact advisory skill-change
-  proposal and files must remain unchanged.
-- Use `propose-rules-update` when the task changes or reviews durable rules,
-  instructions, automation prompts, skill rules, helper contracts, or their
-  interactions.
-- Use `governance-consistency-audit` when the task checks alignment across
-  AGENTS files, automations, directly referenced helpers, and delegated
-  governance owners.
-
-#### 2. Close from action evidence
+#### Close from action evidence
 
 - Follow only the selected action unless its explicit boundary requires a
   lifecycle handoff.

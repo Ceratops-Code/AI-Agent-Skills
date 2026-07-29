@@ -5,7 +5,7 @@
 Every confirmed failure must change the controlling instruction surface or its
 deterministic enforcement.
 
-Read [rule-design.md](rule-design.md) before drafting.
+Read and apply [rule-design.md](rule-design.md) before drafting.
 
 ## Constraints
 
@@ -75,13 +75,8 @@ to preserved behavior or an explicitly approved change.
   coupled writes with rollback, reopen and revalidate the result, and emit only
   `OK` or one compact actionable error.
 
-Append one decision for each approved rule change using the decision-only fields
-defined by the rule-design contract. Preserve prior entries and identify an
-earlier decision in the new decision text only when its rationale is
-intentionally replaced or narrowed. Do not rewrite prior entries for rule
-renames, removals, or implementation evolution; append the new decision those
-changes represent. Historical rule IDs remain valid history references without
-being current-rule references.
+Append one decision per approved rule change under the history contract in
+[rule-design.md](rule-design.md).
 
 ## Iterative optimization
 
