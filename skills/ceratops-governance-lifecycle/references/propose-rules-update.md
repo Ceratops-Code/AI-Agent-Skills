@@ -33,9 +33,8 @@ Route approved skill-source mutations through `$ceratops-skill-lifecycle`
    an interacting instruction stack. Use compact lookup for current rules and
    direct graph neighbors. Add `--full` when renamed or retired rules, a
    supersession decision, or uncertain relevance requires the complete log.
-   Invalid fields block the remaining proposal workflow. If history does not
-   exist, use targeted source history and state that recorded decision history
-   was unavailable.
+   If history does not exist, use targeted source history and state that
+   recorded decision history was unavailable.
 4. Compare a local correction with a structural or non-rule correction. Select
    by prevention of the failure, regression safety, behavioral scope, and
    complexity; textual minimality does not win automatically.
