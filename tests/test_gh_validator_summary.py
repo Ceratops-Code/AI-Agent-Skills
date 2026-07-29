@@ -37,6 +37,7 @@ from github_contract_engine.collectors.repository import (  # noqa: E402
     stale_release_candidates,
 )
 from github_contract_engine.collect_observed_states import (  # noqa: E402
+    _artifact_state,
     _fetch_all,
     state_producer,
 )
@@ -607,6 +608,51 @@ class GHContractStateEngineTests(unittest.TestCase):
             )
         self.assertTrue(state["pypi"]["all_resolved"])
         self.assertEqual(state["pypi"]["packages"]["demo"]["name"], "demo")
+
+    def test_powershell_gallery_resolution_requires_matching_entry(self):
+        parameters = {
+            "artifact_contracts": [
+                {
+                    "artifact_type": "powershell_gallery_module",
+                    "registry": "powershellgallery.com",
+                    "package_or_image_name": "DemoModule",
+                }
+            ]
+        }
+        rules = [{"assertions": [{"path": "/artifact/live_metadata/all_resolved"}]}]
+
+        for body, expected in (
+            (b"<feed></feed>", False),
+            (b"<feed><entry></entry></feed>", True),
+        ):
+            with self.subTest(entry_present=expected):
+                response = mock.MagicMock()
+                response.read.return_value = body
+                response.__enter__.return_value = response
+                with mock.patch.object(
+                    registries.urllib.request, "urlopen", return_value=response
+                ):
+                    state = registries.collect_registries(
+                        parameters,
+                        {},
+                        ["powershell_gallery_module"],
+                        rules,
+                    )
+
+                metadata = state["powershell_gallery"]["packages"]["DemoModule"]
+                self.assertEqual(metadata["ok"], expected)
+                self.assertTrue(metadata["query_succeeded"])
+                self.assertEqual(metadata["entry_present"], expected)
+                self.assertEqual(
+                    state["powershell_gallery"]["all_resolved"], expected
+                )
+                artifact = _artifact_state(
+                    parameters,
+                    {"types": {"artifact_surface": ["powershell_gallery_module"]}},
+                    {},
+                    state,
+                )
+                self.assertEqual(artifact["live_metadata"]["all_resolved"], expected)
 
     def test_ghcr_metadata_verifies_the_named_package(self):
         parameters = {
@@ -1568,11 +1614,15 @@ class GHContractStateEngineTests(unittest.TestCase):
         sync_text = (SCRIPTS / "github_pr_workflow" / "sync.py").read_text(
             encoding="utf-8"
         )
-        first_clean = sync_text.index('_assert_clean(repo_root, "before syncing main")')
+        first_clean = sync_text.index(
+            '_assert_clean(worktree, f"before synchronization in {worktree}")'
+        )
         fetch = sync_text.index('"fetch", "--prune", args.remote_name')
         switch = sync_text.index('"switch", args.main_branch')
         fast_forward = sync_text.index('"--ff-only"')
-        second_clean = sync_text.index('_assert_clean(repo_root, f"after fast-forwarding')
+        second_clean = sync_text.index(
+            '_assert_clean(main_worktree, f"after fast-forwarding'
+        )
         align = sync_text.index('"branch", "-f", branch, args.main_branch')
         self.assertLess(first_clean, fetch)
         self.assertLess(fetch, switch)

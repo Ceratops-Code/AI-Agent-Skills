@@ -123,9 +123,24 @@ def _powershell(name: str) -> dict[str, Any]:
         )
         with urllib.request.urlopen(request, timeout=30) as response:
             body = response.read().decode("utf-8")
-        return {"ok": True, "url": url, "name": name, "entry_present": "<entry" in body}
+        # OData returns HTTP 200 for an empty feed; resolution requires the
+        # requested package entry, not only a successful registry query.
+        entry_present = "<entry" in body
+        return {
+            "ok": entry_present,
+            "query_succeeded": True,
+            "url": url,
+            "name": name,
+            "entry_present": entry_present,
+        }
     except Exception as exc:
-        return {"ok": False, "url": url, "name": name, "error": str(exc)}
+        return {
+            "ok": False,
+            "query_succeeded": False,
+            "url": url,
+            "name": name,
+            "error": str(exc),
+        }
 
 
 FETCHERS: dict[str, tuple[str, Callable[[str], dict[str, Any]]]] = {
