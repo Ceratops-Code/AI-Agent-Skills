@@ -64,8 +64,7 @@ and mixed cycles require focused semantic review.
 Treat `overlaps` and `conflicts` as symmetric review edges declared once. They
 remain unresolved findings until semantic review selects a coherent outcome;
 do not change involved behavior without resolving the edge or recording the
-manual decision to retain it. Keep the current `CLOSE-01` and `REWORK-05`
-conflict as a finding until that decision is made.
+manual decision to retain it.
 
 Merge coextensive guidance into one rule. Keep independently reusable behavior
 separate and express only the directional relationship needed to interpret it.

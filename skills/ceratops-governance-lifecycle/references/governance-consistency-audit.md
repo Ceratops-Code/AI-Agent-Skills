@@ -136,8 +136,7 @@ when the projects root remains ambiguous.
 - Use focused semantic review to detect missing, unnecessary, mistyped,
   misdirected, or incompatible relations and to assess `list-heavy`,
   `overlaps`, `conflicts`, and non-override cycles. Keep unresolved review edges
-  as findings. Preserve the `CLOSE-01` and `REWORK-05` conflict until a manual
-  decision changes it.
+  as findings.
 - Build relation candidates from sections, explicit ID references, semantic
   similarity, deterministic findings, and direct neighbors. Deep-read only
   those candidate pairs; do not compare every possible rule pair.

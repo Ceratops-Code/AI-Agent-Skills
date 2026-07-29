@@ -63,4 +63,6 @@ Ask for the missing raw prompt only when none was provided.
 
 ### Output Contract
 
-Return only the optimized prompt unless the user asks for explanation.
+For a prompt-rewrite deliverable, return only the optimized prompt unless the
+user asks for explanation. In `execution-preflight` mode, keep the prompt
+internal and resume the calling task.
