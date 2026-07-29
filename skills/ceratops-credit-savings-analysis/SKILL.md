@@ -87,6 +87,9 @@ blocked; do not fall back to visible context.
 - Before reporting, classify each finding's control as implemented or still
   unimplemented; expose both call counts in the run table, but omit detailed
   implemented findings and recommendations.
+- Before classification, inspect highest-call runs covering at least 80% of
+  calls for avoidable call clusters; do not treat lack of inspection as
+  evidence that a call was necessary.
 - Classify every model call as necessary, avoidable with an implemented fix, or
   avoidable with an unimplemented fix, and map each fix only to calls it
   directly prevents.
