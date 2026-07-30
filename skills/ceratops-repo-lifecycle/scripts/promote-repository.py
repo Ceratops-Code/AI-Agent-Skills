@@ -116,13 +116,33 @@ def promote(args: argparse.Namespace) -> dict[str, object]:
     repo_root = args.repo_root.expanduser().resolve(strict=True)
     if not repo_root.is_dir():
         raise PromotionError("Repository root is not a directory.")
-    branches = list(dict.fromkeys(args.source_branch))
-    if len(branches) != len(args.source_branch):
+    branches = list(dict.fromkeys(args.source_branch or []))
+    if len(branches) != len(args.source_branch or []):
         raise PromotionError("Source branches must be unique.")
-    if args.release_branch in branches or args.main_branch in branches:
-        raise PromotionError("Source branches cannot be release or main.")
+    if args.prepare_release_only:
+        if branches or args.run_operation is not None or args.no_run_operation:
+            raise PromotionError(
+                "Prepare-only cannot select source branches or deployment."
+            )
+        current_branch = require_output(
+            _git(repo_root, "branch", "--show-current"),
+            cwd=repo_root,
+        ).strip()
+        if current_branch != args.main_branch:
+            raise PromotionError(
+                f"Prepare-only requires branch {args.main_branch}, "
+                f"got {current_branch or 'detached HEAD'}."
+            )
+    else:
+        if not branches:
+            raise PromotionError("Promotion requires at least one source branch.")
+        if args.run_operation is None and not args.no_run_operation:
+            raise PromotionError("Promotion requires an explicit deployment choice.")
+        if args.release_branch in branches or args.main_branch in branches:
+            raise PromotionError("Source branches cannot be release or main.")
     _clean(repo_root, "before promotion")
-    _preflight_sources(repo_root, branches)
+    if not args.prepare_release_only:
+        _preflight_sources(repo_root, branches)
     require_success(
         _git(repo_root, "remote", "get-url", args.remote_name),
         cwd=repo_root,
@@ -164,6 +184,13 @@ def promote(args: argparse.Namespace) -> dict[str, object]:
             cwd=repo_root,
         )
     _clean(repo_root, f"after preparing {args.release_branch}")
+
+    if args.prepare_release_only:
+        return {
+            "status": "prepared",
+            "release_branch": args.release_branch,
+            "head": _branch_head(repo_root, args.release_branch),
+        }
 
     merged: list[str] = []
     for branch in branches:
@@ -248,17 +275,21 @@ def build_parser() -> argparse.ArgumentParser:
         description="Promote selected branches into a local release branch."
     )
     parser.add_argument("--repo-root", type=pathlib.Path, default=pathlib.Path.cwd())
-    parser.add_argument("--source-branch", action="append", required=True)
+    parser.add_argument("--source-branch", action="append")
     parser.add_argument("--main-branch", default="main")
     parser.add_argument("--release-branch", default="release/local")
     parser.add_argument("--remote-name", default="origin")
-    operation = parser.add_mutually_exclusive_group(required=True)
+    parser.add_argument(
+        "--prepare-release-only",
+        action="store_true",
+        help="Prepare the release branch from a clean main checkout and stop.",
+    )
+    operation = parser.add_mutually_exclusive_group()
     operation.add_argument("--run-operation")
     operation.add_argument(
         "--no-run-operation",
-        dest="run_operation",
-        action="store_const",
-        const=None,
+        action="store_true",
+        help="Promote without running a deployment operation.",
     )
     parser.add_argument(
         "--deploy-contract",

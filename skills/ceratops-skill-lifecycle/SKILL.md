@@ -1,6 +1,6 @@
 ---
 name: ceratops-skill-lifecycle
-description: Route Ceratops or compatible skill lifecycle work to action references for create, make-repo-compatible, update, skills-contract-review, and skills-consistency-review work. Use when Codex should create a skill, make a skills repository Ceratops-compatible, update skill source or shared governance surfaces, refresh Ceratops skill-design contracts, or audit one manifest-backed installed skill and its coupled source.
+description: Route Ceratops or compatible skill lifecycle work to action references for create, make-repo-compatible, fast-change, update, skills-contract-review, and skills-consistency-review work. Use when Codex should create a skill, make a skills repository Ceratops-compatible, apply an eligible direct-release skill change with targeted installation, update skill source or shared governance surfaces, refresh Ceratops skill-design contracts, or audit one manifest-backed installed skill and its coupled source.
 ---
 
 # Ceratops Skill Lifecycle
@@ -18,6 +18,7 @@ surface for standards refresh, repository consistency, creation, and mutation.
 - Create a new skill: `references/create.md`
 - Make an existing skills repository Ceratops-compatible:
   `references/make-repo-compatible.md`
+- Apply an eligible direct-release skill change: `references/fast-change.md`
 - Update an existing skill or shared maintenance surface: `references/update.md`
 - Refresh Ceratops skill-design contracts from current standards evidence:
   `references/skills-contract-review.md`
@@ -34,6 +35,7 @@ surface for standards refresh, repository consistency, creation, and mutation.
 - Whether `skills/skill-sections.json` declares a stable
   `runtime_source_id` and either the `ceratops` or `ceratops-compatible`
   validation profile.
+- Whether the complete intended scope qualifies for `fast-change`.
 - Whether the task should stop at committed task-worktree changes or hand off
   to `$ceratops-repo-lifecycle`.
 
@@ -45,9 +47,9 @@ Infer missing inputs from the current repo state before asking.
 
 - Use the action references as the source of truth for skill-source edits,
   validation, and output contracts.
-- Keep skill creation, repository compatibility, update, contract review,
-  and repository consistency review inside this multi-action skill and its
-  `references/` files; do not introduce alias skills or old-name shims.
+- Keep skill creation, repository compatibility, fast change, update, contract
+  review, and repository consistency review inside this multi-action skill and
+  its `references/` files; do not introduce alias skills or old-name shims.
 - For skill-source mutation in this repo, treat source skill text, metadata,
   shared sections, `skills/skill-sections.json`, runtime payloads,
   validators, contracts, helper scripts, and docs as one coupled maintenance
@@ -60,15 +62,17 @@ Infer missing inputs from the current repo state before asking.
   installer source. Copy only `scripts/install-skills.py` into compatible
   repositories, and compare installers only by their parsed integer
   `INSTALLER_VERSION`.
-- Stop in the task worktree by default for update actions and for create actions
-  outside this repo. In this repo, new Ceratops skill creation continues through
+- Use `fast-change` directly on the verified primary release checkout whenever
+  its action contract and readiness helper accept the complete intended scope.
+  Use a task worktree for update actions and for create actions outside this
+  repo. In this repo, new Ceratops skill creation continues through
   `$ceratops-repo-lifecycle` `promote-and-deploy` unless the user opts out.
 
 ### Boundaries
 
-- Use this skill for creating skills, updating existing skills, skill
-  repository compatibility, consistency audits, and skill-design contract
-  upkeep.
+- Use this skill for creating skills, eligible direct-release changes, updating
+  existing skills, skill repository compatibility, consistency audits, and
+  skill-design contract upkeep.
 - If the task is advisory-only skill optimization, use
   `$ceratops-governance-lifecycle` action `optimize-skill`.
 - If the task is Ceratops skill-contract standards upkeep, use
@@ -88,8 +92,11 @@ Infer missing inputs from the current repo state before asking.
 - Use `make-repo-compatible` when a target skills repository lacks the manifest,
   shared-section, metadata, documentation, installer, or validation surfaces
   required by the `ceratops-compatible` profile.
+- Use `fast-change` whenever the request is exact and its complete selected
+  skill-local scope satisfies `references/fast-change.md`.
 - Use `update` when an existing skill, shared section, manifest, runtime
-  generation, validator, contract, helper, or doc surface must change.
+  generation, validator, contract, helper interface, or other coupled surface
+  falls outside fast-change.
 - Use `skills-contract-review` only to refresh the skill-design contracts
   against current registered best-practice evidence.
 - Use `skills-consistency-review` to audit one manifest-backed installed skill
@@ -123,5 +130,6 @@ Report only:
 
 ### Example Invocation
 
-`Use $ceratops-skill-lifecycle to update these Ceratops skills in a task
-worktree and stop before the repository-lifecycle handoff.`
+`Use $ceratops-skill-lifecycle for this exact skill change. Prefer fast-change
+when its complete scope passes readiness; otherwise use update in a task
+worktree.`

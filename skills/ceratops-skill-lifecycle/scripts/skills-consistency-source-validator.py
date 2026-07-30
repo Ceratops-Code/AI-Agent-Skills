@@ -45,6 +45,7 @@ INSTALLER_VERSION_HISTORY_BASELINE = 4
 INSTALLER_SYNCHRONIZER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "runtime" / "synchronize-installers.py"
 RUNTIME_BUILDER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "runtime" / "managed_runtime_builder.py"
 RUNTIME_VALIDATOR = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "runtime" / "skills-consistency-runtime-validator.py"
+FAST_CHANGE_READINESS_HELPER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "validate-fast-change-readiness.py"
 PROMOTE_REPOSITORY_HELPER = ROOT / "skills" / "ceratops-repo-lifecycle" / "scripts" / "promote-repository.py"
 MANAGE_PENDING_WORK_HELPER = ROOT / "skills" / "ceratops-repo-lifecycle" / "scripts" / "manage-pending-work.py"
 DEPLOY_OPERATION_HELPER = ROOT / "skills" / "ceratops-repo-lifecycle" / "scripts" / "run-deploy-operation.py"
@@ -1115,6 +1116,7 @@ def check_validation_command_surface() -> list[str]:
     installer_template_text = INSTALLER_TEMPLATE.read_text(encoding="utf-8") if INSTALLER_TEMPLATE.is_file() else ""
     synchronizer_text = INSTALLER_SYNCHRONIZER.read_text(encoding="utf-8") if INSTALLER_SYNCHRONIZER.is_file() else ""
     runtime_validator_text = RUNTIME_VALIDATOR.read_text(encoding="utf-8") if RUNTIME_VALIDATOR.is_file() else ""
+    fast_change_readiness_text = FAST_CHANGE_READINESS_HELPER.read_text(encoding="utf-8") if FAST_CHANGE_READINESS_HELPER.is_file() else ""
     promotion_helper_text = PROMOTE_REPOSITORY_HELPER.read_text(encoding="utf-8") if PROMOTE_REPOSITORY_HELPER.is_file() else ""
     pending_work_text = MANAGE_PENDING_WORK_HELPER.read_text(encoding="utf-8") if MANAGE_PENDING_WORK_HELPER.is_file() else ""
     deploy_helper_text = DEPLOY_OPERATION_HELPER.read_text(encoding="utf-8") if DEPLOY_OPERATION_HELPER.is_file() else ""
@@ -1143,10 +1145,34 @@ def check_validation_command_surface() -> list[str]:
         ("deployment operation helper", DEPLOY_OPERATION_HELPER),
         ("repository ship helper", SHIP_REPOSITORY_HELPER),
         ("GitHub ship helper", GITHUB_SHIP_HELPER),
+        ("fast-change readiness helper", FAST_CHANGE_READINESS_HELPER),
     )
     for label, path in helper_paths:
         if not path.is_file():
             errors.append(f"missing {label}: {path.relative_to(ROOT)}")
+
+    fast_change_markers = (
+        '"branch", "--show-current"',
+        '"status", "--porcelain"',
+        'parser.add_argument("--skill", action="append", required=True)',
+        'parser.add_argument("--target", action="append", required=True)',
+        "target.is_relative_to(skill_root)",
+        'repo_root / "scripts" / "install-skills.py"',
+        '"status": "ready"',
+    )
+    if (
+        any(
+            marker not in fast_change_readiness_text
+            for marker in fast_change_markers
+        )
+        or ".ps1" in fast_change_readiness_text
+        or "powershell" in fast_change_readiness_text.lower()
+    ):
+        errors.append(
+            "fast-change readiness must validate a clean release checkout, "
+            "repeatable selected skills and targets, and targeted installer "
+            "availability in Python"
+        )
 
     promotion_markers = (
         'PENDING_MANAGER = SCRIPT_ROOT / "manage-pending-work.py"',
@@ -1163,6 +1189,9 @@ def check_validation_command_surface() -> list[str]:
         '_clean(repo_root, "before reporting ready state")',
         '"--run-operation"',
         '"--no-run-operation"',
+        '"--prepare-release-only"',
+        "if args.prepare_release_only:",
+        '"status": "prepared"',
     )
     if (
         any(marker not in promotion_helper_text for marker in promotion_markers)
@@ -1200,6 +1229,18 @@ def check_validation_command_surface() -> list[str]:
         errors.append(
             "repository promotion must refresh main, assemble the release "
             "head, record scope, then optionally deploy"
+        )
+    prepared_status = promotion_flow.find('"status": "prepared"')
+    scope_record = promotion_flow.find("record_command =")
+    if (
+        'if not args.prepare_release_only:\n        _preflight_sources' not in promotion_flow
+        or prepared_status < 0
+        or scope_record < 0
+        or prepared_status > scope_record
+    ):
+        errors.append(
+            "release preparation must exit before source promotion, scope "
+            "recording, or deployment"
         )
     if (
         "install-skills.py" in promotion_helper_text
@@ -1720,6 +1761,7 @@ def main() -> int:
     global BOOTSTRAP_INSTALLER, RUNTIME_INSTALLER, BUNDLE_RESOLVER, INSTALLER_TEMPLATE
     global INSTALLER_VERSION_HISTORY
     global INSTALLER_SYNCHRONIZER, RUNTIME_BUILDER, RUNTIME_VALIDATOR
+    global FAST_CHANGE_READINESS_HELPER
     global PROMOTE_REPOSITORY_HELPER, MANAGE_PENDING_WORK_HELPER
     global DEPLOY_OPERATION_HELPER, SHIP_REPOSITORY_HELPER, GITHUB_SHIP_HELPER
     global DEPLOY_CONTRACT, DEPLOY_TEMPLATE, SKILL_SECTIONS_TEMPLATE
@@ -1755,6 +1797,7 @@ def main() -> int:
         INSTALLER_SYNCHRONIZER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "runtime" / "synchronize-installers.py"
         RUNTIME_BUILDER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "runtime" / "managed_runtime_builder.py"
         RUNTIME_VALIDATOR = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "runtime" / "skills-consistency-runtime-validator.py"
+        FAST_CHANGE_READINESS_HELPER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "validate-fast-change-readiness.py"
         PROMOTE_REPOSITORY_HELPER = ROOT / "skills" / "ceratops-repo-lifecycle" / "scripts" / "promote-repository.py"
         MANAGE_PENDING_WORK_HELPER = ROOT / "skills" / "ceratops-repo-lifecycle" / "scripts" / "manage-pending-work.py"
         DEPLOY_OPERATION_HELPER = ROOT / "skills" / "ceratops-repo-lifecycle" / "scripts" / "run-deploy-operation.py"

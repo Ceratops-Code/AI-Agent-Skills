@@ -9,7 +9,7 @@ Reusable Ceratops skills for Codex and other `SKILL.md`-compatible agents.
 | `ceratops-repo-lifecycle` | Route repository lifecycle work across local promotion, structured deployment, guarded shipping, GitHub creation, contracts, health, dependencies, and PR merge actions. |
 | `ceratops-governance-lifecycle` | Route prompt optimization, advisory skill optimization, regression-safe instruction updates, and cross-scope governance consistency audits across action references. |
 | `ceratops-credit-savings-analysis` | Analyze recent Codex runs for avoidable credit spend and recommend low-maintenance controls. |
-| `ceratops-skill-lifecycle` | Route skill-domain work across create, make-repo-compatible, update, skills-contract-review, and skills-consistency-review actions. |
+| `ceratops-skill-lifecycle` | Route skill-domain work across create, make-repo-compatible, preferred eligible fast-change, update, skills-contract-review, and skills-consistency-review actions. |
 | `ceratops-automation-run` | Run recurring automations with shared Ceratops alert, memory, and completion policy. |
 | `ceratops-task-lifecycle` | Route task execution, same-thread resume, fix-loop break, handoff, and closure-check work across action references. |
 | `ceratops-code-consistency-audit` | Audit merged refactors for contradictions, docs drift, comment sufficiency, stale follow-through, and merged-only edge cases. |
@@ -96,15 +96,23 @@ without repository deduplication.
 | `skills/ceratops-governance-lifecycle/scripts/rule_graph.py` | Parses canonical AGENTS rules and rejects structural syntax or rule-local explicit-user override escape clauses. |
 | `skills/ceratops-repo-lifecycle/scripts/github_contract_engine/` | Package CLI for compact local audit snapshots, contract evaluation, shared GitHub API access, sanitized evidence, and evidence-gated CodeQL disposition. |
 | `skills/ceratops-repo-lifecycle/scripts/github_pr_workflow/` | Package CLI for individual PR operations, exact-commit checkpointed shipping, a scoped pending-work pre-push guard, concurrent gates, integrated post-gate admin merge, reusable-branch restoration, and terminal checkpoint cleanup. Standalone merge behavior is unchanged. |
-| `skills/ceratops-repo-lifecycle/scripts/promote-repository.py` | Fast-forwards selected committed task branches into a local `release/*` branch and either stops or runs one named deployment operation. |
+| `skills/ceratops-repo-lifecycle/scripts/promote-repository.py` | Prepares a clean local `release/*` branch for fast-change, or fast-forwards selected committed task branches and either stops or runs one named deployment operation. |
 | `skills/ceratops-repo-lifecycle/scripts/manage-pending-work.py` | Records, checks, and finalizes the exact selected branch and worktree scope used by promotion and shipping. |
 | `skills/ceratops-repo-lifecycle/scripts/run-deploy-operation.py` | Validates `deploy/deploy.yml` and executes one declared operation as ordered argv steps without a shell. |
 | `skills/ceratops-repo-lifecycle/scripts/ship-repository.py` | Orchestrates scoped pre-push checking, guarded GitHub shipping, main synchronization, a pre-deploy recheck, `after_ship`, and final selected-source recheck and cleanup. |
+| `skills/ceratops-skill-lifecycle/scripts/validate-fast-change-readiness.py` | Validates a clean release checkout plus the complete selected existing-skill and target-file scope before direct fast-change editing. |
 | `skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py` | Source validator plus deterministic authoritative installer-version synchronization. |
 
 Lifecycle helpers suppress successful subcommand output and print only compact
 JSON on success. This repo keeps scripts only where they add reusable safety
 logic or bundle nontrivial evidence collection.
+
+`fast-change` is the preferred skill-maintenance path whenever one exact
+coherent change stays within declared files under existing selected skills,
+preserves helper boundaries, and has sufficient targeted checks. It may cover
+multiple files and skills. The repository lifecycle helper prepares
+`release/local`; the skill lifecycle readiness helper then verifies the complete
+scope before editing and targeted installation.
 
 Promotion and deployment are separate repository actions. `promote` assembles
 the selected branches into `release/*` without deployment;

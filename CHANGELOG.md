@@ -20,6 +20,9 @@
 - Added separate `promote`, `promote-and-deploy`, `run-operation`, and `ship`
   actions backed by `promote-repository.py`, `manage-pending-work.py`,
   `run-deploy-operation.py`, and `ship-repository.py`.
+- Restored preferred fast-change skill maintenance with multi-file,
+  multi-skill scope, Python readiness validation, targeted installation, and a
+  repository-owned release-preparation mode.
 - Moved the live section manifest and sources to
   `skills/skill-sections.json` and `skills/sections/`, added the live
   `deploy/deploy.yml` contract, and limited `templates/` to reusable section

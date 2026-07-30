@@ -16,6 +16,11 @@ branch. Run the repository's `after_promote` deployment operation only for the
   --remote-name origin --no-run-operation`.
 - (D) Promotion plus deployment uses the same command with
   `--run-operation after_promote` instead of `--no-run-operation`.
+- (D) Fast-change callers may prepare a clean release checkout without
+  promotion or deployment:
+  `python scripts/promote-repository.py --repo-root PATH --main-branch main
+  --release-branch release/local --remote-name origin
+  --prepare-release-only`.
 
 ### Inputs To Capture
 
@@ -47,6 +52,9 @@ release branch without merging main into it, creates a missing release branch
 from main, requires release `HEAD` to be an ancestor of every selected branch,
 runs `git diff --check`, fast-forwards each branch, records the exact generic
 scope, and optionally executes the structured deployment operation.
+Preparation-only requires a clean `main` checkout and exits immediately after
+the release branch is ready, before source preflight, promotion, scope records,
+or deployment.
 
 ## Done When
 

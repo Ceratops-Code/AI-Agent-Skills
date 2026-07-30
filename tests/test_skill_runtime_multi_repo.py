@@ -24,6 +24,7 @@ DEPLOY_CONTRACT_TEMPLATE = ROOT / "templates" / "deploy-template.yml"
 INSTALLER_TEMPLATE = LIFECYCLE_SOURCE / "scripts" / "templates" / "install-skills-template.py"
 INSTALLER_SYNCHRONIZER = LIFECYCLE_SOURCE / "scripts" / "runtime" / "synchronize-installers.py"
 RUNTIME_VALIDATOR = LIFECYCLE_SOURCE / "scripts" / "runtime" / "skills-consistency-runtime-validator.py"
+FAST_CHANGE_READINESS = LIFECYCLE_SOURCE / "scripts" / "validate-fast-change-readiness.py"
 DEPLOY_OPERATION = REPOSITORY_LIFECYCLE_SOURCE / "scripts" / "run-deploy-operation.py"
 PROMOTE_REPOSITORY = REPOSITORY_LIFECYCLE_SOURCE / "scripts" / "promote-repository.py"
 MANAGE_PENDING_WORK = REPOSITORY_LIFECYCLE_SOURCE / "scripts" / "manage-pending-work.py"
@@ -375,6 +376,113 @@ def run_git(repo: pathlib.Path, *args: str) -> subprocess.CompletedProcess[str]:
         text=True,
         check=False,
     )
+
+
+def test_fast_change_prepares_release_and_accepts_complete_multi_skill_scope(
+    tmp_path: pathlib.Path,
+) -> None:
+    remote = tmp_path / "remote.git"
+    repo = tmp_path / "skills-repo"
+    repo.mkdir()
+    assert run_git(tmp_path, "init", "--bare", str(remote)).returncode == 0
+    assert run_git(repo, "init", "-b", "main").returncode == 0
+    assert run_git(repo, "config", "user.email", "test@example.invalid").returncode == 0
+    assert run_git(repo, "config", "user.name", "Test Agent").returncode == 0
+    for skill_name in ("alpha-tool", "beta-tool"):
+        skill_root = repo / "skills" / skill_name
+        (skill_root / "references").mkdir(parents=True)
+        (skill_root / "SKILL.md").write_text(
+            f"---\nname: {skill_name}\ndescription: Test skill.\n---\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        (skill_root / "references" / "change.md").write_text(
+            "# Change\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+    (repo / "scripts").mkdir()
+    (repo / "scripts" / "install-skills.py").write_text(
+        "raise SystemExit(0)\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    assert run_git(repo, "add", ".").returncode == 0
+    assert run_git(repo, "commit", "-m", "base").returncode == 0
+    base_head = run_git(repo, "rev-parse", "HEAD").stdout.strip()
+    assert run_git(repo, "remote", "add", "origin", str(remote)).returncode == 0
+    assert run_git(repo, "push", "-u", "origin", "main").returncode == 0
+
+    prepared = subprocess.run(
+        [
+            sys.executable,
+            str(PROMOTE_REPOSITORY),
+            "--repo-root",
+            str(repo),
+            "--prepare-release-only",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert prepared.returncode == 0, prepared.stderr
+    assert json.loads(prepared.stdout) == {
+        "status": "prepared",
+        "release_branch": "release/local",
+        "head": base_head,
+    }
+    assert run_git(repo, "branch", "--show-current").stdout.strip() == "release/local"
+
+    ready = subprocess.run(
+        [
+            sys.executable,
+            str(FAST_CHANGE_READINESS),
+            "--repo-root",
+            str(repo),
+            "--skill",
+            "alpha-tool",
+            "--skill",
+            "beta-tool",
+            "--target",
+            "skills/alpha-tool/SKILL.md",
+            "--target",
+            "skills/alpha-tool/references/change.md",
+            "--target",
+            "skills/beta-tool/SKILL.md",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert ready.returncode == 0, ready.stderr
+    assert json.loads(ready.stdout) == {
+        "status": "ready",
+        "branch": "release/local",
+        "skills": ["alpha-tool", "beta-tool"],
+        "targets": [
+            "skills/alpha-tool/SKILL.md",
+            "skills/alpha-tool/references/change.md",
+            "skills/beta-tool/SKILL.md",
+        ],
+    }
+
+    rejected = subprocess.run(
+        [
+            sys.executable,
+            str(FAST_CHANGE_READINESS),
+            "--repo-root",
+            str(repo),
+            "--skill",
+            "alpha-tool",
+            "--target",
+            "skills/beta-tool/SKILL.md",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert rejected.returncode == 1
+    assert "selected skill root" in json.loads(rejected.stderr)["message"]
 
 
 def write_deploy_contract(
