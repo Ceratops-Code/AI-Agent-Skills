@@ -12,8 +12,9 @@ repo docs, then update the narrowest correct source that exists.
 
 ### Inputs To Capture
 
-- Existing skills or shared files in scope: `skills/*`, `templates/sections/`,
-  `templates/skill-sections.json`,
+- Existing skills or shared files in scope: `skills/*`,
+  `skills/skill-sections.json`, `skills/sections/`,
+  `templates/skill-sections-template.json`, `templates/deploy-template.yml`,
   `skills/ceratops-skill-lifecycle/scripts/templates/install-skills-template.py`,
   `scripts/install-skills.py`,
   `skills/ceratops-skill-lifecycle/scripts/runtime/managed_runtime_builder.py`,
@@ -26,8 +27,8 @@ repo docs, then update the narrowest correct source that exists.
 - Target repo `runtime_source_id` and `validation_profile`; the `ceratops`
   profile adds Ceratops icon, contract, retired-artifact, and repository
   governance checks while `ceratops-compatible` uses the common full checks.
-- Whether the task should stop at local repo changes or also continue to local
-  promotion.
+- Whether the task should stop at committed task-worktree changes or hand off
+  to `$ceratops-repo-lifecycle`.
 
 Infer missing inputs from current repo state before asking.
 
@@ -44,8 +45,8 @@ Infer missing inputs from current repo state before asking.
 - If the task is manifest-backed installed-skill consistency or contract
   compliance, return to the parent skill and select
   `skills-consistency-review`.
-- If the task only promotes already-prepared committed changes, select
-  `change-promotion`.
+- If the task only promotes, deploys, or ships already-prepared committed
+  changes, use `$ceratops-repo-lifecycle`.
 
 ### Workflow
 
@@ -98,7 +99,7 @@ Infer missing inputs from current repo state before asking.
   skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py
   --repo-root <repo> --sync-installer-version`; this deterministic producer owns
   the template version, behavior history, and repository bootstrap copy.
-- If shared section files or `templates/skill-sections.json` changed, run the
+- If shared section files or `skills/skill-sections.json` changed, run the
   manifest's shared-source check path.
 - Do not run validation solely because skill-local text, metadata, or docs
   changed; use targeted readback, stale-reference search, and diff review unless
@@ -107,11 +108,10 @@ Infer missing inputs from current repo state before asking.
   command when supported.
 - If runtime generation code changed, run the repo's runtime-generation check
   path when provided.
-- Install a compatible repo through its `python scripts/install-skills.py
-  --repo-root <repo>` entrypoint. The Ceratops source repository must use its
-  checkout lifecycle bundle; other compatible repositories must prefer a
-  supported installed lifecycle bundle. Full installs run full source
-  validation; explicit skill installs validate only the selected skills.
+- After committing, use `$ceratops-repo-lifecycle` `promote` when only local
+  release staging is requested, `promote-and-deploy` when the repository's
+  declared deployment should run, or `ship` when the staged release should be
+  shipped.
 - Reserve full source validation for explicit broad validation,
   validation-script changes, or concrete cross-surface uncertainty.
 - Re-open changed files and confirm source skills, manifest assignments, runtime

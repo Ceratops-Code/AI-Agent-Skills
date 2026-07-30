@@ -92,7 +92,7 @@ Infer missing inputs from the contract files before asking.
 - Re-open the changed contract entries and confirm that no standard, check, or
   protection was unintentionally dropped.
 - If changed contract sources must be available in the installed runtime, hand
-  off to `change-promotion`.
+  the committed branch to `$ceratops-repo-lifecycle` `promote-and-deploy`.
 
 ## Done When
 

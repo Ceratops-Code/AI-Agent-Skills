@@ -2,23 +2,33 @@
 
 ## Unreleased
 
-- Added exact-commit, checkpointed GitHub PR shipping with concurrent CI and
-  Codex-review gates, exact-head merge, local synchronization, and safe
-  reusable-branch restoration.
+- Added deterministic repository shipping with a scoped pending-work check
+  before the first remote push, retained post-sync and post-deploy rechecks,
+  concurrent CI and Codex-review gates, exact-head post-gate admin merge, local
+  synchronization, structured post-merge deployment, and selected-source
+  cleanup. Standalone PR merge behavior is unchanged.
 - Added evidence-gated CodeQL disposition that requires sentinel source-to-sink
   sanitizer proof and explicit authorization before alert dismissal.
 - Moved Ceratops skills to a copy-based runtime install model: source skills
   stay delta-only, the lifecycle renderer expands shared sections, and the
   versioned `scripts/install-skills.py` bootstrap installs managed runtime skill
   folders plus declared payloads.
-- Consolidated GitHub repo lifecycle work into `ceratops-gh-repo-lifecycle` and
-  skill creation, mutation, promotion, and shipping work into
+- Renamed the repository owner to `ceratops-repo-lifecycle` and consolidated
+  local Git promotion, structured deployment, guarded GitHub shipping, and PR
+  lifecycle work there. Skill creation and mutation remain in
   `ceratops-skill-lifecycle`.
+- Added separate `promote`, `promote-and-deploy`, `run-operation`, and `ship`
+  actions backed by `promote-repository.py`, `manage-pending-work.py`,
+  `run-deploy-operation.py`, and `ship-repository.py`.
+- Moved the live section manifest and sources to
+  `skills/skill-sections.json` and `skills/sections/`, added the live
+  `deploy/deploy.yml` contract, and limited `templates/` to reusable section
+  manifest and deployment-contract skeletons.
 - Split health policy into deterministic and non-deterministic contracts for
   GitHub org settings, live GitHub repo settings, repo contents, code comments,
   and external artifact registries.
 - Split contract review by lifecycle owner: GitHub, code, repo, PR, org, and
-  artifact contracts now live under `ceratops-gh-repo-lifecycle` as
+  artifact contracts now live under `ceratops-repo-lifecycle` as
   `contracts-review`; skill consistency, governance, and skill-design contracts
   now live under `ceratops-skill-lifecycle` as
   `skills-consistency-review`.
@@ -28,9 +38,8 @@
 - Reduced routine skill maintenance validation to same-surface checks, with full
   validation reserved for CI, governance automation, explicit broad
   verification, validation-script changes, or real cross-surface uncertainty.
-- Replaced thin release-branch wrapper scripts with direct Git commands in the
-  stage and ship skills, while keeping the pending-release-work script for
-  read-only multi-worktree and branch evidence.
+- Replaced the skill-specific release wrappers with deterministic generic
+  repository lifecycle helpers and exact selected-branch/worktree scope.
 - Clarified that successful mutation commands are enough evidence for the exact
   setting or file they changed; contract validators are for drift, audit,
   uncertain state, and broad current-health claims.

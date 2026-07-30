@@ -12,7 +12,7 @@ from unittest import mock
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-GH_SCRIPTS = ROOT / "skills" / "ceratops-gh-repo-lifecycle" / "scripts"
+GH_SCRIPTS = ROOT / "skills" / "ceratops-repo-lifecycle" / "scripts"
 sys.path.insert(0, str(GH_SCRIPTS))
 
 from github_pr_workflow import (  # noqa: E402
@@ -336,6 +336,18 @@ class SyncTests(unittest.TestCase):
 class ShipTests(unittest.TestCase):
     commit = "a" * 40
 
+    def git(self, repo_root: pathlib.Path, *arguments: str) -> str:
+        completed = subprocess.run(
+            ["git", "-C", str(repo_root), *arguments],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        return completed.stdout.strip()
+
     def args(self, repo_root: pathlib.Path) -> argparse.Namespace:
         return argparse.Namespace(
             repo_root=repo_root,
@@ -347,13 +359,334 @@ class ShipTests(unittest.TestCase):
             title=None,
             body=None,
             merge_method="merge",
-            admin=False,
+            pending_work_check=False,
+            pending_work_scope=None,
             delete_branch=False,
             reusable_head=True,
             ci_wait_seconds=30,
             review_wait_seconds=30,
             interval_seconds=0,
         )
+
+    def selected_worktree_repository(
+        self,
+        temporary_directory: str,
+    ) -> tuple[pathlib.Path, pathlib.Path, pathlib.Path, str]:
+        root = pathlib.Path(temporary_directory)
+        repo_root = root / "project"
+        repo_root.mkdir()
+        self.git(repo_root, "init")
+        self.git(repo_root, "config", "user.email", "test@example.invalid")
+        self.git(repo_root, "config", "user.name", "Test Agent")
+        (repo_root / "tracked.txt").write_text(
+            "base\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        self.git(repo_root, "add", "tracked.txt")
+        self.git(repo_root, "commit", "-m", "base")
+        self.git(repo_root, "branch", "-M", "main")
+        self.git(repo_root, "branch", "selected")
+        self.git(repo_root, "branch", "unrelated")
+
+        selected_worktree = root / "selected"
+        unrelated_worktree = root / "unrelated"
+        self.git(
+            repo_root,
+            "worktree",
+            "add",
+            str(selected_worktree),
+            "selected",
+        )
+        self.git(
+            repo_root,
+            "worktree",
+            "add",
+            str(unrelated_worktree),
+            "unrelated",
+        )
+        (selected_worktree / "tracked.txt").write_text(
+            "base\nselected\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        self.git(selected_worktree, "add", "tracked.txt")
+        self.git(selected_worktree, "commit", "-m", "selected")
+        target_commit = self.git(selected_worktree, "rev-parse", "HEAD")
+        self.git(repo_root, "branch", "release/local", target_commit)
+        return (
+            repo_root,
+            selected_worktree,
+            unrelated_worktree,
+            target_commit,
+        )
+
+    def pending_scope(self, target_commit: str) -> dict[str, object]:
+        return {
+            "version": 1,
+            "target_branch": "release/local",
+            "target_commit": target_commit,
+            "source_branches": ["selected"],
+        }
+
+    def test_pending_work_finds_dirty_selected_worktree(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            (
+                repo_root,
+                selected_worktree,
+                _,
+                target_commit,
+            ) = self.selected_worktree_repository(temporary_directory)
+            (selected_worktree / "tracked.txt").write_text(
+                "base\nselected\ndirty\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+
+            findings = ship._pending_work_findings(
+                repo_root,
+                self.pending_scope(target_commit),
+            )
+
+        self.assertEqual(
+            [finding["kind"] for finding in findings],
+            ["dirty_worktree"],
+        )
+        self.assertEqual(findings[0]["subject"], "selected")
+
+    def test_pending_work_finds_unmerged_selected_commits(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            (
+                repo_root,
+                selected_worktree,
+                _,
+                target_commit,
+            ) = self.selected_worktree_repository(temporary_directory)
+            (selected_worktree / "tracked.txt").write_text(
+                "base\nselected\nlater\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+            self.git(selected_worktree, "add", "tracked.txt")
+            self.git(selected_worktree, "commit", "-m", "later")
+
+            findings = ship._pending_work_findings(
+                repo_root,
+                self.pending_scope(target_commit),
+            )
+
+        self.assertEqual(
+            [finding["kind"] for finding in findings],
+            ["unmerged_branch_commits"],
+        )
+        self.assertEqual(findings[0]["detail"], "1 commit not in target commit")
+
+    def test_pending_work_ignores_unrelated_dirty_worktree(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            (
+                repo_root,
+                _,
+                unrelated_worktree,
+                target_commit,
+            ) = self.selected_worktree_repository(temporary_directory)
+            (unrelated_worktree / "tracked.txt").write_text(
+                "base\nunrelated dirty\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+
+            findings = ship._pending_work_findings(
+                repo_root,
+                self.pending_scope(target_commit),
+            )
+
+        self.assertEqual(findings, [])
+
+    def test_pending_work_blocks_before_ensure_pr(self) -> None:
+        state = {
+            "version": 1,
+            "repository": "owner/repo",
+            "commit": self.commit,
+            "head_branch": "release/local",
+            "base_branch": "main",
+            "pending_work": {
+                "enabled": True,
+                "scope_sha256": "b" * 64,
+            },
+            "phase": "prepared",
+        }
+        finding = {
+            "kind": "dirty_worktree",
+            "subject": "selected",
+            "detail": "1 status entry",
+        }
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            repo_root = pathlib.Path(temporary_directory)
+            args = self.args(repo_root)
+            args.pending_work_check = True
+            args.pending_work_scope = repo_root / "scope.json"
+            checkpoint = repo_root / "checkpoint.json"
+            with (
+                mock.patch.object(
+                    ship, "_repository_name", return_value="owner/repo"
+                ),
+                mock.patch.object(ship, "_resolve_commit", return_value=self.commit),
+                mock.patch.object(
+                    ship,
+                    "_load_pending_work_scope",
+                    return_value=(
+                        state["pending_work"],
+                        self.pending_scope(self.commit),
+                    ),
+                ),
+                mock.patch.object(
+                    ship,
+                    "_load_or_create_checkpoint",
+                    return_value=(checkpoint, state),
+                ),
+                mock.patch.object(
+                    ship,
+                    "_pending_work_findings",
+                    return_value=[finding],
+                ),
+                mock.patch.object(ship.ensure_pr, "ensure_pr") as ensure,
+                mock.patch.object(ship, "_live_pr") as live_pr,
+                mock.patch.object(ship, "run_parallel_gates") as gates,
+                mock.patch.object(ship.merge, "merge_verified_pr") as merge_pr,
+                mock.patch.object(ship.sync, "sync_main") as sync_main,
+            ):
+                result = ship.ship(args)
+
+        self.assertEqual(
+            result,
+            {
+                "status": "pending_work",
+                "phase": "prepared",
+                "repository": "owner/repo",
+                "commit": self.commit,
+                "remote_mutation": False,
+                "findings": [finding],
+            },
+        )
+        ensure.assert_not_called()
+        live_pr.assert_not_called()
+        gates.assert_not_called()
+        merge_pr.assert_not_called()
+        sync_main.assert_not_called()
+
+    def test_pending_work_flags_are_explicit_and_consistent(self) -> None:
+        parser = ship.build_parser()
+        with self.assertRaises(SystemExit):
+            parser.parse_args(["--head-branch", "release/local"])
+
+        args = self.args(pathlib.Path.cwd())
+        args.pending_work_check = True
+        with self.assertRaisesRegex(
+            ship.ShipError,
+            "requires --pending-work-scope",
+        ):
+            ship._load_pending_work_scope(args, pathlib.Path.cwd(), self.commit)
+
+        args.pending_work_check = False
+        args.pending_work_scope = pathlib.Path("scope.json")
+        with self.assertRaisesRegex(
+            ship.ShipError,
+            "cannot be used",
+        ):
+            ship._load_pending_work_scope(args, pathlib.Path.cwd(), self.commit)
+
+    def test_pending_work_scope_is_normalized_and_hashed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            repo_root = pathlib.Path(temporary_directory)
+            scope_path = repo_root / "scope.json"
+            scope_path.write_text(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "target_branch": "release/local",
+                        "target_commit": self.commit,
+                        "source_branches": ["zeta", "alpha"],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            args = self.args(repo_root)
+            args.pending_work_check = True
+            args.pending_work_scope = scope_path
+
+            identity, scope = ship._load_pending_work_scope(
+                args,
+                repo_root,
+                self.commit,
+            )
+
+        self.assertTrue(identity["enabled"])
+        self.assertRegex(identity["scope_sha256"], r"^[0-9a-f]{64}$")
+        assert scope is not None
+        self.assertEqual(scope["source_branches"], ["alpha", "zeta"])
+
+    def test_pending_work_mode_is_pinned_in_checkpoint(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            repo_root = pathlib.Path(temporary_directory)
+            self.git(repo_root, "init")
+            self.git(repo_root, "config", "user.email", "test@example.invalid")
+            self.git(repo_root, "config", "user.name", "Test Agent")
+            (repo_root / "tracked.txt").write_text(
+                "base\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+            self.git(repo_root, "add", "tracked.txt")
+            self.git(repo_root, "commit", "-m", "base")
+            self.git(repo_root, "branch", "-M", "release/local")
+            commit = self.git(repo_root, "rev-parse", "HEAD")
+            args = self.args(repo_root)
+            args.commit = commit
+            first_identity = {"enabled": False}
+            checkpoint, _ = ship._load_or_create_checkpoint(
+                args,
+                repo_root,
+                "owner/repo",
+                commit,
+                first_identity,
+            )
+            with self.assertRaisesRegex(
+                ship.ShipError,
+                "checkpoint identity drift",
+            ):
+                ship._load_or_create_checkpoint(
+                    args,
+                    repo_root,
+                    "owner/repo",
+                    commit,
+                    {
+                        "enabled": True,
+                        "scope_sha256": "c" * 64,
+                    },
+                )
+
+            checkpoint.unlink()
+
+    def test_pending_work_cli_result_is_nonzero(self) -> None:
+        pending = {
+            "status": "pending_work",
+            "phase": "prepared",
+            "remote_mutation": False,
+            "findings": [],
+        }
+        with (
+            mock.patch.object(ship, "ship", return_value=pending),
+            mock.patch("builtins.print"),
+        ):
+            exit_code = ship.main(
+                [
+                    "--head-branch",
+                    "release/local",
+                    "--no-pending-work-check",
+                ]
+            )
+
+        self.assertEqual(exit_code, 2)
 
     def test_passing_mergeability_is_not_treated_as_pending(self) -> None:
         findings = [
@@ -525,6 +858,40 @@ class ShipTests(unittest.TestCase):
         self.assertEqual(result["ci"]["head_oid"], self.commit)
         self.assertEqual(result["codex"]["active_threads"], 0)
         self.assertEqual(result["disposition"], "passed")
+
+    def test_parallel_gates_authorize_integrated_admin_merge(self) -> None:
+        args = self.args(pathlib.Path.cwd())
+        with (
+            mock.patch.object(
+                ship,
+                "wait_for_ci_gate",
+                return_value={
+                    "base": "main",
+                    "head_oid": self.commit,
+                    "review_authorization_required": True,
+                },
+            ),
+            mock.patch.object(
+                ship.codex_review,
+                "wait_for_codex_threads",
+                return_value={
+                    "head_oid": self.commit,
+                    "active_codex_thread_count": 0,
+                    "unresolved_review_thread_count": 0,
+                },
+            ),
+        ):
+            result = ship.run_parallel_gates(
+                args,
+                "17",
+                "owner/repo",
+                self.commit,
+                ci_wait_seconds=0,
+                review_wait_seconds=0,
+            )
+
+        self.assertEqual(result["disposition"], "admin_authorized")
+        self.assertFalse(result["authorization_required"])
 
     def test_parallel_gates_preflight_required_unresolved_threads(self) -> None:
         args = self.args(pathlib.Path.cwd())
@@ -736,9 +1103,11 @@ class ShipTests(unittest.TestCase):
         self.assertEqual(gates.call_count, 2)
         merge_pr.assert_called_once()
         self.assertEqual(merge_pr.call_args.args[0].wait_seconds, 0)
+        self.assertTrue(merge_pr.call_args.args[0].admin)
         sync_main.assert_called_once()
 
-    def test_ship_returns_exact_authorization_handoff_after_gates(self) -> None:
+    def test_ship_required_review_admin_merges_without_handoff(self) -> None:
+        merge_commit = "b" * 40
         state = {
             "version": 1,
             "repository": "owner/repo",
@@ -777,32 +1146,48 @@ class ShipTests(unittest.TestCase):
                     ship,
                     "run_parallel_gates",
                     return_value={
-                        "disposition": "authorization_required",
-                        "authorization_required": True,
+                        "disposition": "admin_authorized",
+                        "authorization_required": False,
                     },
                 ) as gates,
-                mock.patch.object(ship.merge, "merge_verified_pr") as merge_pr,
-                mock.patch.object(ship.sync, "sync_main") as sync_main,
+                mock.patch.object(
+                    ship.merge,
+                    "merge_verified_pr",
+                    return_value={
+                        "status": "merged",
+                        "merged_at": "2026-07-25T00:00:00Z",
+                        "merge_commit": merge_commit,
+                    },
+                ) as merge_pr,
+                mock.patch.object(
+                    ship.sync,
+                    "sync_main",
+                    return_value={"head": merge_commit},
+                ) as sync_main,
+                mock.patch.object(
+                    ship,
+                    "restore_reusable_branch",
+                    return_value={
+                        "branch": "release/local",
+                        "status": "aligned",
+                        "head": merge_commit,
+                    },
+                ),
             ):
                 result = ship.ship(args)
-            checkpoint_retained = checkpoint.exists()
 
-        self.assertEqual(result["status"], "authorization_required")
-        self.assertEqual(result["phase"], "gates_passed")
-        self.assertTrue(result["authorization_required"])
-        self.assertEqual(result["next_cwd"], str(pathlib.Path.cwd().resolve()))
-        self.assertIn("--admin", result["next_argv"])
-        self.assertEqual(
-            result["next_argv"][result["next_argv"].index("--commit") + 1],
-            self.commit,
-        )
+        self.assertEqual(result["status"], "shipped")
+        self.assertEqual(result["phase"], "synchronized")
+        self.assertEqual(result["gate_disposition"], "admin_authorized")
+        self.assertNotIn("next_argv", result)
+        self.assertNotIn("next_cwd", result)
         self.assertEqual(gates.call_count, 2)
-        self.assertTrue(checkpoint_retained)
-        write_checkpoint.assert_called_once()
-        merge_pr.assert_not_called()
-        sync_main.assert_not_called()
+        self.assertEqual(write_checkpoint.call_count, 3)
+        merge_pr.assert_called_once()
+        self.assertTrue(merge_pr.call_args.args[0].admin)
+        sync_main.assert_called_once()
 
-    def test_authorized_resume_rechecks_once_then_completes(self) -> None:
+    def test_gates_passed_resume_rechecks_once_then_completes(self) -> None:
         merge_commit = "b" * 40
         state = {
             "version": 1,
@@ -813,12 +1198,11 @@ class ShipTests(unittest.TestCase):
             "phase": "gates_passed",
             "pr": 17,
             "url": "https://example.test/pr/17",
-            "gate_disposition": "authorization_required",
+            "gate_disposition": "admin_authorized",
         }
         with tempfile.TemporaryDirectory() as temporary_directory:
             repo_root = pathlib.Path(temporary_directory)
             args = self.args(repo_root)
-            args.admin = True
             checkpoint = repo_root / "checkpoint.json"
             checkpoint.write_text("checkpoint", encoding="utf-8")
             with (
@@ -1019,6 +1403,7 @@ class ShipTests(unittest.TestCase):
                 pathlib.Path.cwd(),
                 "owner/repo",
                 self.commit,
+                {"enabled": False},
             )
 
         self.assertIsNotNone(state)
@@ -1039,6 +1424,7 @@ class ShipTests(unittest.TestCase):
             "commit": self.commit,
             "head_branch": "release/local",
             "base_branch": "main",
+            "pending_work": {"enabled": False},
             "phase": "merged",
             "pr": 17,
             "url": "https://example.test/pr/17",
@@ -1096,7 +1482,11 @@ class ShipTests(unittest.TestCase):
         )
         self.assertTrue(checkpoint_removed)
         reconcile.assert_called_once_with(
-            args, repo_root, "owner/repo", self.commit
+            args,
+            repo_root,
+            "owner/repo",
+            self.commit,
+            {"enabled": False},
         )
         ensure.assert_not_called()
         gates.assert_not_called()
@@ -1150,6 +1540,7 @@ class ShipTests(unittest.TestCase):
         self.assertEqual(
             command[command.index("--match-head-commit") + 1], self.commit
         )
+        self.assertNotIn("--admin", command)
         self.assertEqual(result["status"], "merged")
 
 

@@ -22,11 +22,15 @@ import sys
 from collections.abc import Callable, Mapping, Sequence
 from typing import cast
 
+import jsonschema
+import yaml
 
-ROOT = pathlib.Path(__file__).resolve().parents[3]
+
+VALIDATOR_BUNDLE_ROOT = pathlib.Path(__file__).resolve().parents[3]
+ROOT = VALIDATOR_BUNDLE_ROOT
 SKILLS_DIR = ROOT / "skills"
 README = ROOT / "README.md"
-SECTION_MANIFEST = ROOT / "templates" / "skill-sections.json"
+SECTION_MANIFEST = ROOT / "skills" / "skill-sections.json"
 SKILL_CONTRACT_DIR = pathlib.Path("skills/ceratops-skill-lifecycle/references/contracts")
 RUNTIME_MANIFEST_SCHEMA = "ceratops-runtime-skill.v3"
 PROFILE_CERATOPS = "ceratops"
@@ -41,9 +45,22 @@ INSTALLER_VERSION_HISTORY_BASELINE = 4
 INSTALLER_SYNCHRONIZER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "runtime" / "synchronize-installers.py"
 RUNTIME_BUILDER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "runtime" / "managed_runtime_builder.py"
 RUNTIME_VALIDATOR = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "runtime" / "skills-consistency-runtime-validator.py"
-FAST_CHANGE_READINESS_HELPER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "validate-fast-change-readiness.ps1"
-PROMOTION_HELPER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "promote-skill-branches-to-release-and-install.ps1"
-MANAGE_PENDING_RELEASE_HELPER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "manage-pending-release-work.ps1"
+PROMOTE_REPOSITORY_HELPER = ROOT / "skills" / "ceratops-repo-lifecycle" / "scripts" / "promote-repository.py"
+MANAGE_PENDING_WORK_HELPER = ROOT / "skills" / "ceratops-repo-lifecycle" / "scripts" / "manage-pending-work.py"
+DEPLOY_OPERATION_HELPER = ROOT / "skills" / "ceratops-repo-lifecycle" / "scripts" / "run-deploy-operation.py"
+SHIP_REPOSITORY_HELPER = ROOT / "skills" / "ceratops-repo-lifecycle" / "scripts" / "ship-repository.py"
+GITHUB_SHIP_HELPER = ROOT / "skills" / "ceratops-repo-lifecycle" / "scripts" / "github_pr_workflow" / "ship.py"
+DEPLOY_CONTRACT = ROOT / "deploy" / "deploy.yml"
+DEPLOY_TEMPLATE = ROOT / "templates" / "deploy-template.yml"
+SKILL_SECTIONS_TEMPLATE = ROOT / "templates" / "skill-sections-template.json"
+DEPLOY_SCHEMA = (
+    VALIDATOR_BUNDLE_ROOT
+    / "skills"
+    / "ceratops-repo-lifecycle"
+    / "references"
+    / "schemas"
+    / "deploy-contract.schema.json"
+)
 VALIDATOR = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "skills-consistency-source-validator.py"
 WORKFLOW = ROOT / ".github" / "workflows" / "validate.yml"
 SKILL_DETERMINISTIC_CONTRACT = pathlib.Path("skills/ceratops-skill-lifecycle/references/contracts/skill-deterministic-contract.json")
@@ -399,6 +416,134 @@ def validation_profile(manifest: Mapping[str, object]) -> str:
 
     value = manifest.get("validation_profile")
     return value if isinstance(value, str) and value in VALIDATION_PROFILES else ""
+
+
+def load_yaml_mapping(
+    path: pathlib.Path,
+    label: str,
+) -> tuple[dict[str, object] | None, list[str]]:
+    """Safely load one YAML mapping without constructing Python objects."""
+
+    if not path.is_file():
+        return None, [f"missing {label}: {path.relative_to(ROOT)}"]
+    try:
+        value = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, yaml.YAMLError) as exc:
+        return None, [f"{path.relative_to(ROOT)}: invalid YAML: {exc}"]
+    if not isinstance(value, dict):
+        return None, [f"{path.relative_to(ROOT)}: YAML root must be an object"]
+    if not all(isinstance(key, str) for key in value):
+        return None, [f"{path.relative_to(ROOT)}: YAML object keys must be strings"]
+    return cast(dict[str, object], value), []
+
+
+def check_deployment_contract(
+    manifest: Mapping[str, object],
+    profile: str,
+) -> list[str]:
+    """Validate the live deploy contract and Ceratops reusable sources."""
+
+    errors: list[str] = []
+    try:
+        schema = read_json(DEPLOY_SCHEMA)
+        jsonschema.Draft202012Validator.check_schema(schema)
+        validator = jsonschema.Draft202012Validator(schema)
+    except (
+        OSError,
+        UnicodeError,
+        json.JSONDecodeError,
+        jsonschema.SchemaError,
+    ) as exc:
+        schema_label = DEPLOY_SCHEMA.relative_to(VALIDATOR_BUNDLE_ROOT)
+        errors.append(f"{schema_label}: invalid deploy contract schema: {exc}")
+        return errors
+
+    contract, contract_errors = load_yaml_mapping(
+        DEPLOY_CONTRACT,
+        "deploy/deploy.yml",
+    )
+    errors.extend(contract_errors)
+    if contract is not None:
+        validation_errors = sorted(
+            validator.iter_errors(contract),
+            key=lambda error: tuple(str(part) for part in error.absolute_path),
+        )
+        for error in validation_errors:
+            location = ".".join(str(part) for part in error.absolute_path)
+            suffix = f" at {location}" if location else ""
+            errors.append(
+                f"deploy/deploy.yml: schema validation failed{suffix}: "
+                f"{error.message}"
+            )
+        if not validation_errors:
+            operations = cast(Mapping[str, object], contract["operations"])
+            for operation_name, operation_value in operations.items():
+                operation = cast(Mapping[str, object], operation_value)
+                steps = cast(Sequence[object], operation["steps"])
+                for index, step_value in enumerate(steps):
+                    step = cast(Mapping[str, object], step_value)
+                    cwd = step.get("cwd")
+                    if cwd is None:
+                        continue
+                    normalized = cast(str, cwd).replace("\\", "/")
+                    posix_path = pathlib.PurePosixPath(normalized)
+                    windows_path = pathlib.PureWindowsPath(cast(str, cwd))
+                    if (
+                        posix_path.is_absolute()
+                        or windows_path.is_absolute()
+                        or bool(windows_path.drive)
+                        or ".." in posix_path.parts
+                    ):
+                        errors.append(
+                            "deploy/deploy.yml: "
+                            f"{operation_name}.steps[{index}].cwd must be "
+                            "repository-relative"
+                        )
+            if profile == PROFILE_CERATOPS:
+                for operation_name in ("after_promote", "after_ship"):
+                    if operation_name not in operations:
+                        errors.append(
+                            "deploy/deploy.yml: Ceratops profile requires "
+                            f"operation {operation_name}"
+                        )
+
+    if profile != PROFILE_CERATOPS:
+        return errors
+
+    template, template_errors = load_yaml_mapping(
+        DEPLOY_TEMPLATE,
+        "templates/deploy-template.yml",
+    )
+    errors.extend(template_errors)
+    if template is not None and template != {"version": 1, "operations": {}}:
+        errors.append(
+            "templates/deploy-template.yml must be the empty version 1 "
+            "deployment skeleton"
+        )
+
+    payloads = manifest.get("runtime_payloads")
+    lifecycle_payloads = (
+        payloads.get("ceratops-skill-lifecycle")
+        if isinstance(payloads, dict)
+        else None
+    )
+    required_templates = {
+        str(DEPLOY_TEMPLATE.relative_to(ROOT)).replace("\\", "/"),
+        str(SKILL_SECTIONS_TEMPLATE.relative_to(ROOT)).replace("\\", "/"),
+    }
+    if not isinstance(lifecycle_payloads, list):
+        errors.append(
+            "runtime_payloads.ceratops-skill-lifecycle must include reusable "
+            "repository templates"
+        )
+    else:
+        for template_path in sorted(required_templates):
+            if template_path not in lifecycle_payloads:
+                errors.append(
+                    "runtime_payloads.ceratops-skill-lifecycle is missing "
+                    f"{template_path}"
+                )
+    return errors
 
 
 def parse_openai_interface(path: pathlib.Path) -> dict[str, str]:
@@ -952,9 +1097,9 @@ def check_skill_scope_validator() -> list[str]:
     """Check stable semantic boundaries not derivable from action indexes."""
 
     errors: list[str] = []
-    merge_text = (SKILLS_DIR / "ceratops-gh-repo-lifecycle" / "references" / "merge-pr.md").read_text(encoding="utf-8")
+    merge_text = (SKILLS_DIR / "ceratops-repo-lifecycle" / "references" / "merge-pr.md").read_text(encoding="utf-8")
     if "python -m github_contract_engine validate repo" in merge_text:
-        errors.append("ceratops-gh-repo-lifecycle: merge-pr action must not run repo/artifact contract validation")
+        errors.append("ceratops-repo-lifecycle: merge-pr action must not run repo/artifact contract validation")
     return errors
 
 
@@ -970,13 +1115,11 @@ def check_validation_command_surface() -> list[str]:
     installer_template_text = INSTALLER_TEMPLATE.read_text(encoding="utf-8") if INSTALLER_TEMPLATE.is_file() else ""
     synchronizer_text = INSTALLER_SYNCHRONIZER.read_text(encoding="utf-8") if INSTALLER_SYNCHRONIZER.is_file() else ""
     runtime_validator_text = RUNTIME_VALIDATOR.read_text(encoding="utf-8") if RUNTIME_VALIDATOR.is_file() else ""
-    fast_change_readiness_text = FAST_CHANGE_READINESS_HELPER.read_text(encoding="utf-8") if FAST_CHANGE_READINESS_HELPER.is_file() else ""
-    promotion_helper_text = PROMOTION_HELPER.read_text(encoding="utf-8") if PROMOTION_HELPER.is_file() else ""
-    manage_pending_helper_text = (
-        MANAGE_PENDING_RELEASE_HELPER.read_text(encoding="utf-8")
-        if MANAGE_PENDING_RELEASE_HELPER.is_file()
-        else ""
-    )
+    promotion_helper_text = PROMOTE_REPOSITORY_HELPER.read_text(encoding="utf-8") if PROMOTE_REPOSITORY_HELPER.is_file() else ""
+    pending_work_text = MANAGE_PENDING_WORK_HELPER.read_text(encoding="utf-8") if MANAGE_PENDING_WORK_HELPER.is_file() else ""
+    deploy_helper_text = DEPLOY_OPERATION_HELPER.read_text(encoding="utf-8") if DEPLOY_OPERATION_HELPER.is_file() else ""
+    repository_ship_text = SHIP_REPOSITORY_HELPER.read_text(encoding="utf-8") if SHIP_REPOSITORY_HELPER.is_file() else ""
+    github_ship_text = GITHUB_SHIP_HELPER.read_text(encoding="utf-8") if GITHUB_SHIP_HELPER.is_file() else ""
     readme_text = README.read_text(encoding="utf-8") if README.is_file() else ""
     workflow_text = WORKFLOW.read_text(encoding="utf-8") if WORKFLOW.is_file() else ""
 
@@ -994,193 +1137,243 @@ def check_validation_command_surface() -> list[str]:
         errors.append("runtime installer must call the source validator")
     if '"full"' not in runtime_installer_text or '"skill"' not in runtime_installer_text:
         errors.append("runtime installer must select full or targeted source validation from install scope")
-    if "ValidateSet" in promotion_helper_text or "$Validate" in promotion_helper_text:
-        errors.append("release promotion must not expose a validation selector")
-    if "scripts\\install-skills.py" not in promotion_helper_text or '"python"' not in promotion_helper_text:
-        errors.append("release promotion must install through the target repository Python installer")
-    pending_approved_data = '$managePendingArgs += "-ApprovedBranchData"'
-    pending_call = "$managePendingOutput = @("
-    fast_forward_call = 'Invoke-GitQuiet @("merge", "--ff-only", $branch)'
-    installer_guard = 'if (-not (Test-Path -LiteralPath $installScript -PathType Leaf))'
-    mypy_call = "\nInvoke-PromotionMypy\n"
-    mypy_failure_classifications = (
-        '"mypy_scope_missing"',
-        '"mypy_scope_mismatch"',
-        '"mypy_failed"',
+    helper_paths = (
+        ("repository promotion helper", PROMOTE_REPOSITORY_HELPER),
+        ("pending-work helper", MANAGE_PENDING_WORK_HELPER),
+        ("deployment operation helper", DEPLOY_OPERATION_HELPER),
+        ("repository ship helper", SHIP_REPOSITORY_HELPER),
+        ("GitHub ship helper", GITHUB_SHIP_HELPER),
     )
-    mypy_failure_output = (
-        "[Console]::Error.WriteLine($payload)",
-        "exit 1",
-    )
-    promotion_commit_arg = '"-PromotionCommit"'
-    record_promotion_arg = '"-RecordPromotion"'
-    install_call = "$installScript,"
-    lifecycle_bootstrap_markers = (
-        "function Invoke-LifecycleSourceBootstrap",
-        'Get-GitLines @(\n            "diff",\n            "--name-only",',
-        "$sourceRuntimeInstaller",
-        'Get-RepositoryInstallerVersion $InstallerScript',
-        '"--skill",',
-        '"ceratops-skill-lifecycle"',
-        "function New-LifecycleRuntimeRollback",
-        "function Restore-LifecycleRuntimeRollback",
-        "function Remove-LifecycleRuntimeRollback",
-    )
-    lifecycle_bootstrap_call = (
-        "\n$lifecycleRollback = Invoke-LifecycleSourceBootstrap `\n"
-    )
-    lifecycle_restore_call = (
-        "\n        Restore-LifecycleRuntimeRollback $lifecycleRollback\n"
+    for label, path in helper_paths:
+        if not path.is_file():
+            errors.append(f"missing {label}: {path.relative_to(ROOT)}")
+
+    promotion_markers = (
+        'PENDING_MANAGER = SCRIPT_ROOT / "manage-pending-work.py"',
+        'DEPLOY_RUNNER = SCRIPT_ROOT / "run-deploy-operation.py"',
+        '"fetch", "--prune", args.remote_name',
+        '"switch", args.main_branch',
+        '"merge", "--ff-only", remote_main',
+        'if _ref_exists(repo_root, f"refs/heads/{args.release_branch}")',
+        '"merge-base", "--is-ancestor", "HEAD", branch',
+        '"diff", "--check", base, branch',
+        '"merge", "--ff-only", branch',
+        '"record"',
+        "if args.run_operation is not None:",
+        '_clean(repo_root, "before reporting ready state")',
+        '"--run-operation"',
+        '"--no-run-operation"',
     )
     if (
-        promotion_helper_text.count(pending_approved_data) != 1
-        or promotion_helper_text.count(pending_call) != 1
-        or promotion_helper_text.count(promotion_commit_arg) != 1
-        or promotion_helper_text.count(record_promotion_arg) != 1
-        or '$managePendingArgs += "-CleanMergedBranches"' in promotion_helper_text
-    ):
-        errors.append(
-            "release promotion must retain approved sources through one "
-            "promotion-record pending-release manager call"
-        )
-    elif any(
-        marker not in promotion_helper_text
-        for marker in (
-            *mypy_failure_classifications,
-            *mypy_failure_output,
-            *lifecycle_bootstrap_markers,
-        )
-    ):
-        errors.append(
-            "release promotion must classify repository-configured mypy "
-            "failures, conditionally bootstrap changed lifecycle sources, "
-            "and retain rollback enforcement"
-        )
-    elif not (
-        promotion_helper_text.find(fast_forward_call)
-        < promotion_helper_text.find(installer_guard)
-        < promotion_helper_text.find(mypy_call)
-        < promotion_helper_text.find(promotion_commit_arg)
-        < promotion_helper_text.find(record_promotion_arg)
-        < promotion_helper_text.find(pending_approved_data)
-        < promotion_helper_text.find(pending_call)
-        < promotion_helper_text.find(lifecycle_bootstrap_call)
-        < promotion_helper_text.find(install_call)
-        < promotion_helper_text.find(lifecycle_restore_call)
-    ):
-        errors.append(
-            "release promotion must guard the installer, run classified mypy, "
-            "retain approved sources, and bootstrap changed lifecycle sources "
-            "between pending-release recording and rollback-protected full "
-            "installation"
-        )
-    release_preparation_markers = (
-        'Invoke-GitQuiet @("fetch", "--prune", $RemoteName)',
-        'Invoke-GitQuiet @("switch", $MainBranch)',
-        'Invoke-GitQuiet @("merge", "--ff-only", $remoteMain)',
-        'if (Test-RefExists "refs/heads/$ReleaseBranch")',
-        "Assert-BranchCheckedOut $ReleaseBranch",
-    )
-    if any(
-        marker not in promotion_helper_text
-        for marker in release_preparation_markers
-    ):
-        errors.append(
-            "release promotion must own remote refresh, main synchronization, "
-            "and release-branch preparation"
-        )
-    elif not (
-        promotion_helper_text.find(release_preparation_markers[0])
-        < promotion_helper_text.find(release_preparation_markers[1])
-        < promotion_helper_text.find(release_preparation_markers[2])
-        < promotion_helper_text.find(release_preparation_markers[3])
-        < promotion_helper_text.find(release_preparation_markers[4])
-        < promotion_helper_text.find(fast_forward_call)
-    ):
-        errors.append(
-            "release promotion must prepare the synchronized release branch "
-            "before staging approved branches"
-        )
-    pending_scope_markers = (
-        "ApprovedBranchData",
-        "FromBase64String",
-        "Get-ApprovedBranchWorktreePath",
-        '"--format=%(worktreepath)"',
-    )
-    if (
-        any(marker not in manage_pending_helper_text for marker in pending_scope_markers)
-        or '"worktree", "list"' in manage_pending_helper_text
-        or '"--format=%(refname:short)"' in manage_pending_helper_text
-    ):
-        errors.append("pending-release management must be limited to approved branches and their worktrees")
-    promotion_retention_markers = (
-        "retained_approved_branches",
-        "promotion_record",
-        "PromotionCommit",
-        "RecordPromotion",
-        "Write-PromotionRecord",
-        "codex\\skill-lifecycle\\promotions",
-        "Remove-Item -LiteralPath $promotionRecordPath",
-    )
-    if any(
-        marker not in promotion_helper_text + manage_pending_helper_text
-        for marker in promotion_retention_markers
-    ):
-        errors.append(
-            "release promotion must retain approved sources by exact promotion "
-            "commit and clean them only through the pending-release manager"
-        )
-    terminal_finalizer_markers = (
-        "$FinalizeShippedRelease",
-        "Assert-SynchronizedCheckout",
-        "scripts\\install-skills.py",
-        "skills-consistency-runtime-validator.py",
-        "[Environment]::CurrentDirectory = $resolvedSkillsRepoRoot",
-        '$result["install"] = "managed"',
-        '$result["runtime_validation"] = "full"',
-    )
-    terminal_install_call = re.search(
-        r'Invoke-QuietNative -FilePath "python" -Arguments @\(\s*'
-        r"\$installScript,",
-        manage_pending_helper_text,
-    )
-    terminal_runtime_call = re.search(
-        r'Invoke-QuietNative -FilePath "python" -Arguments @\(\s*'
-        r"\$runtimeValidator,",
-        manage_pending_helper_text,
-    )
-    terminal_cleanup_loop = "foreach ($candidate in $cleanupCandidates)"
-    terminal_record_cleanup = "Remove-Item -LiteralPath $promotionRecordPath"
-    if (
-        any(
-            marker not in manage_pending_helper_text
-            for marker in terminal_finalizer_markers
-        )
-        or "-FinalizeShippedRelease" not in readme_text
-    ):
-        errors.append(
-            "terminal release finalization must install and validate runtime "
-            "through the pending-release manager"
-        )
-    elif not (
-        terminal_install_call is not None
-        and terminal_runtime_call is not None
-        and terminal_install_call.start()
-        < terminal_runtime_call.start()
-        < manage_pending_helper_text.find(terminal_cleanup_loop)
-        < manage_pending_helper_text.find(terminal_record_cleanup)
-    ):
-        errors.append(
-            "terminal release finalization must validate before approved-source "
-            "and promotion-record cleanup"
-        )
-    if (
-        '"merge", "--ff-only"' not in promotion_helper_text
+        any(marker not in promotion_helper_text for marker in promotion_markers)
+        or '"worktree", "list"' in promotion_helper_text
         or '"merge", "--no-edit"' in promotion_helper_text
     ):
-        errors.append("release promotion must fast-forward approved branches and must not create merge commits")
-    if "scripts\\install-skills.py" not in fast_change_readiness_text:
-        errors.append("fast-change readiness must expose the target repository Python installer")
+        errors.append(
+            "repository promotion must fast-forward only selected branches, "
+            "record their scope, and delegate optional deployment"
+        )
+    promotion_start = promotion_helper_text.find("def promote(")
+    promotion_end = promotion_helper_text.find("def build_parser(")
+    promotion_flow = promotion_helper_text[promotion_start:promotion_end]
+    promotion_order = (
+        '"fetch", "--prune", args.remote_name',
+        '"switch", args.main_branch',
+        '"merge", "--ff-only", remote_main',
+        'if _ref_exists(repo_root, f"refs/heads/{args.release_branch}")',
+        '"merge-base", "--is-ancestor", "HEAD", branch',
+        '"diff", "--check", base, branch',
+        '"merge", "--ff-only", branch',
+        "target_commit =",
+        "record_command =",
+        "record_code, record =",
+        "if args.run_operation is not None:",
+        '_clean(repo_root, "before reporting ready state")',
+    )
+    if (
+        promotion_start < 0
+        or promotion_end < 0
+        or any(marker not in promotion_flow for marker in promotion_order)
+        or list(map(promotion_flow.find, promotion_order))
+        != sorted(map(promotion_flow.find, promotion_order))
+    ):
+        errors.append(
+            "repository promotion must refresh main, assemble the release "
+            "head, record scope, then optionally deploy"
+        )
+    if (
+        "install-skills.py" in promotion_helper_text
+        or "skills-consistency-runtime-validator.py" in promotion_helper_text
+    ):
+        errors.append(
+            "repository promotion must leave repository-specific work to the "
+            "named deployment operation"
+        )
+
+    pending_markers = (
+        "ship._load_pending_work_scope",
+        "ship._pending_work_findings",
+        '"repository-lifecycle"',
+        '"promotions"',
+        '"--format=%(worktreepath)"',
+        'subparsers.add_parser("record")',
+        'subparsers.add_parser("check")',
+        'subparsers.add_parser("finalize")',
+        'repo_root.parent / "worktrees" / repo_root.name',
+        '"worktree", "remove", str(path)',
+        '"branch", "-d", branch',
+        "path.unlink()",
+    )
+    if (
+        any(marker not in pending_work_text for marker in pending_markers)
+        or '"worktree", "list"' in pending_work_text
+        or '"--format=%(refname:short)"' in pending_work_text
+        or '"branch", "-D", branch' in pending_work_text
+    ):
+        errors.append(
+            "pending-work management must persist and clean only exact "
+            "selected branches and their bounded worktrees"
+        )
+    finalizer_start = pending_work_text.find("def finalize_scope(")
+    finalizer_end = pending_work_text.find("def build_parser(")
+    finalizer_flow = pending_work_text[finalizer_start:finalizer_end]
+    finalizer_order = (
+        "checked = check_scope(",
+        '"branch", "--show-current"',
+        '"rev-parse", "HEAD"',
+        '"status", "--porcelain"',
+        "expected_root =",
+        'for branch in scope["source_branches"]:',
+        "_remove_selected_worktree(",
+        '"branch", "-d", branch',
+        "path.unlink()",
+    )
+    if (
+        finalizer_start < 0
+        or finalizer_end < 0
+        or any(marker not in finalizer_flow for marker in finalizer_order)
+        or list(map(finalizer_flow.find, finalizer_order))
+        != sorted(map(finalizer_flow.find, finalizer_order))
+    ):
+        errors.append(
+            "pending-work finalization must recheck synchronized state before "
+            "selected-source cleanup"
+        )
+
+    deploy_markers = (
+        "yaml.safe_load(",
+        "jsonschema.Draft202012Validator(schema).validate(value)",
+        '"deploy-contract.schema.json"',
+        "not _inside(resolved, repo_root)",
+        "not _inside(cwd, repo_root)",
+        "for step in _operation_steps(contract, operation):",
+        "subprocess.run(",
+        "list(argv)",
+        "capture_output=True",
+        "check=False",
+        "output[-8:]",
+        "if result.returncode != 0:",
+        '"--operation", required=True',
+    )
+    if (
+        any(marker not in deploy_helper_text for marker in deploy_markers)
+        or "shell=True" in deploy_helper_text
+    ):
+        errors.append(
+            "deployment runner must validate safe YAML and schema, constrain "
+            "paths, and execute argv steps without a shell"
+        )
+
+    repository_ship_markers = (
+        'DEPLOY_RUNNER = SCRIPT_ROOT / "run-deploy-operation.py"',
+        'PENDING_MANAGER = SCRIPT_ROOT / "manage-pending-work.py"',
+        '"github_pr_workflow"',
+        '"--pending-work-check"',
+        '"--no-pending-work-check"',
+        '"--deploy-operation", default="after_ship"',
+        '"phase": "post_sync"',
+        '"remote_mutation": True',
+    )
+    if any(
+        marker not in repository_ship_text
+        for marker in repository_ship_markers
+    ):
+        errors.append(
+            "repository ship must delegate GitHub shipping and own post-sync "
+            "deployment plus selected-work finalization"
+        )
+    repository_ship_start = repository_ship_text.find("def ship_repository(")
+    repository_ship_end = repository_ship_text.find("def build_parser(")
+    repository_ship_flow = repository_ship_text[
+        repository_ship_start:repository_ship_end
+    ]
+    repository_ship_order = (
+        "ship_code, shipped =",
+        "check_code, checked =",
+        "deploy_code, deployed =",
+        "finalize_code, finalized =",
+    )
+    if (
+        repository_ship_start < 0
+        or repository_ship_end < 0
+        or any(
+            marker not in repository_ship_flow
+            for marker in repository_ship_order
+        )
+        or list(map(repository_ship_flow.find, repository_ship_order))
+        != sorted(map(repository_ship_flow.find, repository_ship_order))
+    ):
+        errors.append(
+            "repository ship must complete GitHub sync, late scope check, "
+            "deployment, and final cleanup in order"
+        )
+
+    github_ship_markers = (
+        "pending_work_identity, pending_work_scope = _load_pending_work_scope(",
+        "findings = _pending_work_findings(repo_root, pending_work_scope)",
+        '"remote_mutation": False',
+        "pr_result = ensure_pr.ensure_pr(",
+        'live.get("headRefOid") != commit',
+        "run_parallel_gates(",
+        "ci_wait_seconds=0",
+        "review_wait_seconds=0",
+        "merge_result = merge.merge_verified_pr(",
+        "admin=True",
+        "auto=False",
+        "expected_head=commit",
+        "sync_result = sync.sync_main(",
+    )
+    if (
+        any(marker not in github_ship_text for marker in github_ship_markers)
+        or "run-deploy-operation.py" in github_ship_text
+        or "finalize_scope(" in github_ship_text
+    ):
+        errors.append(
+            "GitHub ship must own exact-head gates, merge, and synchronization "
+            "without owning deployment or source cleanup"
+        )
+    github_ship_start = github_ship_text.find("def ship(")
+    github_ship_end = github_ship_text.find("def build_parser(")
+    github_ship_flow = github_ship_text[github_ship_start:github_ship_end]
+    github_ship_order = (
+        "findings = _pending_work_findings(repo_root, pending_work_scope)",
+        "pr_result = ensure_pr.ensure_pr(",
+        "run_parallel_gates(",
+        "ci_wait_seconds=0",
+        "merge_result = merge.merge_verified_pr(",
+        "sync_result = sync.sync_main(",
+    )
+    if (
+        github_ship_start < 0
+        or github_ship_end < 0
+        or any(marker not in github_ship_flow for marker in github_ship_order)
+        or list(map(github_ship_flow.find, github_ship_order))
+        != sorted(map(github_ship_flow.find, github_ship_order))
+    ):
+        errors.append(
+            "GitHub ship must block before remote mutation, reread gates, "
+            "merge the exact head, then synchronize main"
+        )
     if RUNTIME_MANIFEST_SCHEMA not in builder_text:
         errors.append("runtime builder must emit the lifecycle bundle capability schema")
     for field in ("source_repository_root", "installer_version"):
@@ -1526,8 +1719,11 @@ def main() -> int:
     global ROOT, SKILLS_DIR, README, SECTION_MANIFEST, CERATOPS_ICON_SOURCE
     global BOOTSTRAP_INSTALLER, RUNTIME_INSTALLER, BUNDLE_RESOLVER, INSTALLER_TEMPLATE
     global INSTALLER_VERSION_HISTORY
-    global INSTALLER_SYNCHRONIZER, RUNTIME_BUILDER, RUNTIME_VALIDATOR, FAST_CHANGE_READINESS_HELPER
-    global PROMOTION_HELPER, MANAGE_PENDING_RELEASE_HELPER, VALIDATOR, WORKFLOW
+    global INSTALLER_SYNCHRONIZER, RUNTIME_BUILDER, RUNTIME_VALIDATOR
+    global PROMOTE_REPOSITORY_HELPER, MANAGE_PENDING_WORK_HELPER
+    global DEPLOY_OPERATION_HELPER, SHIP_REPOSITORY_HELPER, GITHUB_SHIP_HELPER
+    global DEPLOY_CONTRACT, DEPLOY_TEMPLATE, SKILL_SECTIONS_TEMPLATE
+    global VALIDATOR, WORKFLOW
 
     parser = argparse.ArgumentParser(description="Validate Ceratops-compatible skill source and runtime-generation inputs.")
     parser.add_argument("--repo-root", type=pathlib.Path, help="Source skills repository root.")
@@ -1549,7 +1745,7 @@ def main() -> int:
         ROOT = args.repo_root.resolve()
         SKILLS_DIR = ROOT / "skills"
         README = ROOT / "README.md"
-        SECTION_MANIFEST = ROOT / "templates" / "skill-sections.json"
+        SECTION_MANIFEST = ROOT / "skills" / "skill-sections.json"
         CERATOPS_ICON_SOURCE = ROOT / "assets" / "ceratops-logo-500.png"
         BOOTSTRAP_INSTALLER = ROOT / "scripts" / "install-skills.py"
         RUNTIME_INSTALLER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "runtime" / "install-managed-skills.py"
@@ -1559,9 +1755,14 @@ def main() -> int:
         INSTALLER_SYNCHRONIZER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "runtime" / "synchronize-installers.py"
         RUNTIME_BUILDER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "runtime" / "managed_runtime_builder.py"
         RUNTIME_VALIDATOR = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "runtime" / "skills-consistency-runtime-validator.py"
-        FAST_CHANGE_READINESS_HELPER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "validate-fast-change-readiness.ps1"
-        PROMOTION_HELPER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "promote-skill-branches-to-release-and-install.ps1"
-        MANAGE_PENDING_RELEASE_HELPER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "manage-pending-release-work.ps1"
+        PROMOTE_REPOSITORY_HELPER = ROOT / "skills" / "ceratops-repo-lifecycle" / "scripts" / "promote-repository.py"
+        MANAGE_PENDING_WORK_HELPER = ROOT / "skills" / "ceratops-repo-lifecycle" / "scripts" / "manage-pending-work.py"
+        DEPLOY_OPERATION_HELPER = ROOT / "skills" / "ceratops-repo-lifecycle" / "scripts" / "run-deploy-operation.py"
+        SHIP_REPOSITORY_HELPER = ROOT / "skills" / "ceratops-repo-lifecycle" / "scripts" / "ship-repository.py"
+        GITHUB_SHIP_HELPER = ROOT / "skills" / "ceratops-repo-lifecycle" / "scripts" / "github_pr_workflow" / "ship.py"
+        DEPLOY_CONTRACT = ROOT / "deploy" / "deploy.yml"
+        DEPLOY_TEMPLATE = ROOT / "templates" / "deploy-template.yml"
+        SKILL_SECTIONS_TEMPLATE = ROOT / "templates" / "skill-sections-template.json"
         VALIDATOR = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "skills-consistency-source-validator.py"
         WORKFLOW = ROOT / ".github" / "workflows" / "validate.yml"
 
@@ -1569,12 +1770,16 @@ def main() -> int:
     if not SKILLS_DIR.is_dir():
         errors.append("missing skills/ directory")
     if not SECTION_MANIFEST.is_file():
-        errors.append("missing templates/skill-sections.json")
+        errors.append("missing skills/skill-sections.json")
 
     manifest = load_section_manifest() if SECTION_MANIFEST.is_file() else {"sections": {}, "skills": {}}
     errors.extend(check_repo_manifest_identity(manifest))
     profile = validation_profile(manifest)
-    skill_dirs = sorted(p for p in SKILLS_DIR.iterdir() if p.is_dir()) if SKILLS_DIR.is_dir() else []
+    skill_dirs = (
+        sorted(path.parent for path in SKILLS_DIR.glob("*/SKILL.md"))
+        if SKILLS_DIR.is_dir()
+        else []
+    )
     if args.sync_installer_version:
         if profile != PROFILE_CERATOPS:
             print("--sync-installer-version requires the ceratops validation profile", file=sys.stderr)
@@ -1672,6 +1877,7 @@ def main() -> int:
                 for command in commands:
                     errors.extend(validate_workflow_target(command, skill_names))
     errors.extend(check_runtime_payloads(manifest, skill_names))
+    errors.extend(check_deployment_contract(manifest, profile))
     for skill_name in assignments:
         if skill_name not in skill_names:
             errors.append(f"{skill_name}: section assignment points to a missing skill directory")

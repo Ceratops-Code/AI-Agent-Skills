@@ -1,0 +1,31 @@
+version: 1
+operations:
+  after_promote:
+    steps:
+      - id: type-check
+        run:
+          - python
+          - -m
+          - mypy
+      - id: install-managed-skills
+        run:
+          - python
+          - scripts/install-skills.py
+      - id: validate-installed-skills
+        run:
+          - python
+          - skills/ceratops-skill-lifecycle/scripts/runtime/skills-consistency-runtime-validator.py
+          - --repo-root
+          - .
+  after_ship:
+    steps:
+      - id: install-managed-skills
+        run:
+          - python
+          - scripts/install-skills.py
+      - id: validate-installed-skills
+        run:
+          - python
+          - skills/ceratops-skill-lifecycle/scripts/runtime/skills-consistency-runtime-validator.py
+          - --repo-root
+          - .

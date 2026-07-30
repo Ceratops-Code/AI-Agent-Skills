@@ -26,7 +26,7 @@ TEMPLATE = BUNDLE_ROOT / "scripts" / "templates" / "install-skills-template.py"
 MANIFEST_NAME = ".runtime-manifest.json"
 RUNTIME_MANIFEST_SCHEMA = "ceratops-runtime-skill.v3"
 VALIDATION_PROFILES = {"ceratops", "ceratops-compatible"}
-SECTION_MANIFEST = pathlib.Path("templates/skill-sections.json")
+SECTION_MANIFEST = pathlib.Path("skills/skill-sections.json")
 REQUIRED_FIELDS = {
     "schema",
     "skill",

@@ -17,7 +17,7 @@ import subprocess
 import sys
 
 
-INSTALLER_VERSION = 5
+INSTALLER_VERSION = 6
 LIFECYCLE_SKILL = "ceratops-skill-lifecycle"
 RESOLVER_RELATIVE = pathlib.Path("scripts/runtime/resolve-lifecycle-bundle.py")
 INSTALLER_RELATIVE = pathlib.Path("scripts/runtime/install-managed-skills.py")
@@ -35,7 +35,7 @@ def checkout_is_ceratops(repo_root: pathlib.Path) -> bool:
 
     try:
         manifest = json.loads(
-            (repo_root / "templates" / "skill-sections.json").read_text(encoding="utf-8")
+            (repo_root / "skills" / "skill-sections.json").read_text(encoding="utf-8")
         )
     except (OSError, json.JSONDecodeError):
         return False

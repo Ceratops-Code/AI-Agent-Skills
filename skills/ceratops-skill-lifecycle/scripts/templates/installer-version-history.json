@@ -8,6 +8,10 @@
     {
       "version": 5,
       "behavior_sha256": "2db6628218652a89dadc190dc874bc5bf3037db4f1e4e907ee5790316699e6bc"
+    },
+    {
+      "version": 6,
+      "behavior_sha256": "8086819d9e08d9e638ecad0b0a781132aa2b6c15c4e088ea8d950704f3e5d018"
     }
   ]
 }

@@ -2,7 +2,7 @@
   "contract_format_version": 1,
   "kind": "skill_design_contract",
   "name": "ceratops_skill_deterministic_contract",
-  "captured_on": "2026-07-20",
+  "captured_on": "2026-07-30",
   "source_files": [
     {
       "path": "$AI_AGENT_SKILLS_ROOT/skills/ceratops-skill-lifecycle/references/contracts/skill-contract-source-docs.json",
@@ -25,8 +25,20 @@
       "lines": "authoritative versioned compatible-repository installer"
     },
     {
-      "path": "$AI_AGENT_SKILLS_ROOT/templates/skill-sections.json",
+      "path": "$AI_AGENT_SKILLS_ROOT/skills/skill-sections.json",
       "lines": "shared section and runtime payload ownership"
+    },
+    {
+      "path": "$AI_AGENT_SKILLS_ROOT/deploy/deploy.yml",
+      "lines": "live structured repository deployment operations"
+    },
+    {
+      "path": "$AI_AGENT_SKILLS_ROOT/templates/deploy-template.yml",
+      "lines": "reusable deployment-contract skeleton"
+    },
+    {
+      "path": "$AI_AGENT_SKILLS_ROOT/skills/ceratops-repo-lifecycle/references/schemas/deploy-contract.schema.json",
+      "lines": "deployment operation and argv-step schema"
     },
     {
       "path": "$AI_AGENT_SKILLS_ROOT/AGENTS.md",
@@ -68,6 +80,7 @@
     "auto_apply_check_ids": [],
     "ai_agent_check_ids": [
       "skill.repository_identity_and_profile",
+      "skill.repository_deployment_contract",
       "skill.installer_version_consistency",
       "skill.frontmatter_and_layout",
       "skill.metadata_alignment",
@@ -97,13 +110,27 @@
       "id": "skill.repository_identity_and_profile",
       "category": "runtime",
       "deterministic_evidence": [
-        "templates/skill-sections.json runtime_source_id",
-        "templates/skill-sections.json validation_profile"
+        "skills/skill-sections.json runtime_source_id",
+        "skills/skill-sections.json validation_profile"
       ],
       "pass_condition": "The source manifest declares a nonempty stable runtime_source_id and either the ceratops or ceratops-compatible validation profile; full validation always applies common checks and only the ceratops profile adds Ceratops-specific icon, contract, retired-artifact, and repository-governance checks.",
       "source_lines": [
         "skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py:check_repo_manifest_identity",
         "skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py:main"
+      ]
+    },
+    {
+      "id": "skill.repository_deployment_contract",
+      "category": "runtime",
+      "deterministic_evidence": [
+        "deploy/deploy.yml",
+        "templates/deploy-template.yml",
+        "deploy contract schema"
+      ],
+      "pass_condition": "The live deployment file validates as version 1 structured operations with argv-array steps and repository-relative working directories; the reusable template remains an empty version 1 skeleton. The ceratops profile declares after_promote and after_ship and includes both reusable templates in the installed skill-lifecycle payload.",
+      "source_lines": [
+        "skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py:check_deployment_contract",
+        "skills/ceratops-repo-lifecycle/scripts/run-deploy-operation.py:run_operation"
       ]
     },
     {
@@ -158,8 +185,8 @@
       "id": "skill.shared_section_generation",
       "category": "runtime",
       "deterministic_evidence": [
-        "templates/skill-sections.json",
-        "templates/sections/*",
+        "skills/skill-sections.json",
+        "skills/sections/*",
         "source SKILL.md"
       ],
       "pass_condition": "Every source skill has a manifest assignment including core, source SKILL.md files remain delta-only, assigned shared sections render, and source files do not contain generated runtime shared-section blocks.",
@@ -173,13 +200,13 @@
       "id": "skill.multi_action_contract",
       "category": "source",
       "deterministic_evidence": [
-        "templates/skill-sections.json multi-action-skill assignments",
+        "skills/skill-sections.json multi-action-skill assignments",
         "skills/<skill-name>/SKILL.md Action References",
         "skills/<skill-name>/references/*.md action titles"
       ],
       "pass_condition": "Every skill assigned the multi-action-skill section has one complete Action References index with at least two unique direct references/*.md paths; every mapped file exists and uses an Action title, and every top-level reference with an Action title is indexed.",
       "source_lines": [
-        "templates/sections/multi-action-skill.md:Multi-Action Skill Contract",
+        "skills/sections/multi-action-skill.md:Multi-Action Skill Contract",
         "skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py:check_multi_action_skill_contract"
       ]
     },
@@ -199,7 +226,7 @@
       "id": "skill.runtime_payload_portability",
       "category": "runtime",
       "deterministic_evidence": [
-        "templates/skill-sections.json runtime_payloads",
+        "skills/skill-sections.json runtime_payloads",
         "declared payload paths"
       ],
       "pass_condition": "Runtime payload declarations point only to existing repo-relative paths or matching globs and do not use absolute paths or parent-directory traversal.",

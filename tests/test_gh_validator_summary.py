@@ -13,7 +13,7 @@ from typing import Any
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-SCRIPTS = ROOT / "skills" / "ceratops-gh-repo-lifecycle" / "scripts"
+SCRIPTS = ROOT / "skills" / "ceratops-repo-lifecycle" / "scripts"
 REFERENCES = SCRIPTS.parent / "references" / "contracts"
 sys.path.insert(0, str(SCRIPTS))
 

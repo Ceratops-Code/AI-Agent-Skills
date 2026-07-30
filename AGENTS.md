@@ -25,11 +25,9 @@ Project-specific rules for this skills repository.
   and do not place it inside the skills repo checkout.
   - self: list-heavy
 - [SKILLS-PREVIEW-01] Keep installed Ceratops skill folders generated from the
-  skills repo checkout, not task worktrees. For unpublished local previews,
-  refresh remote refs with `git fetch --prune origin`, merge ready worktree
-  branches into the checkout's local `release/*` branch, and run
-  `python scripts/install-skills.py` there instead of generating installed
-  skills from task worktrees.
+  skills repo checkout, not task worktrees. For an unpublished local preview,
+  use `$ceratops-repo-lifecycle` action `promote-and-deploy`; it must assemble
+  the selected local `release/*` branch before running `deploy/deploy.yml`.
   - self: list-heavy
 - [SKILLS-STAGE-01] Stage skill-source changes into a local `release/*` batch
   only when the task explicitly requests staging, shipping, or local preview
@@ -39,19 +37,23 @@ Project-specific rules for this skills repository.
 - [SKILLS-SHIP-01] Skills-repo changes must ship from `release/*`, never
   directly from task or feature branches.
 - [SKILLS-CREATE-01] New Ceratops skill creation is the only default-staging
-  exception: `$ceratops-skill-lifecycle` create must finish with
-  change-promotion and install verification.
+  exception: `$ceratops-skill-lifecycle` create must hand off to
+  `$ceratops-repo-lifecycle` action `promote-and-deploy` and finish with
+  deployment verification.
   - overrides: SKILLS-STAGE-01
-- [SKILLS-SHIP-02] For staging or shipping, use `$ceratops-skill-lifecycle`
-  change-promotion or ship-to-remote. After shipping, restore the checkout from
-  `origin/main`, reinstall managed skills from `main`, and report retained
-  worktrees or release branches.
+- [SKILLS-SHIP-02] For promotion or shipping, use
+  `$ceratops-repo-lifecycle` action `promote`, `promote-and-deploy`, or `ship`.
+  `ship` must update the checkout from `origin/main` after merge, run
+  `deploy/deploy.yml`, and report retained worktrees or release branches.
   - self: list-heavy
 - [SKILLS-BATCH-01] Treat an explicit request to promote or ship a named
   `release/*` branch as authorization for every commit currently on that
   branch; do not request per-commit inclusion confirmation.
 - [SKILLS-SHIP-03] Treat GitHub replies, thread resolutions, and review
   submissions required by the active Ceratops workflow as pre-approved.
+- [SKILLS-DEPLOY-01] `deploy/deploy.yml` is this repository's live executable
+  deployment contract. `templates/deploy-template.yml` is only a reusable
+  starting file; agents must not execute prose deployment instructions.
 
 ## Instruction and skill maintenance
 

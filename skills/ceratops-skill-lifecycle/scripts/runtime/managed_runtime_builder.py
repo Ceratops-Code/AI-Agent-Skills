@@ -29,7 +29,7 @@ from typing import cast
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[4]
-SECTION_MANIFEST = ROOT / "templates" / "skill-sections.json"
+SECTION_MANIFEST = ROOT / "skills" / "skill-sections.json"
 SKILLS = ROOT / "skills"
 START = "<!-- CERATOPS_SHARED_SECTIONS_START -->"
 END = "<!-- CERATOPS_SHARED_SECTIONS_END -->"
@@ -47,7 +47,7 @@ def configure_repo(repo_root: pathlib.Path) -> None:
     global ROOT, SECTION_MANIFEST, SKILLS
 
     ROOT = repo_root.resolve()
-    SECTION_MANIFEST = ROOT / "templates" / "skill-sections.json"
+    SECTION_MANIFEST = ROOT / "skills" / "skill-sections.json"
     SKILLS = ROOT / "skills"
 
 

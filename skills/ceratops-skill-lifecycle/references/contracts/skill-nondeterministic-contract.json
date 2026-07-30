@@ -20,7 +20,7 @@
     "sources": [
       "skills/<skill-name>/SKILL.md",
       "skills/<skill-name>/agents/openai.yaml",
-      "templates/skill-sections.json",
+      "skills/skill-sections.json",
       "skills/ceratops-skill-lifecycle/references/contracts/skill-deterministic-contract.json",
       "skills/ceratops-skill-lifecycle/references/contracts/skill-contract-source-docs.json",
       "$CODEX_HOME/plugins/cache/openai-primary-runtime/*/*/skills/*/SKILL.md",

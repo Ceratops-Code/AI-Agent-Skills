@@ -1,0 +1,10 @@
+{
+  "runtime_source_id": "",
+  "validation_profile": "ceratops-compatible",
+  "sections": {
+    "core": "skills/sections/core.md"
+  },
+  "maintenance_workflows": {},
+  "runtime_payloads": {},
+  "skills": {}
+}

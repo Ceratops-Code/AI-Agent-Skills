@@ -36,7 +36,7 @@ installed-runtime surface.
   `references/contracts/skill-deterministic-contract.json`
 - Skill non-deterministic contract:
   `references/contracts/skill-nondeterministic-contract.json`
-- Compatible-repository section manifest: `templates/skill-sections.json`
+- Compatible-repository section manifest: `skills/skill-sections.json`
 
 ### Inputs To Capture
 
@@ -75,7 +75,7 @@ Infer missing inputs from the repository and installed manifests before asking.
 - Use `skills-contract-review` only when the standards contracts themselves
   require a best-practice refresh.
 - Exclude GitHub organization, repository, code, PR, artifact, registry, and
-  release contracts; route those to `$ceratops-gh-repo-lifecycle`
+  release contracts; route those to `$ceratops-repo-lifecycle`
   `contracts-review`.
 - Keep report-only as the default. Apply source, installer, runtime, or
   automation changes only when the user approved that exact scope.
@@ -170,6 +170,9 @@ Infer missing inputs from the repository and installed manifests before asking.
   worktree.
 - Update every producer and consumer together for an approved rename or
   ownership change; leave no aliases, old-name shims, or pointer artifacts.
+- Hand committed promotion, deployment, or shipping work to
+  `$ceratops-repo-lifecycle` instead of mutating repository lifecycle state
+  here.
 - Regenerate installed runtime or update installed automation prompts only when
   those external mutations are explicitly in scope.
 

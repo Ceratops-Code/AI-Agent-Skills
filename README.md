@@ -6,10 +6,10 @@ Reusable Ceratops skills for Codex and other `SKILL.md`-compatible agents.
 
 | Skill | Purpose |
 | --- | --- |
-| `ceratops-gh-repo-lifecycle` | Route GitHub repo lifecycle work across creation, contracts, CodeQL disposition, health, dependencies, PR shipping, and merge actions. |
+| `ceratops-repo-lifecycle` | Route repository lifecycle work across local promotion, structured deployment, guarded shipping, GitHub creation, contracts, health, dependencies, and PR merge actions. |
 | `ceratops-governance-lifecycle` | Route prompt optimization, advisory skill optimization, regression-safe instruction updates, and cross-scope governance consistency audits across action references. |
 | `ceratops-credit-savings-analysis` | Analyze recent Codex runs for avoidable credit spend and recommend low-maintenance controls. |
-| `ceratops-skill-lifecycle` | Route skill lifecycle work across create, make-repo-compatible, update, skills-contract-review, skills-consistency-review, fast-change, change-promotion, and ship-to-remote actions. |
+| `ceratops-skill-lifecycle` | Route skill-domain work across create, make-repo-compatible, update, skills-contract-review, and skills-consistency-review actions. |
 | `ceratops-automation-run` | Run recurring automations with shared Ceratops alert, memory, and completion policy. |
 | `ceratops-task-lifecycle` | Route task execution, same-thread resume, fix-loop break, handoff, and closure-check work across action references. |
 | `ceratops-code-consistency-audit` | Audit merged refactors for contradictions, docs drift, comment sufficiency, stale follow-through, and merged-only edge cases. |
@@ -20,7 +20,11 @@ Reusable Ceratops skills for Codex and other `SKILL.md`-compatible agents.
 assets/
   ceratops-logo-500.png
 skills/
-  <skill-name>/
+  skill-sections.json
+  sections/
+    core.md
+    multi-action-skill.md
+  ceratops-*/
     SKILL.md
     agents/openai.yaml
     assets/
@@ -28,16 +32,16 @@ skills/
     scripts/
     references/
       <action-or-contract-reference>
+deploy/
+  deploy.yml
 templates/
-  skill-sections.json
-  sections/
-    core.md
-    multi-action-skill.md
+  skill-sections-template.json
+  deploy-template.yml
 ```
 
 Source `SKILL.md` files are portable, delta-only skill definitions. Runtime
 `SKILL.md` files are generated during install by expanding the shared section
-assignments from `templates/skill-sections.json`.
+assignments from `skills/skill-sections.json`.
 That manifest also declares a stable `runtime_source_id`, unique among source
 repos that share an install root, and a
 `validation_profile`. Compatible external repos use `ceratops-compatible`;
@@ -46,6 +50,10 @@ retired-artifact, and repository-governance checks to the common full checks.
 Skill names are independent of the profile and need no `ceratops-` prefix.
 `core` is assigned to every skill; `multi-action-skill` is assigned only to
 skills that select among multiple action references.
+The `skills/` tree is authoritative skill source for this repository.
+`deploy/deploy.yml` is its authoritative structured deployment definition.
+Files under `templates/` are reusable skeletons to copy into other
+repositories, not live configuration.
 `agents/openai.yaml` is Codex UI metadata and may be ignored by other agents.
 Each Ceratops skill declares the runtime-local icon path
 `./assets/ceratops-logo-500.png`. The repo-root `assets/ceratops-logo-500.png`
@@ -53,7 +61,7 @@ is the source copied into each skill by the skill-lifecycle runtime installer.
 Reusable helper logic lives in skill-local lifecycle scripts under
 `skills/*/scripts/`, not in an installed Python package.
 Contract sources live inside their owning lifecycle skill.
-`skills/ceratops-gh-repo-lifecycle/references/` owns GitHub org, GitHub repo,
+`skills/ceratops-repo-lifecycle/references/` owns GitHub org, GitHub repo,
 repo-code, PR readiness, artifact, release, code-comment, and CodeQL disposition
 contracts. `skills/ceratops-skill-lifecycle/references/` owns
 skill-design contracts and skill source-doc tracking. The
@@ -86,38 +94,59 @@ without repository deduplication.
 | `skills/ceratops-task-lifecycle/scripts/closure_snapshot.py` | Emits one compact snapshot for explicitly named closure targets and optionally removes exact task-created files validated inside the task temp root. |
 | `skills/ceratops-governance-lifecycle/scripts/apply_rules_update.py` | Applies one approved coupled rules/history request with stale-text checks, shared validation, rollback, and compact output. |
 | `skills/ceratops-governance-lifecycle/scripts/rule_graph.py` | Parses canonical AGENTS rules and rejects structural syntax or rule-local explicit-user override escape clauses. |
-| `skills/ceratops-gh-repo-lifecycle/scripts/github_contract_engine/` | Package CLI for compact local audit snapshots, contract evaluation, shared GitHub API access, sanitized evidence, and evidence-gated CodeQL disposition. |
-| `skills/ceratops-gh-repo-lifecycle/scripts/github_pr_workflow/` | Package CLI for individual PR operations, caller-adapted dependency queues, and exact-commit checkpointed shipping with concurrent gates, reusable-branch restoration, and terminal same-PR checkpoint cleanup. |
+| `skills/ceratops-repo-lifecycle/scripts/github_contract_engine/` | Package CLI for compact local audit snapshots, contract evaluation, shared GitHub API access, sanitized evidence, and evidence-gated CodeQL disposition. |
+| `skills/ceratops-repo-lifecycle/scripts/github_pr_workflow/` | Package CLI for individual PR operations, exact-commit checkpointed shipping, a scoped pending-work pre-push guard, concurrent gates, integrated post-gate admin merge, reusable-branch restoration, and terminal checkpoint cleanup. Standalone merge behavior is unchanged. |
+| `skills/ceratops-repo-lifecycle/scripts/promote-repository.py` | Fast-forwards selected committed task branches into a local `release/*` branch and either stops or runs one named deployment operation. |
+| `skills/ceratops-repo-lifecycle/scripts/manage-pending-work.py` | Records, checks, and finalizes the exact selected branch and worktree scope used by promotion and shipping. |
+| `skills/ceratops-repo-lifecycle/scripts/run-deploy-operation.py` | Validates `deploy/deploy.yml` and executes one declared operation as ordered argv steps without a shell. |
+| `skills/ceratops-repo-lifecycle/scripts/ship-repository.py` | Orchestrates scoped pre-push checking, guarded GitHub shipping, main synchronization, a pre-deploy recheck, `after_ship`, and final selected-source recheck and cleanup. |
 | `skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py` | Source validator plus deterministic authoritative installer-version synchronization. |
-| `skills/ceratops-skill-lifecycle/scripts/promote-skill-branches-to-release-and-install.ps1` | Called by skill change-promotion to prepare `release/local`, fast-forward reviewed branches, type-check the assembled candidate, record its exact retention state, then validate, install, and emit compact ready/not-ready JSON. |
-| `skills/ceratops-skill-lifecycle/scripts/manage-pending-release-work.ps1` | Records exact promoted sources, performs cleanup-only checks, or terminally installs and verifies synchronized runtime before approved-source cleanup. |
 
 Lifecycle helpers suppress successful subcommand output and print only compact
 JSON on success. This repo keeps scripts only where they add reusable safety
 logic or bundle nontrivial evidence collection.
 
+Promotion and deployment are separate repository actions. `promote` assembles
+the selected branches into `release/*` without deployment;
+`promote-and-deploy` additionally runs the contract's `after_promote`
+operation. `run-operation` executes any explicitly named operation from the
+live contract. The runner never converts prose instructions into commands.
+
+`ship` takes either an exact pending-work scope or an explicit disabled-check
+mode. When enabled, the same generic scope is checked before the first remote
+push, after synchronization before deployment, and again before cleanup because
+local state can change while CI or deployment runs. Pre-push detection returns
+compact `pending_work` output with `remote_mutation: false`; later detection
+reports `remote_mutation: true` because the merge already occurred. The initial
+integrated ship request authorizes the complete workflow. Its final merge uses
+admin only after readiness, CI, Codex-review, and exact-head gates pass;
+standalone merge behavior remains unchanged.
+
 ## Contracts
 
 The contract structure is split by the owning lifecycle skill:
 
-- `skills/ceratops-gh-repo-lifecycle/references/contracts/github-contract-source-docs.json`
+- `deploy/deploy.yml` declares this repository's executable deployment
+  operations and is validated against
+  `skills/ceratops-repo-lifecycle/references/schemas/deploy-contract.schema.json`.
+- `skills/ceratops-repo-lifecycle/references/contracts/github-contract-source-docs.json`
   records official source documents and reference repositories used by GitHub,
   repo, PR readiness, code, and artifact contracts.
-- `skills/ceratops-gh-repo-lifecycle/references/contracts/github-org-deterministic-contract.json`
+- `skills/ceratops-repo-lifecycle/references/contracts/github-org-deterministic-contract.json`
   defines deterministic organization settings, policy, identity, security,
   Dependabot, and default-logo/custom-logo checks.
-- `skills/ceratops-gh-repo-lifecycle/references/contracts/github-repo-deterministic-contract.json`
+- `skills/ceratops-repo-lifecycle/references/contracts/github-repo-deterministic-contract.json`
   defines deterministic live GitHub repository settings, security,
   branch/ruleset, Actions policy, queues, releases, and stale GitHub state
   checks.
-- `skills/ceratops-gh-repo-lifecycle/references/contracts/github-pr-readiness-deterministic-contract.json`
+- `skills/ceratops-repo-lifecycle/references/contracts/github-pr-readiness-deterministic-contract.json`
   defines deterministic live PR readiness checks used before merge and
   auto-merge decisions.
-- `skills/ceratops-gh-repo-lifecycle/references/contracts/code-repo-deterministic-contract.json`
+- `skills/ceratops-repo-lifecycle/references/contracts/code-repo-deterministic-contract.json`
   defines deterministic repository-content checks for files, workflow text,
   Dependabot config, CODEOWNERS, local git state, local path references, and
   secret-pattern scans.
-- `skills/ceratops-gh-repo-lifecycle/references/contracts/artifact-deterministic-contract.json`
+- `skills/ceratops-repo-lifecycle/references/contracts/artifact-deterministic-contract.json`
   defines external artifact checks for PyPI, npm, DockerHub or OCI registries,
   GitHub Container Registry, GitHub releases, docs sites, and other package
   registries.
@@ -128,13 +157,13 @@ The contract structure is split by the owning lifecycle skill:
   defines deterministic Ceratops skill checks for source structure, resource
   layout, metadata, shared-section generation, runtime payloads, public docs,
   portability, and contract presence.
-- `skills/ceratops-gh-repo-lifecycle/references/contracts/*-nondeterministic-contract.json`
+- `skills/ceratops-repo-lifecycle/references/contracts/*-nondeterministic-contract.json`
   and
   `skills/ceratops-skill-lifecycle/references/contracts/*-nondeterministic-contract.json`
   files capture checks that need intent judgment, prose review, browser
   confirmation, or current-doc interpretation after bundled evidence is
   collected.
-- `skills/ceratops-gh-repo-lifecycle/references/schemas/` contains shared closed
+- `skills/ceratops-repo-lifecycle/references/schemas/` contains shared closed
   schemas for state, PR-readiness, non-deterministic, and source-registry
   contract families.
 
@@ -142,7 +171,7 @@ Run deterministic checks with bundled selections instead of one command per
 setting:
 
 ```powershell
-Push-Location .\skills\ceratops-gh-repo-lifecycle\scripts
+Push-Location .\skills\ceratops-repo-lifecycle\scripts
 python -m github_contract_engine audit-snapshot --repo-root ..\..\..
 python -m github_contract_engine validate org --org ORG --subset all
 python -m github_contract_engine validate repo --repo OWNER/REPO --surface repo --subset settings --local-repo-path PATH
@@ -179,7 +208,7 @@ alone is not a finding.
 Collect review evidence for non-deterministic checks with:
 
 ```powershell
-Push-Location .\skills\ceratops-gh-repo-lifecycle\scripts
+Push-Location .\skills\ceratops-repo-lifecycle\scripts
 python -m github_contract_engine collect --surface org --org ORG --json
 python -m github_contract_engine collect --surface repo --repo OWNER/REPO --local-repo-path PATH --json
 python -m github_contract_engine collect --surface code --repo OWNER/REPO --local-repo-path PATH --json
@@ -230,24 +259,24 @@ Common intended combinations:
 
 | Command Surface | Command Subset | Who Runs It |
 | --- | --- | --- |
-| org validator, implicit org surface | `settings` | `$ceratops-gh-repo-lifecycle` contracts-review for contract governance; health-audit only when org posture is part of a live health audit. |
-| org validator, implicit org surface | `actions` | `$ceratops-gh-repo-lifecycle` contracts-review for contract governance; health-audit only when org Actions posture is part of a live health audit. |
-| org validator, implicit org surface | `dependabot` | `$ceratops-gh-repo-lifecycle` contracts-review for contract governance; health-audit only when org Dependabot posture is part of a live health audit. |
-| org validator, implicit org surface | `security` | `$ceratops-gh-repo-lifecycle` contracts-review for contract governance; health-audit only when org security posture is part of a live health audit. |
-| org validator, implicit org surface | `all` | `$ceratops-gh-repo-lifecycle` contracts-review for contract governance; health-audit only for explicit broad org health. |
-| `repo` | `settings` | `$ceratops-gh-repo-lifecycle` contracts-review for contract governance; health-audit when live repo state is part of the task. |
-| `repo` + `code` via `--select repo:dependency --select code:dependency` | `dependency` | `$ceratops-gh-repo-lifecycle` dependency-maintenance action when both live GitHub dependency/security posture and repo-content dependency posture are in scope; health-audit action for dependency posture audits. |
-| `code` | `content` | `$ceratops-gh-repo-lifecycle` contracts-review for contract governance; health-audit or create-or-publish when repo contents are part of the task. |
-| `artifact` | `artifact` | `$ceratops-gh-repo-lifecycle` contracts-review for contract governance; health-audit or create-or-publish when a published artifact is part of the task. |
-| `all` | `create` | `$ceratops-gh-repo-lifecycle` create-or-publish action. |
-| `all` | `health` | `$ceratops-gh-repo-lifecycle` health-audit action; contracts-review only for broad contract governance. |
-| PR validator, implicit PR surface | none | `$ceratops-gh-repo-lifecycle` merge-pr or dependency-maintenance action, and `$ceratops-skill-lifecycle` ship-to-remote action before merge or auto-merge decisions. |
+| org validator, implicit org surface | `settings` | `$ceratops-repo-lifecycle` contracts-review for contract governance; health-audit only when org posture is part of a live health audit. |
+| org validator, implicit org surface | `actions` | `$ceratops-repo-lifecycle` contracts-review for contract governance; health-audit only when org Actions posture is part of a live health audit. |
+| org validator, implicit org surface | `dependabot` | `$ceratops-repo-lifecycle` contracts-review for contract governance; health-audit only when org Dependabot posture is part of a live health audit. |
+| org validator, implicit org surface | `security` | `$ceratops-repo-lifecycle` contracts-review for contract governance; health-audit only when org security posture is part of a live health audit. |
+| org validator, implicit org surface | `all` | `$ceratops-repo-lifecycle` contracts-review for contract governance; health-audit only for explicit broad org health. |
+| `repo` | `settings` | `$ceratops-repo-lifecycle` contracts-review for contract governance; health-audit when live repo state is part of the task. |
+| `repo` + `code` via `--select repo:dependency --select code:dependency` | `dependency` | `$ceratops-repo-lifecycle` dependency-maintenance action when both live GitHub dependency/security posture and repo-content dependency posture are in scope; health-audit action for dependency posture audits. |
+| `code` | `content` | `$ceratops-repo-lifecycle` contracts-review for contract governance; health-audit or create-or-publish when repo contents are part of the task. |
+| `artifact` | `artifact` | `$ceratops-repo-lifecycle` contracts-review for contract governance; health-audit or create-or-publish when a published artifact is part of the task. |
+| `all` | `create` | `$ceratops-repo-lifecycle` create-or-publish action. |
+| `all` | `health` | `$ceratops-repo-lifecycle` health-audit action; contracts-review only for broad contract governance. |
+| PR validator, implicit PR surface | none | `$ceratops-repo-lifecycle` ship, merge-pr, or dependency-maintenance action before merge or auto-merge decisions. |
 
 A successful mutation command is enough evidence for that exact mutation. Re-run
 a validator only for drift/audit work, uncertain state, broader closure claims,
 or checks not already proven by the successful command.
 
-`skills/ceratops-gh-repo-lifecycle/references/contracts/code-comment-nondeterministic-contract.json`
+`skills/ceratops-repo-lifecycle/references/contracts/code-comment-nondeterministic-contract.json`
 is a non-deterministic local review rubric for comment sufficiency. It avoids
 repeated live research during code-consistency audits and is not part of routine
 ongoing-work validation.
@@ -301,15 +330,12 @@ After changing the installed source snapshot, rerun `python
 scripts/install-skills.py --repo-root <repo>` so new, renamed, or deleted
 same-source managed skill folders match that snapshot.
 When shipping a staged batch, reuse the same `release/local` branch name locally
-and remotely by default. Use
-`promote-skill-branches-to-release-and-install.ps1` for reviewed local
-branch staging, `$ceratops-gh-repo-lifecycle` ship-change with
-`python -m github_pr_workflow ship --repo-root <repo> --head-branch
-release/local --reusable-head` for exact-commit PR publication, concurrent
-gates, merge, main sync, reusable-branch restoration, and same-PR checkpoint
-cleanup, then `manage-pending-release-work.ps1 -FinalizeShippedRelease` for the
-final runtime rebuild, verification, and approved-source cleanup from `main`.
-Skill installation remains outside the GitHub helper.
+and remotely by default. Use `$ceratops-repo-lifecycle` `promote` to assemble
+selected reviewed branches without installation, or `promote-and-deploy` to run
+the live contract's `after_promote` operation. Use `ship` for the complete
+scoped pre-push check, exact-commit PR publication, readiness and review gates,
+final merge, main synchronization, `after_ship`, late recheck, and
+selected-source cleanup workflow.
 
 Restart Codex after adding new skill folders if the app does not pick them up
 automatically.
@@ -342,6 +368,10 @@ python -m mypy
 python .\skills\ceratops-skill-lifecycle\scripts\skills-consistency-source-validator.py --mode full
 ```
 
+Full validation checks the live deployment contract, its repository-bounded
+working directories, required Ceratops operations, and both reusable template
+skeletons without executing deployment.
+
 Targeted installation validates only explicitly selected skills and their
 rendering inputs:
 
@@ -350,7 +380,7 @@ python .\skills\ceratops-skill-lifecycle\scripts\skills-consistency-source-valid
 ```
 
 Run section validation only when shared section source files or
-`templates/skill-sections.json` assignments changed:
+`skills/skill-sections.json` assignments changed:
 
 ```powershell
 python .\skills\ceratops-skill-lifecycle\scripts\skills-consistency-source-validator.py --mode sections
@@ -359,10 +389,10 @@ python .\skills\ceratops-skill-lifecycle\scripts\skills-consistency-source-valid
 The section mode validates that source skills are delta-only;
 `skills/ceratops-skill-lifecycle/scripts/runtime/managed_runtime_builder.py`
 performs runtime shared-section expansion during install.
-`templates/skill-sections.json` records the source validation commands selected
+`skills/skill-sections.json` records the source validation commands selected
 by each maintenance workflow.
 The runtime builder composes each runtime skill's shared block from
-`templates/skill-sections.json` and `templates/sections/`, and each generated
+`skills/skill-sections.json` and `skills/sections/`, and each generated
 runtime `SKILL.md` block includes section-source comments so the origin of every
 shared section stays visible in the installed skill copy. Full validation
 always checks manifest identity and profile, source skill structure,
@@ -380,7 +410,7 @@ With working
 GitHub auth, run
 `python -m github_contract_engine validate org` and
 `python -m github_contract_engine validate repo` from
-`skills/ceratops-gh-repo-lifecycle/scripts/` for deterministic GitHub, code,
+`skills/ceratops-repo-lifecycle/scripts/` for deterministic GitHub, code,
 and artifact contract checks.
 
 ## Releases

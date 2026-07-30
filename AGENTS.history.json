@@ -127,6 +127,17 @@
       "decision": "Remove project-to-global relation metadata while preserving each project rule's governing behavior.",
       "reason": "Rule relations now remain within one global, project, or skill scope.",
       "regression": "Preserve mandatory local enforcement, controlled checkout behavior, runtime helper ownership, concise style, and all same-project relation metadata."
+    },
+    {
+      "rules": [
+        "SKILLS-PREVIEW-01",
+        "SKILLS-CREATE-01",
+        "SKILLS-SHIP-02",
+        "SKILLS-DEPLOY-01"
+      ],
+      "decision": "Route local promotion and remote shipping through repository lifecycle and make deploy/deploy.yml the live executable deployment contract.",
+      "reason": "Git state transitions need one owner while each repository retains a deterministic deployment definition.",
+      "regression": "Do not install from task worktrees, ship from feature branches, execute prose runbooks, or lose post-merge main synchronization."
     }
   ]
 }
