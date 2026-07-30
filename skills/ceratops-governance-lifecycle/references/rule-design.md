@@ -40,16 +40,20 @@ conditions or actions can be named without weakening their interaction.
 
 A normative enumeration may name at most three members. For a larger set,
 state the common deciding property; when exact membership is operationally
-required, store the closed set in deterministic data or a helper.
+required, store the closed set in deterministic data or a helper. An exact
+larger enumeration may remain in a rule only when the user explicitly asks to
+add `self: list-heavy approved`.
 
 `self: gate` marks a rule that itself requires explicit user approval,
 confirmation, or choice before proceeding. Keep the current gate inventory in
 `AGENTS.md`, never in history.
 
-`self: exceeds-limit` and `self: list-heavy` are approved non-blocking debt,
-not structural failures. Their presence must match the current rule, remain an
-audit finding, and be removed when the underlying debt is fixed. Size status is
-deterministic; enumeration status requires focused semantic review.
+`self: exceeds-limit` marks approved non-blocking size debt. `self: list-heavy`
+marks an unresolved enumeration review. `self: list-heavy approved` is
+user-controlled current metadata, not debt or review; add or remove it only on
+explicit user instruction, otherwise ignore it and leave it unchanged. It
+remains valid while the rule remains list-heavy. Size status is deterministic;
+enumeration status requires focused semantic review.
 
 ## Relationships
 

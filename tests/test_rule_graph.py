@@ -15,7 +15,7 @@ SCRIPTS = (
 sys.path.insert(0, str(SCRIPTS))
 
 from apply_rules_update import ApplicationError, prepare  # noqa: E402
-from rule_graph import parse_rule_text  # noqa: E402
+from rule_graph import parse_rule_text, rule_source_summary  # noqa: E402
 
 
 class RuleGraphTests(unittest.TestCase):
@@ -103,12 +103,85 @@ class RuleGraphTests(unittest.TestCase):
 
         self.assertEqual(parsed.findings, [])
 
+    def test_list_heavy_approved_is_metadata_not_debt_or_review(self):
+        parsed = parse_rule_text(
+            "- [LOCAL-01] Preserve the approved exact enumeration.\n"
+            "  - self: list-heavy approved\n",
+            "AGENTS.md",
+        )
+
+        self.assertEqual(parsed.findings, [])
+        self.assertEqual(parsed.debts, [])
+        self.assertEqual(parsed.semantic_reviews, [])
+
+    def test_plain_list_heavy_is_review_not_debt(self):
+        parsed = parse_rule_text(
+            "- [LOCAL-01] Review the exact enumeration.\n"
+            "  - self: list-heavy\n",
+            "AGENTS.md",
+        )
+
+        self.assertEqual(parsed.findings, [])
+        self.assertEqual(parsed.debts, [])
+        self.assertEqual(
+            [review["code"] for review in parsed.semantic_reviews],
+            ["list-heavy"],
+        )
+
+    def test_plain_and_approved_list_heavy_statuses_conflict(self):
+        parsed = parse_rule_text(
+            "- [LOCAL-01] Reject conflicting enumeration statuses.\n"
+            "  - self: list-heavy, list-heavy approved\n",
+            "AGENTS.md",
+        )
+
+        self.assertEqual(
+            [finding["code"] for finding in parsed.findings],
+            ["conflicting_self_statuses"],
+        )
+        self.assertEqual(parsed.debts, [])
+        self.assertEqual(parsed.semantic_reviews, [])
+
+    def test_list_heavy_approved_is_in_summary_inventory_not_counts(self):
+        parsed = parse_rule_text(
+            "- [LOCAL-01] Preserve the approved exact enumeration.\n"
+            "  - self: list-heavy approved\n",
+            "AGENTS.md",
+        )
+
+        summary = rule_source_summary(parsed)
+
+        self.assertEqual(
+            summary["approved_statuses"],
+            {"list-heavy approved": ["LOCAL-01"]},
+        )
+        self.assertEqual(summary["approved_debt"]["count"], 0)
+        self.assertEqual(summary["semantic_reviews"]["count"], 0)
+
     def test_rules_update_can_repair_an_invalid_current_stack(self):
         current = (
             "- [LOCAL-01] Use the selected mechanism unless the user "
             "explicitly asks otherwise.\n"
         )
         replacement = "- [LOCAL-01] Use the selected mechanism.\n"
+        with tempfile.TemporaryDirectory() as directory:
+            request, local_rules = self.rules_update_request(
+                pathlib.Path(directory), current, replacement
+            )
+
+            update = prepare(request)
+
+        self.assertEqual(
+            update.candidates[local_rules.resolve()],
+            replacement.encode(),
+        )
+
+    def test_rules_update_accepts_list_heavy_approved_metadata(self):
+        current = "- [LOCAL-01] Preserve the exact enumeration.\n"
+        replacement = (
+            "- [LOCAL-01] Preserve the exact enumeration.\n"
+            "  - self: list-heavy approved\n"
+        )
         with tempfile.TemporaryDirectory() as directory:
             request, local_rules = self.rules_update_request(
                 pathlib.Path(directory), current, replacement

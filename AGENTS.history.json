@@ -107,6 +107,14 @@
       "decision": "Keep governance recommendations advisory without a rule-local user-authorization clause.",
       "reason": "Global authorization and advisory-turn rules already govern when a proposed change may be applied.",
       "regression": "Recommendations alone must not mutate instruction, automation, skill, or helper-contract state."
+    },
+    {
+      "rules": [
+        "SKILLS-SHIP-03"
+      ],
+      "decision": "Pre-approve GitHub communication and review-state writes required by the active Ceratops workflow.",
+      "reason": "An explicitly selected Ceratops workflow is the repository's trusted owner for its required GitHub actions.",
+      "regression": "Do not request separate approval for a required Ceratops GitHub write or extend this authorization to unrelated workflows."
     }
   ]
 }

@@ -81,11 +81,9 @@ when the projects root remains ambiguous.
 - Review config- and prompt-level credit waste without inferring actual usage or
   billing when saved local evidence is absent.
 - Do not treat portable variables or relative paths alone as contradictions.
-- Treat [rule-design.md](rule-design.md) as the only prose rule-graph standard;
-  helpers implement its closed syntax and audit prompts must not redefine it.
-- Treat accurate `self: exceeds-limit` and `self: list-heavy` statuses as
-  approved non-blocking debt that remains reportable until the underlying rule
-  is corrected. Treat `self: gate` as current rule metadata, not debt.
+- Apply [rule-design.md](rule-design.md) as the only prose rule-graph and
+  status-classification standard; helpers enforce its closed syntax, and audit
+  prompts must not redefine it.
 
 ### Accepted Exceptions
 
@@ -129,14 +127,9 @@ when the projects root remains ambiguous.
 
 ### 3. Review governance consistency
 
-- Accept deterministic findings for rule syntax, IDs, metadata placement,
-  targets, duplicates, size status, cycles, history schema, and stack legality.
-  Review each rule body once for semantic rule form, enumeration, gate
-  classification, and `self` accuracy without performing pairwise comparison.
-- Use focused semantic review to detect missing, unnecessary, mistyped,
-  misdirected, or incompatible relations and to assess `list-heavy`,
-  `overlaps`, `conflicts`, and non-override cycles. Keep unresolved review edges
-  as findings.
+- Apply the deterministic and semantic-review boundaries in
+  [rule-design.md](rule-design.md); review each rule body once without pairwise
+  comparison and keep unresolved review edges as findings.
 - Build relation candidates from sections, explicit ID references, semantic
   similarity, deterministic findings, and direct neighbors. Deep-read only
   those candidate pairs; do not compare every possible rule pair.

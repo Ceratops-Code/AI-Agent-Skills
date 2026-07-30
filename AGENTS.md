@@ -53,6 +53,8 @@ Project-specific rules for this skills repository.
 - [SKILLS-BATCH-01] Treat an explicit request to promote or ship a named
   `release/*` branch as authorization for every commit currently on that
   branch; do not request per-commit inclusion confirmation.
+- [SKILLS-SHIP-03] Treat GitHub replies, thread resolutions, and review
+  submissions required by the active Ceratops workflow as pre-approved.
 
 ## Instruction and skill maintenance
 
