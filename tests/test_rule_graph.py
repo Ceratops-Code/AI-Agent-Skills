@@ -142,7 +142,7 @@ class RuleGraphTests(unittest.TestCase):
         self.assertEqual(parsed.debts, [])
         self.assertEqual(parsed.semantic_reviews, [])
 
-    def test_list_heavy_approved_is_omitted_from_summary_counts(self):
+    def test_list_heavy_approved_is_in_summary_inventory_not_counts(self):
         parsed = parse_rule_text(
             "- [LOCAL-01] Preserve the approved exact enumeration.\n"
             "  - self: list-heavy approved\n",
@@ -151,6 +151,10 @@ class RuleGraphTests(unittest.TestCase):
 
         summary = rule_source_summary(parsed)
 
+        self.assertEqual(
+            summary["approved_statuses"],
+            {"list-heavy approved": ["LOCAL-01"]},
+        )
         self.assertEqual(summary["approved_debt"]["count"], 0)
         self.assertEqual(summary["semantic_reviews"]["count"], 0)
 

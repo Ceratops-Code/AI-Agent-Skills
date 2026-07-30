@@ -621,6 +621,13 @@ def rule_source_summary(source: ParsedRuleSource) -> dict[str, Any]:
             for record in source.records
             if "gate" in record.self_statuses
         ),
+        "approved_statuses": {
+            "list-heavy approved": sorted(
+                record.rule_id
+                for record in source.records
+                if "list-heavy approved" in record.self_statuses
+            )
+        },
         "findings": compact(source.findings),
         "approved_debt": compact(source.debts),
         "semantic_reviews": compact(source.semantic_reviews),
