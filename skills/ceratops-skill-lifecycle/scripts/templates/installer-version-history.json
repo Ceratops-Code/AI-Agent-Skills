@@ -4,6 +4,10 @@
     {
       "version": 4,
       "behavior_sha256": "9729c35ceaa4de25f0360abd010a0108b709fa437e47fb06eac4ad9316eb8387"
+    },
+    {
+      "version": 5,
+      "behavior_sha256": "2db6628218652a89dadc190dc874bc5bf3037db4f1e4e907ee5790316699e6bc"
     }
   ]
 }

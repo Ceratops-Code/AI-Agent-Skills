@@ -35,7 +35,7 @@ MODEL_CALL_LEDGER = ROOT / "skills" / "ceratops-credit-savings-analysis" / "scri
 CLOSURE_SNAPSHOT = ROOT / "skills" / "ceratops-task-lifecycle" / "scripts" / "closure_snapshot.py"
 RUNTIME_MANIFEST = ".runtime-manifest.json"
 RUNTIME_MANIFEST_SCHEMA = "ceratops-runtime-skill.v3"
-INSTALLER_VERSION = 4
+INSTALLER_VERSION = 5
 
 
 def test_model_call_ledger_keeps_full_evidence_out_of_stdout(
@@ -1471,8 +1471,9 @@ def test_full_validation_excludes_git_ignored_files(tmp_path: pathlib.Path) -> N
     )
     for ignored_dir in (repo / ".venv", repo / "ignored-output"):
         ignored_dir.mkdir()
+        private_path = chr(92).join(("C:", "Users", "fixture", "generated"))
         (ignored_dir / "generated.md").write_text(
-            "C:\\Users\\roman\\generated\nUse $" + "unknown-skill.\n",
+            f"{private_path}\nUse $" + "unknown-skill.\n",
             encoding="utf-8",
             newline="\n",
         )
@@ -1492,8 +1493,9 @@ def test_full_validation_scans_manifest_runtime_inputs_only(tmp_path: pathlib.Pa
     repo = tmp_path / "compatible"
     create_compatible_repo(repo, "example/compatible", ["alpha-tool"])
     runtime_input = repo / "runtime-note.md"
+    private_path = chr(92).join(("C:", "Users", "fixture", "private-source"))
     runtime_input.write_text(
-        "Generated from C:\\Users\\roman\\private-source.\n",
+        f"Generated from {private_path}.\n",
         encoding="utf-8",
         newline="\n",
     )
@@ -1620,7 +1622,47 @@ def test_bootstrap_prefers_installed_bundle_for_external_repo(tmp_path: pathlib.
     assert runtime_owner(install_root, "alpha-tool") == "example/external"
 
 
-def test_bootstrap_falls_back_to_checkout_for_first_install(tmp_path: pathlib.Path) -> None:
+def test_bootstrap_prefers_ceratops_checkout_over_same_version_installed_bundle(
+    tmp_path: pathlib.Path,
+) -> None:
+    codex_home = tmp_path / "codex-home"
+    install_root = tmp_path / "installed"
+    installed_bundle = codex_home / "skills" / "ceratops-skill-lifecycle"
+    shutil.copytree(LIFECYCLE_SOURCE, installed_bundle)
+    install_bundle_manifest(installed_bundle)
+    installed_validator = (
+        installed_bundle / "scripts" / "skills-consistency-source-validator.py"
+    )
+    installed_validator.write_text(
+        "raise SystemExit('retired references/skill-source-docs.json was requested')\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(BOOTSTRAP),
+            "--repo-root",
+            str(ROOT),
+            "--install-root",
+            str(install_root),
+            "--skill",
+            "ceratops-skill-lifecycle",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={**os.environ, "CODEX_HOME": str(codex_home)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert runtime_owner(install_root, "ceratops-skill-lifecycle") == (
+        "Ceratops-Code/AI-Agent-Skills"
+    )
+
+
+def test_bootstrap_uses_checkout_for_first_install(tmp_path: pathlib.Path) -> None:
     codex_home = tmp_path / "empty-codex-home"
     install_root = tmp_path / "installed"
     env = {**os.environ, "CODEX_HOME": str(codex_home)}
@@ -1824,7 +1866,7 @@ def test_installer_behavior_fingerprint_is_python_version_stable() -> None:
     fingerprint = validator["installer_behavior_fingerprint"]
 
     assert fingerprint(INSTALLER_TEMPLATE) == (
-        "9729c35ceaa4de25f0360abd010a0108b709fa437e47fb06eac4ad9316eb8387"
+        "2db6628218652a89dadc190dc874bc5bf3037db4f1e4e907ee5790316699e6bc"
     )
 
 

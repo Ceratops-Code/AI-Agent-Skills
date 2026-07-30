@@ -62,7 +62,7 @@ def main() -> int:
         print(f"missing skills directory: {repo_root / 'skills'}", file=sys.stderr)
         return 1
     if not VALIDATOR.is_file() or not BUILDER.is_file():
-        print("installed lifecycle bundle is incomplete", file=sys.stderr)
+        print("selected lifecycle bundle is incomplete", file=sys.stderr)
         return 1
 
     known_skills = source_skill_names(repo_root)

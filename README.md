@@ -77,8 +77,8 @@ without repository deduplication.
 | --- | --- |
 | `scripts/install-skills.py` | Versioned repository bootstrap that delegates validation and installation to the supported lifecycle bundle. |
 | `skills/ceratops-skill-lifecycle/scripts/templates/install-skills-template.py` | Authoritative installer copied into compatible repositories as `scripts/install-skills.py`; consistency compares only `INSTALLER_VERSION`. |
-| `skills/ceratops-skill-lifecycle/scripts/runtime/install-managed-skills.py` | Installed source-scoped runtime installer; full installs run full source validation and same-source stale cleanup, while targeted installs validate only selected skills and remove no stale folders. |
-| `skills/ceratops-skill-lifecycle/scripts/runtime/resolve-lifecycle-bundle.py` | Installed-first resolver with target-checkout fallback only for the initial Ceratops installation. |
+| `skills/ceratops-skill-lifecycle/scripts/runtime/install-managed-skills.py` | Selected source-scoped runtime installer; full installs run full source validation and same-source stale cleanup, while targeted installs validate only selected skills and remove no stale folders. |
+| `skills/ceratops-skill-lifecycle/scripts/runtime/resolve-lifecycle-bundle.py` | Source-checkout resolver for the Ceratops repository and installed-bundle resolver for other compatible repositories. |
 | `skills/ceratops-skill-lifecycle/scripts/runtime/synchronize-installers.py` | Copies the authoritative installer into an approved task worktree only when its parsed version is missing or lower, then runs full validation. |
 | `skills/ceratops-skill-lifecycle/scripts/runtime/skills-consistency-runtime-validator.py` | Inventories direct managed runtime manifests or validates one selected skill after deriving its source repository, including identity, installer version, and complete managed-file comparison. |
 | `skills/ceratops-skill-lifecycle/scripts/runtime/managed_runtime_builder.py` | Canonical managed-runtime builder used for installation and expected-tree generation. |
@@ -121,9 +121,9 @@ The contract structure is split by the owning lifecycle skill:
   defines external artifact checks for PyPI, npm, DockerHub or OCI registries,
   GitHub Container Registry, GitHub releases, docs sites, and other package
   registries.
-- `skills/ceratops-skill-lifecycle/references/contracts/skill-contract-source-docs.json` records
-  official skill-standard documents and installed OpenAI skill references used
-  by skill-design contracts.
+- `skills/ceratops-skill-lifecycle/references/contracts/skill-contract-source-docs.json`
+  records official skill-standard documents and installed OpenAI skill
+  references used by skill-design contracts.
 - `skills/ceratops-skill-lifecycle/references/contracts/skill-deterministic-contract.json`
   defines deterministic Ceratops skill checks for source structure, resource
   layout, metadata, shared-section generation, runtime payloads, public docs,
@@ -285,8 +285,8 @@ For another Ceratops-compatible repo, run its versioned repository installer:
 python <target-repo>\scripts\install-skills.py --repo-root <target-repo>
 ```
 
-The repository bootstrap prefers the supported installed lifecycle bundle and
-uses the target checkout's bundle only for the initial Ceratops installation.
+The Ceratops source repository bootstrap uses its checkout lifecycle bundle.
+Other compatible repositories prefer a supported installed lifecycle bundle.
 An install without `--skill` runs full source validation, refreshes all source
 skills, and removes only stale folders with the same `runtime_source_id`. An
 explicit `--skill` validates and installs only the selected skills and performs

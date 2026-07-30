@@ -4,7 +4,7 @@
 The Ceratops lifecycle bundle owns the authoritative template for this
 bootstrap. Compatible repositories carry it as ``scripts/install-skills.py``.
 Keep repository-specific behavior out of this file: validation, rendering,
-ownership checks, and stale cleanup belong to the installed lifecycle bundle.
+ownership checks, and stale cleanup belong to the selected lifecycle bundle.
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ import subprocess
 import sys
 
 
-INSTALLER_VERSION = 4
+INSTALLER_VERSION = 5
 LIFECYCLE_SKILL = "ceratops-skill-lifecycle"
 RESOLVER_RELATIVE = pathlib.Path("scripts/runtime/resolve-lifecycle-bundle.py")
 INSTALLER_RELATIVE = pathlib.Path("scripts/runtime/install-managed-skills.py")
@@ -30,8 +30,28 @@ def codex_skills_root() -> pathlib.Path:
     return pathlib.Path(codex_home).expanduser() / "skills" if codex_home else pathlib.Path.home() / ".codex" / "skills"
 
 
+def checkout_is_ceratops(repo_root: pathlib.Path) -> bool:
+    """Identify the Ceratops source repository from its section manifest."""
+
+    try:
+        manifest = json.loads(
+            (repo_root / "templates" / "skill-sections.json").read_text(encoding="utf-8")
+        )
+    except (OSError, json.JSONDecodeError):
+        return False
+    return isinstance(manifest, dict) and manifest.get("validation_profile") == "ceratops"
+
+
 def resolver_path(repo_root: pathlib.Path) -> pathlib.Path:
-    """Use a capable installed resolver or the newer Ceratops source resolver."""
+    """Keep Ceratops source and validator together; use installed elsewhere."""
+
+    checkout = repo_root / "skills" / LIFECYCLE_SKILL / RESOLVER_RELATIVE
+    if checkout_is_ceratops(repo_root):
+        if checkout.is_file():
+            return checkout
+        raise FileNotFoundError(
+            "The Ceratops source repository lifecycle resolver is missing."
+        )
 
     installed_bundle = codex_skills_root() / LIFECYCLE_SKILL
     installed = installed_bundle / RESOLVER_RELATIVE
@@ -48,15 +68,11 @@ def resolver_path(repo_root: pathlib.Path) -> pathlib.Path:
     if installed.is_file() and installed_version >= INSTALLER_VERSION:
         return installed
 
-    checkout = repo_root / "skills" / LIFECYCLE_SKILL / RESOLVER_RELATIVE
-    if checkout.is_file():
-        return checkout
     if installed.is_file():
         return installed
 
     raise FileNotFoundError(
-        "A supported installed ceratops-skill-lifecycle bundle is required. "
-        "Only the Ceratops source repository can bootstrap the first installation."
+        "A supported installed ceratops-skill-lifecycle bundle is required."
     )
 
 

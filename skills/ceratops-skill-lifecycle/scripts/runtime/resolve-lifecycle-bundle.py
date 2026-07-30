@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """Resolve the lifecycle helper bundle for one repository installation.
 
-An installed schema-compatible bundle is authoritative. The target checkout is
-accepted only when it is the Ceratops source repository bootstrapping its first
-supported runtime copy.
+The Ceratops source repository uses its complete checkout bundle. Other
+compatible repositories use a schema-compatible installed bundle.
 """
 
 from __future__ import annotations
@@ -71,26 +70,30 @@ def installed_bundle_supported(bundle_root: pathlib.Path, installer_version: int
 
 
 def checkout_is_ceratops(repo_root: pathlib.Path) -> bool:
-    """Allow checkout fallback only for the Ceratops source repository."""
+    """Identify the Ceratops source repository from its section manifest."""
 
     manifest = read_json(repo_root / "templates" / "skill-sections.json")
     return manifest is not None and manifest.get("validation_profile") == "ceratops"
 
 
 def resolve_bundle(repo_root: pathlib.Path, installer_version: int) -> pathlib.Path:
-    """Select the installed bundle or the single permitted bootstrap fallback."""
+    """Select the source checkout for Ceratops or an installed bundle elsewhere."""
+
+    checkout = repo_root / "skills" / LIFECYCLE_SKILL
+    if checkout_is_ceratops(repo_root):
+        if bundle_files_present(checkout):
+            return checkout.resolve()
+        raise RuntimeError(
+            "The Ceratops source repository lifecycle bundle is incomplete."
+        )
 
     installed = codex_skills_root() / LIFECYCLE_SKILL
     if installed_bundle_supported(installed, installer_version):
         return installed.resolve()
 
-    checkout = repo_root / "skills" / LIFECYCLE_SKILL
-    if checkout_is_ceratops(repo_root) and bundle_files_present(checkout):
-        return checkout.resolve()
-
     raise RuntimeError(
-        "The installed ceratops-skill-lifecycle bundle does not support this installer version, "
-        "and checkout fallback is allowed only for the initial Ceratops installation."
+        "The installed ceratops-skill-lifecycle bundle does not support this "
+        "installer version."
     )
 
 
