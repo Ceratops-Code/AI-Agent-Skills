@@ -156,7 +156,7 @@
       "id": "ND.sources.current-doc-recheck",
       "applies_when": "Registry availability, trusted publishing, provenance, or paid and free behavior affects the result.",
       "review_required": "Recheck official GitHub or registry documentation before deciding drift.",
-      "evidence_keys": ["contract-source-docs.json"]
+      "evidence_keys": ["github-contract-source-docs.json"]
     }
   ]
 }

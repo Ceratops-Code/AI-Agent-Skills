@@ -65,7 +65,7 @@
       "id": "ND.github.sources-current-doc-recheck",
       "applies_when": "Feature availability, paid status, or API behavior matters and local evidence is ambiguous.",
       "review_required": "Recheck official GitHub documentation or gh help before deciding drift.",
-      "evidence_keys": ["contract-source-docs.json"]
+      "evidence_keys": ["github-contract-source-docs.json"]
     },
     {
       "id": "ND.reference-repo.comparator-only",

@@ -1,9 +1,10 @@
 """Check the contract source-doc registry with one compact fallback path.
 
-Contracts review uses `references/contract-source-docs.json` as the bounded
+Contracts review uses
+`references/contracts/github-contract-source-docs.json` as the bounded
 official-source list. This helper checks those URLs once, falls back to `curl`
-only when Python's transport layer fails, and emits compact results so reviewers
-do not spend turns retrying the same URL with ad hoc commands.
+only when Python's transport layer fails, and emits compact results so
+reviewers do not spend turns retrying the same URL with ad hoc commands.
 """
 
 from __future__ import annotations
@@ -31,15 +32,36 @@ def default_registry_path() -> pathlib.Path:
     skill_dir = scripts_dir.parent
     repo_root = skill_dir.parents[1] if skill_dir.parent.name == "skills" else skill_dir
     candidates = [
-        pathlib.Path.cwd() / "references" / "contract-source-docs.json",
-        pathlib.Path.cwd() / "skills" / "ceratops-gh-repo-lifecycle" / "references" / "contract-source-docs.json",
-        repo_root / "skills" / "ceratops-gh-repo-lifecycle" / "references" / "contract-source-docs.json",
-        skill_dir / "references" / "contract-source-docs.json",
+        pathlib.Path.cwd()
+        / "references"
+        / "contracts"
+        / "github-contract-source-docs.json",
+        pathlib.Path.cwd()
+        / "skills"
+        / "ceratops-gh-repo-lifecycle"
+        / "references"
+        / "contracts"
+        / "github-contract-source-docs.json",
+        repo_root
+        / "skills"
+        / "ceratops-gh-repo-lifecycle"
+        / "references"
+        / "contracts"
+        / "github-contract-source-docs.json",
+        skill_dir
+        / "references"
+        / "contracts"
+        / "github-contract-source-docs.json",
     ]
     for candidate in candidates:
         if candidate.is_file():
             return candidate
-    return skill_dir / "references" / "contract-source-docs.json"
+    return (
+        skill_dir
+        / "references"
+        / "contracts"
+        / "github-contract-source-docs.json"
+    )
 
 
 def load_registry(path: pathlib.Path) -> list[dict[str, Any]]:

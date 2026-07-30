@@ -100,7 +100,7 @@ logic or bundle nontrivial evidence collection.
 
 The contract structure is split by the owning lifecycle skill:
 
-- `skills/ceratops-gh-repo-lifecycle/references/contract-source-docs.json`
+- `skills/ceratops-gh-repo-lifecycle/references/contracts/github-contract-source-docs.json`
   records official source documents and reference repositories used by GitHub,
   repo, PR readiness, code, and artifact contracts.
 - `skills/ceratops-gh-repo-lifecycle/references/contracts/github-org-deterministic-contract.json`
@@ -121,7 +121,7 @@ The contract structure is split by the owning lifecycle skill:
   defines external artifact checks for PyPI, npm, DockerHub or OCI registries,
   GitHub Container Registry, GitHub releases, docs sites, and other package
   registries.
-- `skills/ceratops-skill-lifecycle/references/skill-source-docs.json` records
+- `skills/ceratops-skill-lifecycle/references/contracts/skill-contract-source-docs.json` records
   official skill-standard documents and installed OpenAI skill references used
   by skill-design contracts.
 - `skills/ceratops-skill-lifecycle/references/contracts/skill-deterministic-contract.json`

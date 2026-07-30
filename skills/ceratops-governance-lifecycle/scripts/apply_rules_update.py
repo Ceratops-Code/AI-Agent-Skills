@@ -2,10 +2,12 @@
 """Apply one approved, mechanically validated rules/history transaction.
 
 The UTF-8 JSON request has the closed top-level fields ``version``,
-``rule_stack``, ``rule_replacements``, and ``history_operations``. Paths are
-resolved from the caller's working directory. Each replacement names its rules
-source, companion history source, exact expected-old text, and exact replacement
-text. History operations support only an approved ``append`` entry.
+``rule_stack``, ``rule_replacements``, and ``history_operations``.
+``rule_stack`` lists the global source first and every source in one complete
+project scope after it. Paths are resolved from the caller's working directory.
+Each replacement names its rules source, companion history source, exact
+expected-old text, and exact replacement text. History operations support only
+an approved ``append`` entry.
 
 This helper owns stale-text detection, structural validation, change coverage,
 and rollback-protected writes. It does not establish semantic equivalence; the
@@ -30,6 +32,7 @@ from rule_graph import (
     HISTORY_VERSION,
     ParsedRuleSource,
     RuleRecord,
+    instruction_scope_map,
     load_history_source,
     parse_history_text,
     parse_rule_text,
@@ -179,7 +182,7 @@ def validate_stack_texts(
     label: str,
     allow_findings: bool = False,
 ) -> tuple[list[ParsedRuleSource], dict[str, Any], set[str]]:
-    """Run the shared source and graph validators over one effective stack."""
+    """Run shared validators over one global-plus-project instruction unit."""
     parsed = [
         parse_rule_text(texts[path], str(path))
         for path in stack_paths
@@ -187,7 +190,13 @@ def validate_stack_texts(
     for source in parsed:
         if source.findings and not allow_findings:
             raise ApplicationError(finding_text(label, source.findings[0]))
-    validation = validate_rule_stack(parsed, global_source=str(stack_paths[0]))
+    validation = validate_rule_stack(
+        parsed,
+        scope_by_source=instruction_scope_map(
+            parsed,
+            global_source=str(stack_paths[0]),
+        ),
+    )
     findings = cast(list[dict[str, object]], validation["findings"])
     if findings and not allow_findings:
         raise ApplicationError(finding_text(label, findings[0]))

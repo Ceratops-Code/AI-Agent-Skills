@@ -24,7 +24,7 @@
     "repo",
     "workflow"
   ],
-  "source_docs_ref": "contract-source-docs.json",
+  "source_docs_ref": "github-contract-source-docs.json",
   "source_doc_scopes": [
     "org"
   ],
@@ -1076,8 +1076,8 @@
       "endpoint": "/orgs/${org_login}/settings/immutable-releases",
       "method": "GET",
       "source_lines": [
-        "contract-source-docs.json:github.rest.orgs",
-        "contract-source-docs.json:github.concepts.immutable_releases"
+        "github-contract-source-docs.json:github.rest.orgs",
+        "github-contract-source-docs.json:github.concepts.immutable_releases"
       ],
       "desired": {
         "enforced_repositories": "all"
@@ -1096,8 +1096,8 @@
       "endpoint": "/orgs/${org_login}/settings/immutable-releases/repositories",
       "method": "GET",
       "source_lines": [
-        "contract-source-docs.json:github.rest.orgs",
-        "contract-source-docs.json:github.concepts.immutable_releases"
+        "github-contract-source-docs.json:github.rest.orgs",
+        "github-contract-source-docs.json:github.concepts.immutable_releases"
       ],
       "desired": {
         "status": 409,

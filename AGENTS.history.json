@@ -115,6 +115,18 @@
       "decision": "Pre-approve GitHub communication and review-state writes required by the active Ceratops workflow.",
       "reason": "An explicitly selected Ceratops workflow is the repository's trusted owner for its required GitHub actions.",
       "regression": "Do not request separate approval for a required Ceratops GitHub write or extend this authorization to unrelated workflows."
+    },
+    {
+      "rules": [
+        "SKILLS-ENF-01",
+        "SKILLS-ENF-02",
+        "SKILLS-CHECKOUT-01",
+        "SKILLS-RUNTIME-01",
+        "SKILLS-STYLE-01"
+      ],
+      "decision": "Remove project-to-global relation metadata while preserving each project rule's governing behavior.",
+      "reason": "Rule relations now remain within one global, project, or skill scope.",
+      "regression": "Preserve mandatory local enforcement, controlled checkout behavior, runtime helper ownership, concise style, and all same-project relation metadata."
     }
   ]
 }

@@ -38,7 +38,7 @@ SCHEMA_ASSIGNMENTS = {
         CONTRACTS / "code-comment-nondeterministic-contract.json",
     ),
     SCHEMAS / "source-doc-registry.schema.json": (
-        REFERENCES / "contract-source-docs.json",
+        CONTRACTS / "github-contract-source-docs.json",
     ),
 }
 

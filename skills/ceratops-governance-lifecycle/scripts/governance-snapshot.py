@@ -406,14 +406,6 @@ def classify_force_definitions(text: str) -> dict[str, bool]:
     }
 
 
-def _path_is_within(path: pathlib.Path, parent: pathlib.Path) -> bool:
-    try:
-        path.resolve().relative_to(parent.resolve())
-        return True
-    except ValueError:
-        return False
-
-
 def _history_inventory(
     path: pathlib.Path,
 ) -> dict[str, object]:
@@ -460,20 +452,49 @@ def _compact_edges(edges: list[dict[str, object]]) -> list[dict[str, object]]:
         item: dict[str, object] = {
             key: edge[key] for key in ("source", "relation", "target")
         }
-        if edge.get("source_file") != edge.get("target_file"):
+        if edge.get("cross_scope") is True:
             item["cross_scope"] = True
         compact.append(item)
     return compact
 
 
+def _project_scope_root(
+    path: pathlib.Path, projects_root: pathlib.Path
+) -> pathlib.Path:
+    """Resolve one local AGENTS file to its Git or root-child project."""
+
+    git_root, _ = run_git(path.parent, "rev-parse", "--show-toplevel")
+    if git_root:
+        return pathlib.Path(git_root).resolve()
+    resolved_root = projects_root.resolve()
+    try:
+        relative = path.resolve().relative_to(resolved_root)
+    except ValueError:
+        return path.parent.resolve()
+    return (
+        (resolved_root / relative.parts[0]).resolve()
+        if relative.parts
+        else resolved_root
+    )
+
+
 def agents_rule_graph_inventory(
     projects_root: pathlib.Path, codex_home: pathlib.Path
 ) -> dict[str, object]:
-    """Validate every global-to-local AGENTS stack against one graph parser."""
+    """Validate global and complete project AGENTS scopes with one parser."""
     paths = list(iter_agents(projects_root, codex_home))
     global_path = (codex_home / "AGENTS.md").resolve()
     parsed = {path.resolve(): parse_rule_source(path) for path in paths}
     local_paths = sorted(path for path in parsed if path != global_path)
+    project_root_by_path = {
+        path: _project_scope_root(path, projects_root)
+        for path in local_paths
+    }
+    project_paths: dict[pathlib.Path, list[pathlib.Path]] = {}
+    for path, project_root in project_root_by_path.items():
+        project_paths.setdefault(project_root, []).append(path)
+    for grouped_paths in project_paths.values():
+        grouped_paths.sort()
     file_items: list[dict[str, Any]] = []
     stacks: list[dict[str, Any]] = []
 
@@ -484,7 +505,8 @@ def agents_rule_graph_inventory(
         global_summary["history"] = _history_inventory(global_path)
         file_items.append(global_summary)
         global_validation = validate_rule_stack(
-            [global_source], global_source=global_source.source
+            [global_source],
+            scope_by_source={global_source.source: "global"},
         )
         global_validation["edges"] = _compact_edges(global_validation["edges"])
         global_validation["path"] = str(global_path)
@@ -492,15 +514,10 @@ def agents_rule_graph_inventory(
         stacks.append(global_validation)
 
     for path in local_paths:
-        ancestor_paths = sorted(
-            (
-                candidate
-                for candidate in local_paths
-                if _path_is_within(path.parent, candidate.parent)
-            ),
-            key=lambda candidate: len(candidate.parts),
-        )
-        stack_sources = [parsed[candidate] for candidate in ancestor_paths]
+        project_root = project_root_by_path[path]
+        stack_sources = [
+            parsed[candidate] for candidate in project_paths[project_root]
+        ]
         if global_path in parsed:
             stack_sources.insert(0, parsed[global_path])
         local_summary = rule_source_summary(parsed[path])
@@ -509,11 +526,19 @@ def agents_rule_graph_inventory(
         local_summary["history"] = _history_inventory(path)
         file_items.append(local_summary)
 
+        project_scope = f"project:{project_root}"
+        scope_by_source = {
+            source.source: (
+                "global"
+                if global_path in parsed
+                and source.source == parsed[global_path].source
+                else project_scope
+            )
+            for source in stack_sources
+        }
         validation = validate_rule_stack(
             stack_sources,
-            global_source=parsed[global_path].source
-            if global_path in parsed
-            else "",
+            scope_by_source=scope_by_source,
         )
         validation["edges"] = [
             edge

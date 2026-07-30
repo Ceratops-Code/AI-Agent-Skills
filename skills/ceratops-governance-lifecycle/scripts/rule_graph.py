@@ -12,9 +12,10 @@ from __future__ import annotations
 import json
 import re
 from collections import Counter
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, cast
+from typing import Any, cast
 
 
 RULE_ID_PATTERN = r"[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+"
@@ -417,17 +418,34 @@ def _strong_components(
     return sorted(components)
 
 
-def validate_rule_stack(
+def instruction_scope_map(
     sources: list[ParsedRuleSource], *, global_source: str
+) -> dict[str, str]:
+    """Assign one global and one project scope to an instruction unit."""
+
+    return {
+        source.source: "global" if source.source == global_source else "project"
+        for source in sources
+    }
+
+
+def validate_rule_stack(
+    sources: list[ParsedRuleSource], *, scope_by_source: Mapping[str, str]
 ) -> dict[str, Any]:
-    """Validate IDs, targets, relation cycles, and cross-scope legality."""
+    """Validate IDs, targets, cycles, and caller-declared scope boundaries."""
     findings: list[dict[str, object]] = []
     semantic_reviews: list[dict[str, object]] = []
     records_by_id: dict[str, RuleRecord] = {}
-    source_order = {
-        source.source: index
-        for index, source in enumerate(sources)
-    }
+    source_names = {source.source for source in sources}
+    missing_scopes = sorted(source_names - set(scope_by_source))
+    extra_scopes = sorted(set(scope_by_source) - source_names)
+    if missing_scopes or extra_scopes:
+        raise ValueError(
+            "scope_by_source must cover the validation unit exactly; "
+            f"missing={missing_scopes} extra={extra_scopes}"
+        )
+    if any(not scope_by_source[source] for source in source_names):
+        raise ValueError("scope_by_source values must be non-empty")
     all_records = [record for source in sources for record in source.records]
     for record in all_records:
         prior = records_by_id.get(record.rule_id)
@@ -460,9 +478,11 @@ def validate_rule_stack(
                     "relation": relation,
                     "target": target,
                     "source_file": record.source,
+                    "source_scope": scope_by_source[record.source],
                 }
                 if target_record is not None:
                     edge["target_file"] = target_record.source
+                    edge["target_scope"] = scope_by_source[target_record.source]
                 edges.append(edge)
                 if target == record.rule_id:
                     findings.append(
@@ -483,30 +503,21 @@ def validate_rule_stack(
                     )
                     continue
                 if (
-                    target_record.source != record.source
-                    and source_order[target_record.source]
-                    > source_order[record.source]
+                    scope_by_source[target_record.source]
+                    != scope_by_source[record.source]
                 ):
+                    edge["cross_scope"] = True
                     findings.append(
                         {
-                            "code": "relation_targets_descendant",
+                            "code": "relation_targets_other_scope",
                             "rule_id": record.rule_id,
                             "relation": relation,
                             "target": target,
+                            "source_scope": scope_by_source[record.source],
+                            "target_scope": scope_by_source[target_record.source],
                         }
                     )
-                if (
-                    record.source != global_source
-                    and target_record.source == global_source
-                    and relation == "overrides"
-                ):
-                    semantic_reviews.append(
-                        {
-                            "code": "local_override_delegation",
-                            "rule_id": record.rule_id,
-                            "target": target,
-                        }
-                    )
+                    continue
                 if relation in DIRECTIONAL_KEYS:
                     directional_graphs[relation][record.rule_id].add(target)
                     combined_graph[record.rule_id].add(target)
@@ -702,14 +713,20 @@ def load_history_source(path: Path) -> list[dict[str, object]]:
 
 
 def load_graph(paths: list[Path]) -> tuple[dict[str, set[str]], set[str]]:
-    """Load a structurally valid stack and return undirected adjacency."""
+    """Load one global-plus-project instruction unit and return adjacency."""
     parsed = [parse_rule_source(path) for path in paths]
     source_findings = [finding for source in parsed for finding in source.findings]
     if source_findings:
         first = source_findings[0]
         raise ValueError(f"invalid rule source: {first}")
     global_source = parsed[0].source if parsed else ""
-    validation = validate_rule_stack(parsed, global_source=global_source)
+    validation = validate_rule_stack(
+        parsed,
+        scope_by_source=instruction_scope_map(
+            parsed,
+            global_source=global_source,
+        ),
+    )
     if validation["findings"]:
         raise ValueError(f"invalid rule graph: {validation['findings'][0]}")
     graph: dict[str, set[str]] = {

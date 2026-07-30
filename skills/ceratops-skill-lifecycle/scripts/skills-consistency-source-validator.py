@@ -49,7 +49,7 @@ WORKFLOW = ROOT / ".github" / "workflows" / "validate.yml"
 SKILL_DETERMINISTIC_CONTRACT = pathlib.Path("skills/ceratops-skill-lifecycle/references/contracts/skill-deterministic-contract.json")
 SKILL_NONDETERMINISTIC_CONTRACT = pathlib.Path("skills/ceratops-skill-lifecycle/references/contracts/skill-nondeterministic-contract.json")
 REQUIRED_CONTRACT_FILES = [
-    pathlib.Path("skills/ceratops-skill-lifecycle/references/skill-source-docs.json"),
+    SKILL_CONTRACT_DIR / "skill-contract-source-docs.json",
     SKILL_DETERMINISTIC_CONTRACT,
     SKILL_NONDETERMINISTIC_CONTRACT,
 ]

@@ -44,7 +44,7 @@ def entry_view(
 
 
 def command_lookup(args: argparse.Namespace) -> None:
-    """Print targeted compact history or the complete append-only log."""
+    """Query history over one global-plus-complete-project instruction unit."""
     history_paths = [path.resolve() for path in args.history]
     graph, _ = load_graph(args.rules)
     requested = set(args.rule_ids)

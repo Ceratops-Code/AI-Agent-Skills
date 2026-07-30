@@ -65,7 +65,7 @@
       "id": "ND.code.sources-current-doc-recheck",
       "applies_when": "A repository-content convention or generated-file behavior matters and local evidence is ambiguous.",
       "review_required": "Recheck only the relevant official documentation or local project standard before deciding drift.",
-      "evidence_keys": ["contract-source-docs.json"]
+      "evidence_keys": ["github-contract-source-docs.json"]
     }
   ]
 }

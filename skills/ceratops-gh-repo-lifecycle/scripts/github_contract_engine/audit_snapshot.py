@@ -114,7 +114,8 @@ def _recent_history(repo_root: pathlib.Path) -> list[dict[str, str]]:
         "--format=%h%x1f%ad%x1f%s",
         "--date=short",
         "--",
-        "skills/ceratops-gh-repo-lifecycle/references/contract-source-docs.json",
+        "skills/ceratops-gh-repo-lifecycle/references/contracts/"
+        "github-contract-source-docs.json",
         "skills/ceratops-gh-repo-lifecycle/references/contracts",
         "skills/ceratops-gh-repo-lifecycle/references/contracts-review.md",
         "skills/ceratops-gh-repo-lifecycle/scripts/github_contract_engine",
@@ -136,7 +137,9 @@ def build_snapshot(repo_root: pathlib.Path) -> dict[str, Any]:
     references = (
         root / "skills" / "ceratops-gh-repo-lifecycle" / "references"
     )
-    registry_path = references / "contract-source-docs.json"
+    registry_path = (
+        references / "contracts" / "github-contract-source-docs.json"
+    )
     if not registry_path.is_file():
         raise SnapshotError("selected root is not a compatible skills checkout")
 

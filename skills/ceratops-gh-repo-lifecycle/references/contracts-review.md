@@ -34,7 +34,8 @@ applied.
 
 ### References
 
-- Contract source-doc registry: `references/contract-source-docs.json`
+- Contract source-doc registry:
+  `references/contracts/github-contract-source-docs.json`
 - Org deterministic contract:
   `references/contracts/github-org-deterministic-contract.json`
 - GitHub repo deterministic contract:
@@ -105,8 +106,8 @@ request before asking.
   `references/contracts/artifact-deterministic-contract.json` or this lifecycle
   action set claims to cover them.
 - Keep durable standards in the skill-local contracts and
-  `references/contract-source-docs.json`; do not recreate a separate standards
-  checklist file.
+  `references/contracts/github-contract-source-docs.json`; do not recreate a
+  separate standards checklist file.
 - If a recommendation would widen contract scope beyond supported GH lifecycle
   surfaces, change default GitHub policy, change merge or review posture, change
   security posture, add mandatory paid features, or materially alter checker
@@ -133,9 +134,9 @@ request before asking.
 
 ### 2. Refresh Current Source Evidence
 
-- Read `references/contract-source-docs.json` and the affected contract files at
-  the start of the audit and use them as the bounded checklist for the next
-  evidence-gathering steps.
+- Read `references/contracts/github-contract-source-docs.json` and the affected
+  contract files at the start of the audit and use them as the bounded
+  checklist for the next evidence-gathering steps.
 - Run `python -m github_contract_engine check-source-docs --json` before ad hoc
   source-doc URL checks;
   treat fallback-only transport failures as execution-context evidence.
@@ -183,9 +184,9 @@ request before asking.
 ### 5. Align Touched References
 
 - If explicitly approved changes alter this action's `references/`, contract
-  checker scripts, `references/contract-source-docs.json`, or repo docs that
-  describe contract structure, use targeted readback, stale-reference search,
-  and diff review for the touched scope.
+  checker scripts, `references/contracts/github-contract-source-docs.json`, or
+  repo docs that describe contract structure, use targeted readback,
+  stale-reference search, and diff review for the touched scope.
 - If explicitly approved changes alter copied helper scripts or helper-runtime
   claims, run only the touched helper's own smoke command when that helper
   supports one.

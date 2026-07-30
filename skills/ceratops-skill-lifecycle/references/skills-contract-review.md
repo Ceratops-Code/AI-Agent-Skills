@@ -5,13 +5,15 @@
 Refresh the skill-design standards in
 `references/contracts/skill-deterministic-contract.json` and
 `references/contracts/skill-nondeterministic-contract.json` against current
-best practices from `references/skill-source-docs.json`.
+best practices from
+`references/contracts/skill-contract-source-docs.json`.
 
 ## Context
 
 ### References
 
-- Skill source-doc registry: `references/skill-source-docs.json`
+- Skill source-doc registry:
+  `references/contracts/skill-contract-source-docs.json`
 - Skill deterministic contract:
   `references/contracts/skill-deterministic-contract.json`
 - Skill non-deterministic contract:
@@ -42,7 +44,8 @@ Infer missing inputs from the contract files before asking.
 
 ### Skill-Specific Rules
 
-- Treat official sources listed in `skill-source-docs.json` as standards
+- Treat official sources listed in
+  `references/contracts/skill-contract-source-docs.json` as standards
   authority and installed OpenAI skills only as bounded pattern evidence.
 - Refresh evidence only for a concrete standards question; do not perform
   broad research when the existing evidence is current and sufficient.
@@ -60,7 +63,8 @@ Infer missing inputs from the contract files before asking.
 
 ### 1. Inspect current standards evidence
 
-- Read `skill-source-docs.json` and both skill contracts.
+- Read `references/contracts/skill-contract-source-docs.json` and both skill
+  contracts.
 - Identify the exact contract requirement whose currency, placement, or scope
   needs review.
 

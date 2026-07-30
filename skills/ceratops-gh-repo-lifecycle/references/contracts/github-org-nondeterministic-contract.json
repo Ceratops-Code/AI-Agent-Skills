@@ -107,7 +107,7 @@
       "id": "ND.org.source-doc-recheck",
       "applies_when": "GitHub renamed, moved, or plan-gated a setting, or API and browser state disagree.",
       "review_required": "Recheck current official GitHub documentation and the browser UI before deciding drift.",
-      "evidence_keys": ["contract-source-docs.json"]
+      "evidence_keys": ["github-contract-source-docs.json"]
     }
   ]
 }
