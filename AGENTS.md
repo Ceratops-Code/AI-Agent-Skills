@@ -7,11 +7,9 @@ Project-specific rules for this skills repository.
 - [SKILLS-ENF-01] All instruction bullets in this file are mandatory,
   blocking, and closure-gating for the phase, action, decision, artifact, or
   response they govern.
-  - overlaps: ENF-01
 - [SKILLS-ENF-02] Do not proceed with or claim completion for any action,
   decision, artifact, or response when an applicable instruction bullet is
   unmet, unverifiable, or in conflict; report the blocker or conflict instead.
-  - overlaps: ENF-02
 
 ## Skills repo checkout and worktrees
 
@@ -19,7 +17,6 @@ Project-specific rules for this skills repository.
   installed Ceratops skill copies must stay on local `main` tracking
   `origin/main` or a local `release/*` branch created from `main` for an active
   unpublished batch.
-  - limits: FILE-02
 - [SKILLS-WORKTREE-01] Do not develop or patch Ceratops skill source directly
   in the skills repo checkout during create, update, audit, or repair work. For
   any task that modifies skills, work in one thread-owned git worktree, name it
@@ -76,7 +73,6 @@ Project-specific rules for this skills repository.
   installed console commands, `python -m <module>` entrypoints, or scripts in
   the installed skill folder; do not locate shared helpers by absolute paths or
   by the repo's parent directory.
-  - overlaps: HELP-01
 - [SKILLS-MAINT-01] When a workflow needs a shared repo-maintenance script, run
   `scripts/<name>` from the active source checkout root when available, or the
   installed skill folder; when a helper is skill-local, run it from that skill
@@ -84,7 +80,6 @@ Project-specific rules for this skills repository.
   declared location contains it.
 - [SKILLS-STYLE-01] Prefer concise, principle-based, machine-oriented wording;
   avoid example lists unless needed to disambiguate behavior.
-  - overlaps: OUT-01, OUT-02
 - [SKILLS-VERIFY-01] After instruction edits, verify the changed diff or
   reopened section and confirm no new duplicate, contradiction, or dropped
   behavior was introduced.

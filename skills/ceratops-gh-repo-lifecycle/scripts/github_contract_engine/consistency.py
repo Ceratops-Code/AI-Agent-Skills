@@ -34,7 +34,7 @@ REPO_ROOT = SKILL_DIR.parents[1]
 REFERENCES = SKILL_DIR / "references"
 CONTRACTS = REFERENCES / "contracts"
 SCRIPTS = SKILL_DIR / "scripts"
-SOURCE_DOCS = REFERENCES / "contract-source-docs.json"
+SOURCE_DOCS = CONTRACTS / "github-contract-source-docs.json"
 SCHEMAS = REFERENCES / "schemas"
 STATE_CONTRACT_PATHS = {
     "org": CONTRACTS / "github-org-deterministic-contract.json",
@@ -303,8 +303,11 @@ def _validate_state_contract(path: pathlib.Path, contract: dict[str, Any]) -> li
         )
     if contract.get("contract_format_version") != 2:
         errors.append(f"{rel(path)}: state contract format must be 2")
-    if contract.get("source_docs_ref") != "contract-source-docs.json":
-        errors.append(f"{rel(path)}: source_docs_ref must be contract-source-docs.json")
+    if contract.get("source_docs_ref") != "github-contract-source-docs.json":
+        errors.append(
+            f"{rel(path)}: source_docs_ref must be "
+            "github-contract-source-docs.json"
+        )
     ids = check_ids(contract)
     for duplicate in sorted({check_id for check_id in ids if ids.count(check_id) > 1}):
         errors.append(f"{rel(path)}: duplicate deterministic check ID {duplicate}")

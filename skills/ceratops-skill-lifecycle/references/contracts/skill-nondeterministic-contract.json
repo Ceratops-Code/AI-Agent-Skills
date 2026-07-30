@@ -22,13 +22,13 @@
       "skills/<skill-name>/agents/openai.yaml",
       "templates/skill-sections.json",
       "skills/ceratops-skill-lifecycle/references/contracts/skill-deterministic-contract.json",
-      "skills/ceratops-skill-lifecycle/references/skill-source-docs.json",
+      "skills/ceratops-skill-lifecycle/references/contracts/skill-contract-source-docs.json",
       "$CODEX_HOME/plugins/cache/openai-primary-runtime/*/*/skills/*/SKILL.md",
       "$CODEX_HOME/plugins/cache/openai-curated/*/*/skills/*/SKILL.md"
     ],
     "source_policy": [
       "Use local evidence first.",
-      "Use upstream sources from skill-source-docs.json as standards evidence.",
+      "Use upstream sources from skill-contract-source-docs.json as standards evidence.",
       "Use installed OpenAI skills only as pattern examples.",
       "Compare at most two or three examples relevant to the current skill type or standards question and record the specific pattern each informed."
     ]
@@ -75,7 +75,7 @@
       "id": "ND.skill.reference-discipline",
       "applies_when": "The skill references documentation, examples, templates, assets, or installed OpenAI skills.",
       "review_required": "Confirm references are loaded progressively, deep procedural detail stays in skill-local resources, examples are patterns rather than authority, and public files use portable paths.",
-      "evidence_keys": ["skill.SKILL.md", "skill.references", "skill.assets", "skill-source-docs.json"]
+      "evidence_keys": ["skill.SKILL.md", "skill.references", "skill.assets", "skill-contract-source-docs.json"]
     },
     {
       "id": "ND.skill.context-economy",
@@ -99,7 +99,7 @@
       "id": "ND.skill.openai-example-comparison",
       "applies_when": "An explicit skill-design refresh leaves a concrete high-quality-skill decision unresolved after registered official evidence.",
       "review_required": "Compare two or three relevant installed OpenAI skill examples and record the concrete pattern borrowed or rejected.",
-      "evidence_keys": ["skill-source-docs.json", "installed_openai_skill_examples"]
+      "evidence_keys": ["skill-contract-source-docs.json", "installed_openai_skill_examples"]
     }
   ]
 }

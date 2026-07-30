@@ -58,9 +58,9 @@ skill and select `update`.
 5. Commit the release-branch change.
 6. Update only the affected runtime skill copy through `python
    scripts/install-skills.py --repo-root <repo> --skill <skill-name>` in the
-   target repository; stop if the installed lifecycle bundle is unavailable. A
-   targeted install validates only the selected skill and never removes stale
-   skills.
+   target repository; the Ceratops source repository must use its checkout
+   lifecycle bundle. A targeted install validates only the selected skill and
+   never removes stale skills.
 7. Optionally apply and commit the same change in explicitly requested active
    worktrees or branches when it merges cleanly.
 

@@ -108,10 +108,10 @@ Infer missing inputs from current repo state before asking.
 - If runtime generation code changed, run the repo's runtime-generation check
   path when provided.
 - Install a compatible repo through its `python scripts/install-skills.py
-  --repo-root <repo>` entrypoint. It must use the supported installed lifecycle
-  bundle, with target-checkout fallback allowed only for the initial Ceratops
-  installation. Full installs run full source validation; explicit skill
-  installs validate only the selected skills.
+  --repo-root <repo>` entrypoint. The Ceratops source repository must use its
+  checkout lifecycle bundle; other compatible repositories must prefer a
+  supported installed lifecycle bundle. Full installs run full source
+  validation; explicit skill installs validate only the selected skills.
 - Reserve full source validation for explicit broad validation,
   validation-script changes, or concrete cross-surface uncertainty.
 - Re-open changed files and confirm source skills, manifest assignments, runtime

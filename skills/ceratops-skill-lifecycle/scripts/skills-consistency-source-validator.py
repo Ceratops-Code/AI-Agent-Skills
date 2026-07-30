@@ -49,7 +49,7 @@ WORKFLOW = ROOT / ".github" / "workflows" / "validate.yml"
 SKILL_DETERMINISTIC_CONTRACT = pathlib.Path("skills/ceratops-skill-lifecycle/references/contracts/skill-deterministic-contract.json")
 SKILL_NONDETERMINISTIC_CONTRACT = pathlib.Path("skills/ceratops-skill-lifecycle/references/contracts/skill-nondeterministic-contract.json")
 REQUIRED_CONTRACT_FILES = [
-    pathlib.Path("skills/ceratops-skill-lifecycle/references/skill-source-docs.json"),
+    SKILL_CONTRACT_DIR / "skill-contract-source-docs.json",
     SKILL_DETERMINISTIC_CONTRACT,
     SKILL_NONDETERMINISTIC_CONTRACT,
 ]
@@ -1193,8 +1193,15 @@ def check_validation_command_surface() -> list[str]:
         or '"--mode"' in runtime_validator_text
     ):
         errors.append("runtime validator must compare managed trees through one command")
-    if RUNTIME_MANIFEST_SCHEMA not in bundle_resolver_text or "installed_bundle_supported" not in bundle_resolver_text:
-        errors.append("lifecycle bundle resolver must enforce installed runtime capability before checkout fallback")
+    if (
+        RUNTIME_MANIFEST_SCHEMA not in bundle_resolver_text
+        or "checkout_is_ceratops" not in bundle_resolver_text
+        or "installed_bundle_supported" not in bundle_resolver_text
+    ):
+        errors.append(
+            "lifecycle bundle resolver must enforce source-checkout and installed "
+            "runtime capability selection"
+        )
     if "INSTALLER_VERSION" not in synchronizer_text or "shutil.copy2" not in synchronizer_text:
         errors.append("installer synchronizer must compare versions and copy the authoritative template")
     for snippet in ("--mode full", "--mode sections", "--mode skill"):

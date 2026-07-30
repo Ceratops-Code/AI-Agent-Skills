@@ -134,8 +134,10 @@ class GHContractStateEngineTests(unittest.TestCase):
         )
         with tempfile.TemporaryDirectory() as temporary_directory:
             fixture = pathlib.Path(temporary_directory) / "fixture.py"
+            slash = chr(92)
             fixture.write_text(
-                'USES_RE = re.compile(r"^\\s*uses:\\s*")\n', encoding="utf-8"
+                f'USES_RE = re.compile(r"^{slash}s*uses:{slash}s*")\n',
+                encoding="utf-8",
             )
             local = collect_local_repository(temporary_directory, [rule])
             self.assertEqual(local["scans"][rule["id"]]["matches"], [])
@@ -195,17 +197,19 @@ class GHContractStateEngineTests(unittest.TestCase):
         )
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = pathlib.Path(temporary_directory)
+            slash = chr(92)
+            escaped_slash = slash * 2
             excluded = root / "excluded.py"
             excluded.write_text(
                 "\n".join(
                     [
-                        r'REPO = "C:\repo\fixture"',
-                        r'REPOS = "C:\repos\project"',
-                        r'PROGRAMS = "C:\Program Files\Git"',
-                        r'PROGRAMS_X86 = "C:\Program Files (x86)\Tool"',
-                        r'WINDOWS = "C:\WINDOWS\System32\tool.exe"',
-                        r'PROJECTS = "c:\\CODEXPROJECTS\\repo"',
-                        r'CODEX = "C:\Users\runner\.codex\skills"',
+                        f'REPO = "C:{slash}repo{slash}fixture"',
+                        f'REPOS = "C:{slash}repos{slash}project"',
+                        f'PROGRAMS = "C:{slash}Program Files{slash}Git"',
+                        f'PROGRAMS_X86 = "C:{slash}Program Files (x86){slash}Tool"',
+                        f'WINDOWS = "C:{slash}WINDOWS{slash}System32{slash}tool.exe"',
+                        f'PROJECTS = "c:{escaped_slash}CODEXPROJECTS{escaped_slash}repo"',
+                        f'CODEX = "C:{slash}Users{slash}runner{slash}.codex{slash}skills"',
                     ]
                 ),
                 encoding="utf-8",
@@ -214,8 +218,8 @@ class GHContractStateEngineTests(unittest.TestCase):
             retained.write_text(
                 "\n".join(
                     [
-                        r'NEAR_PREFIX = "C:\ReposBackup\project"',
-                        r'OTHER_DRIVE_ROOT = "D:\work\project"',
+                        f'NEAR_PREFIX = "C:{slash}ReposBackup{slash}project"',
+                        f'OTHER_DRIVE_ROOT = "D:{slash}work{slash}project"',
                     ]
                 ),
                 encoding="utf-8",
@@ -223,10 +227,10 @@ class GHContractStateEngineTests(unittest.TestCase):
             with mock.patch.dict(
                 os.environ,
                 {
-                    "CODEX_HOME": r"C:\Users\runner\.codex",
-                    "ProgramFiles": r"C:\Program Files",
-                    "ProgramFiles(x86)": r"C:\Program Files (x86)",
-                    "SystemRoot": r"C:\Windows",
+                    "CODEX_HOME": f"C:{slash}Users{slash}runner{slash}.codex",
+                    "ProgramFiles": f"C:{slash}Program Files",
+                    "ProgramFiles(x86)": f"C:{slash}Program Files (x86)",
+                    "SystemRoot": f"C:{slash}Windows",
                 },
                 clear=False,
             ):
@@ -249,6 +253,7 @@ class GHContractStateEngineTests(unittest.TestCase):
         )
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = pathlib.Path(temporary_directory)
+            slash = chr(92)
             subprocess.run(
                 ["git", "init", "--quiet", str(root)],
                 check=True,
@@ -259,11 +264,17 @@ class GHContractStateEngineTests(unittest.TestCase):
             )
             (root / "ignored").mkdir()
             (root / "ignored" / "nested.txt").write_text(
-                r"D:\ignored", encoding="utf-8"
+                f"D:{slash}ignored", encoding="utf-8"
             )
-            (root / "ignored.txt").write_text(r"D:\ignored", encoding="utf-8")
-            (root / "visible.txt").write_text(r"D:\visible", encoding="utf-8")
-            (root / "tracked.txt").write_text(r"D:\tracked", encoding="utf-8")
+            (root / "ignored.txt").write_text(
+                f"D:{slash}ignored", encoding="utf-8"
+            )
+            (root / "visible.txt").write_text(
+                f"D:{slash}visible", encoding="utf-8"
+            )
+            (root / "tracked.txt").write_text(
+                f"D:{slash}tracked", encoding="utf-8"
+            )
             subprocess.run(
                 ["git", "-C", str(root), "add", "-f", "tracked.txt"],
                 check=True,
@@ -298,8 +309,11 @@ class GHContractStateEngineTests(unittest.TestCase):
         )
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = pathlib.Path(temporary_directory)
+            slash = chr(92)
             (root / ".git").mkdir()
-            (root / "visible.txt").write_text(r"D:\visible", encoding="utf-8")
+            (root / "visible.txt").write_text(
+                f"D:{slash}visible", encoding="utf-8"
+            )
             failed_inventory = subprocess.CompletedProcess(
                 args=["git", "ls-files"],
                 returncode=1,

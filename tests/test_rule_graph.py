@@ -1,5 +1,6 @@
 import json
 import pathlib
+import runpy
 import sys
 import tempfile
 import unittest
@@ -15,7 +16,14 @@ SCRIPTS = (
 sys.path.insert(0, str(SCRIPTS))
 
 from apply_rules_update import ApplicationError, prepare  # noqa: E402
-from rule_graph import parse_rule_text, rule_source_summary  # noqa: E402
+from rule_graph import (  # noqa: E402
+    parse_rule_text,
+    rule_source_summary,
+    validate_rule_stack,
+)
+
+GOVERNANCE_SNAPSHOT = runpy.run_path(str(SCRIPTS / "governance-snapshot.py"))
+agents_rule_graph_inventory = GOVERNANCE_SNAPSHOT["agents_rule_graph_inventory"]
 
 
 class RuleGraphTests(unittest.TestCase):
@@ -157,6 +165,170 @@ class RuleGraphTests(unittest.TestCase):
         )
         self.assertEqual(summary["approved_debt"]["count"], 0)
         self.assertEqual(summary["semantic_reviews"]["count"], 0)
+
+    def test_relations_within_global_scope_are_valid(self):
+        source = parse_rule_text(
+            "- [GLOBAL-01] Apply the narrower global rule.\n"
+            "  - limits: GLOBAL-02\n"
+            "- [GLOBAL-02] Apply the global baseline.\n",
+            "global/AGENTS.md",
+        )
+
+        validation = validate_rule_stack(
+            [source],
+            scope_by_source={source.source: "global"},
+        )
+
+        self.assertEqual(validation["findings"], [])
+
+    def test_relations_cannot_cross_global_and_project_scopes(self):
+        cases = (
+            (
+                "- [GLOBAL-01] Apply the global rule.\n"
+                "  - limits: LOCAL-01\n",
+                "- [LOCAL-01] Apply the local rule.\n",
+            ),
+            (
+                "- [GLOBAL-01] Apply the global rule.\n",
+                "- [LOCAL-01] Apply the local rule.\n"
+                "  - limits: GLOBAL-01\n",
+            ),
+        )
+        for global_text, local_text in cases:
+            with self.subTest(global_text=global_text, local_text=local_text):
+                global_source = parse_rule_text(
+                    global_text,
+                    "global/AGENTS.md",
+                )
+                local_source = parse_rule_text(
+                    local_text,
+                    "project/AGENTS.md",
+                )
+
+                validation = validate_rule_stack(
+                    [global_source, local_source],
+                    scope_by_source={
+                        global_source.source: "global",
+                        local_source.source: "project:one",
+                    },
+                )
+
+                self.assertEqual(
+                    [finding["code"] for finding in validation["findings"]],
+                    ["relation_targets_other_scope"],
+                )
+
+    def test_relation_between_local_files_in_one_project_is_valid(self):
+        parent = parse_rule_text(
+            "- [LOCAL-01] Apply the project rule.\n"
+            "  - limits: NESTED-01\n",
+            "project/AGENTS.md",
+        )
+        nested = parse_rule_text(
+            "- [NESTED-01] Apply the nested project rule.\n",
+            "project/component/AGENTS.md",
+        )
+
+        validation = validate_rule_stack(
+            [parent, nested],
+            scope_by_source={
+                parent.source: "project:one",
+                nested.source: "project:one",
+            },
+        )
+
+        self.assertEqual(validation["findings"], [])
+
+    def test_non_git_project_root_and_nested_agents_share_stack(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            projects_root = root / "project"
+            codex_home = root / "codex"
+            nested = projects_root / "component" / "AGENTS.md"
+            projects_root.mkdir()
+            codex_home.mkdir()
+            nested.parent.mkdir()
+            (projects_root / "AGENTS.md").write_text(
+                "- [ROOT-01] Apply the project rule.\n",
+                encoding="utf-8",
+                newline="",
+            )
+            nested.write_text(
+                "- [NESTED-01] Apply the nested rule.\n"
+                "  - limits: ROOT-01\n",
+                encoding="utf-8",
+                newline="",
+            )
+
+            inventory = agents_rule_graph_inventory(projects_root, codex_home)
+
+        nested_stack = next(
+            stack for stack in inventory["stacks"] if stack["path"] == str(nested)
+        )
+        self.assertEqual(nested_stack["findings"], [])
+        self.assertEqual(
+            nested_stack["stack_paths"],
+            [
+                str(projects_root / "AGENTS.md"),
+                str(nested),
+            ],
+        )
+
+    def test_relations_cannot_cross_project_scopes(self):
+        first = parse_rule_text(
+            "- [FIRST-01] Apply the first project rule.\n"
+            "  - limits: SECOND-01\n",
+            "first/AGENTS.md",
+        )
+        second = parse_rule_text(
+            "- [SECOND-01] Apply the second project rule.\n",
+            "second/AGENTS.md",
+        )
+
+        validation = validate_rule_stack(
+            [first, second],
+            scope_by_source={
+                first.source: "project:first",
+                second.source: "project:second",
+            },
+        )
+
+        self.assertEqual(
+            [finding["code"] for finding in validation["findings"]],
+            ["relation_targets_other_scope"],
+        )
+
+    def test_skill_relations_require_one_skill_scope(self):
+        owner = parse_rule_text(
+            "- [SKILL-01] Apply the owning skill rule.\n"
+            "  - limits: ACTION-01\n",
+            "skill/SKILL.md",
+        )
+        action = parse_rule_text(
+            "- [ACTION-01] Apply the skill action rule.\n",
+            "skill/references/action.md",
+        )
+
+        same_skill = validate_rule_stack(
+            [owner, action],
+            scope_by_source={
+                owner.source: "skill:one",
+                action.source: "skill:one",
+            },
+        )
+        different_skills = validate_rule_stack(
+            [owner, action],
+            scope_by_source={
+                owner.source: "skill:one",
+                action.source: "skill:two",
+            },
+        )
+
+        self.assertEqual(same_skill["findings"], [])
+        self.assertEqual(
+            [finding["code"] for finding in different_skills["findings"]],
+            ["relation_targets_other_scope"],
+        )
 
     def test_rules_update_can_repair_an_invalid_current_stack(self):
         current = (

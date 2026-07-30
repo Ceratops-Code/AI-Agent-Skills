@@ -5,7 +5,7 @@
   "captured_on": "2026-05-02",
   "source_files": [
     {
-      "path": "$AI_AGENT_SKILLS_ROOT/skills/ceratops-gh-repo-lifecycle/references/contract-source-docs.json",
+      "path": "$AI_AGENT_SKILLS_ROOT/skills/ceratops-gh-repo-lifecycle/references/contracts/github-contract-source-docs.json",
       "lines": "source-doc registry"
     },
     {
@@ -70,7 +70,7 @@
       "reason": "Needed only when the checker must verify org-level code security configuration attachment/default posture for repositories owned by an organization."
     }
   ],
-  "source_docs_ref": "contract-source-docs.json",
+  "source_docs_ref": "github-contract-source-docs.json",
   "source_doc_scopes": [
     "repo"
   ],
@@ -698,8 +698,8 @@
     {
       "id": "actions.oidc_subject_claim_posture",
       "source_lines": [
-        "contract-source-docs.json:github.rest.actions.oidc",
-        "contract-source-docs.json:github.actions.oidc"
+        "github-contract-source-docs.json:github.rest.actions.oidc",
+        "github-contract-source-docs.json:github.actions.oidc"
       ],
       "kind": "api",
       "endpoint": "/repos/${owner}/${repo}/actions/oidc/customization/sub",

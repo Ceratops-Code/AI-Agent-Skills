@@ -12,7 +12,7 @@ skills to synced `main`.
 
 - Default release branch: `release/local`
 - (D) Repository installer: `python scripts/install-skills.py`, which uses the
-  supported installed lifecycle bundle.
+  Ceratops source checkout lifecycle bundle.
 - Installed managed skill path: `$CODEX_HOME/skills/<skill-name>`
 
 ### GitHub Lifecycle Handoffs

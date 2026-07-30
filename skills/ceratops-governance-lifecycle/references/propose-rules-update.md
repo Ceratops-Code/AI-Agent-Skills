@@ -30,11 +30,11 @@ Route approved skill-source mutations through `$ceratops-skill-lifecycle`
    `AGENTS.history.json` beside their `AGENTS.md`. From this skill directory,
    run `python scripts/rule_history.py lookup --history <history> --rules
    <rules> ID...`, repeating both options in effective global-to-local order for
-   an interacting instruction stack. Use compact lookup for current rules and
-   direct graph neighbors. Add `--full` when renamed or retired rules, a
-   supersession decision, or uncertain relevance requires the complete log.
-   If history does not exist, use targeted source history and state that
-   recorded decision history was unavailable.
+   every source in the affected global and complete project scopes. Use compact
+   lookup for current rules and direct graph neighbors. Add `--full` when
+   renamed or retired rules, a supersession decision, or uncertain relevance
+   requires the complete log. If history does not exist, use targeted source
+   history and state that recorded decision history was unavailable.
 4. Compare a local correction with a structural or non-rule correction. Select
    by prevention of the failure, regression safety, behavioral scope, and
    complexity; textual minimality does not win automatically.
@@ -64,10 +64,10 @@ mapping every operative part of the old text, including commands and examples,
 to preserved behavior or an explicitly approved change.
 
 - (D) For every approved rule mutation, create one request that names the
-  effective global-to-local instruction stack, each target rules and companion
-  history source, each exact expected-old and replacement text, and every
-  approved history append; then run `python scripts/apply_rules_update.py
-  --request <path>`.
+  affected global scope and every rule source in the complete project scope,
+  each target rules and companion history source, each exact expected-old and
+  replacement text, and every approved history append; then run `python
+  scripts/apply_rules_update.py --request <path>`.
 - (D) The helper must require each expected-old text to occur exactly once,
   construct and validate every candidate before replacing a target, reuse the
   rule-graph and history validators, preserve encoding and line endings, cover

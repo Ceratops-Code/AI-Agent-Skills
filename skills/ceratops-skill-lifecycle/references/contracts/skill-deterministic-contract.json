@@ -5,7 +5,7 @@
   "captured_on": "2026-07-20",
   "source_files": [
     {
-      "path": "$AI_AGENT_SKILLS_ROOT/skills/ceratops-skill-lifecycle/references/skill-source-docs.json",
+      "path": "$AI_AGENT_SKILLS_ROOT/skills/ceratops-skill-lifecycle/references/contracts/skill-contract-source-docs.json",
       "lines": "source-doc registry, skill standards, and installed skill references"
     },
     {
@@ -57,7 +57,7 @@
   "required_scopes": [
     "skill"
   ],
-  "source_docs_ref": "skill-source-docs.json",
+  "source_docs_ref": "skill-contract-source-docs.json",
   "source_doc_scopes": [
     "skill"
   ],
@@ -134,7 +134,7 @@
       ],
       "pass_condition": "Source skill frontmatter contains only name and description; name matches the directory, contains 1 to 64 lowercase ASCII letters, digits, or hyphens, does not start or end with a hyphen, and contains no consecutive hyphens; description contains 40 to 1024 characters; the body contains a Markdown H2 section structure; the ceratops profile additionally requires Boundaries and Output Contract subsections.",
       "source_lines": [
-        "skill-source-docs.json:open_agent_skills.specification",
+        "skill-contract-source-docs.json:open_agent_skills.specification",
         "skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py:parse_frontmatter",
         "skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py:check_skill"
       ]
@@ -258,15 +258,15 @@
       "deterministic_evidence": [
         "skills/ceratops-skill-lifecycle/references/contracts/skill-deterministic-contract.json",
         "skills/ceratops-skill-lifecycle/references/contracts/skill-nondeterministic-contract.json",
-        "skill-source-docs.json",
+        "skill-contract-source-docs.json",
         "skills/ceratops-skill-lifecycle/references/skills-contract-review.md",
         "skills/ceratops-skill-lifecycle/references/skills-consistency-review.md",
         "README.md"
       ],
       "pass_condition": "The source-doc registry and contract-review action own skill-design standards refresh, the validator owns deterministic compliance, and the repository consistency action owns manual non-deterministic compliance without silently changing the contracts.",
       "source_lines": [
-        "skill-source-docs.json:docs scope skill",
-        "skill-source-docs.json:reference_skills",
+        "skill-contract-source-docs.json:docs scope skill",
+        "skill-contract-source-docs.json:reference_skills",
         "skills/ceratops-skill-lifecycle/references/skills-contract-review.md:References",
         "skills/ceratops-skill-lifecycle/references/skills-consistency-review.md:References",
         "README.md:Contracts"

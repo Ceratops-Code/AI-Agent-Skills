@@ -11,8 +11,7 @@ secondary evidence.
 Every instruction rule in an applicable global or local `AGENTS.md` must use
 the structured syntax parsed by `scripts/rule_graph.py`. A rule starts with one
 globally stack-unique ID, uses the parser's canonical metadata syntax, and may
-reference only IDs available in its effective global-to-local instruction
-stack. Nested local files extend the stack of their ancestors.
+reference only IDs in its own scope.
 
 Reuse a section's rule-ID namespace when it fits; add another only for a
 distinct concern, and split the section only if it becomes too broad or long.
@@ -76,25 +75,24 @@ When evidence cannot select one coherent result, present the exact decision
 point before treating a candidate as complete.
 
 Use deterministic checks for syntax, targets, duplicates, placement, statuses,
-size, cycles, and stack legality. Use focused semantic review for missing,
+size, cycles, and scope legality. Use focused semantic review for missing,
 unnecessary, mistyped, misdirected, incompatible, overlap, and conflict edges.
 
 ## Scope interaction
 
 Treat global instructions as the baseline for local instructions. A local rule
-may add project behavior or narrow discretion the global rules leave open. It
-may override a global rule only when that rule explicitly delegates the
-decision to local scope. Otherwise repair the local rule or propose a global
-delegation instead of retaining a contradiction.
+may add project behavior or select a local decision only when the global rule
+explicitly delegates that decision. Otherwise repair the local rule or propose
+a global delegation instead of retaining a contradiction.
 
-A global rule must not depend on a local rule. A local relation may target only
-the global rules and ancestor-local rules in its effective stack. Validate IDs,
-relations, and compatibility across the complete stack, not each file alone.
+Rule relations must remain within one scope: global, one project, or one skill.
+Validate IDs and relations inside each complete scope, then validate behavioral
+compatibility across the applicable global-to-local instruction stack.
 
 Store local history beside its local rule source and query every applicable
-history in a cross-scope change. Revalidate current global and ancestor-local
-rules directly; do not store dates, hashes, source snapshots, current rule
-inventories, or gate inventories in history.
+history separately in a multi-scope change. Revalidate current global and all
+project-local rules directly; do not store dates, hashes, source snapshots,
+current rule inventories, or gate inventories in history.
 
 Use a JSON history object with `version: 2` and an `entries` array. Each entry
 uses the decision-only schema owned by `scripts/rule_graph.py`: `rules`,

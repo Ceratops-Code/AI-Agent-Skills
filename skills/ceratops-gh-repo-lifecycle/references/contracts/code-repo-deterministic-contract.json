@@ -5,7 +5,7 @@
   "captured_on": "2026-05-02",
   "source_files": [
     {
-      "path": "$AI_AGENT_SKILLS_ROOT/skills/ceratops-gh-repo-lifecycle/references/contract-source-docs.json",
+      "path": "$AI_AGENT_SKILLS_ROOT/skills/ceratops-gh-repo-lifecycle/references/contracts/github-contract-source-docs.json",
       "lines": "source-doc registry"
     },
     {
@@ -61,7 +61,7 @@
     "repo"
   ],
   "optional_scopes_for_full_screen_parity": [],
-  "source_docs_ref": "contract-source-docs.json",
+  "source_docs_ref": "github-contract-source-docs.json",
   "source_doc_scopes": [
     "repo"
   ],

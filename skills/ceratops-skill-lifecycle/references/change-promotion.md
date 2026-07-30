@@ -14,9 +14,9 @@ installed runtime only when this action is intentionally selected.
 - Installed managed skill path: `$CODEX_HOME/skills/<skill-name>`
 - Default release branch: `release/local`
 - Default remote: `origin`
-- (D) Repository installer: `python scripts/install-skills.py`, which uses the
-  supported installed lifecycle bundle and permits target-checkout fallback
-  only for the initial Ceratops installation.
+- (D) Repository installer: `python scripts/install-skills.py`; the Ceratops
+  source repository uses its checkout lifecycle bundle, while other compatible
+  repositories prefer a supported installed lifecycle bundle.
 
 ### Script Bundle
 
