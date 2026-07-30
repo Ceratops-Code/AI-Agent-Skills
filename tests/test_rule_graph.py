@@ -1,5 +1,6 @@
 import json
 import pathlib
+import runpy
 import sys
 import tempfile
 import unittest
@@ -20,6 +21,9 @@ from rule_graph import (  # noqa: E402
     rule_source_summary,
     validate_rule_stack,
 )
+
+GOVERNANCE_SNAPSHOT = runpy.run_path(str(SCRIPTS / "governance-snapshot.py"))
+agents_rule_graph_inventory = GOVERNANCE_SNAPSHOT["agents_rule_graph_inventory"]
 
 
 class RuleGraphTests(unittest.TestCase):
@@ -234,6 +238,41 @@ class RuleGraphTests(unittest.TestCase):
         )
 
         self.assertEqual(validation["findings"], [])
+
+    def test_non_git_project_root_and_nested_agents_share_stack(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            projects_root = root / "project"
+            codex_home = root / "codex"
+            nested = projects_root / "component" / "AGENTS.md"
+            projects_root.mkdir()
+            codex_home.mkdir()
+            nested.parent.mkdir()
+            (projects_root / "AGENTS.md").write_text(
+                "- [ROOT-01] Apply the project rule.\n",
+                encoding="utf-8",
+                newline="",
+            )
+            nested.write_text(
+                "- [NESTED-01] Apply the nested rule.\n"
+                "  - limits: ROOT-01\n",
+                encoding="utf-8",
+                newline="",
+            )
+
+            inventory = agents_rule_graph_inventory(projects_root, codex_home)
+
+        nested_stack = next(
+            stack for stack in inventory["stacks"] if stack["path"] == str(nested)
+        )
+        self.assertEqual(nested_stack["findings"], [])
+        self.assertEqual(
+            nested_stack["stack_paths"],
+            [
+                str(projects_root / "AGENTS.md"),
+                str(nested),
+            ],
+        )
 
     def test_relations_cannot_cross_project_scopes(self):
         first = parse_rule_text(

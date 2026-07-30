@@ -461,12 +461,14 @@ def _compact_edges(edges: list[dict[str, object]]) -> list[dict[str, object]]:
 def _project_scope_root(
     path: pathlib.Path, projects_root: pathlib.Path
 ) -> pathlib.Path:
-    """Resolve one local AGENTS file to its Git or root-child project."""
+    """Resolve one local AGENTS file to its Git, direct-root, or child project."""
 
     git_root, _ = run_git(path.parent, "rev-parse", "--show-toplevel")
     if git_root:
         return pathlib.Path(git_root).resolve()
     resolved_root = projects_root.resolve()
+    if (resolved_root / "AGENTS.md").is_file():
+        return resolved_root
     try:
         relative = path.resolve().relative_to(resolved_root)
     except ValueError:
