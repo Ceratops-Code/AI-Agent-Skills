@@ -359,10 +359,19 @@ def promote(args: argparse.Namespace) -> dict[str, object]:
             args.run_operation,
         ]
         if args.run_operation == "after_promote":
+            deployment_base = require_output(
+                _git(
+                    repo_root,
+                    "merge-base",
+                    args.main_branch,
+                    release_start,
+                ),
+                cwd=repo_root,
+            ).splitlines()[0]
             operation_command.extend(
                 (
                     "--parameter-if-declared",
-                    f"base_revision={release_start}",
+                    f"base_revision={deployment_base}",
                 )
             )
         operation_code, operation = _run_json(

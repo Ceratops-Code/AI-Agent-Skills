@@ -58,8 +58,9 @@ executes the structured deployment operation. For `after_promote`, it uses the
 supplied checkout only when that checkout is already clean on the release branch
 at the promoted commit; otherwise it uses the final promoted source-branch
 worktree. It requires that exact-head deployment checkout before changing the
-release branch and offers the release-start commit as conditional
-`base_revision` context. The operation runner supplies it only when the
+release branch and offers the merge base of refreshed main and the release-start
+commit as conditional `base_revision` context, so prior unpublished promotions
+remain in deployment scope. The operation runner supplies it only when the
 selected operation declares that parameter, so compatible parameterless
 operations remain valid.
 Preparation-only requires a clean `main` checkout, may switch that supplied

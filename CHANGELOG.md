@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Made repository shipping reuse completed `after_ship` work across pending
+  cleanup retries, made cleanup progress durable per selected branch, and made
+  promotion deployment include prior unpublished release batches.
 - Made fast-change run repository-declared Markdown lint for Markdown patches
   before installation or commit, with existing compensation on failure.
 - Made promotion-provided `base_revision` conditional on the selected operation

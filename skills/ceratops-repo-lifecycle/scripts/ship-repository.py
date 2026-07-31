@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import pathlib
 import subprocess
 import sys
@@ -41,6 +42,84 @@ def _run_json(command: list[str]) -> tuple[int, dict[str, Any]]:
     if not isinstance(payload, dict):
         raise RepositoryShipError("Lifecycle helper returned a non-object result.")
     return result.returncode, payload
+
+
+def _deployment_checkpoint_path(scope: pathlib.Path) -> pathlib.Path:
+    """Return the scope-owned completed-deployment record path."""
+
+    return scope.with_suffix(".after-ship.json")
+
+
+def _deployment_identity(
+    repo_root: pathlib.Path,
+    *,
+    target_branch: str,
+    target_commit: str,
+    contract: pathlib.Path,
+    operation: str,
+) -> dict[str, object]:
+    """Bind reusable deployment evidence to one exact release operation."""
+
+    resolved_contract = (
+        contract if contract.is_absolute() else repo_root / contract
+    ).resolve(strict=True)
+    return {
+        "version": 1,
+        "target_branch": target_branch,
+        "target_commit": target_commit,
+        "contract": str(resolved_contract),
+        "operation": operation,
+    }
+
+
+def _read_deployment_checkpoint(
+    path: pathlib.Path,
+    identity: dict[str, object],
+) -> dict[str, Any] | None:
+    """Reuse only structurally valid evidence for the exact current release."""
+
+    if not path.exists():
+        return None
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RepositoryShipError(
+            f"Could not read deployment checkpoint {path}: {exc}"
+        ) from exc
+    if (
+        not isinstance(value, dict)
+        or set(value) != {*identity, "deployment"}
+        or value.get("version") != 1
+        or any(
+            not isinstance(value.get(key), str)
+            for key in ("target_branch", "target_commit", "contract", "operation")
+        )
+        or not isinstance(value.get("deployment"), dict)
+    ):
+        raise RepositoryShipError("Deployment checkpoint has invalid structure.")
+    if any(value.get(key) != expected for key, expected in identity.items()):
+        return None
+    return dict(value["deployment"])
+
+
+def _write_deployment_checkpoint(
+    path: pathlib.Path,
+    identity: dict[str, object],
+    deployment: dict[str, Any],
+) -> None:
+    """Atomically persist completed deployment before selected-work cleanup."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(
+        json.dumps(
+            {**identity, "deployment": deployment},
+            separators=(",", ":"),
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    os.replace(temporary, path)
 
 
 def _ship_command(args: argparse.Namespace, repo_root: pathlib.Path) -> list[str]:
@@ -170,20 +249,45 @@ def ship_repository(args: argparse.Namespace) -> dict[str, object]:
                 str(checked.get("message", "Late pending-work check failed."))
             )
 
-    deploy_code, deployed = _run_json(
-        [
-            sys.executable,
-            str(DEPLOY_RUNNER),
-            "--repo-root",
-            str(repo_root),
-            "--contract",
-            str(args.deploy_contract),
-            "--operation",
-            args.deploy_operation,
-        ]
-    )
-    if deploy_code:
-        raise RepositoryShipError(str(deployed.get("message", "Deployment failed.")))
+    checkpoint_path: pathlib.Path | None = None
+    deployment_identity: dict[str, object] | None = None
+    deployed: dict[str, Any] | None = None
+    if pending_scope is not None:
+        checkpoint_path = _deployment_checkpoint_path(pending_scope)
+        deployment_identity = _deployment_identity(
+            repo_root,
+            target_branch=args.head_branch,
+            target_commit=target_commit,
+            contract=args.deploy_contract,
+            operation=args.deploy_operation,
+        )
+        deployed = _read_deployment_checkpoint(
+            checkpoint_path,
+            deployment_identity,
+        )
+    if deployed is None:
+        deploy_code, deployed = _run_json(
+            [
+                sys.executable,
+                str(DEPLOY_RUNNER),
+                "--repo-root",
+                str(repo_root),
+                "--contract",
+                str(args.deploy_contract),
+                "--operation",
+                args.deploy_operation,
+            ]
+        )
+        if deploy_code:
+            raise RepositoryShipError(
+                str(deployed.get("message", "Deployment failed."))
+            )
+        if checkpoint_path is not None and deployment_identity is not None:
+            _write_deployment_checkpoint(
+                checkpoint_path,
+                deployment_identity,
+                deployed,
+            )
 
     finalized: dict[str, Any] | None = None
     if pending_scope is not None:
@@ -213,6 +317,8 @@ def ship_repository(args: argparse.Namespace) -> dict[str, object]:
             raise RepositoryShipError(
                 str(finalized.get("message", "Selected-work cleanup failed."))
             )
+        if checkpoint_path is not None:
+            checkpoint_path.unlink(missing_ok=True)
 
     return {
         "status": shipped["status"],

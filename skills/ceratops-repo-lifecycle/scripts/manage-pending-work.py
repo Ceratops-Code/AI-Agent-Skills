@@ -321,7 +321,8 @@ def finalize_scope(
     scope = _read_scope(path)
     expected_root = (repo_root.parent / "worktrees" / repo_root.name).resolve()
     removed: list[str] = []
-    for branch in scope["source_branches"]:
+    source_branches = list(scope["source_branches"])
+    for index, branch in enumerate(source_branches):
         if branch in {current_branch, target_branch}:
             raise PendingWorkError("Pending-work scope contains a protected branch.")
         worktree = _selected_worktree(repo_root, branch)
@@ -332,7 +333,12 @@ def finalize_scope(
             cwd=repo_root,
         )
         removed.append(branch)
-    path.unlink()
+        remaining = source_branches[index + 1 :]
+        if remaining:
+            scope = {**scope, "source_branches": remaining}
+            _write_scope(path, scope)
+        else:
+            path.unlink()
     return {
         "status": "finalized",
         "removed": removed,

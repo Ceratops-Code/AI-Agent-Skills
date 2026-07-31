@@ -1573,6 +1573,59 @@ def test_promote_repository_requires_an_explicit_deployment_choice(
         assert log.read_text(encoding="utf-8") == "no-base\n"
 
 
+def test_promote_and_deploy_includes_prior_unpublished_batch(
+    tmp_path: pathlib.Path,
+) -> None:
+    repo, approved_head, log, environment = prepare_repository_lifecycle_repo(tmp_path)
+    deployed_baseline = run_git(repo, "rev-parse", "main").stdout.strip()
+    first = subprocess.run(
+        [
+            sys.executable,
+            str(PROMOTE_REPOSITORY),
+            "--repo-root",
+            str(repo),
+            "--source-branch",
+            "approved",
+            "--no-run-operation",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=environment,
+    )
+    assert first.returncode == 0, first.stderr
+    assert not log.exists()
+
+    assert run_git(repo, "switch", "-c", "approved-second", "release/local").returncode == 0
+    (repo / "README.md").write_text(
+        "base\napproved\napproved second\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    assert run_git(repo, "add", "README.md").returncode == 0
+    assert run_git(repo, "commit", "-m", "approved second change").returncode == 0
+    second = subprocess.run(
+        [
+            sys.executable,
+            str(PROMOTE_REPOSITORY),
+            "--repo-root",
+            str(repo),
+            "--source-branch",
+            "approved-second",
+            "--run-operation",
+            "after_promote",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=environment,
+    )
+
+    assert second.returncode == 0, second.stderr
+    assert json.loads(second.stdout)["release_start"] == approved_head
+    assert log.read_text(encoding="utf-8") == f"{deployed_baseline}\n"
+
+
 def test_promote_repository_reuses_checked_out_release_worktree(
     tmp_path: pathlib.Path,
 ) -> None:
@@ -1759,6 +1812,12 @@ def test_repository_ship_late_pending_work_reports_remote_mutation(
 ) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
+    (repo / "deploy").mkdir()
+    (repo / "deploy" / "deploy.yml").write_text(
+        "version: 1\noperations: {}\n",
+        encoding="utf-8",
+        newline="\n",
+    )
     scope = tmp_path / "scope.json"
     shipped = {
         "status": "shipped",
@@ -1824,6 +1883,19 @@ def test_repository_ship_late_pending_work_reports_remote_mutation(
         review_wait_seconds=1,
         interval_seconds=1,
     )
+    if late_phase == "post_finalize":
+        stale_identity = loaded["_deployment_identity"](
+            repo,
+            target_branch="release/local",
+            target_commit="d" * 40,
+            contract=args.deploy_contract,
+            operation="after_ship",
+        )
+        loaded["_write_deployment_checkpoint"](
+            scope.with_suffix(".after-ship.json"),
+            stale_identity,
+            {"status": "deployed", "operation": "after_ship", "steps": ["old"]},
+        )
 
     result = ship_repository(args)
 
@@ -1839,6 +1911,45 @@ def test_repository_ship_late_pending_work_reports_remote_mutation(
         assert len(commands) == 4
         assert "finalize" in commands[3]
         assert result["deployment"] == deployed
+        checkpoint = scope.with_suffix(".after-ship.json")
+        assert checkpoint.is_file()
+        responses.extend(
+            [
+                (0, {**shipped, "status": "already_shipped"}),
+                (0, {"status": "ready"}),
+                (0, {"status": "finalized"}),
+            ]
+        )
+
+        resumed = ship_repository(args)
+
+        assert resumed["status"] == "already_shipped"
+        assert resumed["deployment"] == deployed
+        assert len(commands) == 7
+        deploy_runner = str(SHIP_REPOSITORY.parent / "run-deploy-operation.py")
+        assert all(deploy_runner not in command for command in commands[4:])
+        assert not checkpoint.exists()
+
+
+def test_repository_ship_rejects_malformed_deployment_checkpoint(
+    tmp_path: pathlib.Path,
+) -> None:
+    loaded = runpy.run_path(str(SHIP_REPOSITORY))
+    checkpoint = tmp_path / "scope.after-ship.json"
+    checkpoint.write_text("{}", encoding="utf-8", newline="\n")
+    identity = {
+        "version": 1,
+        "target_branch": "release/local",
+        "target_commit": "a" * 40,
+        "contract": str(tmp_path / "deploy.yml"),
+        "operation": "after_ship",
+    }
+
+    with pytest.raises(
+        loaded["RepositoryShipError"],
+        match="invalid structure",
+    ):
+        loaded["_read_deployment_checkpoint"](checkpoint, identity)
 
 
 def run_pending_work(
@@ -1998,6 +2109,103 @@ def test_pending_work_scope_is_selected_generic_and_finalized_late(
     assert unrelated_worktree.is_dir()
     assert run_git(repo, "show-ref", "--verify", "refs/heads/unrelated").returncode == 0
     assert not scope_path.exists()
+
+
+def test_pending_work_finalization_persists_partial_cleanup_progress(
+    tmp_path: pathlib.Path,
+) -> None:
+    repo = tmp_path / "Repository"
+    repo.mkdir()
+    assert run_git(repo, "init", "-b", "main").returncode == 0
+    assert run_git(repo, "config", "user.email", "test@example.invalid").returncode == 0
+    assert run_git(repo, "config", "user.name", "Test Agent").returncode == 0
+    readme = repo / "README.md"
+    readme.write_text("base\n", encoding="utf-8", newline="\n")
+    assert run_git(repo, "add", "README.md").returncode == 0
+    assert run_git(repo, "commit", "-m", "base").returncode == 0
+    assert run_git(repo, "switch", "-c", "selected-a").returncode == 0
+    readme.write_text("base\na\n", encoding="utf-8", newline="\n")
+    assert run_git(repo, "commit", "-am", "selected a").returncode == 0
+    assert run_git(repo, "switch", "-c", "selected-b").returncode == 0
+    readme.write_text("base\na\nb\n", encoding="utf-8", newline="\n")
+    assert run_git(repo, "commit", "-am", "selected b").returncode == 0
+    target_commit = run_git(repo, "rev-parse", "HEAD").stdout.strip()
+    assert run_git(repo, "branch", "release/local", target_commit).returncode == 0
+    assert run_git(repo, "switch", "main").returncode == 0
+    assert run_git(repo, "merge", "--ff-only", "release/local").returncode == 0
+    current_commit = run_git(repo, "rev-parse", "HEAD").stdout.strip()
+
+    worktree_root = tmp_path / "worktrees" / repo.name
+    selected_a = worktree_root / "selected-a"
+    selected_b = worktree_root / "selected-b"
+    worktree_root.mkdir(parents=True)
+    assert run_git(repo, "worktree", "add", str(selected_a), "selected-a").returncode == 0
+    assert run_git(repo, "worktree", "add", str(selected_b), "selected-b").returncode == 0
+    recorded = run_pending_work(
+        repo,
+        "record",
+        "--target-branch",
+        "release/local",
+        "--target-commit",
+        target_commit,
+        "--source-branch",
+        "selected-a",
+        "--source-branch",
+        "selected-b",
+    )
+    assert recorded.returncode == 0, recorded.stderr
+    scope_path = pathlib.Path(json.loads(recorded.stdout)["pending_work_scope"])
+
+    lifecycle_scripts = str(MANAGE_PENDING_WORK.parent)
+    sys.path.insert(0, lifecycle_scripts)
+    try:
+        loaded = runpy.run_path(str(MANAGE_PENDING_WORK))
+    finally:
+        sys.path.remove(lifecycle_scripts)
+    finalize_scope = loaded["finalize_scope"]
+    original_require_success = finalize_scope.__globals__["require_success"]
+    pending_error = loaded["PendingWorkError"]
+
+    def fail_second_branch(
+        command: list[str],
+        *,
+        cwd: pathlib.Path,
+    ) -> subprocess.CompletedProcess[str]:
+        if command[-3:] == ["branch", "-d", "selected-b"]:
+            raise pending_error("simulated second-branch cleanup failure")
+        return original_require_success(command, cwd=cwd)
+
+    finalize_scope.__globals__["require_success"] = fail_second_branch
+    with pytest.raises(pending_error, match="second-branch cleanup failure"):
+        finalize_scope(
+            repo,
+            scope_path,
+            target_branch="release/local",
+            target_commit=target_commit,
+            current_branch="main",
+            current_commit=current_commit,
+        )
+
+    assert json.loads(scope_path.read_text(encoding="utf-8"))["source_branches"] == [
+        "selected-b"
+    ]
+    assert run_git(repo, "show-ref", "--verify", "refs/heads/selected-a").returncode != 0
+    assert run_git(repo, "show-ref", "--verify", "refs/heads/selected-b").returncode == 0
+    finalize_scope.__globals__["require_success"] = original_require_success
+
+    resumed = finalize_scope(
+        repo,
+        scope_path,
+        target_branch="release/local",
+        target_commit=target_commit,
+        current_branch="main",
+        current_commit=current_commit,
+    )
+
+    assert resumed["status"] == "finalized"
+    assert resumed["removed"] == ["selected-b"]
+    assert not scope_path.exists()
+    assert run_git(repo, "show-ref", "--verify", "refs/heads/selected-b").returncode != 0
 
 
 def install_bundle_manifest(

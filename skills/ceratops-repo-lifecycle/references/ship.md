@@ -52,9 +52,12 @@ Infer missing values from the checkout, scope file, and live PR before asking.
 6. It rechecks the exact selected scope before `after_ship`, runs the operation
    from `deploy/deploy.yml`, rechecks once more, and removes only clean selected
    worktrees under the expected worktree root plus merged selected branches.
-7. Resume the same exact commit and scope after interruption. Deployment
-   operations must be retry-safe because a process interruption can occur
-   between an external side effect and its result.
+7. After successful `after_ship`, the helper checkpoints its result against the
+   exact target, operation, and resolved contract before finalization. A retry
+   reuses that result while cleanup remains pending and removes the checkpoint
+   after cleanup succeeds. Deployment operations must still be retry-safe
+   because interruption can occur between an external side effect and its
+   checkpoint.
 
 ## Done When
 
