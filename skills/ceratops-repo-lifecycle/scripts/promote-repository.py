@@ -73,6 +73,90 @@ def _selected_worktree(repo_root: pathlib.Path, branch: str) -> pathlib.Path | N
     return pathlib.Path(raw).resolve() if raw else None
 
 
+def _current_branch(worktree: pathlib.Path) -> str:
+    return require_output(
+        _git(worktree, "branch", "--show-current"),
+        cwd=worktree,
+    ).strip()
+
+
+def _is_ancestor(
+    repo_root: pathlib.Path,
+    ancestor: str,
+    descendant: str,
+) -> bool:
+    result = run_command(
+        _git(repo_root, "merge-base", "--is-ancestor", ancestor, descendant),
+        cwd=repo_root,
+    )
+    if result.returncode not in {0, 1}:
+        raise PromotionError("Could not compare Git ancestry.")
+    return result.returncode == 0
+
+
+def _fast_forward_branch(
+    repo_root: pathlib.Path,
+    branch: str,
+    target: str,
+    phase: str,
+) -> str:
+    """Advance a branch without creating or switching a checkout.
+
+    Checked-out branches must advance through their clean existing worktree so
+    its index and files remain synchronized. Unchecked branches use an atomic
+    compare-and-swap ref update. A local branch already ahead of the requested
+    target remains unchanged, matching ``git merge --ff-only`` behavior.
+    """
+
+    worktree = _selected_worktree(repo_root, branch)
+    if worktree is not None:
+        _clean(worktree, f"before {phase}")
+    current = _branch_head(repo_root, branch)
+    target_head = _branch_head(repo_root, target)
+    if current == target_head or _is_ancestor(repo_root, target_head, current):
+        return current
+    if not _is_ancestor(repo_root, current, target_head):
+        raise PromotionError(f"Branch cannot fast-forward during {phase}: {branch}")
+    if worktree is not None:
+        require_success(
+            _git(worktree, "merge", "--ff-only", target_head),
+            cwd=worktree,
+        )
+        _clean(worktree, f"after {phase}")
+    else:
+        require_success(
+            _git(
+                repo_root,
+                "update-ref",
+                f"refs/heads/{branch}",
+                target_head,
+                current,
+            ),
+            cwd=repo_root,
+        )
+    return _branch_head(repo_root, branch)
+
+
+def _deployment_checkout(
+    repo_root: pathlib.Path,
+    release_branch: str,
+    final_source_branch: str,
+) -> pathlib.Path:
+    """Select an existing exact-head checkout without adding a worktree."""
+
+    if _current_branch(repo_root) == release_branch:
+        _clean(repo_root, "before deployment preflight")
+        return repo_root
+    source_worktree = _selected_worktree(repo_root, final_source_branch)
+    if source_worktree is None:
+        raise PromotionError(
+            "Deployment requires the final source branch worktree or the "
+            "supplied checkout already on the release branch."
+        )
+    _clean(source_worktree, "before deployment preflight")
+    return source_worktree
+
+
 def _preflight_sources(repo_root: pathlib.Path, branches: list[str]) -> None:
     for branch in branches:
         require_success(
@@ -159,65 +243,77 @@ def promote(args: argparse.Namespace) -> dict[str, object]:
         f"refs/remotes/{args.remote_name}/{args.main_branch}",
     ):
         raise PromotionError(f"Remote main branch does not exist: {remote_main}")
-    require_success(
-        _git(repo_root, "switch", args.main_branch),
-        cwd=repo_root,
+    _fast_forward_branch(
+        repo_root,
+        args.main_branch,
+        remote_main,
+        f"refreshing {args.main_branch}",
     )
-    require_success(
-        _git(repo_root, "merge", "--ff-only", remote_main),
-        cwd=repo_root,
-    )
-    if _ref_exists(repo_root, f"refs/heads/{args.release_branch}"):
-        require_success(
-            _git(repo_root, "switch", args.release_branch),
-            cwd=repo_root,
-        )
-    else:
-        require_success(
-            _git(
-                repo_root,
-                "switch",
-                "-c",
-                args.release_branch,
-                args.main_branch,
-            ),
-            cwd=repo_root,
-        )
-    _clean(repo_root, f"after preparing {args.release_branch}")
-    release_start = _branch_head(repo_root, args.release_branch)
 
     if args.prepare_release_only:
+        if _ref_exists(repo_root, f"refs/heads/{args.release_branch}"):
+            require_success(
+                _git(repo_root, "switch", args.release_branch),
+                cwd=repo_root,
+            )
+        else:
+            require_success(
+                _git(
+                    repo_root,
+                    "switch",
+                    "-c",
+                    args.release_branch,
+                    args.main_branch,
+                ),
+                cwd=repo_root,
+            )
+        _clean(repo_root, f"after preparing {args.release_branch}")
+        release_start = _branch_head(repo_root, args.release_branch)
         return {
             "status": "prepared",
             "release_branch": args.release_branch,
             "head": release_start,
         }
 
-    merged: list[str] = []
-    for branch in branches:
-        ancestor = run_command(
-            _git(repo_root, "merge-base", "--is-ancestor", "HEAD", branch),
+    deployment_checkout = (
+        _deployment_checkout(repo_root, args.release_branch, branches[-1])
+        if args.run_operation is not None
+        else None
+    )
+    if not _ref_exists(repo_root, f"refs/heads/{args.release_branch}"):
+        require_success(
+            _git(
+                repo_root,
+                "branch",
+                "--no-track",
+                args.release_branch,
+                args.main_branch,
+            ),
             cwd=repo_root,
         )
-        if ancestor.returncode == 1:
+    release_start = _branch_head(repo_root, args.release_branch)
+
+    merged: list[str] = []
+    for branch in branches:
+        release_head = _branch_head(repo_root, args.release_branch)
+        if not _is_ancestor(repo_root, release_head, branch):
             raise PromotionError(
                 f"Source branch must be rebased onto {args.release_branch}: {branch}"
             )
-        if ancestor.returncode:
-            raise PromotionError(f"Could not compare source branch: {branch}")
         base = require_output(
-            _git(repo_root, "merge-base", "HEAD", branch),
+            _git(repo_root, "merge-base", release_head, branch),
             cwd=repo_root,
         ).splitlines()[0]
         require_success(
             _git(repo_root, "diff", "--check", base, branch),
             cwd=repo_root,
         )
-        require_success(
-            _git(repo_root, "merge", "--ff-only", branch),
-            cwd=repo_root,
+        _fast_forward_branch(
+            repo_root,
+            args.release_branch,
+            branch,
+            f"promoting {branch}",
         )
-        _clean(repo_root, f"after promoting {branch}")
         merged.append(branch)
 
     target_commit = _branch_head(repo_root, args.release_branch)
@@ -242,11 +338,21 @@ def promote(args: argparse.Namespace) -> dict[str, object]:
 
     operation: dict[str, Any] | None = None
     if args.run_operation is not None:
+        if deployment_checkout is None:
+            raise PromotionError("Deployment checkout was not selected.")
+        deployment_head = require_output(
+            _git(deployment_checkout, "rev-parse", "HEAD^{commit}"),
+            cwd=deployment_checkout,
+        ).splitlines()[0]
+        if deployment_head != target_commit:
+            raise PromotionError(
+                "Deployment checkout does not match the promoted release commit."
+            )
         operation_command = [
             sys.executable,
             str(DEPLOY_RUNNER),
             "--repo-root",
-            str(repo_root),
+            str(deployment_checkout),
             "--contract",
             str(args.deploy_contract),
             "--operation",
@@ -265,6 +371,7 @@ def promote(args: argparse.Namespace) -> dict[str, object]:
         )
         if operation_code:
             raise PromotionError(str(operation.get("message", "Deployment failed.")))
+        _clean(deployment_checkout, "before reporting ready state")
 
     _clean(repo_root, "before reporting ready state")
     return {
