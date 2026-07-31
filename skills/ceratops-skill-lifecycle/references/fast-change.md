@@ -37,7 +37,8 @@ Infer these inputs from the exact approved change before asking.
 - Use this action only for one coherent patch contained in declared existing
   skill-local files.
 - Rules-only changes may update non-executable skill rules, actions, references,
-  or metadata and run no content validation, readback, or tests.
+  or metadata. Markdown patches run the repository-declared `lint:markdown`
+  package script when present, but no semantic validation, readback, or tests.
 - Helper changes may preserve the existing dependency, public-interface,
   persistent-state, and side-effect boundaries and must name existing behavior
   tests for every changed behavior.
@@ -57,13 +58,15 @@ Infer these inputs from the exact approved change before asking.
 3. Run the fast-change helper once. It mechanically validates branch, clean
    state, request fields, patch paths, ownership, and installer availability
    before mutation.
-4. The helper applies the exact patch. Rules-only requests run no validation or
-   tests; helper requests run only the declared pytest nodes.
+4. The helper applies the exact patch and runs the repository-declared
+   `lint:markdown` package script when any patch path is Markdown. Rules-only
+   requests run no other validation or tests; helper requests then run only the
+   declared pytest nodes.
 5. The helper invokes the installer once for the exact selected skills, stages
    only patch paths, and commits once.
-6. On patch, test, install, staging, or commit failure, the helper reverses only
-   its patch. If runtime activation completed before a later failure, it
-   reinstalls the restored selected snapshot.
+6. On patch, lint, test, install, staging, or commit failure, the helper
+   reverses only its patch. If runtime activation completed before a later
+   failure, it reinstalls the restored selected snapshot.
 7. If classification returns `decision_required`, preserve the request as the
    `update` change specification and report the exact reason, files, skills,
    and required checks.
@@ -76,12 +79,14 @@ Infer these inputs from the exact approved change before asking.
 
 - Classification completed before mutation.
 - The committed diff contains only declared eligible paths.
+- Repository-declared Markdown lint passed when selected by the patch paths.
 - Every changed helper behavior passed its declared existing test.
 - The exact selected runtime batch installed once.
 - Compensation completed after any failed mutated run, or its exact failure is
   reported.
-- No broad source validation, runtime validation, promotion scope, deployment
-  operation, or model-mediated handoff ran.
+- No semantic rules-only validation, broad source validation, runtime
+  validation, promotion scope, deployment operation, or model-mediated handoff
+  ran.
 
 ### Output Contract
 
@@ -89,6 +94,6 @@ Report only:
 
 - release branch and commit
 - affected source and runtime skills
-- targeted behavior tests and installation outcome
+- Markdown lint, targeted behavior tests, and installation outcome
 - exact escalation or compensation blocker
 - intentionally skipped broad checks

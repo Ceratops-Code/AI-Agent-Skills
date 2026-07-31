@@ -18,7 +18,7 @@
     },
     {
       "path": "$AI_AGENT_SKILLS_ROOT/skills/ceratops-skill-lifecycle/scripts/fast-change.py",
-      "lines": "classified direct-release patch, exact tests, installation, commit, and compensation"
+      "lines": "classified direct-release patch, declared Markdown lint, exact tests, installation, commit, and compensation"
     },
     {
       "path": "$AI_AGENT_SKILLS_ROOT/skills/ceratops-skill-lifecycle/scripts/runtime/managed_runtime_builder.py",

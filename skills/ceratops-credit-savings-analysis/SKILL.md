@@ -170,10 +170,14 @@ evidence prevents analysis. Otherwise start with
 `Unimplemented avoidable spend: none found.`
 
 First show this exact run table:
-`Completed run | Total model calls |
+
+```text
+Completed run | Total model calls |
 Avoidable calls - Fix Implemented |
 Avoidable calls - Fix Unimplemented |
-Token usage (total; input % of total/cached % of input/output % of total/reasoning output % of output)`.
+Token usage (total; input % of total/cached % of input/output % of total/reasoning output % of output)
+```
+
 Use each run's `started_at` date/time, not its turn ID, for `Completed run`, and
 include a totals row. Show total tokens as an integer and each percentage to two
 decimal places; do not show raw category token counts. For each

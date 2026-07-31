@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Made fast-change run repository-declared Markdown lint for Markdown patches
+  before installation or commit, with existing compensation on failure.
 - Made promotion-provided `base_revision` conditional on the selected operation
   declaration while preserving strict explicit deployment parameters, and
   corrected stale installer bootstrap docstrings.

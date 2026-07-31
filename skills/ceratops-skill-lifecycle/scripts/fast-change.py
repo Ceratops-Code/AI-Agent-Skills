@@ -4,7 +4,8 @@
 One JSON request declares the exact patch, selected runtime skills, existing
 behavior tests, and commit. The helper classifies the complete request before
 mutation, owns patch-to-commit orchestration, and touches only declared paths.
-It never performs broad source or runtime validation.
+Markdown patches run repository-declared lint; broad source and runtime
+validation remain outside this helper.
 """
 
 from __future__ import annotations
@@ -69,6 +70,7 @@ class ChangeSpec:
     selected_skills: tuple[str, ...]
     classification: str
     tests: tuple[str, ...]
+    run_markdown_lint: bool
     commit_message: str
     install_root: pathlib.Path | None
     paths: tuple[str, ...]
@@ -211,6 +213,37 @@ def _inside_skill(path: pathlib.PurePosixPath, skill: str) -> bool:
         path.relative_to(root)
     except ValueError:
         return False
+    return True
+
+
+def _declares_markdown_lint(
+    repo_root: pathlib.Path, paths: Sequence[str]
+) -> bool:
+    """Select the repository-owned Markdown check only for Markdown patches."""
+
+    if not any(
+        pathlib.PurePosixPath(path).suffix.lower() == ".md" for path in paths
+    ):
+        return False
+    package_path = repo_root / "package.json"
+    if not package_path.is_file():
+        return False
+    try:
+        package = json.loads(package_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise DecisionRequired(f"package.json is unreadable: {exc}") from exc
+    if not isinstance(package, Mapping):
+        raise DecisionRequired("package.json must contain an object")
+    scripts = package.get("scripts")
+    if scripts is None:
+        return False
+    if not isinstance(scripts, Mapping):
+        raise DecisionRequired("package.json scripts must contain an object")
+    command = scripts.get("lint:markdown")
+    if command is None:
+        return False
+    if not isinstance(command, str) or not command.strip():
+        raise DecisionRequired("package.json lint:markdown must be nonempty text")
     return True
 
 
@@ -391,6 +424,7 @@ def classify_request(path: pathlib.Path) -> ChangeSpec:
                 raise DecisionRequired(f"pytest node file does not exist: {test}")
     if not (repo_root / "scripts" / "install-skills.py").is_file():
         raise DecisionRequired("repository targeted installer is missing")
+    run_markdown_lint = _declares_markdown_lint(repo_root, paths)
     return ChangeSpec(
         repo_root=repo_root,
         release_branch=release_branch,
@@ -398,6 +432,7 @@ def classify_request(path: pathlib.Path) -> ChangeSpec:
         selected_skills=selected,
         classification=classification,
         tests=tests,
+        run_markdown_lint=run_markdown_lint,
         commit_message=commit_message.strip(),
         install_root=(
             pathlib.Path(install_value).expanduser().resolve()
@@ -501,6 +536,17 @@ def execute(spec: ChangeSpec) -> dict[str, object]:
             "--check",
             failure="git diff --check failed",
         )
+        if spec.run_markdown_lint:
+            phase = "markdown_lint"
+            _checked(
+                [
+                    "npm.cmd" if sys.platform == "win32" else "npm",
+                    "run",
+                    "lint:markdown",
+                ],
+                cwd=spec.repo_root,
+                failure="repository Markdown lint failed",
+            )
         if spec.classification == "helper":
             phase = "tests"
             _checked(

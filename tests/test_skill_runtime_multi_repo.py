@@ -403,6 +403,11 @@ def prepare_fast_change_repo(tmp_path: pathlib.Path) -> pathlib.Path:
             encoding="utf-8",
             newline="\n",
         )
+        (skill_root / "notes.txt").write_text(
+            "Notes\n",
+            encoding="utf-8",
+            newline="\n",
+        )
         (skill_root / "scripts" / "tool.py").write_text(
             "VALUE = 1\n",
             encoding="utf-8",
@@ -426,6 +431,41 @@ def prepare_fast_change_repo(tmp_path: pathlib.Path) -> pathlib.Path:
     assert run_git(repo, "add", ".").returncode == 0
     assert run_git(repo, "commit", "-m", "base").returncode == 0
     return repo
+
+
+def enable_test_markdown_lint(repo: pathlib.Path) -> pathlib.Path:
+    """Declare one observable repository Markdown check in an isolated repo."""
+
+    log = repo.parent / "markdown-lint.log"
+    (repo / "package.json").write_text(
+        json.dumps(
+            {
+                "private": True,
+                "scripts": {"lint:markdown": "python markdown-lint.py"},
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    (repo / "markdown-lint.py").write_text(
+        "import pathlib\n"
+        "root = pathlib.Path(__file__).resolve().parent\n"
+        "log = root.parent / 'markdown-lint.log'\n"
+        "with log.open('a', encoding='utf-8') as stream:\n"
+        "    stream.write('run\\n')\n"
+        "for path in (root / 'skills').rglob('*.md'):\n"
+        "    for number, line in enumerate(path.read_text(encoding='utf-8').splitlines(), 1):\n"
+        "        if len(line) > 80:\n"
+        "            print(f'{path}:{number}: line too long')\n"
+        "            raise SystemExit(1)\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    assert run_git(repo, "add", "package.json", "markdown-lint.py").returncode == 0
+    assert run_git(repo, "commit", "-m", "add markdown lint").returncode == 0
+    return log
 
 
 def fast_change_patch(
@@ -495,6 +535,7 @@ def test_fast_change_commits_cohesive_rules_only_multi_skill_scope(
     tmp_path: pathlib.Path,
 ) -> None:
     repo = prepare_fast_change_repo(tmp_path)
+    lint_log = enable_test_markdown_lint(repo)
     paths = {
         "skills/alpha-tool/SKILL.md": ("description: Test", "description: Updated"),
         "skills/alpha-tool/references/change.md": ("# Change", "# Updated"),
@@ -521,6 +562,52 @@ def test_fast_change_commits_cohesive_rules_only_multi_skill_scope(
     installs = (repo.parent / "install.log").read_text(encoding="utf-8").splitlines()
     assert len(installs) == 1
     assert installs[0].count("--skill") == 2
+    assert lint_log.read_text(encoding="utf-8").splitlines() == ["run"]
+
+    plain_text = run_fast_change(
+        repo,
+        fast_change_request(
+            repo,
+            fast_change_patch(
+                repo,
+                {"skills/alpha-tool/notes.txt": ("Notes", "Updated notes")},
+            ),
+            selected=["alpha-tool"],
+        ),
+    )
+    assert plain_text.returncode == 0, plain_text.stderr
+    assert lint_log.read_text(encoding="utf-8").splitlines() == ["run"]
+
+    head_before_failure = run_git(repo, "rev-parse", "HEAD").stdout.strip()
+    too_long = "description: " + ("x" * 90)
+    failed_lint = run_fast_change(
+        repo,
+        fast_change_request(
+            repo,
+            fast_change_patch(
+                repo,
+                {
+                    "skills/alpha-tool/SKILL.md": (
+                        "description: Updated skill.",
+                        too_long,
+                    )
+                },
+            ),
+            selected=["alpha-tool"],
+        ),
+    )
+    assert failed_lint.returncode == 1
+    assert run_git(repo, "rev-parse", "HEAD").stdout.strip() == head_before_failure
+    assert "description: Updated skill." in (
+        repo / "skills" / "alpha-tool" / "SKILL.md"
+    ).read_text(encoding="utf-8")
+    assert run_git(repo, "status", "--porcelain").stdout == ""
+    installs = (repo.parent / "install.log").read_text(encoding="utf-8").splitlines()
+    assert len(installs) == 2
+    assert lint_log.read_text(encoding="utf-8").splitlines() == ["run", "run"]
+    detail = json.loads(failed_lint.stderr)["detail"]
+    assert detail["phase"] == "markdown_lint"
+    assert detail["compensation"] == ["source_restored"]
 
 
 def test_fast_change_helper_tests_and_compensates_failures(

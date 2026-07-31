@@ -99,7 +99,7 @@ without repository deduplication.
 | `skills/ceratops-repo-lifecycle/scripts/manage-pending-work.py` | Records, checks, and finalizes the exact selected branch and worktree scope used by promotion and shipping. |
 | `skills/ceratops-repo-lifecycle/scripts/run-deploy-operation.py` | Validates `deploy/deploy.yml`, resolves its exact declared parameters, and executes one operation as ordered argv steps without a shell. |
 | `skills/ceratops-repo-lifecycle/scripts/ship-repository.py` | Orchestrates scoped pre-push checking, guarded GitHub shipping, main synchronization, a pre-deploy recheck, `after_ship`, and final selected-source recheck and cleanup. |
-| `skills/ceratops-skill-lifecycle/scripts/fast-change.py` | Classifies and owns one eligible direct-release patch through exact tests, targeted installation, commit, and failure compensation. |
+| `skills/ceratops-skill-lifecycle/scripts/fast-change.py` | Classifies and owns one eligible direct-release patch through declared Markdown lint, exact helper tests, targeted installation, commit, and failure compensation. |
 | `skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py` | Source validator plus deterministic authoritative installer-version synchronization. |
 
 Lifecycle helpers suppress successful subcommand output and print only compact
@@ -111,8 +111,9 @@ coherent change stays within declared files under existing selected skills,
 preserves helper boundaries, and has sufficient targeted checks. It may cover
 multiple files and skills. The repository lifecycle helper prepares
 `release/local`; one `fast-change.py` request then classifies the complete
-scope before mutation and owns patching, exact existing tests when required,
-targeted installation, staging, commit, and compensation.
+scope before mutation and owns patching, repository-declared Markdown lint,
+exact helper tests when required, targeted installation, staging, commit, and
+compensation.
 
 Promotion and deployment are separate repository actions. `promote` assembles
 the selected branches into `release/*` without deployment;
