@@ -517,7 +517,8 @@ def runtime_lock(install_root: pathlib.Path) -> Iterator[None]:
     install_root.mkdir(parents=True, exist_ok=True)
     identity = _runtime_identity(install_root)
     if os.name == "nt":
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        windows_ctypes = cast(Any, ctypes)
+        kernel32 = windows_ctypes.WinDLL("kernel32", use_last_error=True)
         create = kernel32.CreateMutexW
         create.argtypes = (ctypes.c_void_p, ctypes.c_bool, ctypes.c_wchar_p)
         create.restype = ctypes.c_void_p
@@ -530,7 +531,7 @@ def runtime_lock(install_root: pathlib.Path) -> Iterator[None]:
         close.argtypes = (ctypes.c_void_p,)
         handle = create(None, False, f"Local\\CeratopsSkillInstall-{identity}")
         if not handle:
-            raise OSError(ctypes.get_last_error(), "CreateMutexW failed")
+            raise OSError(windows_ctypes.get_last_error(), "CreateMutexW failed")
         acquired = False
         try:
             result = wait(handle, 0)
@@ -538,7 +539,7 @@ def runtime_lock(install_root: pathlib.Path) -> Iterator[None]:
                 raise InstallBusy()
             if result == 0xFFFFFFFF:
                 raise OSError(
-                    ctypes.get_last_error(), "WaitForSingleObject failed"
+                    windows_ctypes.get_last_error(), "WaitForSingleObject failed"
                 )
             if result not in {0x00000000, 0x00000080}:
                 raise OSError(f"unexpected mutex wait result: {result}")

@@ -2677,7 +2677,7 @@ def test_transaction_retry_policy_and_acl_order(
                     errno.EBUSY if self.transient else errno.EACCES,
                     "rename failure",
                 )
-                error.winerror = 32 if self.transient else 5
+                setattr(error, "winerror", 32 if self.transient else 5)
                 raise error
 
     monkeypatch.setattr(builder["time"], "sleep", lambda _seconds: None)
