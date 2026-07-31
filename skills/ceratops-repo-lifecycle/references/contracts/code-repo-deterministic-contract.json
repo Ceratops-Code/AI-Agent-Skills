@@ -133,9 +133,6 @@
   "checks": [
     {
       "id": "type.path_signals",
-      "source_lines": [
-        "skills/ceratops-repo-lifecycle/references/health-audit.md"
-      ],
       "kind": "classification",
       "applies_when": "always",
       "assertions": [
@@ -147,9 +144,6 @@
     },
     {
       "id": "type.language_signals",
-      "source_lines": [
-        "skills/ceratops-repo-lifecycle/references/health-audit.md"
-      ],
       "kind": "classification",
       "applies_when": "always",
       "assertions": [
@@ -161,9 +155,6 @@
     },
     {
       "id": "actions.workflow_sha_pinning",
-      "source_lines": [
-        "skills/ceratops-repo-lifecycle/references/health-audit.md"
-      ],
       "kind": "tree_scan",
       "applies_when": "type.workflow_surface has has_workflows",
       "assertions": [
@@ -180,9 +171,6 @@
     },
     {
       "id": "security.dependabot_config_file",
-      "source_lines": [
-        "skills/ceratops-repo-lifecycle/references/health-audit.md"
-      ],
       "kind": "tree_scan",
       "applies_when": "repo.archived == false && repo.fork == false && package_manifests_present == true",
       "assertions": [
@@ -215,9 +203,6 @@
     },
     {
       "id": "content.required_files_presence",
-      "source_lines": [
-        "skills/ceratops-repo-lifecycle/references/health-audit.md"
-      ],
       "kind": "api_and_tree",
       "applies_when": "repo.archived == false",
       "assertions": [
@@ -260,9 +245,6 @@
     },
     {
       "id": "content.codeowners_valid",
-      "source_lines": [
-        "skills/ceratops-repo-lifecycle/references/health-audit.md"
-      ],
       "kind": "api",
       "endpoint": "/repos/${owner}/${repo}/codeowners/errors",
       "applies_when": "repository.codeowners_present",
@@ -281,10 +263,6 @@
     },
     {
       "id": "local.git_state",
-      "source_lines": [
-        "skills/ceratops-repo-lifecycle/references/health-audit.md",
-        "skills/ceratops-repo-lifecycle/references/create-or-publish.md"
-      ],
       "kind": "local_git",
       "applies_when": "local_repo_path is provided",
       "assertions": [
@@ -316,9 +294,6 @@
     },
     {
       "id": "stale_state.local_path_references",
-      "source_lines": [
-        "skills/ceratops-repo-lifecycle/references/health-audit.md"
-      ],
       "kind": "tree_scan",
       "applies_when": "local_repo_path is provided && repo.archived == false",
       "assertions": [
@@ -350,10 +325,6 @@
     },
     {
       "id": "content.local_secret_pattern_scan",
-      "source_lines": [
-        "skills/ceratops-repo-lifecycle/scripts/github_contract_engine/collectors/local_repository.py:collect_local_repository",
-        "skills/ceratops-repo-lifecycle/references/health-audit.md"
-      ],
       "kind": "tree_scan",
       "applies_when": "local_repo_path is provided && repo.archived == false",
       "assertions": [

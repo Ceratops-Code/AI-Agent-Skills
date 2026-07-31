@@ -11,10 +11,11 @@ from __future__ import annotations
 import argparse
 import json
 import pathlib
+import re
 import subprocess
 import sys
 from collections.abc import Mapping, Sequence
-from typing import Any
+from typing import Any, cast
 
 import jsonschema
 import yaml
@@ -28,6 +29,8 @@ SCHEMA = (
     / "deploy-contract.schema.json"
 )
 DEFAULT_CONTRACT = pathlib.Path("deploy/deploy.yml")
+PARAMETER_NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
+PLACEHOLDER_RE = re.compile(r"^\{(?P<name>[a-z][a-z0-9_]*)\}$")
 
 
 class DeployError(RuntimeError):
@@ -71,7 +74,7 @@ def _read_contract(
 
 def _operation_steps(
     contract: Mapping[str, Any], operation: str
-) -> Sequence[Mapping[str, Any]]:
+) -> tuple[Mapping[str, Any], Sequence[Mapping[str, Any]]]:
     operations = contract.get("operations")
     if not isinstance(operations, Mapping) or operation not in operations:
         raise DeployError(f"Deployment operation is not declared: {operation}")
@@ -81,7 +84,43 @@ def _operation_steps(
     steps = selected.get("steps")
     if not isinstance(steps, Sequence) or isinstance(steps, (str, bytes)):
         raise DeployError(f"Deployment operation has no valid steps: {operation}")
-    return steps
+    return selected, steps
+
+
+def _parameters(values: Sequence[str]) -> dict[str, str]:
+    """Parse unique nonempty ``name=value`` operation parameters."""
+
+    result: dict[str, str] = {}
+    for value in values:
+        name, separator, parameter = value.partition("=")
+        if (
+            not separator
+            or PARAMETER_NAME_RE.fullmatch(name) is None
+            or not parameter
+        ):
+            raise DeployError("Deployment parameters must use name=value.")
+        if name in result:
+            raise DeployError(f"Duplicate deployment parameter: {name}")
+        result[name] = parameter
+    return result
+
+
+def _expanded_argv(
+    argv: Sequence[str], parameters: Mapping[str, str]
+) -> list[str]:
+    """Replace only whole-argument declared placeholders."""
+
+    expanded: list[str] = []
+    for value in argv:
+        match = PLACEHOLDER_RE.fullmatch(value)
+        if match is None:
+            expanded.append(value)
+            continue
+        name = match.group("name")
+        if name not in parameters:
+            raise DeployError(f"Missing deployment parameter: {name}")
+        expanded.append(parameters[name])
+    return expanded
 
 
 def _working_directory(
@@ -105,6 +144,7 @@ def run_operation(
     repo_root: pathlib.Path,
     operation: str,
     contract_path: pathlib.Path = DEFAULT_CONTRACT,
+    parameters: Mapping[str, str] | None = None,
 ) -> dict[str, object]:
     """Run one declared operation and return its compact structured result."""
 
@@ -112,8 +152,26 @@ def run_operation(
     if not root.is_dir():
         raise DeployError("Repository root is not a directory.")
     contract = _read_contract(root, contract_path)
-    completed: list[str] = []
-    for step in _operation_steps(contract, operation):
+    selected, steps = _operation_steps(contract, operation)
+    expected = selected.get("parameters", [])
+    if (
+        not isinstance(expected, Sequence)
+        or isinstance(expected, (str, bytes))
+        or not all(isinstance(value, str) for value in expected)
+    ):
+        raise DeployError(f"Deployment operation has invalid parameters: {operation}")
+    supplied = dict(parameters or {})
+    missing = sorted(set(expected) - set(supplied))
+    extra = sorted(set(supplied) - set(expected))
+    if missing or extra:
+        detail = []
+        if missing:
+            detail.append("missing " + ", ".join(missing))
+        if extra:
+            detail.append("unexpected " + ", ".join(extra))
+        raise DeployError("Deployment parameter mismatch: " + "; ".join(detail))
+    prepared: list[tuple[str, list[str], pathlib.Path]] = []
+    for step in steps:
         step_id = step.get("id")
         argv = step.get("run")
         if (
@@ -123,10 +181,20 @@ def run_operation(
             or not all(isinstance(value, str) and value for value in argv)
         ):
             raise DeployError(f"Deployment operation has an invalid step: {operation}")
+        prepared.append(
+            (
+                step_id,
+                _expanded_argv(cast(Sequence[str], argv), supplied),
+                _working_directory(root, step),
+            )
+        )
+
+    completed: list[str] = []
+    for step_id, argv, working_directory in prepared:
         try:
             result = subprocess.run(
-                list(argv),
-                cwd=_working_directory(root, step),
+                argv,
+                cwd=working_directory,
                 capture_output=True,
                 text=True,
                 check=False,
@@ -154,6 +222,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--repo-root", type=pathlib.Path, default=pathlib.Path.cwd())
     parser.add_argument("--contract", type=pathlib.Path, default=DEFAULT_CONTRACT)
     parser.add_argument("--operation", required=True)
+    parser.add_argument("--parameter", action="append", default=[])
     return parser
 
 
@@ -162,7 +231,12 @@ def main(argv: list[str] | None = None) -> int:
 
     args = build_parser().parse_args(argv)
     try:
-        result = run_operation(args.repo_root, args.operation, args.contract)
+        result = run_operation(
+            args.repo_root,
+            args.operation,
+            args.contract,
+            _parameters(args.parameter),
+        )
     except (DeployError, OSError, ValueError) as exc:
         print(
             json.dumps(

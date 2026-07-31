@@ -184,12 +184,13 @@ def promote(args: argparse.Namespace) -> dict[str, object]:
             cwd=repo_root,
         )
     _clean(repo_root, f"after preparing {args.release_branch}")
+    release_start = _branch_head(repo_root, args.release_branch)
 
     if args.prepare_release_only:
         return {
             "status": "prepared",
             "release_branch": args.release_branch,
-            "head": _branch_head(repo_root, args.release_branch),
+            "head": release_start,
         }
 
     merged: list[str] = []
@@ -241,17 +242,22 @@ def promote(args: argparse.Namespace) -> dict[str, object]:
 
     operation: dict[str, Any] | None = None
     if args.run_operation is not None:
+        operation_command = [
+            sys.executable,
+            str(DEPLOY_RUNNER),
+            "--repo-root",
+            str(repo_root),
+            "--contract",
+            str(args.deploy_contract),
+            "--operation",
+            args.run_operation,
+        ]
+        if args.run_operation == "after_promote":
+            operation_command.extend(
+                ("--parameter", f"base_revision={release_start}")
+            )
         operation_code, operation = _run_json(
-            [
-                sys.executable,
-                str(DEPLOY_RUNNER),
-                "--repo-root",
-                str(repo_root),
-                "--contract",
-                str(args.deploy_contract),
-                "--operation",
-                args.run_operation,
-            ],
+            operation_command,
             SCRIPT_ROOT,
         )
         if operation_code:
@@ -262,6 +268,7 @@ def promote(args: argparse.Namespace) -> dict[str, object]:
         "status": "ready",
         "release_branch": args.release_branch,
         "head": target_commit,
+        "release_start": release_start,
         "merged_branches": merged,
         "pending_work_scope": record["pending_work_scope"],
         "operation": operation,

@@ -715,10 +715,6 @@
       "id": "dependabot.open_alert_queue",
       "endpoint": "/orgs/${org_login}/dependabot/alerts?state=open&per_page=100",
       "method": "GET",
-      "source_lines": [
-        "$CODEX_HOME/automations/daily-dependabot-alert-review/automation.toml:task-specific Dependabot queue contract",
-        "$CODEX_HOME/automations/daily-dependabot-alert-review/dependabot-org-queue-snapshot.py:snapshot schema and alert fields"
-      ],
       "desired": {
         "max_open_alerts": 0
       },
@@ -734,10 +730,6 @@
       "id": "dependabot.open_pr_queue",
       "endpoint": "/search/issues?q=org:${org_login}+is:pr+is:open+author:app/dependabot&per_page=100",
       "method": "GET",
-      "source_lines": [
-        "$CODEX_HOME/automations/daily-dependabot-alert-review/automation.toml:task-specific Dependabot queue contract",
-        "$CODEX_HOME/automations/daily-dependabot-alert-review/dependabot-org-queue-snapshot.py:snapshot schema and PR fields"
-      ],
       "desired": {
         "max_open_dependabot_prs": 0
       },
@@ -1075,10 +1067,6 @@
       "id": "organization.immutable_releases",
       "endpoint": "/orgs/${org_login}/settings/immutable-releases",
       "method": "GET",
-      "source_lines": [
-        "github-contract-source-docs.json:github.rest.orgs",
-        "github-contract-source-docs.json:github.concepts.immutable_releases"
-      ],
       "desired": {
         "enforced_repositories": "all"
       },
@@ -1095,10 +1083,6 @@
       "id": "organization.immutable_releases_selected_repositories",
       "endpoint": "/orgs/${org_login}/settings/immutable-releases/repositories",
       "method": "GET",
-      "source_lines": [
-        "github-contract-source-docs.json:github.rest.orgs",
-        "github-contract-source-docs.json:github.concepts.immutable_releases"
-      ],
       "desired": {
         "status": 409,
         "message_contains": "Immutable releases enforced for all repositories"

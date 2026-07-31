@@ -19,10 +19,10 @@ LIFECYCLE_SKILL = "ceratops-skill-lifecycle"
 MANIFEST_NAME = ".runtime-manifest.json"
 RUNTIME_MANIFEST_SCHEMA = "ceratops-runtime-skill.v3"
 REQUIRED_BUNDLE_PATHS = (
+    pathlib.Path("scripts/fast-change.py"),
     pathlib.Path("scripts/runtime/install-managed-skills.py"),
     pathlib.Path("scripts/runtime/managed_runtime_builder.py"),
     pathlib.Path("scripts/runtime/synchronize-installers.py"),
-    pathlib.Path("scripts/runtime/skills-consistency-runtime-validator.py"),
     pathlib.Path("scripts/skills-consistency-source-validator.py"),
     pathlib.Path("scripts/templates/install-skills-template.py"),
 )

@@ -684,9 +684,6 @@
   "checks": [
     {
       "id": "common.artifact_scope_trigger",
-      "source_lines": [
-        "skills/ceratops-repo-lifecycle/references/create-or-publish.md"
-      ],
       "category": "common",
       "kind": "classification",
       "applies_when": "detected_external_artifact_count > 0 || current_change_affects_artifact == true || final_answer_makes_artifact_claim == true",
@@ -699,9 +696,6 @@
     },
     {
       "id": "common.real_deliverable_classification",
-      "source_lines": [
-        "skills/ceratops-repo-lifecycle/references/create-or-publish.md"
-      ],
       "category": "common",
       "kind": "tree_workflow_release_registry_scan",
       "applies_when": "detected_external_artifact_count > 0 || current_change_affects_artifact == true || final_answer_makes_artifact_claim == true",
@@ -714,9 +708,6 @@
     },
     {
       "id": "common.identity_contract",
-      "source_lines": [
-        "skills/ceratops-repo-lifecycle/references/create-or-publish.md"
-      ],
       "category": "common",
       "kind": "contract_and_metadata",
       "applies_when": "detected_external_artifact_count > 0",
@@ -742,9 +733,6 @@
     },
     {
       "id": "common.audit_only_no_publish",
-      "source_lines": [
-        "skills/ceratops-repo-lifecycle/references/create-or-publish.md"
-      ],
       "category": "common",
       "kind": "mode_guard",
       "applies_when": "audit_only == true",
@@ -758,9 +746,6 @@
     },
     {
       "id": "common.local_build_package_consume",
-      "source_lines": [
-        "skills/ceratops-repo-lifecycle/references/create-or-publish.md"
-      ],
       "category": "common",
       "kind": "local_command_evidence",
       "applies_when": "current_change_affects_artifact == true || final_answer_makes_artifact_claim == true || merged_change_requires_release == true",
@@ -779,9 +764,6 @@
     },
     {
       "id": "common.publish_guard",
-      "source_lines": [
-        "skills/ceratops-repo-lifecycle/references/create-or-publish.md"
-      ],
       "category": "common",
       "kind": "policy_guard",
       "applies_when": "audit_only == false",
@@ -795,9 +777,6 @@
     },
     {
       "id": "common.version_source",
-      "source_lines": [
-        "skills/ceratops-repo-lifecycle/references/create-or-publish.md"
-      ],
       "category": "common",
       "kind": "metadata_and_tag_scan",
       "applies_when": "detected_external_artifact_count > 0",
@@ -813,9 +792,6 @@
     },
     {
       "id": "common.live_registry_verification",
-      "source_lines": [
-        "skills/ceratops-repo-lifecycle/references/create-or-publish.md"
-      ],
       "category": "common",
       "kind": "registry_api_or_cli",
       "applies_when": "detected_external_artifact_count > 0 && (artifact_was_published == true || final_answer_makes_artifact_claim == true || audit_only == false)",
@@ -829,9 +805,6 @@
     },
     {
       "id": "common.short_lived_identity_policy",
-      "source_lines": [
-        "skills/ceratops-repo-lifecycle/references/create-or-publish.md"
-      ],
       "category": "common",
       "kind": "workflow_scan",
       "applies_when": "detected_external_artifact_count > 0 && publish_workflow_detected == true",
@@ -850,9 +823,6 @@
     },
     {
       "id": "common.attestation_permissions",
-      "source_lines": [
-        "skills/ceratops-repo-lifecycle/references/create-or-publish.md"
-      ],
       "category": "common",
       "kind": "workflow_scan",
       "applies_when": "workflow_emits_attestation_or_provenance == true",
@@ -880,10 +850,6 @@
     },
     {
       "id": "common.linked_artifact_metadata",
-      "source_lines": [
-        "skills/ceratops-repo-lifecycle/references/create-or-publish.md",
-        "github-contract-source-docs.json:github.rest.artifact_metadata"
-      ],
       "category": "common",
       "kind": "workflow_and_github_packages_scan",
       "applies_when": "workflow_contains_artifact_metadata_write || linked_artifacts_claimed == true",
@@ -896,9 +862,6 @@
     },
     {
       "id": "common.no_artifact_consistency",
-      "source_lines": [
-        "skills/ceratops-repo-lifecycle/references/create-or-publish.md"
-      ],
       "category": "common",
       "kind": "tree_workflow_release_scan",
       "applies_when": "artifact_type_system includes no_artifact || final_answer_makes_no_artifact_claim == true",
@@ -911,9 +874,6 @@
     },
     {
       "id": "pypi.metadata_and_build",
-      "source_lines": [
-        "skills/ceratops-repo-lifecycle/references/create-or-publish.md"
-      ],
       "category": "pypi_python_package",
       "kind": "manifest_and_build_scan",
       "applies_when": "artifact_type has pypi_python_package",
@@ -985,9 +945,6 @@
     },
     {
       "id": "pypi.trusted_publishing_and_attestations",
-      "source_lines": [
-        "skills/ceratops-repo-lifecycle/references/create-or-publish.md"
-      ],
       "category": "pypi_python_package",
       "kind": "workflow_and_registry_scan",
       "applies_when": "artifact_type has pypi_python_package && publish_workflow_detected == true",
@@ -1011,9 +968,6 @@
     },
     {
       "id": "pypi.live_version_install_smoke",
-      "source_lines": [
-        "skills/ceratops-repo-lifecycle/references/create-or-publish.md"
-      ],
       "category": "pypi_python_package",
       "kind": "registry_api_and_local_command",
       "applies_when": "artifact_type has pypi_python_package && (artifact_was_published == true || final_answer_makes_artifact_claim == true)",
@@ -1032,9 +986,6 @@
     },
     {
       "id": "npm.metadata_and_package_contents",
-      "source_lines": [
-        "skills/ceratops-repo-lifecycle/references/create-or-publish.md"
-      ],
       "category": "npm_package",
       "kind": "manifest_and_pack_scan",
       "applies_when": "artifact_type has npm_package",
@@ -1081,9 +1032,6 @@
     },
     {
       "id": "npm.trusted_publishing_and_provenance",
-      "source_lines": [
-        "skills/ceratops-repo-lifecycle/references/create-or-publish.md"
-      ],
       "category": "npm_package",
       "kind": "workflow_and_registry_scan",
       "applies_when": "artifact_type has npm_package && publish_workflow_detected == true",
@@ -1121,9 +1069,6 @@
     },
     {
       "id": "npm.live_package_version_smoke",
-      "source_lines": [
-        "skills/ceratops-repo-lifecycle/references/create-or-publish.md"
-      ],
       "category": "npm_package",
       "kind": "registry_api_and_local_command",
       "applies_when": "artifact_type has npm_package && (artifact_was_published == true || final_answer_makes_artifact_claim == true)",
@@ -1142,9 +1087,6 @@
     },
     {
       "id": "docker_oci.dockerfile_and_context",
-      "source_lines": [
-        "skills/ceratops-repo-lifecycle/references/create-or-publish.md"
-      ],
       "category": "docker_oci_image",
       "kind": "tree_scan",
       "applies_when": "artifact_type intersects docker_oci_image,github_container_registry_image,generic_oci_registry_image",
@@ -1181,9 +1123,6 @@
     },
     {
       "id": "docker_oci.build_publish_and_pull",
-      "source_lines": [
-        "skills/ceratops-repo-lifecycle/references/create-or-publish.md"
-      ],
       "category": "docker_oci_image",
       "kind": "local_command_and_registry",
       "applies_when": "artifact_type intersects docker_oci_image,github_container_registry_image,generic_oci_registry_image",
@@ -1202,9 +1141,6 @@
     },
     {
       "id": "docker_oci.provenance_and_sbom",
-      "source_lines": [
-        "skills/ceratops-repo-lifecycle/references/create-or-publish.md"
-      ],
       "category": "docker_oci_image",
       "kind": "workflow_and_registry_scan",
       "applies_when": "artifact_type intersects docker_oci_image,github_container_registry_image,generic_oci_registry_image && (workflow_emits_attestation_or_provenance == true || docker_build_push_action_default_provenance_applies == true)",
@@ -1223,9 +1159,6 @@
     },
     {
       "id": "maven.metadata_publish_and_verify",
-      "source_lines": [
-        "skills/ceratops-repo-lifecycle/references/create-or-publish.md"
-      ],
       "category": "maven_package",
       "kind": "manifest_build_registry",
       "applies_when": "artifact_type intersects maven_package,gradle_maven_package",
@@ -1271,9 +1204,6 @@
     },
     {
       "id": "nuget.metadata_pack_publish_and_verify",
-      "source_lines": [
-        "skills/ceratops-repo-lifecycle/references/create-or-publish.md"
-      ],
       "category": "nuget_package",
       "kind": "manifest_build_registry",
       "applies_when": "artifact_type has nuget_package",
@@ -1291,9 +1221,6 @@
     },
     {
       "id": "crates.metadata_package_publish_and_verify",
-      "source_lines": [
-        "skills/ceratops-repo-lifecycle/references/create-or-publish.md"
-      ],
       "category": "crates_package",
       "kind": "manifest_build_registry",
       "applies_when": "artifact_type has crates_package",
@@ -1343,9 +1270,6 @@
     },
     {
       "id": "rubygems.metadata_build_publish_and_verify",
-      "source_lines": [
-        "skills/ceratops-repo-lifecycle/references/create-or-publish.md"
-      ],
       "category": "rubygems_package",
       "kind": "manifest_build_registry",
       "applies_when": "artifact_type has rubygems_package",
@@ -1389,9 +1313,6 @@
     },
     {
       "id": "powershell_gallery.metadata_publish_and_verify",
-      "source_lines": [
-        "skills/ceratops-repo-lifecycle/references/create-or-publish.md"
-      ],
       "category": "powershell_gallery_module",
       "kind": "manifest_build_registry",
       "applies_when": "artifact_type has powershell_gallery_module",
@@ -1441,9 +1362,6 @@
     },
     {
       "id": "github_packages.live_package_metadata",
-      "source_lines": [
-        "skills/ceratops-repo-lifecycle/references/create-or-publish.md"
-      ],
       "category": "github_packages",
       "kind": "github_api",
       "applies_when": "artifact_category contains github_packages || registry_hosts contains github.com || registry_hosts contains ghcr.io",
@@ -1461,9 +1379,6 @@
     },
     {
       "id": "github_packages.publish_guard",
-      "source_lines": [
-        "skills/ceratops-repo-lifecycle/references/create-or-publish.md"
-      ],
       "category": "github_packages",
       "kind": "workflow_scan",
       "applies_when": "artifact_category contains github_packages && publish_workflow_detected == true",
@@ -1482,9 +1397,6 @@
     },
     {
       "id": "github_release_assets.assets_and_tags",
-      "source_lines": [
-        "skills/ceratops-repo-lifecycle/references/create-or-publish.md"
-      ],
       "category": "github_release_binary",
       "kind": "github_api_and_tree",
       "applies_when": "artifact_type intersects github_release_binary,generic_binary_archive,installer_or_cli_binary",
@@ -1497,9 +1409,6 @@
     },
     {
       "id": "github_release_assets.attestation_verification",
-      "source_lines": [
-        "skills/ceratops-repo-lifecycle/references/create-or-publish.md"
-      ],
       "category": "github_release_binary",
       "kind": "github_api_and_cli",
       "applies_when": "artifact_type intersects github_release_binary,generic_binary_archive,installer_or_cli_binary && workflow_emits_attestation_or_provenance == true",
@@ -1514,9 +1423,6 @@
     },
     {
       "id": "docs_site.publish_and_live_check",
-      "source_lines": [
-        "skills/ceratops-repo-lifecycle/references/create-or-publish.md"
-      ],
       "category": "documentation_and_sites",
       "kind": "workflow_and_http",
       "applies_when": "artifact_type intersects github_pages_site,static_docs_site",
@@ -1535,9 +1441,6 @@
     },
     {
       "id": "iac_modules.publish_and_verify",
-      "source_lines": [
-        "skills/ceratops-repo-lifecycle/references/create-or-publish.md"
-      ],
       "category": "iac_and_modules",
       "kind": "manifest_build_registry",
       "applies_when": "artifact_type intersects terraform_module,helm_chart",

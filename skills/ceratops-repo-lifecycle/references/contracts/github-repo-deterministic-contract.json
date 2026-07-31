@@ -358,9 +358,6 @@
   "checks": [
     {
       "id": "type.visibility_origin_lifecycle",
-      "source_lines": [
-        "skills/ceratops-repo-lifecycle/references/health-audit.md"
-      ],
       "kind": "classification",
       "applies_when": "always",
       "assertions": [
@@ -380,9 +377,6 @@
     },
     {
       "id": "type.topic_signals",
-      "source_lines": [
-        "skills/ceratops-repo-lifecycle/references/health-audit.md"
-      ],
       "kind": "classification",
       "applies_when": "always",
       "assertions": [
@@ -394,9 +388,6 @@
     },
     {
       "id": "repo.identity_public_contract",
-      "source_lines": [
-        "skills/ceratops-repo-lifecycle/references/health-audit.md"
-      ],
       "kind": "api",
       "endpoint": "/repos/${owner}/${repo}",
       "applies_when": "repo.archived == false",
@@ -435,9 +426,6 @@
     },
     {
       "id": "repo.topics_required",
-      "source_lines": [
-        "skills/ceratops-repo-lifecycle/references/health-audit.md"
-      ],
       "kind": "api",
       "endpoint": "/repos/${owner}/${repo}/topics",
       "applies_when": "repo.archived == false",
@@ -451,9 +439,6 @@
     },
     {
       "id": "repo.unused_feature_flags",
-      "source_lines": [
-        "skills/ceratops-repo-lifecycle/references/create-or-publish.md"
-      ],
       "kind": "api",
       "endpoint": "/repos/${owner}/${repo}",
       "applies_when": "repo.archived == false",
@@ -480,9 +465,6 @@
     },
     {
       "id": "repo.merge_settings",
-      "source_lines": [
-        "skills/ceratops-repo-lifecycle/references/health-audit.md"
-      ],
       "kind": "api",
       "endpoint": "/repos/${owner}/${repo}",
       "applies_when": "repo.archived == false && repo.fork == false",
@@ -517,9 +499,6 @@
     },
     {
       "id": "process.default_branch_name_and_protection_indicator",
-      "source_lines": [
-        "skills/ceratops-repo-lifecycle/references/health-audit.md"
-      ],
       "kind": "api",
       "endpoint": "/repos/${owner}/${repo}/branches/${default_branch}",
       "applies_when": "repo.visibility == public && repo.archived == false && repo.fork == false",
@@ -537,9 +516,6 @@
     },
     {
       "id": "process.default_branch_enforcement_present",
-      "source_lines": [
-        "skills/ceratops-repo-lifecycle/references/health-audit.md"
-      ],
       "kind": "api_composite",
       "applies_when": "repo.visibility == public && repo.archived == false && repo.fork == false",
       "assertions": [
@@ -551,9 +527,6 @@
     },
     {
       "id": "process.branch_protection_or_ruleset_posture",
-      "source_lines": [
-        "skills/ceratops-repo-lifecycle/references/health-audit.md"
-      ],
       "kind": "api_composite",
       "applies_when": "repo.visibility == public && repo.archived == false && repo.fork == false",
       "assertions": [
@@ -608,9 +581,6 @@
     },
     {
       "id": "process.maintainer_bypass_ruleset",
-      "source_lines": [
-        "skills/ceratops-repo-lifecycle/references/create-or-publish.md"
-      ],
       "kind": "api_composite",
       "applies_when": "expected_maintainer_bypass_actors is not empty && repo.archived == false && repo.fork == false",
       "assertions": [
@@ -641,9 +611,6 @@
     },
     {
       "id": "actions.permissions_policy",
-      "source_lines": [
-        "skills/ceratops-repo-lifecycle/references/health-audit.md"
-      ],
       "kind": "api",
       "endpoint": "/repos/${owner}/${repo}/actions/permissions",
       "applies_when": "repo.archived == false && type.workflow_surface has has_workflows",
@@ -664,9 +631,6 @@
     },
     {
       "id": "actions.workflow_token_permissions",
-      "source_lines": [
-        "skills/ceratops-repo-lifecycle/references/health-audit.md"
-      ],
       "kind": "api_and_tree",
       "endpoint": "/repos/${owner}/${repo}/actions/permissions/workflow",
       "applies_when": "repo.archived == false && type.workflow_surface has has_workflows",
@@ -697,10 +661,6 @@
     },
     {
       "id": "actions.oidc_subject_claim_posture",
-      "source_lines": [
-        "github-contract-source-docs.json:github.rest.actions.oidc",
-        "github-contract-source-docs.json:github.actions.oidc"
-      ],
       "kind": "api",
       "endpoint": "/repos/${owner}/${repo}/actions/oidc/customization/sub",
       "applies_when": "repo.archived == false && type.workflow_surface has has_workflows",
@@ -715,9 +675,6 @@
     },
     {
       "id": "actions.artifact_log_retention",
-      "source_lines": [
-        "skills/ceratops-repo-lifecycle/references/health-audit.md"
-      ],
       "kind": "api",
       "endpoint": "/repos/${owner}/${repo}/actions/permissions/artifact-and-log-retention",
       "applies_when": "repo.archived == false && type.workflow_surface has has_workflows",
@@ -731,9 +688,6 @@
     },
     {
       "id": "actions.fork_pr_contributor_approval",
-      "source_lines": [
-        "skills/ceratops-repo-lifecycle/references/health-audit.md"
-      ],
       "kind": "api",
       "endpoint": "/repos/${owner}/${repo}/actions/permissions/fork-pr-contributor-approval",
       "applies_when": "repo.visibility == public && repo.archived == false && type.workflow_surface has has_workflows",
@@ -750,9 +704,6 @@
     },
     {
       "id": "actions.private_fork_pr_workflows",
-      "source_lines": [
-        "skills/ceratops-repo-lifecycle/references/health-audit.md"
-      ],
       "kind": "api",
       "endpoint": "/repos/${owner}/${repo}/actions/permissions/fork-pr-workflows-private-repos",
       "applies_when": "repo.visibility in [private,internal] && repo.archived == false",
@@ -777,9 +728,6 @@
     },
     {
       "id": "actions.latest_default_branch_runs",
-      "source_lines": [
-        "skills/ceratops-repo-lifecycle/references/create-or-publish.md"
-      ],
       "kind": "api",
       "endpoint": "/repos/${owner}/${repo}/actions/runs?branch=${default_branch}&per_page=20",
       "applies_when": "repo.archived == false && type.workflow_surface has has_workflows",
@@ -804,9 +752,6 @@
     },
     {
       "id": "security.security_and_analysis_status",
-      "source_lines": [
-        "skills/ceratops-repo-lifecycle/references/health-audit.md"
-      ],
       "kind": "api",
       "endpoint": "/repos/${owner}/${repo}",
       "applies_when": "repo.archived == false",
@@ -834,9 +779,6 @@
     },
     {
       "id": "security.vulnerability_alerts_enabled",
-      "source_lines": [
-        "skills/ceratops-repo-lifecycle/references/health-audit.md"
-      ],
       "kind": "api_status",
       "endpoint": "/repos/${owner}/${repo}/vulnerability-alerts",
       "applies_when": "repo.archived == false",
@@ -851,9 +793,6 @@
     },
     {
       "id": "security.dependabot_security_updates_enabled",
-      "source_lines": [
-        "skills/ceratops-repo-lifecycle/references/health-audit.md"
-      ],
       "kind": "api_status",
       "endpoint": "/repos/${owner}/${repo}/automated-security-fixes",
       "applies_when": "repo.archived == false && repo.fork == false",
@@ -868,9 +807,6 @@
     },
     {
       "id": "security.open_dependabot_alert_queue",
-      "source_lines": [
-        "skills/ceratops-repo-lifecycle/references/health-audit.md"
-      ],
       "kind": "api",
       "endpoint": "/repos/${owner}/${repo}/dependabot/alerts?state=open&per_page=100",
       "applies_when": "repo.archived == false",
@@ -883,10 +819,6 @@
     },
     {
       "id": "security.open_dependabot_pr_queue",
-      "source_lines": [
-        "$CODEX_HOME/automations/daily-dependabot-alert-review/automation.toml:task-specific Dependabot queue contract",
-        "$CODEX_HOME/automations/daily-dependabot-alert-review/dependabot-org-queue-snapshot.py:snapshot schema and queue fields"
-      ],
       "kind": "cli",
       "applies_when": "repo.archived == false || repository.security.dependabot_prs.items is not empty || repository.security.dependabot_prs.available == false",
       "assertions": [
@@ -910,9 +842,6 @@
     },
     {
       "id": "security.code_security_configuration_attached",
-      "source_lines": [
-        "skills/ceratops-repo-lifecycle/references/health-audit.md"
-      ],
       "kind": "api",
       "endpoint": "/repos/${owner}/${repo}/code-security-configuration",
       "applies_when": "repo.archived == false && repo.owner.type == Organization",
@@ -927,9 +856,6 @@
     },
     {
       "id": "security.code_scanning_default_setup_or_custom",
-      "source_lines": [
-        "skills/ceratops-repo-lifecycle/references/health-audit.md"
-      ],
       "kind": "api_and_tree",
       "endpoint": "/repos/${owner}/${repo}/code-scanning/default-setup",
       "applies_when": "repo.visibility == public && repo.archived == false",
@@ -943,9 +869,6 @@
     },
     {
       "id": "security.open_code_scanning_alert_queue",
-      "source_lines": [
-        "skills/ceratops-repo-lifecycle/references/health-audit.md"
-      ],
       "kind": "api",
       "endpoint": "/repos/${owner}/${repo}/code-scanning/alerts?state=open&per_page=100",
       "applies_when": "repo.visibility == public && repo.archived == false",
@@ -958,9 +881,6 @@
     },
     {
       "id": "security.open_secret_scanning_alert_queue",
-      "source_lines": [
-        "skills/ceratops-repo-lifecycle/references/health-audit.md"
-      ],
       "kind": "api",
       "endpoint": "/repos/${owner}/${repo}/secret-scanning/alerts?state=open&per_page=100",
       "applies_when": "repo.visibility == public && repo.archived == false",
@@ -973,9 +893,6 @@
     },
     {
       "id": "security.private_vulnerability_reporting_public",
-      "source_lines": [
-        "skills/ceratops-repo-lifecycle/references/health-audit.md"
-      ],
       "kind": "api_status",
       "endpoint": "/repos/${owner}/${repo}/private-vulnerability-reporting",
       "applies_when": "repo.visibility == public && repo.archived == false",
@@ -990,9 +907,6 @@
     },
     {
       "id": "security.dependency_review_availability",
-      "source_lines": [
-        "skills/ceratops-repo-lifecycle/references/health-audit.md"
-      ],
       "kind": "api_status",
       "endpoint": "/repos/${owner}/${repo}/dependency-graph/compare/${default_branch}...${default_branch}",
       "applies_when": "repo.archived == false && (repo.visibility != private || owner.plan.name != free)",
@@ -1007,9 +921,6 @@
     },
     {
       "id": "content.community_profile_public",
-      "source_lines": [
-        "skills/ceratops-repo-lifecycle/references/health-audit.md"
-      ],
       "kind": "api",
       "endpoint": "/repos/${owner}/${repo}/community/profile",
       "applies_when": "repo.archived == false",
@@ -1035,9 +946,6 @@
     },
     {
       "id": "content.dependencies_label_when_dependabot_uses_it",
-      "source_lines": [
-        "skills/ceratops-repo-lifecycle/references/health-audit.md"
-      ],
       "kind": "tree_and_api",
       "applies_when": "repository.content.dependabot_label_referenced",
       "assertions": [
@@ -1052,9 +960,6 @@
     },
     {
       "id": "stale_state.pull_requests",
-      "source_lines": [
-        "skills/ceratops-repo-lifecycle/references/health-audit.md"
-      ],
       "kind": "api",
       "endpoint": "/repos/${owner}/${repo}/pulls?state=open&per_page=100",
       "applies_when": "repo.archived == false",
@@ -1071,9 +976,6 @@
     },
     {
       "id": "stale_state.branches",
-      "source_lines": [
-        "skills/ceratops-repo-lifecycle/references/health-audit.md"
-      ],
       "kind": "api",
       "endpoint": "/repos/${owner}/${repo}/branches?per_page=100",
       "applies_when": "repo.archived == false",
@@ -1096,9 +998,6 @@
     },
     {
       "id": "stale_state.tags",
-      "source_lines": [
-        "skills/ceratops-repo-lifecycle/references/health-audit.md"
-      ],
       "kind": "api",
       "endpoint": "/repos/${owner}/${repo}/tags?per_page=100",
       "applies_when": "detected_external_artifact_count > 0",
@@ -1112,9 +1011,6 @@
     },
     {
       "id": "stale_state.releases",
-      "source_lines": [
-        "skills/ceratops-repo-lifecycle/references/health-audit.md"
-      ],
       "kind": "api",
       "endpoint": "/repos/${owner}/${repo}/releases?per_page=100",
       "applies_when": "repo.archived == false",

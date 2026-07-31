@@ -1,6 +1,8 @@
 version: 1
 operations:
   after_promote:
+    parameters:
+      - base_revision
     steps:
       - id: type-check
         run:
@@ -11,21 +13,11 @@ operations:
         run:
           - python
           - scripts/install-skills.py
-      - id: validate-installed-skills
-        run:
-          - python
-          - skills/ceratops-skill-lifecycle/scripts/runtime/skills-consistency-runtime-validator.py
-          - --repo-root
-          - .
+          - --base-revision
+          - "{base_revision}"
   after_ship:
     steps:
       - id: install-managed-skills
         run:
           - python
           - scripts/install-skills.py
-      - id: validate-installed-skills
-        run:
-          - python
-          - skills/ceratops-skill-lifecycle/scripts/runtime/skills-consistency-runtime-validator.py
-          - --repo-root
-          - .

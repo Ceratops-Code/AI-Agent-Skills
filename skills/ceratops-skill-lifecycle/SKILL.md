@@ -63,10 +63,11 @@ Infer missing inputs from the current repo state before asking.
   repositories, and compare installers only by their parsed integer
   `INSTALLER_VERSION`.
 - Use `fast-change` directly on the verified primary release checkout whenever
-  its action contract and readiness helper accept the complete intended scope.
-  Use a task worktree for update actions and for create actions outside this
-  repo. In this repo, new Ceratops skill creation continues through
-  `$ceratops-repo-lifecycle` `promote-and-deploy` unless the user opts out.
+  its action contract and one-request orchestrator accept the complete intended
+  scope. The orchestrator owns patch, exact tests, targeted installation,
+  commit, and compensation. Use a task worktree for `update` and for `create`
+  outside this repo; new Ceratops skills continue through repository lifecycle
+  `promote-and-deploy`.
 
 ### Boundaries
 

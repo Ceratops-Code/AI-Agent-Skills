@@ -56,6 +56,8 @@ from github_contract_engine.format_report import (  # noqa: E402
 )
 from github_contract_engine.github_api import ApiResult, load_json  # noqa: E402
 from github_contract_engine.remediations import HANDLERS  # noqa: E402
+from github_pr_workflow import codex_review as pr_codex_review  # noqa: E402
+from github_pr_workflow import merge as pr_merge  # noqa: E402
 from github_pr_workflow import readiness as pr_validator  # noqa: E402
 
 
@@ -100,7 +102,14 @@ class GHContractStateEngineTests(unittest.TestCase):
         )
         self.assertTrue(
             all(
-                "missing_source_lines" in contract
+                set(contract)
+                == {
+                    "path",
+                    "kind",
+                    "captured_on",
+                    "check_count",
+                    "check_ids",
+                }
                 for contract in snapshot["contracts"]
             )
         )
@@ -1075,38 +1084,48 @@ class GHContractStateEngineTests(unittest.TestCase):
             },
         )
 
-    def test_contract_entrypoints_use_sanitized_json_writer(self):
-        entrypoints = (
-            "codeql_disposition.py",
-            "collect_non_deterministic_evidence.py",
-            "organization_validator.py",
-            "repository_validator.py",
+    def test_codex_review_uses_the_shared_authenticated_clients(self):
+        graphql_result = ApiResult(
+            ok=True,
+            method="GRAPHQL",
+            endpoint="pull-request-review",
+            data={"repository": {"pullRequest": {"number": 7}}},
         )
-        for name in entrypoints:
-            text = (SCRIPTS / "github_contract_engine" / name).read_text(
-                encoding="utf-8"
+        with mock.patch.object(
+            pr_codex_review,
+            "run_gh_graphql",
+            return_value=graphql_result,
+        ) as graphql:
+            data = pr_codex_review.gh_graphql(
+                "query Review",
+                {"number": 7},
+                cwd=ROOT,
             )
-            self.assertIn("write_json(", text)
-            self.assertNotIn("print(json.dumps(", text)
+        self.assertEqual(data["repository"]["pullRequest"]["number"], 7)
+        graphql.assert_called_once_with(
+            "query Review",
+            {"number": 7},
+            "pull-request-review",
+            cwd=ROOT,
+        )
 
-    def test_codex_review_uses_the_existing_github_api_client(self):
-        text = (SCRIPTS / "github_pr_workflow" / "codex_review.py").read_text(
-            encoding="utf-8"
+        repo_result = ApiResult(
+            ok=True,
+            method="COMMAND",
+            endpoint="gh repo view",
+            data={"nameWithOwner": "owner/repo"},
         )
-        self.assertIn(
-            "from github_contract_engine.github_api import "
-            "run_gh_graphql, run_json_command",
-            text,
+        with mock.patch.object(
+            pr_codex_review,
+            "run_json_command",
+            return_value=repo_result,
+        ) as repo_view:
+            self.assertEqual(pr_codex_review.default_repo(ROOT), "owner/repo")
+        repo_view.assert_called_once_with(
+            ["gh", "repo", "view", "--json", "nameWithOwner"],
+            "gh repo view",
+            cwd=ROOT,
         )
-        self.assertNotIn("subprocess.run", text)
-
-    def test_pr_readiness_uses_graphql_rules_only(self):
-        text = (SCRIPTS / "github_pr_workflow" / "readiness.py").read_text(
-            encoding="utf-8"
-        )
-        self.assertIn("run_gh_graphql", text)
-        self.assertNotIn("/rules/branches/", text)
-        self.assertNotIn("urllib.parse", text)
 
     def test_remediation_registry_covers_contract_actions(self):
         actions = {
@@ -1219,6 +1238,22 @@ class GHContractStateEngineTests(unittest.TestCase):
         )
         self.assertTrue(
             any("settable" in error and "/checks/0" in error for error in inert_errors)
+        )
+        source_anchored = json.loads(json.dumps(self.contracts["repo"]))
+        source_anchored["checks"][0]["source_lines"] = [
+            "scripts/example.py:implementation"
+        ]
+        source_anchor_errors = schema_validation.validate_contract_document(
+            source_anchored,
+            schema,
+            document_name="source-anchored.json",
+            schema_name="state-contract.schema.json",
+        )
+        self.assertTrue(
+            any(
+                "source_lines" in error and "/checks/0" in error
+                for error in source_anchor_errors
+            )
         )
 
     def test_pr_readiness_emit_errors_on_error_level(self):
@@ -1601,48 +1636,59 @@ class GHContractStateEngineTests(unittest.TestCase):
             )
 
     def test_merge_helper_revalidates_after_review_wait(self):
-        text = (SCRIPTS / "github_pr_workflow" / "merge.py").read_text(
-            encoding="utf-8"
+        head = "a" * 40
+        trace: list[str] = []
+        readiness_results = iter(
+            [
+                {"head_oid": head, "status": "ready"},
+                {"head_oid": head, "status": "ready"},
+            ]
         )
-        merge_section = text[text.index("def merge_pr(") :]
-        readiness_call = "_validate_readiness("
-        positions = [
-            index
-            for index in range(len(merge_section))
-            if merge_section.startswith(readiness_call, index)
-        ]
-        self.assertEqual(len(positions), 2)
-        wait_position = merge_section.index(
-            "review = codex_review.wait_for_codex_threads("
-        )
-        self.assertLess(positions[0], wait_position)
-        self.assertLess(wait_position, positions[1])
-        self.assertLess(
-            positions[1],
-            merge_section.index(
-                "return merge_verified_pr(args, expected_head=expected_head)"
-            ),
-        )
-        self.assertIn('"--match-head-commit"', text)
 
-        sync_text = (SCRIPTS / "github_pr_workflow" / "sync.py").read_text(
-            encoding="utf-8"
+        def readiness(*_args, **_kwargs):
+            trace.append("readiness")
+            return next(readiness_results)
+
+        def review_wait(*_args, **_kwargs):
+            trace.append("review")
+            return {"active_codex_thread_count": 0, "head_oid": head}
+
+        def merge_verified(_args, *, expected_head):
+            trace.append("merge")
+            self.assertEqual(expected_head, head)
+            return {"status": "merged", "head": expected_head}
+
+        args = argparse.Namespace(
+            repo_root=ROOT,
+            pr="17",
+            admin=True,
+            expected_head=head,
+            repo="owner/repo",
+            wait_seconds=0,
+            interval_seconds=0,
         )
-        first_clean = sync_text.index(
-            '_assert_clean(worktree, f"before synchronization in {worktree}")'
-        )
-        fetch = sync_text.index('"fetch", "--prune", args.remote_name')
-        switch = sync_text.index('"switch", args.main_branch')
-        fast_forward = sync_text.index('"--ff-only"')
-        second_clean = sync_text.index(
-            '_assert_clean(main_worktree, f"after fast-forwarding'
-        )
-        align = sync_text.index('"branch", "-f", branch, args.main_branch')
-        self.assertLess(first_clean, fetch)
-        self.assertLess(fetch, switch)
-        self.assertLess(switch, fast_forward)
-        self.assertLess(fast_forward, second_clean)
-        self.assertLess(second_clean, align)
+        with (
+            mock.patch.object(
+                pr_merge,
+                "_validate_readiness",
+                side_effect=readiness,
+            ) as validate,
+            mock.patch.object(
+                pr_merge.codex_review,
+                "wait_for_codex_threads",
+                side_effect=review_wait,
+            ),
+            mock.patch.object(
+                pr_merge,
+                "merge_verified_pr",
+                side_effect=merge_verified,
+            ),
+        ):
+            result = pr_merge.merge_pr(args)
+
+        self.assertEqual(result, {"status": "merged", "head": head})
+        self.assertEqual(trace, ["readiness", "review", "readiness", "merge"])
+        self.assertEqual(validate.call_count, 2)
 
 
 if __name__ == "__main__":

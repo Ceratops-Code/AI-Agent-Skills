@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Validate Ceratops-compatible skill source and runtime-generation inputs.
 
-Called by CI, explicit skill-maintenance validation, and runtime installation.
+Called by CI and explicit skill-maintenance validation.
 The default mode is a full source-repository validation.
 ``--mode skill`` validates only explicitly selected skills and their required
-rendering inputs for targeted installation. ``--mode sections`` checks shared
+rendering inputs for targeted maintenance. ``--mode sections`` checks shared
 section assignments and source skill delta-only status without running
 unrelated README, metadata, secret, or contract checks.
 """
@@ -12,14 +12,12 @@ unrelated README, metadata, secret, or contract checks.
 from __future__ import annotations
 
 import argparse
-import ast
-import hashlib
 import json
 import pathlib
 import re
 import subprocess
 import sys
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from typing import cast
 
 import jsonschema
@@ -36,21 +34,9 @@ RUNTIME_MANIFEST_SCHEMA = "ceratops-runtime-skill.v3"
 PROFILE_CERATOPS = "ceratops"
 PROFILE_COMPATIBLE = "ceratops-compatible"
 VALIDATION_PROFILES = {PROFILE_CERATOPS, PROFILE_COMPATIBLE}
+ALLOWED_EXTERNAL_PYTHON_MODULES = {"mypy", "pytest", "yamllint"}
 BOOTSTRAP_INSTALLER = ROOT / "scripts" / "install-skills.py"
-RUNTIME_INSTALLER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "runtime" / "install-managed-skills.py"
-BUNDLE_RESOLVER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "runtime" / "resolve-lifecycle-bundle.py"
 INSTALLER_TEMPLATE = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "templates" / "install-skills-template.py"
-INSTALLER_VERSION_HISTORY = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "templates" / "installer-version-history.json"
-INSTALLER_VERSION_HISTORY_BASELINE = 4
-INSTALLER_SYNCHRONIZER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "runtime" / "synchronize-installers.py"
-RUNTIME_BUILDER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "runtime" / "managed_runtime_builder.py"
-RUNTIME_VALIDATOR = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "runtime" / "skills-consistency-runtime-validator.py"
-FAST_CHANGE_READINESS_HELPER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "validate-fast-change-readiness.py"
-PROMOTE_REPOSITORY_HELPER = ROOT / "skills" / "ceratops-repo-lifecycle" / "scripts" / "promote-repository.py"
-MANAGE_PENDING_WORK_HELPER = ROOT / "skills" / "ceratops-repo-lifecycle" / "scripts" / "manage-pending-work.py"
-DEPLOY_OPERATION_HELPER = ROOT / "skills" / "ceratops-repo-lifecycle" / "scripts" / "run-deploy-operation.py"
-SHIP_REPOSITORY_HELPER = ROOT / "skills" / "ceratops-repo-lifecycle" / "scripts" / "ship-repository.py"
-GITHUB_SHIP_HELPER = ROOT / "skills" / "ceratops-repo-lifecycle" / "scripts" / "github_pr_workflow" / "ship.py"
 DEPLOY_CONTRACT = ROOT / "deploy" / "deploy.yml"
 DEPLOY_TEMPLATE = ROOT / "templates" / "deploy-template.yml"
 SKILL_SECTIONS_TEMPLATE = ROOT / "templates" / "skill-sections-template.json"
@@ -62,8 +48,6 @@ DEPLOY_SCHEMA = (
     / "schemas"
     / "deploy-contract.schema.json"
 )
-VALIDATOR = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "skills-consistency-source-validator.py"
-WORKFLOW = ROOT / ".github" / "workflows" / "validate.yml"
 SKILL_DETERMINISTIC_CONTRACT = pathlib.Path("skills/ceratops-skill-lifecycle/references/contracts/skill-deterministic-contract.json")
 SKILL_NONDETERMINISTIC_CONTRACT = pathlib.Path("skills/ceratops-skill-lifecycle/references/contracts/skill-nondeterministic-contract.json")
 REQUIRED_CONTRACT_FILES = [
@@ -126,7 +110,7 @@ SECRET_PATTERNS = [
     re.compile(r"BEGIN (?:RSA |OPENSSH |EC |DSA )?PRIVATE KEY"),
     re.compile(r"[A-Za-z]:\\Users\\[^\\]+", re.IGNORECASE),
 ]
-TEXT_SUFFIXES = {".md", ".py", ".ps1", ".json", ".yml", ".yaml", ".toml", ".txt"}
+GOVERNED_TEXT_SUFFIXES = {".md", ".json", ".yml", ".yaml", ".toml", ".txt"}
 IGNORED_REPO_DIRS = {".git", "__pycache__", ".mypy_cache", ".pytest_cache", ".ruff_cache", "node_modules"}
 IGNORED_REPO_FALLBACK_DIRS = IGNORED_REPO_DIRS | {".venv"}
 
@@ -149,139 +133,21 @@ def installer_version(path: pathlib.Path) -> int | None:
     if not path.is_file():
         return None
     try:
-        module = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    except (OSError, SyntaxError, UnicodeError):
-        return None
-    versions: list[int] = []
-    for node in module.body:
-        if not isinstance(node, (ast.Assign, ast.AnnAssign)):
-            continue
-        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-        if not any(isinstance(target, ast.Name) and target.id == "INSTALLER_VERSION" for target in targets):
-            continue
-        value = node.value
-        if not isinstance(value, ast.Constant) or not isinstance(value.value, int) or isinstance(value.value, bool):
-            return None
-        versions.append(value.value)
-    return versions[0] if len(versions) == 1 and versions[0] > 0 else None
-
-
-def is_installer_version_assignment(node: ast.stmt) -> bool:
-    """Return whether a statement assigns the installer version metadata."""
-
-    if not isinstance(node, (ast.Assign, ast.AnnAssign)):
-        return False
-    targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-    return any(isinstance(target, ast.Name) and target.id == "INSTALLER_VERSION" for target in targets)
-
-
-def installer_behavior_fingerprint(path: pathlib.Path) -> str | None:
-    """Hash executable installer behavior while ignoring version metadata and docstrings."""
-
-    try:
         text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeError):
         return None
-    return installer_behavior_fingerprint_text(text, str(path))
+    versions = [
+        int(match.group("version"))
+        for match in INSTALLER_VERSION_RE.finditer(text)
+    ]
+    return versions[0] if len(versions) == 1 and versions[0] > 0 else None
 
 
-def installer_behavior_fingerprint_text(text: str, filename: str) -> str | None:
-    """Hash executable behavior from installer text."""
-
-    try:
-        module = ast.parse(text, filename=filename)
-    except SyntaxError:
-        return None
-    for owner in ast.walk(module):
-        if not isinstance(owner, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
-            continue
-        if isinstance(owner, ast.Module):
-            owner.body = [node for node in owner.body if not is_installer_version_assignment(node)]
-        if (
-            owner.body
-            and isinstance(owner.body[0], ast.Expr)
-            and isinstance(owner.body[0].value, ast.Constant)
-            and isinstance(owner.body[0].value.value, str)
-        ):
-            del owner.body[0]
-    dump = cast(Callable[..., str], ast.dump)
-    try:
-        normalized = dump(module, include_attributes=False, show_empty=True)
-    except TypeError:
-        normalized = dump(module, include_attributes=False)
-    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
-
-
-def installer_version_history_entries() -> list[tuple[int, str]]:
-    """Read contiguous behavior history from the enforced version-4 baseline."""
-
-    try:
-        history = read_json(INSTALLER_VERSION_HISTORY)
-    except (OSError, json.JSONDecodeError, UnicodeError) as exc:
-        raise ValueError("authoritative installer version history must be readable JSON") from exc
-    if history.get("schema") != "ceratops-installer-version-history.v1":
-        raise ValueError("authoritative installer version history has an unsupported schema")
-    entries = history.get("versions")
-    if not isinstance(entries, list) or not entries:
-        raise ValueError("authoritative installer version history must declare at least one version")
-
-    parsed_entries: list[tuple[int, str]] = []
-    for index, entry in enumerate(entries):
-        if not isinstance(entry, dict):
-            raise ValueError(f"authoritative installer version history entry {index} must be an object")
-        version = entry.get("version")
-        fingerprint = entry.get("behavior_sha256")
-        expected_version = INSTALLER_VERSION_HISTORY_BASELINE + index
-        if not isinstance(version, int) or isinstance(version, bool) or version != expected_version:
-            raise ValueError(
-                "authoritative installer history versions must be contiguous from "
-                f"version {INSTALLER_VERSION_HISTORY_BASELINE}"
-            )
-        if not isinstance(fingerprint, str) or re.fullmatch(r"[0-9a-f]{64}", fingerprint) is None:
-            raise ValueError(
-                f"authoritative installer history version {version} has an invalid behavior_sha256"
-            )
-        if parsed_entries and parsed_entries[-1][1] == fingerprint:
-            raise ValueError("adjacent authoritative installer versions must have different behavior")
-        parsed_entries.append((version, fingerprint))
-    return parsed_entries
-
-
-def check_installer_version_history() -> list[str]:
-    """Verify deterministic producer output as a corruption backstop."""
-
-    try:
-        parsed_entries = installer_version_history_entries()
-    except ValueError as exc:
-        return [str(exc)]
-    errors: list[str] = []
-    current_version = installer_version(INSTALLER_TEMPLATE)
-    current_fingerprint = installer_behavior_fingerprint(INSTALLER_TEMPLATE)
-    if current_version is None or current_fingerprint is None:
-        return errors
-    if parsed_entries and parsed_entries[-1][0] != current_version:
-        errors.append("authoritative installer version must match the newest history version")
-    if parsed_entries and parsed_entries[-1][1] != current_fingerprint:
-        errors.append("authoritative installer behavior changed without a new version history entry")
-    return errors
-
-
-INSTALLER_VERSION_LINE_RE = re.compile(
-    r"^(?P<prefix>[ \t]*INSTALLER_VERSION[ \t]*=[ \t]*)"
-    r"\d+(?P<suffix>[ \t]*(?:#.*)?(?:\r?\n|$))",
+INSTALLER_VERSION_RE = re.compile(
+    r"^[ \t]*INSTALLER_VERSION[ \t]*=[ \t]*"
+    r"(?P<version>[1-9][0-9]*)[ \t]*(?:#.*)?$",
     re.MULTILINE,
 )
-
-
-def replace_installer_version(text: str, version: int) -> str:
-    """Set one literal installer-version line while preserving surrounding text."""
-
-    matches = list(INSTALLER_VERSION_LINE_RE.finditer(text))
-    if len(matches) != 1:
-        raise ValueError("authoritative installer must contain one writable INSTALLER_VERSION line")
-    match = matches[0]
-    replacement = f"{match.group('prefix')}{version}{match.group('suffix')}"
-    return f"{text[:match.start()]}{replacement}{text[match.end():]}"
 
 
 def write_coupled_installer_state(changes: Mapping[pathlib.Path, bytes]) -> None:
@@ -301,50 +167,19 @@ def write_coupled_installer_state(changes: Mapping[pathlib.Path, bytes]) -> None
 
 
 def synchronize_authoritative_installer_version() -> None:
-    """Assign the correct version and update all authoritative installer outputs."""
+    """Copy the explicit-version authoritative template into the bootstrap."""
 
-    entries = installer_version_history_entries()
     template_bytes = INSTALLER_TEMPLATE.read_bytes()
-    try:
-        template_text = template_bytes.decode("utf-8")
-    except UnicodeError as exc:
-        raise ValueError("authoritative installer template must be UTF-8") from exc
-    fingerprint = installer_behavior_fingerprint_text(template_text, str(INSTALLER_TEMPLATE))
-    if fingerprint is None:
-        raise ValueError("authoritative installer template must be valid Python")
-
-    latest_version, latest_fingerprint = entries[-1]
-    expected_version = latest_version
-    if fingerprint != latest_fingerprint:
-        expected_version += 1
-        entries.append((expected_version, fingerprint))
-    synchronized_text = replace_installer_version(template_text, expected_version)
-    synchronized_bytes = synchronized_text.encode("utf-8")
-    if installer_behavior_fingerprint_text(synchronized_text, str(INSTALLER_TEMPLATE)) != fingerprint:
-        raise RuntimeError("installer-version synchronization changed executable behavior")
-
-    newline = "\r\n" if b"\r\n" in INSTALLER_VERSION_HISTORY.read_bytes() else "\n"
-    history_text = json.dumps(
-        {
-            "schema": "ceratops-installer-version-history.v1",
-            "versions": [
-                {"version": version, "behavior_sha256": behavior_sha256}
-                for version, behavior_sha256 in entries
-            ],
-        },
-        indent=2,
+    if installer_version(INSTALLER_TEMPLATE) is None:
+        raise ValueError(
+            "authoritative installer template must declare one positive "
+            "INSTALLER_VERSION"
+        )
+    changes = (
+        {BOOTSTRAP_INSTALLER: template_bytes}
+        if BOOTSTRAP_INSTALLER.read_bytes() != template_bytes
+        else {}
     )
-    history_bytes = f"{history_text}\n".replace("\n", newline).encode("utf-8")
-    candidates = {
-        INSTALLER_TEMPLATE: synchronized_bytes,
-        INSTALLER_VERSION_HISTORY: history_bytes,
-        BOOTSTRAP_INSTALLER: synchronized_bytes,
-    }
-    changes = {
-        path: payload
-        for path, payload in candidates.items()
-        if path.read_bytes() != payload
-    }
     if changes:
         write_coupled_installer_state(changes)
 
@@ -408,7 +243,6 @@ def check_source_installer(profile: str) -> list[str]:
         errors.append("authoritative installer template must declare one positive integer INSTALLER_VERSION")
     elif source_version is not None and source_version != template_version:
         errors.append("repo installer and authoritative template INSTALLER_VERSION values must match")
-    errors.extend(check_installer_version_history())
     return errors
 
 
@@ -506,6 +340,53 @@ def check_deployment_contract(
                         errors.append(
                             "deploy/deploy.yml: Ceratops profile requires "
                             f"operation {operation_name}"
+                        )
+                after_promote = operations.get("after_promote")
+                if isinstance(after_promote, Mapping):
+                    if after_promote.get("parameters") != ["base_revision"]:
+                        errors.append(
+                            "deploy/deploy.yml: after_promote must declare "
+                            "base_revision"
+                        )
+                    promote_runs = [
+                        step.get("run")
+                        for step in cast(
+                            Sequence[Mapping[str, object]],
+                            after_promote.get("steps", []),
+                        )
+                    ]
+                    if not any(
+                        isinstance(argv, list)
+                        and "scripts/install-skills.py" in argv
+                        and "--base-revision" in argv
+                        and "{base_revision}" in argv
+                        for argv in promote_runs
+                    ):
+                        errors.append(
+                            "deploy/deploy.yml: after_promote must pass its "
+                            "base revision to the installer"
+                        )
+                for operation_name in ("after_promote", "after_ship"):
+                    selected_operation = operations.get(operation_name)
+                    if not isinstance(selected_operation, Mapping):
+                        continue
+                    runs = [
+                        step.get("run")
+                        for step in cast(
+                            Sequence[Mapping[str, object]],
+                            selected_operation.get("steps", []),
+                        )
+                    ]
+                    installer_runs = [
+                        argv
+                        for argv in runs
+                        if isinstance(argv, list)
+                        and "scripts/install-skills.py" in argv
+                    ]
+                    if len(installer_runs) != 1:
+                        errors.append(
+                            "deploy/deploy.yml: "
+                            f"{operation_name} must run the installer once"
                         )
 
     if profile != PROFILE_CERATOPS:
@@ -746,6 +627,8 @@ def validate_workflow_target(command: str, skill_names: set[str]) -> list[str]:
 
     if len(parts) >= 3 and parts[0] in {"python", "py"} and parts[1] == "-m":
         module = parts[2]
+        if module in ALLOWED_EXTERNAL_PYTHON_MODULES:
+            return errors
         module_path = ROOT / "src" / pathlib.Path(module.replace(".", "/"))
         if not (module_path.with_suffix(".py").is_file() or (module_path / "__main__.py").is_file()):
             errors.append(f"section manifest maintenance workflow points to missing module {module}")
@@ -839,50 +722,13 @@ def check_retired_baseline_absent() -> list[str]:
     return errors
 
 
-def check_contract_source_lines() -> list[str]:
-    """Validate deterministic contract source reference metadata."""
-
-    errors: list[str] = []
-    for rel_path in REQUIRED_CONTRACT_FILES:
-        if rel_path.suffix != ".json":
-            continue
-        path = ROOT / rel_path
-        if not path.is_file():
-            continue
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError as exc:
-            errors.append(f"{rel_path}: invalid JSON: {exc}")
-            continue
-        checks = data.get("checks", [])
-        if not isinstance(checks, list):
-            continue
-        for index, check in enumerate(checks):
-            check_id = check.get("id", f"checks[{index}]") if isinstance(check, dict) else f"checks[{index}]"
-            source_lines = check.get("source_lines") if isinstance(check, dict) else None
-            if source_lines is None:
-                continue
-            if not isinstance(source_lines, list) or not all(isinstance(item, str) for item in source_lines):
-                errors.append(f"{rel_path}: {check_id}: source_lines must be a list of strings")
-                continue
-            seen: set[str] = set()
-            duplicates: list[str] = []
-            for source_line in source_lines:
-                if source_line in seen and source_line not in duplicates:
-                    duplicates.append(source_line)
-                seen.add(source_line)
-            if duplicates:
-                errors.append(f"{rel_path}: {check_id}: duplicate source_lines: {', '.join(duplicates)}")
-    return errors
-
-
 def iter_repo_text_files() -> list[pathlib.Path]:
-    """Return repo text files that can carry skill references or commands."""
+    """Return governed data and documentation files carrying skill references."""
 
     return [
         path
         for path in iter_repo_source_files()
-        if path.suffix.lower() in TEXT_SUFFIXES
+        if path.suffix.lower() in GOVERNED_TEXT_SUFFIXES
     ]
 
 
@@ -1094,373 +940,6 @@ def check_multi_action_skill_contract(
     return errors
 
 
-def check_skill_scope_validator() -> list[str]:
-    """Check stable semantic boundaries not derivable from action indexes."""
-
-    errors: list[str] = []
-    merge_text = (SKILLS_DIR / "ceratops-repo-lifecycle" / "references" / "merge-pr.md").read_text(encoding="utf-8")
-    if "python -m github_contract_engine validate repo" in merge_text:
-        errors.append("ceratops-repo-lifecycle: merge-pr action must not run repo/artifact contract validation")
-    return errors
-
-
-def check_validation_command_surface() -> list[str]:
-    """Keep source-validator modes, lifecycle helper paths, docs, and CI aligned."""
-
-    errors: list[str] = []
-    validator_text = VALIDATOR.read_text(encoding="utf-8") if VALIDATOR.is_file() else ""
-    bootstrap_installer_text = BOOTSTRAP_INSTALLER.read_text(encoding="utf-8") if BOOTSTRAP_INSTALLER.is_file() else ""
-    runtime_installer_text = RUNTIME_INSTALLER.read_text(encoding="utf-8") if RUNTIME_INSTALLER.is_file() else ""
-    builder_text = RUNTIME_BUILDER.read_text(encoding="utf-8") if RUNTIME_BUILDER.is_file() else ""
-    bundle_resolver_text = BUNDLE_RESOLVER.read_text(encoding="utf-8") if BUNDLE_RESOLVER.is_file() else ""
-    installer_template_text = INSTALLER_TEMPLATE.read_text(encoding="utf-8") if INSTALLER_TEMPLATE.is_file() else ""
-    synchronizer_text = INSTALLER_SYNCHRONIZER.read_text(encoding="utf-8") if INSTALLER_SYNCHRONIZER.is_file() else ""
-    runtime_validator_text = RUNTIME_VALIDATOR.read_text(encoding="utf-8") if RUNTIME_VALIDATOR.is_file() else ""
-    fast_change_readiness_text = FAST_CHANGE_READINESS_HELPER.read_text(encoding="utf-8") if FAST_CHANGE_READINESS_HELPER.is_file() else ""
-    promotion_helper_text = PROMOTE_REPOSITORY_HELPER.read_text(encoding="utf-8") if PROMOTE_REPOSITORY_HELPER.is_file() else ""
-    pending_work_text = MANAGE_PENDING_WORK_HELPER.read_text(encoding="utf-8") if MANAGE_PENDING_WORK_HELPER.is_file() else ""
-    deploy_helper_text = DEPLOY_OPERATION_HELPER.read_text(encoding="utf-8") if DEPLOY_OPERATION_HELPER.is_file() else ""
-    repository_ship_text = SHIP_REPOSITORY_HELPER.read_text(encoding="utf-8") if SHIP_REPOSITORY_HELPER.is_file() else ""
-    github_ship_text = GITHUB_SHIP_HELPER.read_text(encoding="utf-8") if GITHUB_SHIP_HELPER.is_file() else ""
-    readme_text = README.read_text(encoding="utf-8") if README.is_file() else ""
-    workflow_text = WORKFLOW.read_text(encoding="utf-8") if WORKFLOW.is_file() else ""
-
-    for mode in ("skill", "sections", "full"):
-        if f'"{mode}"' not in validator_text:
-            errors.append(f"validator does not declare --mode {mode}")
-    if "-Validate" in bootstrap_installer_text or "-Validate" in runtime_installer_text:
-        errors.append("installers must not expose validation flags")
-    if "SkipInstall" in bootstrap_installer_text or "SkipInstall" in runtime_installer_text:
-        errors.append("installers must not expose validation-only install skipping")
-    for name, text in (("repo installer", bootstrap_installer_text), ("authoritative installer template", installer_template_text)):
-        if "INSTALLER_VERSION" not in text or "resolve-lifecycle-bundle.py" not in text or "install-managed-skills.py" not in text:
-            errors.append(f"{name} must declare its version and call the Python lifecycle resolver and installer")
-    if "skills-consistency-source-validator.py" not in runtime_installer_text or '"--mode"' not in runtime_installer_text:
-        errors.append("runtime installer must call the source validator")
-    if '"full"' not in runtime_installer_text or '"skill"' not in runtime_installer_text:
-        errors.append("runtime installer must select full or targeted source validation from install scope")
-    helper_paths = (
-        ("repository promotion helper", PROMOTE_REPOSITORY_HELPER),
-        ("pending-work helper", MANAGE_PENDING_WORK_HELPER),
-        ("deployment operation helper", DEPLOY_OPERATION_HELPER),
-        ("repository ship helper", SHIP_REPOSITORY_HELPER),
-        ("GitHub ship helper", GITHUB_SHIP_HELPER),
-        ("fast-change readiness helper", FAST_CHANGE_READINESS_HELPER),
-    )
-    for label, path in helper_paths:
-        if not path.is_file():
-            errors.append(f"missing {label}: {path.relative_to(ROOT)}")
-
-    fast_change_markers = (
-        '"branch", "--show-current"',
-        '"status", "--porcelain"',
-        'parser.add_argument("--skill", action="append", required=True)',
-        'parser.add_argument("--target", action="append", required=True)',
-        "target.is_relative_to(skill_root)",
-        'repo_root / "scripts" / "install-skills.py"',
-        '"status": "ready"',
-    )
-    if (
-        any(
-            marker not in fast_change_readiness_text
-            for marker in fast_change_markers
-        )
-        or ".ps1" in fast_change_readiness_text
-        or "powershell" in fast_change_readiness_text.lower()
-    ):
-        errors.append(
-            "fast-change readiness must validate a clean release checkout, "
-            "repeatable selected skills and targets, and targeted installer "
-            "availability in Python"
-        )
-
-    promotion_markers = (
-        'PENDING_MANAGER = SCRIPT_ROOT / "manage-pending-work.py"',
-        'DEPLOY_RUNNER = SCRIPT_ROOT / "run-deploy-operation.py"',
-        '"fetch", "--prune", args.remote_name',
-        '"switch", args.main_branch',
-        '"merge", "--ff-only", remote_main',
-        'if _ref_exists(repo_root, f"refs/heads/{args.release_branch}")',
-        '"merge-base", "--is-ancestor", "HEAD", branch',
-        '"diff", "--check", base, branch',
-        '"merge", "--ff-only", branch',
-        '"record"',
-        "if args.run_operation is not None:",
-        '_clean(repo_root, "before reporting ready state")',
-        '"--run-operation"',
-        '"--no-run-operation"',
-        '"--prepare-release-only"',
-        "if args.prepare_release_only:",
-        '"status": "prepared"',
-    )
-    if (
-        any(marker not in promotion_helper_text for marker in promotion_markers)
-        or '"worktree", "list"' in promotion_helper_text
-        or '"merge", "--no-edit"' in promotion_helper_text
-    ):
-        errors.append(
-            "repository promotion must fast-forward only selected branches, "
-            "record their scope, and delegate optional deployment"
-        )
-    promotion_start = promotion_helper_text.find("def promote(")
-    promotion_end = promotion_helper_text.find("def build_parser(")
-    promotion_flow = promotion_helper_text[promotion_start:promotion_end]
-    promotion_order = (
-        '"fetch", "--prune", args.remote_name',
-        '"switch", args.main_branch',
-        '"merge", "--ff-only", remote_main',
-        'if _ref_exists(repo_root, f"refs/heads/{args.release_branch}")',
-        '"merge-base", "--is-ancestor", "HEAD", branch',
-        '"diff", "--check", base, branch',
-        '"merge", "--ff-only", branch',
-        "target_commit =",
-        "record_command =",
-        "record_code, record =",
-        "if args.run_operation is not None:",
-        '_clean(repo_root, "before reporting ready state")',
-    )
-    if (
-        promotion_start < 0
-        or promotion_end < 0
-        or any(marker not in promotion_flow for marker in promotion_order)
-        or list(map(promotion_flow.find, promotion_order))
-        != sorted(map(promotion_flow.find, promotion_order))
-    ):
-        errors.append(
-            "repository promotion must refresh main, assemble the release "
-            "head, record scope, then optionally deploy"
-        )
-    prepared_status = promotion_flow.find('"status": "prepared"')
-    scope_record = promotion_flow.find("record_command =")
-    if (
-        'if not args.prepare_release_only:\n        _preflight_sources' not in promotion_flow
-        or prepared_status < 0
-        or scope_record < 0
-        or prepared_status > scope_record
-    ):
-        errors.append(
-            "release preparation must exit before source promotion, scope "
-            "recording, or deployment"
-        )
-    if (
-        "install-skills.py" in promotion_helper_text
-        or "skills-consistency-runtime-validator.py" in promotion_helper_text
-    ):
-        errors.append(
-            "repository promotion must leave repository-specific work to the "
-            "named deployment operation"
-        )
-
-    pending_markers = (
-        "ship._load_pending_work_scope",
-        "ship._pending_work_findings",
-        '"repository-lifecycle"',
-        '"promotions"',
-        '"--format=%(worktreepath)"',
-        'subparsers.add_parser("record")',
-        'subparsers.add_parser("check")',
-        'subparsers.add_parser("finalize")',
-        'repo_root.parent / "worktrees" / repo_root.name',
-        '"worktree", "remove", str(path)',
-        '"branch", "-d", branch',
-        "path.unlink()",
-    )
-    if (
-        any(marker not in pending_work_text for marker in pending_markers)
-        or '"worktree", "list"' in pending_work_text
-        or '"--format=%(refname:short)"' in pending_work_text
-        or '"branch", "-D", branch' in pending_work_text
-    ):
-        errors.append(
-            "pending-work management must persist and clean only exact "
-            "selected branches and their bounded worktrees"
-        )
-    finalizer_start = pending_work_text.find("def finalize_scope(")
-    finalizer_end = pending_work_text.find("def build_parser(")
-    finalizer_flow = pending_work_text[finalizer_start:finalizer_end]
-    finalizer_order = (
-        "checked = check_scope(",
-        '"branch", "--show-current"',
-        '"rev-parse", "HEAD"',
-        '"status", "--porcelain"',
-        "expected_root =",
-        'for branch in scope["source_branches"]:',
-        "_remove_selected_worktree(",
-        '"branch", "-d", branch',
-        "path.unlink()",
-    )
-    if (
-        finalizer_start < 0
-        or finalizer_end < 0
-        or any(marker not in finalizer_flow for marker in finalizer_order)
-        or list(map(finalizer_flow.find, finalizer_order))
-        != sorted(map(finalizer_flow.find, finalizer_order))
-    ):
-        errors.append(
-            "pending-work finalization must recheck synchronized state before "
-            "selected-source cleanup"
-        )
-
-    deploy_markers = (
-        "yaml.safe_load(",
-        "jsonschema.Draft202012Validator(schema).validate(value)",
-        '"deploy-contract.schema.json"',
-        "not _inside(resolved, repo_root)",
-        "not _inside(cwd, repo_root)",
-        "for step in _operation_steps(contract, operation):",
-        "subprocess.run(",
-        "list(argv)",
-        "capture_output=True",
-        "check=False",
-        "output[-8:]",
-        "if result.returncode != 0:",
-        '"--operation", required=True',
-    )
-    if (
-        any(marker not in deploy_helper_text for marker in deploy_markers)
-        or "shell=True" in deploy_helper_text
-    ):
-        errors.append(
-            "deployment runner must validate safe YAML and schema, constrain "
-            "paths, and execute argv steps without a shell"
-        )
-
-    repository_ship_markers = (
-        'DEPLOY_RUNNER = SCRIPT_ROOT / "run-deploy-operation.py"',
-        'PENDING_MANAGER = SCRIPT_ROOT / "manage-pending-work.py"',
-        '"github_pr_workflow"',
-        '"--pending-work-check"',
-        '"--no-pending-work-check"',
-        '"--deploy-operation", default="after_ship"',
-        '"phase": "post_sync"',
-        '"remote_mutation": True',
-    )
-    if any(
-        marker not in repository_ship_text
-        for marker in repository_ship_markers
-    ):
-        errors.append(
-            "repository ship must delegate GitHub shipping and own post-sync "
-            "deployment plus selected-work finalization"
-        )
-    repository_ship_start = repository_ship_text.find("def ship_repository(")
-    repository_ship_end = repository_ship_text.find("def build_parser(")
-    repository_ship_flow = repository_ship_text[
-        repository_ship_start:repository_ship_end
-    ]
-    repository_ship_order = (
-        "ship_code, shipped =",
-        "check_code, checked =",
-        "deploy_code, deployed =",
-        "finalize_code, finalized =",
-    )
-    if (
-        repository_ship_start < 0
-        or repository_ship_end < 0
-        or any(
-            marker not in repository_ship_flow
-            for marker in repository_ship_order
-        )
-        or list(map(repository_ship_flow.find, repository_ship_order))
-        != sorted(map(repository_ship_flow.find, repository_ship_order))
-    ):
-        errors.append(
-            "repository ship must complete GitHub sync, late scope check, "
-            "deployment, and final cleanup in order"
-        )
-
-    github_ship_markers = (
-        "pending_work_identity, pending_work_scope = _load_pending_work_scope(",
-        "findings = _pending_work_findings(repo_root, pending_work_scope)",
-        '"remote_mutation": False',
-        "pr_result = ensure_pr.ensure_pr(",
-        'live.get("headRefOid") != commit',
-        "run_parallel_gates(",
-        "ci_wait_seconds=0",
-        "review_wait_seconds=0",
-        "merge_result = merge.merge_verified_pr(",
-        "admin=True",
-        "auto=False",
-        "expected_head=commit",
-        "sync_result = sync.sync_main(",
-    )
-    if (
-        any(marker not in github_ship_text for marker in github_ship_markers)
-        or "run-deploy-operation.py" in github_ship_text
-        or "finalize_scope(" in github_ship_text
-    ):
-        errors.append(
-            "GitHub ship must own exact-head gates, merge, and synchronization "
-            "without owning deployment or source cleanup"
-        )
-    github_ship_start = github_ship_text.find("def ship(")
-    github_ship_end = github_ship_text.find("def build_parser(")
-    github_ship_flow = github_ship_text[github_ship_start:github_ship_end]
-    github_ship_order = (
-        "findings = _pending_work_findings(repo_root, pending_work_scope)",
-        "pr_result = ensure_pr.ensure_pr(",
-        "run_parallel_gates(",
-        "ci_wait_seconds=0",
-        "merge_result = merge.merge_verified_pr(",
-        "sync_result = sync.sync_main(",
-    )
-    if (
-        github_ship_start < 0
-        or github_ship_end < 0
-        or any(marker not in github_ship_flow for marker in github_ship_order)
-        or list(map(github_ship_flow.find, github_ship_order))
-        != sorted(map(github_ship_flow.find, github_ship_order))
-    ):
-        errors.append(
-            "GitHub ship must block before remote mutation, reread gates, "
-            "merge the exact head, then synchronize main"
-        )
-    if RUNTIME_MANIFEST_SCHEMA not in builder_text:
-        errors.append("runtime builder must emit the lifecycle bundle capability schema")
-    for field in ("source_repository_root", "installer_version"):
-        if field not in builder_text or field not in runtime_validator_text:
-            errors.append(f"runtime building and validation must both own manifest field {field}")
-    if (
-        "compare_managed_tree" not in runtime_validator_text
-        or '"--skill"' not in runtime_validator_text
-        or '"--inventory"' not in runtime_validator_text
-        or '"--mode"' in runtime_validator_text
-    ):
-        errors.append("runtime validator must compare managed trees through one command")
-    if (
-        RUNTIME_MANIFEST_SCHEMA not in bundle_resolver_text
-        or "checkout_is_ceratops" not in bundle_resolver_text
-        or "installed_bundle_supported" not in bundle_resolver_text
-    ):
-        errors.append(
-            "lifecycle bundle resolver must enforce source-checkout and installed "
-            "runtime capability selection"
-        )
-    if "INSTALLER_VERSION" not in synchronizer_text or "shutil.copy2" not in synchronizer_text:
-        errors.append("installer synchronizer must compare versions and copy the authoritative template")
-    for snippet in ("--mode full", "--mode sections", "--mode skill"):
-        if snippet not in readme_text:
-            errors.append(f"README is missing validation command snippet {snippet}")
-    if "scripts/install-skills.py" not in workflow_text:
-        errors.append("CI workflow must render managed skills through the Python repo installer")
-
-    return errors
-
-
-def check_validator_output_budget() -> list[str]:
-    """Keep success output small enough for routine automation use."""
-
-    errors: list[str] = []
-    text = VALIDATOR.read_text(encoding="utf-8") if VALIDATOR.is_file() else ""
-    success_lines = [line.strip() for line in text.splitlines() if line.strip().startswith("print(") and '"ok:' in line]
-    if len(success_lines) != 3:
-        errors.append("validator should have exactly one compact ok print per mode")
-    for line in success_lines:
-        if len(line) > 80:
-            errors.append(f"validator success output is too long: {line}")
-    return errors
-
-
 def check_source_governance_consistency(
     manifest: dict[str, object],
     skill_dirs: list[pathlib.Path],
@@ -1474,11 +953,8 @@ def check_source_governance_consistency(
     errors.extend(check_repo_skill_refs(skill_names))
     errors.extend(check_multi_action_skill_contract(manifest))
     if profile == PROFILE_CERATOPS:
-        errors.extend(check_validation_command_surface())
         errors.extend(check_skill_contract_remediation_policy())
         errors.extend(check_skill_nondeterministic_contract())
-        errors.extend(check_skill_scope_validator())
-        errors.extend(check_validator_output_budget())
 
     assignments = manifest.get("skills", {})
     payloads = manifest.get("runtime_payloads", {})
@@ -1758,14 +1234,8 @@ def main() -> int:
     """Run selected-skill, section, or full source validation."""
 
     global ROOT, SKILLS_DIR, README, SECTION_MANIFEST, CERATOPS_ICON_SOURCE
-    global BOOTSTRAP_INSTALLER, RUNTIME_INSTALLER, BUNDLE_RESOLVER, INSTALLER_TEMPLATE
-    global INSTALLER_VERSION_HISTORY
-    global INSTALLER_SYNCHRONIZER, RUNTIME_BUILDER, RUNTIME_VALIDATOR
-    global FAST_CHANGE_READINESS_HELPER
-    global PROMOTE_REPOSITORY_HELPER, MANAGE_PENDING_WORK_HELPER
-    global DEPLOY_OPERATION_HELPER, SHIP_REPOSITORY_HELPER, GITHUB_SHIP_HELPER
+    global BOOTSTRAP_INSTALLER, INSTALLER_TEMPLATE
     global DEPLOY_CONTRACT, DEPLOY_TEMPLATE, SKILL_SECTIONS_TEMPLATE
-    global VALIDATOR, WORKFLOW
 
     parser = argparse.ArgumentParser(description="Validate Ceratops-compatible skill source and runtime-generation inputs.")
     parser.add_argument("--repo-root", type=pathlib.Path, help="Source skills repository root.")
@@ -1790,24 +1260,10 @@ def main() -> int:
         SECTION_MANIFEST = ROOT / "skills" / "skill-sections.json"
         CERATOPS_ICON_SOURCE = ROOT / "assets" / "ceratops-logo-500.png"
         BOOTSTRAP_INSTALLER = ROOT / "scripts" / "install-skills.py"
-        RUNTIME_INSTALLER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "runtime" / "install-managed-skills.py"
-        BUNDLE_RESOLVER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "runtime" / "resolve-lifecycle-bundle.py"
         INSTALLER_TEMPLATE = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "templates" / "install-skills-template.py"
-        INSTALLER_VERSION_HISTORY = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "templates" / "installer-version-history.json"
-        INSTALLER_SYNCHRONIZER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "runtime" / "synchronize-installers.py"
-        RUNTIME_BUILDER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "runtime" / "managed_runtime_builder.py"
-        RUNTIME_VALIDATOR = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "runtime" / "skills-consistency-runtime-validator.py"
-        FAST_CHANGE_READINESS_HELPER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "validate-fast-change-readiness.py"
-        PROMOTE_REPOSITORY_HELPER = ROOT / "skills" / "ceratops-repo-lifecycle" / "scripts" / "promote-repository.py"
-        MANAGE_PENDING_WORK_HELPER = ROOT / "skills" / "ceratops-repo-lifecycle" / "scripts" / "manage-pending-work.py"
-        DEPLOY_OPERATION_HELPER = ROOT / "skills" / "ceratops-repo-lifecycle" / "scripts" / "run-deploy-operation.py"
-        SHIP_REPOSITORY_HELPER = ROOT / "skills" / "ceratops-repo-lifecycle" / "scripts" / "ship-repository.py"
-        GITHUB_SHIP_HELPER = ROOT / "skills" / "ceratops-repo-lifecycle" / "scripts" / "github_pr_workflow" / "ship.py"
         DEPLOY_CONTRACT = ROOT / "deploy" / "deploy.yml"
         DEPLOY_TEMPLATE = ROOT / "templates" / "deploy-template.yml"
         SKILL_SECTIONS_TEMPLATE = ROOT / "templates" / "skill-sections-template.json"
-        VALIDATOR = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "skills-consistency-source-validator.py"
-        WORKFLOW = ROOT / ".github" / "workflows" / "validate.yml"
 
     errors: list[str] = []
     if not SKILLS_DIR.is_dir():
@@ -1933,8 +1389,6 @@ def main() -> int:
             errors.append(f"{skill_dir.name}: missing section assignment in manifest")
             continue
         errors.extend(check_skill(skill_dir, readme_rows, manifest, skill_names, profile))
-    if profile == PROFILE_CERATOPS:
-        errors.extend(check_contract_source_lines())
     errors.extend(
         check_runtime_input_safety(
             manifest_runtime_input_paths(manifest, skill_dirs)

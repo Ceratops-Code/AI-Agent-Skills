@@ -40,8 +40,8 @@ Infer missing branch and checkout inputs from local Git state before asking.
 
 ### Workflow
 
-1. Complete a blocking local review of each selected source branch against the
-   then-current release head.
+1. Require clean selected worktrees, Git ancestry, and `git diff --check`
+   through the promotion helper.
 2. For `promote`, run the helper with `--no-run-operation`.
 3. For `promote-and-deploy`, run it with `--run-operation after_promote`.
 4. Treat its pending-work scope as the only source scope later passed to ship.
@@ -51,7 +51,10 @@ The helper refreshes the remote, fast-forwards main, reuses an existing local
 release branch without merging main into it, creates a missing release branch
 from main, requires release `HEAD` to be an ancestor of every selected branch,
 runs `git diff --check`, fast-forwards each branch, records the exact generic
-scope, and optionally executes the structured deployment operation.
+scope, and optionally executes the structured deployment operation. For
+`after_promote`, it passes the release-start commit as the operation's
+`base_revision` parameter so repository deployment can resolve the exact
+affected set.
 Preparation-only requires a clean `main` checkout and exits immediately after
 the release branch is ready, before source preflight, promotion, scope records,
 or deployment.

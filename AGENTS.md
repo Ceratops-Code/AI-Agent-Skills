@@ -25,11 +25,13 @@ Project-specific rules for this skills repository.
   and do not place it inside the skills repo checkout.
   - self: list-heavy
 - [SKILLS-FAST-01] Use `$ceratops-skill-lifecycle` action `fast-change`
-  whenever its action contract applies and its deterministic readiness helper
-  accepts the complete intended scope. It may edit the verified primary
-  `release/*` checkout directly and run targeted installation; use `update`
-  when either condition fails.
+  whenever its action contract and one-request orchestrator accept the complete
+  intended scope. The action may update the verified primary `release/*`
+  checkout and install its selected skills; otherwise use `update`.
   - overrides: SKILLS-WORKTREE-01, SKILLS-PREVIEW-01, SKILLS-STAGE-01
+- [SKILLS-FAST-02] An accepted rules-only `fast-change` uses its action
+  contract instead of the ordinary instruction-edit verification requirement.
+  - overrides: SKILLS-VERIFY-01
 - [SKILLS-PREVIEW-01] Keep installed Ceratops skill folders generated from the
   skills repo checkout, not task worktrees. For an unpublished local preview,
   use `$ceratops-repo-lifecycle` action `promote-and-deploy`; it must assemble

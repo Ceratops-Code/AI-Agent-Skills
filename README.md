@@ -83,13 +83,12 @@ without repository deduplication.
 
 | Script | Caller And Timing |
 | --- | --- |
-| `scripts/install-skills.py` | Versioned repository bootstrap that delegates validation and installation to the supported lifecycle bundle. |
+| `scripts/install-skills.py` | Versioned repository bootstrap that delegates exact runtime installation to the supported lifecycle bundle. |
 | `skills/ceratops-skill-lifecycle/scripts/templates/install-skills-template.py` | Authoritative installer copied into compatible repositories as `scripts/install-skills.py`; consistency compares only `INSTALLER_VERSION`. |
-| `skills/ceratops-skill-lifecycle/scripts/runtime/install-managed-skills.py` | Selected source-scoped runtime installer; full installs run full source validation and same-source stale cleanup, while targeted installs validate only selected skills and remove no stale folders. |
+| `skills/ceratops-skill-lifecycle/scripts/runtime/install-managed-skills.py` | Classifies explicit, promotion-relative, or all-managed affected sets; owns direct-manifest inventory; and invokes one runtime transaction without source validation. |
 | `skills/ceratops-skill-lifecycle/scripts/runtime/resolve-lifecycle-bundle.py` | Source-checkout resolver for the Ceratops repository and installed-bundle resolver for other compatible repositories. |
-| `skills/ceratops-skill-lifecycle/scripts/runtime/synchronize-installers.py` | Copies the authoritative installer into an approved task worktree only when its parsed version is missing or lower, then runs full validation. |
-| `skills/ceratops-skill-lifecycle/scripts/runtime/skills-consistency-runtime-validator.py` | Inventories direct managed runtime manifests or validates one selected skill after deriving its source repository, including identity, installer version, and complete managed-file comparison. |
-| `skills/ceratops-skill-lifecycle/scripts/runtime/managed_runtime_builder.py` | Canonical managed-runtime builder used for installation and expected-tree generation. |
+| `skills/ceratops-skill-lifecycle/scripts/runtime/synchronize-installers.py` | Copies the authoritative installer into an approved task worktree only when its parsed version is missing or lower, then runs explicit full source validation. |
+| `skills/ceratops-skill-lifecycle/scripts/runtime/managed_runtime_builder.py` | Stages, activates, rolls back, recovers, and cleans one locked selected-skill runtime transaction. |
 | `skills/ceratops-credit-savings-analysis/scripts/model-call-ledger.py` | Writes sanitized session evidence, emits artifact-free closure inventories, and validates caller classifications against every selected model call. |
 | `skills/ceratops-task-lifecycle/scripts/closure_snapshot.py` | Emits one compact snapshot for explicitly named closure targets and optionally removes exact task-created files validated inside the task temp root. |
 | `skills/ceratops-governance-lifecycle/scripts/apply_rules_update.py` | Applies one approved coupled rules/history request with stale-text checks, shared validation, rollback, and compact output. |
@@ -98,9 +97,9 @@ without repository deduplication.
 | `skills/ceratops-repo-lifecycle/scripts/github_pr_workflow/` | Package CLI for individual PR operations, exact-commit checkpointed shipping, a scoped pending-work pre-push guard, concurrent gates, integrated post-gate admin merge, reusable-branch restoration, and terminal checkpoint cleanup. Standalone merge behavior is unchanged. |
 | `skills/ceratops-repo-lifecycle/scripts/promote-repository.py` | Prepares a clean local `release/*` branch for fast-change, or fast-forwards selected committed task branches and either stops or runs one named deployment operation. |
 | `skills/ceratops-repo-lifecycle/scripts/manage-pending-work.py` | Records, checks, and finalizes the exact selected branch and worktree scope used by promotion and shipping. |
-| `skills/ceratops-repo-lifecycle/scripts/run-deploy-operation.py` | Validates `deploy/deploy.yml` and executes one declared operation as ordered argv steps without a shell. |
+| `skills/ceratops-repo-lifecycle/scripts/run-deploy-operation.py` | Validates `deploy/deploy.yml`, resolves its exact declared parameters, and executes one operation as ordered argv steps without a shell. |
 | `skills/ceratops-repo-lifecycle/scripts/ship-repository.py` | Orchestrates scoped pre-push checking, guarded GitHub shipping, main synchronization, a pre-deploy recheck, `after_ship`, and final selected-source recheck and cleanup. |
-| `skills/ceratops-skill-lifecycle/scripts/validate-fast-change-readiness.py` | Validates a clean release checkout plus the complete selected existing-skill and target-file scope before direct fast-change editing. |
+| `skills/ceratops-skill-lifecycle/scripts/fast-change.py` | Classifies and owns one eligible direct-release patch through exact tests, targeted installation, commit, and failure compensation. |
 | `skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py` | Source validator plus deterministic authoritative installer-version synchronization. |
 
 Lifecycle helpers suppress successful subcommand output and print only compact
@@ -111,8 +110,9 @@ logic or bundle nontrivial evidence collection.
 coherent change stays within declared files under existing selected skills,
 preserves helper boundaries, and has sufficient targeted checks. It may cover
 multiple files and skills. The repository lifecycle helper prepares
-`release/local`; the skill lifecycle readiness helper then verifies the complete
-scope before editing and targeted installation.
+`release/local`; one `fast-change.py` request then classifies the complete
+scope before mutation and owns patching, exact existing tests when required,
+targeted installation, staging, commit, and compensation.
 
 Promotion and deployment are separate repository actions. `promote` assembles
 the selected branches into `release/*` without deployment;
@@ -310,11 +310,9 @@ python -m pip install -r requirements-runtime.txt
 python .\scripts\install-skills.py
 ```
 
-For a full install, that bootstrap does two things explicitly:
-
-- runs direct full source validation through the skill-lifecycle validator
-- builds managed runtime skill copies under `$CODEX_HOME/skills/`, including
-  declared runtime payloads such as the Ceratops icon
+For a full install, that bootstrap builds every managed runtime skill under
+`$CODEX_HOME/skills/`, including declared runtime payloads such as the Ceratops
+icon, in one selected-batch transaction.
 
 For another Ceratops-compatible repo, run its versioned repository installer:
 
@@ -324,11 +322,26 @@ python <target-repo>\scripts\install-skills.py --repo-root <target-repo>
 
 The Ceratops source repository bootstrap uses its checkout lifecycle bundle.
 Other compatible repositories prefer a supported installed lifecycle bundle.
-An install without `--skill` runs full source validation, refreshes all source
-skills, and removes only stale folders with the same `runtime_source_id`. An
-explicit `--skill` validates and installs only the selected skills and performs
-no stale cleanup. Runtime manifests record source ownership, local
-source-repository root, validation profile, and installer version.
+An install without a selection refreshes all source skills and removes only
+stale folders with the same `runtime_source_id`. Repeated `--skill` and
+`--remove-skill` values form one exact transaction. `--base-revision <sha>`
+derives the exact addition, removal, shared-section, payload, or global-runtime
+effect from structured Git and manifest data. Installation does not run source
+validation. Runtime manifests record source ownership, local source-repository
+root, validation profile, and installer version.
+Interrupted-state convergence is guaranteed when the same affected set or an
+all-managed install runs again; an unrelated targeted install does not claim
+to discover a fully activated orphan with no transaction remnant. A
+post-commit cleanup failure keeps the complete new batch active and reports
+`cleanup_blocked` with retained retired folders.
+
+For report-only global routing, the runtime installer can write direct managed
+manifest entries and malformed-entry blockers without comparing runtime files
+to source:
+
+```powershell
+python .\skills\ceratops-skill-lifecycle\scripts\runtime\install-managed-skills.py --inventory-output <file>
+```
 
 Installed Ceratops skills should be generated from the skills repo checkout: the
 local skills repo checkout used as the input path for the runtime installer.
@@ -412,9 +425,9 @@ Ceratops artifacts, and repository-specific governance; the
 `ceratops-compatible` profile skips only those Ceratops-specific additions.
 Run helper `--help` smoke checks only for touched helper scripts or touched
 helper claims. Full source validation is for explicit broad verification, not
-every regular skill update. Installed runtime is validated separately by
-`skills-consistency-runtime-validator.py` during `skills-consistency-review`.
-With working
+every regular skill update. A successful targeted or all-managed transaction is
+the post-install runtime evidence; `skills-consistency-review` reads the
+selected runtime manifest as structured identity evidence. With working
 GitHub auth, run
 `python -m github_contract_engine validate org` and
 `python -m github_contract_engine validate repo` from

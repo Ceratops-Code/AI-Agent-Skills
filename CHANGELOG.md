@@ -20,9 +20,15 @@
 - Added separate `promote`, `promote-and-deploy`, `run-operation`, and `ship`
   actions backed by `promote-repository.py`, `manage-pending-work.py`,
   `run-deploy-operation.py`, and `ship-repository.py`.
-- Restored preferred fast-change skill maintenance with multi-file,
-  multi-skill scope, Python readiness validation, targeted installation, and a
-  repository-owned release-preparation mode.
+- Restored preferred fast-change skill maintenance with one classified Python
+  orchestrator owning multi-file and multi-skill patching, exact existing
+  tests, targeted installation, commit, and failure compensation.
+- Made runtime deployment a locked selected-batch transaction with exact
+  add/remove/base-revision scope, rollback and interrupted-state convergence;
+  moved direct-manifest inventory into the installer and retired the separate
+  runtime validator.
+- Replaced executable source-shape, syntax-tree, hash, and contract
+  source-anchor enforcement with behavioral and structured-data checks.
 - Moved the live section manifest and sources to
   `skills/skill-sections.json` and `skills/sections/`, added the live
   `deploy/deploy.yml` contract, and limited `templates/` to reusable section

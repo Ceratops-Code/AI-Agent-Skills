@@ -64,6 +64,10 @@ Infer missing inputs from current repo state before asking.
   presence of the lifecycle source skill.
 - Classify the requested change as skill-local, shared, structural,
   validation-only, helper-runtime-adjacent, or docs-only.
+- Resolve runtime scope before mutation: additions, removals, renames,
+  per-skill assignments, payloads, and shared-section consumers select exact
+  skills; wildcard payloads, source identity, profile, or global generation
+  semantics select all managed skills; unresolved effects require a decision.
 
 #### 2. Decide ownership before editing
 
@@ -95,25 +99,26 @@ Infer missing inputs from current repo state before asking.
 
 #### 4. Run needed checks
 
-- When the authoritative installer may have changed, run `python
-  skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py
-  --repo-root <repo> --sync-installer-version`; this deterministic producer owns
-  the template version, behavior history, and repository bootstrap copy.
+- When installer behavior changes, advance the explicit `INSTALLER_VERSION`,
+  update the authoritative template and repository bootstrap together, and run
+  their public CLI behavior tests. Use `--sync-installer-version` only to copy
+  the already-versioned authoritative template into the repository bootstrap.
 - If shared section files or `skills/skill-sections.json` changed, run the
   manifest's shared-source check path.
 - Do not run validation solely because skill-local text, metadata, or docs
   changed; use targeted readback, stale-reference search, and diff review unless
   a broader check is stale.
 - If helper-runtime code or claims changed, run only the touched helper's smoke
-  command when supported.
-- If runtime generation code changed, run the repo's runtime-generation check
-  path when provided.
+  command and exact existing behavior tests.
+- If runtime generation, installer, or transaction code changed, run the
+  affected transaction tests and one all-managed temporary installation.
 - After committing, use `$ceratops-repo-lifecycle` `promote` when only local
   release staging is requested, `promote-and-deploy` when the repository's
   declared deployment should run, or `ship` when the staged release should be
   shipped.
 - Reserve full source validation for explicit broad validation,
-  validation-script changes, or concrete cross-surface uncertainty.
+  validation-script changes, or concrete structured cross-surface uncertainty;
+  never use executable source form as behavior evidence.
 - Re-open changed files and confirm source skills, manifest assignments, runtime
   payloads, docs, contracts, and metadata still align.
 

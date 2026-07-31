@@ -10,9 +10,9 @@ target-repository validation follows every synchronization decision.
 from __future__ import annotations
 
 import argparse
-import ast
 import json
 import pathlib
+import re
 import shutil
 import subprocess
 import sys
@@ -22,6 +22,11 @@ BUNDLE_ROOT = pathlib.Path(__file__).resolve().parents[2]
 TEMPLATE = BUNDLE_ROOT / "scripts" / "templates" / "install-skills-template.py"
 VALIDATOR = BUNDLE_ROOT / "scripts" / "skills-consistency-source-validator.py"
 TARGET_RELATIVE = pathlib.Path("scripts/install-skills.py")
+INSTALLER_VERSION_RE = re.compile(
+    r"^[ \t]*INSTALLER_VERSION[ \t]*=[ \t]*"
+    r"(?P<version>[1-9][0-9]*)[ \t]*(?:#.*)?$",
+    re.MULTILINE,
+)
 
 
 def installer_version(path: pathlib.Path) -> int | None:
@@ -30,20 +35,13 @@ def installer_version(path: pathlib.Path) -> int | None:
     if not path.is_file():
         return None
     try:
-        module = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    except (OSError, SyntaxError, UnicodeError):
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
         return None
-    versions: list[int] = []
-    for node in module.body:
-        if not isinstance(node, (ast.Assign, ast.AnnAssign)):
-            continue
-        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-        value = node.value
-        if any(isinstance(target, ast.Name) and target.id == "INSTALLER_VERSION" for target in targets):
-            if isinstance(value, ast.Constant) and isinstance(value.value, int) and not isinstance(value.value, bool):
-                versions.append(value.value)
-            else:
-                return None
+    versions = [
+        int(match.group("version"))
+        for match in INSTALLER_VERSION_RE.finditer(text)
+    ]
     return versions[0] if len(versions) == 1 and versions[0] > 0 else None
 
 

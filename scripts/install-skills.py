@@ -17,7 +17,7 @@ import subprocess
 import sys
 
 
-INSTALLER_VERSION = 6
+INSTALLER_VERSION = 7
 LIFECYCLE_SKILL = "ceratops-skill-lifecycle"
 RESOLVER_RELATIVE = pathlib.Path("scripts/runtime/resolve-lifecycle-bundle.py")
 INSTALLER_RELATIVE = pathlib.Path("scripts/runtime/install-managed-skills.py")
@@ -93,6 +93,8 @@ def main() -> int:
     parser.add_argument("--repo-root", type=pathlib.Path, help="Source repository root; defaults to this script's repository.")
     parser.add_argument("--install-root", type=pathlib.Path, help="Runtime skills root; defaults to $CODEX_HOME/skills.")
     parser.add_argument("--skill", action="append", help="Install only this skill; repeat for multiple skills.")
+    parser.add_argument("--remove-skill", action="append", help="Remove this absent source skill; repeat for multiple skills.")
+    parser.add_argument("--base-revision", help="Calculate the exact runtime effect since this full Git revision.")
     args = parser.parse_args()
 
     repo_root = (args.repo_root or pathlib.Path(__file__).resolve().parents[1]).resolve()
@@ -126,6 +128,10 @@ def main() -> int:
             command.extend(("--install-root", str(args.install_root.resolve())))
         for skill_name in args.skill or []:
             command.extend(("--skill", skill_name))
+        for skill_name in args.remove_skill or []:
+            command.extend(("--remove-skill", skill_name))
+        if args.base_revision is not None:
+            command.extend(("--base-revision", args.base_revision))
         output = run_checked(command, "Managed skill installation failed")
     except (FileNotFoundError, RuntimeError, OSError) as exc:
         print(str(exc), file=sys.stderr)

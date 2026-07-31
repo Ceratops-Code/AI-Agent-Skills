@@ -72,11 +72,6 @@ def _contract_summary(repo_root: pathlib.Path) -> list[dict[str, Any]]:
                     for check in checks
                     if isinstance(check, dict) and "id" in check
                 ),
-                "missing_source_lines": sum(
-                    1
-                    for check in checks
-                    if isinstance(check, dict) and not check.get("source_lines")
-                ),
             }
         )
     return result

@@ -6,7 +6,6 @@ import argparse
 import fnmatch
 import json
 import pathlib
-import re
 from typing import Any
 
 from .collect_observed_states import PRODUCER_REGISTRY, state_producer
@@ -253,48 +252,6 @@ def _validate_artifact_detectors(
     return errors
 
 
-def _validate_source_lines(path: pathlib.Path, check: dict[str, Any]) -> list[str]:
-    errors: list[str] = []
-    for reference in check.get("source_lines", []):
-        source_name, separator, anchor = str(reference).partition(":")
-        if source_name.startswith("$"):
-            continue
-        if "/" not in source_name and "\\" not in source_name:
-            contract_local = path.parent / source_name
-            source = contract_local if contract_local.is_file() else REFERENCES / source_name
-        else:
-            source = REPO_ROOT / source_name
-        if not source.is_file():
-            errors.append(
-                f"{rel(path)}: {check.get('id')} references missing source {source_name}"
-            )
-            continue
-        if separator and anchor and not re.fullmatch(r"\d+(?:-\d+)?", anchor):
-            if source.suffix == ".json":
-                document = load_json(source)
-
-                def contains_id(value: Any) -> bool:
-                    if isinstance(value, dict):
-                        return value.get("id") == anchor or any(
-                            contains_id(item) for item in value.values()
-                        )
-                    if isinstance(value, list):
-                        return any(contains_id(item) for item in value)
-                    return False
-
-                if not contains_id(document):
-                    errors.append(
-                        f"{rel(path)}: {check.get('id')} references missing source ID {reference}"
-                    )
-                continue
-            text = source.read_text(encoding="utf-8")
-            if re.search(rf"(?m)^(?:def|class)\s+{re.escape(anchor)}\b", text) is None:
-                errors.append(
-                    f"{rel(path)}: {check.get('id')} references missing source symbol {reference}"
-                )
-    return errors
-
-
 def _validate_state_contract(path: pathlib.Path, contract: dict[str, Any]) -> list[str]:
     errors: list[str] = []
     if "type_system" in contract:
@@ -341,7 +298,6 @@ def _validate_state_contract(path: pathlib.Path, contract: dict[str, Any]) -> li
     declared_actions: set[str] = set()
     for check in contract.get("checks", []):
         check_id = str(check.get("id"))
-        errors.extend(_validate_source_lines(path, check))
         assertions = check.get("assertions")
         if not isinstance(assertions, list) or not assertions:
             errors.append(

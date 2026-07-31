@@ -11,14 +11,14 @@
     ],
     "skill_local_or_metadata_changes": [],
     "helper_runtime_changes": [
-      "python skills/ceratops-governance-lifecycle/scripts/apply_rules_update.py --help"
+      "python skills/ceratops-skill-lifecycle/scripts/fast-change.py --request <request>"
     ],
     "runtime_generation_changes": [
-      "python skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py --mode sections"
+      "python -m pytest -q tests/test_skill_runtime_multi_repo.py",
+      "python scripts/install-skills.py --install-root <task-temp-root>"
     ],
-    "contract_checker_changes": [],
-    "source_full_validation": [
-      "python skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py --mode full"
+    "contract_checker_changes": [
+      "python -m pytest -q tests/test_gh_validator_summary.py"
     ],
     "new_skill_local_availability": [
       "$ceratops-skill-lifecycle"
