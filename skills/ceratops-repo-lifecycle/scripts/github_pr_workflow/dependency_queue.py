@@ -26,12 +26,64 @@ from .dependency_evidence import (
     dependency_tree_evidence,
     exact_ci_evidence,
     fetch_pr_batch,
+    fetch_pr_body,
     minimum_patched_version,
+    parse_grouped_updates,
     parse_update,
     queued_repositories,
     registry_evidence,
 )
 from .dependency_finalization import finalize
+
+
+UPDATE_RISK_ORDER = {
+    "same_or_nonsemantic": 0,
+    "patch": 1,
+    "minor": 2,
+    "major": 3,
+    "unknown": 4,
+}
+
+
+def aggregate_update_type(updates: list[dict[str, Any]]) -> str:
+    """Return the most conservative update type in a grouped PR."""
+
+    return max(
+        (str(update.get("update_type") or "unknown") for update in updates),
+        key=lambda value: UPDATE_RISK_ORDER.get(value, UPDATE_RISK_ORDER["unknown"]),
+        default="unknown",
+    )
+
+
+def aggregate_package_evidence(
+    items: list[dict[str, Any]], field: str
+) -> dict[str, Any]:
+    """Keep grouped package evidence compact without masking member failures."""
+
+    projected = [
+        {
+            "package": item["update"].get("package"),
+            **item[field],
+        }
+        for item in items
+    ]
+    statuses = {str(item.get("status") or "unavailable") for item in projected}
+    if statuses == {"ok"}:
+        status = "ok"
+    elif "blocked" in statuses:
+        status = "blocked"
+    else:
+        status = "unavailable"
+    return {"status": status, "items": projected}
+
+
+def package_failure_message(update: dict[str, Any], evidence: dict[str, Any]) -> str:
+    """Return one bounded package-qualified preflight failure."""
+
+    package = str(update.get("package") or "unparsed dependency")
+    reason = evidence.get("error") or evidence.get("errors") or evidence.get("reason")
+    return f"{package}: {reason or 'evidence unavailable'}"[:360]
+
 
 def preflight(args: argparse.Namespace) -> int:
     """Build a non-mutating queue gate from the caller's complete snapshot."""
@@ -167,50 +219,110 @@ def preflight(args: argparse.Namespace) -> int:
                     }
                 )
                 live = {}
-            update = parse_update(str(pr.get("title") or ""), live.get("files", []), repo_alerts)
-            registry = registry_evidence(update)
-            if registry.get("status") != "ok":
-                repo_blockers.append(
-                    {
-                        "repo": full_name,
-                        "pr": number,
-                        "check": "registry_preflight",
-                        "message": str(registry.get("error") or registry.get("reason") or "registry metadata unavailable")[:360],
+            changed_files = live.get("files", [])
+            title = str(live.get("title") or pr.get("title") or "")
+            updates = [parse_update(title, changed_files, repo_alerts)]
+            if not updates[0].get("package") and live and isinstance(number, int):
+                body_probe = fetch_pr_body(
+                    full_name,
+                    number,
+                    str(live.get("head_oid") or ""),
+                )
+                if body_probe.get("status") == "ok":
+                    grouped_updates = parse_grouped_updates(
+                        str(body_probe.get("body") or ""),
+                        changed_files,
+                        repo_alerts,
+                    )
+                    if grouped_updates:
+                        updates = grouped_updates
+                else:
+                    repo_blockers.append(
+                        {
+                            "repo": full_name,
+                            "pr": number,
+                            "check": "pr_body_preflight",
+                            "message": str(body_probe.get("error") or "PR body unavailable")[
+                                :360
+                            ],
+                        }
+                    )
+
+            update_evidence = []
+            for update in updates:
+                registry_item = registry_evidence(update)
+                if registry_item.get("status") != "ok":
+                    repo_blockers.append(
+                        {
+                            "repo": full_name,
+                            "pr": number,
+                            "check": "registry_preflight",
+                            "message": package_failure_message(update, registry_item),
+                        }
+                    )
+                dependency_tree_item = (
+                    dependency_tree_evidence(
+                        pathlib.Path(str(checkout["path"])),
+                        update,
+                        changed_files,
+                        repo_alerts,
+                    )
+                    if checkout.get("status") == "found"
+                    else {
+                        "status": "unavailable",
+                        "reason": "local_checkout_not_found",
+                        "sources": [],
                     }
                 )
-            dependency_tree = (
-                dependency_tree_evidence(
-                    pathlib.Path(str(checkout["path"])),
-                    update,
-                    live.get("files", []),
-                    repo_alerts,
-                )
-                if checkout.get("status") == "found"
-                else {"status": "unavailable", "reason": "local_checkout_not_found", "sources": []}
-            )
-            if dependency_tree.get("status") != "ok":
-                repo_blockers.append(
+                if dependency_tree_item.get("status") != "ok":
+                    repo_blockers.append(
+                        {
+                            "repo": full_name,
+                            "pr": number,
+                            "check": "dependency_tree_preflight",
+                            "message": package_failure_message(
+                                update, dependency_tree_item
+                            ),
+                        }
+                    )
+                update_evidence.append(
                     {
-                        "repo": full_name,
-                        "pr": number,
-                        "check": "dependency_tree_preflight",
-                        "message": str(
-                            dependency_tree.get("errors")
-                            or dependency_tree.get("reason")
-                            or "dependency tree unavailable"
-                        )[:360],
+                        "update": update,
+                        "registry": registry_item,
+                        "dependency_tree": dependency_tree_item,
                     }
                 )
+
+            if len(update_evidence) == 1:
+                update_summary = update_evidence[0]["update"]
+                registry = update_evidence[0]["registry"]
+                dependency_tree = update_evidence[0]["dependency_tree"]
+            else:
+                update_summary = {
+                    "grouped": True,
+                    "package_count": len(updates),
+                    "updates": updates,
+                    "update_type": aggregate_update_type(updates),
+                }
+                registry = aggregate_package_evidence(update_evidence, "registry")
+                dependency_tree = aggregate_package_evidence(
+                    update_evidence, "dependency_tree"
+                )
+            update_types = {
+                str(update.get("update_type") or "unknown") for update in updates
+            }
             enriched_prs.append(
                 {
                     **pr,
                     "live": live,
-                    "update": update,
+                    "update": update_summary,
                     "registry": registry,
                     "dependency_tree": dependency_tree,
                     "decision_gates": {
-                        "compatibility_review_required": update.get("update_type") in {"major", "unknown"},
-                        "api_review_required": update.get("update_type") == "major",
+                        "compatibility_review_required": bool(
+                            update_types & {"major", "unknown"}
+                        ),
+                        "api_review_required": "major" in update_types,
                         "exact_ci_available": ci.get("status") == "ok",
                         "archived_report_only": archived,
                     },
