@@ -2,9 +2,13 @@
 
 ## Behavioral objective
 
-Minimize behavioral delta: change only decisions needed to prevent the failure
-while preserving recorded correct behavior. Word count and diff size are
-secondary evidence.
+Design rules for reliable execution by GPT-5.5 Light. Each rule must state an
+observable trigger, specific action, and explicit scope without relying on vague
+categories or implicit reasoning.
+
+Make the smallest change needed to prevent the failure while preserving recorded
+correct behavior. Avoid duplicate instructions and unnecessary exceptions;
+treat word count and diff size as secondary evidence.
 
 ## Rule form
 

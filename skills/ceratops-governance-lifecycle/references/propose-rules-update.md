@@ -44,10 +44,10 @@ Route approved skill-source mutations through `$ceratops-skill-lifecycle`
    strength. Keep deterministic procedure in its executable owner, resolve
    structural defects and every affected semantic review state, and identify
    each targeted change.
-6. Before presenting the candidate, map every operative part and its
-   enforcement strength, including named commands and examples, to unchanged
-   behavior or the explicitly targeted fix; replay the failure and applicable
-   history, rejecting any other behavior change or regression.
+6. Before presenting a candidate, replay the failure and map every operative
+   part and enforcement strength, including commands and examples, to the fix
+   or preserved behavior; reject any unaccounted effect, historical regression,
+   or conflict with an opposing active requirement.
 7. In the same reasoning pass, compare the candidate with the original and
    every recorded candidate and assessment. While any supported conclusion
    identifies a concrete improvement, revise and repeat steps 5-6; then submit
