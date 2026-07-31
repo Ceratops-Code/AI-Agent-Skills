@@ -2,7 +2,8 @@
 """Validate and execute one named repository deployment operation.
 
 The contract contains argv arrays, never shell text. Every working directory
-must resolve inside the selected repository. Successful commands emit no
+must resolve inside the selected repository. Explicit parameters are strict;
+lifecycle context is used only when declared. Successful commands emit no
 captured output; failures retain only a bounded tail for diagnosis.
 """
 
@@ -145,8 +146,9 @@ def run_operation(
     operation: str,
     contract_path: pathlib.Path = DEFAULT_CONTRACT,
     parameters: Mapping[str, str] | None = None,
+    parameters_if_declared: Mapping[str, str] | None = None,
 ) -> dict[str, object]:
-    """Run one declared operation and return its compact structured result."""
+    """Run one operation with strict parameters and conditional caller context."""
 
     root = repo_root.expanduser().resolve(strict=True)
     if not root.is_dir():
@@ -160,9 +162,20 @@ def run_operation(
         or not all(isinstance(value, str) for value in expected)
     ):
         raise DeployError(f"Deployment operation has invalid parameters: {operation}")
+    declared = set(expected)
     supplied = dict(parameters or {})
-    missing = sorted(set(expected) - set(supplied))
-    extra = sorted(set(supplied) - set(expected))
+    conditional = dict(parameters_if_declared or {})
+    duplicated = sorted(set(supplied) & set(conditional))
+    if duplicated:
+        raise DeployError(
+            "Deployment parameter supplied more than once: "
+            + ", ".join(duplicated)
+        )
+    supplied.update(
+        (name, value) for name, value in conditional.items() if name in declared
+    )
+    missing = sorted(declared - set(supplied))
+    extra = sorted(set(parameters or {}) - declared)
     if missing or extra:
         detail = []
         if missing:
@@ -223,6 +236,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--contract", type=pathlib.Path, default=DEFAULT_CONTRACT)
     parser.add_argument("--operation", required=True)
     parser.add_argument("--parameter", action="append", default=[])
+    parser.add_argument("--parameter-if-declared", action="append", default=[])
     return parser
 
 
@@ -236,6 +250,7 @@ def main(argv: list[str] | None = None) -> int:
             args.operation,
             args.contract,
             _parameters(args.parameter),
+            _parameters(args.parameter_if_declared),
         )
     except (DeployError, OSError, ValueError) as exc:
         print(

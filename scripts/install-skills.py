@@ -43,7 +43,7 @@ def checkout_is_ceratops(repo_root: pathlib.Path) -> bool:
 
 
 def resolver_path(repo_root: pathlib.Path) -> pathlib.Path:
-    """Keep Ceratops source and validator together; use installed elsewhere."""
+    """Resolve the lifecycle bundle from source or the installed runtime."""
 
     checkout = repo_root / "skills" / LIFECYCLE_SKILL / RESOLVER_RELATIVE
     if checkout_is_ceratops(repo_root):
@@ -87,7 +87,7 @@ def run_checked(arguments: list[str], failure: str) -> str:
 
 
 def main() -> int:
-    """Resolve one lifecycle bundle and run its validating installer."""
+    """Resolve one lifecycle bundle and install its managed skills."""
 
     parser = argparse.ArgumentParser(description="Install managed Ceratops-compatible skills.")
     parser.add_argument("--repo-root", type=pathlib.Path, help="Source repository root; defaults to this script's repository.")

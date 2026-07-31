@@ -52,9 +52,10 @@ release branch without merging main into it, creates a missing release branch
 from main, requires release `HEAD` to be an ancestor of every selected branch,
 runs `git diff --check`, fast-forwards each branch, records the exact generic
 scope, and optionally executes the structured deployment operation. For
-`after_promote`, it passes the release-start commit as the operation's
-`base_revision` parameter so repository deployment can resolve the exact
-affected set.
+`after_promote`, it offers the release-start commit as conditional
+`base_revision` context. The operation runner supplies it only when the
+selected operation declares that parameter, so compatible parameterless
+operations remain valid.
 Preparation-only requires a clean `main` checkout and exits immediately after
 the release branch is ready, before source preflight, promotion, scope records,
 or deployment.

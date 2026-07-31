@@ -682,6 +682,7 @@ def run_deploy_operation(
     *,
     contract: pathlib.Path | None = None,
     parameters: tuple[str, ...] = (),
+    parameters_if_declared: tuple[str, ...] = (),
 ) -> subprocess.CompletedProcess[str]:
     """Run one isolated deployment operation."""
 
@@ -697,6 +698,8 @@ def run_deploy_operation(
         command.extend(("--contract", str(contract)))
     for parameter in parameters:
         command.extend(("--parameter", parameter))
+    for parameter in parameters_if_declared:
+        command.extend(("--parameter-if-declared", parameter))
     return subprocess.run(
         command,
         capture_output=True,
@@ -777,6 +780,7 @@ def test_deploy_operation_requires_and_expands_exact_declared_parameters(
     repo = tmp_path / "repo"
     repo.mkdir()
     output = repo / "parameter.txt"
+    parameterless_output = repo / "parameterless.txt"
     probe = repo / "parameter-probe.py"
     probe.write_text(
         "import pathlib, sys\n"
@@ -800,7 +804,20 @@ def test_deploy_operation_requires_and_expands_exact_declared_parameters(
                         ],
                     }
                 ],
-            }
+            },
+            "parameterless": {
+                "steps": [
+                    {
+                        "id": "record",
+                        "run": [
+                            sys.executable,
+                            "parameter-probe.py",
+                            str(parameterless_output),
+                            "literal",
+                        ],
+                    }
+                ]
+            },
         },
     )
 
@@ -814,6 +831,42 @@ def test_deploy_operation_requires_and_expands_exact_declared_parameters(
     )
     assert extra.returncode == 1
     assert "unexpected unexpected" in json.loads(extra.stderr)["message"]
+
+    conditional = run_deploy_operation(
+        repo,
+        "after_promote",
+        parameters_if_declared=("base_revision=conditional",),
+    )
+    assert conditional.returncode == 0, conditional.stderr
+    assert output.read_text(encoding="utf-8") == "conditional"
+
+    duplicated = run_deploy_operation(
+        repo,
+        "after_promote",
+        parameters=("base_revision=explicit",),
+        parameters_if_declared=("base_revision=conditional",),
+    )
+    assert duplicated.returncode == 1
+    assert "supplied more than once" in json.loads(duplicated.stderr)["message"]
+
+    strict_parameterless = run_deploy_operation(
+        repo,
+        "parameterless",
+        parameters=("base_revision=explicit",),
+    )
+    assert strict_parameterless.returncode == 1
+    assert "unexpected base_revision" in json.loads(strict_parameterless.stderr)[
+        "message"
+    ]
+    conditional_parameterless = run_deploy_operation(
+        repo,
+        "parameterless",
+        parameters_if_declared=("base_revision=conditional",),
+    )
+    assert (
+        conditional_parameterless.returncode == 0
+    ), conditional_parameterless.stderr
+    assert parameterless_output.read_text(encoding="utf-8") == "literal"
 
     result = run_deploy_operation(
         repo,
@@ -1281,6 +1334,8 @@ def runtime_owner(install_root: pathlib.Path, skill_name: str) -> str:
 
 def prepare_repository_lifecycle_repo(
     tmp_path: pathlib.Path,
+    *,
+    declares_base_revision: bool = True,
 ) -> tuple[pathlib.Path, str, pathlib.Path, dict[str, str]]:
     """Create one isolated repository with a promotable source branch."""
 
@@ -1296,27 +1351,28 @@ def prepare_repository_lifecycle_repo(
     (repo / "deploy-probe.py").write_text(
         "import os, pathlib, sys\n"
         "pathlib.Path(os.environ['DEPLOY_TEST_LOG']).write_text("
-        "sys.argv[1] + '\\n', encoding='utf-8')\n",
+        "(sys.argv[1] if len(sys.argv) > 1 else 'no-base') + '\\n', "
+        "encoding='utf-8')\n",
         encoding="utf-8",
         newline="\n",
     )
+    operation: dict[str, object] = {
+        "steps": [
+            {
+                "id": "record",
+                "run": [
+                    sys.executable,
+                    "deploy-probe.py",
+                    *(["{base_revision}"] if declares_base_revision else []),
+                ],
+            }
+        ]
+    }
+    if declares_base_revision:
+        operation["parameters"] = ["base_revision"]
     write_deploy_contract(
         repo,
-        {
-            "after_promote": {
-                "parameters": ["base_revision"],
-                "steps": [
-                    {
-                        "id": "record",
-                        "run": [
-                            sys.executable,
-                            "deploy-probe.py",
-                            "{base_revision}",
-                        ],
-                    }
-                ]
-            }
-        },
+        {"after_promote": operation},
     )
     assert run_git(repo, "add", ".").returncode == 0
     assert run_git(repo, "commit", "-m", "base").returncode == 0
@@ -1336,28 +1392,46 @@ def prepare_repository_lifecycle_repo(
 
 
 @pytest.mark.parametrize(
-    ("operation_arguments", "expected_operation", "expected_log"),
+    (
+        "operation_arguments",
+        "declares_base_revision",
+        "expected_operation",
+        "expects_base_revision",
+    ),
     [
-        (["--no-run-operation"], None, None),
+        (["--no-run-operation"], True, None, None),
         (
             ["--run-operation", "after_promote"],
+            True,
             {
                 "status": "deployed",
                 "operation": "after_promote",
                 "steps": ["record"],
             },
-            "base_revision",
+            True,
+        ),
+        (
+            ["--run-operation", "after_promote"],
+            False,
+            {
+                "status": "deployed",
+                "operation": "after_promote",
+                "steps": ["record"],
+            },
+            False,
         ),
     ],
 )
 def test_promote_repository_requires_an_explicit_deployment_choice(
     tmp_path: pathlib.Path,
     operation_arguments: list[str],
+    declares_base_revision: bool,
     expected_operation: dict[str, object] | None,
-    expected_log: str | None,
+    expects_base_revision: bool | None,
 ) -> None:
     repo, approved_head, log, environment = prepare_repository_lifecycle_repo(
-        tmp_path
+        tmp_path,
+        declares_base_revision=declares_base_revision,
     )
     release_start = run_git(repo, "rev-parse", "main").stdout.strip()
 
@@ -1394,10 +1468,12 @@ def test_promote_repository_requires_an_explicit_deployment_choice(
     }
     assert run_git(repo, "branch", "--show-current").stdout.strip() == "release/local"
     assert run_git(repo, "status", "--porcelain").stdout == ""
-    if expected_log is None:
+    if expects_base_revision is None:
         assert not log.exists()
-    else:
+    elif expects_base_revision:
         assert log.read_text(encoding="utf-8") == f"{release_start}\n"
+    else:
+        assert log.read_text(encoding="utf-8") == "no-base\n"
 
 
 def test_promote_and_deploy_rejects_operation_created_repository_work(

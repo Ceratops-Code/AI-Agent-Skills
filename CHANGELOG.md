@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Made promotion-provided `base_revision` conditional on the selected operation
+  declaration while preserving strict explicit deployment parameters, and
+  corrected stale installer bootstrap docstrings.
 - Added deterministic repository shipping with a scoped pending-work check
   before the first remote push, retained post-sync and post-deploy rechecks,
   concurrent CI and Codex-review gates, exact-head post-gate admin merge, local

@@ -254,7 +254,10 @@ def promote(args: argparse.Namespace) -> dict[str, object]:
         ]
         if args.run_operation == "after_promote":
             operation_command.extend(
-                ("--parameter", f"base_revision={release_start}")
+                (
+                    "--parameter-if-declared",
+                    f"base_revision={release_start}",
+                )
             )
         operation_code, operation = _run_json(
             operation_command,
