@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-import base64
+import argparse
+import errno
 import json
 import os
 import pathlib
@@ -8,6 +9,8 @@ import runpy
 import shutil
 import subprocess
 import sys
+import threading
+import time
 from typing import Any
 
 import pytest
@@ -17,25 +20,23 @@ VALIDATOR = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "skills-c
 BUILDER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "runtime" / "managed_runtime_builder.py"
 BOOTSTRAP = ROOT / "scripts" / "install-skills.py"
 LIFECYCLE_SOURCE = ROOT / "skills" / "ceratops-skill-lifecycle"
+REPOSITORY_LIFECYCLE_SOURCE = ROOT / "skills" / "ceratops-repo-lifecycle"
+LIVE_SECTION_MANIFEST = ROOT / "skills" / "skill-sections.json"
+SECTION_MANIFEST_TEMPLATE = ROOT / "templates" / "skill-sections-template.json"
+DEPLOY_CONTRACT_TEMPLATE = ROOT / "templates" / "deploy-template.yml"
 INSTALLER_TEMPLATE = LIFECYCLE_SOURCE / "scripts" / "templates" / "install-skills-template.py"
 INSTALLER_SYNCHRONIZER = LIFECYCLE_SOURCE / "scripts" / "runtime" / "synchronize-installers.py"
-RUNTIME_VALIDATOR = LIFECYCLE_SOURCE / "scripts" / "runtime" / "skills-consistency-runtime-validator.py"
-PROMOTION_HELPER = (
-    LIFECYCLE_SOURCE
-    / "scripts"
-    / "promote-skill-branches-to-release-and-install.ps1"
-)
-FAST_CHANGE_READINESS = (
-    LIFECYCLE_SOURCE / "scripts" / "validate-fast-change-readiness.ps1"
-)
-MANAGE_PENDING_RELEASE_WORK = (
-    LIFECYCLE_SOURCE / "scripts" / "manage-pending-release-work.ps1"
-)
+RUNTIME_INSTALLER = LIFECYCLE_SOURCE / "scripts" / "runtime" / "install-managed-skills.py"
+FAST_CHANGE = LIFECYCLE_SOURCE / "scripts" / "fast-change.py"
+DEPLOY_OPERATION = REPOSITORY_LIFECYCLE_SOURCE / "scripts" / "run-deploy-operation.py"
+PROMOTE_REPOSITORY = REPOSITORY_LIFECYCLE_SOURCE / "scripts" / "promote-repository.py"
+MANAGE_PENDING_WORK = REPOSITORY_LIFECYCLE_SOURCE / "scripts" / "manage-pending-work.py"
+SHIP_REPOSITORY = REPOSITORY_LIFECYCLE_SOURCE / "scripts" / "ship-repository.py"
 MODEL_CALL_LEDGER = ROOT / "skills" / "ceratops-credit-savings-analysis" / "scripts" / "model-call-ledger.py"
 CLOSURE_SNAPSHOT = ROOT / "skills" / "ceratops-task-lifecycle" / "scripts" / "closure_snapshot.py"
 RUNTIME_MANIFEST = ".runtime-manifest.json"
 RUNTIME_MANIFEST_SCHEMA = "ceratops-runtime-skill.v3"
-INSTALLER_VERSION = 5
+INSTALLER_VERSION = 7
 
 
 def test_model_call_ledger_keeps_full_evidence_out_of_stdout(
@@ -380,89 +381,753 @@ def run_git(repo: pathlib.Path, *args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-@pytest.mark.skipif(
-    shutil.which("powershell") is None,
-    reason="PowerShell lifecycle helper is unavailable",
-)
-def test_fast_change_readiness_limits_target_to_selected_skill(
-    tmp_path: pathlib.Path,
-) -> None:
-    repo = tmp_path / "AI-Agent-Skills"
+def prepare_fast_change_repo(tmp_path: pathlib.Path) -> pathlib.Path:
+    """Create one clean release checkout with a logging installer."""
+
+    repo = tmp_path / "skills-repo"
     repo.mkdir()
     assert run_git(repo, "init", "-b", "release/local").returncode == 0
     assert run_git(repo, "config", "user.email", "test@example.invalid").returncode == 0
     assert run_git(repo, "config", "user.name", "Test Agent").returncode == 0
     for skill_name in ("alpha-tool", "beta-tool"):
         skill_root = repo / "skills" / skill_name
-        (skill_root / "scripts").mkdir(parents=True)
+        (skill_root / "references").mkdir(parents=True)
+        (skill_root / "scripts").mkdir()
         (skill_root / "SKILL.md").write_text(
             f"---\nname: {skill_name}\ndescription: Test skill.\n---\n",
             encoding="utf-8",
             newline="\n",
         )
-        (skill_root / "scripts" / "helper.ps1").write_text(
-            "Write-Output 'OK'\n",
+        (skill_root / "references" / "change.md").write_text(
+            "# Change\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        (skill_root / "notes.txt").write_text(
+            "Notes\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        (skill_root / "scripts" / "tool.py").write_text(
+            "VALUE = 1\n",
             encoding="utf-8",
             newline="\n",
         )
     (repo / "scripts").mkdir()
     (repo / "scripts" / "install-skills.py").write_text(
-        "raise SystemExit(0)\n",
+        "import os, pathlib, sys\n"
+        "log = pathlib.Path(__file__).resolve().parents[2] / 'install.log'\n"
+        "with log.open('a', encoding='utf-8') as stream:\n"
+        "    stream.write(' '.join(sys.argv[1:]) + '\\n')\n"
+        "raise SystemExit(1 if os.environ.get('FAST_INSTALL_FAIL') else 0)\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    (repo / ".gitignore").write_text(
+        "__pycache__/\n.pytest_cache/\n",
         encoding="utf-8",
         newline="\n",
     )
     assert run_git(repo, "add", ".").returncode == 0
     assert run_git(repo, "commit", "-m", "base").returncode == 0
+    return repo
 
-    accepted = subprocess.run(
-        [
-            "powershell",
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-            str(FAST_CHANGE_READINESS),
-            "-SkillsRepoRoot",
-            str(repo),
-            "-ReleaseBranch",
-            "release/local",
-            "-SkillName",
-            "alpha-tool",
-            "-TargetPath",
-            str(repo / "skills" / "alpha-tool" / "scripts" / "helper.ps1"),
-        ],
+
+def enable_test_markdown_lint(repo: pathlib.Path) -> pathlib.Path:
+    """Declare one observable repository Markdown check in an isolated repo."""
+
+    log = repo.parent / "markdown-lint.log"
+    (repo / "package.json").write_text(
+        json.dumps(
+            {
+                "private": True,
+                "scripts": {"lint:markdown": "python markdown-lint.py"},
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    (repo / "markdown-lint.py").write_text(
+        "import pathlib\n"
+        "root = pathlib.Path(__file__).resolve().parent\n"
+        "log = root.parent / 'markdown-lint.log'\n"
+        "with log.open('a', encoding='utf-8') as stream:\n"
+        "    stream.write('run\\n')\n"
+        "for path in (root / 'skills').rglob('*.md'):\n"
+        "    for number, line in enumerate(path.read_text(encoding='utf-8').splitlines(), 1):\n"
+        "        if len(line) > 80:\n"
+        "            print(f'{path}:{number}: line too long')\n"
+        "            raise SystemExit(1)\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    assert run_git(repo, "add", "package.json", "markdown-lint.py").returncode == 0
+    assert run_git(repo, "commit", "-m", "add markdown lint").returncode == 0
+    return log
+
+
+def fast_change_patch(
+    repo: pathlib.Path, replacements: dict[str, tuple[str, str]]
+) -> str:
+    """Create a Git patch for exact existing-file replacements, then restore."""
+
+    for relative, (old, new) in replacements.items():
+        path = repo / relative
+        path.write_text(
+            path.read_text(encoding="utf-8").replace(old, new),
+            encoding="utf-8",
+            newline="\n",
+        )
+    patch = run_git(repo, "diff", "--", *replacements).stdout
+    assert run_git(repo, "restore", "--", *replacements).returncode == 0
+    return patch
+
+
+def run_fast_change(
+    repo: pathlib.Path,
+    request: dict[str, object],
+    *,
+    environment: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    """Write and run one fast-change request outside the target repository."""
+
+    request_path = repo.parent / f"request-{time.time_ns()}.json"
+    request_path.write_text(
+        json.dumps(request),
+        encoding="utf-8",
+        newline="\n",
+    )
+    return subprocess.run(
+        [sys.executable, str(FAST_CHANGE), "--request", str(request_path)],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=environment,
+    )
+
+
+def fast_change_request(
+    repo: pathlib.Path,
+    patch: str,
+    *,
+    selected: list[str],
+    classification: str = "rules-only",
+    tests: list[str] | None = None,
+) -> dict[str, object]:
+    """Return one complete versioned fast-change request."""
+
+    return {
+        "version": 1,
+        "repo_root": str(repo),
+        "release_branch": "release/local",
+        "patch": patch,
+        "selected_skills": selected,
+        "removed_skills": [],
+        "classification": classification,
+        "tests": tests or [],
+        "commit_message": "Apply exact fast change",
+    }
+
+
+def test_fast_change_commits_cohesive_rules_only_multi_skill_scope(
+    tmp_path: pathlib.Path,
+) -> None:
+    repo = prepare_fast_change_repo(tmp_path)
+    lint_log = enable_test_markdown_lint(repo)
+    paths = {
+        "skills/alpha-tool/SKILL.md": ("description: Test", "description: Updated"),
+        "skills/alpha-tool/references/change.md": ("# Change", "# Updated"),
+        "skills/beta-tool/SKILL.md": ("description: Test", "description: Updated"),
+    }
+    result = run_fast_change(
+        repo,
+        fast_change_request(
+            repo,
+            fast_change_patch(repo, paths),
+            selected=["alpha-tool", "beta-tool"],
+        ),
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "committed"
+    assert payload["skills"] == ["alpha-tool", "beta-tool"]
+    assert run_git(repo, "status", "--porcelain").stdout == ""
+    committed = set(
+        run_git(repo, "show", "--pretty=", "--name-only", "HEAD").stdout.splitlines()
+    )
+    assert committed == set(paths)
+    installs = (repo.parent / "install.log").read_text(encoding="utf-8").splitlines()
+    assert len(installs) == 1
+    assert installs[0].count("--skill") == 2
+    assert lint_log.read_text(encoding="utf-8").splitlines() == ["run"]
+
+    plain_text = run_fast_change(
+        repo,
+        fast_change_request(
+            repo,
+            fast_change_patch(
+                repo,
+                {"skills/alpha-tool/notes.txt": ("Notes", "Updated notes")},
+            ),
+            selected=["alpha-tool"],
+        ),
+    )
+    assert plain_text.returncode == 0, plain_text.stderr
+    assert lint_log.read_text(encoding="utf-8").splitlines() == ["run"]
+
+    head_before_failure = run_git(repo, "rev-parse", "HEAD").stdout.strip()
+    too_long = "description: " + ("x" * 90)
+    failed_lint = run_fast_change(
+        repo,
+        fast_change_request(
+            repo,
+            fast_change_patch(
+                repo,
+                {
+                    "skills/alpha-tool/SKILL.md": (
+                        "description: Updated skill.",
+                        too_long,
+                    )
+                },
+            ),
+            selected=["alpha-tool"],
+        ),
+    )
+    assert failed_lint.returncode == 1
+    assert run_git(repo, "rev-parse", "HEAD").stdout.strip() == head_before_failure
+    assert "description: Updated skill." in (
+        repo / "skills" / "alpha-tool" / "SKILL.md"
+    ).read_text(encoding="utf-8")
+    assert run_git(repo, "status", "--porcelain").stdout == ""
+    installs = (repo.parent / "install.log").read_text(encoding="utf-8").splitlines()
+    assert len(installs) == 2
+    assert lint_log.read_text(encoding="utf-8").splitlines() == ["run", "run"]
+    detail = json.loads(failed_lint.stderr)["detail"]
+    assert detail["phase"] == "markdown_lint"
+    assert detail["compensation"] == ["source_restored"]
+
+
+def test_fast_change_helper_tests_and_compensates_failures(
+    tmp_path: pathlib.Path,
+) -> None:
+    repo = prepare_fast_change_repo(tmp_path)
+    tests_dir = repo / "tests"
+    tests_dir.mkdir()
+    test_file = tests_dir / "test_helper.py"
+    test_file.write_text(
+        "import pathlib\n\n"
+        "def test_value():\n"
+        "    assert pathlib.Path('skills/alpha-tool/scripts/tool.py')"
+        ".read_text(encoding='utf-8') == 'VALUE = 2\\n'\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    assert run_git(repo, "add", "tests/test_helper.py").returncode == 0
+    assert run_git(repo, "commit", "-m", "add helper test").returncode == 0
+    patch = fast_change_patch(
+        repo,
+        {"skills/alpha-tool/scripts/tool.py": ("VALUE = 1", "VALUE = 2")},
+    )
+    request = fast_change_request(
+        repo,
+        patch,
+        selected=["alpha-tool"],
+        classification="helper",
+        tests=["tests/test_helper.py::test_value"],
+    )
+
+    success = run_fast_change(repo, request)
+    assert success.returncode == 0, success.stderr
+    assert "VALUE = 2" in (
+        repo / "skills" / "alpha-tool" / "scripts" / "tool.py"
+    ).read_text(encoding="utf-8")
+
+    failing_patch = fast_change_patch(
+        repo,
+        {"skills/alpha-tool/scripts/tool.py": ("VALUE = 2", "VALUE = 3")},
+    )
+    failing_request = fast_change_request(
+        repo,
+        failing_patch,
+        selected=["alpha-tool"],
+        classification="helper",
+        tests=["tests/test_helper.py::test_value"],
+    )
+    failed_test = run_fast_change(repo, failing_request)
+    assert failed_test.returncode == 1, failed_test.stderr
+    assert "VALUE = 2" in (
+        repo / "skills" / "alpha-tool" / "scripts" / "tool.py"
+    ).read_text(encoding="utf-8")
+    assert run_git(repo, "status", "--porcelain").stdout == ""
+
+    install_failure = run_fast_change(
+        repo,
+        fast_change_request(
+            repo,
+            fast_change_patch(
+                repo,
+                {"skills/alpha-tool/SKILL.md": ("description: Test", "description: Failed")},
+            ),
+            selected=["alpha-tool"],
+        ),
+        environment={**os.environ, "FAST_INSTALL_FAIL": "1"},
+    )
+    assert install_failure.returncode == 1
+    assert "description: Test" in (
+        repo / "skills" / "alpha-tool" / "SKILL.md"
+    ).read_text(encoding="utf-8")
+    assert run_git(repo, "status", "--porcelain").stdout == ""
+
+
+def test_fast_change_commit_failure_restores_source_and_runtime(
+    tmp_path: pathlib.Path,
+) -> None:
+    repo = prepare_fast_change_repo(tmp_path)
+    hook = repo / ".git" / "hooks" / "pre-commit"
+    hook.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8", newline="\n")
+    hook.chmod(0o755)
+    original_head = run_git(repo, "rev-parse", "HEAD").stdout.strip()
+    request = fast_change_request(
+        repo,
+        fast_change_patch(
+            repo,
+            {"skills/alpha-tool/SKILL.md": ("description: Test", "description: Updated")},
+        ),
+        selected=["alpha-tool"],
+    )
+
+    result = run_fast_change(repo, request)
+
+    assert result.returncode == 1
+    assert run_git(repo, "rev-parse", "HEAD").stdout.strip() == original_head
+    assert "description: Test" in (
+        repo / "skills" / "alpha-tool" / "SKILL.md"
+    ).read_text(encoding="utf-8")
+    assert run_git(repo, "status", "--porcelain").stdout == ""
+    installs = (repo.parent / "install.log").read_text(encoding="utf-8").splitlines()
+    assert len(installs) == 2
+    detail = json.loads(result.stderr)["detail"]
+    assert detail["compensation"] == ["source_restored", "runtime_restored"]
+
+
+def test_fast_change_rejects_complete_ineligible_or_dirty_scope_before_mutation(
+    tmp_path: pathlib.Path,
+) -> None:
+    repo = prepare_fast_change_repo(tmp_path)
+    patch = fast_change_patch(
+        repo,
+        {"skills/alpha-tool/SKILL.md": ("description: Test", "description: Updated")},
+    )
+    request = fast_change_request(repo, patch, selected=["beta-tool"])
+
+    mismatch = run_fast_change(repo, request)
+
+    assert mismatch.returncode == 2
+    payload = json.loads(mismatch.stderr)
+    assert payload["status"] == "decision_required"
+    assert payload["route"] == "update"
+    assert payload["affected_files"] == ["skills/alpha-tool/SKILL.md"]
+    assert payload["affected_skills"] == ["beta-tool"]
+    assert pathlib.Path(payload["change_specification"]).is_file()
+    assert run_git(repo, "status", "--porcelain").stdout == ""
+    assert not (repo.parent / "install.log").exists()
+
+    (repo / "dirty.txt").write_text("dirty\n", encoding="utf-8", newline="\n")
+    dirty = run_fast_change(
+        repo,
+        fast_change_request(repo, patch, selected=["alpha-tool"]),
+    )
+    assert dirty.returncode == 2
+    assert "must be clean" in json.loads(dirty.stderr)["reason"]
+    assert "description: Test" in (
+        repo / "skills" / "alpha-tool" / "SKILL.md"
+    ).read_text(encoding="utf-8")
+
+
+def write_deploy_contract(
+    repo: pathlib.Path,
+    operations: dict[str, object],
+) -> pathlib.Path:
+    """Write one JSON-compatible YAML deployment contract."""
+
+    contract = repo / "deploy" / "deploy.yml"
+    contract.parent.mkdir(parents=True, exist_ok=True)
+    contract.write_text(
+        json.dumps({"version": 1, "operations": operations}, indent=2) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    return contract
+
+
+def run_deploy_operation(
+    repo: pathlib.Path,
+    operation: str,
+    *,
+    contract: pathlib.Path | None = None,
+    parameters: tuple[str, ...] = (),
+    parameters_if_declared: tuple[str, ...] = (),
+) -> subprocess.CompletedProcess[str]:
+    """Run one isolated deployment operation."""
+
+    command = [
+        sys.executable,
+        str(DEPLOY_OPERATION),
+        "--repo-root",
+        str(repo),
+        "--operation",
+        operation,
+    ]
+    if contract is not None:
+        command.extend(("--contract", str(contract)))
+    for parameter in parameters:
+        command.extend(("--parameter", parameter))
+    for parameter in parameters_if_declared:
+        command.extend(("--parameter-if-declared", parameter))
+    return subprocess.run(
+        command,
         capture_output=True,
         text=True,
         check=False,
     )
-    assert accepted.returncode == 0, accepted.stderr
-    assert json.loads(accepted.stdout)["target"] == (
-        "skills/alpha-tool/scripts/helper.ps1"
+
+
+def test_deploy_template_is_a_schema_valid_empty_skeleton(
+    tmp_path: pathlib.Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    shutil.copy2(DEPLOY_CONTRACT_TEMPLATE, write_deploy_contract(repo, {}))
+
+    result = run_deploy_operation(repo, "missing")
+
+    assert result.returncode == 1
+    payload = json.loads(result.stderr)
+    assert payload["status"] == "error"
+    assert payload["message"] == "Deployment operation is not declared: missing"
+
+
+def test_deploy_operation_preserves_argv_without_a_shell(
+    tmp_path: pathlib.Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    probe = repo / "argv-probe.py"
+    output = repo / "argv.json"
+    injected = repo / "injected.txt"
+    literal = f"literal; echo injected > {injected}"
+    probe.write_text(
+        "import json, pathlib, sys\n"
+        "pathlib.Path(sys.argv[1]).write_text("
+        "json.dumps(sys.argv[2:]), encoding='utf-8')\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    write_deploy_contract(
+        repo,
+        {
+            "verify": {
+                "steps": [
+                    {
+                        "id": "argv",
+                        "run": [
+                            sys.executable,
+                            "argv-probe.py",
+                            str(output),
+                            "value with spaces",
+                            literal,
+                        ],
+                    }
+                ]
+            }
+        },
     )
 
-    rejected = subprocess.run(
+    result = run_deploy_operation(repo, "verify")
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {
+        "status": "deployed",
+        "operation": "verify",
+        "steps": ["argv"],
+    }
+    assert json.loads(output.read_text(encoding="utf-8")) == [
+        "value with spaces",
+        literal,
+    ]
+    assert not injected.exists()
+
+
+def test_deploy_operation_requires_and_expands_exact_declared_parameters(
+    tmp_path: pathlib.Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    output = repo / "parameter.txt"
+    parameterless_output = repo / "parameterless.txt"
+    probe = repo / "parameter-probe.py"
+    probe.write_text(
+        "import pathlib, sys\n"
+        "pathlib.Path(sys.argv[1]).write_text(sys.argv[2], encoding='utf-8')\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    write_deploy_contract(
+        repo,
+        {
+            "after_promote": {
+                "parameters": ["base_revision"],
+                "steps": [
+                    {
+                        "id": "record",
+                        "run": [
+                            sys.executable,
+                            "parameter-probe.py",
+                            str(output),
+                            "{base_revision}",
+                        ],
+                    }
+                ],
+            },
+            "parameterless": {
+                "steps": [
+                    {
+                        "id": "record",
+                        "run": [
+                            sys.executable,
+                            "parameter-probe.py",
+                            str(parameterless_output),
+                            "literal",
+                        ],
+                    }
+                ]
+            },
+        },
+    )
+
+    missing = run_deploy_operation(repo, "after_promote")
+    assert missing.returncode == 1
+    assert "missing base_revision" in json.loads(missing.stderr)["message"]
+    extra = run_deploy_operation(
+        repo,
+        "after_promote",
+        parameters=("base_revision=abc", "unexpected=value"),
+    )
+    assert extra.returncode == 1
+    assert "unexpected unexpected" in json.loads(extra.stderr)["message"]
+
+    conditional = run_deploy_operation(
+        repo,
+        "after_promote",
+        parameters_if_declared=("base_revision=conditional",),
+    )
+    assert conditional.returncode == 0, conditional.stderr
+    assert output.read_text(encoding="utf-8") == "conditional"
+
+    duplicated = run_deploy_operation(
+        repo,
+        "after_promote",
+        parameters=("base_revision=explicit",),
+        parameters_if_declared=("base_revision=conditional",),
+    )
+    assert duplicated.returncode == 1
+    assert "supplied more than once" in json.loads(duplicated.stderr)["message"]
+
+    strict_parameterless = run_deploy_operation(
+        repo,
+        "parameterless",
+        parameters=("base_revision=explicit",),
+    )
+    assert strict_parameterless.returncode == 1
+    assert "unexpected base_revision" in json.loads(strict_parameterless.stderr)[
+        "message"
+    ]
+    conditional_parameterless = run_deploy_operation(
+        repo,
+        "parameterless",
+        parameters_if_declared=("base_revision=conditional",),
+    )
+    assert (
+        conditional_parameterless.returncode == 0
+    ), conditional_parameterless.stderr
+    assert parameterless_output.read_text(encoding="utf-8") == "literal"
+
+    result = run_deploy_operation(
+        repo,
+        "after_promote",
+        parameters=("base_revision=0123456789abcdef",),
+    )
+    assert result.returncode == 0, result.stderr
+    assert output.read_text(encoding="utf-8") == "0123456789abcdef"
+
+
+def test_after_ship_runs_source_installer_once_from_repository_directory(
+    tmp_path: pathlib.Path,
+) -> None:
+    repo = tmp_path / "repo"
+    installed_skill = tmp_path / "runtime" / "ceratops-repo-lifecycle"
+    installed_skill.mkdir(parents=True)
+    (repo / "scripts").mkdir(parents=True)
+    log = tmp_path / "install-invocations.jsonl"
+    (repo / "scripts" / "install-skills.py").write_text(
+        "import json, os, pathlib, sys\n"
+        "with pathlib.Path(os.environ['INSTALL_LOG']).open('a', encoding='utf-8') as stream:\n"
+        "    stream.write(json.dumps({'cwd': str(pathlib.Path.cwd()), 'argv': sys.argv[1:]}) + '\\n')\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    write_deploy_contract(
+        repo,
+        {
+            "after_ship": {
+                "steps": [
+                    {
+                        "id": "install-managed-skills",
+                        "run": [sys.executable, "scripts/install-skills.py"],
+                    }
+                ]
+            }
+        },
+    )
+
+    result = subprocess.run(
         [
-            "powershell",
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-            str(FAST_CHANGE_READINESS),
-            "-SkillsRepoRoot",
+            sys.executable,
+            str(DEPLOY_OPERATION),
+            "--repo-root",
             str(repo),
-            "-ReleaseBranch",
-            "release/local",
-            "-SkillName",
-            "alpha-tool",
-            "-TargetPath",
-            str(repo / "skills" / "beta-tool" / "SKILL.md"),
+            "--operation",
+            "after_ship",
         ],
+        cwd=installed_skill,
         capture_output=True,
         text=True,
         check=False,
+        env={**os.environ, "INSTALL_LOG": str(log)},
     )
-    assert rejected.returncode != 0
-    assert "TargetPath must stay inside selected skill root" in rejected.stderr
+
+    assert result.returncode == 0, result.stderr
+    invocations = [
+        json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()
+    ]
+    assert invocations == [{"cwd": str(repo.resolve()), "argv": []}]
+
+
+def test_deploy_operation_rejects_invalid_schema(
+    tmp_path: pathlib.Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    contract = write_deploy_contract(
+        repo,
+        {"invalid": {"steps": [{"id": "invalid", "run": "python -V"}]}},
+    )
+
+    result = run_deploy_operation(repo, "invalid", contract=contract)
+
+    assert result.returncode == 1
+    payload = json.loads(result.stderr)
+    assert payload["status"] == "error"
+    assert payload["message"].startswith("Invalid deployment contract:")
+
+
+def test_deploy_operation_enforces_repository_path_boundaries(
+    tmp_path: pathlib.Path,
+) -> None:
+    repo = tmp_path / "repo"
+    outside = tmp_path / "outside"
+    marker = repo / "must-not-run.txt"
+    repo.mkdir()
+    outside.mkdir()
+    write_deploy_contract(
+        repo,
+        {
+            "escape": {
+                "steps": [
+                    {
+                        "id": "would-mutate",
+                        "run": [
+                            sys.executable,
+                            "-c",
+                            (
+                                "import pathlib; "
+                                "pathlib.Path('must-not-run.txt').write_text('ran')"
+                            ),
+                        ],
+                    },
+                    {
+                        "id": "escape",
+                        "cwd": "../outside",
+                        "run": [sys.executable, "-c", "raise SystemExit(0)"],
+                    }
+                ]
+            }
+        },
+    )
+
+    escaped_cwd = run_deploy_operation(repo, "escape")
+
+    assert escaped_cwd.returncode == 1
+    assert json.loads(escaped_cwd.stderr)["message"] == (
+        "Deployment step cwd must be a directory inside the repository."
+    )
+    assert not marker.exists()
+
+    outside_contract = outside / "deploy.yml"
+    outside_contract.write_text(
+        json.dumps({"version": 1, "operations": {}}),
+        encoding="utf-8",
+        newline="\n",
+    )
+    escaped_contract = run_deploy_operation(
+        repo,
+        "escape",
+        contract=outside_contract,
+    )
+    assert escaped_contract.returncode == 1
+    assert json.loads(escaped_contract.stderr)["message"] == (
+        "Deployment contract must be a file inside the repository."
+    )
+
+
+def test_deploy_operation_reports_a_bounded_failure_tail(
+    tmp_path: pathlib.Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    failure = repo / "fail.py"
+    failure.write_text(
+        "import sys\n"
+        "for index in range(12):\n"
+        "    print(f'line-{index}', file=sys.stderr)\n"
+        "raise SystemExit(7)\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    write_deploy_contract(
+        repo,
+        {
+            "fail": {
+                "steps": [
+                    {
+                        "id": "expected-failure",
+                        "run": [sys.executable, "fail.py"],
+                    }
+                ]
+            }
+        },
+    )
+
+    result = run_deploy_operation(repo, "fail")
+
+    assert result.returncode == 1
+    message = json.loads(result.stderr)["message"]
+    assert message.startswith("Deployment step failed: expected-failure\nline-4")
+    assert "line-11" in message
+    assert "line-3" not in message
 
 
 def test_closure_snapshot_composes_only_named_local_state(
@@ -659,12 +1324,14 @@ def add_skill(repo: pathlib.Path, name: str) -> None:
 def create_compatible_repo(repo: pathlib.Path, source_id: str, skill_names: list[str]) -> None:
     """Create the smallest complete Ceratops-compatible source repository."""
 
-    (repo / "templates" / "sections").mkdir(parents=True)
-    (repo / "templates" / "sections" / "core.md").write_text(
+    (repo / "skills" / "sections").mkdir(parents=True)
+    (repo / "skills" / "sections" / "core.md").write_text(
         "## Shared Runtime Rules\n\nUse the source repository contract.\n",
         encoding="utf-8",
         newline="\n",
     )
+    (repo / "deploy").mkdir()
+    shutil.copy2(DEPLOY_CONTRACT_TEMPLATE, repo / "deploy" / "deploy.yml")
     (repo / "scripts").mkdir()
     shutil.copy2(INSTALLER_TEMPLATE, repo / "scripts" / "install-skills.py")
     for skill_name in skill_names:
@@ -688,10 +1355,10 @@ def write_manifest(repo: pathlib.Path, source_id: str) -> None:
     manifest = {
         "runtime_source_id": source_id,
         "validation_profile": "ceratops-compatible",
-        "sections": {"core": "templates/sections/core.md"},
+        "sections": {"core": "skills/sections/core.md"},
         "skills": {name: ["core"] for name in skill_names},
     }
-    (repo / "templates" / "skill-sections.json").write_text(
+    (repo / "skills" / "skill-sections.json").write_text(
         json.dumps(manifest, indent=2) + "\n",
         encoding="utf-8",
         newline="\n",
@@ -723,56 +1390,81 @@ def run_builder(
     )
 
 
+def load_runtime_builder() -> dict[str, Any]:
+    """Load one isolated builder module namespace for monkeypatched behavior tests."""
+
+    return runpy.run_path(str(BUILDER))
+
+
+def load_runtime_installer() -> dict[str, Any]:
+    """Load the runtime installer with its sibling builder import available."""
+
+    runtime_dir = str(RUNTIME_INSTALLER.parent)
+    sys.modules.pop("managed_runtime_builder", None)
+    sys.path.insert(0, runtime_dir)
+    try:
+        return runpy.run_path(str(RUNTIME_INSTALLER))
+    finally:
+        sys.path.remove(runtime_dir)
+
+
+def runtime_skill_text(install_root: pathlib.Path, skill_name: str) -> str:
+    """Read one installed runtime skill body."""
+
+    return (install_root / skill_name / "SKILL.md").read_text(encoding="utf-8")
+
+
 def runtime_owner(install_root: pathlib.Path, skill_name: str) -> str:
     data = json.loads((install_root / skill_name / RUNTIME_MANIFEST).read_text(encoding="utf-8"))
     return str(data["runtime_source_id"])
 
 
-def prepare_promotion_test_repo(
+def prepare_repository_lifecycle_repo(
     tmp_path: pathlib.Path,
-    mypy_config: tuple[str, str] | None,
+    *,
+    declares_base_revision: bool = True,
 ) -> tuple[pathlib.Path, str, pathlib.Path, dict[str, str]]:
-    """Create one isolated promotion repository with an approved branch."""
+    """Create one isolated repository with a promotable source branch."""
 
     remote = tmp_path / "remote.git"
-    seed = tmp_path / "seed"
-    repo = tmp_path / "AI-Agent-Skills"
+    repo = tmp_path / "repo"
+    log = tmp_path / "deploy.log"
     assert run_git(tmp_path, "init", "--bare", str(remote)).returncode == 0
-    seed.mkdir()
-    assert run_git(seed, "init").returncode == 0
-    assert run_git(seed, "config", "user.email", "test@example.invalid").returncode == 0
-    assert run_git(seed, "config", "user.name", "Test Agent").returncode == 0
-    (seed / "dummy.py").write_text("value: int = 1\n", encoding="utf-8", newline="\n")
-    if mypy_config is not None:
-        config_name, config_text = mypy_config
-        (seed / config_name).write_text(
-            config_text,
-            encoding="utf-8",
-            newline="\n",
-        )
-    (seed / "README.md").write_text("base\n", encoding="utf-8", newline="\n")
-    (seed / "scripts").mkdir()
-    (seed / "scripts" / "install-skills.py").write_text(
-        "import os, pathlib\n"
-        "INSTALLER_VERSION = 4\n"
-        "with pathlib.Path(os.environ['PROMOTION_TEST_LOG']).open("
-        "'a', encoding='utf-8') as log:\n"
-        "    log.write('installed\\n')\n",
+    repo.mkdir()
+    assert run_git(repo, "init", "-b", "main").returncode == 0
+    assert run_git(repo, "config", "user.email", "test@example.invalid").returncode == 0
+    assert run_git(repo, "config", "user.name", "Test Agent").returncode == 0
+    (repo / "README.md").write_text("base\n", encoding="utf-8", newline="\n")
+    (repo / "deploy-probe.py").write_text(
+        "import os, pathlib, sys\n"
+        "pathlib.Path(os.environ['DEPLOY_TEST_LOG']).write_text("
+        "(sys.argv[1] if len(sys.argv) > 1 else 'no-base') + '\\n', "
+        "encoding='utf-8')\n",
         encoding="utf-8",
         newline="\n",
     )
-    assert run_git(seed, "add", ".").returncode == 0
-    assert run_git(seed, "commit", "-m", "base").returncode == 0
-    assert run_git(seed, "branch", "-M", "main").returncode == 0
-    assert run_git(seed, "remote", "add", "origin", str(remote)).returncode == 0
-    assert run_git(seed, "push", "-u", "origin", "main").returncode == 0
-    assert (
-        run_git(remote, "symbolic-ref", "HEAD", "refs/heads/main").returncode
-        == 0
+    operation: dict[str, object] = {
+        "steps": [
+            {
+                "id": "record",
+                "run": [
+                    sys.executable,
+                    "deploy-probe.py",
+                    *(["{base_revision}"] if declares_base_revision else []),
+                ],
+            }
+        ]
+    }
+    if declares_base_revision:
+        operation["parameters"] = ["base_revision"]
+    write_deploy_contract(
+        repo,
+        {"after_promote": operation},
     )
-    assert run_git(tmp_path, "clone", str(remote), str(repo)).returncode == 0
-    assert run_git(repo, "config", "user.email", "test@example.invalid").returncode == 0
-    assert run_git(repo, "config", "user.name", "Test Agent").returncode == 0
+    assert run_git(repo, "add", ".").returncode == 0
+    assert run_git(repo, "commit", "-m", "base").returncode == 0
+    assert run_git(repo, "remote", "add", "origin", str(remote)).returncode == 0
+    assert run_git(repo, "push", "-u", "origin", "main").returncode == 0
     assert run_git(repo, "switch", "-c", "approved").returncode == 0
     (repo / "README.md").write_text(
         "base\napproved\n",
@@ -782,36 +1474,63 @@ def prepare_promotion_test_repo(
     assert run_git(repo, "add", "README.md").returncode == 0
     assert run_git(repo, "commit", "-m", "approved change").returncode == 0
     approved_head = run_git(repo, "rev-parse", "HEAD").stdout.strip()
-    log = tmp_path / "promotion.log"
-    environment = os.environ.copy()
-    environment["PROMOTION_TEST_LOG"] = str(log)
+    environment = {**os.environ, "DEPLOY_TEST_LOG": str(log)}
     return repo, approved_head, log, environment
 
 
-def run_promotion_helper(
-    repo: pathlib.Path,
-    environment: dict[str, str],
-) -> subprocess.CompletedProcess[str]:
-    """Run the promotion helper against an isolated repository."""
+@pytest.mark.parametrize(
+    (
+        "operation_arguments",
+        "declares_base_revision",
+        "expected_operation",
+        "expects_base_revision",
+    ),
+    [
+        (["--no-run-operation"], True, None, None),
+        (
+            ["--run-operation", "after_promote"],
+            True,
+            {
+                "status": "deployed",
+                "operation": "after_promote",
+                "steps": ["record"],
+            },
+            True,
+        ),
+        (
+            ["--run-operation", "after_promote"],
+            False,
+            {
+                "status": "deployed",
+                "operation": "after_promote",
+                "steps": ["record"],
+            },
+            False,
+        ),
+    ],
+)
+def test_promote_repository_requires_an_explicit_deployment_choice(
+    tmp_path: pathlib.Path,
+    operation_arguments: list[str],
+    declares_base_revision: bool,
+    expected_operation: dict[str, object] | None,
+    expects_base_revision: bool | None,
+) -> None:
+    repo, approved_head, log, environment = prepare_repository_lifecycle_repo(
+        tmp_path,
+        declares_base_revision=declares_base_revision,
+    )
+    release_start = run_git(repo, "rev-parse", "main").stdout.strip()
 
-    return subprocess.run(
+    promoted = subprocess.run(
         [
-            "powershell",
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-            str(PROMOTION_HELPER),
-            "-SkillsRepoRoot",
+            sys.executable,
+            str(PROMOTE_REPOSITORY),
+            "--repo-root",
             str(repo),
-            "-ApprovedBranch",
+            "--source-branch",
             "approved",
-            "-MainBranch",
-            "main",
-            "-ReleaseBranch",
-            "release/local",
-            "-RemoteName",
-            "origin",
+            *operation_arguments,
         ],
         capture_output=True,
         text=True,
@@ -819,474 +1538,674 @@ def run_promotion_helper(
         env=environment,
     )
 
-
-@pytest.mark.skipif(
-    shutil.which("powershell") is None,
-    reason="PowerShell lifecycle helper is unavailable",
-)
-def test_promotion_helper_owns_release_branch_preparation(
-    tmp_path: pathlib.Path,
-) -> None:
-    repo, approved_head, log, environment = prepare_promotion_test_repo(
-        tmp_path,
-        ("mypy.ini", "[mypy]\nfiles = dummy.py\n"),
-    )
-    promoted = run_promotion_helper(repo, environment)
-
     assert promoted.returncode == 0, promoted.stderr
     result = json.loads(promoted.stdout)
     assert result["status"] == "ready"
     assert result["release_branch"] == "release/local"
     assert result["merged_branches"] == ["approved"]
     assert result["head"] == approved_head
-    assert result["retained_approved_branches"] == ["approved"]
-    assert pathlib.Path(result["promotion_record"]).is_file()
-    assert log.read_text(encoding="utf-8") == "installed\n"
-    assert run_git(repo, "branch", "--show-current").stdout.strip() == "release/local"
+    assert result["release_start"] == release_start
+    assert result["operation"] == expected_operation
+    scope_path = pathlib.Path(result["pending_work_scope"])
+    assert json.loads(scope_path.read_text(encoding="utf-8")) == {
+        "source_branches": ["approved"],
+        "target_branch": "release/local",
+        "target_commit": approved_head,
+        "version": 1,
+    }
+    assert run_git(repo, "branch", "--show-current").stdout.strip() == "approved"
+    assert run_git(repo, "rev-parse", "release/local").stdout.strip() == approved_head
+    assert (
+        run_git(
+            repo,
+            "for-each-ref",
+            "--format=%(worktreepath)",
+            "refs/heads/release/local",
+        ).stdout.strip()
+        == ""
+    )
     assert run_git(repo, "status", "--porcelain").stdout == ""
+    if expects_base_revision is None:
+        assert not log.exists()
+    elif expects_base_revision:
+        assert log.read_text(encoding="utf-8") == f"{release_start}\n"
+    else:
+        assert log.read_text(encoding="utf-8") == "no-base\n"
 
 
-@pytest.mark.skipif(
-    shutil.which("powershell") is None,
-    reason="PowerShell lifecycle helper is unavailable",
-)
-def test_promotion_bootstraps_changed_lifecycle_before_full_install(
+def test_promote_and_deploy_includes_prior_unpublished_batch(
     tmp_path: pathlib.Path,
 ) -> None:
-    repo, _, log, environment = prepare_promotion_test_repo(
-        tmp_path,
-        ("mypy.ini", "[mypy]\nfiles = dummy.py\n"),
+    repo, approved_head, log, environment = prepare_repository_lifecycle_repo(tmp_path)
+    deployed_baseline = run_git(repo, "rev-parse", "main").stdout.strip()
+    first = subprocess.run(
+        [
+            sys.executable,
+            str(PROMOTE_REPOSITORY),
+            "--repo-root",
+            str(repo),
+            "--source-branch",
+            "approved",
+            "--no-run-operation",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=environment,
     )
-    source_installer = (
-        repo
-        / "skills"
-        / "ceratops-skill-lifecycle"
-        / "scripts"
-        / "runtime"
-        / "install-managed-skills.py"
-    )
-    source_installer.parent.mkdir(parents=True)
-    source_installer.write_text(
-        "import os, pathlib\n"
-        "with pathlib.Path(os.environ['PROMOTION_TEST_LOG']).open("
-        "'a', encoding='utf-8') as log:\n"
-        "    log.write('lifecycle\\n')\n",
-        encoding="utf-8",
-        newline="\n",
-    )
-    assert run_git(repo, "add", str(source_installer)).returncode == 0
-    assert run_git(repo, "commit", "-m", "change lifecycle").returncode == 0
-
-    promoted = run_promotion_helper(repo, environment)
-
-    assert promoted.returncode == 0, promoted.stderr
-    assert log.read_text(encoding="utf-8") == "lifecycle\ninstalled\n"
-
-
-@pytest.mark.skipif(
-    shutil.which("powershell") is None,
-    reason="PowerShell lifecycle helper is unavailable",
-)
-def test_promotion_restores_lifecycle_runtime_when_full_install_fails(
-    tmp_path: pathlib.Path,
-) -> None:
-    repo, _, log, environment = prepare_promotion_test_repo(
-        tmp_path,
-        ("mypy.ini", "[mypy]\nfiles = dummy.py\n"),
-    )
-    codex_home = tmp_path / "codex"
-    installed_lifecycle = (
-        codex_home / "skills" / "ceratops-skill-lifecycle"
-    )
-    installed_lifecycle.mkdir(parents=True)
-    (installed_lifecycle / "runtime.txt").write_text(
-        "prior\n",
-        encoding="utf-8",
-        newline="\n",
-    )
-    environment["CODEX_HOME"] = str(codex_home)
-
-    source_installer = (
-        repo
-        / "skills"
-        / "ceratops-skill-lifecycle"
-        / "scripts"
-        / "runtime"
-        / "install-managed-skills.py"
-    )
-    source_installer.parent.mkdir(parents=True)
-    source_installer.write_text(
-        "import os, pathlib, shutil\n"
-        "target = pathlib.Path(os.environ['CODEX_HOME']) / 'skills' / "
-        "'ceratops-skill-lifecycle'\n"
-        "if target.exists():\n"
-        "    shutil.rmtree(target)\n"
-        "target.mkdir(parents=True)\n"
-        "(target / 'runtime.txt').write_text('staged\\n', encoding='utf-8')\n"
-        "with pathlib.Path(os.environ['PROMOTION_TEST_LOG']).open("
-        "'a', encoding='utf-8') as log:\n"
-        "    log.write('lifecycle\\n')\n",
-        encoding="utf-8",
-        newline="\n",
-    )
-    install_script = repo / "scripts" / "install-skills.py"
-    install_script.write_text(
-        "import os, pathlib\n"
-        "INSTALLER_VERSION = 4\n"
-        "with pathlib.Path(os.environ['PROMOTION_TEST_LOG']).open("
-        "'a', encoding='utf-8') as log:\n"
-        "    log.write('install-failed\\n')\n"
-        "raise SystemExit('requested full install failure')\n",
-        encoding="utf-8",
-        newline="\n",
-    )
-    assert run_git(
-        repo,
-        "add",
-        str(source_installer),
-        str(install_script),
-    ).returncode == 0
-    assert run_git(repo, "commit", "-m", "change lifecycle").returncode == 0
-
-    promoted = run_promotion_helper(repo, environment)
-
-    assert promoted.returncode != 0
-    assert (installed_lifecycle / "runtime.txt").read_text(
-        encoding="utf-8"
-    ) == "prior\n"
-    assert log.read_text(encoding="utf-8") == (
-        "lifecycle\ninstall-failed\n"
-    )
-    rollback_parent = tmp_path / "tmp" / repo.name
-    assert not rollback_parent.exists() or not any(rollback_parent.iterdir())
-
-
-@pytest.mark.skipif(
-    shutil.which("powershell") is None,
-    reason="PowerShell lifecycle helper is unavailable",
-)
-@pytest.mark.parametrize(
-    ("mypy_config", "classification", "config_files"),
-    [
-        (None, "mypy_scope_missing", '"config_files":[]'),
-        (
-            ("pyproject.toml", "[project]\nname = 'fixture'\n"),
-            "mypy_scope_missing",
-            '"config_files":[]',
-        ),
-        (
-            ("mypy.ini", "[mypy]\n"),
-            "mypy_scope_mismatch",
-            '"config_files":["mypy.ini"]',
-        ),
-        (
-            ("mypy.ini", "[mypy]\nfiles = missing.py\n"),
-            "mypy_failed",
-            '"config_files":["mypy.ini"]',
-        ),
-    ],
-)
-def test_promotion_helper_classifies_mypy_failures(
-    tmp_path: pathlib.Path,
-    mypy_config: tuple[str, str] | None,
-    classification: str,
-    config_files: str,
-) -> None:
-    repo, _, log, environment = prepare_promotion_test_repo(
-        tmp_path,
-        mypy_config,
-    )
-
-    promoted = run_promotion_helper(repo, environment)
-
-    assert promoted.returncode != 0
-    assert f'"classification":"{classification}"' in promoted.stderr
-    assert '"command":"python -m mypy"' in promoted.stderr
-    assert config_files in promoted.stderr
+    assert first.returncode == 0, first.stderr
     assert not log.exists()
 
+    assert run_git(repo, "switch", "-c", "approved-second", "release/local").returncode == 0
+    (repo / "README.md").write_text(
+        "base\napproved\napproved second\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    assert run_git(repo, "add", "README.md").returncode == 0
+    assert run_git(repo, "commit", "-m", "approved second change").returncode == 0
+    second = subprocess.run(
+        [
+            sys.executable,
+            str(PROMOTE_REPOSITORY),
+            "--repo-root",
+            str(repo),
+            "--source-branch",
+            "approved-second",
+            "--run-operation",
+            "after_promote",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=environment,
+    )
 
-@pytest.mark.skipif(
-    shutil.which("powershell") is None,
-    reason="PowerShell lifecycle helper is unavailable",
-)
-def test_promotion_records_are_collision_free_and_cleaned_terminally(
+    assert second.returncode == 0, second.stderr
+    assert json.loads(second.stdout)["release_start"] == approved_head
+    assert log.read_text(encoding="utf-8") == f"{deployed_baseline}\n"
+
+
+def test_promote_repository_reuses_checked_out_release_worktree(
     tmp_path: pathlib.Path,
 ) -> None:
-    repo = tmp_path / "AI-Agent-Skills"
+    repo, approved_head, _, environment = prepare_repository_lifecycle_repo(tmp_path)
+    approved_worktree = tmp_path / "approved-worktree"
+    release_worktree = tmp_path / "release-worktree"
+    assert run_git(repo, "switch", "main").returncode == 0
+    assert (
+        run_git(repo, "worktree", "add", str(approved_worktree), "approved").returncode
+        == 0
+    )
+    assert run_git(repo, "branch", "release/local", "main").returncode == 0
+    assert (
+        run_git(repo, "worktree", "add", str(release_worktree), "release/local").returncode
+        == 0
+    )
+
+    promoted = subprocess.run(
+        [
+            sys.executable,
+            str(PROMOTE_REPOSITORY),
+            "--repo-root",
+            str(repo),
+            "--source-branch",
+            "approved",
+            "--no-run-operation",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=environment,
+    )
+
+    assert promoted.returncode == 0, promoted.stderr
+    assert json.loads(promoted.stdout)["head"] == approved_head
+    assert run_git(repo, "branch", "--show-current").stdout.strip() == "main"
+    assert (
+        run_git(release_worktree, "branch", "--show-current").stdout.strip()
+        == "release/local"
+    )
+    assert run_git(release_worktree, "rev-parse", "HEAD").stdout.strip() == approved_head
+    assert run_git(repo, "status", "--porcelain").stdout == ""
+    assert run_git(approved_worktree, "status", "--porcelain").stdout == ""
+    assert run_git(release_worktree, "status", "--porcelain").stdout == ""
+
+
+def test_promote_repository_fast_forwards_unchecked_main_ref(
+    tmp_path: pathlib.Path,
+) -> None:
+    repo, approved_head, _, environment = prepare_repository_lifecycle_repo(tmp_path)
+    assert run_git(repo, "push", "origin", "approved:main").returncode == 0
+
+    promoted = subprocess.run(
+        [
+            sys.executable,
+            str(PROMOTE_REPOSITORY),
+            "--repo-root",
+            str(repo),
+            "--source-branch",
+            "approved",
+            "--no-run-operation",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=environment,
+    )
+
+    assert promoted.returncode == 0, promoted.stderr
+    assert run_git(repo, "branch", "--show-current").stdout.strip() == "approved"
+    assert run_git(repo, "rev-parse", "main").stdout.strip() == approved_head
+    assert run_git(repo, "rev-parse", "release/local").stdout.strip() == approved_head
+
+
+def test_promote_and_deploy_requires_an_existing_target_checkout(
+    tmp_path: pathlib.Path,
+) -> None:
+    repo, _, _, environment = prepare_repository_lifecycle_repo(tmp_path)
+    assert run_git(repo, "switch", "main").returncode == 0
+
+    promoted = subprocess.run(
+        [
+            sys.executable,
+            str(PROMOTE_REPOSITORY),
+            "--repo-root",
+            str(repo),
+            "--source-branch",
+            "approved",
+            "--run-operation",
+            "after_promote",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=environment,
+    )
+
+    assert promoted.returncode == 1
+    result = json.loads(promoted.stderr)
+    assert "final source branch worktree" in result["message"]
+    assert (
+        run_git(
+            repo,
+            "show-ref",
+            "--verify",
+            "--quiet",
+            "refs/heads/release/local",
+        ).returncode
+        == 1
+    )
+
+
+def test_prepare_release_only_switches_the_supplied_checkout_without_adding_one(
+    tmp_path: pathlib.Path,
+) -> None:
+    repo, _, _, environment = prepare_repository_lifecycle_repo(tmp_path)
+    assert run_git(repo, "switch", "main").returncode == 0
+
+    prepared = subprocess.run(
+        [
+            sys.executable,
+            str(PROMOTE_REPOSITORY),
+            "--repo-root",
+            str(repo),
+            "--prepare-release-only",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=environment,
+    )
+
+    assert prepared.returncode == 0, prepared.stderr
+    assert json.loads(prepared.stdout)["status"] == "prepared"
+    assert run_git(repo, "branch", "--show-current").stdout.strip() == "release/local"
+    worktree_lines = run_git(repo, "worktree", "list", "--porcelain").stdout.splitlines()
+    assert sum(line.startswith("worktree ") for line in worktree_lines) == 1
+
+
+def test_promote_and_deploy_rejects_operation_created_repository_work(
+    tmp_path: pathlib.Path,
+) -> None:
+    repo, _, _, environment = prepare_repository_lifecycle_repo(tmp_path)
+    probe = repo / "deploy-probe.py"
+    probe.write_text(
+        "import pathlib\n"
+        "pathlib.Path('generated-by-deploy.txt').write_text("
+        "'untracked\\n', encoding='utf-8')\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    assert run_git(repo, "add", "deploy-probe.py").returncode == 0
+    assert run_git(repo, "commit", "-m", "create deploy output").returncode == 0
+
+    promoted = subprocess.run(
+        [
+            sys.executable,
+            str(PROMOTE_REPOSITORY),
+            "--repo-root",
+            str(repo),
+            "--source-branch",
+            "approved",
+            "--run-operation",
+            "after_promote",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=environment,
+    )
+
+    assert promoted.returncode == 1
+    result = json.loads(promoted.stderr)
+    assert result["status"] == "error"
+    assert "dirty" in result["message"].lower()
+    assert "ready" in result["message"].lower()
+    assert (repo / "generated-by-deploy.txt").is_file()
+
+
+@pytest.mark.parametrize("late_phase", ["post_sync", "post_finalize"])
+def test_repository_ship_late_pending_work_reports_remote_mutation(
+    tmp_path: pathlib.Path,
+    late_phase: str,
+) -> None:
+    repo = tmp_path / "repo"
     repo.mkdir()
-    assert run_git(repo, "init").returncode == 0
+    (repo / "deploy").mkdir()
+    (repo / "deploy" / "deploy.yml").write_text(
+        "version: 1\noperations: {}\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    scope = tmp_path / "scope.json"
+    shipped = {
+        "status": "shipped",
+        "repository": "example/repository",
+        "commit": "a" * 40,
+        "pr": 17,
+        "url": "https://example.invalid/pull/17",
+        "merge_commit": "c" * 40,
+        "synchronized_head": "b" * 40,
+    }
+    pending = {
+        "status": "pending_work",
+        "remote_mutation": False,
+        "findings": [
+            {
+                "kind": "dirty_worktree",
+                "subject": "selected",
+                "detail": "1 status entry",
+            }
+        ],
+    }
+    deployed = {
+        "status": "deployed",
+        "operation": "after_ship",
+        "steps": ["install"],
+    }
+    responses: list[tuple[int, dict[str, Any]]] = (
+        [(0, shipped), (2, pending)]
+        if late_phase == "post_sync"
+        else [
+            (0, shipped),
+            (0, {"status": "ready"}),
+            (0, deployed),
+            (2, pending),
+        ]
+    )
+    commands: list[list[str]] = []
+
+    def run_json(command: list[str]) -> tuple[int, dict[str, Any]]:
+        commands.append(command)
+        return responses[len(commands) - 1]
+
+    loaded = runpy.run_path(str(SHIP_REPOSITORY))
+    ship_repository = loaded["ship_repository"]
+    ship_repository.__globals__["_run_json"] = run_json
+    args = argparse.Namespace(
+        repo_root=repo,
+        repo="example/repository",
+        head_branch="release/local",
+        base_branch="main",
+        remote_name="origin",
+        commit="a" * 40,
+        title=None,
+        body=None,
+        merge_method="merge",
+        pending_work_scope=scope,
+        no_pending_work_check=False,
+        delete_branch=False,
+        reusable_head=True,
+        deploy_contract=pathlib.Path("deploy/deploy.yml"),
+        deploy_operation="after_ship",
+        ci_wait_seconds=1,
+        review_wait_seconds=1,
+        interval_seconds=1,
+    )
+    if late_phase == "post_finalize":
+        stale_identity = loaded["_deployment_identity"](
+            repo,
+            target_branch="release/local",
+            target_commit="d" * 40,
+            contract=args.deploy_contract,
+            operation="after_ship",
+        )
+        loaded["_write_deployment_checkpoint"](
+            scope.with_suffix(".after-ship.json"),
+            stale_identity,
+            {"status": "deployed", "operation": "after_ship", "steps": ["old"]},
+        )
+
+    result = ship_repository(args)
+
+    assert result["status"] == "pending_work"
+    assert result["remote_mutation"] is True
+    assert result["repository"] == "example/repository"
+    assert result["commit"] == "a" * 40
+    assert "check" in commands[1]
+    if late_phase == "post_sync":
+        assert len(commands) == 2
+        assert "deployment" not in result
+    else:
+        assert len(commands) == 4
+        assert "finalize" in commands[3]
+        assert result["deployment"] == deployed
+        checkpoint = scope.with_suffix(".after-ship.json")
+        assert checkpoint.is_file()
+        responses.extend(
+            [
+                (0, {**shipped, "status": "already_shipped"}),
+                (0, {"status": "ready"}),
+                (0, {"status": "finalized"}),
+            ]
+        )
+
+        resumed = ship_repository(args)
+
+        assert resumed["status"] == "already_shipped"
+        assert resumed["deployment"] == deployed
+        assert len(commands) == 7
+        deploy_runner = str(SHIP_REPOSITORY.parent / "run-deploy-operation.py")
+        assert all(deploy_runner not in command for command in commands[4:])
+        assert not checkpoint.exists()
+
+
+def test_repository_ship_rejects_malformed_deployment_checkpoint(
+    tmp_path: pathlib.Path,
+) -> None:
+    loaded = runpy.run_path(str(SHIP_REPOSITORY))
+    checkpoint = tmp_path / "scope.after-ship.json"
+    checkpoint.write_text("{}", encoding="utf-8", newline="\n")
+    identity = {
+        "version": 1,
+        "target_branch": "release/local",
+        "target_commit": "a" * 40,
+        "contract": str(tmp_path / "deploy.yml"),
+        "operation": "after_ship",
+    }
+
+    with pytest.raises(
+        loaded["RepositoryShipError"],
+        match="invalid structure",
+    ):
+        loaded["_read_deployment_checkpoint"](checkpoint, identity)
+
+
+def run_pending_work(
+    repo: pathlib.Path,
+    command: str,
+    *arguments: str,
+) -> subprocess.CompletedProcess[str]:
+    """Run one generic pending-work operation."""
+
+    return subprocess.run(
+        [
+            sys.executable,
+            str(MANAGE_PENDING_WORK),
+            "--repo-root",
+            str(repo),
+            command,
+            *arguments,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def test_pending_work_scope_is_selected_generic_and_finalized_late(
+    tmp_path: pathlib.Path,
+) -> None:
+    repo = tmp_path / "Repository"
+    repo.mkdir()
+    assert run_git(repo, "init", "-b", "main").returncode == 0
     assert run_git(repo, "config", "user.email", "test@example.invalid").returncode == 0
     assert run_git(repo, "config", "user.name", "Test Agent").returncode == 0
     (repo / "README.md").write_text("base\n", encoding="utf-8", newline="\n")
-    (repo / "scripts").mkdir()
-    (repo / "scripts" / "install-skills.py").write_text(
-        "import os, pathlib, shutil\n"
-        "active_bundle_value = os.environ.get('FINALIZER_ACTIVE_BUNDLE')\n"
-        "if active_bundle_value:\n"
-        "    active_bundle = pathlib.Path(active_bundle_value)\n"
-        "    previous_bundle = active_bundle.with_name(\n"
-        "        active_bundle.name + '-previous'\n"
-        "    )\n"
-        "    active_bundle.rename(previous_bundle)\n"
-        "    shutil.copytree(previous_bundle, active_bundle)\n"
-        "    shutil.rmtree(previous_bundle)\n"
-        "record = pathlib.Path(os.environ['EXPECTED_PROMOTION_RECORD'])\n"
-        "worktree = pathlib.Path(os.environ['EXPECTED_APPROVED_WORKTREE'])\n"
-        "if not record.is_file() or not worktree.is_dir():\n"
-        "    raise SystemExit('cleanup ran before installation')\n"
-        "with pathlib.Path(os.environ['FINALIZER_TEST_LOG']).open('a') as log:\n"
-        "    log.write('install\\n')\n",
-        encoding="utf-8",
-        newline="\n",
-    )
-    assert run_git(repo, "add", ".").returncode == 0
+    assert run_git(repo, "add", "README.md").returncode == 0
     assert run_git(repo, "commit", "-m", "base").returncode == 0
-    assert run_git(repo, "branch", "-M", "main").returncode == 0
-    assert run_git(repo, "branch", "approved").returncode == 0
+    assert run_git(repo, "branch", "selected").returncode == 0
     assert run_git(repo, "branch", "unrelated").returncode == 0
 
     worktree_root = tmp_path / "worktrees" / repo.name
-    approved_worktree = worktree_root / "approved"
+    selected_worktree = worktree_root / "selected"
     unrelated_worktree = worktree_root / "unrelated"
     worktree_root.mkdir(parents=True)
     assert (
-        run_git(repo, "worktree", "add", str(approved_worktree), "approved").returncode
+        run_git(repo, "worktree", "add", str(selected_worktree), "selected").returncode
         == 0
     )
     assert (
         run_git(repo, "worktree", "add", str(unrelated_worktree), "unrelated").returncode
         == 0
     )
-    (approved_worktree / "README.md").write_text(
-        "base\napproved\n",
+    (selected_worktree / "README.md").write_text(
+        "base\nselected\n",
         encoding="utf-8",
         newline="\n",
     )
-    assert run_git(approved_worktree, "add", "README.md").returncode == 0
-    assert (
-        run_git(approved_worktree, "commit", "-m", "approved change").returncode
-        == 0
-    )
-    promotion_commit = run_git(
-        approved_worktree, "rev-parse", "HEAD"
-    ).stdout.strip()
-    assert run_git(repo, "branch", "release/local", promotion_commit).returncode == 0
+    assert run_git(selected_worktree, "add", "README.md").returncode == 0
+    assert run_git(selected_worktree, "commit", "-m", "selected").returncode == 0
+    target_commit = run_git(selected_worktree, "rev-parse", "HEAD").stdout.strip()
+    assert run_git(repo, "branch", "release/local", target_commit).returncode == 0
 
-    approved_branch_data = base64.b64encode(b"approved").decode("ascii")
-    record_command = [
-        "powershell",
-        "-NoProfile",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-File",
-        str(MANAGE_PENDING_RELEASE_WORK),
-        "-SkillsRepoRoot",
-        str(repo),
-        "-ReleaseBranch",
+    recorded = run_pending_work(
+        repo,
+        "record",
+        "--target-branch",
         "release/local",
-        "-PromotionCommit",
-        promotion_commit,
-        "-ApprovedBranchData",
-        approved_branch_data,
-        "-RecordPromotion",
-    ]
-
-    retained = subprocess.run(
-        record_command,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert retained.returncode == 0, retained.stderr
-    retained_payload = json.loads(retained.stdout)
-    record = pathlib.Path(retained_payload["promotion_record"])
-    assert approved_worktree.is_dir()
-    assert unrelated_worktree.is_dir()
-    assert record.is_file()
-    assert retained_payload["approved_branches"] == ["approved"]
-
-    (approved_worktree / "README.md").write_text(
-        "base\napproved\nlater retained commit\n",
-        encoding="utf-8",
-        newline="\n",
-    )
-    assert run_git(approved_worktree, "add", "README.md").returncode == 0
-    assert (
-        run_git(approved_worktree, "commit", "-m", "later retained change").returncode
-        == 0
-    )
-    (approved_worktree / "README.md").write_text(
-        "base\napproved\nlater retained commit\nuncommitted retained work\n",
-        encoding="utf-8",
-        newline="\n",
-    )
-    assert run_git(repo, "branch", "approved-next", promotion_commit).returncode == 0
-    next_record_command = record_command.copy()
-    next_record_command[
-        next_record_command.index(approved_branch_data)
-    ] = base64.b64encode(b"approved-next").decode("ascii")
-    next_retained = subprocess.run(
-        next_record_command,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert next_retained.returncode == 0, next_retained.stderr
-    next_payload = json.loads(next_retained.stdout)
-    assert next_payload["approved_branches"] == ["approved", "approved-next"]
-    assert pathlib.Path(next_payload["promotion_record"]) == record
-    assert (
-        run_git(approved_worktree, "reset", "--hard", promotion_commit).returncode
-        == 0
+        "--target-commit",
+        target_commit,
+        "--source-branch",
+        "selected",
     )
 
-    collision_branch = "release__local"
-    assert (
-        run_git(repo, "branch", collision_branch, promotion_commit).returncode == 0
-    )
-    collision_record_command = record_command.copy()
-    collision_record_command[
-        collision_record_command.index("release/local")
-    ] = collision_branch
-    collision_retained = subprocess.run(
-        collision_record_command,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert collision_retained.returncode == 0, collision_retained.stderr
-    collision_record = pathlib.Path(
-        json.loads(collision_retained.stdout)["promotion_record"]
-    )
-    assert collision_record != record
-    assert collision_record.is_file()
-
-    bundle_scripts = tmp_path / "bundle" / "scripts"
-    (bundle_scripts / "runtime").mkdir(parents=True)
-    finalizer_helper = bundle_scripts / MANAGE_PENDING_RELEASE_WORK.name
-    shutil.copy2(MANAGE_PENDING_RELEASE_WORK, finalizer_helper)
-    # Reproduce Git's successful deregistration with ignored dependency
-    # content left behind without adding a production-only test mode.
-    finalizer_text = finalizer_helper.read_text(encoding="utf-8")
-    remove_call = '    Invoke-Git @("worktree", "remove", $WorktreePath)\n'
-    assert finalizer_text.count(remove_call) == 1
-    finalizer_helper.write_text(
-        finalizer_text.replace(
-            remove_call,
-            remove_call
-            + "    if (-not [string]::IsNullOrWhiteSpace($env:RESIDUAL_INJECTION_LOG)) {\n"
-            + '        $residual = Join-Path $WorktreePath "node_modules"\n'
-            + "        $null = New-Item -ItemType Directory -Force -Path $residual\n"
-            + "        [IO.File]::WriteAllText(\n"
-            + '            (Join-Path $residual "residual.txt"),\n'
-            + '            "residual",\n'
-            + "            [Text.UTF8Encoding]::new($false)\n"
-            + "        )\n"
-            + "        [IO.File]::AppendAllText(\n"
-            + "            $env:RESIDUAL_INJECTION_LOG,\n"
-            + '            "residual-created`n",\n'
-            + "            [Text.UTF8Encoding]::new($false)\n"
-            + "        )\n"
-            + "    }\n",
-        ),
-        encoding="utf-8",
-        newline="\n",
-    )
-    (bundle_scripts / "runtime" / "skills-consistency-runtime-validator.py").write_text(
-        "import os, pathlib\n"
-        "record = pathlib.Path(os.environ['EXPECTED_PROMOTION_RECORD'])\n"
-        "worktree = pathlib.Path(os.environ['EXPECTED_APPROVED_WORKTREE'])\n"
-        "if not record.is_file() or not worktree.is_dir():\n"
-        "    raise SystemExit('cleanup ran before runtime validation')\n"
-        "with pathlib.Path(os.environ['FINALIZER_TEST_LOG']).open('a') as log:\n"
-        "    log.write('runtime\\n')\n"
-        "if os.environ.get('FAIL_RUNTIME') == '1':\n"
-        "    raise SystemExit('requested runtime failure')\n",
-        encoding="utf-8",
-        newline="\n",
-    )
-    assert run_git(repo, "reset", "--hard", promotion_commit).returncode == 0
-    finalizer_log = tmp_path / "finalizer.log"
-    finalizer_env = {
-        **os.environ,
-        "EXPECTED_APPROVED_WORKTREE": str(approved_worktree),
-        "EXPECTED_PROMOTION_RECORD": str(record),
-        "FINALIZER_ACTIVE_BUNDLE": str(bundle_scripts.parent),
-        "FINALIZER_TEST_LOG": str(finalizer_log),
+    assert recorded.returncode == 0, recorded.stderr
+    recorded_payload = json.loads(recorded.stdout)
+    assert recorded_payload["status"] == "ready"
+    scope_path = pathlib.Path(recorded_payload["pending_work_scope"])
+    assert json.loads(scope_path.read_text(encoding="utf-8")) == {
+        "source_branches": ["selected"],
+        "target_branch": "release/local",
+        "target_commit": target_commit,
+        "version": 1,
     }
-    cleanup_command = [
-        "powershell",
-        "-NoProfile",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-File",
-        str(finalizer_helper),
-        "-SkillsRepoRoot",
-        str(repo),
-        "-ReleaseBranch",
+
+    (selected_worktree / "README.md").write_text(
+        "base\nselected\nlater commit\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    assert run_git(selected_worktree, "add", "README.md").returncode == 0
+    assert run_git(selected_worktree, "commit", "-m", "later selected").returncode == 0
+    (selected_worktree / "README.md").write_text(
+        "base\nselected\nlater commit\ndirty\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    (unrelated_worktree / "README.md").write_text(
+        "base\nunrelated commit\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    assert run_git(unrelated_worktree, "add", "README.md").returncode == 0
+    assert run_git(unrelated_worktree, "commit", "-m", "unrelated").returncode == 0
+    (unrelated_worktree / "README.md").write_text(
+        "base\nunrelated commit\ndirty\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+
+    checked = run_pending_work(
+        repo,
+        "check",
+        "--scope",
+        str(scope_path),
+        "--target-branch",
         "release/local",
-        "-PromotionCommit",
-        promotion_commit,
-        "-FinalizeShippedRelease",
-    ]
-    failed = subprocess.run(
-        cleanup_command,
-        capture_output=True,
-        text=True,
-        check=False,
-        env={**finalizer_env, "FAIL_RUNTIME": "1"},
-        cwd=bundle_scripts.parent,
+        "--target-commit",
+        target_commit,
     )
-    assert failed.returncode != 0
-    assert approved_worktree.is_dir()
-    assert run_git(repo, "show-ref", "--verify", "refs/heads/approved").returncode == 0
-    assert record.is_file()
-    assert finalizer_log.read_text(encoding="utf-8").splitlines() == [
-        "install",
-        "runtime",
-    ]
-    finalizer_log.unlink()
 
-    residual_injection_log = tmp_path / "residual-injection.log"
-    cleanup_env = {
-        **finalizer_env,
-        "RESIDUAL_INJECTION_LOG": str(residual_injection_log),
-    }
-    cleaned = subprocess.run(
-        cleanup_command,
-        capture_output=True,
-        text=True,
-        check=False,
-        env=cleanup_env,
-        cwd=bundle_scripts.parent,
+    assert checked.returncode == 2, checked.stderr
+    checked_payload = json.loads(checked.stdout)
+    assert checked_payload["status"] == "pending_work"
+    assert checked_payload["remote_mutation"] is False
+    assert [(item["kind"], item["subject"]) for item in checked_payload["findings"]] == [
+        ("dirty_worktree", "selected"),
+        ("unmerged_branch_commits", "selected"),
+    ]
+    assert all(
+        item["subject"] != "unrelated" for item in checked_payload["findings"]
     )
-    assert cleaned.returncode == 0, cleaned.stderr
-    cleaned_payload = json.loads(cleaned.stdout)
-    assert cleaned_payload["install"] == "managed"
-    assert cleaned_payload["runtime_validation"] == "full"
-    assert finalizer_log.read_text(encoding="utf-8").splitlines() == [
-        "install",
-        "runtime",
-    ]
-    assert residual_injection_log.read_text(encoding="utf-8").splitlines() == [
-        "residual-created"
-    ]
-    assert not approved_worktree.exists()
-    assert run_git(repo, "show-ref", "--verify", "refs/heads/approved").returncode != 0
+
+    assert run_git(selected_worktree, "reset", "--hard", target_commit).returncode == 0
+    assert run_git(repo, "merge", "--ff-only", "release/local").returncode == 0
+    current_commit = run_git(repo, "rev-parse", "HEAD").stdout.strip()
+    finalized = run_pending_work(
+        repo,
+        "finalize",
+        "--scope",
+        str(scope_path),
+        "--target-branch",
+        "release/local",
+        "--target-commit",
+        target_commit,
+        "--current-branch",
+        "main",
+        "--current-commit",
+        current_commit,
+    )
+
+    assert finalized.returncode == 0, finalized.stderr
+    assert json.loads(finalized.stdout) == {
+        "status": "finalized",
+        "removed": ["selected"],
+        "pending_work_scope": "",
+    }
+    assert not selected_worktree.exists()
+    assert run_git(repo, "show-ref", "--verify", "refs/heads/selected").returncode != 0
     assert unrelated_worktree.is_dir()
     assert run_git(repo, "show-ref", "--verify", "refs/heads/unrelated").returncode == 0
-    assert not record.exists()
-    assert collision_record.is_file()
+    assert not scope_path.exists()
 
-    collision_cleanup = subprocess.run(
-        [*collision_record_command[:-3], "-CleanMergedBranches"],
-        capture_output=True,
-        text=True,
-        check=False,
+
+def test_pending_work_finalization_persists_partial_cleanup_progress(
+    tmp_path: pathlib.Path,
+) -> None:
+    repo = tmp_path / "Repository"
+    repo.mkdir()
+    assert run_git(repo, "init", "-b", "main").returncode == 0
+    assert run_git(repo, "config", "user.email", "test@example.invalid").returncode == 0
+    assert run_git(repo, "config", "user.name", "Test Agent").returncode == 0
+    readme = repo / "README.md"
+    readme.write_text("base\n", encoding="utf-8", newline="\n")
+    assert run_git(repo, "add", "README.md").returncode == 0
+    assert run_git(repo, "commit", "-m", "base").returncode == 0
+    assert run_git(repo, "switch", "-c", "selected-a").returncode == 0
+    readme.write_text("base\na\n", encoding="utf-8", newline="\n")
+    assert run_git(repo, "commit", "-am", "selected a").returncode == 0
+    assert run_git(repo, "switch", "-c", "selected-b").returncode == 0
+    readme.write_text("base\na\nb\n", encoding="utf-8", newline="\n")
+    assert run_git(repo, "commit", "-am", "selected b").returncode == 0
+    target_commit = run_git(repo, "rev-parse", "HEAD").stdout.strip()
+    assert run_git(repo, "branch", "release/local", target_commit).returncode == 0
+    assert run_git(repo, "switch", "main").returncode == 0
+    assert run_git(repo, "merge", "--ff-only", "release/local").returncode == 0
+    current_commit = run_git(repo, "rev-parse", "HEAD").stdout.strip()
+
+    worktree_root = tmp_path / "worktrees" / repo.name
+    selected_a = worktree_root / "selected-a"
+    selected_b = worktree_root / "selected-b"
+    worktree_root.mkdir(parents=True)
+    assert run_git(repo, "worktree", "add", str(selected_a), "selected-a").returncode == 0
+    assert run_git(repo, "worktree", "add", str(selected_b), "selected-b").returncode == 0
+    recorded = run_pending_work(
+        repo,
+        "record",
+        "--target-branch",
+        "release/local",
+        "--target-commit",
+        target_commit,
+        "--source-branch",
+        "selected-a",
+        "--source-branch",
+        "selected-b",
     )
-    assert collision_cleanup.returncode == 0, collision_cleanup.stderr
-    assert not collision_record.exists()
+    assert recorded.returncode == 0, recorded.stderr
+    scope_path = pathlib.Path(json.loads(recorded.stdout)["pending_work_scope"])
+
+    lifecycle_scripts = str(MANAGE_PENDING_WORK.parent)
+    sys.path.insert(0, lifecycle_scripts)
+    try:
+        loaded = runpy.run_path(str(MANAGE_PENDING_WORK))
+    finally:
+        sys.path.remove(lifecycle_scripts)
+    finalize_scope = loaded["finalize_scope"]
+    original_require_success = finalize_scope.__globals__["require_success"]
+    pending_error = loaded["PendingWorkError"]
+
+    def fail_second_branch(
+        command: list[str],
+        *,
+        cwd: pathlib.Path,
+    ) -> subprocess.CompletedProcess[str]:
+        if command[-3:] == ["branch", "-d", "selected-b"]:
+            raise pending_error("simulated second-branch cleanup failure")
+        return original_require_success(command, cwd=cwd)
+
+    finalize_scope.__globals__["require_success"] = fail_second_branch
+    with pytest.raises(pending_error, match="second-branch cleanup failure"):
+        finalize_scope(
+            repo,
+            scope_path,
+            target_branch="release/local",
+            target_commit=target_commit,
+            current_branch="main",
+            current_commit=current_commit,
+        )
+
+    assert json.loads(scope_path.read_text(encoding="utf-8"))["source_branches"] == [
+        "selected-b"
+    ]
+    assert run_git(repo, "show-ref", "--verify", "refs/heads/selected-a").returncode != 0
+    assert run_git(repo, "show-ref", "--verify", "refs/heads/selected-b").returncode == 0
+    finalize_scope.__globals__["require_success"] = original_require_success
+
+    resumed = finalize_scope(
+        repo,
+        scope_path,
+        target_branch="release/local",
+        target_commit=target_commit,
+        current_branch="main",
+        current_commit=current_commit,
+    )
+
+    assert resumed["status"] == "finalized"
+    assert resumed["removed"] == ["selected-b"]
+    assert not scope_path.exists()
+    assert run_git(repo, "show-ref", "--verify", "refs/heads/selected-b").returncode != 0
 
 
 def install_bundle_manifest(
@@ -1323,6 +2242,37 @@ def test_compatible_full_validation_accepts_arbitrary_skill_names(tmp_path: path
 
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "ok: 1"
+
+
+def test_source_validator_ignores_shared_sections_directory(tmp_path: pathlib.Path) -> None:
+    repo = tmp_path / "compatible"
+    create_compatible_repo(repo, "example/compatible", ["alpha-tool"])
+
+    result = subprocess.run(
+        [sys.executable, str(VALIDATOR), "--repo-root", str(repo), "--mode", "sections"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "ok: sections 1"
+
+
+def test_skill_sections_template_contains_no_live_repository_inventory() -> None:
+    template = json.loads(SECTION_MANIFEST_TEMPLATE.read_text(encoding="utf-8"))
+    live = json.loads(LIVE_SECTION_MANIFEST.read_text(encoding="utf-8"))
+
+    assert template == {
+        "runtime_source_id": "",
+        "validation_profile": "ceratops-compatible",
+        "sections": {"core": "skills/sections/core.md"},
+        "maintenance_workflows": {},
+        "runtime_payloads": {},
+        "skills": {},
+    }
+    assert live["runtime_source_id"]
+    assert live["skills"]
 
 
 def test_source_validator_rejects_consecutive_name_hyphens(tmp_path: pathlib.Path) -> None:
@@ -1382,7 +2332,7 @@ def test_multi_action_membership_is_owned_by_the_skill_index(
     skills_dir = tmp_path / "skills"
     write_multi_action_skill(
         skills_dir,
-        "ceratops-gh-repo-lifecycle",
+        "ceratops-repo-lifecycle",
         ["references/merge-pr.md", "references/new-command.md"],
         {
             "references/merge-pr.md": "# Merge PR Action\n\nMerge the ready pull request.\n",
@@ -1392,12 +2342,11 @@ def test_multi_action_membership_is_owned_by_the_skill_index(
     validator = load_source_validator(skills_dir)
     manifest = {
         "skills": {
-            "ceratops-gh-repo-lifecycle": ["multi-action-skill"],
+            "ceratops-repo-lifecycle": ["multi-action-skill"],
         }
     }
 
     assert validator["check_multi_action_skill_contract"](manifest) == []
-    assert validator["check_skill_scope_validator"]() == []
 
 
 def test_multi_action_contract_rejects_structural_drift(
@@ -1431,30 +2380,6 @@ def test_multi_action_contract_rejects_structural_drift(
     assert "example-lifecycle: unlisted action reference references/orphan.md" in errors
 
 
-def test_skill_scope_validator_retains_semantic_boundaries(
-    tmp_path: pathlib.Path,
-) -> None:
-    merge_path = (
-        tmp_path
-        / "skills"
-        / "ceratops-gh-repo-lifecycle"
-        / "references"
-        / "merge-pr.md"
-    )
-    merge_path.parent.mkdir(parents=True)
-    merge_path.write_text(
-        "# Merge PR Action\n\npython -m github_contract_engine validate repo\n",
-        encoding="utf-8",
-        newline="\n",
-    )
-    validator = load_source_validator(tmp_path / "skills")
-
-    assert validator["check_skill_scope_validator"]() == [
-        "ceratops-gh-repo-lifecycle: merge-pr action must not run repo/artifact "
-        "contract validation"
-    ]
-
-
 def test_full_validation_excludes_git_ignored_files(tmp_path: pathlib.Path) -> None:
     repo = tmp_path / "compatible"
     create_compatible_repo(repo, "example/compatible", ["alpha-tool"])
@@ -1477,6 +2402,11 @@ def test_full_validation_excludes_git_ignored_files(tmp_path: pathlib.Path) -> N
             encoding="utf-8",
             newline="\n",
         )
+    (repo / "executable.py").write_text(
+        "REFERENCE = '$unknown-skill'\n",
+        encoding="utf-8",
+        newline="\n",
+    )
 
     result = subprocess.run(
         [sys.executable, str(VALIDATOR), "--repo-root", str(repo), "--mode", "full"],
@@ -1508,7 +2438,7 @@ def test_full_validation_scans_manifest_runtime_inputs_only(tmp_path: pathlib.Pa
     )
     assert unlisted.returncode == 0, unlisted.stderr
 
-    manifest_path = repo / "templates" / "skill-sections.json"
+    manifest_path = repo / "skills" / "skill-sections.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest["runtime_payloads"] = {"alpha-tool": ["runtime-note.md"]}
     manifest_path.write_text(
@@ -1535,12 +2465,12 @@ def test_full_install_removes_only_same_source_stale_skills(tmp_path: pathlib.Pa
     create_compatible_repo(repo_a, "example/source-a", ["alpha-tool", "retired-tool"])
     create_compatible_repo(repo_b, "example/source-b", ["beta-tool"])
 
-    assert run_builder(repo_a, install_root, "--remove-stale").returncode == 0
-    assert run_builder(repo_b, install_root, "--remove-stale").returncode == 0
+    assert run_builder(repo_a, install_root, "--all-managed").returncode == 0
+    assert run_builder(repo_b, install_root, "--all-managed").returncode == 0
     shutil.rmtree(repo_a / "skills" / "retired-tool")
     write_manifest(repo_a, "example/source-a")
 
-    result = run_builder(repo_a, install_root, "--remove-stale")
+    result = run_builder(repo_a, install_root, "--all-managed")
 
     assert result.returncode == 0, result.stderr
     assert not (install_root / "retired-tool").exists()
@@ -1554,8 +2484,8 @@ def test_targeted_install_keeps_stale_and_rejects_other_source_collision(tmp_pat
     install_root = tmp_path / "installed"
     create_compatible_repo(repo_a, "example/source-a", ["alpha-tool", "retired-tool"])
     create_compatible_repo(repo_b, "example/source-b", ["beta-tool"])
-    assert run_builder(repo_a, install_root, "--remove-stale").returncode == 0
-    assert run_builder(repo_b, install_root, "--remove-stale").returncode == 0
+    assert run_builder(repo_a, install_root, "--all-managed").returncode == 0
+    assert run_builder(repo_b, install_root, "--all-managed").returncode == 0
 
     shutil.rmtree(repo_a / "skills" / "retired-tool")
     write_manifest(repo_a, "example/source-a")
@@ -1593,6 +2523,601 @@ def test_targeted_install_keeps_stale_and_rejects_other_source_collision(tmp_pat
     assert "unsupported ownership manifest" in legacy_collision.stderr
 
 
+def test_transaction_stages_complete_batch_before_canonical_mutation(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "compatible"
+    install_root = tmp_path / "installed"
+    create_compatible_repo(repo, "example/compatible", ["alpha-tool", "beta-tool"])
+    assert run_builder(repo, install_root, "--all-managed").returncode == 0
+    before = {
+        name: runtime_skill_text(install_root, name)
+        for name in ("alpha-tool", "beta-tool")
+    }
+    for name in before:
+        source = repo / "skills" / name / "SKILL.md"
+        source.write_text(
+            source.read_text(encoding="utf-8") + f"\nUpdated {name}.\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+
+    builder = load_runtime_builder()
+    original_write = builder["write_expected_skill"]
+    observed: list[tuple[str, dict[str, str]]] = []
+
+    def traced_write(skill: str, *args: object, **kwargs: object) -> None:
+        observed.append(
+            (
+                skill,
+                {
+                    name: runtime_skill_text(install_root, name)
+                    for name in before
+                },
+            )
+        )
+        original_write(skill, *args, **kwargs)
+
+    monkeypatch.setitem(
+        builder["install_transaction"].__globals__,
+        "write_expected_skill",
+        traced_write,
+    )
+    result = builder["install_transaction"](
+        repo,
+        install_root,
+        INSTALLER_VERSION,
+        selected=("alpha-tool", "beta-tool"),
+    )
+
+    assert result.status == "ok"
+    assert [skill for skill, _ in observed] == ["alpha-tool", "beta-tool"]
+    assert all(snapshot == before for _, snapshot in observed)
+    assert all(
+        f"Updated {name}." in runtime_skill_text(install_root, name)
+        for name in before
+    )
+
+
+def test_transaction_staging_or_activation_failure_restores_prior_batch(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "compatible"
+    install_root = tmp_path / "installed"
+    create_compatible_repo(repo, "example/compatible", ["alpha-tool", "beta-tool"])
+    assert run_builder(repo, install_root, "--all-managed").returncode == 0
+    before = {
+        name: runtime_skill_text(install_root, name)
+        for name in ("alpha-tool", "beta-tool")
+    }
+    for name in before:
+        source = repo / "skills" / name / "SKILL.md"
+        source.write_text(
+            source.read_text(encoding="utf-8") + "\nChanged.\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+
+    staging_builder = load_runtime_builder()
+    original_write = staging_builder["write_expected_skill"]
+
+    def fail_second_stage(skill: str, *args: object, **kwargs: object) -> None:
+        if skill == "beta-tool":
+            raise OSError("staging failed")
+        original_write(skill, *args, **kwargs)
+
+    monkeypatch.setitem(
+        staging_builder["install_transaction"].__globals__,
+        "write_expected_skill",
+        fail_second_stage,
+    )
+    with pytest.raises(staging_builder["TransactionError"]) as staging_error:
+        staging_builder["install_transaction"](
+            repo,
+            install_root,
+            INSTALLER_VERSION,
+            selected=("alpha-tool", "beta-tool"),
+        )
+    assert staging_error.value.phase == "staging"
+    assert staging_error.value.rollback_state == "complete"
+    assert {
+        name: runtime_skill_text(install_root, name)
+        for name in before
+    } == before
+    assert not list(install_root.glob(".*-deployed-*"))
+
+    activation_builder = load_runtime_builder()
+    original_rename = activation_builder["rename_with_retry"]
+
+    def fail_second_activation(
+        source: pathlib.Path, target: pathlib.Path
+    ) -> None:
+        if source.name.startswith(".beta-tool-deployed-"):
+            raise PermissionError("activation denied")
+        original_rename(source, target)
+
+    monkeypatch.setitem(
+        activation_builder["install_transaction"].__globals__,
+        "rename_with_retry",
+        fail_second_activation,
+    )
+    with pytest.raises(activation_builder["TransactionError"]) as activation_error:
+        activation_builder["install_transaction"](
+            repo,
+            install_root,
+            INSTALLER_VERSION,
+            selected=("alpha-tool", "beta-tool"),
+        )
+    assert activation_error.value.phase == "activation"
+    assert activation_error.value.rollback_state == "complete"
+    assert {
+        name: runtime_skill_text(install_root, name)
+        for name in before
+    } == before
+
+
+def test_transaction_retry_policy_and_acl_order(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    builder = load_runtime_builder()
+
+    class RenameProbe:
+        def __init__(self, failures: int, *, transient: bool) -> None:
+            self.failures = failures
+            self.transient = transient
+            self.calls = 0
+
+        def replace(self, _target: object) -> None:
+            self.calls += 1
+            if self.calls <= self.failures:
+                error = OSError(
+                    errno.EBUSY if self.transient else errno.EACCES,
+                    "rename failure",
+                )
+                setattr(error, "winerror", 32 if self.transient else 5)
+                raise error
+
+    monkeypatch.setattr(builder["time"], "sleep", lambda _seconds: None)
+    transient = RenameProbe(2, transient=True)
+    builder["rename_with_retry"](transient, pathlib.Path("unused"))
+    assert transient.calls == 3
+    permanent = RenameProbe(2, transient=False)
+    with pytest.raises(OSError):
+        builder["rename_with_retry"](permanent, pathlib.Path("unused"))
+    assert permanent.calls == 1
+
+    repo = tmp_path / "compatible"
+    install_root = tmp_path / "installed"
+    create_compatible_repo(repo, "example/compatible", ["alpha-tool"])
+    order: list[str] = []
+    original_rename = builder["rename_with_retry"]
+
+    def record_acl(path: pathlib.Path) -> None:
+        order.append(f"acl:{path.name}")
+
+    def record_rename(source: pathlib.Path, target: pathlib.Path) -> None:
+        if "-deployed-" in source.name:
+            order.append(f"activate:{source.name}")
+        original_rename(source, target)
+
+    monkeypatch.setitem(
+        builder["install_transaction"].__globals__,
+        "enable_windows_acl_inheritance",
+        record_acl,
+    )
+    monkeypatch.setitem(
+        builder["install_transaction"].__globals__,
+        "rename_with_retry",
+        record_rename,
+    )
+    builder["install_transaction"](
+        repo,
+        install_root,
+        INSTALLER_VERSION,
+        selected=("alpha-tool",),
+    )
+    assert order[0].startswith("acl:.alpha-tool-deployed-")
+    assert order[1].startswith("activate:.alpha-tool-deployed-")
+
+
+def test_transaction_recovers_interrupted_and_blocks_ambiguous_remnants(
+    tmp_path: pathlib.Path,
+) -> None:
+    repo = tmp_path / "compatible"
+    install_root = tmp_path / "installed"
+    create_compatible_repo(repo, "example/compatible", ["alpha-tool", "beta-tool"])
+    assert run_builder(repo, install_root, "--all-managed").returncode == 0
+    old_text = runtime_skill_text(install_root, "alpha-tool")
+    source = repo / "skills" / "alpha-tool" / "SKILL.md"
+    source.write_text(
+        source.read_text(encoding="utf-8") + "\nRecovered update.\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    builder = load_runtime_builder()
+    builder["configure_repo"](repo)
+    manifest = builder["load_manifest"]()
+    transaction = "a" * 32
+    retired = install_root / f".alpha-tool-retired-{transaction}"
+    deployed = install_root / f".alpha-tool-deployed-{transaction}"
+    (install_root / "alpha-tool").replace(retired)
+    builder["write_expected_skill"](
+        "alpha-tool",
+        deployed,
+        manifest,
+        INSTALLER_VERSION,
+    )
+
+    recovered = builder["install_transaction"](
+        repo,
+        install_root,
+        INSTALLER_VERSION,
+        selected=("alpha-tool",),
+    )
+
+    assert recovered.status == "ok"
+    assert "Recovered update." in runtime_skill_text(install_root, "alpha-tool")
+    assert not retired.exists()
+    assert not deployed.exists()
+
+    ambiguous = install_root / f".alpha-tool-retired-{'b' * 32}"
+    (install_root / "alpha-tool").replace(ambiguous)
+    with pytest.raises(builder["TransactionError"]) as blocked:
+        builder["install_transaction"](
+            repo,
+            install_root,
+            INSTALLER_VERSION,
+            selected=("beta-tool",),
+        )
+    assert blocked.value.phase == "recovery"
+    assert "same affected set" in str(blocked.value)
+
+
+def test_transaction_rejects_conflicting_remnant_ids(
+    tmp_path: pathlib.Path,
+) -> None:
+    repo = tmp_path / "compatible"
+    install_root = tmp_path / "installed"
+    create_compatible_repo(repo, "example/compatible", ["alpha-tool"])
+    assert run_builder(repo, install_root, "--all-managed").returncode == 0
+    for transaction in ("c" * 32, "d" * 32):
+        shutil.copytree(
+            install_root / "alpha-tool",
+            install_root / f".alpha-tool-retired-{transaction}",
+        )
+    builder = load_runtime_builder()
+
+    with pytest.raises(builder["TransactionError"]) as blocked:
+        builder["install_transaction"](
+            repo,
+            install_root,
+            INSTALLER_VERSION,
+            selected=("alpha-tool",),
+        )
+
+    assert blocked.value.phase == "recovery"
+    assert "conflicting transaction IDs" in str(blocked.value)
+
+
+def test_transaction_supports_explicit_add_remove_and_rename(
+    tmp_path: pathlib.Path,
+) -> None:
+    repo = tmp_path / "compatible"
+    install_root = tmp_path / "installed"
+    create_compatible_repo(repo, "example/compatible", ["alpha-tool", "old-tool"])
+    assert run_builder(repo, install_root, "--all-managed").returncode == 0
+
+    add_skill(repo, "beta-tool")
+    write_manifest(repo, "example/compatible")
+    added = run_builder(repo, install_root, "--skill", "beta-tool")
+    assert added.returncode == 0, added.stderr
+    assert (install_root / "beta-tool").is_dir()
+
+    shutil.rmtree(repo / "skills" / "old-tool")
+    write_manifest(repo, "example/compatible")
+    removed = run_builder(repo, install_root, "--remove-skill", "old-tool")
+    assert removed.returncode == 0, removed.stderr
+    assert not (install_root / "old-tool").exists()
+
+    (repo / "skills" / "alpha-tool").replace(repo / "skills" / "renamed-tool")
+    skill_md = repo / "skills" / "renamed-tool" / "SKILL.md"
+    skill_md.write_text(
+        skill_md.read_text(encoding="utf-8").replace(
+            "name: alpha-tool", "name: renamed-tool"
+        ),
+        encoding="utf-8",
+        newline="\n",
+    )
+    write_manifest(repo, "example/compatible")
+    renamed = run_builder(
+        repo,
+        install_root,
+        "--skill",
+        "renamed-tool",
+        "--remove-skill",
+        "alpha-tool",
+    )
+    assert renamed.returncode == 0, renamed.stderr
+    assert (install_root / "renamed-tool").is_dir()
+    assert not (install_root / "alpha-tool").exists()
+
+
+def test_base_revision_resolves_structured_add_remove_rename_and_sections(
+    tmp_path: pathlib.Path,
+) -> None:
+    repo = tmp_path / "compatible"
+    create_compatible_repo(
+        repo,
+        "example/compatible",
+        ["alpha-tool", "beta-tool", "old-tool"],
+    )
+    assert run_git(repo, "init", "-b", "main").returncode == 0
+    assert run_git(repo, "config", "user.email", "test@example.invalid").returncode == 0
+    assert run_git(repo, "config", "user.name", "Test Agent").returncode == 0
+    assert run_git(repo, "add", ".").returncode == 0
+    assert run_git(repo, "commit", "-m", "base").returncode == 0
+    base = run_git(repo, "rev-parse", "HEAD").stdout.strip()
+
+    (repo / "skills" / "old-tool").replace(repo / "skills" / "renamed-tool")
+    renamed_skill = repo / "skills" / "renamed-tool" / "SKILL.md"
+    renamed_skill.write_text(
+        renamed_skill.read_text(encoding="utf-8").replace(
+            "name: old-tool", "name: renamed-tool"
+        ),
+        encoding="utf-8",
+        newline="\n",
+    )
+    section = repo / "skills" / "sections" / "core.md"
+    section.write_text(
+        section.read_text(encoding="utf-8") + "\nUpdated shared rule.\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    write_manifest(repo, "example/compatible")
+    assert run_git(repo, "add", "-A").returncode == 0
+    assert run_git(repo, "commit", "-m", "rename and section").returncode == 0
+    installer = load_runtime_installer()
+
+    affected = installer["affected_from_base"](repo, base)
+
+    assert affected.deploy == ("alpha-tool", "beta-tool", "renamed-tool")
+    assert affected.remove == ("old-tool",)
+    assert affected.all_managed is False
+
+
+def test_base_revision_resolves_payload_global_and_ambiguous_changes(
+    tmp_path: pathlib.Path,
+) -> None:
+    installer = load_runtime_installer()
+
+    payload_repo = tmp_path / "payload"
+    create_compatible_repo(
+        payload_repo,
+        "example/payload",
+        ["alpha-tool", "beta-tool"],
+    )
+    payload = payload_repo / "payload-alpha.txt"
+    payload.write_text("one\n", encoding="utf-8", newline="\n")
+    manifest_path = payload_repo / "skills" / "skill-sections.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["runtime_payloads"] = {"alpha-tool": ["payload-alpha.txt"]}
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    assert run_git(payload_repo, "init", "-b", "main").returncode == 0
+    assert run_git(payload_repo, "config", "user.email", "test@example.invalid").returncode == 0
+    assert run_git(payload_repo, "config", "user.name", "Test Agent").returncode == 0
+    assert run_git(payload_repo, "add", ".").returncode == 0
+    assert run_git(payload_repo, "commit", "-m", "base").returncode == 0
+    payload_base = run_git(payload_repo, "rev-parse", "HEAD").stdout.strip()
+    payload.write_text("two\n", encoding="utf-8", newline="\n")
+    with pytest.raises(installer["DecisionRequired"], match="clean checkout"):
+        installer["affected_from_base"](payload_repo, payload_base)
+    assert run_git(payload_repo, "add", "payload-alpha.txt").returncode == 0
+    assert run_git(payload_repo, "commit", "-m", "payload").returncode == 0
+
+    payload_affected = installer["affected_from_base"](
+        payload_repo, payload_base
+    )
+    assert payload_affected.deploy == ("alpha-tool",)
+    assert payload_affected.remove == ()
+    assert payload_affected.all_managed is False
+    wildcard_base = run_git(payload_repo, "rev-parse", "HEAD").stdout.strip()
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["runtime_payloads"] = {"*": ["payload-alpha.txt"]}
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    assert run_git(payload_repo, "add", "skills/skill-sections.json").returncode == 0
+    assert run_git(payload_repo, "commit", "-m", "wildcard payload").returncode == 0
+    wildcard_affected = installer["affected_from_base"](
+        payload_repo, wildcard_base
+    )
+    assert wildcard_affected.deploy == ("alpha-tool", "beta-tool")
+    assert wildcard_affected.all_managed is True
+
+    global_repo = tmp_path / "global"
+    create_compatible_repo(
+        global_repo,
+        "example/global",
+        ["alpha-tool", "beta-tool"],
+    )
+    assert run_git(global_repo, "init", "-b", "main").returncode == 0
+    assert run_git(global_repo, "config", "user.email", "test@example.invalid").returncode == 0
+    assert run_git(global_repo, "config", "user.name", "Test Agent").returncode == 0
+    assert run_git(global_repo, "add", ".").returncode == 0
+    assert run_git(global_repo, "commit", "-m", "base").returncode == 0
+    global_base = run_git(global_repo, "rev-parse", "HEAD").stdout.strip()
+    bootstrap = global_repo / "scripts" / "install-skills.py"
+    bootstrap.write_text(
+        bootstrap.read_text(encoding="utf-8") + "\n# changed generator\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    assert run_git(global_repo, "add", "scripts/install-skills.py").returncode == 0
+    assert run_git(global_repo, "commit", "-m", "global").returncode == 0
+    global_affected = installer["affected_from_base"](global_repo, global_base)
+    assert global_affected.deploy == ("alpha-tool", "beta-tool")
+    assert global_affected.all_managed is True
+    global_install_root = tmp_path / "global-installed"
+    global_install = subprocess.run(
+        [
+            sys.executable,
+            str(RUNTIME_INSTALLER),
+            "--repo-root",
+            str(global_repo),
+            "--install-root",
+            str(global_install_root),
+            "--installer-version",
+            str(INSTALLER_VERSION),
+            "--base-revision",
+            global_base,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert global_install.returncode == 0, global_install.stderr
+    assert {
+        path.name
+        for path in global_install_root.iterdir()
+        if not path.name.startswith(".")
+    } == {"alpha-tool", "beta-tool"}
+
+    ambiguous_repo = tmp_path / "ambiguous"
+    create_compatible_repo(ambiguous_repo, "example/ambiguous", ["alpha-tool"])
+    assert run_git(ambiguous_repo, "init", "-b", "main").returncode == 0
+    assert run_git(ambiguous_repo, "config", "user.email", "test@example.invalid").returncode == 0
+    assert run_git(ambiguous_repo, "config", "user.name", "Test Agent").returncode == 0
+    assert run_git(ambiguous_repo, "add", ".").returncode == 0
+    assert run_git(ambiguous_repo, "commit", "-m", "base").returncode == 0
+    ambiguous_base = run_git(ambiguous_repo, "rev-parse", "HEAD").stdout.strip()
+    ambiguous_manifest = ambiguous_repo / "skills" / "skill-sections.json"
+    value = json.loads(ambiguous_manifest.read_text(encoding="utf-8"))
+    value["unowned_effect"] = {"value": True}
+    ambiguous_manifest.write_text(
+        json.dumps(value, indent=2) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    assert run_git(ambiguous_repo, "add", "skills/skill-sections.json").returncode == 0
+    assert run_git(ambiguous_repo, "commit", "-m", "ambiguous").returncode == 0
+    with pytest.raises(installer["DecisionRequired"]):
+        installer["affected_from_base"](ambiguous_repo, ambiguous_base)
+
+
+def test_transaction_hard_crash_converges_only_matching_scope(
+    tmp_path: pathlib.Path,
+) -> None:
+    repo = tmp_path / "compatible"
+    install_root = tmp_path / "installed"
+    create_compatible_repo(repo, "example/compatible", ["alpha-tool", "beta-tool"])
+    assert run_builder(repo, install_root, "--skill", "alpha-tool").returncode == 0
+    builder = load_runtime_builder()
+    builder["configure_repo"](repo)
+    manifest = builder["load_manifest"]()
+    builder["write_expected_skill"](
+        "beta-tool",
+        install_root / "beta-tool",
+        manifest,
+        INSTALLER_VERSION,
+    )
+    source = repo / "skills" / "beta-tool" / "SKILL.md"
+    source.write_text(
+        source.read_text(encoding="utf-8") + "\nAfter crash.\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+
+    unrelated = run_builder(repo, install_root, "--skill", "alpha-tool")
+    assert unrelated.returncode == 0, unrelated.stderr
+    assert "After crash." not in runtime_skill_text(install_root, "beta-tool")
+
+    matching = run_builder(repo, install_root, "--skill", "beta-tool")
+    assert matching.returncode == 0, matching.stderr
+    assert "After crash." in runtime_skill_text(install_root, "beta-tool")
+
+
+def test_transaction_cleanup_blocker_keeps_new_batch_and_serializes_writers(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "compatible"
+    install_root = tmp_path / "installed"
+    create_compatible_repo(repo, "example/compatible", ["alpha-tool"])
+    assert run_builder(repo, install_root, "--all-managed").returncode == 0
+    source = repo / "skills" / "alpha-tool" / "SKILL.md"
+    source.write_text(
+        source.read_text(encoding="utf-8") + "\nCommitted update.\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    builder = load_runtime_builder()
+    original_remove = builder["_remove_tree"]
+
+    def block_retired(path: pathlib.Path, root: pathlib.Path) -> None:
+        if "-retired-" in path.name:
+            raise PermissionError("cleanup blocked")
+        original_remove(path, root)
+
+    monkeypatch.setitem(
+        builder["install_transaction"].__globals__,
+        "_remove_tree",
+        block_retired,
+    )
+    result = builder["install_transaction"](
+        repo,
+        install_root,
+        INSTALLER_VERSION,
+        selected=("alpha-tool",),
+    )
+    assert result.status == "cleanup_blocked"
+    assert "Committed update." in runtime_skill_text(install_root, "alpha-tool")
+    assert result.retained_retired
+    monkeypatch.setitem(
+        builder["install_transaction"].__globals__,
+        "_remove_tree",
+        original_remove,
+    )
+    recovered = builder["install_transaction"](
+        repo,
+        install_root,
+        INSTALLER_VERSION,
+        selected=("alpha-tool",),
+    )
+    assert recovered.status == "ok"
+    assert not list(install_root.glob(".*-retired-*"))
+
+    lock_builder = load_runtime_builder()
+    errors: list[BaseException] = []
+
+    def competing_install() -> None:
+        try:
+            lock_builder["install_transaction"](
+                repo,
+                install_root,
+                INSTALLER_VERSION,
+                selected=("alpha-tool",),
+            )
+        except BaseException as exc:
+            errors.append(exc)
+
+    with lock_builder["runtime_lock"](install_root):
+        thread = threading.Thread(target=competing_install)
+        thread.start()
+        thread.join(timeout=10)
+    assert not thread.is_alive()
+    assert len(errors) == 1
+    assert isinstance(errors[0], lock_builder["InstallBusy"])
+
+
 def test_bootstrap_prefers_installed_bundle_for_external_repo(tmp_path: pathlib.Path) -> None:
     repo = tmp_path / "compatible"
     codex_home = tmp_path / "codex-home"
@@ -1600,6 +3125,10 @@ def test_bootstrap_prefers_installed_bundle_for_external_repo(tmp_path: pathlib.
     installed_bundle = codex_home / "skills" / "ceratops-skill-lifecycle"
     create_compatible_repo(repo, "example/external", ["alpha-tool"])
     shutil.copytree(LIFECYCLE_SOURCE, installed_bundle)
+    shutil.copytree(
+        REPOSITORY_LIFECYCLE_SOURCE,
+        codex_home / "skills" / "ceratops-repo-lifecycle",
+    )
     install_bundle_manifest(installed_bundle)
     env = {**os.environ, "CODEX_HOME": str(codex_home)}
 
@@ -1622,6 +3151,95 @@ def test_bootstrap_prefers_installed_bundle_for_external_repo(tmp_path: pathlib.
     assert runtime_owner(install_root, "alpha-tool") == "example/external"
 
 
+def test_bootstrap_passes_base_revision_to_one_exact_transaction(
+    tmp_path: pathlib.Path,
+) -> None:
+    repo = tmp_path / "compatible"
+    codex_home = tmp_path / "codex-home"
+    install_root = tmp_path / "installed"
+    installed_bundle = codex_home / "skills" / "ceratops-skill-lifecycle"
+    create_compatible_repo(
+        repo,
+        "example/external",
+        ["alpha-tool", "old-tool"],
+    )
+    shutil.copytree(LIFECYCLE_SOURCE, installed_bundle)
+    shutil.copytree(
+        REPOSITORY_LIFECYCLE_SOURCE,
+        codex_home / "skills" / "ceratops-repo-lifecycle",
+    )
+    install_bundle_manifest(installed_bundle)
+    environment = {**os.environ, "CODEX_HOME": str(codex_home)}
+    assert run_git(repo, "init", "-b", "main").returncode == 0
+    assert run_git(repo, "config", "user.email", "test@example.invalid").returncode == 0
+    assert run_git(repo, "config", "user.name", "Test Agent").returncode == 0
+    assert run_git(repo, "add", ".").returncode == 0
+    assert run_git(repo, "commit", "-m", "base").returncode == 0
+    base = run_git(repo, "rev-parse", "HEAD").stdout.strip()
+    initial = subprocess.run(
+        [
+            sys.executable,
+            str(repo / "scripts" / "install-skills.py"),
+            "--repo-root",
+            str(repo),
+            "--install-root",
+            str(install_root),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=environment,
+    )
+    assert initial.returncode == 0, initial.stderr
+
+    shutil.rmtree(repo / "skills" / "old-tool")
+    add_skill(repo, "beta-tool")
+    write_manifest(repo, "example/external")
+    assert run_git(repo, "add", "-A").returncode == 0
+    assert run_git(repo, "commit", "-m", "replace skill").returncode == 0
+    deployed = subprocess.run(
+        [
+            sys.executable,
+            str(repo / "scripts" / "install-skills.py"),
+            "--repo-root",
+            str(repo),
+            "--install-root",
+            str(install_root),
+            "--base-revision",
+            base,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=environment,
+    )
+
+    assert deployed.returncode == 0, deployed.stderr
+    assert (install_root / "alpha-tool").is_dir()
+    assert (install_root / "beta-tool").is_dir()
+    assert not (install_root / "old-tool").exists()
+    shutil.rmtree(repo / "skills" / "beta-tool")
+    write_manifest(repo, "example/external")
+    explicit_remove = subprocess.run(
+        [
+            sys.executable,
+            str(repo / "scripts" / "install-skills.py"),
+            "--repo-root",
+            str(repo),
+            "--install-root",
+            str(install_root),
+            "--remove-skill",
+            "beta-tool",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=environment,
+    )
+    assert explicit_remove.returncode == 0, explicit_remove.stderr
+    assert not (install_root / "beta-tool").exists()
+
+
 def test_bootstrap_prefers_ceratops_checkout_over_same_version_installed_bundle(
     tmp_path: pathlib.Path,
 ) -> None:
@@ -1629,6 +3247,10 @@ def test_bootstrap_prefers_ceratops_checkout_over_same_version_installed_bundle(
     install_root = tmp_path / "installed"
     installed_bundle = codex_home / "skills" / "ceratops-skill-lifecycle"
     shutil.copytree(LIFECYCLE_SOURCE, installed_bundle)
+    shutil.copytree(
+        REPOSITORY_LIFECYCLE_SOURCE,
+        codex_home / "skills" / "ceratops-repo-lifecycle",
+    )
     install_bundle_manifest(installed_bundle)
     installed_validator = (
         installed_bundle / "scripts" / "skills-consistency-source-validator.py"
@@ -1693,6 +3315,10 @@ def test_bootstrap_uses_checkout_resolver_for_outdated_installed_bundle(
     install_root = tmp_path / "installed"
     installed_bundle = codex_home / "skills" / "ceratops-skill-lifecycle"
     shutil.copytree(LIFECYCLE_SOURCE, installed_bundle)
+    shutil.copytree(
+        REPOSITORY_LIFECYCLE_SOURCE,
+        codex_home / "skills" / "ceratops-repo-lifecycle",
+    )
     install_bundle_manifest(installed_bundle, installer_version=1)
     installed_resolver = installed_bundle / "scripts" / "runtime" / "resolve-lifecycle-bundle.py"
     installed_resolver.write_text(
@@ -1740,15 +3366,26 @@ def test_runtime_manifest_records_source_profile_and_installer_version(tmp_path:
     assert manifest["installer_version"] == INSTALLER_VERSION
 
 
-def test_full_install_runs_full_source_validation(tmp_path: pathlib.Path) -> None:
+def test_full_install_does_not_run_source_validation(tmp_path: pathlib.Path) -> None:
     repo = tmp_path / "compatible"
     codex_home = tmp_path / "codex-home"
     install_root = tmp_path / "installed"
     installed_bundle = codex_home / "skills" / "ceratops-skill-lifecycle"
     create_compatible_repo(repo, "example/external", ["alpha-tool"])
     shutil.copytree(LIFECYCLE_SOURCE, installed_bundle)
+    shutil.copytree(
+        REPOSITORY_LIFECYCLE_SOURCE,
+        codex_home / "skills" / "ceratops-repo-lifecycle",
+    )
     install_bundle_manifest(installed_bundle)
     (repo / "README.md").write_text("# Invalid\n", encoding="utf-8", newline="\n")
+    (
+        installed_bundle / "scripts" / "skills-consistency-source-validator.py"
+    ).write_text(
+        "raise SystemExit('source validator must not run during installation')\n",
+        encoding="utf-8",
+        newline="\n",
+    )
 
     result = subprocess.run(
         [
@@ -1765,18 +3402,23 @@ def test_full_install_runs_full_source_validation(tmp_path: pathlib.Path) -> Non
         env={**os.environ, "CODEX_HOME": str(codex_home)},
     )
 
-    assert result.returncode == 1
-    assert "Full source-repository validation failed" in result.stderr
-    assert not (install_root / "alpha-tool").exists()
+    assert result.returncode == 0, result.stderr
+    assert (install_root / "alpha-tool" / "SKILL.md").is_file()
 
 
-def test_targeted_install_validates_only_selected_skill(tmp_path: pathlib.Path) -> None:
+def test_targeted_install_checks_only_selected_rendering_inputs(
+    tmp_path: pathlib.Path,
+) -> None:
     repo = tmp_path / "compatible"
     codex_home = tmp_path / "codex-home"
     install_root = tmp_path / "installed"
     installed_bundle = codex_home / "skills" / "ceratops-skill-lifecycle"
     create_compatible_repo(repo, "example/external", ["alpha-tool", "broken-tool"])
     shutil.copytree(LIFECYCLE_SOURCE, installed_bundle)
+    shutil.copytree(
+        REPOSITORY_LIFECYCLE_SOURCE,
+        codex_home / "skills" / "ceratops-repo-lifecycle",
+    )
     install_bundle_manifest(installed_bundle)
     (repo / "skills" / "broken-tool" / "SKILL.md").write_text("invalid\n", encoding="utf-8", newline="\n")
 
@@ -1820,7 +3462,8 @@ def test_targeted_install_validates_only_selected_skill(tmp_path: pathlib.Path) 
     )
 
     assert invalid_selected.returncode == 1
-    assert "Targeted skill validation failed" in invalid_selected.stderr
+    assert "missing frontmatter" in invalid_selected.stderr
+    assert (install_root / "alpha-tool" / "SKILL.md").is_file()
 
 
 def test_installer_synchronization_compares_only_version(tmp_path: pathlib.Path) -> None:
@@ -1861,226 +3504,35 @@ def test_installer_synchronization_compares_only_version(tmp_path: pathlib.Path)
     assert target.read_bytes() == INSTALLER_TEMPLATE.read_bytes()
 
 
-def test_installer_behavior_fingerprint_is_python_version_stable() -> None:
-    validator = runpy.run_path(str(VALIDATOR))
-    fingerprint = validator["installer_behavior_fingerprint"]
-
-    assert fingerprint(INSTALLER_TEMPLATE) == (
-        "2db6628218652a89dadc190dc874bc5bf3037db4f1e4e907ee5790316699e6bc"
-    )
-
-
-def test_installer_version_producer_assigns_versions_without_model_repair(
+def test_installer_version_metadata_is_explicit_and_coupled(
     tmp_path: pathlib.Path,
 ) -> None:
     validator = runpy.run_path(str(VALIDATOR))
-    fingerprint = validator["installer_behavior_fingerprint"]
-    check_history = validator["check_installer_version_history"]
+    parse_version = validator["installer_version"]
     synchronize = validator["synchronize_authoritative_installer_version"]
     template = tmp_path / "install-skills-template.py"
     bootstrap = tmp_path / "install-skills.py"
-    history = tmp_path / "installer-version-history.json"
     template.write_text(
-        '"""Bootstrap documentation."""\n'
-        "INSTALLER_VERSION = 4\n"
-        "def main():\n"
-        '    """Run the bootstrap."""\n'
-        '    print("first")\n',
+        "INSTALLER_VERSION = 11\nprint('authoritative')\n",
         encoding="utf-8",
         newline="\n",
     )
     bootstrap.write_text("stale\n", encoding="utf-8", newline="\n")
-    baseline = fingerprint(template)
-    assert isinstance(baseline, str)
-    history.write_text(
-        json.dumps(
-            {
-                "schema": "ceratops-installer-version-history.v1",
-                "versions": [{"version": 4, "behavior_sha256": baseline}],
-            }
-        )
-        + "\n",
-        encoding="utf-8",
-        newline="\n",
-    )
     synchronize.__globals__["INSTALLER_TEMPLATE"] = template
-    synchronize.__globals__["INSTALLER_VERSION_HISTORY"] = history
     synchronize.__globals__["BOOTSTRAP_INSTALLER"] = bootstrap
 
     synchronize()
-    assert check_history() == []
     assert bootstrap.read_bytes() == template.read_bytes()
+    assert parse_version(template) == 11
+    assert parse_version(INSTALLER_TEMPLATE) == INSTALLER_VERSION
+    assert parse_version(BOOTSTRAP) == INSTALLER_VERSION
 
     template.write_text(
-        template.read_text(encoding="utf-8").replace(
-            "INSTALLER_VERSION = 4", "INSTALLER_VERSION = 9"
-        ),
+        "INSTALLER_VERSION = 11\nINSTALLER_VERSION = 12\n",
         encoding="utf-8",
         newline="\n",
     )
-    synchronize()
-    assert "INSTALLER_VERSION = 4" in template.read_text(encoding="utf-8")
-    assert len(json.loads(history.read_text(encoding="utf-8"))["versions"]) == 1
-    assert fingerprint(template) == baseline
-    assert check_history() == []
-
-    template.write_text(
-        template.read_text(encoding="utf-8").replace('print("first")', 'print("changed")'),
-        encoding="utf-8",
-        newline="\n",
-    )
-    changed = fingerprint(template)
-    assert isinstance(changed, str)
-    assert changed != baseline
-    synchronize()
-    assert "INSTALLER_VERSION = 5" in template.read_text(encoding="utf-8")
-    assert [entry["version"] for entry in json.loads(history.read_text(encoding="utf-8"))["versions"]] == [4, 5]
-    assert bootstrap.read_bytes() == template.read_bytes()
-    assert check_history() == []
-
-    before = (template.read_bytes(), history.read_bytes(), bootstrap.read_bytes())
-    synchronize()
-    assert (template.read_bytes(), history.read_bytes(), bootstrap.read_bytes()) == before
-
-    template.write_text(
-        template.read_text(encoding="utf-8")
-        .replace("Bootstrap documentation.", "Updated bootstrap documentation.")
-        .replace("Run the bootstrap.", "Run the documented bootstrap."),
-        encoding="utf-8",
-        newline="\n",
-    )
-    synchronize()
-    assert "INSTALLER_VERSION = 5" in template.read_text(encoding="utf-8")
-    assert len(json.loads(history.read_text(encoding="utf-8"))["versions"]) == 2
-    assert check_history() == []
-
-    template.write_text(
-        template.read_text(encoding="utf-8")
-        .replace("INSTALLER_VERSION = 5", "INSTALLER_VERSION = 2")
-        .replace('print("changed")', 'print("first")'),
-        encoding="utf-8",
-        newline="\n",
-    )
-    synchronize()
-    history_entries = json.loads(history.read_text(encoding="utf-8"))["versions"]
-    assert [entry["version"] for entry in history_entries] == [4, 5, 6]
-    assert history_entries[-1]["behavior_sha256"] == baseline
-    assert "INSTALLER_VERSION = 6" in template.read_text(encoding="utf-8")
-    assert check_history() == []
-
-
-def test_repository_review_uses_only_attributable_direct_manifest_folders(tmp_path: pathlib.Path) -> None:
-    repo = tmp_path / "compatible"
-    other_repo = tmp_path / "other-compatible"
-    install_root = tmp_path / "installed"
-    create_compatible_repo(repo, "example/compatible", ["alpha-tool"])
-    create_compatible_repo(other_repo, "example/other-compatible", ["beta-tool"])
-    assert run_builder(repo, install_root, "--skill", "alpha-tool").returncode == 0
-    assert run_builder(other_repo, install_root, "--skill", "beta-tool").returncode == 0
-    (install_root / "unmanaged-tool").mkdir()
-    nested = install_root / "unmanaged-tool" / "nested-managed"
-    nested.mkdir()
-    (nested / RUNTIME_MANIFEST).write_text("{}\n", encoding="utf-8", newline="\n")
-
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(RUNTIME_VALIDATOR),
-            "--repo-root",
-            str(repo),
-            "--runtime-root",
-            str(install_root),
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert json.loads(result.stdout) == {
-        "managed": 1,
-        "runtime_source_id": "example/compatible",
-        "status": "valid",
-    }
-
-    installed_metadata = install_root / "alpha-tool" / "agents" / "openai.yaml"
-    installed_metadata.write_text("stale: true\n", encoding="utf-8", newline="\n")
-    stale_metadata = subprocess.run(
-        [
-            sys.executable,
-            str(RUNTIME_VALIDATOR),
-            "--repo-root",
-            str(repo),
-            "--runtime-root",
-            str(install_root),
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-    assert stale_metadata.returncode == 1
-    assert "managed file content differs: agents/openai.yaml" in stale_metadata.stderr
-    assert run_builder(repo, install_root, "--skill", "alpha-tool").returncode == 0
-
-    installed_skill = install_root / "alpha-tool" / "SKILL.md"
-    installed_skill.write_text(
-        installed_skill.read_text(encoding="utf-8").replace(
-            "Use the source repository contract.",
-            "Stale generated section.",
-        ),
-        encoding="utf-8",
-        newline="\n",
-    )
-    stale = subprocess.run(
-        [
-            sys.executable,
-            str(RUNTIME_VALIDATOR),
-            "--repo-root",
-            str(repo),
-            "--runtime-root",
-            str(install_root),
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-    assert stale.returncode == 1
-    assert "managed file content differs: SKILL.md" in stale.stderr
-
-
-def test_selected_skill_review_does_not_audit_sibling_skills(tmp_path: pathlib.Path) -> None:
-    repo = tmp_path / "compatible"
-    install_root = tmp_path / "installed"
-    create_compatible_repo(repo, "example/compatible", ["alpha-tool", "beta-tool"])
-    assert run_builder(repo, install_root, "--remove-stale").returncode == 0
-    (install_root / "beta-tool" / "SKILL.md").write_text(
-        "stale\n",
-        encoding="utf-8",
-        newline="\n",
-    )
-
-    selected = subprocess.run(
-        [
-            sys.executable,
-            str(RUNTIME_VALIDATOR),
-            "--runtime-root",
-            str(install_root),
-            "--skill",
-            "alpha-tool",
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-    assert selected.returncode == 0, selected.stderr
-    assert json.loads(selected.stdout) == {
-        "managed": 1,
-        "runtime_source_id": "example/compatible",
-        "status": "valid",
-    }
+    assert parse_version(template) is None
 
 
 def test_runtime_inventory_lists_direct_manifests_and_malformed_blockers(
@@ -2089,21 +3541,27 @@ def test_runtime_inventory_lists_direct_manifests_and_malformed_blockers(
     repo = tmp_path / "compatible"
     install_root = tmp_path / "installed"
     create_compatible_repo(repo, "example/compatible", ["alpha-tool", "beta-tool"])
-    assert run_builder(repo, install_root, "--remove-stale").returncode == 0
+    assert run_builder(repo, install_root, "--all-managed").returncode == 0
     malformed = install_root / "broken-tool"
     malformed.mkdir()
     (malformed / RUNTIME_MANIFEST).write_text("{\n", encoding="utf-8", newline="\n")
     nested = install_root / "unmanaged-tool" / "nested-managed"
     nested.mkdir(parents=True)
     (nested / RUNTIME_MANIFEST).write_text("{}\n", encoding="utf-8", newline="\n")
+    (install_root / "alpha-tool" / "SKILL.md").write_text(
+        "runtime drift is not inventory validation\n",
+        encoding="utf-8",
+        newline="\n",
+    )
 
     result = subprocess.run(
         [
             sys.executable,
-            str(RUNTIME_VALIDATOR),
-            "--runtime-root",
+            str(RUNTIME_INSTALLER),
+            "--install-root",
             str(install_root),
-            "--inventory",
+            "--inventory-output",
+            str(tmp_path / "inventory.json"),
         ],
         capture_output=True,
         text=True,
@@ -2111,7 +3569,10 @@ def test_runtime_inventory_lists_direct_manifests_and_malformed_blockers(
     )
 
     assert result.returncode == 0, result.stderr
-    inventory = json.loads(result.stdout)
+    assert result.stdout.strip() == "OK"
+    inventory = json.loads(
+        (tmp_path / "inventory.json").read_text(encoding="utf-8")
+    )
     assert inventory["status"] == "inventory"
     assert inventory["managed"] == 2
     assert inventory["blocked"] == 1

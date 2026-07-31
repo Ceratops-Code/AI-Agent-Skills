@@ -127,6 +127,52 @@
       "decision": "Remove project-to-global relation metadata while preserving each project rule's governing behavior.",
       "reason": "Rule relations now remain within one global, project, or skill scope.",
       "regression": "Preserve mandatory local enforcement, controlled checkout behavior, runtime helper ownership, concise style, and all same-project relation metadata."
+    },
+    {
+      "rules": [
+        "SKILLS-PREVIEW-01",
+        "SKILLS-CREATE-01",
+        "SKILLS-SHIP-02",
+        "SKILLS-DEPLOY-01"
+      ],
+      "decision": "Route local promotion and remote shipping through repository lifecycle and make deploy/deploy.yml the live executable deployment contract.",
+      "reason": "Git state transitions need one owner while each repository retains a deterministic deployment definition.",
+      "regression": "Do not install from task worktrees, ship from feature branches, execute prose runbooks, or lose post-merge main synchronization."
+    },
+    {
+      "rules": [
+        "SKILLS-FAST-01",
+        "SKILLS-WORKTREE-01",
+        "SKILLS-PREVIEW-01",
+        "SKILLS-STAGE-01"
+      ],
+      "decision": "Restore fast-change as the preferred direct-release path whenever its action contract and deterministic readiness accept the complete intended scope.",
+      "reason": "Eligible exact skill-local maintenance should avoid task-worktree promotion and broad deployment overhead while retaining deterministic branch, scope, and targeted-install controls.",
+      "regression": "Use standard update and repository-lifecycle promotion when fast-change eligibility or readiness fails; never bypass clean release-checkout or targeted validation requirements."
+    },
+    {
+      "rules": [
+        "SKILLS-FAST-01"
+      ],
+      "decision": "Replace the deleted fast-change readiness-helper dependency with the one-request orchestrator and add the narrow SKILLS-VERIFY-01 override while preserving fast-change as the preferred direct-release path and retaining its existing exceptions.",
+      "reason": "The orchestrator now owns complete eligibility, and accepted rules-only fast changes intentionally run no readback; the stale rule named a deleted owner and conflicted with the current action contract.",
+      "regression": "Preserve task-worktree, preview, staging, and instruction-verification requirements outside an accepted fast-change action, along with targeted installation and the update fallback."
+    },
+    {
+      "rules": [
+        "SKILLS-FAST-01"
+      ],
+      "decision": "Keep the reconciled one-request fast-change contract in SKILLS-FAST-01 while splitting its independent rules-only verification exception into SKILLS-FAST-02.",
+      "reason": "A four-target relation line created avoidable rule-size debt, while the verification exception is an independently decidable condition.",
+      "regression": "Preserve the preferred fast-change route, verified release-checkout update, selected-skill installation, update fallback, and existing worktree, preview, and staging overrides."
+    },
+    {
+      "rules": [
+        "SKILLS-FAST-02"
+      ],
+      "decision": "Select the accepted rules-only fast-change action contract over ordinary instruction-edit verification in one repository-scoped rule.",
+      "reason": "Rules-only fast changes intentionally run no readback, and isolating that exception keeps both governing rules canonical and narrowly scoped.",
+      "regression": "Preserve SKILLS-VERIFY-01 for every instruction edit outside an accepted rules-only fast-change."
     }
   ]
 }

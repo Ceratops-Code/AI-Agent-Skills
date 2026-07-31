@@ -2,84 +2,98 @@
 
 ## Goal
 
-Apply one clearly understood compatible skill change directly on an intended local
-release branch without a task worktree, broad validation, or broad repo checks,
-then commit the change and update only the affected runtime skill copy.
+Apply one exact classified change directly on a clean primary local
+`release/*` checkout, update only its affected runtime skills, and commit once.
+Prefer this action whenever its complete scope is eligible.
 
 ## Context
 
 ### Inputs To Capture
 
-- Exact skill, rule, metadata field, or small file change to apply.
-- Source checkout that is already on the intended `release/*` branch, or is
-  clean on `main` and can be switched to the intended local `release/*` branch
-  through the repo's release-branch helper.
-- Whether the same change should also be copied and committed into any active
-  task worktrees or branches.
-- Target installed skills directory. Use `$CODEX_HOME/skills` unless the user
-  provides another target.
+- Intended local release checkout and branch.
+- Exact unified patch and every selected or removed source skill.
+- Classification: `rules-only` or `helper`.
+- Existing pytest node IDs covering every changed helper behavior.
+- Commit message and optional runtime root.
 
-If the change is not exact, low-risk, and dependency-free, return to the parent
-skill and select `update`.
+Infer these inputs from the exact approved change before asking.
 
 ### Script Bundle
 
-- (D) Run `scripts/validate-fast-change-readiness.ps1 -SkillsRepoRoot <repo>
-  -ReleaseBranch release/local -SkillName <skill-name> -TargetPath
-  <target-file>` from the supported installed lifecycle bundle.
+- (D) Prepare a clean release checkout, when needed, through repository
+  lifecycle: `python scripts/promote-repository.py --repo-root PATH
+  --main-branch main --release-branch release/local --remote-name origin
+  --prepare-release-only`.
+- (D) Write one version-1 JSON request and run `python
+  scripts/fast-change.py --request <request>` from the skill lifecycle bundle.
+  The request contains `version`, `repo_root`, `release_branch`, `patch`,
+  `selected_skills`, `removed_skills`, `classification`, `tests`, and
+  `commit_message`, plus optional `install_root`.
 
 ## Constraints
 
 ### Boundaries
 
-- Use this action only when the user explicitly asks for a fast direct skill
-  change.
-- Limit fast-change to one existing file inside one selected existing skill.
-  Non-executable skill text qualifies after exact readback. A helper qualifies
-  only when the change restores already-contracted behavior, changes no
-  dependency, interface, persistent state, or side-effect scope, and has one
-  safe targeted parse or behavior check.
-- Select `update` when the change needs another source file or skill, touches a
-  shared, generated, or validation surface, changes a helper boundary named
-  above, or lacks the required targeted helper check.
-- If the change creates a new skill, select `create`.
+- Use this action only for one coherent patch contained in declared existing
+  skill-local files.
+- Rules-only changes may update non-executable skill rules, actions, references,
+  or metadata. Markdown patches run the repository-declared `lint:markdown`
+  package script when present, but no semantic validation, readback, or tests.
+- Helper changes may preserve the existing dependency, public-interface,
+  persistent-state, and side-effect boundaries and must name existing behavior
+  tests for every changed behavior.
+- Cohesive multi-file and multi-skill requests are eligible when the complete
+  scope passes classification before mutation.
+- Use `update` for additions, removals, renames, shared sources, manifests,
+  templates, deployment, installers, runtime generation, validators, contracts,
+  helper-boundary changes, or unresolved affected sets.
 
 ### Workflow
 
-1. Confirm branch, target skill, exact change, and optional propagation request.
-2. If the checkout is clean on `main`, prepare and switch to the intended local
-   `release/*` branch with the repo's release-branch helper; if no helper
-   exists, stop instead of hand-rolling release branch setup.
-3. (D) Validate fast-change readiness for the intended branch, clean worktree,
-   target file, and targeted install command evidence; stop on helper failure.
-4. Patch the target source file and inspect the diff. Reopen changed
-   non-executable text and confirm the exact intended result without a
-   repository test. For a helper, run only its identified safe targeted check.
-5. Commit the release-branch change.
-6. Update only the affected runtime skill copy through `python
-   scripts/install-skills.py --repo-root <repo> --skill <skill-name>` in the
-   target repository; the Ceratops source repository must use its checkout
-   lifecycle bundle. A targeted install validates only the selected skill and
-   never removes stale skills.
-7. Optionally apply and commit the same change in explicitly requested active
-   worktrees or branches when it merges cleanly.
+1. Confirm the complete patch, selected skills, classification, exact existing
+   tests, intended release branch, commit message, and runtime root.
+2. If the primary checkout is clean on `main`, use repository lifecycle release
+   preparation. If it is already clean on the intended release branch, keep it;
+   otherwise stop.
+3. Run the fast-change helper once. It mechanically validates branch, clean
+   state, request fields, patch paths, ownership, and installer availability
+   before mutation.
+4. The helper applies the exact patch and runs the repository-declared
+   `lint:markdown` package script when any patch path is Markdown. Rules-only
+   requests run no other validation or tests; helper requests then run only the
+   declared pytest nodes.
+5. The helper invokes the installer once for the exact selected skills, stages
+   only patch paths, and commits once.
+6. On patch, lint, test, install, staging, or commit failure, the helper
+   reverses only its patch. If runtime activation completed before a later
+   failure, it reinstalls the restored selected snapshot.
+7. If classification returns `decision_required`, preserve the request as the
+   `update` change specification and report the exact reason, files, skills,
+   and required checks.
+8. Later promotion or shipping remains repository lifecycle work; fast-change
+   creates no pending-work scope.
 
 ## Done When
 
 ### Completion Gate
 
-- The checkout is on the intended local `release/*` branch and contains the
-  committed change.
-- The affected runtime skill copy was updated or the exact blocker is reported.
-- No repository-wide validation or broad checks were run.
-- Optional branch or worktree propagation is completed, intentionally skipped,
-  or blocked with exact branch names.
+- Classification completed before mutation.
+- The committed diff contains only declared eligible paths.
+- Repository-declared Markdown lint passed when selected by the patch paths.
+- Every changed helper behavior passed its declared existing test.
+- The exact selected runtime batch installed once.
+- Compensation completed after any failed mutated run, or its exact failure is
+  reported.
+- No semantic rules-only validation, broad source validation, runtime
+  validation, promotion scope, deployment operation, or model-mediated handoff
+  ran.
 
 ### Output Contract
 
 Report only:
 
 - release branch and commit
-- affected source and runtime skill
-- optional propagated branches or blockers
-- intentionally skipped checks
+- affected source and runtime skills
+- Markdown lint, targeted behavior tests, and installation outcome
+- exact escalation or compensation blocker
+- intentionally skipped broad checks

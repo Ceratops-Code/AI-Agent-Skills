@@ -19,10 +19,10 @@ LIFECYCLE_SKILL = "ceratops-skill-lifecycle"
 MANIFEST_NAME = ".runtime-manifest.json"
 RUNTIME_MANIFEST_SCHEMA = "ceratops-runtime-skill.v3"
 REQUIRED_BUNDLE_PATHS = (
+    pathlib.Path("scripts/fast-change.py"),
     pathlib.Path("scripts/runtime/install-managed-skills.py"),
     pathlib.Path("scripts/runtime/managed_runtime_builder.py"),
     pathlib.Path("scripts/runtime/synchronize-installers.py"),
-    pathlib.Path("scripts/runtime/skills-consistency-runtime-validator.py"),
     pathlib.Path("scripts/skills-consistency-source-validator.py"),
     pathlib.Path("scripts/templates/install-skills-template.py"),
 )
@@ -72,7 +72,7 @@ def installed_bundle_supported(bundle_root: pathlib.Path, installer_version: int
 def checkout_is_ceratops(repo_root: pathlib.Path) -> bool:
     """Identify the Ceratops source repository from its section manifest."""
 
-    manifest = read_json(repo_root / "templates" / "skill-sections.json")
+    manifest = read_json(repo_root / "skills" / "skill-sections.json")
     return manifest is not None and manifest.get("validation_profile") == "ceratops"
 
 

@@ -12,15 +12,19 @@ Contributions should keep skills practical, current, and safe.
 - Keep reusable automation-run policy in `skills/ceratops-automation-run/`
   instead of duplicating the same alert, memory, and completion rules across
   automation prompts.
-- Keep shared Ceratops rules in `templates/sections/` plus
-  `templates/skill-sections.json`, keep the universal `core` section focused,
+- Keep live shared Ceratops rules in `skills/sections/` and assignments in
+  `skills/skill-sections.json`; keep the universal `core` section focused,
   keep GH-only wording in GH-only sections, keep GH org/repo/PR/code/artifact
   contract review in
-  `skills/ceratops-gh-repo-lifecycle/references/contracts-review.md`, keep
+  `skills/ceratops-repo-lifecycle/references/contracts-review.md`, keep
   repository skill consistency and contract compliance in
   `skills/ceratops-skill-lifecycle/references/skills-consistency-review.md`, and
   keep skill-design standards refresh in
   `skills/ceratops-skill-lifecycle/references/skills-contract-review.md`.
+- Keep live deployment operations in `deploy/deploy.yml` as structured argv
+  steps. Keep `templates/skill-sections-template.json` and
+  `templates/deploy-template.yml` as reusable skeletons rather than live
+  repository configuration.
 - Do not add secrets, private endpoints, local machine paths, or org-internal
   procedures.
 - Prefer current official docs over memory when changing GitHub, registry, or
@@ -45,14 +49,18 @@ python -m mypy
 python .\skills\ceratops-skill-lifecycle\scripts\skills-consistency-source-validator.py --mode full
 ```
 
+Full validation checks `deploy/deploy.yml` and both reusable templates without
+executing a deployment operation.
+
 If the change affects workflow behavior, include a short test note in the PR
 explaining how the skill was exercised or reviewed.
 Run `python
 .\skills\ceratops-skill-lifecycle\scripts\skills-consistency-source-validator.py
 --mode sections` only when shared section source files or
-`templates/skill-sections.json` changed. Run the touched package command with
-`--help` from `skills/ceratops-gh-repo-lifecycle/scripts` only when GitHub
-lifecycle helper code or related skill claims changed.
+`skills/skill-sections.json` changed. Run the touched package or repository
+lifecycle helper command with `--help` from
+`skills/ceratops-repo-lifecycle/scripts` when its code or related skill claims
+changed.
 The section mode validates section assignments and rejects stale source files
 that still contain generated runtime blocks.
 `skills/ceratops-skill-lifecycle/scripts/runtime/managed_runtime_builder.py`

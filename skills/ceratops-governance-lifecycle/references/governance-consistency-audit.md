@@ -47,7 +47,7 @@ domain audits owned by other lifecycle actions.
   contracts, shared sections, runtime payloads, and standards upkeep.
 - Use `$ceratops-skill-lifecycle` `skills-consistency-review` for active skill
   catalog, source, installer, and managed-runtime consistency.
-- Use `$ceratops-gh-repo-lifecycle` `contracts-review` for GitHub organization,
+- Use `$ceratops-repo-lifecycle` `contracts-review` for GitHub organization,
   repository, code, PR, artifact, and release contracts.
 
 ### Inputs To Capture

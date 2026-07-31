@@ -14,14 +14,11 @@ installed-runtime surface.
 - (D) Source consistency validator: `python
   scripts/skills-consistency-source-validator.py --repo-root <repo-root>
   --mode skill --skill <skill-name>` from the lifecycle bundle.
-- (D) Managed runtime validator: `python
-  scripts/runtime/skills-consistency-runtime-validator.py --skill
-  <skill-name>` from the installed lifecycle bundle; it derives the source
-  repository from the selected direct runtime manifest.
 - (D) Global inventory helper: `python
-  scripts/runtime/skills-consistency-runtime-validator.py --inventory` emits
-  compact JSON for every direct manifest-backed installed skill and malformed
-  direct-manifest blocker without auditing any skill.
+  scripts/runtime/install-managed-skills.py --inventory-output <file>` writes
+  compact routing data for every direct manifest-backed installed skill and
+  malformed direct-manifest blockers without auditing any skill, then emits
+  `OK`.
 - (D) Installer synchronization when repair is authorized: `python
   scripts/runtime/synchronize-installers.py --target-repo-root
   <task-worktree>` from the installed lifecycle bundle.
@@ -36,7 +33,7 @@ installed-runtime surface.
   `references/contracts/skill-deterministic-contract.json`
 - Skill non-deterministic contract:
   `references/contracts/skill-nondeterministic-contract.json`
-- Compatible-repository section manifest: `templates/skill-sections.json`
+- Compatible-repository section manifest: `skills/skill-sections.json`
 
 ### Inputs To Capture
 
@@ -75,7 +72,7 @@ Infer missing inputs from the repository and installed manifests before asking.
 - Use `skills-contract-review` only when the standards contracts themselves
   require a best-practice refresh.
 - Exclude GitHub organization, repository, code, PR, artifact, registry, and
-  release contracts; route those to `$ceratops-gh-repo-lifecycle`
+  release contracts; route those to `$ceratops-repo-lifecycle`
   `contracts-review`.
 - Keep report-only as the default. Apply source, installer, runtime, or
   automation changes only when the user approved that exact scope.
@@ -93,12 +90,12 @@ Infer missing inputs from the repository and installed manifests before asking.
 - Run deterministic validation before AI semantic contract validation.
 - Run deterministic source checks through
   `skills-consistency-source-validator.py --mode skill --skill <skill-name>`
-  and installed-runtime checks through
-  `skills-consistency-runtime-validator.py --skill <skill-name>`.
+  and treat the selected direct manifest as structured runtime identity
+  evidence.
 - Validate every applicable non-deterministic contract check through
   evidence-backed AI validation.
-- Let the runtime validator read the selected direct manifest before validating
-  its identity, installer version, and complete managed file tree.
+- Read the selected direct manifest before evaluating identity and installer
+  version. Do not infer runtime behavior from expected-tree byte comparison.
 - Compare installers only by parsed integer `INSTALLER_VERSION`; retain
   same- or higher-version differences and synchronize missing or lower versions
   only through an approved task worktree.
@@ -138,17 +135,17 @@ Infer missing inputs from the repository and installed manifests before asking.
 
 ### 3. Validate installer and runtime coherence
 
-- Run the managed runtime validator once with `--skill <skill-name>`.
 - Reject a malformed selected manifest; compare manifest schema, skill,
   `runtime_source_id`, `source_path`, `source_repository_root`,
   `validation_profile`, and `installer_version` with source ownership.
-- Detect unresolved source or local resources, a missing or stale installed
-  skill, stale shared-section output, frontmatter drift, source/runtime
-  ownership conflicts, and stale cross-skill references attributable to the
-  selected skill.
+- Detect unresolved source or local resources, source/runtime ownership
+  conflicts, and stale cross-skill references attributable to the selected
+  skill through structured source and manifest evidence.
 - When an installer is missing or lower-version and repair is approved, run the
   synchronization helper in the task worktree and require successful full
   target-repository validation before continuing.
+- When runtime regeneration is approved, run one targeted transactional
+  installation. Installer success is the post-install runtime evidence.
 
 ### 4. Validate non-deterministic contract compliance
 
@@ -170,13 +167,16 @@ Infer missing inputs from the repository and installed manifests before asking.
   worktree.
 - Update every producer and consumer together for an approved rename or
   ownership change; leave no aliases, old-name shims, or pointer artifacts.
+- Hand committed promotion, deployment, or shipping work to
+  `$ceratops-repo-lifecycle` instead of mutating repository lifecycle state
+  here.
 - Regenerate installed runtime or update installed automation prompts only when
   those external mutations are explicitly in scope.
 
 ### 6. Close from current evidence
 
-- Re-run the failed deterministic, lint, type, installer, or runtime checks
-  after an approved repair.
+- Re-run the failed deterministic, lint, type, installer, or structured runtime
+  checks after an approved repair.
 - Revalidate only affected non-deterministic checks and coupled semantic
   surfaces.
 - Account for every deterministic and non-deterministic contract check for the
@@ -190,8 +190,9 @@ Infer missing inputs from the repository and installed manifests before asking.
   applicable deterministic and non-deterministic contract check.
 - Targeted source validation passes or every finding has an owning file and
   smallest credible repair.
-- The selected runtime manifest is read before validation, and every managed
-  file for that installed skill is checked or its blocker is named.
+- The selected runtime manifest is read before evaluation, and any requested
+  regeneration completed through the transactional installer or its blocker is
+  named.
 - Skill text, action routing, metadata, automation consumers, helpers,
   installers, runtime payloads, installed runtime, docs, and validator claims
   agree or every mismatch is classified.

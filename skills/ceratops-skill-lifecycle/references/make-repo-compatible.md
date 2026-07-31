@@ -13,9 +13,9 @@ skills' intended behavior.
 - Target repository task worktree, source skill inventory, and intended stable
   `runtime_source_id`.
 - Existing shared skill rules, metadata, README skill inventory, runtime
-  resources, installer, and validation surfaces.
+  resources, installer, deployment definition, and validation surfaces.
 - Whether compatibility is standalone work or a prerequisite for `create` or
-  `update`, and whether runtime installation is explicitly requested.
+  `update`, and whether repository deployment is explicitly requested.
 
 Infer the source identity from stable repository evidence before asking.
 
@@ -28,6 +28,8 @@ Infer the source identity from stable repository evidence before asking.
 - (D) Installer synchronization after the compatibility sources exist: `python
   scripts/runtime/synchronize-installers.py --target-repo-root
   <task-worktree>` from the installed lifecycle bundle.
+- Reusable template root: the source repository root when using its lifecycle
+  source, or the installed lifecycle skill root when using its runtime bundle.
 
 ## Constraints
 
@@ -40,7 +42,8 @@ Infer the source identity from stable repository evidence before asking.
   compatible repository unless that repository independently requires them.
 - Do not create the requested new skill in this action; return to `create` after
   compatibility passes.
-- Do not install runtime copies unless installation is explicitly requested.
+- Do not promote or deploy the completed compatibility change here; hand those
+  operations to `$ceratops-repo-lifecycle` only when requested.
 
 ### Skill-Specific Rules
 
@@ -67,11 +70,15 @@ Infer the source identity from stable repository evidence before asking.
 
 ### 2. Establish compatible source surfaces
 
-- Create `templates/sections/core.md` from target-owned behavior required by
+- Create `skills/sections/core.md` from target-owned behavior required by
   every source skill.
-- Create `templates/skill-sections.json` with the stable source identity,
+- Copy the selected template root's `templates/skill-sections-template.json` to
+  `skills/skill-sections.json`, then populate the stable source identity,
   `ceratops-compatible` profile, section paths, per-skill assignments,
   target-owned maintenance workflows, and portable runtime payloads.
+- Copy the selected template root's `templates/deploy-template.yml` to
+  `deploy/deploy.yml`, then declare only the target repository's supported
+  operations and lifecycle hooks.
 - Make every source `SKILL.md` delta-only, add or align
   `skills/<name>/agents/openai.yaml`, and align the README Skills table without
   changing skill behavior.
@@ -87,9 +94,10 @@ Infer the source identity from stable repository evidence before asking.
 
 - Run full source-repository validation and repair every compatibility finding
   in the task worktree.
-- If runtime installation was explicitly requested, run `python
-  scripts/install-skills.py --repo-root <repo>` and verify managed manifests;
-  otherwise stop at validated source compatibility.
+- Commit the validated compatibility change in the task worktree.
+- If only local release staging was requested, hand off to
+  `$ceratops-repo-lifecycle` `promote`; if deployment was requested, hand off
+  to `promote-and-deploy`; otherwise stop at committed source compatibility.
 - Resume the owning `create` or `update` action when compatibility was a
   prerequisite.
 
@@ -99,11 +107,11 @@ Infer the source identity from stable repository evidence before asking.
 
 - The repository has a stable source identity, `ceratops-compatible` manifest,
   target-owned shared sections, complete per-skill assignments, aligned source
-  skills, metadata, README inventory, portable payload declarations, and a
-  supported versioned installer.
+  skills, metadata, README inventory, portable payload declarations, a live
+  deployment definition, and a supported versioned installer.
 - Full target-repository validation passes.
-- Runtime installation either passed when explicitly requested or remains
-  intentionally out of scope.
+- Any requested repository-lifecycle handoff completed or its blocker is
+  reported.
 
 ### Output Contract
 
@@ -111,5 +119,5 @@ Report only:
 
 - target repository and source identity
 - compatibility surfaces added or aligned
-- validation and requested installation outcome
+- validation and requested repository-lifecycle outcome
 - unresolved blockers or intentionally retained target-specific behavior
