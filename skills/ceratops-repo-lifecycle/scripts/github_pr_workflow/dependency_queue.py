@@ -28,7 +28,7 @@ from .dependency_evidence import (
     fetch_pr_batch,
     fetch_pr_body,
     minimum_patched_version,
-    parse_grouped_updates,
+    parse_body_updates,
     parse_update,
     queued_repositories,
     registry_evidence,
@@ -229,13 +229,13 @@ def preflight(args: argparse.Namespace) -> int:
                     str(live.get("head_oid") or ""),
                 )
                 if body_probe.get("status") == "ok":
-                    grouped_updates = parse_grouped_updates(
+                    body_updates = parse_body_updates(
                         str(body_probe.get("body") or ""),
                         changed_files,
                         repo_alerts,
                     )
-                    if grouped_updates:
-                        updates = grouped_updates
+                    if body_updates:
+                        updates = body_updates
                 else:
                     repo_blockers.append(
                         {

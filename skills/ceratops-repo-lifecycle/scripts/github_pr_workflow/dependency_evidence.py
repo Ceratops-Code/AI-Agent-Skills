@@ -265,12 +265,12 @@ def parse_update(title: str, files: list[dict[str, Any]], alerts: list[dict[str,
     return build_update(package, current, target, path_hint, changed_paths, alerts)
 
 
-def parse_grouped_updates(
+def parse_body_updates(
     body: str,
     files: list[dict[str, Any]],
     alerts: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Parse two or more unique exact Dependabot body update records."""
+    """Parse one or more unique exact Dependabot body update records."""
 
     records: list[tuple[str, str, str]] = []
     seen: dict[str, tuple[str, str]] = {}
@@ -286,7 +286,7 @@ def parse_grouped_updates(
             continue
         seen[key] = versions
         records.append((package, current, target))
-    if len(records) < 2:
+    if not records:
         return []
     changed_paths = [str(item.get("path") or "") for item in files]
     return [
