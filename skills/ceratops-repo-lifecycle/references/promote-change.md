@@ -47,32 +47,25 @@ Infer missing branch and checkout inputs from local Git state before asking.
 4. Treat its pending-work scope as the only source scope later passed to ship.
 5. Retain selected clean source worktrees and branches until terminal shipping.
 
-The helper refreshes the remote and fast-forwards main in its existing clean
-checkout or, when main is not checked out, by a guarded branch-ref update.
-Normal promotion never creates or switches a checkout: it reuses a clean
-existing release checkout when present and otherwise creates or advances only
-the local release branch ref from main. It requires the current release commit
-to be an ancestor of every selected branch, runs `git diff --check`,
-fast-forwards each branch, records the exact generic scope, and optionally
-executes the structured deployment operation. For `after_promote`, it uses the
-supplied checkout only when that checkout is already clean on the release branch
-at the promoted commit; otherwise it uses the final promoted source-branch
-worktree. It requires that exact-head deployment checkout before changing the
-release branch and offers the merge base of refreshed main and the release-start
+The helper refreshes the remote, fast-forwards main, reuses an existing local
+release branch without merging main into it, creates a missing release branch
+from main, requires release `HEAD` to be an ancestor of every selected branch,
+runs `git diff --check`, fast-forwards each branch, records the exact generic
+scope, and optionally executes the structured deployment operation. For
+`after_promote`, it offers the merge base of refreshed main and the release-start
 commit as conditional `base_revision` context, so prior unpublished promotions
 remain in deployment scope. The operation runner supplies it only when the
 selected operation declares that parameter, so compatible parameterless
 operations remain valid.
-Preparation-only requires a clean `main` checkout, may switch that supplied
-checkout to the ready release branch, never adds a worktree, and exits before
-source preflight, promotion, scope records, or deployment.
+Preparation-only requires a clean `main` checkout and exits immediately after
+the release branch is ready, before source preflight, promotion, scope records,
+or deployment.
 
 ## Done When
 
 ### Completion Gate
 
-- Every checkout used for promotion or deployment is clean; preparation-only
-  leaves the supplied checkout clean on the selected release branch.
+- The checkout is clean on the selected release branch.
 - Every selected branch is contained in the reported release commit.
 - Deployment ran only when `promote-and-deploy` was selected.
 - The exact pending-work scope is retained for shipping.
