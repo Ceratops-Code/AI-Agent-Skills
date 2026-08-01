@@ -55,14 +55,29 @@ def _run_finalization(
     both this wrapper and the cleanup child must leave the selected worktree.
     """
 
+    previous_cwd = pathlib.Path.cwd().resolve()
     os.chdir(repo_root)
-    return _run_json(command, cwd=repo_root)
+    try:
+        return _run_json(command, cwd=repo_root)
+    finally:
+        if previous_cwd.exists():
+            os.chdir(previous_cwd)
 
 
 def _deployment_checkpoint_path(scope: pathlib.Path) -> pathlib.Path:
     """Return the scope-owned completed-deployment record path."""
 
     return scope.with_suffix(".after-ship.json")
+
+
+def _resolve_pending_scope(
+    repo_root: pathlib.Path, scope: pathlib.Path | None
+) -> pathlib.Path | None:
+    """Bind a caller-relative scope to the repository for every ship phase."""
+
+    if scope is None:
+        return None
+    return (scope if scope.is_absolute() else repo_root / scope).resolve()
 
 
 def _deployment_identity(
@@ -226,6 +241,8 @@ def ship_repository(args: argparse.Namespace) -> dict[str, object]:
     """Run the complete repository shipping and deployment workflow."""
 
     repo_root = args.repo_root.expanduser().resolve(strict=True)
+    pending_scope = _resolve_pending_scope(repo_root, args.pending_work_scope)
+    args.pending_work_scope = pending_scope
     ship_code, shipped = _run_json(_ship_command(args, repo_root))
     if ship_code == 2:
         return shipped
@@ -238,7 +255,6 @@ def ship_repository(args: argparse.Namespace) -> dict[str, object]:
     if not isinstance(target_commit, str) or not isinstance(synchronized_head, str):
         raise RepositoryShipError("Shipping result lacks exact commit identity.")
 
-    pending_scope = args.pending_work_scope
     if pending_scope is not None:
         check_code, checked = _run_json(
             _pending_command(

@@ -1657,9 +1657,11 @@ def test_promote_and_deploy_rejects_operation_created_repository_work(
 
 
 @pytest.mark.parametrize("late_phase", ["post_sync", "post_finalize"])
+@pytest.mark.parametrize("relative_scope", [False, True])
 def test_repository_ship_late_pending_work_reports_remote_mutation(
     tmp_path: pathlib.Path,
     late_phase: str,
+    relative_scope: bool,
 ) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -1669,7 +1671,8 @@ def test_repository_ship_late_pending_work_reports_remote_mutation(
         encoding="utf-8",
         newline="\n",
     )
-    scope = tmp_path / "scope.json"
+    scope = repo / "scope.json" if relative_scope else tmp_path / "scope.json"
+    scope_argument = pathlib.Path("scope.json") if relative_scope else scope
     shipped = {
         "status": "shipped",
         "repository": "example/repository",
@@ -1726,7 +1729,7 @@ def test_repository_ship_late_pending_work_reports_remote_mutation(
         title=None,
         body=None,
         merge_method="merge",
-        pending_work_scope=scope,
+        pending_work_scope=scope_argument,
         no_pending_work_check=False,
         delete_branch=False,
         reusable_head=True,
@@ -1753,6 +1756,7 @@ def test_repository_ship_late_pending_work_reports_remote_mutation(
     result = ship_repository(args)
 
     assert result["status"] == "pending_work"
+    assert args.pending_work_scope == scope.resolve()
     assert result["remote_mutation"] is True
     assert result["repository"] == "example/repository"
     assert result["commit"] == "a" * 40
@@ -1814,6 +1818,7 @@ def test_repository_ship_finalization_runs_outside_selected_worktree(
     repo.mkdir()
     command = ["python", "manage-pending-work.py", "finalize"]
     events: list[tuple[str, object]] = []
+    original_directory = pathlib.Path.cwd().resolve()
 
     def change_directory(path: pathlib.Path) -> None:
         events.append(("chdir", path))
@@ -1833,6 +1838,7 @@ def test_repository_ship_finalization_runs_outside_selected_worktree(
     assert events == [
         ("chdir", repo),
         ("run", (command, repo)),
+        ("chdir", original_directory),
     ]
 
 
