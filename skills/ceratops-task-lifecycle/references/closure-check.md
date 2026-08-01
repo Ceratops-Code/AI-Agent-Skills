@@ -26,9 +26,9 @@ targeted local state before asking.
 
 ### Skill-Specific Rules
 
-- Closure invocation authorizes only helper-validated cleanup of task-created
-  temporary artifacts inside the verified task temp root; remain advisory and
-  ask before any other mutation.
+- Closure invocation authorizes creating task-required temporary artifacts only
+  inside the verified task temp root and requires their helper-validated cleanup
+  before completion; remain advisory and ask before any other mutation.
 - For an `incremental closure`, scope new work and credit analysis to completed
   runs after the previous completed closure and carry forward only unresolved
   or intentionally retained boundary state; otherwise scope from the beginning
@@ -134,8 +134,9 @@ targeted local state before asking.
   gate.
 - The credit analysis used category totals validated by the existing ledger
   helper; an unvalidated classification is a blocker.
-- No mutation occurred except helper-validated task-temp cleanup, unless the
-  user explicitly requested another exact action.
+- No mutation occurred except creation and helper-validated cleanup of
+  task-required temporary artifacts inside the verified task temp root, unless
+  the user explicitly requested another exact action.
 
 ### Output Contract
 
