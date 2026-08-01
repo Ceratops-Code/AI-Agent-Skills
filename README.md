@@ -84,6 +84,7 @@ without repository deduplication.
 | Script | Caller And Timing |
 | --- | --- |
 | `scripts/install-skills.py` | Versioned repository bootstrap that delegates exact runtime installation to the supported lifecycle bundle. |
+| `scripts/validate-repository.py` | Sole full local-and-CI validation owner; captures child output and writes first-failure evidence to a caller-selected file. |
 | `skills/ceratops-skill-lifecycle/scripts/templates/install-skills-template.py` | Authoritative installer copied into compatible repositories as `scripts/install-skills.py`; consistency compares only `INSTALLER_VERSION`. |
 | `skills/ceratops-skill-lifecycle/scripts/runtime/install-managed-skills.py` | Classifies explicit, promotion-relative, or all-managed affected sets; owns direct-manifest inventory; and invokes one runtime transaction without source validation. |
 | `skills/ceratops-skill-lifecycle/scripts/runtime/resolve-lifecycle-bundle.py` | Source-checkout resolver for the Ceratops repository and installed-bundle resolver for other compatible repositories. |
@@ -376,23 +377,23 @@ with `$skill-name`.
 
 ## Validate
 
-Run full validation through the skill-lifecycle validator:
+Install the declared Python and Node development dependencies, select temporary
+rendering and evidence paths, then run the same repository validator used by
+CI:
 
 ```powershell
 npm ci
-npm run lint:markdown
 python -m pip install -r requirements-dev.txt
-python -m yamllint .
-python -m mypy
+$env:REPOSITORY_VALIDATION_RENDER_DIR = Join-Path $env:TEMP "ceratops-skills"
+$env:REPOSITORY_VALIDATION_EVIDENCE_FILE = Join-Path $env:TEMP "repository-validation.log"
+python scripts/validate-repository.py
 ```
 
-```powershell
-python .\skills\ceratops-skill-lifecycle\scripts\skills-consistency-source-validator.py --mode full
-```
-
-Full validation checks the live deployment contract, its repository-bounded
-working directories, required Ceratops operations, and both reusable template
-skeletons without executing deployment.
+The validator runs Markdown and YAML lint, mypy for Linux and Win32, pytest,
+full source-contract validation, managed-skill rendering, and repository
+lifecycle CLI smoke checks. Full source validation checks the live deployment
+contract, its repository-bounded working directories, required Ceratops
+operations, and both reusable template skeletons without executing deployment.
 
 Targeted installation validates only explicitly selected skills and their
 rendering inputs:
@@ -424,12 +425,12 @@ and high-confidence secret or private-path patterns. The `ceratops` profile
 additionally checks the shared Ceratops icon, lifecycle contracts, retired
 Ceratops artifacts, and repository-specific governance; the
 `ceratops-compatible` profile skips only those Ceratops-specific additions.
-Run helper `--help` smoke checks only for touched helper scripts or touched
-helper claims. Full source validation is for explicit broad verification, not
-every regular skill update. A successful targeted or all-managed transaction is
-the post-install runtime evidence; `skills-consistency-review` reads the
-selected runtime manifest as structured identity evidence. With working
-GitHub auth, run
+Outside the full repository validator, run helper `--help` smoke checks only
+for touched helper scripts or touched helper claims. Full source validation is
+for explicit broad verification, not every regular skill update. A successful
+targeted or all-managed transaction is the post-install runtime evidence;
+`skills-consistency-review` reads the selected runtime manifest as structured
+identity evidence. With working GitHub auth, run
 `python -m github_contract_engine validate org` and
 `python -m github_contract_engine validate repo` from
 `skills/ceratops-repo-lifecycle/scripts/` for deterministic GitHub, code,
