@@ -19,7 +19,7 @@ only the selected merged source branches and worktrees.
 
 ### Inputs To Capture
 
-- Repository checkout, staged head branch, base branch, remote, merge method,
+- Repository checkout, staged `release/local`, base branch, remote, merge method,
   PR title/body, and exact pending-work scope mode.
 - Whether the head is reusable after merge.
 
@@ -29,7 +29,7 @@ Infer missing values from the checkout, scope file, and live PR before asking.
 
 ### Boundaries
 
-- Ship only a clean staged integration or release branch.
+- Ship only clean staged `release/local`.
 - Do not edit source or expand pending-work scope in this action.
 - Keep standalone merge behavior under `merge-pr`; its admin choice is
   unchanged.

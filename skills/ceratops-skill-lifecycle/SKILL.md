@@ -62,7 +62,7 @@ Infer missing inputs from the current repo state before asking.
   installer source. Copy only `scripts/install-skills.py` into compatible
   repositories, and compare installers only by their parsed integer
   `INSTALLER_VERSION`.
-- Use `fast-change` directly on the verified primary release checkout whenever
+- Use `fast-change` directly on verified primary `release/local` whenever
   its action contract and one-request orchestrator accept the complete intended
   scope. The orchestrator owns patch, repository-declared Markdown lint, exact
   helper tests, targeted installation, commit, and compensation. Use a task

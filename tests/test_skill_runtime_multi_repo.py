@@ -721,6 +721,22 @@ def test_fast_change_rejects_complete_ineligible_or_dirty_scope_before_mutation(
         repo,
         {"skills/alpha-tool/SKILL.md": ("description: Test", "description: Updated")},
     )
+    noncanonical_request = fast_change_request(
+        repo,
+        patch,
+        selected=["alpha-tool"],
+    )
+    noncanonical_request["release_branch"] = "release/task"
+
+    noncanonical = run_fast_change(repo, noncanonical_request)
+
+    assert noncanonical.returncode == 2
+    assert json.loads(noncanonical.stderr)["reason"] == (
+        "release_branch must be release/local"
+    )
+    assert run_git(repo, "status", "--porcelain").stdout == ""
+    assert not (repo.parent / "install.log").exists()
+
     request = fast_change_request(repo, patch, selected=["beta-tool"])
 
     mismatch = run_fast_change(repo, request)
@@ -1616,6 +1632,37 @@ def test_promote_and_deploy_includes_prior_unpublished_batch(
     assert log.read_text(encoding="utf-8") == f"{deployed_baseline}\n"
 
 
+def test_promote_repository_rejects_noncanonical_release_branch_before_mutation(
+    tmp_path: pathlib.Path,
+) -> None:
+    repo, _, _, environment = prepare_repository_lifecycle_repo(tmp_path)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(PROMOTE_REPOSITORY),
+            "--repo-root",
+            str(repo),
+            "--source-branch",
+            "approved",
+            "--release-branch",
+            "release/task",
+            "--no-run-operation",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=environment,
+    )
+
+    assert result.returncode == 1
+    assert json.loads(result.stderr)["message"] == (
+        "release_branch must be release/local."
+    )
+    assert run_git(repo, "branch", "--show-current").stdout.strip() == "approved"
+    assert run_git(repo, "branch", "--list", "release/task").stdout == ""
+
+
 def test_promote_and_deploy_rejects_operation_created_repository_work(
     tmp_path: pathlib.Path,
 ) -> None:
@@ -1817,6 +1864,36 @@ def test_repository_ship_rejects_malformed_deployment_checkpoint(
         loaded["_read_deployment_checkpoint"](checkpoint, identity)
 
 
+def test_repository_ship_rejects_noncanonical_release_branch_before_remote_process(
+    tmp_path: pathlib.Path,
+) -> None:
+    loaded = runpy.run_path(str(SHIP_REPOSITORY))
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    child_calls: list[list[str]] = []
+
+    def run_json(command: list[str]) -> tuple[int, dict[str, Any]]:
+        child_calls.append(command)
+        return 0, {}
+
+    ship_repository = loaded["ship_repository"]
+    ship_repository.__globals__["_run_json"] = run_json
+
+    with pytest.raises(
+        loaded["RepositoryShipError"],
+        match="Head branch must be release/local",
+    ):
+        ship_repository(
+            argparse.Namespace(
+                repo_root=repo,
+                head_branch="release/task",
+                pending_work_scope=None,
+            )
+        )
+
+    assert child_calls == []
+
+
 def test_repository_ship_finalization_runs_outside_selected_worktree(
     tmp_path: pathlib.Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1893,7 +1970,11 @@ def test_repository_ship_blocks_selected_worktree_caller_before_remote_process(
         match="outside selected worktree",
     ):
         ship_repository(
-            argparse.Namespace(repo_root=repo, pending_work_scope=scope)
+            argparse.Namespace(
+                repo_root=repo,
+                head_branch="release/local",
+                pending_work_scope=scope,
+            )
         )
 
     assert child_calls == []

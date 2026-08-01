@@ -173,6 +173,19 @@
       "decision": "Select the accepted rules-only fast-change action contract over ordinary instruction-edit verification in one repository-scoped rule.",
       "reason": "Rules-only fast changes intentionally run no readback, and isolating that exception keeps both governing rules canonical and narrowly scoped.",
       "regression": "Preserve SKILLS-VERIFY-01 for every instruction edit outside an accepted rules-only fast-change."
+    },
+    {
+      "rules": [
+        "SKILLS-CHECKOUT-01",
+        "SKILLS-FAST-01",
+        "SKILLS-PREVIEW-01",
+        "SKILLS-STAGE-01",
+        "SKILLS-SHIP-01",
+        "SKILLS-BATCH-01"
+      ],
+      "decision": "Narrow the skills repository's sole release-batch identity from arbitrary release/* branches to release/local and require owning helpers to reject alternatives.",
+      "reason": "One canonical release line prevents task-named release branches from becoming reusable or retained release state.",
+      "regression": "Continue allowing main for normal installed-source checkout, keep task work in thread worktrees, and do not ship or fast-change from any branch other than release/local."
     }
   ]
 }

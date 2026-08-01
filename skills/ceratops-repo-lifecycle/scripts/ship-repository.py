@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Ship one integration branch, deploy synchronized main, and clean its scope.
+"""Ship ``release/local``, deploy synchronized main, and clean its scope.
 
 The GitHub helper retains ownership of publication, gates, exact-head merge,
 and synchronization. This wrapper adds the repository lifecycle's deterministic
@@ -20,6 +20,7 @@ from typing import Any
 SCRIPT_ROOT = pathlib.Path(__file__).resolve().parent
 DEPLOY_RUNNER = SCRIPT_ROOT / "run-deploy-operation.py"
 PENDING_MANAGER = SCRIPT_ROOT / "manage-pending-work.py"
+RELEASE_BRANCH = "release/local"
 
 
 class RepositoryShipError(RuntimeError):
@@ -299,6 +300,8 @@ def _pending_command(
 def ship_repository(args: argparse.Namespace) -> dict[str, object]:
     """Run the complete repository shipping and deployment workflow."""
 
+    if args.head_branch != RELEASE_BRANCH:
+        raise RepositoryShipError(f"Head branch must be {RELEASE_BRANCH}.")
     repo_root = args.repo_root.expanduser().resolve(strict=True)
     pending_scope = _resolve_pending_scope(repo_root, args.pending_work_scope)
     args.pending_work_scope = pending_scope
@@ -433,7 +436,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--repo-root", type=pathlib.Path, default=pathlib.Path.cwd())
     parser.add_argument("--repo")
-    parser.add_argument("--head-branch", required=True)
+    parser.add_argument(
+        "--head-branch",
+        required=True,
+        help="must be release/local",
+    )
     parser.add_argument("--base-branch", default="main")
     parser.add_argument("--remote-name", default="origin")
     parser.add_argument("--commit")
