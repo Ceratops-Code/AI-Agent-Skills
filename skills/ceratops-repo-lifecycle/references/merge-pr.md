@@ -18,6 +18,9 @@ detected before merge.
   `python -m github_pr_workflow merge --pr NUMBER_OR_URL --repo-root PATH
   --repo OWNER/REPO [--expected-head SHA] [--admin] [--delete-branch]
   [--merge-method merge|squash|rebase]`.
+  `--admin` is the explicit authorization for the helper's narrowly scoped,
+  temporary admin-enforcement bypass when required review is the sole accepted
+  blocker for an immediate merge.
 - (D) Post-merge sync helper:
   `python -m github_pr_workflow sync --repo-root PATH --main-branch main
   --remote-name origin [--align-branch BRANCH]`.
@@ -32,8 +35,6 @@ detected before merge.
 - (D) Codex thread resolver:
   `python -m github_pr_workflow resolve
   --thread-id THREAD_ID --json`
-- Direct merge command: `gh pr merge --admin NUMBER_OR_URL_OR_BRANCH
-  [--merge|--squash|--rebase] [--delete-branch]`
 - (D) Branch deletion policy check for reusable release or integration head
   branches: `gh repo view OWNER/REPO --json deleteBranchOnMerge`
 
@@ -78,8 +79,9 @@ before asking.
 
 - (D) Prefer `python -m github_pr_workflow merge --repo-root PATH --repo
   OWNER/REPO` for ready direct merges; it runs PR readiness, waits on the Codex
-  review gate, revalidates, merges with `gh`, verifies the live PR state, and
-  emits compact JSON.
+  review and conversation-resolution gates, revalidates CI and requested-change
+  state, merges the exact head, verifies the live PR state, restores any
+  unfinished admin-enforcement checkpoint, and emits compact JSON.
 - (D) When not using the merge subcommand, run
   `python -m github_pr_workflow validate --cwd PATH` before merge or auto-merge
   decisions and run `python -m github_pr_workflow wait
@@ -107,12 +109,23 @@ before asking.
 - Confirm required checks, conversations, Codex review gate, and strict
   status-check freshness are satisfied; `REVIEW_REQUIRED` does not block
   explicitly requested direct admin merges, but requested changes still block.
+- (D) The merge helper may change protection only for an immediate `--admin`
+  merge when final gated readiness reports `REVIEW_REQUIRED` and the base
+  branch's dedicated `enforce_admins` state is enabled. Ordinary and auto
+  merges never create this bypass.
+- (D) Before disabling, the helper persists the minimum repo-scoped restore
+  checkpoint. It DELETEs only the dedicated admin-enforcement endpoint
+  immediately before the exact-head merge, restores the initial state in
+  `finally`, reads it back on every exit, and removes the checkpoint only after
+  verified restoration. Later merge work restores unfinished checkpoints first.
+- If disabling fails, do not attempt merge. If restoration cannot be verified,
+  treat the result as critical and retain repository, base branch, PR, exact
+  head, observed merge state, and the dedicated-endpoint recovery action.
 - If workflow refs or Actions permissions changed, confirm no mutable external
   action refs violate the repo policy.
 - Use `python -m github_pr_workflow merge --repo-root PATH --repo OWNER/REPO`
-  for the deterministic direct merge path when available; otherwise use `gh pr
-  merge --admin` for direct merges, adding the PR selector, allowed merge-method
-  flag, and `--delete-branch` when cleanup is intended and allowed.
+  for admin direct merges; do not reproduce its protection toggle in callers or
+  replace it with raw `gh pr merge --admin` when required-review bypass is needed.
 - For remote-only PR merges, run `gh pr merge <number> --repo OWNER/REPO` from
   an existing non-repo directory such as `$CODEX_HOME`.
 - Use `gh pr merge --auto` only when the user explicitly wants GitHub to defer
@@ -141,6 +154,7 @@ before asking.
 - A fresh pre-merge PR readiness check and fresh Codex review gate backed the
   merge decision.
 - Post-merge state was verified separately from the live PR endpoint.
+- Any admin-enforcement bypass was restored and read back before success.
 - Local repo state, branch, remotes, refs, worktree cleanliness, and retained
   safety branches were verified.
 
@@ -153,3 +167,4 @@ Report only:
 - intentionally retained branch or side effect with reason
 - anything important not verified
 - exact credential step if blocked
+- critical dedicated-endpoint recovery action if restoration is unverified

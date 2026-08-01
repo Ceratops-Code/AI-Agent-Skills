@@ -336,6 +336,16 @@ class SyncTests(unittest.TestCase):
 class ShipTests(unittest.TestCase):
     commit = "a" * 40
 
+    def setUp(self) -> None:
+        """Keep legacy ship tests focused below checkpoint recovery ownership."""
+
+        recovery = mock.patch.object(
+            ship.merge,
+            "restore_unfinished_checkpoints",
+        )
+        recovery.start()
+        self.addCleanup(recovery.stop)
+
     def git(self, repo_root: pathlib.Path, *arguments: str) -> str:
         completed = subprocess.run(
             ["git", "-C", str(repo_root), *arguments],
@@ -1051,6 +1061,11 @@ class ShipTests(unittest.TestCase):
                     return_value={
                         "disposition": "passed",
                         "authorization_required": False,
+                        "ci": {
+                            "base": "main",
+                            "head_oid": self.commit,
+                            "review_required": False,
+                        },
                     },
                 ) as gates,
                 mock.patch.object(
@@ -1148,6 +1163,11 @@ class ShipTests(unittest.TestCase):
                     return_value={
                         "disposition": "admin_authorized",
                         "authorization_required": False,
+                        "ci": {
+                            "base": "main",
+                            "head_oid": self.commit,
+                            "review_required": True,
+                        },
                     },
                 ) as gates,
                 mock.patch.object(
@@ -1230,6 +1250,11 @@ class ShipTests(unittest.TestCase):
                     return_value={
                         "disposition": "admin_authorized",
                         "authorization_required": False,
+                        "ci": {
+                            "base": "main",
+                            "head_oid": self.commit,
+                            "review_required": True,
+                        },
                     },
                 ) as gates,
                 mock.patch.object(

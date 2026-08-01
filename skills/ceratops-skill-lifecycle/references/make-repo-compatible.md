@@ -28,8 +28,13 @@ Infer the source identity from stable repository evidence before asking.
 - (D) Installer synchronization after the compatibility sources exist: `python
   scripts/runtime/synchronize-installers.py --target-repo-root
   <task-worktree>` from the installed lifecycle bundle.
-- Reusable template root: the source repository root when using its lifecycle
-  source, or the installed lifecycle skill root when using its runtime bundle.
+- (D) Compatibility materialization: `python
+  scripts/materialize-compatible-repo.py --target-repo-root <task-worktree>
+  [--runtime-source-id <stable-id>]` from the installed or source lifecycle
+  bundle. It owns template loading, target inspection, section materialization,
+  marker cleanup, installer synchronization, validation, rollback, and compact
+  output. Identity precedence is explicit input, existing stable manifest
+  identity, then derivable GitHub origin.
 
 ## Constraints
 
@@ -53,8 +58,11 @@ Infer the source identity from stable repository evidence before asking.
   skill-specific behavior in the source `SKILL.md`.
 - Use one stable `runtime_source_id` unique among repositories sharing an
   install root and set `validation_profile` to `ceratops-compatible`.
-- Assign every source skill to `core`; declare only existing portable runtime
-  payloads and target-owned maintenance commands.
+- Assign every source skill to `core`; preserve valid target-owned custom
+  sections and assignments, portable runtime payloads, and maintenance commands.
+- Block malformed or unsafe existing declarations before mutation. After the
+  first write, restore every changed target file after any caught blocker and
+  report the failed phase and rollback state.
 - Keep source skill folders portable and keep generated shared-section blocks
   out of source `SKILL.md` files.
 
@@ -70,13 +78,14 @@ Infer the source identity from stable repository evidence before asking.
 
 ### 2. Establish compatible source surfaces
 
-- Create `skills/sections/core.md` from target-owned behavior required by
-  every source skill.
-- Copy the selected template root's `templates/skill-sections-template.json` to
-  `skills/skill-sections.json`, then populate the stable source identity,
-  `ceratops-compatible` profile, section paths, per-skill assignments,
-  target-owned maintenance workflows, and portable runtime payloads.
-- Copy the selected template root's `templates/deploy-template.yml` to
+- Run the compatibility materializer so it loads the lifecycle-owned
+  `scripts/templates/skill-sections-template.json`, derives or accepts the
+  stable source identity, inventories source skills and multi-action markers,
+  copies canonical shared sections to `skills/sections/`, writes
+  `skills/skill-sections.json`, preserves valid target-owned custom sections
+  and assignments, and removes generated section blocks from source skills.
+- Copy the selected repository-lifecycle bundle's
+  `references/deploy-template.yml` to
   `deploy/deploy.yml`, then declare only the target repository's supported
   operations and lifecycle hooks.
 - Make every source `SKILL.md` delta-only, add or align
@@ -85,10 +94,9 @@ Infer the source identity from stable repository evidence before asking.
 
 ### 3. Install the repository bootstrap
 
-- Run the installer synchronization helper only after the other compatibility
-  surfaces are ready so its required full validation can succeed.
-- Retain a same- or higher-version target installer; replace only a missing or
-  lower parsed integer `INSTALLER_VERSION`.
+- The compatibility materializer delegates installer replacement to the
+  synchronization helper after compatibility sources exist. Retain a same- or
+  higher-version installer and replace only a missing or lower version.
 
 ### 4. Validate and hand off
 
@@ -110,6 +118,8 @@ Infer the source identity from stable repository evidence before asking.
   skills, metadata, README inventory, portable payload declarations, a live
   deployment definition, and a supported versioned installer.
 - Full target-repository validation passes.
+- Any caught blocker after mutation restores the exact prior target files and
+  reports completed or failed rollback state.
 - Any requested repository-lifecycle handoff completed or its blocker is
   reported.
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fast-forward selected task branches into one reusable local release branch.
+"""Fast-forward selected task branches into reusable ``release/local``.
 
 The helper owns only generic Git promotion and selected-scope recording.
 Repository-specific validation or installation runs through a named operation
@@ -26,6 +26,7 @@ from github_pr_workflow.command import (
 SCRIPT_ROOT = pathlib.Path(__file__).resolve().parent
 PENDING_MANAGER = SCRIPT_ROOT / "manage-pending-work.py"
 DEPLOY_RUNNER = SCRIPT_ROOT / "run-deploy-operation.py"
+RELEASE_BRANCH = "release/local"
 
 
 class PromotionError(RuntimeError):
@@ -113,6 +114,8 @@ def _run_json(command: list[str], cwd: pathlib.Path) -> tuple[int, dict[str, Any
 def promote(args: argparse.Namespace) -> dict[str, object]:
     """Prepare a release branch, record selected work, and optionally deploy."""
 
+    if args.release_branch != RELEASE_BRANCH:
+        raise PromotionError(f"release_branch must be {RELEASE_BRANCH}.")
     repo_root = args.repo_root.expanduser().resolve(strict=True)
     if not repo_root.is_dir():
         raise PromotionError("Repository root is not a directory.")
@@ -296,7 +299,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--repo-root", type=pathlib.Path, default=pathlib.Path.cwd())
     parser.add_argument("--source-branch", action="append")
     parser.add_argument("--main-branch", default="main")
-    parser.add_argument("--release-branch", default="release/local")
+    parser.add_argument(
+        "--release-branch",
+        default=RELEASE_BRANCH,
+        help="must be release/local",
+    )
     parser.add_argument("--remote-name", default="origin")
     parser.add_argument(
         "--prepare-release-only",

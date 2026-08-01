@@ -34,9 +34,10 @@ skills/
       <action-or-contract-reference>
 deploy/
   deploy.yml
-templates/
-  skill-sections-template.json
+skills/ceratops-repo-lifecycle/references/
   deploy-template.yml
+skills/ceratops-skill-lifecycle/scripts/templates/
+  skill-sections-template.json
 ```
 
 Source `SKILL.md` files are portable, delta-only skill definitions. Runtime
@@ -52,8 +53,8 @@ Skill names are independent of the profile and need no `ceratops-` prefix.
 skills that select among multiple action references.
 The `skills/` tree is authoritative skill source for this repository.
 `deploy/deploy.yml` is its authoritative structured deployment definition.
-Files under `templates/` are reusable skeletons to copy into other
-repositories, not live configuration.
+The templates under `skills/ceratops-repo-lifecycle/references/` are reusable
+skeletons to copy into other repositories, not live configuration.
 `agents/openai.yaml` is Codex UI metadata and may be ignored by other agents.
 Each Ceratops skill declares the runtime-local icon path
 `./assets/ceratops-logo-500.png`. The repo-root `assets/ceratops-logo-500.png`
@@ -83,11 +84,12 @@ without repository deduplication.
 
 | Script | Caller And Timing |
 | --- | --- |
-| `scripts/install-skills.py` | Versioned repository bootstrap that delegates exact runtime installation to the supported lifecycle bundle. |
+| `scripts/install-skills.py` | Prefers the installed lifecycle runtime for AI-Agent-Skills, then runs one independent checkout fallback when that runtime is unavailable or unsuccessful. |
 | `scripts/validate-repository.py` | Sole full local-and-CI validation owner; captures child output and writes first-failure evidence to a caller-selected file. |
-| `skills/ceratops-skill-lifecycle/scripts/templates/install-skills-template.py` | Authoritative installer copied into compatible repositories as `scripts/install-skills.py`; consistency compares only `INSTALLER_VERSION`. |
+| `skills/ceratops-skill-lifecycle/scripts/templates/install-skills-template.py` | Authoritative standard-library-only installer copied into compatible repositories as `scripts/install-skills.py`; it only resolves shared sections and copies rendered skills. |
+| `skills/ceratops-skill-lifecycle/scripts/materialize-compatible-repo.py` | Deterministically instantiates a compatible repository's live section manifest, preserves valid target identity and custom assignments, aligns canonical sections and generated markers, then delegates installer synchronization and validation with rollback on caught blockers. |
+| `skills/ceratops-skill-lifecycle/scripts/templates/skill-sections-template.json` | Repository-neutral template for materializing a target repository's live `skills/skill-sections.json`; never a live manifest. |
 | `skills/ceratops-skill-lifecycle/scripts/runtime/install-managed-skills.py` | Classifies explicit, promotion-relative, or all-managed affected sets; owns direct-manifest inventory; and invokes one runtime transaction without source validation. |
-| `skills/ceratops-skill-lifecycle/scripts/runtime/resolve-lifecycle-bundle.py` | Source-checkout resolver for the Ceratops repository and installed-bundle resolver for other compatible repositories. |
 | `skills/ceratops-skill-lifecycle/scripts/runtime/synchronize-installers.py` | Copies the authoritative installer into an approved task worktree only when its parsed version is missing or lower, then runs explicit full source validation. |
 | `skills/ceratops-skill-lifecycle/scripts/runtime/managed_runtime_builder.py` | Stages, activates, rolls back, recovers, and cleans one locked selected-skill runtime transaction. |
 | `skills/ceratops-credit-savings-analysis/scripts/model-call-ledger.py` | Writes sanitized session evidence, emits artifact-free closure inventories, and validates caller classifications against every selected model call. |
@@ -96,7 +98,7 @@ without repository deduplication.
 | `skills/ceratops-governance-lifecycle/scripts/rule_graph.py` | Parses canonical AGENTS rules and rejects structural syntax or rule-local explicit-user override escape clauses. |
 | `skills/ceratops-repo-lifecycle/scripts/github_contract_engine/` | Package CLI for compact local audit snapshots, contract evaluation, shared GitHub API access, sanitized evidence, and evidence-gated CodeQL disposition. |
 | `skills/ceratops-repo-lifecycle/scripts/github_pr_workflow/` | Package CLI for individual PR operations, exact-commit checkpointed shipping, a scoped pending-work pre-push guard, concurrent gates, integrated post-gate admin merge, reusable-branch restoration, and terminal checkpoint cleanup. Standalone merge behavior is unchanged. |
-| `skills/ceratops-repo-lifecycle/scripts/promote-repository.py` | Prepares a clean local `release/*` branch for fast-change, or fast-forwards selected committed task branches and either stops or runs one named deployment operation. |
+| `skills/ceratops-repo-lifecycle/scripts/promote-repository.py` | Prepares `release/local` for fast-change, or fast-forwards selected committed task branches and either stops or runs one named deployment operation. |
 | `skills/ceratops-repo-lifecycle/scripts/manage-pending-work.py` | Records, checks, and progressively finalizes the exact selected branch and worktree scope used by promotion and shipping. |
 | `skills/ceratops-repo-lifecycle/scripts/run-deploy-operation.py` | Validates `deploy/deploy.yml`, resolves its exact declared parameters, and executes one operation as ordered argv steps without a shell. |
 | `skills/ceratops-repo-lifecycle/scripts/ship-repository.py` | Orchestrates scoped pre-push checking, guarded GitHub shipping, main synchronization, a pre-deploy recheck, checkpointed `after_ship`, and resumable selected-source cleanup. |
@@ -117,7 +119,7 @@ exact helper tests when required, targeted installation, staging, commit, and
 compensation.
 
 Promotion and deployment are separate repository actions. `promote` assembles
-the selected branches into `release/*` without deployment;
+the selected branches into `release/local` without deployment;
 `promote-and-deploy` additionally runs the contract's `after_promote`
 operation. `run-operation` executes any explicitly named operation from the
 live contract. The runner never converts prose instructions into commands.
@@ -304,7 +306,7 @@ Codex discovers personal skills from:
 $CODEX_HOME/skills/<skill-name>/SKILL.md
 ```
 
-Install the lifecycle runtime dependency and run the bootstrap from the repo
+Install the lifecycle runtime dependency and run the installer from the repo
 root:
 
 ```powershell
@@ -312,9 +314,11 @@ python -m pip install -r requirements-runtime.txt
 python .\scripts\install-skills.py
 ```
 
-For a full install, that bootstrap builds every managed runtime skill under
-`$CODEX_HOME/skills/`, including declared runtime payloads such as the Ceratops
-icon, in one selected-batch transaction.
+With installed Ceratops lifecycle skills, the installer uses their managed
+runtime transaction. If that path is unavailable or unsuccessful, it runs the
+checkout's independent installer once. The fallback performs an ordinary full
+or explicitly selected reinstall; it does not preserve removal or
+base-revision selection.
 
 For another Ceratops-compatible repo, run its versioned repository installer:
 
@@ -322,20 +326,13 @@ For another Ceratops-compatible repo, run its versioned repository installer:
 python <target-repo>\scripts\install-skills.py --repo-root <target-repo>
 ```
 
-The Ceratops source repository bootstrap uses its checkout lifecycle bundle.
-Other compatible repositories prefer a supported installed lifecycle bundle.
-An install without a selection refreshes all source skills and removes only
-stale folders with the same `runtime_source_id`. Repeated `--skill` and
-`--remove-skill` values form one exact transaction. `--base-revision <sha>`
-derives the exact addition, removal, shared-section, payload, or global-runtime
-effect from structured Git and manifest data. Installation does not run source
-validation. Runtime manifests record source ownership, local source-repository
-root, validation profile, and installer version.
-Interrupted-state convergence is guaranteed when the same affected set or an
-all-managed install runs again; an unrelated targeted install does not claim
-to discover a fully activated orphan with no transaction remnant. A
-post-commit cleanup failure keeps the complete new batch active and reports
-`cleanup_blocked` with retained retired folders.
+An external repository's copied installer is independent: it uses only the
+Python standard library, reads declared skills, resolves shared sections and
+payloads, fully stages the requested output, and replaces same-source
+destinations. It does not locate or run Ceratops, validate repository lifecycle
+policy, negotiate compatibility, recover transactions, or fall back after an
+error. Managing an external repository through Ceratops is optional and
+requires separately installed Ceratops skills.
 
 For report-only global routing, the runtime installer can write direct managed
 manifest entries and malformed-entry blockers without comparing runtime files
@@ -348,10 +345,10 @@ python .\skills\ceratops-skill-lifecycle\scripts\runtime\install-managed-skills.
 Installed Ceratops skills should be generated from the skills repo checkout: the
 local skills repo checkout used as the input path for the runtime installer.
 The active branch only selects which repo snapshot is installed: synced `main`
-for normal use, or a local `release/*` branch for an active unpublished preview.
-After changing the installed source snapshot, rerun `python
-scripts/install-skills.py --repo-root <repo>` so new, renamed, or deleted
-same-source managed skill folders match that snapshot.
+for normal use, or `release/local` for an active unpublished preview.
+After changing the installed source snapshot, use the installed lifecycle skill
+to refresh it; if that path is unavailable or unsuccessful, rerun `python
+scripts/install-skills.py --repo-root <repo>` once.
 When shipping a staged batch, reuse the same `release/local` branch name locally
 and remotely by default. Use `$ceratops-repo-lifecycle` `promote` to assemble
 selected reviewed branches without installation, or `promote-and-deploy` to run

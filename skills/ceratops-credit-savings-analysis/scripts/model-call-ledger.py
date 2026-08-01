@@ -5,10 +5,12 @@ The ledger groups automatic continuations by turn ID, includes only completed
 runs, and fingerprints tool arguments instead of reproducing potentially
 sensitive command text. Ordinary mode writes detailed evidence to a
 caller-selected file. Closure mode emits the minimum sanitized selected-window
-call inventory in one invocation and creates no cleanup artifact. The same
-helper validates a caller-owned classification file before reporting, while the
-model remains responsible for deciding whether a call was necessary or
-avoidable.
+call inventory in one invocation and creates no cleanup artifact. Repeated
+``--include-run`` options add bounded sanitized action summaries to stdout only
+for explicitly selected completed runs; default and written evidence remain
+fingerprint-only. The same helper validates a caller-owned classification file
+before reporting, while the model remains responsible for deciding whether a
+call was necessary or avoidable.
 """
 
 from __future__ import annotations
@@ -18,6 +20,7 @@ import hashlib
 import json
 import os
 import pathlib
+import re
 import sys
 import uuid
 from collections import Counter
@@ -40,6 +43,37 @@ TOKEN_FIELDS = (
     "output_tokens",
     "reasoning_output_tokens",
     "total_tokens",
+)
+REDACTED = "<redacted>"
+USER_HOME = "<user-home>"
+SEMANTIC_SUMMARY_LIMIT = 240
+SENSITIVE_KEY_RE = re.compile(
+    r"(?:^|_)(?:api_?key|authorization|client_?secret|cookie|credentials?|"
+    r"password|private_?key|secrets?|tokens?)(?:$|_)",
+    re.IGNORECASE,
+)
+AUTH_VALUE_RE = re.compile(r"\b(bearer|basic)\s+[^\s,;]+", re.IGNORECASE)
+CREDENTIAL_ASSIGNMENT_RE = re.compile(
+    r"(?P<prefix>[\"']?(?:--?|\$env:)?[A-Za-z0-9_-]*"
+    r"(?:api[_-]?key|authorization|client[_-]?secret|cookie|credential|"
+    r"password|private[_-]?key|secret|token)[A-Za-z0-9_-]*[\"']?"
+    r"(?:\s*[:=]\s*|\s+))"
+    r"(?P<value>\"[^\"]*\"|'[^']*'|[^\s,;}\]]+)",
+    re.IGNORECASE,
+)
+KNOWN_TOKEN_RE = re.compile(
+    r"\b(?:gh[pousr]_[A-Za-z0-9_]{20,}|"
+    r"github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{16,})\b"
+)
+PRIVATE_KEY_RE = re.compile(
+    r"-----BEGIN [^-]*PRIVATE KEY-----.*?-----END [^-]*PRIVATE KEY-----",
+    re.DOTALL,
+)
+URL_CREDENTIAL_RE = re.compile(r"(https?://)[^/\s:@]+:[^/\s@]+@", re.IGNORECASE)
+USER_HOME_RE = re.compile(
+    r"(?:[A-Z]:[\\/]+Users[\\/]+[^\\/\s\"']+|"
+    r"[\\/]+(?:Users|home)[\\/]+[^\\/\s\"']+)",
+    re.IGNORECASE,
 )
 
 
@@ -133,6 +167,127 @@ def payload_fingerprint(value: Any) -> str:
     """Hash tool arguments so the ledger does not echo commands or secrets."""
 
     return hashlib.sha256(stable_payload(value).encode("utf-8")).hexdigest()[:16]
+
+
+def sensitive_key(value: object) -> bool:
+    """Recognize structured argument keys whose values must never be emitted."""
+
+    normalized = re.sub(r"[^a-z0-9]+", "_", str(value).lower()).strip("_")
+    return bool(SENSITIVE_KEY_RE.search(normalized))
+
+
+def sanitize_text(value: str) -> str:
+    """Redact common credential forms and local profile roots before truncation."""
+
+    result = PRIVATE_KEY_RE.sub(REDACTED, value)
+    result = USER_HOME_RE.sub(USER_HOME, result)
+    result = URL_CREDENTIAL_RE.sub(rf"\1{REDACTED}@", result)
+    result = AUTH_VALUE_RE.sub(
+        lambda match: f"{match.group(1)} {REDACTED}", result
+    )
+    result = KNOWN_TOKEN_RE.sub(REDACTED, result)
+    return CREDENTIAL_ASSIGNMENT_RE.sub(
+        lambda match: f"{match.group('prefix')}{REDACTED}", result
+    )
+
+
+def sanitize_semantic_value(value: Any) -> Any:
+    """Recursively redact structured tool arguments for opt-in semantic output."""
+
+    if isinstance(value, str):
+        return sanitize_text(value)
+    if isinstance(value, list):
+        return [sanitize_semantic_value(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    return {
+        str(key): (
+            REDACTED
+            if sensitive_key(key)
+            else sanitize_semantic_value(item)
+        )
+        for key, item in value.items()
+    }
+
+
+def semantic_summary(value: Any, *, decode_json: bool = True) -> str:
+    """Produce one whitespace-normalized bounded summary after full redaction."""
+
+    decoded = value
+    if decode_json and isinstance(value, str):
+        try:
+            decoded = json.loads(value)
+        except json.JSONDecodeError:
+            pass
+    sanitized = sanitize_semantic_value(decoded)
+    if isinstance(sanitized, str):
+        text = sanitized
+    else:
+        text = json.dumps(
+            sanitized,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            default=str,
+        )
+    compact = re.sub(r"\s+", " ", text).strip()
+    if len(compact) <= SEMANTIC_SUMMARY_LIMIT:
+        return compact
+    return compact[: SEMANTIC_SUMMARY_LIMIT - 3] + "..."
+
+
+def assistant_message_text(payload: dict[str, Any]) -> str:
+    """Collect only assistant-authored text from one message response item."""
+
+    content = payload.get("content")
+    if not isinstance(content, list):
+        return ""
+    parts: list[str] = []
+    for item in content:
+        if not isinstance(item, dict):
+            continue
+        text = item.get("text") or item.get("output_text")
+        if isinstance(text, str):
+            parts.append(text)
+    return " ".join(parts)
+
+
+def semantic_action_from_item(payload: dict[str, Any]) -> dict[str, str] | None:
+    """Reduce one response item to an opt-in sanitized semantic action."""
+
+    item_type = payload.get("type")
+    if item_type == "message" and payload.get("role") != "user":
+        phase = payload.get("phase")
+        action = {
+            "kind": "message",
+            "name": phase if isinstance(phase, str) else "assistant",
+        }
+        summary = semantic_summary(
+            assistant_message_text(payload),
+            decode_json=False,
+        )
+    elif item_type == "function_call":
+        name = payload.get("name")
+        action = {
+            "kind": "tool",
+            "name": name if isinstance(name, str) else "unknown",
+        }
+        summary = semantic_summary(payload.get("arguments"))
+    elif item_type == "custom_tool_call":
+        name = payload.get("name")
+        action = {
+            "kind": "tool",
+            "name": name if isinstance(name, str) else "unknown",
+        }
+        summary = semantic_summary(payload.get("input"))
+    elif item_type == "tool_search_call":
+        action = {"kind": "tool", "name": "tool_search"}
+        summary = semantic_summary(payload.get("arguments"))
+    else:
+        return None
+    if summary:
+        action["summary"] = summary
+    return action
 
 
 def action_from_item(payload: dict[str, Any]) -> dict[str, str] | None:
@@ -300,11 +455,111 @@ def build_ledger(
     }
 
 
+def build_semantic_runs(
+    rows: list[dict[str, Any]],
+    ledger: dict[str, Any],
+    include_runs: list[str],
+) -> list[dict[str, Any]]:
+    """Build opt-in semantic actions only for requested completed-window runs."""
+
+    if not include_runs:
+        return []
+    runs_by_id = {run["turn_id"]: run for run in ledger["runs"]}
+    requested = list(dict.fromkeys(include_runs))
+    unknown = sorted(set(requested) - runs_by_id.keys())
+    if unknown:
+        raise LedgerError(f"requested run is outside the completed window: {unknown[0]}")
+
+    requested_set = set(requested)
+    calls_by_id: dict[str, list[dict[str, Any]]] = {
+        turn_id: [] for turn_id in requested
+    }
+    active_turn: str | None = None
+    pending_actions: list[dict[str, str]] = []
+    for row in rows:
+        row_type = row.get("type")
+        payload = row.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        if row_type == "turn_context":
+            turn_id = payload.get("turn_id")
+            active_turn = turn_id if turn_id in requested_set else None
+            pending_actions = []
+            continue
+        if active_turn is None:
+            continue
+        if row_type == "response_item":
+            action = semantic_action_from_item(payload)
+            if action is not None:
+                pending_actions.append(action)
+            continue
+        if row_type != "event_msg" or payload.get("type") != "token_count":
+            continue
+        usage = token_usage(payload)
+        if not any(
+            usage.get(field, 0) > 0
+            for field in ("input_tokens", "output_tokens", "reasoning_output_tokens")
+        ):
+            pending_actions = []
+            continue
+        calls = calls_by_id[active_turn]
+        calls.append({"index": len(calls) + 1, "actions": pending_actions})
+        pending_actions = []
+
+    result: list[dict[str, Any]] = []
+    for turn_id in requested:
+        run = runs_by_id[turn_id]
+        calls = calls_by_id[turn_id]
+        if len(calls) != run["model_calls"]:
+            raise LedgerError(f"semantic call count does not match ledger: {turn_id}")
+        result.append(
+            {
+                "turn_id": turn_id,
+                "started_at": run["started_at"],
+                "model_calls": run["model_calls"],
+                "calls": calls,
+            }
+        )
+    return result
+
+
+def selected_runs_with_semantics(
+    ledger: dict[str, Any],
+    include_runs: list[str],
+    semantic_runs: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Preserve ordinary selected-run details and add sanitized action summaries."""
+
+    runs_by_id = {run["turn_id"]: run for run in ledger["runs"]}
+    semantic_by_id = {run["turn_id"]: run for run in semantic_runs}
+    selected: list[dict[str, Any]] = []
+    for turn_id in include_runs:
+        run = runs_by_id[turn_id]
+        semantic_calls = {
+            call["index"]: call["actions"]
+            for call in semantic_by_id[turn_id]["calls"]
+        }
+        selected.append(
+            {
+                **run,
+                "calls": [
+                    {
+                        **call,
+                        "semantic_actions": semantic_calls[call["index"]],
+                    }
+                    for call in run["calls"]
+                ],
+            }
+        )
+    return selected
+
+
 def build_summary(
     ledger: dict[str, Any],
     *,
     evidence_output: pathlib.Path,
     include_runs: list[str],
+    semantic_runs: list[dict[str, Any]],
 ) -> dict[str, Any]:
     """Keep stdout small while exposing explicitly requested run details."""
 
@@ -330,14 +585,21 @@ def build_summary(
             }
             for run in runs
         ],
-        "selected_runs": [runs_by_id[turn_id] for turn_id in include_runs],
+        "selected_runs": selected_runs_with_semantics(
+            ledger,
+            include_runs,
+            semantic_runs,
+        ),
     }
 
 
-def build_closure_summary(ledger: dict[str, Any]) -> dict[str, Any]:
+def build_closure_summary(
+    ledger: dict[str, Any],
+    semantic_runs: list[dict[str, Any]],
+) -> dict[str, Any]:
     """Emit all completed calls without per-call token or temporary-file noise."""
 
-    return {
+    result = {
         "schema": CLOSURE_SCHEMA,
         "evidence_schema": ledger["schema"],
         "classification_input": classification_input_contract(),
@@ -362,6 +624,9 @@ def build_closure_summary(ledger: dict[str, Any]) -> dict[str, Any]:
             for run in ledger["runs"]
         ],
     }
+    if semantic_runs:
+        result["selected_runs"] = semantic_runs
+    return result
 
 
 def classification_input_contract() -> dict[str, Any]:
@@ -593,7 +858,15 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--last-runs", type=positive_int)
-    parser.add_argument("--include-run", action="append", default=[])
+    parser.add_argument(
+        "--include-run",
+        action="append",
+        default=[],
+        help=(
+            "add bounded sanitized action summaries for one completed run; "
+            "repeat for additional runs"
+        ),
+    )
     parser.add_argument(
         "--closure",
         action="store_true",
@@ -623,8 +896,6 @@ def main(argv: list[str] | None = None) -> int:
         elif args.closure:
             if args.evidence_output is not None:
                 raise LedgerError("--closure does not accept --evidence-output")
-            if args.include_run:
-                raise LedgerError("--closure includes every completed run")
         else:
             if args.thread_id is not None:
                 raise LedgerError("--thread-id requires --closure")
@@ -637,11 +908,13 @@ def main(argv: list[str] | None = None) -> int:
             if args.session is None:
                 raise LedgerError("session path is required")
             session = args.session.expanduser().resolve(strict=True)
+        rows = load_rows(session)
         ledger = build_ledger(
-            load_rows(session),
+            rows,
             session=session,
             last_runs=args.last_runs,
         )
+        semantic_runs = build_semantic_runs(rows, ledger, args.include_run)
         if args.classifications is not None:
             classification_path = args.classifications.expanduser().resolve(
                 strict=True
@@ -651,7 +924,7 @@ def main(argv: list[str] | None = None) -> int:
                 load_classifications(classification_path),
             )
         elif args.closure:
-            result = build_closure_summary(ledger)
+            result = build_closure_summary(ledger, semantic_runs)
         else:
             if args.evidence_output is None:
                 raise LedgerError("ordinary mode requires --evidence-output")
@@ -662,6 +935,7 @@ def main(argv: list[str] | None = None) -> int:
                 ledger,
                 evidence_output=evidence_output,
                 include_runs=args.include_run,
+                semantic_runs=semantic_runs,
             )
             write_evidence(evidence_output, ledger)
     except (LedgerError, OSError) as exc:

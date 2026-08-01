@@ -37,7 +37,7 @@
       "lines": "live structured repository deployment operations"
     },
     {
-      "path": "$AI_AGENT_SKILLS_ROOT/templates/deploy-template.yml",
+      "path": "$AI_AGENT_SKILLS_ROOT/skills/ceratops-repo-lifecycle/references/deploy-template.yml",
       "lines": "reusable deployment-contract skeleton"
     },
     {
@@ -123,10 +123,10 @@
       "category": "runtime",
       "deterministic_evidence": [
         "deploy/deploy.yml",
-        "templates/deploy-template.yml",
+        "skills/ceratops-repo-lifecycle/references/deploy-template.yml",
         "deploy contract schema"
       ],
-      "pass_condition": "The live deployment file validates as version 1 structured operations with argv-array steps and repository-relative working directories; the reusable template remains an empty version 1 skeleton. The ceratops profile declares after_promote with one base_revision parameter and one affected-set installer invocation, declares after_ship with one all-managed installer invocation, and includes both reusable templates in the installed skill-lifecycle payload."
+      "pass_condition": "The live deployment file validates as version 1 structured operations with argv-array steps and repository-relative working directories; the reusable template remains an empty version 1 skeleton. The ceratops profile declares after_promote with one base_revision parameter and one affected-set installer invocation, declares after_ship with one all-managed installer invocation, and includes both reusable templates in the installed repository-lifecycle payload."
     },
     {
       "id": "skill.installer_version_consistency",
@@ -137,7 +137,7 @@
         "installed runtime manifest installer_version",
         "bootstrap installer CLI behavior tests"
       ],
-      "pass_condition": "The authoritative template and repository bootstrap declare the same explicit positive integer INSTALLER_VERSION. An installer behavior change advances that version intentionally and is established through behavior tests, never syntax-tree or hash comparison. Compatible repositories retain same- or higher-version installers and synchronize only missing or lower versions through task worktrees."
+      "pass_condition": "The external installer template and AI-Agent-Skills installer declare the same explicit positive integer INSTALLER_VERSION but implement separate tiers. Behavior tests prove AI-Agent-Skills prefers an installed lifecycle runtime, falls back once to its independent checkout installer when that runtime is unavailable or unsuccessful, and fails nonzero when both paths fail. External installers remain standard-library-only, ignore installed Ceratops bundles, and fail unresolved input without fallback. Compatible repositories retain same- or higher-version installers and synchronize only missing or lower versions through task worktrees."
     },
     {
       "id": "skill.frontmatter_and_layout",
@@ -164,9 +164,11 @@
       "deterministic_evidence": [
         "skills/skill-sections.json",
         "skills/sections/*",
+        "skills/ceratops-skill-lifecycle/scripts/templates/skill-sections-template.json",
+        "skills/ceratops-skill-lifecycle/scripts/materialize-compatible-repo.py",
         "source SKILL.md"
       ],
-      "pass_condition": "Every source skill has a manifest assignment including core, source SKILL.md files remain delta-only, assigned shared sections render, and source files do not contain generated runtime shared-section blocks."
+      "pass_condition": "Every source skill has a manifest assignment including core, source SKILL.md files remain delta-only, assigned shared sections render, and source files do not contain generated runtime shared-section blocks. The reusable template remains repository-neutral and is rejected as a live manifest. Materialization prefers explicit, existing stable, then origin-derived identity; preserves valid target-owned custom sections and assignments; copies canonical sections; removes generated marker blocks; restores exact prior target files after any caught blocker; and works from source or a self-contained supported installed bundle."
     },
     {
       "id": "skill.multi_action_contract",

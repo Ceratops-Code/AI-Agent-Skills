@@ -31,6 +31,9 @@ first.
   engine/API, and exact-CI evidence. Finalization owns preflight-approved head
   binding, bounded readiness waits, live revalidation, blocker fingerprints,
   merge delegation, snapshot refresh, checkout sync, and bounded results.
+  Finalization delegates `--admin` to `python -m github_pr_workflow merge` and
+  inherits its checkpointed admin-enforcement semantics; it does not toggle
+  protection independently.
 
 ### Inputs To Capture
 
@@ -92,7 +95,7 @@ Infer missing inputs from local files and live GitHub state before asking.
   post-merge cleanup.
 - For a caller-scoped multi-PR queue, pass every model-approved PR to one
   queue finalization call; it must reuse `merge-pr` semantics rather than
-  duplicating or weakening those gates.
+  duplicating or weakening gates, admin-enforcement bypass, or recovery.
 - Include live repo dependency selection only when the queue changes or
   explicitly verifies GitHub dependency/security posture.
 - Include code dependency selection only when explicitly verifying Dependabot

@@ -22,20 +22,23 @@ materially reduce recurrence.
   when specified, or the full thread when no boundary is stated.
 - Resolve the selected session record through
   `$CODEX_HOME/session_index.jsonl`, `$CODEX_HOME/sessions/`, or
-  `$CODEX_HOME/archived_sessions/`. Use only its selected-run rows for semantic
-  evidence the ledger omits, and sanitize that evidence before recording or
-  reporting. Visible context may identify scope but is not analysis evidence.
+  `$CODEX_HOME/archived_sessions/`. Request semantic evidence only through
+  `model-call-ledger.py --include-run TURN_ID`; do not parse session rows with
+  ad hoc helpers. Visible context may identify scope but is not analysis
+  evidence.
 - (D) For non-closure analysis, run `python scripts/model-call-ledger.py
   --session PATH --evidence-output LEDGER_PATH [--last-runs N]
   [--include-run TURN_ID]`; it writes every completed run and model call to the
   sanitized ledger, emits only the run reconciliation summary, and includes
   full call details only for explicitly requested runs.
 - (D) For closure analysis, run `python scripts/model-call-ledger.py
-  (--thread-id THREAD_ID | --session SESSION) --closure [--last-runs N]`.
-  For an `incremental closure`, set `N` to the completed runs strictly after
-  the previous completed closure and exclude the boundary and active runs;
-  omit `--last-runs` only for a full-thread closure. The helper emits one
-  sanitized selected-window call inventory and creates no evidence artifact.
+  (--thread-id THREAD_ID | --session SESSION) --closure [--last-runs N]
+  [--include-run TURN_ID]`. For an `incremental closure`, set `N` to the
+  completed runs strictly after the previous completed closure and exclude the
+  boundary and active runs; omit `--last-runs` only for a full-thread closure.
+  The helper emits one fingerprint-only selected-window call inventory by
+  default, adds bounded sanitized action summaries only for explicitly included
+  completed runs, and creates no evidence artifact.
 - (D) Before reporting, rerun `model-call-ledger.py` for the same source and
   window with `--classifications CLASSIFICATIONS_PATH`; the existing helper
   must reject missing, duplicate, or multiply classified calls and emit only
