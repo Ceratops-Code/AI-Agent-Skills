@@ -42,6 +42,9 @@
   `deploy/deploy.yml` contract, moved the reusable section-manifest template
   into the skill-lifecycle bundle, and limited `templates/` to the reusable
   deployment-contract skeleton.
+- Made compatibility materialization preserve target identity and custom
+  section assignments, roll back blocker paths, and run from a self-contained
+  lifecycle-only installed bundle.
 - Split health policy into deterministic and non-deterministic contracts for
   GitHub org settings, live GitHub repo settings, repo contents, code comments,
   and external artifact registries.

@@ -41,12 +41,25 @@ INSTALLER_TEMPLATE = LIFECYCLE_BUNDLE_ROOT / "scripts" / "templates" / "install-
 DEPLOY_CONTRACT = ROOT / "deploy" / "deploy.yml"
 DEPLOY_TEMPLATE = ROOT / "templates" / "deploy-template.yml"
 SKILL_SECTIONS_TEMPLATE = INSTALLER_TEMPLATE.parent / "skill-sections-template.json"
-DEPLOY_SCHEMA = (
+SOURCE_DEPLOY_SCHEMA = (
     LIFECYCLE_BUNDLE_ROOT.parent
     / "ceratops-repo-lifecycle"
     / "references"
     / "schemas"
     / "deploy-contract.schema.json"
+)
+INSTALLED_DEPLOY_SCHEMA = (
+    LIFECYCLE_BUNDLE_ROOT
+    / "skills"
+    / "ceratops-repo-lifecycle"
+    / "references"
+    / "schemas"
+    / "deploy-contract.schema.json"
+)
+DEPLOY_SCHEMA = (
+    SOURCE_DEPLOY_SCHEMA
+    if SOURCE_DEPLOY_SCHEMA.is_file()
+    else INSTALLED_DEPLOY_SCHEMA
 )
 SKILL_DETERMINISTIC_CONTRACT = pathlib.Path("skills/ceratops-skill-lifecycle/references/contracts/skill-deterministic-contract.json")
 SKILL_NONDETERMINISTIC_CONTRACT = pathlib.Path("skills/ceratops-skill-lifecycle/references/contracts/skill-nondeterministic-contract.json")
@@ -420,6 +433,8 @@ def check_deployment_contract(
     required_payloads = {
         str(DEPLOY_TEMPLATE.relative_to(ROOT)).replace("\\", "/"),
         "skills/sections/*.md",
+        "skills/ceratops-repo-lifecycle/references/schemas/"
+        "deploy-contract.schema.json",
     }
     if not isinstance(lifecycle_payloads, list):
         errors.append(

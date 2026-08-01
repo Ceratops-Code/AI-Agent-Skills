@@ -20,11 +20,21 @@ MANIFEST_NAME = ".runtime-manifest.json"
 RUNTIME_MANIFEST_SCHEMA = "ceratops-runtime-skill.v3"
 REQUIRED_BUNDLE_PATHS = (
     pathlib.Path("scripts/fast-change.py"),
+    pathlib.Path("scripts/materialize-compatible-repo.py"),
     pathlib.Path("scripts/runtime/install-managed-skills.py"),
     pathlib.Path("scripts/runtime/managed_runtime_builder.py"),
     pathlib.Path("scripts/runtime/synchronize-installers.py"),
     pathlib.Path("scripts/skills-consistency-source-validator.py"),
     pathlib.Path("scripts/templates/install-skills-template.py"),
+    pathlib.Path("scripts/templates/skill-sections-template.json"),
+)
+REQUIRED_INSTALLED_PAYLOAD_PATHS = (
+    pathlib.Path("skills/sections/core.md"),
+    pathlib.Path("skills/sections/multi-action-skill.md"),
+    pathlib.Path(
+        "skills/ceratops-repo-lifecycle/references/schemas/"
+        "deploy-contract.schema.json"
+    ),
 )
 
 
@@ -51,6 +61,15 @@ def bundle_files_present(bundle_root: pathlib.Path) -> bool:
     return all((bundle_root / relative).is_file() for relative in REQUIRED_BUNDLE_PATHS)
 
 
+def installed_payloads_present(bundle_root: pathlib.Path) -> bool:
+    """Check runtime-only canonical inputs required by compatibility helpers."""
+
+    return all(
+        (bundle_root / relative).is_file()
+        for relative in REQUIRED_INSTALLED_PAYLOAD_PATHS
+    )
+
+
 def installed_bundle_supported(bundle_root: pathlib.Path, installer_version: int) -> bool:
     """Check installed identity, schema, helper payload, and version support."""
 
@@ -66,6 +85,7 @@ def installed_bundle_supported(bundle_root: pathlib.Path, installer_version: int
         and not isinstance(manifest_installer_version, bool)
         and manifest_installer_version >= installer_version
         and bundle_files_present(bundle_root)
+        and installed_payloads_present(bundle_root)
     )
 
 
