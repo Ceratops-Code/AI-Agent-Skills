@@ -126,9 +126,9 @@ def write_json(payload: dict[str, Any], *, compact: bool = False) -> None:
         )
     else:
         serialized = json.dumps(sanitized_payload, indent=2, sort_keys=True)
-    # CodeQL cannot infer the custom recursive sanitizer. The adjacent
-    # regression test verifies both output modes before this single sink.
-    sys.stdout.write(serialized)  # codeql[py/clear-text-logging-sensitive-data]
+    # The recursive sanitizer is the security boundary. The adjacent regression
+    # test verifies both output modes before this single stdout sink.
+    sys.stdout.write(serialized)
     sys.stdout.write("\n")
 
 
