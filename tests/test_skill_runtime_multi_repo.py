@@ -1673,6 +1673,11 @@ def test_repository_ship_late_pending_work_reports_remote_mutation(
     )
     scope = repo / "scope.json" if relative_scope else tmp_path / "scope.json"
     scope_argument = pathlib.Path("scope.json") if relative_scope else scope
+    scope.write_text(
+        json.dumps({"source_branches": ["selected"]}),
+        encoding="utf-8",
+        newline="\n",
+    )
     shipped = {
         "status": "shipped",
         "repository": "example/repository",
@@ -1719,6 +1724,9 @@ def test_repository_ship_late_pending_work_reports_remote_mutation(
     loaded = runpy.run_path(str(SHIP_REPOSITORY))
     ship_repository = loaded["ship_repository"]
     ship_repository.__globals__["_run_json"] = run_json
+    ship_repository.__globals__["_branch_worktree"] = (
+        lambda repo_root, branch: None
+    )
     args = argparse.Namespace(
         repo_root=repo,
         repo="example/repository",
@@ -1840,6 +1848,55 @@ def test_repository_ship_finalization_runs_outside_selected_worktree(
         ("run", (command, repo)),
         ("chdir", original_directory),
     ]
+
+
+def test_repository_ship_blocks_selected_worktree_caller_before_remote_process(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loaded = runpy.run_path(str(SHIP_REPOSITORY))
+    repo = tmp_path / "repo"
+    selected = tmp_path / "worktrees" / "repo" / "thread"
+    selected.mkdir(parents=True)
+    repo.mkdir()
+    scope = tmp_path / "scope.json"
+    scope.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "target_branch": "release/local",
+                "target_commit": "a" * 40,
+                "source_branches": ["selected"],
+            }
+        ),
+        encoding="utf-8",
+        newline="\n",
+    )
+    child_calls: list[list[str]] = []
+
+    def branch_worktree(repo_root: pathlib.Path, branch: str) -> pathlib.Path:
+        assert repo_root == repo
+        assert branch == "selected"
+        return selected
+
+    def run_json(command: list[str]) -> tuple[int, dict[str, Any]]:
+        child_calls.append(command)
+        return 0, {}
+
+    ship_repository = loaded["ship_repository"]
+    ship_repository.__globals__["_branch_worktree"] = branch_worktree
+    ship_repository.__globals__["_run_json"] = run_json
+    monkeypatch.chdir(selected)
+
+    with pytest.raises(
+        loaded["RepositoryShipError"],
+        match="outside selected worktree",
+    ):
+        ship_repository(
+            argparse.Namespace(repo_root=repo, pending_work_scope=scope)
+        )
+
+    assert child_calls == []
 
 
 def run_pending_work(

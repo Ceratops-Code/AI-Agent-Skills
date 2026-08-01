@@ -80,6 +80,65 @@ def _resolve_pending_scope(
     return (scope if scope.is_absolute() else repo_root / scope).resolve()
 
 
+def _branch_worktree(repo_root: pathlib.Path, branch: str) -> pathlib.Path | None:
+    """Return the registered worktree for one selected source branch."""
+
+    result = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repo_root),
+            "for-each-ref",
+            "--format=%(worktreepath)",
+            f"refs/heads/{branch}",
+        ],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode:
+        raise RepositoryShipError(f"Could not locate selected branch {branch!r}.")
+    raw = result.stdout.strip()
+    return pathlib.Path(raw).resolve() if raw else None
+
+
+def _require_cleanup_safe_caller(
+    repo_root: pathlib.Path, scope: pathlib.Path | None
+) -> None:
+    """Block publication when the parent shell pins a selected worktree.
+
+    A child process cannot change its parent shell's working directory. On
+    Windows that shell would prevent finalization from deleting the worktree.
+    """
+
+    if scope is None:
+        return
+    try:
+        value = json.loads(scope.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RepositoryShipError(f"Could not read pending-work scope: {exc}") from exc
+    branches = value.get("source_branches") if isinstance(value, dict) else None
+    if not isinstance(branches, list) or not all(
+        isinstance(branch, str) and branch for branch in branches
+    ):
+        raise RepositoryShipError("Pending-work scope has invalid source branches.")
+
+    caller = pathlib.Path.cwd().resolve()
+    for branch in branches:
+        worktree = _branch_worktree(repo_root, branch)
+        if worktree is None:
+            continue
+        try:
+            caller.relative_to(worktree)
+        except ValueError:
+            continue
+        raise RepositoryShipError(
+            "Run ship-repository.py from outside selected worktree "
+            f"{branch!r} so finalization can remove it."
+        )
+
+
 def _deployment_identity(
     repo_root: pathlib.Path,
     *,
@@ -243,6 +302,7 @@ def ship_repository(args: argparse.Namespace) -> dict[str, object]:
     repo_root = args.repo_root.expanduser().resolve(strict=True)
     pending_scope = _resolve_pending_scope(repo_root, args.pending_work_scope)
     args.pending_work_scope = pending_scope
+    _require_cleanup_safe_caller(repo_root, pending_scope)
     ship_code, shipped = _run_json(_ship_command(args, repo_root))
     if ship_code == 2:
         return shipped
