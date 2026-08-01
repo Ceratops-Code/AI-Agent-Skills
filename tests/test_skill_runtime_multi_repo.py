@@ -927,6 +927,85 @@ def merged_pr_state(head: str) -> str:
     )
 
 
+@pytest.mark.parametrize("enabled", [True, False])
+def test_read_admin_enforcement_preserves_boolean_state(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    enabled: bool,
+) -> None:
+    merge = load_pr_workflow_module(monkeypatch, "merge")
+    monkeypatch.setattr(
+        merge,
+        "require_output",
+        lambda command, *, cwd: json.dumps({"enabled": enabled}),
+    )
+
+    assert merge._read_admin_enforcement("endpoint", cwd=tmp_path) is enabled
+
+
+def test_private_free_plan_limit_skips_admin_protection_mutation(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    merge = load_pr_workflow_module(monkeypatch, "merge")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    head = "a" * 40
+    commands: list[tuple[str, ...]] = []
+
+    def require_output(command: list[str], *, cwd: pathlib.Path) -> str:
+        commands.append(tuple(command))
+        if command[:2] == ["gh", "api"]:
+            raise merge.CommandError(
+                "gh api failed\n"
+                "Upgrade to GitHub Pro or make this repository public "
+                "to enable this feature. (HTTP 403)"
+            )
+        if command[:3] == ["gh", "pr", "view"]:
+            return merged_pr_state(head)
+        raise AssertionError(command)
+
+    def require_success(command: list[str], *, cwd: pathlib.Path) -> None:
+        commands.append(tuple(command))
+        if command[:3] != ["gh", "pr", "merge"]:
+            raise AssertionError(command)
+
+    monkeypatch.setattr(merge, "require_output", require_output)
+    monkeypatch.setattr(merge, "require_success", require_success)
+
+    result = merge.merge_verified_pr(
+        merge_args(repo, admin=True),
+        expected_head=head,
+        readiness_summary={
+            "base": "main",
+            "head_oid": head,
+            "review_required": True,
+        },
+        recover_checkpoints=False,
+    )
+
+    assert result["status"] == "merged"
+    assert not any(
+        command[:2] == ("gh", "api") and "--method" in command
+        for command in commands
+    )
+
+
+def test_read_admin_enforcement_rejects_unrelated_forbidden_error(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    merge = load_pr_workflow_module(monkeypatch, "merge")
+
+    def require_output(command: list[str], *, cwd: pathlib.Path) -> str:
+        raise merge.CommandError("Resource not accessible by integration (HTTP 403)")
+
+    monkeypatch.setattr(merge, "require_output", require_output)
+
+    with pytest.raises(merge.CommandError, match="Resource not accessible"):
+        merge._read_admin_enforcement("endpoint", cwd=tmp_path)
+
+
 @pytest.mark.parametrize("initial", [True, False])
 @pytest.mark.parametrize("merge_fails", [False, True])
 def test_admin_enforcement_restores_exact_state_on_every_exit(
