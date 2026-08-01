@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Split installer version 8 into a checkout-only AI-Agent-Skills bootstrap and
+  a self-contained standard-library external-repository installer with no
+  Ceratops runtime dependency, fallback, lifecycle validation, or recovery.
 - Made repository shipping reuse completed `after_ship` work across pending
   cleanup retries, made cleanup progress durable per selected branch, and made
   promotion deployment include prior unpublished release batches.
@@ -39,8 +42,8 @@
   source-anchor enforcement with behavioral and structured-data checks.
 - Moved the live section manifest and sources to
   `skills/skill-sections.json` and `skills/sections/`, added the live
-  `deploy/deploy.yml` contract, and limited `templates/` to reusable section
-  manifest and deployment-contract skeletons.
+  `deploy/deploy.yml` contract, and kept reusable section-manifest and
+  deployment-contract skeletons under repository-lifecycle references.
 - Split health policy into deterministic and non-deterministic contracts for
   GitHub org settings, live GitHub repo settings, repo contents, code comments,
   and external artifact registries.

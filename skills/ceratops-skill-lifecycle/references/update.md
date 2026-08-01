@@ -14,7 +14,8 @@ repo docs, then update the narrowest correct source that exists.
 
 - Existing skills or shared files in scope: `skills/*`,
   `skills/skill-sections.json`, `skills/sections/`,
-  `templates/skill-sections-template.json`, `templates/deploy-template.yml`,
+  `skills/ceratops-repo-lifecycle/references/skill-sections-template.json`,
+  `skills/ceratops-repo-lifecycle/references/deploy-template.yml`,
   `skills/ceratops-skill-lifecycle/scripts/templates/install-skills-template.py`,
   `scripts/install-skills.py`,
   `skills/ceratops-skill-lifecycle/scripts/runtime/managed_runtime_builder.py`,
@@ -99,10 +100,10 @@ Infer missing inputs from current repo state before asking.
 
 #### 4. Run needed checks
 
-- When installer behavior changes, advance the explicit `INSTALLER_VERSION`,
-  update the authoritative template and repository bootstrap together, and run
-  their public CLI behavior tests. Use `--sync-installer-version` only to copy
-  the already-versioned authoritative template into the repository bootstrap.
+- When installer behavior changes, advance the explicit `INSTALLER_VERSION` in
+  both tiers and run their public CLI behavior tests. Keep the source bootstrap
+  checkout-only and the external template self-contained; never copy one tier
+  over the other.
 - If shared section files or `skills/skill-sections.json` changed, run the
   manifest's shared-source check path.
 - Do not run validation solely because skill-local text, metadata, or docs

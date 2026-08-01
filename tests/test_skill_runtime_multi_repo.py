@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import errno
+import importlib
 import json
 import os
 import pathlib
@@ -22,8 +23,14 @@ BOOTSTRAP = ROOT / "scripts" / "install-skills.py"
 LIFECYCLE_SOURCE = ROOT / "skills" / "ceratops-skill-lifecycle"
 REPOSITORY_LIFECYCLE_SOURCE = ROOT / "skills" / "ceratops-repo-lifecycle"
 LIVE_SECTION_MANIFEST = ROOT / "skills" / "skill-sections.json"
-SECTION_MANIFEST_TEMPLATE = ROOT / "templates" / "skill-sections-template.json"
-DEPLOY_CONTRACT_TEMPLATE = ROOT / "templates" / "deploy-template.yml"
+SECTION_MANIFEST_TEMPLATE = (
+    REPOSITORY_LIFECYCLE_SOURCE
+    / "references"
+    / "skill-sections-template.json"
+)
+DEPLOY_CONTRACT_TEMPLATE = (
+    REPOSITORY_LIFECYCLE_SOURCE / "references" / "deploy-template.yml"
+)
 INSTALLER_TEMPLATE = LIFECYCLE_SOURCE / "scripts" / "templates" / "install-skills-template.py"
 INSTALLER_SYNCHRONIZER = LIFECYCLE_SOURCE / "scripts" / "runtime" / "synchronize-installers.py"
 RUNTIME_INSTALLER = LIFECYCLE_SOURCE / "scripts" / "runtime" / "install-managed-skills.py"
@@ -32,11 +39,12 @@ DEPLOY_OPERATION = REPOSITORY_LIFECYCLE_SOURCE / "scripts" / "run-deploy-operati
 PROMOTE_REPOSITORY = REPOSITORY_LIFECYCLE_SOURCE / "scripts" / "promote-repository.py"
 MANAGE_PENDING_WORK = REPOSITORY_LIFECYCLE_SOURCE / "scripts" / "manage-pending-work.py"
 SHIP_REPOSITORY = REPOSITORY_LIFECYCLE_SOURCE / "scripts" / "ship-repository.py"
+PR_WORKFLOW_SCRIPTS = REPOSITORY_LIFECYCLE_SOURCE / "scripts"
 MODEL_CALL_LEDGER = ROOT / "skills" / "ceratops-credit-savings-analysis" / "scripts" / "model-call-ledger.py"
 CLOSURE_SNAPSHOT = ROOT / "skills" / "ceratops-task-lifecycle" / "scripts" / "closure_snapshot.py"
 RUNTIME_MANIFEST = ".runtime-manifest.json"
 RUNTIME_MANIFEST_SCHEMA = "ceratops-runtime-skill.v3"
-INSTALLER_VERSION = 7
+INSTALLER_VERSION = 8
 
 
 def test_model_call_ledger_keeps_full_evidence_out_of_stdout(
@@ -745,6 +753,680 @@ def test_fast_change_rejects_complete_ineligible_or_dirty_scope_before_mutation(
     assert "description: Test" in (
         repo / "skills" / "alpha-tool" / "SKILL.md"
     ).read_text(encoding="utf-8")
+
+
+def load_pr_workflow_module(
+    monkeypatch: pytest.MonkeyPatch, name: str
+) -> Any:
+    """Load one source workflow module without using the installed runtime."""
+
+    monkeypatch.syspath_prepend(str(PR_WORKFLOW_SCRIPTS))
+    return importlib.import_module(f"github_pr_workflow.{name}")
+
+
+def merge_args(
+    repo_root: pathlib.Path,
+    *,
+    admin: bool,
+    auto: bool = False,
+) -> argparse.Namespace:
+    return argparse.Namespace(
+        pr="24",
+        repo_root=repo_root,
+        repo="example/repository",
+        merge_method="merge",
+        admin=admin,
+        auto=auto,
+        delete_branch=False,
+    )
+
+
+def merged_pr_state(head: str) -> str:
+    return json.dumps(
+        {
+            "number": 24,
+            "url": "https://example.invalid/pull/24",
+            "state": "MERGED",
+            "headRefOid": head,
+            "mergedAt": "2026-08-01T00:00:00Z",
+            "mergeCommit": {"oid": "c" * 40},
+        }
+    )
+
+
+@pytest.mark.parametrize("initial", [True, False])
+@pytest.mark.parametrize("merge_fails", [False, True])
+def test_admin_enforcement_restores_exact_state_on_every_exit(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    initial: bool,
+    merge_fails: bool,
+) -> None:
+    merge = load_pr_workflow_module(monkeypatch, "merge")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    checkpoints = tmp_path / "checkpoints"
+    head = "a" * 40
+    state = {"enabled": initial}
+    commands: list[tuple[str, ...]] = []
+
+    def require_output(command: list[str], *, cwd: pathlib.Path) -> str:
+        commands.append(tuple(command))
+        if command[:2] == ["gh", "api"]:
+            return json.dumps({"url": "https://api.invalid", **state})
+        if command[:3] == ["gh", "pr", "view"]:
+            return merged_pr_state(head)
+        raise AssertionError(command)
+
+    def require_success(command: list[str], *, cwd: pathlib.Path) -> None:
+        commands.append(tuple(command))
+        if command[:4] == ["gh", "api", "--method", "DELETE"]:
+            state["enabled"] = False
+            return
+        if command[:4] == ["gh", "api", "--method", "POST"]:
+            state["enabled"] = True
+            return
+        if command[:3] == ["gh", "pr", "merge"]:
+            if merge_fails:
+                raise merge.CommandError("merge failed")
+            return
+        raise AssertionError(command)
+
+    monkeypatch.setattr(merge, "require_output", require_output)
+    monkeypatch.setattr(merge, "require_success", require_success)
+    monkeypatch.setattr(merge, "_checkpoint_directory", lambda _: checkpoints)
+    summary = {
+        "base": "main",
+        "head_oid": head,
+        "review_required": True,
+    }
+
+    if merge_fails:
+        with pytest.raises(merge.CommandError, match="merge failed"):
+            merge.merge_verified_pr(
+                merge_args(repo, admin=True),
+                expected_head=head,
+                readiness_summary=summary,
+                recover_checkpoints=False,
+            )
+    else:
+        result = merge.merge_verified_pr(
+            merge_args(repo, admin=True),
+            expected_head=head,
+            readiness_summary=summary,
+            recover_checkpoints=False,
+        )
+        assert result["status"] == "merged"
+
+    labels = []
+    for command in commands:
+        if command[:2] == ("gh", "api") and "--method" not in command:
+            labels.append("read")
+        elif command[:4] == ("gh", "api", "--method", "DELETE"):
+            labels.append("disable")
+        elif command[:4] == ("gh", "api", "--method", "POST"):
+            labels.append("restore")
+        elif command[:3] == ("gh", "pr", "merge"):
+            labels.append("merge")
+        elif command[:3] == ("gh", "pr", "view"):
+            labels.append("view")
+    expected = ["read"]
+    if initial:
+        expected.append("disable")
+    expected.append("merge")
+    if not merge_fails:
+        expected.append("view")
+    if initial:
+        expected.append("restore")
+    expected.append("read")
+    assert labels == expected
+    assert state["enabled"] is initial
+    assert not list(checkpoints.glob("*.json"))
+    protection_calls = [command for command in commands if command[:2] == ("gh", "api")]
+    assert protection_calls
+    assert all(command[-1].endswith("/protection/enforce_admins") for command in protection_calls)
+
+
+@pytest.mark.parametrize(
+    ("admin", "auto", "review_required"),
+    [(False, False, False), (True, True, True)],
+)
+def test_non_admin_and_auto_merge_never_toggle_protection(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    admin: bool,
+    auto: bool,
+    review_required: bool,
+) -> None:
+    merge = load_pr_workflow_module(monkeypatch, "merge")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    head = "a" * 40
+    commands: list[tuple[str, ...]] = []
+
+    def require_success(command: list[str], *, cwd: pathlib.Path) -> None:
+        commands.append(tuple(command))
+
+    def require_output(command: list[str], *, cwd: pathlib.Path) -> str:
+        commands.append(tuple(command))
+        return merged_pr_state(head)
+
+    monkeypatch.setattr(merge, "require_success", require_success)
+    monkeypatch.setattr(merge, "require_output", require_output)
+    merge.merge_verified_pr(
+        merge_args(repo, admin=admin, auto=auto),
+        expected_head=head,
+        readiness_summary={
+            "base": "main",
+            "head_oid": head,
+            "review_required": review_required,
+        },
+        recover_checkpoints=False,
+    )
+
+    assert not any(command[:2] == ("gh", "api") for command in commands)
+    assert [command[:3] for command in commands] == [
+        ("gh", "pr", "merge"),
+        ("gh", "pr", "view"),
+    ]
+
+
+def test_disable_failure_prevents_merge_and_still_verifies_restore(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    merge = load_pr_workflow_module(monkeypatch, "merge")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    checkpoints = tmp_path / "checkpoints"
+    head = "a" * 40
+    state = {"enabled": True}
+    commands: list[tuple[str, ...]] = []
+
+    def require_output(command: list[str], *, cwd: pathlib.Path) -> str:
+        commands.append(tuple(command))
+        return json.dumps(state)
+
+    def require_success(command: list[str], *, cwd: pathlib.Path) -> None:
+        commands.append(tuple(command))
+        if command[:4] == ["gh", "api", "--method", "DELETE"]:
+            state["enabled"] = False
+            raise merge.CommandError("disable failed")
+        if command[:4] == ["gh", "api", "--method", "POST"]:
+            state["enabled"] = True
+            return
+        raise AssertionError("merge must not be attempted after disable failure")
+
+    monkeypatch.setattr(merge, "require_output", require_output)
+    monkeypatch.setattr(merge, "require_success", require_success)
+    monkeypatch.setattr(merge, "_checkpoint_directory", lambda _: checkpoints)
+
+    with pytest.raises(merge.CommandError, match="disable failed"):
+        merge.merge_verified_pr(
+            merge_args(repo, admin=True),
+            expected_head=head,
+            readiness_summary={
+                "base": "main",
+                "head_oid": head,
+                "review_required": True,
+            },
+            recover_checkpoints=False,
+        )
+
+    assert not any(command[:3] == ("gh", "pr", "merge") for command in commands)
+    assert state["enabled"] is True
+    assert not list(checkpoints.glob("*.json"))
+
+
+def test_restore_failure_is_critical_and_retains_checkpoint(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    merge = load_pr_workflow_module(monkeypatch, "merge")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    checkpoints = tmp_path / "checkpoints"
+    head = "a" * 40
+    state = {"enabled": True}
+
+    def require_output(command: list[str], *, cwd: pathlib.Path) -> str:
+        if command[:2] == ["gh", "api"]:
+            return json.dumps(state)
+        return merged_pr_state(head)
+
+    def require_success(command: list[str], *, cwd: pathlib.Path) -> None:
+        if command[:4] == ["gh", "api", "--method", "DELETE"]:
+            state["enabled"] = False
+            return
+        if command[:4] == ["gh", "api", "--method", "POST"]:
+            raise merge.CommandError("restore failed")
+        if command[:3] == ["gh", "pr", "merge"]:
+            return
+        raise AssertionError(command)
+
+    monkeypatch.setattr(merge, "require_output", require_output)
+    monkeypatch.setattr(merge, "require_success", require_success)
+    monkeypatch.setattr(merge, "_checkpoint_directory", lambda _: checkpoints)
+
+    with pytest.raises(merge.CriticalRestoreError) as raised:
+        merge.merge_verified_pr(
+            merge_args(repo, admin=True),
+            expected_head=head,
+            readiness_summary={
+                "base": "main",
+                "head_oid": head,
+                "review_required": True,
+            },
+            recover_checkpoints=False,
+        )
+
+    payload = raised.value.payload
+    assert payload["status"] == "critical"
+    assert payload["repository"] == "example/repository"
+    assert payload["base_branch"] == "main"
+    assert payload["pr"] == "24"
+    assert payload["head"] == head
+    assert payload["merge_state"] == "MERGED"
+    assert "--method POST" in payload["recovery"]
+    retained = list(checkpoints.glob("*.json"))
+    assert len(retained) == 1
+    assert set(json.loads(retained[0].read_text(encoding="utf-8"))) == {
+        "version",
+        "repository",
+        "base_branch",
+        "pr",
+        "expected_head",
+        "enforce_admins",
+    }
+
+
+def test_interrupted_checkpoint_recovers_before_later_merge(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    merge = load_pr_workflow_module(monkeypatch, "merge")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    checkpoints = tmp_path / "checkpoints"
+    head = "a" * 40
+    checkpoint = merge._checkpoint_document(
+        "example/repository", "release/main", "24", head
+    )
+    monkeypatch.setattr(merge, "_checkpoint_directory", lambda _: checkpoints)
+    path = merge._checkpoint_path(repo, "example/repository", "release/main")
+    merge._write_restore_checkpoint(path, checkpoint)
+    state = {"enabled": False}
+    commands: list[tuple[str, ...]] = []
+
+    def require_output(command: list[str], *, cwd: pathlib.Path) -> str:
+        commands.append(tuple(command))
+        if command[:2] == ["gh", "api"]:
+            return json.dumps(state)
+        return merged_pr_state(head)
+
+    def require_success(command: list[str], *, cwd: pathlib.Path) -> None:
+        commands.append(tuple(command))
+        if command[:4] == ["gh", "api", "--method", "POST"]:
+            state["enabled"] = True
+
+    monkeypatch.setattr(merge, "require_output", require_output)
+    monkeypatch.setattr(merge, "require_success", require_success)
+
+    merge.merge_verified_pr(
+        merge_args(repo, admin=False),
+        expected_head=head,
+    )
+
+    labels = [
+        "api" if command[:2] == ("gh", "api") else command[2]
+        for command in commands
+    ]
+    assert labels == ["api", "api", "api", "merge", "view"]
+    assert "%2F" in commands[0][-1]
+    assert state["enabled"] is True
+    assert not path.exists()
+
+
+def test_admin_restore_checkpoint_is_shared_across_worktrees(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    merge = load_pr_workflow_module(monkeypatch, "merge")
+    repo = tmp_path / "repo"
+    linked = tmp_path / "linked"
+    repo.mkdir()
+    assert run_git(repo, "init", "-b", "main").returncode == 0
+    assert run_git(repo, "config", "user.email", "test@example.invalid").returncode == 0
+    assert run_git(repo, "config", "user.name", "Test Agent").returncode == 0
+    (repo / "README.md").write_text("base\n", encoding="utf-8", newline="\n")
+    assert run_git(repo, "add", "README.md").returncode == 0
+    assert run_git(repo, "commit", "-m", "base").returncode == 0
+    assert run_git(repo, "branch", "linked").returncode == 0
+    assert run_git(repo, "worktree", "add", str(linked), "linked").returncode == 0
+
+    assert merge._checkpoint_directory(repo) == merge._checkpoint_directory(linked)
+
+
+def test_admin_bypass_accepts_only_review_required_readiness(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    merge = load_pr_workflow_module(monkeypatch, "merge")
+    readiness = load_pr_workflow_module(monkeypatch, "readiness")
+    head = "a" * 40
+    summary = {"base": "main", "head_oid": head}
+    review = readiness.Finding(
+        "WARN",
+        "pr.review_decision",
+        "Required review.",
+        actual="REVIEW_REQUIRED",
+    )
+    pending = readiness.Finding(
+        "WARN",
+        "pr.status_checks",
+        "Pending checks.",
+        actual=["CI"],
+    )
+    requested = readiness.Finding(
+        "ERROR",
+        "pr.review_decision",
+        "Changes requested.",
+        actual="CHANGES_REQUESTED",
+    )
+
+    monkeypatch.setattr(
+        merge.readiness,
+        "validate_readiness",
+        lambda *args, **kwargs: (summary, [review]),
+    )
+    accepted = merge._validate_readiness(
+        "24", tmp_path, allow_admin_review_bypass=True
+    )
+    assert accepted["review_required"] is True
+
+    for blocker in (pending, requested):
+        monkeypatch.setattr(
+            merge.readiness,
+            "validate_readiness",
+            lambda *args, blocker=blocker, **kwargs: (
+                summary,
+                [review, blocker],
+            ),
+        )
+        with pytest.raises(merge.WorkflowError, match="PR readiness failed"):
+            merge._validate_readiness(
+                "24", tmp_path, allow_admin_review_bypass=True
+            )
+
+
+def test_merge_pr_runs_all_gates_before_shared_merge(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    merge = load_pr_workflow_module(monkeypatch, "merge")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    head = "a" * 40
+    events: list[str] = []
+
+    monkeypatch.setattr(
+        merge,
+        "restore_unfinished_checkpoints",
+        lambda root: events.append("recover"),
+    )
+
+    def validate(*args: Any, **kwargs: Any) -> dict[str, object]:
+        events.append("readiness")
+        return {
+            "base": "main",
+            "head_oid": head,
+            "review_required": True,
+        }
+
+    monkeypatch.setattr(merge, "_validate_readiness", validate)
+    def codex_gate(*args: Any, **kwargs: Any) -> dict[str, object]:
+        events.append("codex")
+        return {
+            "head_oid": head,
+            "active_codex_thread_count": 0,
+            "unresolved_review_thread_count": 0,
+        }
+
+    monkeypatch.setattr(
+        merge.codex_review,
+        "wait_for_codex_threads",
+        codex_gate,
+    )
+
+    def delegated(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        events.append("merge")
+        assert kwargs["readiness_summary"]["review_required"] is True
+        assert kwargs["recover_checkpoints"] is False
+        return {"status": "merged"}
+
+    monkeypatch.setattr(merge, "merge_verified_pr", delegated)
+    result = merge.merge_pr(
+        argparse.Namespace(
+            **vars(merge_args(repo, admin=True)),
+            expected_head=head,
+            wait_seconds=0,
+            interval_seconds=0,
+        )
+    )
+
+    assert result["status"] == "merged"
+    assert events == ["recover", "readiness", "codex", "readiness", "merge"]
+
+
+def test_unresolved_required_conversation_blocks_before_shared_merge(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    merge = load_pr_workflow_module(monkeypatch, "merge")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    head = "a" * 40
+    monkeypatch.setattr(merge, "restore_unfinished_checkpoints", lambda root: None)
+    monkeypatch.setattr(
+        merge,
+        "_validate_readiness",
+        lambda *args, **kwargs: {
+            "base": "main",
+            "head_oid": head,
+            "review_required": True,
+        },
+    )
+    monkeypatch.setattr(
+        merge.codex_review,
+        "wait_for_codex_threads",
+        lambda *args, **kwargs: {
+            "head_oid": head,
+            "active_codex_thread_count": 0,
+            "unresolved_review_thread_count": 1,
+        },
+    )
+    monkeypatch.setattr(
+        merge.readiness,
+        "review_thread_resolution_required",
+        lambda *args: True,
+    )
+    monkeypatch.setattr(
+        merge,
+        "merge_verified_pr",
+        lambda *args, **kwargs: pytest.fail("merge must remain gated"),
+    )
+
+    with pytest.raises(merge.WorkflowError, match="require resolution"):
+        merge.merge_pr(
+            argparse.Namespace(
+                **vars(merge_args(repo, admin=True)),
+                expected_head=head,
+                wait_seconds=0,
+                interval_seconds=0,
+            )
+        )
+
+
+def test_merge_cli_emits_compact_critical_json(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    merge = load_pr_workflow_module(monkeypatch, "merge")
+    critical = merge.CriticalRestoreError(
+        repository="example/repository",
+        base_branch="main",
+        pr="24",
+        head="a" * 40,
+        merge_state="MERGED",
+        recovery="gh api --method POST endpoint",
+    )
+
+    def fail(args: argparse.Namespace) -> dict[str, Any]:
+        raise critical
+
+    monkeypatch.setattr(merge, "merge_pr", fail)
+    assert merge.main(["--pr", "24"]) == 1
+    output = capsys.readouterr().err.strip()
+    assert json.loads(output)["status"] == "critical"
+    assert '": "' not in output
+    assert '", "' not in output
+
+
+def test_integrated_ship_delegates_admin_semantics_to_merge_owner(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ship = load_pr_workflow_module(monkeypatch, "ship")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    head = "a" * 40
+    checkpoint = tmp_path / "ship-checkpoint.json"
+    events: list[str] = []
+    state = {
+        "phase": "gates_passed",
+        "pr": 24,
+        "url": "https://example.invalid/pull/24",
+        "commit": head,
+        "gate_disposition": "admin_authorized",
+    }
+    ci = {
+        "base": "main",
+        "head_oid": head,
+        "review_required": True,
+    }
+
+    monkeypatch.setattr(
+        ship.merge,
+        "restore_unfinished_checkpoints",
+        lambda root: events.append("recover"),
+    )
+    monkeypatch.setattr(ship, "_repository_name", lambda *args: "example/repository")
+    monkeypatch.setattr(ship, "_resolve_commit", lambda *args: head)
+    monkeypatch.setattr(ship, "_load_pending_work_scope", lambda *args: (None, None))
+    monkeypatch.setattr(
+        ship,
+        "_load_or_create_checkpoint",
+        lambda *args: (checkpoint, state),
+    )
+    monkeypatch.setattr(
+        ship,
+        "_live_pr",
+        lambda *args: {"state": "OPEN", "headRefOid": head},
+    )
+    monkeypatch.setattr(
+        ship,
+        "run_parallel_gates",
+        lambda *args, **kwargs: {
+            "disposition": "admin_authorized",
+            "ci": ci,
+            "codex": {"active_threads": 0, "unresolved_threads": 0},
+        },
+    )
+    monkeypatch.setattr(ship, "_write_checkpoint", lambda *args: None)
+    monkeypatch.setattr(ship.sync, "sync_main", lambda args: {"head": "b" * 40})
+    monkeypatch.setattr(ship, "_remove_completed_pr_checkpoints", lambda *args: [])
+
+    def delegated(
+        args: argparse.Namespace,
+        *,
+        expected_head: str,
+        readiness_summary: dict[str, object],
+        recover_checkpoints: bool,
+    ) -> dict[str, Any]:
+        events.append("merge")
+        assert args.admin is True
+        assert args.auto is False
+        assert expected_head == head
+        assert readiness_summary is ci
+        assert recover_checkpoints is False
+        return {
+            "status": "merged",
+            "merged_at": "2026-08-01T00:00:00Z",
+            "merge_commit": "c" * 40,
+        }
+
+    monkeypatch.setattr(ship.merge, "merge_verified_pr", delegated)
+    result = ship.ship(
+        argparse.Namespace(
+            repo_root=repo,
+            repo="example/repository",
+            commit=head,
+            head_branch="release/local",
+            base_branch="main",
+            remote_name="origin",
+            title=None,
+            body=None,
+            merge_method="merge",
+            delete_branch=False,
+            reusable_head=False,
+            pending_work_check=False,
+            pending_work_scope=None,
+            ci_wait_seconds=0,
+            review_wait_seconds=0,
+            interval_seconds=0,
+        )
+    )
+
+    assert result["status"] == "shipped"
+    assert events == ["recover", "merge"]
+
+
+def test_dependency_finalization_delegates_admin_to_shared_merge(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dependency = load_pr_workflow_module(monkeypatch, "dependency_finalization")
+    commands: list[list[str]] = []
+
+    def run_command(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps({"status": "merged", "head": "a" * 40}),
+            stderr="",
+        )
+
+    monkeypatch.setattr(dependency, "run_command", run_command)
+    monkeypatch.setattr(dependency, "merge_helper_directory", lambda: tmp_path)
+    result, error = dependency.merge_pr(
+        "example/repository",
+        24,
+        tmp_path,
+        "merge",
+        expected_head="a" * 40,
+        admin=True,
+        wait_seconds=0,
+        interval_seconds=0,
+    )
+
+    assert error is None
+    assert result == {"status": "merged", "head": "a" * 40}
+    command = commands[0]
+    assert command[1:4] == ["-m", "github_pr_workflow", "merge"]
+    assert "--admin" in command
+    assert command[command.index("--expected-head") + 1] == "a" * 40
+    assert "enforce_admins" not in " ".join(command)
 
 
 def write_deploy_contract(
@@ -1654,6 +2336,116 @@ def test_promote_and_deploy_rejects_operation_created_repository_work(
     assert "dirty" in result["message"].lower()
     assert "ready" in result["message"].lower()
     assert (repo / "generated-by-deploy.txt").is_file()
+
+
+def test_repository_ship_absent_default_contract_is_no_op_and_finalizes(
+    tmp_path: pathlib.Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    scope = tmp_path / "scope.json"
+    shipped = {
+        "status": "shipped",
+        "repository": "example/repository",
+        "commit": "a" * 40,
+        "pr": 24,
+        "url": "https://example.invalid/pull/24",
+        "merge_commit": "c" * 40,
+        "synchronized_head": "b" * 40,
+    }
+    responses: list[tuple[int, dict[str, Any]]] = [
+        (0, shipped),
+        (0, {"status": "ready"}),
+        (0, {"status": "finalized"}),
+    ]
+    commands: list[list[str]] = []
+
+    def run_json(command: list[str]) -> tuple[int, dict[str, Any]]:
+        commands.append(command)
+        return responses[len(commands) - 1]
+
+    loaded = runpy.run_path(str(SHIP_REPOSITORY))
+    ship_repository = loaded["ship_repository"]
+    ship_repository.__globals__["_run_json"] = run_json
+    result = ship_repository(
+        argparse.Namespace(
+            repo_root=repo,
+            repo="example/repository",
+            head_branch="release/local",
+            base_branch="main",
+            remote_name="origin",
+            commit="a" * 40,
+            title=None,
+            body=None,
+            merge_method="merge",
+            pending_work_scope=scope,
+            no_pending_work_check=False,
+            delete_branch=False,
+            reusable_head=True,
+            deploy_contract=pathlib.Path("deploy/deploy.yml"),
+            deploy_operation="after_ship",
+            ci_wait_seconds=1,
+            review_wait_seconds=1,
+            interval_seconds=1,
+        )
+    )
+
+    assert result["deployment"] == {
+        "status": "no_op",
+        "operation": "after_ship",
+        "steps": [],
+        "reason": "deployment_contract_absent",
+    }
+    assert result["finalization"] == {"status": "finalized"}
+    assert len(commands) == 3
+    assert "check" in commands[1]
+    assert "finalize" in commands[2]
+    deploy_runner = str(SHIP_REPOSITORY.parent / "run-deploy-operation.py")
+    assert all(deploy_runner not in command for command in commands)
+
+
+def test_repository_ship_missing_custom_contract_blocks_before_remote_mutation(
+    tmp_path: pathlib.Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    loaded = runpy.run_path(str(SHIP_REPOSITORY))
+    ship_repository = loaded["ship_repository"]
+    commands: list[list[str]] = []
+    def unexpected_run(command: list[str]) -> tuple[int, dict[str, Any]]:
+        commands.append(command)
+        return 0, {}
+
+    ship_repository.__globals__["_run_json"] = unexpected_run
+
+    with pytest.raises(
+        loaded["RepositoryShipError"],
+        match="does not exist before shipping",
+    ):
+        ship_repository(
+            argparse.Namespace(
+                repo_root=repo,
+                repo="example/repository",
+                head_branch="release/local",
+                base_branch="main",
+                remote_name="origin",
+                commit="a" * 40,
+                title=None,
+                body=None,
+                merge_method="merge",
+                pending_work_scope=None,
+                no_pending_work_check=True,
+                delete_branch=False,
+                reusable_head=False,
+                deploy_contract=pathlib.Path("deploy/custom.yml"),
+                deploy_operation="after_ship",
+                ci_wait_seconds=1,
+                review_wait_seconds=1,
+                interval_seconds=1,
+            )
+        )
+
+    assert commands == []
 
 
 @pytest.mark.parametrize("late_phase", ["post_sync", "post_finalize"])
@@ -3065,18 +3857,11 @@ def test_transaction_cleanup_blocker_keeps_new_batch_and_serializes_writers(
     assert isinstance(errors[0], lock_builder["InstallBusy"])
 
 
-def test_bootstrap_prefers_installed_bundle_for_external_repo(tmp_path: pathlib.Path) -> None:
+def test_external_installer_needs_no_ceratops_bundle(tmp_path: pathlib.Path) -> None:
     repo = tmp_path / "compatible"
     codex_home = tmp_path / "codex-home"
     install_root = tmp_path / "installed"
-    installed_bundle = codex_home / "skills" / "ceratops-skill-lifecycle"
     create_compatible_repo(repo, "example/external", ["alpha-tool"])
-    shutil.copytree(LIFECYCLE_SOURCE, installed_bundle)
-    shutil.copytree(
-        REPOSITORY_LIFECYCLE_SOURCE,
-        codex_home / "skills" / "ceratops-repo-lifecycle",
-    )
-    install_bundle_manifest(installed_bundle)
     env = {**os.environ, "CODEX_HOME": str(codex_home)}
 
     result = subprocess.run(
@@ -3098,96 +3883,44 @@ def test_bootstrap_prefers_installed_bundle_for_external_repo(tmp_path: pathlib.
     assert runtime_owner(install_root, "alpha-tool") == "example/external"
 
 
-def test_bootstrap_passes_base_revision_to_one_exact_transaction(
+def test_external_installer_rejects_unresolved_or_malformed_input_without_fallback(
     tmp_path: pathlib.Path,
 ) -> None:
     repo = tmp_path / "compatible"
     codex_home = tmp_path / "codex-home"
     install_root = tmp_path / "installed"
     installed_bundle = codex_home / "skills" / "ceratops-skill-lifecycle"
-    create_compatible_repo(
-        repo,
-        "example/external",
-        ["alpha-tool", "old-tool"],
-    )
+    create_compatible_repo(repo, "example/external", ["alpha-tool"])
     shutil.copytree(LIFECYCLE_SOURCE, installed_bundle)
-    shutil.copytree(
-        REPOSITORY_LIFECYCLE_SOURCE,
-        codex_home / "skills" / "ceratops-repo-lifecycle",
+    (installed_bundle / "scripts" / "runtime" / "resolve-lifecycle-bundle.py").write_text(
+        "raise SystemExit('installed fallback was selected')\n",
+        encoding="utf-8",
+        newline="\n",
     )
-    install_bundle_manifest(installed_bundle)
     environment = {**os.environ, "CODEX_HOME": str(codex_home)}
-    assert run_git(repo, "init", "-b", "main").returncode == 0
-    assert run_git(repo, "config", "user.email", "test@example.invalid").returncode == 0
-    assert run_git(repo, "config", "user.name", "Test Agent").returncode == 0
-    assert run_git(repo, "add", ".").returncode == 0
-    assert run_git(repo, "commit", "-m", "base").returncode == 0
-    base = run_git(repo, "rev-parse", "HEAD").stdout.strip()
-    initial = subprocess.run(
-        [
-            sys.executable,
-            str(repo / "scripts" / "install-skills.py"),
-            "--repo-root",
-            str(repo),
-            "--install-root",
-            str(install_root),
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-        env=environment,
+    manifest_path = repo / "skills" / "skill-sections.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["skills"]["alpha-tool"] = ["missing-section"]
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8", newline="\n")
+    unresolved = subprocess.run(
+        [sys.executable, str(repo / "scripts" / "install-skills.py"), "--repo-root", str(repo), "--install-root", str(install_root)],
+        capture_output=True, text=True, check=False, env=environment,
     )
-    assert initial.returncode == 0, initial.stderr
+    assert unresolved.returncode != 0
+    assert "unresolved section" in unresolved.stderr
+    assert not install_root.exists()
 
-    shutil.rmtree(repo / "skills" / "old-tool")
-    add_skill(repo, "beta-tool")
-    write_manifest(repo, "example/external")
-    assert run_git(repo, "add", "-A").returncode == 0
-    assert run_git(repo, "commit", "-m", "replace skill").returncode == 0
-    deployed = subprocess.run(
-        [
-            sys.executable,
-            str(repo / "scripts" / "install-skills.py"),
-            "--repo-root",
-            str(repo),
-            "--install-root",
-            str(install_root),
-            "--base-revision",
-            base,
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-        env=environment,
+    manifest_path.write_text("[]\n", encoding="utf-8", newline="\n")
+    malformed = subprocess.run(
+        [sys.executable, str(repo / "scripts" / "install-skills.py"), "--repo-root", str(repo), "--install-root", str(install_root)],
+        capture_output=True, text=True, check=False, env=environment,
     )
-
-    assert deployed.returncode == 0, deployed.stderr
-    assert (install_root / "alpha-tool").is_dir()
-    assert (install_root / "beta-tool").is_dir()
-    assert not (install_root / "old-tool").exists()
-    shutil.rmtree(repo / "skills" / "beta-tool")
-    write_manifest(repo, "example/external")
-    explicit_remove = subprocess.run(
-        [
-            sys.executable,
-            str(repo / "scripts" / "install-skills.py"),
-            "--repo-root",
-            str(repo),
-            "--install-root",
-            str(install_root),
-            "--remove-skill",
-            "beta-tool",
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-        env=environment,
-    )
-    assert explicit_remove.returncode == 0, explicit_remove.stderr
-    assert not (install_root / "beta-tool").exists()
+    assert malformed.returncode != 0
+    assert "must contain an object" in malformed.stderr
+    assert "installed fallback was selected" not in malformed.stderr
 
 
-def test_bootstrap_prefers_ceratops_checkout_over_same_version_installed_bundle(
+def test_source_bootstrap_ignores_every_installed_lifecycle_bundle(
     tmp_path: pathlib.Path,
 ) -> None:
     codex_home = tmp_path / "codex-home"
@@ -3254,8 +3987,28 @@ def test_bootstrap_uses_checkout_for_first_install(tmp_path: pathlib.Path) -> No
     assert result.returncode == 0, result.stderr
     assert runtime_owner(install_root, "ceratops-skill-lifecycle") == "Ceratops-Code/AI-Agent-Skills"
 
+    other_checkout = tmp_path / "other-checkout"
+    other_checkout.mkdir()
+    rejected = subprocess.run(
+        [
+            sys.executable,
+            str(BOOTSTRAP),
+            "--repo-root",
+            str(other_checkout),
+            "--install-root",
+            str(tmp_path / "rejected-install"),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+    assert rejected.returncode != 0
+    assert "only installs the AI-Agent-Skills checkout that contains it" in rejected.stderr
+    assert not (tmp_path / "rejected-install").exists()
 
-def test_bootstrap_uses_checkout_resolver_for_outdated_installed_bundle(
+
+def test_external_installer_ignores_stale_broken_installed_bundle(
     tmp_path: pathlib.Path,
 ) -> None:
     codex_home = tmp_path / "codex-home"
@@ -3274,16 +4027,16 @@ def test_bootstrap_uses_checkout_resolver_for_outdated_installed_bundle(
         newline="\n",
     )
 
+    repo = tmp_path / "compatible"
+    create_compatible_repo(repo, "example/external", ["alpha-tool"])
     result = subprocess.run(
         [
             sys.executable,
-            str(BOOTSTRAP),
+            str(repo / "scripts" / "install-skills.py"),
             "--repo-root",
-            str(ROOT),
+            str(repo),
             "--install-root",
             str(install_root),
-            "--skill",
-            "ceratops-skill-lifecycle",
         ],
         capture_output=True,
         text=True,
@@ -3292,7 +4045,7 @@ def test_bootstrap_uses_checkout_resolver_for_outdated_installed_bundle(
     )
 
     assert result.returncode == 0, result.stderr
-    assert runtime_owner(install_root, "ceratops-skill-lifecycle") == "Ceratops-Code/AI-Agent-Skills"
+    assert runtime_owner(install_root, "alpha-tool") == "example/external"
 
 
 def test_runtime_manifest_records_source_profile_and_installer_version(tmp_path: pathlib.Path) -> None:
@@ -3451,28 +4204,21 @@ def test_installer_synchronization_compares_only_version(tmp_path: pathlib.Path)
     assert target.read_bytes() == INSTALLER_TEMPLATE.read_bytes()
 
 
-def test_installer_version_metadata_is_explicit_and_coupled(
+def test_installer_tiers_declare_the_same_explicit_version(
     tmp_path: pathlib.Path,
 ) -> None:
     validator = runpy.run_path(str(VALIDATOR))
     parse_version = validator["installer_version"]
-    synchronize = validator["synchronize_authoritative_installer_version"]
     template = tmp_path / "install-skills-template.py"
-    bootstrap = tmp_path / "install-skills.py"
     template.write_text(
         "INSTALLER_VERSION = 11\nprint('authoritative')\n",
         encoding="utf-8",
         newline="\n",
     )
-    bootstrap.write_text("stale\n", encoding="utf-8", newline="\n")
-    synchronize.__globals__["INSTALLER_TEMPLATE"] = template
-    synchronize.__globals__["BOOTSTRAP_INSTALLER"] = bootstrap
-
-    synchronize()
-    assert bootstrap.read_bytes() == template.read_bytes()
     assert parse_version(template) == 11
     assert parse_version(INSTALLER_TEMPLATE) == INSTALLER_VERSION
     assert parse_version(BOOTSTRAP) == INSTALLER_VERSION
+    assert INSTALLER_TEMPLATE.read_bytes() != BOOTSTRAP.read_bytes()
 
     template.write_text(
         "INSTALLER_VERSION = 11\nINSTALLER_VERSION = 12\n",

@@ -38,8 +38,20 @@ ALLOWED_EXTERNAL_PYTHON_MODULES = {"mypy", "pytest", "yamllint"}
 BOOTSTRAP_INSTALLER = ROOT / "scripts" / "install-skills.py"
 INSTALLER_TEMPLATE = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "templates" / "install-skills-template.py"
 DEPLOY_CONTRACT = ROOT / "deploy" / "deploy.yml"
-DEPLOY_TEMPLATE = ROOT / "templates" / "deploy-template.yml"
-SKILL_SECTIONS_TEMPLATE = ROOT / "templates" / "skill-sections-template.json"
+DEPLOY_TEMPLATE = (
+    ROOT
+    / "skills"
+    / "ceratops-repo-lifecycle"
+    / "references"
+    / "deploy-template.yml"
+)
+SKILL_SECTIONS_TEMPLATE = (
+    ROOT
+    / "skills"
+    / "ceratops-repo-lifecycle"
+    / "references"
+    / "skill-sections-template.json"
+)
 DEPLOY_SCHEMA = (
     VALIDATOR_BUNDLE_ROOT
     / "skills"
@@ -148,40 +160,6 @@ INSTALLER_VERSION_RE = re.compile(
     r"(?P<version>[1-9][0-9]*)[ \t]*(?:#.*)?$",
     re.MULTILINE,
 )
-
-
-def write_coupled_installer_state(changes: Mapping[pathlib.Path, bytes]) -> None:
-    """Write coupled producer outputs and restore all originals after a write failure."""
-
-    originals = {path: path.read_bytes() for path in changes}
-    try:
-        for path, payload in changes.items():
-            path.write_bytes(payload)
-    except OSError as exc:
-        try:
-            for path, payload in originals.items():
-                path.write_bytes(payload)
-        except OSError as rollback_exc:
-            raise RuntimeError("installer-version synchronization failed and rollback was incomplete") from rollback_exc
-        raise RuntimeError("installer-version synchronization failed; original files were restored") from exc
-
-
-def synchronize_authoritative_installer_version() -> None:
-    """Copy the explicit-version authoritative template into the bootstrap."""
-
-    template_bytes = INSTALLER_TEMPLATE.read_bytes()
-    if installer_version(INSTALLER_TEMPLATE) is None:
-        raise ValueError(
-            "authoritative installer template must declare one positive "
-            "INSTALLER_VERSION"
-        )
-    changes = (
-        {BOOTSTRAP_INSTALLER: template_bytes}
-        if BOOTSTRAP_INSTALLER.read_bytes() != template_bytes
-        else {}
-    )
-    if changes:
-        write_coupled_installer_state(changes)
 
 
 def parse_frontmatter(path: pathlib.Path) -> tuple[dict[str, str], str]:
@@ -394,18 +372,19 @@ def check_deployment_contract(
 
     template, template_errors = load_yaml_mapping(
         DEPLOY_TEMPLATE,
-        "templates/deploy-template.yml",
+        "skills/ceratops-repo-lifecycle/references/deploy-template.yml",
     )
     errors.extend(template_errors)
     if template is not None and template != {"version": 1, "operations": {}}:
         errors.append(
-            "templates/deploy-template.yml must be the empty version 1 "
+            "skills/ceratops-repo-lifecycle/references/deploy-template.yml "
+            "must be the empty version 1 "
             "deployment skeleton"
         )
 
     payloads = manifest.get("runtime_payloads")
-    lifecycle_payloads = (
-        payloads.get("ceratops-skill-lifecycle")
+    repository_lifecycle_payloads = (
+        payloads.get("ceratops-repo-lifecycle")
         if isinstance(payloads, dict)
         else None
     )
@@ -413,16 +392,16 @@ def check_deployment_contract(
         str(DEPLOY_TEMPLATE.relative_to(ROOT)).replace("\\", "/"),
         str(SKILL_SECTIONS_TEMPLATE.relative_to(ROOT)).replace("\\", "/"),
     }
-    if not isinstance(lifecycle_payloads, list):
+    if not isinstance(repository_lifecycle_payloads, list):
         errors.append(
-            "runtime_payloads.ceratops-skill-lifecycle must include reusable "
+            "runtime_payloads.ceratops-repo-lifecycle must include reusable "
             "repository templates"
         )
     else:
         for template_path in sorted(required_templates):
-            if template_path not in lifecycle_payloads:
+            if template_path not in repository_lifecycle_payloads:
                 errors.append(
-                    "runtime_payloads.ceratops-skill-lifecycle is missing "
+                    "runtime_payloads.ceratops-repo-lifecycle is missing "
                     f"{template_path}"
                 )
     return errors
@@ -1241,13 +1220,8 @@ def main() -> int:
     parser.add_argument("--repo-root", type=pathlib.Path, help="Source skills repository root.")
     parser.add_argument("--mode", choices=["skill", "sections", "full"], default="full", help="Use skill for selected-skill installation, sections for shared-source changes, or full for source-repository validation.")
     parser.add_argument("--skill", action="append", help="Source skill to validate in skill mode; repeat for multiple skills.")
-    parser.add_argument("--sync-installer-version", action="store_true", help="Deterministically synchronize authoritative installer version state.")
     args = parser.parse_args()
     selected_skill_names = set(args.skill or [])
-    if args.sync_installer_version and args.repo_root is None:
-        parser.error("--sync-installer-version requires --repo-root")
-    if args.sync_installer_version and (args.mode != "full" or selected_skill_names):
-        parser.error("--sync-installer-version cannot be combined with skill or section validation")
     if args.mode == "skill" and not selected_skill_names:
         parser.error("--mode skill requires at least one --skill")
     if args.mode != "skill" and selected_skill_names:
@@ -1262,8 +1236,20 @@ def main() -> int:
         BOOTSTRAP_INSTALLER = ROOT / "scripts" / "install-skills.py"
         INSTALLER_TEMPLATE = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "templates" / "install-skills-template.py"
         DEPLOY_CONTRACT = ROOT / "deploy" / "deploy.yml"
-        DEPLOY_TEMPLATE = ROOT / "templates" / "deploy-template.yml"
-        SKILL_SECTIONS_TEMPLATE = ROOT / "templates" / "skill-sections-template.json"
+        DEPLOY_TEMPLATE = (
+            ROOT
+            / "skills"
+            / "ceratops-repo-lifecycle"
+            / "references"
+            / "deploy-template.yml"
+        )
+        SKILL_SECTIONS_TEMPLATE = (
+            ROOT
+            / "skills"
+            / "ceratops-repo-lifecycle"
+            / "references"
+            / "skill-sections-template.json"
+        )
 
     errors: list[str] = []
     if not SKILLS_DIR.is_dir():
@@ -1279,17 +1265,6 @@ def main() -> int:
         if SKILLS_DIR.is_dir()
         else []
     )
-    if args.sync_installer_version:
-        if profile != PROFILE_CERATOPS:
-            print("--sync-installer-version requires the ceratops validation profile", file=sys.stderr)
-            return 1
-        try:
-            synchronize_authoritative_installer_version()
-        except (OSError, RuntimeError, ValueError) as exc:
-            print(str(exc), file=sys.stderr)
-            return 1
-        print("OK")
-        return 0
     if args.mode == "skill":
         errors.extend(check_selected_skills(manifest, skill_dirs, selected_skill_names, profile))
         if errors:

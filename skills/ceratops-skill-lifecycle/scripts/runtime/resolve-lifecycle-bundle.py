@@ -1,23 +1,16 @@
 #!/usr/bin/env python3
-"""Resolve the lifecycle helper bundle for one repository installation.
-
-The Ceratops source repository uses its complete checkout bundle. Other
-compatible repositories use a schema-compatible installed bundle.
-"""
+"""Resolve the lifecycle helper bundle from the AI-Agent-Skills checkout."""
 
 from __future__ import annotations
 
 import argparse
 import json
-import os
 import pathlib
 import sys
 from collections.abc import Mapping
 
 
 LIFECYCLE_SKILL = "ceratops-skill-lifecycle"
-MANIFEST_NAME = ".runtime-manifest.json"
-RUNTIME_MANIFEST_SCHEMA = "ceratops-runtime-skill.v3"
 REQUIRED_BUNDLE_PATHS = (
     pathlib.Path("scripts/fast-change.py"),
     pathlib.Path("scripts/runtime/install-managed-skills.py"),
@@ -26,13 +19,6 @@ REQUIRED_BUNDLE_PATHS = (
     pathlib.Path("scripts/skills-consistency-source-validator.py"),
     pathlib.Path("scripts/templates/install-skills-template.py"),
 )
-
-
-def codex_skills_root() -> pathlib.Path:
-    """Return the direct personal runtime skills root."""
-
-    codex_home = os.environ.get("CODEX_HOME")
-    return pathlib.Path(codex_home).expanduser() / "skills" if codex_home else pathlib.Path.home() / ".codex" / "skills"
 
 
 def read_json(path: pathlib.Path) -> Mapping[str, object] | None:
@@ -51,24 +37,6 @@ def bundle_files_present(bundle_root: pathlib.Path) -> bool:
     return all((bundle_root / relative).is_file() for relative in REQUIRED_BUNDLE_PATHS)
 
 
-def installed_bundle_supported(bundle_root: pathlib.Path, installer_version: int) -> bool:
-    """Check installed identity, schema, helper payload, and version support."""
-
-    manifest = read_json(bundle_root / MANIFEST_NAME)
-    if manifest is None:
-        return False
-    manifest_installer_version = manifest.get("installer_version")
-    return (
-        manifest.get("schema") == RUNTIME_MANIFEST_SCHEMA
-        and manifest.get("skill") == LIFECYCLE_SKILL
-        and manifest.get("validation_profile") == "ceratops"
-        and isinstance(manifest_installer_version, int)
-        and not isinstance(manifest_installer_version, bool)
-        and manifest_installer_version >= installer_version
-        and bundle_files_present(bundle_root)
-    )
-
-
 def checkout_is_ceratops(repo_root: pathlib.Path) -> bool:
     """Identify the Ceratops source repository from its section manifest."""
 
@@ -77,7 +45,7 @@ def checkout_is_ceratops(repo_root: pathlib.Path) -> bool:
 
 
 def resolve_bundle(repo_root: pathlib.Path, installer_version: int) -> pathlib.Path:
-    """Select the source checkout for Ceratops or an installed bundle elsewhere."""
+    """Select the complete source checkout and reject every other repository."""
 
     checkout = repo_root / "skills" / LIFECYCLE_SKILL
     if checkout_is_ceratops(repo_root):
@@ -87,14 +55,7 @@ def resolve_bundle(repo_root: pathlib.Path, installer_version: int) -> pathlib.P
             "The Ceratops source repository lifecycle bundle is incomplete."
         )
 
-    installed = codex_skills_root() / LIFECYCLE_SKILL
-    if installed_bundle_supported(installed, installer_version):
-        return installed.resolve()
-
-    raise RuntimeError(
-        "The installed ceratops-skill-lifecycle bundle does not support this "
-        "installer version."
-    )
+    raise RuntimeError("The lifecycle resolver only supports the AI-Agent-Skills checkout.")
 
 
 def main() -> int:

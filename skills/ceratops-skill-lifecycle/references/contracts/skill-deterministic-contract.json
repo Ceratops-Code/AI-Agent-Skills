@@ -37,7 +37,7 @@
       "lines": "live structured repository deployment operations"
     },
     {
-      "path": "$AI_AGENT_SKILLS_ROOT/templates/deploy-template.yml",
+      "path": "$AI_AGENT_SKILLS_ROOT/skills/ceratops-repo-lifecycle/references/deploy-template.yml",
       "lines": "reusable deployment-contract skeleton"
     },
     {
@@ -123,10 +123,10 @@
       "category": "runtime",
       "deterministic_evidence": [
         "deploy/deploy.yml",
-        "templates/deploy-template.yml",
+        "skills/ceratops-repo-lifecycle/references/deploy-template.yml",
         "deploy contract schema"
       ],
-      "pass_condition": "The live deployment file validates as version 1 structured operations with argv-array steps and repository-relative working directories; the reusable template remains an empty version 1 skeleton. The ceratops profile declares after_promote with one base_revision parameter and one affected-set installer invocation, declares after_ship with one all-managed installer invocation, and includes both reusable templates in the installed skill-lifecycle payload."
+      "pass_condition": "The live deployment file validates as version 1 structured operations with argv-array steps and repository-relative working directories; the reusable template remains an empty version 1 skeleton. The ceratops profile declares after_promote with one base_revision parameter and one affected-set installer invocation, declares after_ship with one all-managed installer invocation, and includes both reusable templates in the installed repository-lifecycle payload."
     },
     {
       "id": "skill.installer_version_consistency",
@@ -137,7 +137,7 @@
         "installed runtime manifest installer_version",
         "bootstrap installer CLI behavior tests"
       ],
-      "pass_condition": "The authoritative template and repository bootstrap declare the same explicit positive integer INSTALLER_VERSION. An installer behavior change advances that version intentionally and is established through behavior tests, never syntax-tree or hash comparison. Compatible repositories retain same- or higher-version installers and synchronize only missing or lower versions through task worktrees."
+      "pass_condition": "The external installer template and AI-Agent-Skills bootstrap declare the same explicit positive integer INSTALLER_VERSION but implement separate tiers. Behavior tests prove the bootstrap uses only its checkout lifecycle bundle and the standard-library external installer succeeds independently, ignores installed Ceratops bundles, and fails unresolved input without fallback. Compatible repositories retain same- or higher-version installers and synchronize only missing or lower versions through task worktrees."
     },
     {
       "id": "skill.frontmatter_and_layout",

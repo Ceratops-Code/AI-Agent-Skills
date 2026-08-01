@@ -3,8 +3,8 @@
 ## Goal
 
 Ship one staged integration branch through GitHub, synchronize local main,
-recheck selected local work, execute `after_ship`, recheck again, and clean
-only the selected merged source branches and worktrees.
+recheck selected local work, execute or explicitly no-op `after_ship`, recheck
+again, and clean only the selected merged source branches and worktrees.
 
 ## Context
 
@@ -44,27 +44,29 @@ Infer missing values from the checkout, scope file, and live PR before asking.
    mutation.
 3. The delegated GitHub workflow ensures the PR, waits for readiness, CI, and
    Codex review, immediately rereads every gate, and verifies the exact head.
-4. Only after those gates pass, integrated ship invokes the final merge with
-   admin enabled so required-review protection cannot interrupt the authorized
-   release. Admin never bypasses an earlier failed gate.
+4. Only after those gates pass, integrated ship delegates the final exact-head
+   merge to `merge.merge_verified_pr(admin=True)`. It inherits the shared
+   merge action's checkpointed dedicated-endpoint bypass, restoration, read-back,
+   and critical recovery semantics; ship contains no independent toggle logic.
 5. After merge, the helper synchronizes local main and restores a reusable
    integration branch when selected.
-6. It rechecks the exact selected scope before `after_ship`, runs the operation
-   from `deploy/deploy.yml`, rechecks once more, and removes only clean selected
-   worktrees under the expected worktree root plus merged selected branches.
-7. After successful `after_ship`, the helper checkpoints its result against the
-   exact target, operation, and resolved contract before finalization. A retry
-   reuses that result while cleanup remains pending and removes the checkpoint
-   after cleanup succeeds. Deployment operations must still be retry-safe
-   because interruption can occur between an external side effect and its
-   checkpoint.
+6. Before remote mutation, the wrapper classifies deployment. An absent default
+   `deploy/deploy.yml` makes `after_ship` an explicit no-op; a missing custom
+   contract blocks. After synchronization it rechecks the selected scope, runs
+   a declared operation or records the no-op, rechecks, and removes only clean
+   selected worktrees and merged selected branches.
+7. After a declared `after_ship` succeeds, the helper checkpoints its result
+   against the exact target, operation, and resolved contract before
+   finalization. A retry reuses that result while cleanup remains pending and
+   removes the checkpoint after cleanup succeeds. Deployment operations must
+   remain retry-safe across interruption.
 
 ## Done When
 
 ### Completion Gate
 
 - PR publication, all gates, exact-head admin merge, main synchronization, and
-  `after_ship` completed.
+  declared or explicit no-op `after_ship` completed.
 - All enabled pending-work checks passed.
 - Only selected clean merged source work was removed.
 

@@ -72,13 +72,14 @@ Infer the source identity from stable repository evidence before asking.
 
 - Create `skills/sections/core.md` from target-owned behavior required by
   every source skill.
-- Copy the selected template root's `templates/skill-sections-template.json` to
-  `skills/skill-sections.json`, then populate the stable source identity,
+- Copy the selected repository-lifecycle bundle's
+  `references/skill-sections-template.json` to `skills/skill-sections.json`, then
+  populate the stable source identity,
   `ceratops-compatible` profile, section paths, per-skill assignments,
   target-owned maintenance workflows, and portable runtime payloads.
-- Copy the selected template root's `templates/deploy-template.yml` to
-  `deploy/deploy.yml`, then declare only the target repository's supported
-  operations and lifecycle hooks.
+- Copy the selected repository-lifecycle bundle's
+  `references/deploy-template.yml` to `deploy/deploy.yml`, then declare only the
+  target repository's supported operations and lifecycle hooks.
 - Make every source `SKILL.md` delta-only, add or align
   `skills/<name>/agents/openai.yaml`, and align the README Skills table without
   changing skill behavior.
