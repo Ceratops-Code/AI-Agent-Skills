@@ -14,7 +14,7 @@ repo docs, then update the narrowest correct source that exists.
 
 - Existing skills or shared files in scope: `skills/*`,
   `skills/skill-sections.json`, `skills/sections/`,
-  `skills/ceratops-repo-lifecycle/references/skill-sections-template.json`,
+  `skills/ceratops-skill-lifecycle/scripts/templates/skill-sections-template.json`,
   `skills/ceratops-repo-lifecycle/references/deploy-template.yml`,
   `skills/ceratops-skill-lifecycle/scripts/templates/install-skills-template.py`,
   `scripts/install-skills.py`,

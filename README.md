@@ -36,6 +36,7 @@ deploy/
   deploy.yml
 skills/ceratops-repo-lifecycle/references/
   deploy-template.yml
+skills/ceratops-skill-lifecycle/scripts/templates/
   skill-sections-template.json
 ```
 
@@ -86,8 +87,10 @@ without repository deduplication.
 | `scripts/install-skills.py` | Full AI-Agent-Skills bootstrap that always uses this checkout's lifecycle bundle and source validation. |
 | `scripts/validate-repository.py` | Sole full local-and-CI validation owner; captures child output and writes first-failure evidence to a caller-selected file. |
 | `skills/ceratops-skill-lifecycle/scripts/templates/install-skills-template.py` | Authoritative standard-library-only installer copied into compatible repositories as `scripts/install-skills.py`; it only resolves shared sections and copies rendered skills. |
+| `skills/ceratops-skill-lifecycle/scripts/materialize-compatible-repo.py` | Deterministically instantiates a compatible repository's live section manifest, preserves valid target identity and custom assignments, aligns canonical sections and generated markers, then delegates installer synchronization and validation with rollback on caught blockers. |
+| `skills/ceratops-skill-lifecycle/scripts/templates/skill-sections-template.json` | Repository-neutral template for materializing a target repository's live `skills/skill-sections.json`; never a live manifest. |
 | `skills/ceratops-skill-lifecycle/scripts/runtime/install-managed-skills.py` | Classifies explicit, promotion-relative, or all-managed affected sets; owns direct-manifest inventory; and invokes one runtime transaction without source validation. |
-| `skills/ceratops-skill-lifecycle/scripts/runtime/resolve-lifecycle-bundle.py` | Checkout-only lifecycle-bundle resolver used by the AI-Agent-Skills bootstrap. |
+| `skills/ceratops-skill-lifecycle/scripts/runtime/resolve-lifecycle-bundle.py` | Checkout-only resolver that requires the complete lifecycle and compatibility-materialization helper surface from the AI-Agent-Skills source repository. |
 | `skills/ceratops-skill-lifecycle/scripts/runtime/synchronize-installers.py` | Copies the authoritative installer into an approved task worktree only when its parsed version is missing or lower, then runs explicit full source validation. |
 | `skills/ceratops-skill-lifecycle/scripts/runtime/managed_runtime_builder.py` | Stages, activates, rolls back, recovers, and cleans one locked selected-skill runtime transaction. |
 | `skills/ceratops-credit-savings-analysis/scripts/model-call-ledger.py` | Writes sanitized session evidence, emits artifact-free closure inventories, and validates caller classifications against every selected model call. |

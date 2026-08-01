@@ -181,6 +181,22 @@
       "decision": "Update SKILLS-DEPLOY-01 to name the repository-lifecycle-owned deployment template after its relocation without changing its role.",
       "reason": "The owning path moved into ceratops-repo-lifecycle references, so the governing rule must follow the authoritative source directly.",
       "regression": "Keep deploy/deploy.yml as the live executable contract and keep the reusable template non-executable; do not restore the old templates path or an alias."
+    },
+    {
+      "rules": [
+        "SKILLS-SECTIONS-01"
+      ],
+      "decision": "Separate repository-owned live skill-section sources from the lifecycle-owned reusable compatibility template.",
+      "reason": "A reusable template must not carry or govern repository-specific identity, assignments, or live validation state.",
+      "regression": "Preserve live sources under skills/, keep the template in the lifecycle bundle, and reject using that template as a live manifest."
+    },
+    {
+      "rules": [
+        "SKILLS-SECTIONS-01"
+      ],
+      "decision": "Clarify the lifecycle template owner path without splitting one path inside a Markdown code span.",
+      "reason": "The accepted ownership invariant must remain mechanically readable and repository-relative.",
+      "regression": "Preserve live-source ownership, the exact lifecycle template location, and the template-as-live prohibition."
     }
   ]
 }

@@ -42,8 +42,12 @@
   source-anchor enforcement with behavioral and structured-data checks.
 - Moved the live section manifest and sources to
   `skills/skill-sections.json` and `skills/sections/`, added the live
-  `deploy/deploy.yml` contract, and kept reusable section-manifest and
-  deployment-contract skeletons under repository-lifecycle references.
+  `deploy/deploy.yml` contract, moved the reusable section-manifest template
+  into the skill-lifecycle bundle, and kept the reusable deployment-contract
+  skeleton under repository-lifecycle references.
+- Made compatibility materialization preserve target identity and custom
+  section assignments, roll back blocker paths, and run from a self-contained
+  lifecycle-only installed bundle.
 - Split health policy into deterministic and non-deterministic contracts for
   GitHub org settings, live GitHub repo settings, repo contents, code comments,
   and external artifact registries.

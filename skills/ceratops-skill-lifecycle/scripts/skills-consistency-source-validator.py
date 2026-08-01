@@ -24,8 +24,9 @@ import jsonschema
 import yaml
 
 
-VALIDATOR_BUNDLE_ROOT = pathlib.Path(__file__).resolve().parents[3]
-ROOT = VALIDATOR_BUNDLE_ROOT
+LIFECYCLE_BUNDLE_ROOT = pathlib.Path(__file__).resolve().parents[1]
+SOURCE_REPOSITORY_ROOT = pathlib.Path(__file__).resolve().parents[3]
+ROOT = SOURCE_REPOSITORY_ROOT
 SKILLS_DIR = ROOT / "skills"
 README = ROOT / "README.md"
 SECTION_MANIFEST = ROOT / "skills" / "skill-sections.json"
@@ -36,7 +37,7 @@ PROFILE_COMPATIBLE = "ceratops-compatible"
 VALIDATION_PROFILES = {PROFILE_CERATOPS, PROFILE_COMPATIBLE}
 ALLOWED_EXTERNAL_PYTHON_MODULES = {"mypy", "pytest", "yamllint"}
 BOOTSTRAP_INSTALLER = ROOT / "scripts" / "install-skills.py"
-INSTALLER_TEMPLATE = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "templates" / "install-skills-template.py"
+INSTALLER_TEMPLATE = LIFECYCLE_BUNDLE_ROOT / "scripts" / "templates" / "install-skills-template.py"
 DEPLOY_CONTRACT = ROOT / "deploy" / "deploy.yml"
 DEPLOY_TEMPLATE = (
     ROOT
@@ -45,20 +46,26 @@ DEPLOY_TEMPLATE = (
     / "references"
     / "deploy-template.yml"
 )
-SKILL_SECTIONS_TEMPLATE = (
-    ROOT
-    / "skills"
+SKILL_SECTIONS_TEMPLATE = INSTALLER_TEMPLATE.parent / "skill-sections-template.json"
+SOURCE_DEPLOY_SCHEMA = (
+    LIFECYCLE_BUNDLE_ROOT.parent
     / "ceratops-repo-lifecycle"
     / "references"
-    / "skill-sections-template.json"
+    / "schemas"
+    / "deploy-contract.schema.json"
 )
-DEPLOY_SCHEMA = (
-    VALIDATOR_BUNDLE_ROOT
+INSTALLED_DEPLOY_SCHEMA = (
+    LIFECYCLE_BUNDLE_ROOT
     / "skills"
     / "ceratops-repo-lifecycle"
     / "references"
     / "schemas"
     / "deploy-contract.schema.json"
+)
+DEPLOY_SCHEMA = (
+    SOURCE_DEPLOY_SCHEMA
+    if SOURCE_DEPLOY_SCHEMA.is_file()
+    else INSTALLED_DEPLOY_SCHEMA
 )
 SKILL_DETERMINISTIC_CONTRACT = pathlib.Path("skills/ceratops-skill-lifecycle/references/contracts/skill-deterministic-contract.json")
 SKILL_NONDETERMINISTIC_CONTRACT = pathlib.Path("skills/ceratops-skill-lifecycle/references/contracts/skill-nondeterministic-contract.json")
@@ -69,6 +76,14 @@ REQUIRED_CONTRACT_FILES = [
 ]
 SECTIONS_START = "<!-- CERATOPS_SHARED_SECTIONS_START -->"
 SECTIONS_END = "<!-- CERATOPS_SHARED_SECTIONS_END -->"
+REUSABLE_SECTION_TEMPLATE = {
+    "runtime_source_id": "",
+    "validation_profile": PROFILE_COMPATIBLE,
+    "sections": {"core": "skills/sections/core.md"},
+    "maintenance_workflows": {},
+    "runtime_payloads": {},
+    "skills": {},
+}
 
 SKILL_NAME_PATTERN = r"(?![a-z0-9-]*--)[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?"
 NAME_RE = re.compile(rf"^{SKILL_NAME_PATTERN}$")
@@ -267,7 +282,7 @@ def check_deployment_contract(
         json.JSONDecodeError,
         jsonschema.SchemaError,
     ) as exc:
-        schema_label = DEPLOY_SCHEMA.relative_to(VALIDATOR_BUNDLE_ROOT)
+        schema_label = DEPLOY_SCHEMA
         errors.append(f"{schema_label}: invalid deploy contract schema: {exc}")
         return errors
 
@@ -388,22 +403,52 @@ def check_deployment_contract(
         if isinstance(payloads, dict)
         else None
     )
-    required_templates = {
-        str(DEPLOY_TEMPLATE.relative_to(ROOT)).replace("\\", "/"),
-        str(SKILL_SECTIONS_TEMPLATE.relative_to(ROOT)).replace("\\", "/"),
+    lifecycle_payloads = (
+        payloads.get("ceratops-skill-lifecycle")
+        if isinstance(payloads, dict)
+        else None
+    )
+    deploy_template_path = str(DEPLOY_TEMPLATE.relative_to(ROOT)).replace("\\", "/")
+    required_repository_payloads = {deploy_template_path}
+    required_lifecycle_payloads = {
+        deploy_template_path,
+        "skills/sections/*.md",
+        "skills/ceratops-repo-lifecycle/references/schemas/"
+        "deploy-contract.schema.json",
     }
     if not isinstance(repository_lifecycle_payloads, list):
         errors.append(
-            "runtime_payloads.ceratops-repo-lifecycle must include reusable "
-            "repository templates"
+            "runtime_payloads.ceratops-repo-lifecycle must include its "
+            "reusable deployment template"
         )
     else:
-        for template_path in sorted(required_templates):
-            if template_path not in repository_lifecycle_payloads:
+        for payload_path in sorted(required_repository_payloads):
+            if payload_path not in repository_lifecycle_payloads:
                 errors.append(
                     "runtime_payloads.ceratops-repo-lifecycle is missing "
-                    f"{template_path}"
+                    f"{payload_path}"
                 )
+    if not isinstance(lifecycle_payloads, list):
+        errors.append(
+            "runtime_payloads.ceratops-skill-lifecycle must include reusable "
+            "compatibility inputs"
+        )
+    else:
+        for payload_path in sorted(required_lifecycle_payloads):
+            if payload_path not in lifecycle_payloads:
+                errors.append(
+                    "runtime_payloads.ceratops-skill-lifecycle is missing "
+                    f"{payload_path}"
+                )
+    try:
+        section_template = read_json(SKILL_SECTIONS_TEMPLATE)
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        errors.append(f"invalid lifecycle skill-sections template: {exc}")
+    else:
+        if section_template != REUSABLE_SECTION_TEMPLATE:
+            errors.append(
+                "lifecycle skill-sections template must remain repository-neutral"
+            )
     return errors
 
 
@@ -1213,8 +1258,8 @@ def main() -> int:
     """Run selected-skill, section, or full source validation."""
 
     global ROOT, SKILLS_DIR, README, SECTION_MANIFEST, CERATOPS_ICON_SOURCE
-    global BOOTSTRAP_INSTALLER, INSTALLER_TEMPLATE
-    global DEPLOY_CONTRACT, DEPLOY_TEMPLATE, SKILL_SECTIONS_TEMPLATE
+    global BOOTSTRAP_INSTALLER
+    global DEPLOY_CONTRACT, DEPLOY_TEMPLATE
 
     parser = argparse.ArgumentParser(description="Validate Ceratops-compatible skill source and runtime-generation inputs.")
     parser.add_argument("--repo-root", type=pathlib.Path, help="Source skills repository root.")
@@ -1234,7 +1279,6 @@ def main() -> int:
         SECTION_MANIFEST = ROOT / "skills" / "skill-sections.json"
         CERATOPS_ICON_SOURCE = ROOT / "assets" / "ceratops-logo-500.png"
         BOOTSTRAP_INSTALLER = ROOT / "scripts" / "install-skills.py"
-        INSTALLER_TEMPLATE = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "templates" / "install-skills-template.py"
         DEPLOY_CONTRACT = ROOT / "deploy" / "deploy.yml"
         DEPLOY_TEMPLATE = (
             ROOT
@@ -1242,13 +1286,6 @@ def main() -> int:
             / "ceratops-repo-lifecycle"
             / "references"
             / "deploy-template.yml"
-        )
-        SKILL_SECTIONS_TEMPLATE = (
-            ROOT
-            / "skills"
-            / "ceratops-repo-lifecycle"
-            / "references"
-            / "skill-sections-template.json"
         )
 
     errors: list[str] = []
@@ -1258,6 +1295,8 @@ def main() -> int:
         errors.append("missing skills/skill-sections.json")
 
     manifest = load_section_manifest() if SECTION_MANIFEST.is_file() else {"sections": {}, "skills": {}}
+    if SECTION_MANIFEST.is_file() and manifest == REUSABLE_SECTION_TEMPLATE:
+        errors.append("reusable skill-sections template cannot be a live manifest")
     errors.extend(check_repo_manifest_identity(manifest))
     profile = validation_profile(manifest)
     skill_dirs = (

@@ -13,11 +13,13 @@ from collections.abc import Mapping
 LIFECYCLE_SKILL = "ceratops-skill-lifecycle"
 REQUIRED_BUNDLE_PATHS = (
     pathlib.Path("scripts/fast-change.py"),
+    pathlib.Path("scripts/materialize-compatible-repo.py"),
     pathlib.Path("scripts/runtime/install-managed-skills.py"),
     pathlib.Path("scripts/runtime/managed_runtime_builder.py"),
     pathlib.Path("scripts/runtime/synchronize-installers.py"),
     pathlib.Path("scripts/skills-consistency-source-validator.py"),
     pathlib.Path("scripts/templates/install-skills-template.py"),
+    pathlib.Path("scripts/templates/skill-sections-template.json"),
 )
 
 
