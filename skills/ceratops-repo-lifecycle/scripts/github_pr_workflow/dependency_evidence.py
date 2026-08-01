@@ -22,6 +22,13 @@ from .dependency_common import (
     run_command,
 )
 
+GROUPED_BODY_UPDATE_RE = re.compile(
+    r"^Updates `(?P<package>[^`\r\n]+)` from (?P<current>\S+) to "
+    r"(?P<target>\S+)\s*$",
+    re.MULTILINE,
+)
+
+
 def project_check(check: dict[str, Any]) -> dict[str, Any]:
     """Normalize CheckRun and StatusContext objects from gh's rollup."""
 
@@ -168,13 +175,51 @@ def fetch_pr_batch(
     return details, blockers
 
 
-def parse_update(title: str, files: list[dict[str, Any]], alerts: list[dict[str, Any]]) -> dict[str, Any]:
-    match = BUMP_RE.match(title.strip())
-    package = match.group("package") if match else None
-    current = match.group("current") if match else None
-    target = match.group("target") if match else None
-    path_hint = match.group("path") if match else None
-    changed_paths = [str(item.get("path") or "") for item in files]
+def fetch_pr_body(repo: str, number: int, expected_head: str) -> dict[str, Any]:
+    """Fetch exceptional parser input and bind it to the projected PR head."""
+
+    completed = run_command(
+        [
+            "gh",
+            "pr",
+            "view",
+            str(number),
+            "--repo",
+            repo,
+            "--json",
+            "body,headRefOid",
+        ]
+    )
+    if completed.returncode != 0:
+        return {"status": "blocked", "error": compact_error(completed)}
+    try:
+        payload = json.loads(completed.stdout or "{}")
+    except json.JSONDecodeError as exc:
+        return {"status": "blocked", "error": f"invalid JSON: {exc}"}
+    if not isinstance(payload, dict):
+        return {"status": "blocked", "error": "PR body response must be an object"}
+    actual_head = str(payload.get("headRefOid") or "")
+    if not expected_head or actual_head != expected_head:
+        return {
+            "status": "blocked",
+            "error": f"PR body head mismatch: expected {expected_head}, got {actual_head}",
+        }
+    body = payload.get("body")
+    if not isinstance(body, str):
+        return {"status": "blocked", "error": "PR body is unavailable"}
+    return {"status": "ok", "body": body}
+
+
+def build_update(
+    package: str | None,
+    current: str | None,
+    target: str | None,
+    path_hint: str | None,
+    changed_paths: list[str],
+    alerts: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Build one normalized dependency update from trusted parser fields."""
+
     alert = next(
         (
             item
@@ -188,9 +233,15 @@ def parse_update(title: str, files: list[dict[str, Any]], alerts: list[dict[str,
     if not ecosystem:
         if any(path.startswith(".github/workflows/") for path in changed_paths):
             ecosystem = "github-actions"
-        elif any(name in joined for name in ("package.json", "package-lock.json", "yarn.lock", "pnpm-lock")):
+        elif any(
+            name in joined
+            for name in ("package.json", "package-lock.json", "yarn.lock", "pnpm-lock")
+        ):
             ecosystem = "npm"
-        elif any(name in joined for name in ("requirements", "pyproject.toml", "poetry.lock", "uv.lock")):
+        elif any(
+            name in joined
+            for name in ("requirements", "pyproject.toml", "poetry.lock", "uv.lock")
+        ):
             ecosystem = "pip"
     return {
         "package": package,
@@ -200,6 +251,48 @@ def parse_update(title: str, files: list[dict[str, Any]], alerts: list[dict[str,
         "ecosystem": ecosystem or "unknown",
         "update_type": update_type(current, target),
     }
+
+
+def parse_update(title: str, files: list[dict[str, Any]], alerts: list[dict[str, Any]]) -> dict[str, Any]:
+    """Parse the existing single-update Dependabot title contract."""
+
+    match = BUMP_RE.match(title.strip())
+    package = match.group("package") if match else None
+    current = match.group("current") if match else None
+    target = match.group("target") if match else None
+    path_hint = match.group("path") if match else None
+    changed_paths = [str(item.get("path") or "") for item in files]
+    return build_update(package, current, target, path_hint, changed_paths, alerts)
+
+
+def parse_body_updates(
+    body: str,
+    files: list[dict[str, Any]],
+    alerts: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Parse one or more unique exact Dependabot body update records."""
+
+    records: list[tuple[str, str, str]] = []
+    seen: dict[str, tuple[str, str]] = {}
+    for match in GROUPED_BODY_UPDATE_RE.finditer(body):
+        package = match.group("package").strip()
+        current = match.group("current")
+        target = match.group("target")
+        key = package.lower()
+        versions = (current, target)
+        if key in seen:
+            if seen[key] != versions:
+                return []
+            continue
+        seen[key] = versions
+        records.append((package, current, target))
+    if not records:
+        return []
+    changed_paths = [str(item.get("path") or "") for item in files]
+    return [
+        build_update(package, current, target, None, changed_paths, alerts)
+        for package, current, target in records
+    ]
 
 
 def numeric_version(value: str | None) -> tuple[int, ...] | None:
