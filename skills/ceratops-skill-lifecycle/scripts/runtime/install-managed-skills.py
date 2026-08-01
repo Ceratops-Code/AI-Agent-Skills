@@ -45,7 +45,6 @@ GLOBAL_RUNTIME_PATHS = {
     "skills/ceratops-skill-lifecycle/scripts/templates/skill-sections-template.json",
     "skills/ceratops-skill-lifecycle/scripts/runtime/install-managed-skills.py",
     "skills/ceratops-skill-lifecycle/scripts/runtime/managed_runtime_builder.py",
-    "skills/ceratops-skill-lifecycle/scripts/runtime/resolve-lifecycle-bundle.py",
 }
 FULL_SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
 

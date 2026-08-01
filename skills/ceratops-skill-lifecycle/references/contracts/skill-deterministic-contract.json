@@ -137,7 +137,7 @@
         "installed runtime manifest installer_version",
         "bootstrap installer CLI behavior tests"
       ],
-      "pass_condition": "The external installer template and AI-Agent-Skills bootstrap declare the same explicit positive integer INSTALLER_VERSION but implement separate tiers. Behavior tests prove the bootstrap uses only its checkout lifecycle bundle and the standard-library external installer succeeds independently, ignores installed Ceratops bundles, and fails unresolved input without fallback. Compatible repositories retain same- or higher-version installers and synchronize only missing or lower versions through task worktrees."
+      "pass_condition": "The external installer template and AI-Agent-Skills installer declare the same explicit positive integer INSTALLER_VERSION but implement separate tiers. Behavior tests prove AI-Agent-Skills prefers an installed lifecycle runtime, falls back once to its independent checkout installer when that runtime is unavailable or unsuccessful, and fails nonzero when both paths fail. External installers remain standard-library-only, ignore installed Ceratops bundles, and fail unresolved input without fallback. Compatible repositories retain same- or higher-version installers and synchronize only missing or lower versions through task worktrees."
     },
     {
       "id": "skill.frontmatter_and_layout",
@@ -166,7 +166,6 @@
         "skills/sections/*",
         "skills/ceratops-skill-lifecycle/scripts/templates/skill-sections-template.json",
         "skills/ceratops-skill-lifecycle/scripts/materialize-compatible-repo.py",
-        "skills/ceratops-skill-lifecycle/scripts/runtime/resolve-lifecycle-bundle.py",
         "source SKILL.md"
       ],
       "pass_condition": "Every source skill has a manifest assignment including core, source SKILL.md files remain delta-only, assigned shared sections render, and source files do not contain generated runtime shared-section blocks. The reusable template remains repository-neutral and is rejected as a live manifest. Materialization prefers explicit, existing stable, then origin-derived identity; preserves valid target-owned custom sections and assignments; copies canonical sections; removes generated marker blocks; restores exact prior target files after any caught blocker; and works from source or a self-contained supported installed bundle."

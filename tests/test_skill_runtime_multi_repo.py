@@ -30,7 +30,6 @@ DEPLOY_CONTRACT_TEMPLATE = (
 INSTALLER_TEMPLATE = LIFECYCLE_SOURCE / "scripts" / "templates" / "install-skills-template.py"
 INSTALLER_SYNCHRONIZER = LIFECYCLE_SOURCE / "scripts" / "runtime" / "synchronize-installers.py"
 COMPATIBILITY_MATERIALIZER = LIFECYCLE_SOURCE / "scripts" / "materialize-compatible-repo.py"
-LIFECYCLE_RESOLVER = LIFECYCLE_SOURCE / "scripts" / "runtime" / "resolve-lifecycle-bundle.py"
 RUNTIME_INSTALLER = LIFECYCLE_SOURCE / "scripts" / "runtime" / "install-managed-skills.py"
 FAST_CHANGE = LIFECYCLE_SOURCE / "scripts" / "fast-change.py"
 DEPLOY_OPERATION = REPOSITORY_LIFECYCLE_SOURCE / "scripts" / "run-deploy-operation.py"
@@ -4257,8 +4256,8 @@ def test_external_installer_rejects_unresolved_or_malformed_input_without_fallba
     installed_bundle = codex_home / "skills" / "ceratops-skill-lifecycle"
     create_compatible_repo(repo, "example/external", ["alpha-tool"])
     shutil.copytree(LIFECYCLE_SOURCE, installed_bundle)
-    (installed_bundle / "scripts" / "runtime" / "resolve-lifecycle-bundle.py").write_text(
-        "raise SystemExit('installed fallback was selected')\n",
+    (installed_bundle / "scripts" / "runtime" / "install-managed-skills.py").write_text(
+        "raise SystemExit('installed runtime was selected')\n",
         encoding="utf-8",
         newline="\n",
     )
@@ -4282,26 +4281,62 @@ def test_external_installer_rejects_unresolved_or_malformed_input_without_fallba
     )
     assert malformed.returncode != 0
     assert "must contain an object" in malformed.stderr
-    assert "installed fallback was selected" not in malformed.stderr
+    assert "installed runtime was selected" not in malformed.stderr
 
 
-def test_source_bootstrap_ignores_every_installed_lifecycle_bundle(
+def test_source_installer_prefers_installed_lifecycle(
     tmp_path: pathlib.Path,
 ) -> None:
     codex_home = tmp_path / "codex-home"
     install_root = tmp_path / "installed"
     installed_bundle = codex_home / "skills" / "ceratops-skill-lifecycle"
     shutil.copytree(LIFECYCLE_SOURCE, installed_bundle)
-    shutil.copytree(
-        REPOSITORY_LIFECYCLE_SOURCE,
-        codex_home / "skills" / "ceratops-repo-lifecycle",
-    )
     install_bundle_manifest(installed_bundle)
-    installed_validator = (
-        installed_bundle / "scripts" / "skills-consistency-source-validator.py"
+    marker = tmp_path / "runtime-selected.txt"
+    installed_runtime = (
+        installed_bundle / "scripts" / "runtime" / "install-managed-skills.py"
     )
-    installed_validator.write_text(
-        "raise SystemExit('retired references/skill-source-docs.json was requested')\n",
+    installed_runtime.write_text(
+        "import pathlib\n"
+        f"pathlib.Path({str(marker)!r}).write_text('runtime', encoding='utf-8')\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(BOOTSTRAP),
+            "--repo-root",
+            str(ROOT),
+            "--install-root",
+            str(install_root),
+            "--skill",
+            "ceratops-skill-lifecycle",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={**os.environ, "CODEX_HOME": str(codex_home)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert marker.read_text(encoding="utf-8") == "runtime"
+    assert not install_root.exists()
+
+
+def test_source_installer_falls_back_when_installed_lifecycle_fails(
+    tmp_path: pathlib.Path,
+) -> None:
+    codex_home = tmp_path / "codex-home"
+    install_root = tmp_path / "installed"
+    installed_bundle = codex_home / "skills" / "ceratops-skill-lifecycle"
+    shutil.copytree(LIFECYCLE_SOURCE, installed_bundle)
+    installed_runtime = (
+        installed_bundle / "scripts" / "runtime" / "install-managed-skills.py"
+    )
+    installed_runtime.write_text(
+        "raise SystemExit('installed runtime failed')\n",
         encoding="utf-8",
         newline="\n",
     )
@@ -4329,7 +4364,46 @@ def test_source_bootstrap_ignores_every_installed_lifecycle_bundle(
     )
 
 
-def test_bootstrap_uses_checkout_for_first_install(tmp_path: pathlib.Path) -> None:
+def test_source_installer_fails_when_runtime_and_independent_paths_fail(
+    tmp_path: pathlib.Path,
+) -> None:
+    codex_home = tmp_path / "codex-home"
+    installed_bundle = codex_home / "skills" / "ceratops-skill-lifecycle"
+    shutil.copytree(LIFECYCLE_SOURCE, installed_bundle)
+    installed_runtime = (
+        installed_bundle / "scripts" / "runtime" / "install-managed-skills.py"
+    )
+    installed_runtime.write_text(
+        "raise SystemExit('installed runtime failed')\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(BOOTSTRAP),
+            "--repo-root",
+            str(ROOT),
+            "--install-root",
+            str(tmp_path / "installed"),
+            "--skill",
+            "undeclared-skill",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={**os.environ, "CODEX_HOME": str(codex_home)},
+    )
+
+    assert result.returncode != 0
+    assert "Installed lifecycle failed: installed runtime failed" in result.stderr
+    assert "independent installer failed: undeclared skill" in result.stderr
+
+
+def test_source_installer_falls_back_when_lifecycle_is_unavailable(
+    tmp_path: pathlib.Path,
+) -> None:
     codex_home = tmp_path / "empty-codex-home"
     install_root = tmp_path / "installed"
     env = {**os.environ, "CODEX_HOME": str(codex_home)}
@@ -4342,6 +4416,8 @@ def test_bootstrap_uses_checkout_for_first_install(tmp_path: pathlib.Path) -> No
             str(ROOT),
             "--install-root",
             str(install_root),
+            "--base-revision",
+            "unavailable-runtime-falls-back-to-full-install",
         ],
         capture_output=True,
         text=True,
@@ -4417,6 +4493,7 @@ def test_bootstrap_uses_checkout_for_first_install(tmp_path: pathlib.Path) -> No
 def test_lifecycle_only_installed_bundle_materializes_compatible_repo(
     tmp_path: pathlib.Path,
 ) -> None:
+    codex_home = tmp_path / "empty-codex-home"
     install_root = tmp_path / "installed"
     target_repo = tmp_path / "target"
     installed = subprocess.run(
@@ -4433,6 +4510,7 @@ def test_lifecycle_only_installed_bundle_materializes_compatible_repo(
         capture_output=True,
         text=True,
         check=False,
+        env={**os.environ, "CODEX_HOME": str(codex_home)},
     )
     assert installed.returncode == 0, installed.stderr
     create_compatible_repo(target_repo, "stale/source", ["alpha-tool"])
@@ -4477,9 +4555,9 @@ def test_external_installer_ignores_stale_broken_installed_bundle(
         codex_home / "skills" / "ceratops-repo-lifecycle",
     )
     install_bundle_manifest(installed_bundle, installer_version=1)
-    installed_resolver = installed_bundle / "scripts" / "runtime" / "resolve-lifecycle-bundle.py"
-    installed_resolver.write_text(
-        "raise SystemExit('outdated resolver was selected')\n",
+    installed_runtime = installed_bundle / "scripts" / "runtime" / "install-managed-skills.py"
+    installed_runtime.write_text(
+        "raise SystemExit('broken installed runtime was selected')\n",
         encoding="utf-8",
         newline="\n",
     )
