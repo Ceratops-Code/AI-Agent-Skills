@@ -2,8 +2,8 @@
 
 ## Goal
 
-Fast-forward selected committed task branches into one local `release/*`
-branch. Run the repository's `after_promote` deployment operation only for the
+Fast-forward selected committed task branches into `release/local`. Run the
+repository's `after_promote` deployment operation only for the
 `promote-and-deploy` action.
 
 ## Context
@@ -25,7 +25,7 @@ branch. Run the repository's `after_promote` deployment operation only for the
 ### Inputs To Capture
 
 - Repository checkout, selected committed source branches, main branch,
-  release branch, and remote.
+  `release/local`, and remote.
 - Whether the selected action is `promote` or `promote-and-deploy`.
 
 Infer missing branch and checkout inputs from local Git state before asking.
@@ -48,8 +48,8 @@ Infer missing branch and checkout inputs from local Git state before asking.
 5. Retain selected clean source worktrees and branches until terminal shipping.
 
 The helper refreshes the remote, fast-forwards main, reuses an existing local
-release branch without merging main into it, creates a missing release branch
-from main, requires release `HEAD` to be an ancestor of every selected branch,
+`release/local` without merging main into it, creates it from main when missing,
+requires release `HEAD` to be an ancestor of every selected branch,
 runs `git diff --check`, fast-forwards each branch, records the exact generic
 scope, and optionally executes the structured deployment operation. For
 `after_promote`, it offers the merge base of refreshed main and the release-start
@@ -58,14 +58,14 @@ remain in deployment scope. The operation runner supplies it only when the
 selected operation declares that parameter, so compatible parameterless
 operations remain valid.
 Preparation-only requires a clean `main` checkout and exits immediately after
-the release branch is ready, before source preflight, promotion, scope records,
+`release/local` is ready, before source preflight, promotion, scope records,
 or deployment.
 
 ## Done When
 
 ### Completion Gate
 
-- The checkout is clean on the selected release branch.
+- The checkout is clean on `release/local`.
 - Every selected branch is contained in the reported release commit.
 - Deployment ran only when `promote-and-deploy` was selected.
 - The exact pending-work scope is retained for shipping.
@@ -74,7 +74,7 @@ or deployment.
 
 Report only:
 
-- release branch, exact head, and promoted branches
+- `release/local`, exact head, and promoted branches
 - deployment outcome when selected
 - pending-work scope
 - blockers or intentionally retained state

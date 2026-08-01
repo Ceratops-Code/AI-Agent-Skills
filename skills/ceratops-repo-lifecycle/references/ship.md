@@ -19,7 +19,7 @@ again, and clean only the selected merged source branches and worktrees.
 
 ### Inputs To Capture
 
-- Repository checkout, staged head branch, base branch, remote, merge method,
+- Repository checkout, staged `release/local`, base branch, remote, merge method,
   PR title/body, and exact pending-work scope mode.
 - Whether the head is reusable after merge.
 
@@ -29,7 +29,7 @@ Infer missing values from the checkout, scope file, and live PR before asking.
 
 ### Boundaries
 
-- Ship only a clean staged integration or release branch.
+- Ship only clean staged `release/local`.
 - Do not edit source or expand pending-work scope in this action.
 - Keep standalone merge behavior under `merge-pr`; its admin choice is
   unchanged.
@@ -39,6 +39,9 @@ Infer missing values from the checkout, scope file, and live PR before asking.
 1. Run the complete ship helper once with the selected scope mode. The initial
    ship request authorizes its full deterministic workflow; do not request
    another confirmation after gates pass.
+   When it yields a running cell without new output, resume it with a
+   55-second wait; use a shorter wait only when a known completion or failure
+   deadline is sooner.
 2. When pending-work checking is enabled, the helper validates the exact scope
    before the first remote push. A `pending_work` result performs no remote
    mutation.

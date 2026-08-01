@@ -3,14 +3,15 @@
 ## Goal
 
 Apply one exact classified change directly on a clean primary local
-`release/*` checkout, update only its affected runtime skills, and commit once.
+`release/local` checkout, update only its affected runtime skills, and commit
+once.
 Prefer this action whenever its complete scope is eligible.
 
 ## Context
 
 ### Inputs To Capture
 
-- Intended local release checkout and branch.
+- Intended local `release/local` checkout.
 - Exact unified patch and every selected or removed source skill.
 - Classification: `rules-only` or `helper`.
 - Existing pytest node IDs covering every changed helper behavior.
@@ -51,9 +52,9 @@ Infer these inputs from the exact approved change before asking.
 ### Workflow
 
 1. Confirm the complete patch, selected skills, classification, exact existing
-   tests, intended release branch, commit message, and runtime root.
+   tests, `release/local`, commit message, and runtime root.
 2. If the primary checkout is clean on `main`, use repository lifecycle release
-   preparation. If it is already clean on the intended release branch, keep it;
+   preparation. If it is already clean on `release/local`, keep it;
    otherwise stop.
 3. Run the fast-change helper once. It mechanically validates branch, clean
    state, request fields, patch paths, ownership, and installer availability
@@ -92,7 +93,7 @@ Infer these inputs from the exact approved change before asking.
 
 Report only:
 
-- release branch and commit
+- `release/local` and commit
 - affected source and runtime skills
 - Markdown lint, targeted behavior tests, and installation outcome
 - exact escalation or compensation blocker

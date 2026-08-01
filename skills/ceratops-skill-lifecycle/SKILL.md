@@ -63,7 +63,7 @@ Infer missing inputs from the current repo state before asking.
   shared sections and payloads, and copy rendered skills; it must not depend on
   Ceratops runtime installation, validation, fallback, or recovery. Keep the
   AI-Agent-Skills bootstrap separate and checkout-only.
-- Use `fast-change` directly on the verified primary release checkout whenever
+- Use `fast-change` directly on verified primary `release/local` whenever
   its action contract and one-request orchestrator accept the complete intended
   scope. The orchestrator owns patch, repository-declared Markdown lint, exact
   helper tests, targeted installation, commit, and compensation. Use a task

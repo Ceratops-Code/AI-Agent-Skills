@@ -988,7 +988,6 @@
       ],
       "collection": {
         "retained_branch_name_patterns": [
-          "^release/",
           "^runtime/"
         ],
         "ignored_branch_names": [

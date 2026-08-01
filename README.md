@@ -99,7 +99,7 @@ without repository deduplication.
 | `skills/ceratops-governance-lifecycle/scripts/rule_graph.py` | Parses canonical AGENTS rules and rejects structural syntax or rule-local explicit-user override escape clauses. |
 | `skills/ceratops-repo-lifecycle/scripts/github_contract_engine/` | Package CLI for compact local audit snapshots, contract evaluation, shared GitHub API access, sanitized evidence, and evidence-gated CodeQL disposition. |
 | `skills/ceratops-repo-lifecycle/scripts/github_pr_workflow/` | Package CLI for individual PR operations, exact-commit checkpointed shipping, a scoped pending-work pre-push guard, concurrent gates, integrated post-gate admin merge, reusable-branch restoration, and terminal checkpoint cleanup. Standalone merge behavior is unchanged. |
-| `skills/ceratops-repo-lifecycle/scripts/promote-repository.py` | Prepares a clean local `release/*` branch for fast-change, or fast-forwards selected committed task branches and either stops or runs one named deployment operation. |
+| `skills/ceratops-repo-lifecycle/scripts/promote-repository.py` | Prepares `release/local` for fast-change, or fast-forwards selected committed task branches and either stops or runs one named deployment operation. |
 | `skills/ceratops-repo-lifecycle/scripts/manage-pending-work.py` | Records, checks, and progressively finalizes the exact selected branch and worktree scope used by promotion and shipping. |
 | `skills/ceratops-repo-lifecycle/scripts/run-deploy-operation.py` | Validates `deploy/deploy.yml`, resolves its exact declared parameters, and executes one operation as ordered argv steps without a shell. |
 | `skills/ceratops-repo-lifecycle/scripts/ship-repository.py` | Orchestrates scoped pre-push checking, guarded GitHub shipping, main synchronization, a pre-deploy recheck, checkpointed `after_ship`, and resumable selected-source cleanup. |
@@ -120,7 +120,7 @@ exact helper tests when required, targeted installation, staging, commit, and
 compensation.
 
 Promotion and deployment are separate repository actions. `promote` assembles
-the selected branches into `release/*` without deployment;
+the selected branches into `release/local` without deployment;
 `promote-and-deploy` additionally runs the contract's `after_promote`
 operation. `run-operation` executes any explicitly named operation from the
 live contract. The runner never converts prose instructions into commands.
@@ -348,7 +348,7 @@ python .\skills\ceratops-skill-lifecycle\scripts\runtime\install-managed-skills.
 Installed Ceratops skills should be generated from the skills repo checkout: the
 local skills repo checkout used as the input path for the runtime installer.
 The active branch only selects which repo snapshot is installed: synced `main`
-for normal use, or a local `release/*` branch for an active unpublished preview.
+for normal use, or `release/local` for an active unpublished preview.
 After changing the installed source snapshot, rerun `python
 scripts/install-skills.py --repo-root <repo>` to refresh its declared skills.
 When shipping a staged batch, reuse the same `release/local` branch name locally

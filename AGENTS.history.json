@@ -197,6 +197,19 @@
       "decision": "Clarify the lifecycle template owner path without splitting one path inside a Markdown code span.",
       "reason": "The accepted ownership invariant must remain mechanically readable and repository-relative.",
       "regression": "Preserve live-source ownership, the exact lifecycle template location, and the template-as-live prohibition."
+    },
+    {
+      "rules": [
+        "SKILLS-CHECKOUT-01",
+        "SKILLS-FAST-01",
+        "SKILLS-PREVIEW-01",
+        "SKILLS-STAGE-01",
+        "SKILLS-SHIP-01",
+        "SKILLS-BATCH-01"
+      ],
+      "decision": "Narrow the skills repository's sole release-batch identity from arbitrary release/* branches to release/local and require owning helpers to reject alternatives.",
+      "reason": "One canonical release line prevents task-named release branches from becoming reusable or retained release state.",
+      "regression": "Continue allowing main for normal installed-source checkout, keep task work in thread worktrees, and do not ship or fast-change from any branch other than release/local."
     }
   ]
 }

@@ -145,7 +145,7 @@ when the projects root remains ambiguous.
   alert contracts, noisy output, broad refreshes, unnecessary live checks, and
   weak evidence or stopping budgets.
 - Check worktree-root placement, automation ignore coverage, duplicated
-  worktree rules, and task work merged into local `release/*` branches without
+  worktree rules, and task work merged into `release/local` without
   explicit staging or preview intent.
 - Check claim-scope and verification-scope drift, including artifact-specific
   checks or end-to-end validation required beyond changed artifacts and claims.

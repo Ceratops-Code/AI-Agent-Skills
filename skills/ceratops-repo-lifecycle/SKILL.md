@@ -33,7 +33,7 @@ owns its executable deployment behavior in `deploy/deploy.yml`.
 
 - Target repository, checkout, branch, selected source branches, PR, artifact,
   dependency queue, or creation request that identifies the action.
-- Whether promotion must stop after assembling `release/*` or run the
+- Whether promotion must stop after assembling `release/local` or run the
   repository's `after_promote` operation.
 - Whether shipping has a selected pending-work scope or explicitly disables
   that check.
@@ -80,7 +80,7 @@ remotes, manifests, and live repository data before asking.
   `health-audit`, `dependency-maintenance`, or `ensure-pr` for their named
   repository surfaces.
 - Use `promote` when selected committed branches should join a local
-  `release/*` branch without deployment.
+  `release/local` branch without deployment.
 - Use `promote-and-deploy` when the same promotion should run `after_promote`.
 - Use `run-operation` when one named deployment operation is the entire task.
 - Use `ship` for the complete staged-branch PR, gate, merge, main sync,

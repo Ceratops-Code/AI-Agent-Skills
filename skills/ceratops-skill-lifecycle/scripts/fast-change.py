@@ -35,7 +35,7 @@ REQUIRED_ROOT_FIELDS = {
 }
 ROOT_FIELDS = REQUIRED_ROOT_FIELDS | {"install_root"}
 CLASSIFICATIONS = {"rules-only", "helper"}
-RELEASE_BRANCH_RE = re.compile(r"^release/[A-Za-z0-9._/-]+$")
+RELEASE_BRANCH = "release/local"
 PYTEST_NODE_RE = re.compile(r"^tests/[A-Za-z0-9_./-]+\.py::\S+$")
 SKILL_NAME_RE = re.compile(
     r"^(?![a-z0-9-]*--)[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$"
@@ -291,11 +291,8 @@ def classify_request(path: pathlib.Path) -> ChangeSpec:
     install_value = request.get("install_root")
     if not isinstance(repo_value, str) or not repo_value:
         raise DecisionRequired("repo_root must be nonempty text")
-    if (
-        not isinstance(release_branch, str)
-        or RELEASE_BRANCH_RE.fullmatch(release_branch) is None
-    ):
-        raise DecisionRequired("release_branch must name one local release/* branch")
+    if release_branch != RELEASE_BRANCH:
+        raise DecisionRequired(f"release_branch must be {RELEASE_BRANCH}")
     if not isinstance(patch, str):
         raise DecisionRequired("patch must be text")
     if classification not in CLASSIFICATIONS:
