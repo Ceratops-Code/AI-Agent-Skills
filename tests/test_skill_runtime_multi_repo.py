@@ -149,7 +149,17 @@ def test_model_call_ledger_keeps_full_evidence_out_of_stdout(
         check=False,
     )
     assert selected.returncode == 0, selected.stderr
-    assert len(json.loads(selected.stdout)["selected_runs"][0]["calls"]) == 2
+    assert "sentinel-secret" not in selected.stdout
+    selected_summary = json.loads(selected.stdout)
+    assert len(selected_summary["selected_runs"][0]["calls"]) == 2
+    semantic_action = selected_summary["selected_runs"][0]["calls"][0][
+        "semantic_actions"
+    ][0]
+    assert semantic_action == {
+        "kind": "tool",
+        "name": "shell_command",
+        "summary": '{"credential":"<redacted>"}',
+    }
 
 
 def test_model_call_ledger_closure_mode_is_artifact_free(
@@ -166,6 +176,11 @@ def test_model_call_ledger_closure_mode_is_artifact_free(
         / f"rollout-2026-07-26T00-56-15-{thread_id}.jsonl"
     )
     session.parent.mkdir(parents=True)
+    command_secret = "command-secret"
+    custom_secret = "custom-secret"
+    message_secret = "message-secret"
+    private_tool = pathlib.Path.home() / "private" / "tool.py"
+    search_secret = "search-secret"
     rows = [
         {
             "timestamp": "2026-07-25T00:00:00Z",
@@ -173,12 +188,54 @@ def test_model_call_ledger_closure_mode_is_artifact_free(
             "payload": {"turn_id": "turn-1"},
         },
         {
+            "timestamp": "2026-07-25T00:00:00.500Z",
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "assistant",
+                "phase": "commentary",
+                "content": [
+                    {
+                        "type": "output_text",
+                        "text": (
+                            f"Inspect {private_tool} token={message_secret}"
+                        ),
+                    }
+                ],
+            },
+        },
+        {
             "timestamp": "2026-07-25T00:00:01Z",
             "type": "response_item",
             "payload": {
                 "type": "function_call",
                 "name": "shell_command",
-                "arguments": '{"credential":"sentinel-secret"}',
+                "arguments": json.dumps(
+                    {
+                        "credential": "sentinel-secret",
+                        "command": (
+                            f'python "{private_tool}" --token {command_secret}'
+                        ),
+                        "note": "x" * 500,
+                    }
+                ),
+            },
+        },
+        {
+            "timestamp": "2026-07-25T00:00:01.250Z",
+            "type": "response_item",
+            "payload": {
+                "type": "custom_tool_call",
+                "name": "custom_tool",
+                "input": {"password": custom_secret},
+            },
+        },
+        {
+            "timestamp": "2026-07-25T00:00:01.500Z",
+            "type": "response_item",
+            "payload": {
+                "type": "tool_search_call",
+                "arguments": {"q": "topic", "apiKey": search_secret},
             },
         },
         {
@@ -291,6 +348,13 @@ def test_model_call_ledger_closure_mode_is_artifact_free(
 
     assert closure.returncode == 0, closure.stderr
     assert "sentinel-secret" not in closure.stdout
+    for secret in (
+        command_secret,
+        custom_secret,
+        message_secret,
+        search_secret,
+    ):
+        assert secret not in closure.stdout
     summary = json.loads(closure.stdout)
     assert summary["schema"] == "ceratops-model-call-ledger-closure.v1"
     assert summary["totals"]["runs"] == 2
@@ -298,6 +362,50 @@ def test_model_call_ledger_closure_mode_is_artifact_free(
     assert [run["turn_id"] for run in summary["runs"]] == ["turn-1", "turn-2"]
     assert [call["index"] for call in summary["runs"][0]["calls"]] == [1, 2]
     assert "tokens" not in summary["runs"][0]["calls"][0]
+    assert "selected_runs" not in summary
+
+    semantic = subprocess.run(
+        [
+            sys.executable,
+            str(MODEL_CALL_LEDGER),
+            "--closure",
+            "--session",
+            str(session),
+            "--include-run",
+            "turn-1",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert semantic.returncode == 0, semantic.stderr
+    assert "sentinel-secret" not in semantic.stdout
+    for secret in (
+        command_secret,
+        custom_secret,
+        message_secret,
+        search_secret,
+    ):
+        assert secret not in semantic.stdout
+    semantic_summary = json.loads(semantic.stdout)
+    selected_run = semantic_summary["selected_runs"][0]
+    assert selected_run["turn_id"] == "turn-1"
+    selected_actions = selected_run["calls"][0]["actions"]
+    assert [action["name"] for action in selected_actions] == [
+        "commentary",
+        "shell_command",
+        "custom_tool",
+        "tool_search",
+    ]
+    assert all("<redacted>" in action["summary"] for action in selected_actions)
+    selected_action = selected_actions[1]
+    assert selected_action["kind"] == "tool"
+    assert selected_action["name"] == "shell_command"
+    assert "<redacted>" in selected_action["summary"]
+    assert "<user-home>" in selected_action["summary"]
+    assert str(pathlib.Path.home()) not in selected_action["summary"]
+    assert len(selected_action["summary"]) == 240
+    assert selected_action["summary"].endswith("...")
 
     bounded = subprocess.run(
         [
@@ -327,7 +435,19 @@ def test_model_call_ledger_closure_mode_is_artifact_free(
     assert after == before
 
     invalid_cases = [
-        (["--include-run", "turn-1"], "--closure includes every completed run"),
+        (
+            ["--include-run", "missing-turn"],
+            "requested run is outside the completed window: missing-turn",
+        ),
+        (
+            [
+                "--classifications",
+                str(tmp_path / "unused-classifications.json"),
+                "--include-run",
+                "turn-1",
+            ],
+            "--classifications validates every completed run",
+        ),
         (
             ["--evidence-output", str(tmp_path / "unexpected.json")],
             "--closure does not accept --evidence-output",
