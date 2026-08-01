@@ -26,10 +26,12 @@ class RepositoryShipError(RuntimeError):
     """Raised when a delegated lifecycle phase does not complete."""
 
 
-def _run_json(command: list[str]) -> tuple[int, dict[str, Any]]:
+def _run_json(
+    command: list[str], *, cwd: pathlib.Path = SCRIPT_ROOT
+) -> tuple[int, dict[str, Any]]:
     result = subprocess.run(
         command,
-        cwd=SCRIPT_ROOT,
+        cwd=cwd,
         capture_output=True,
         text=True,
         check=False,
@@ -44,10 +46,97 @@ def _run_json(command: list[str]) -> tuple[int, dict[str, Any]]:
     return result.returncode, payload
 
 
+def _run_finalization(
+    command: list[str], *, repo_root: pathlib.Path
+) -> tuple[int, dict[str, Any]]:
+    """Run cleanup outside any selected worktree that it may remove.
+
+    Windows will not delete a directory used as a process working directory, so
+    both this wrapper and the cleanup child must leave the selected worktree.
+    """
+
+    previous_cwd = pathlib.Path.cwd().resolve()
+    os.chdir(repo_root)
+    try:
+        return _run_json(command, cwd=repo_root)
+    finally:
+        if previous_cwd.exists():
+            os.chdir(previous_cwd)
+
+
 def _deployment_checkpoint_path(scope: pathlib.Path) -> pathlib.Path:
     """Return the scope-owned completed-deployment record path."""
 
     return scope.with_suffix(".after-ship.json")
+
+
+def _resolve_pending_scope(
+    repo_root: pathlib.Path, scope: pathlib.Path | None
+) -> pathlib.Path | None:
+    """Bind a caller-relative scope to the repository for every ship phase."""
+
+    if scope is None:
+        return None
+    return (scope if scope.is_absolute() else repo_root / scope).resolve()
+
+
+def _branch_worktree(repo_root: pathlib.Path, branch: str) -> pathlib.Path | None:
+    """Return the registered worktree for one selected source branch."""
+
+    result = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repo_root),
+            "for-each-ref",
+            "--format=%(worktreepath)",
+            f"refs/heads/{branch}",
+        ],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode:
+        raise RepositoryShipError(f"Could not locate selected branch {branch!r}.")
+    raw = result.stdout.strip()
+    return pathlib.Path(raw).resolve() if raw else None
+
+
+def _require_cleanup_safe_caller(
+    repo_root: pathlib.Path, scope: pathlib.Path | None
+) -> None:
+    """Block publication when the parent shell pins a selected worktree.
+
+    A child process cannot change its parent shell's working directory. On
+    Windows that shell would prevent finalization from deleting the worktree.
+    """
+
+    if scope is None:
+        return
+    try:
+        value = json.loads(scope.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RepositoryShipError(f"Could not read pending-work scope: {exc}") from exc
+    branches = value.get("source_branches") if isinstance(value, dict) else None
+    if not isinstance(branches, list) or not all(
+        isinstance(branch, str) and branch for branch in branches
+    ):
+        raise RepositoryShipError("Pending-work scope has invalid source branches.")
+
+    caller = pathlib.Path.cwd().resolve()
+    for branch in branches:
+        worktree = _branch_worktree(repo_root, branch)
+        if worktree is None:
+            continue
+        try:
+            caller.relative_to(worktree)
+        except ValueError:
+            continue
+        raise RepositoryShipError(
+            "Run ship-repository.py from outside selected worktree "
+            f"{branch!r} so finalization can remove it."
+        )
 
 
 def _deployment_identity(
@@ -211,6 +300,9 @@ def ship_repository(args: argparse.Namespace) -> dict[str, object]:
     """Run the complete repository shipping and deployment workflow."""
 
     repo_root = args.repo_root.expanduser().resolve(strict=True)
+    pending_scope = _resolve_pending_scope(repo_root, args.pending_work_scope)
+    args.pending_work_scope = pending_scope
+    _require_cleanup_safe_caller(repo_root, pending_scope)
     ship_code, shipped = _run_json(_ship_command(args, repo_root))
     if ship_code == 2:
         return shipped
@@ -223,7 +315,6 @@ def ship_repository(args: argparse.Namespace) -> dict[str, object]:
     if not isinstance(target_commit, str) or not isinstance(synchronized_head, str):
         raise RepositoryShipError("Shipping result lacks exact commit identity.")
 
-    pending_scope = args.pending_work_scope
     if pending_scope is not None:
         check_code, checked = _run_json(
             _pending_command(
@@ -291,7 +382,7 @@ def ship_repository(args: argparse.Namespace) -> dict[str, object]:
 
     finalized: dict[str, Any] | None = None
     if pending_scope is not None:
-        finalize_code, finalized = _run_json(
+        finalize_code, finalized = _run_finalization(
             _pending_command(
                 "finalize",
                 repo_root=repo_root,
@@ -300,7 +391,8 @@ def ship_repository(args: argparse.Namespace) -> dict[str, object]:
                 target_commit=target_commit,
                 current_branch=args.base_branch,
                 current_commit=synchronized_head,
-            )
+            ),
+            repo_root=repo_root,
         )
         if finalize_code == 2:
             return {
