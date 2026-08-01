@@ -26,10 +26,12 @@ class RepositoryShipError(RuntimeError):
     """Raised when a delegated lifecycle phase does not complete."""
 
 
-def _run_json(command: list[str]) -> tuple[int, dict[str, Any]]:
+def _run_json(
+    command: list[str], *, cwd: pathlib.Path = SCRIPT_ROOT
+) -> tuple[int, dict[str, Any]]:
     result = subprocess.run(
         command,
-        cwd=SCRIPT_ROOT,
+        cwd=cwd,
         capture_output=True,
         text=True,
         check=False,
@@ -42,6 +44,19 @@ def _run_json(command: list[str]) -> tuple[int, dict[str, Any]]:
     if not isinstance(payload, dict):
         raise RepositoryShipError("Lifecycle helper returned a non-object result.")
     return result.returncode, payload
+
+
+def _run_finalization(
+    command: list[str], *, repo_root: pathlib.Path
+) -> tuple[int, dict[str, Any]]:
+    """Run cleanup outside any selected worktree that it may remove.
+
+    Windows will not delete a directory used as a process working directory, so
+    both this wrapper and the cleanup child must leave the selected worktree.
+    """
+
+    os.chdir(repo_root)
+    return _run_json(command, cwd=repo_root)
 
 
 def _deployment_checkpoint_path(scope: pathlib.Path) -> pathlib.Path:
@@ -291,7 +306,7 @@ def ship_repository(args: argparse.Namespace) -> dict[str, object]:
 
     finalized: dict[str, Any] | None = None
     if pending_scope is not None:
-        finalize_code, finalized = _run_json(
+        finalize_code, finalized = _run_finalization(
             _pending_command(
                 "finalize",
                 repo_root=repo_root,
@@ -300,7 +315,8 @@ def ship_repository(args: argparse.Namespace) -> dict[str, object]:
                 target_commit=target_commit,
                 current_branch=args.base_branch,
                 current_commit=synchronized_head,
-            )
+            ),
+            repo_root=repo_root,
         )
         if finalize_code == 2:
             return {

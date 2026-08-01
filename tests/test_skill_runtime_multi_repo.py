@@ -1707,7 +1707,9 @@ def test_repository_ship_late_pending_work_reports_remote_mutation(
     )
     commands: list[list[str]] = []
 
-    def run_json(command: list[str]) -> tuple[int, dict[str, Any]]:
+    def run_json(
+        command: list[str], *, cwd: pathlib.Path | None = None
+    ) -> tuple[int, dict[str, Any]]:
         commands.append(command)
         return responses[len(commands) - 1]
 
@@ -1801,6 +1803,37 @@ def test_repository_ship_rejects_malformed_deployment_checkpoint(
         match="invalid structure",
     ):
         loaded["_read_deployment_checkpoint"](checkpoint, identity)
+
+
+def test_repository_ship_finalization_runs_outside_selected_worktree(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loaded = runpy.run_path(str(SHIP_REPOSITORY))
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    command = ["python", "manage-pending-work.py", "finalize"]
+    events: list[tuple[str, object]] = []
+
+    def change_directory(path: pathlib.Path) -> None:
+        events.append(("chdir", path))
+
+    def run_json(
+        child_command: list[str], *, cwd: pathlib.Path
+    ) -> tuple[int, dict[str, Any]]:
+        events.append(("run", (child_command, cwd)))
+        return 0, {"status": "finalized"}
+
+    monkeypatch.setattr(loaded["os"], "chdir", change_directory)
+    loaded["_run_finalization"].__globals__["_run_json"] = run_json
+
+    result = loaded["_run_finalization"](command, repo_root=repo)
+
+    assert result == (0, {"status": "finalized"})
+    assert events == [
+        ("chdir", repo),
+        ("run", (command, repo)),
+    ]
 
 
 def run_pending_work(
