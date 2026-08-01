@@ -3891,6 +3891,26 @@ def test_bootstrap_uses_checkout_for_first_install(tmp_path: pathlib.Path) -> No
     assert result.returncode == 0, result.stderr
     assert runtime_owner(install_root, "ceratops-skill-lifecycle") == "Ceratops-Code/AI-Agent-Skills"
 
+    other_checkout = tmp_path / "other-checkout"
+    other_checkout.mkdir()
+    rejected = subprocess.run(
+        [
+            sys.executable,
+            str(BOOTSTRAP),
+            "--repo-root",
+            str(other_checkout),
+            "--install-root",
+            str(tmp_path / "rejected-install"),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+    )
+    assert rejected.returncode != 0
+    assert "only installs the AI-Agent-Skills checkout that contains it" in rejected.stderr
+    assert not (tmp_path / "rejected-install").exists()
+
 
 def test_external_installer_ignores_stale_broken_installed_bundle(
     tmp_path: pathlib.Path,

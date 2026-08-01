@@ -14,6 +14,7 @@ LIFECYCLE_SKILL = "ceratops-skill-lifecycle"
 RESOLVER_RELATIVE = pathlib.Path("scripts/runtime/resolve-lifecycle-bundle.py")
 INSTALLER_RELATIVE = pathlib.Path("scripts/runtime/install-managed-skills.py")
 VALIDATOR_RELATIVE = pathlib.Path("scripts/skills-consistency-source-validator.py")
+CHECKOUT_ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 
 def resolver_path(repo_root: pathlib.Path) -> pathlib.Path:
@@ -46,8 +47,13 @@ def main() -> int:
     parser.add_argument("--base-revision", help="Calculate the exact runtime effect since this full Git revision.")
     args = parser.parse_args()
 
-    repo_root = (args.repo_root or pathlib.Path(__file__).resolve().parents[1]).resolve()
+    repo_root = (args.repo_root or CHECKOUT_ROOT).resolve()
     try:
+        if repo_root != CHECKOUT_ROOT:
+            raise RuntimeError(
+                "This bootstrap only installs the AI-Agent-Skills checkout "
+                "that contains it."
+            )
         resolver = resolver_path(repo_root)
         validator = repo_root / "skills" / LIFECYCLE_SKILL / VALIDATOR_RELATIVE
         if not validator.is_file():
