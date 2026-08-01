@@ -137,7 +137,7 @@
         "installed runtime manifest installer_version",
         "bootstrap installer CLI behavior tests"
       ],
-      "pass_condition": "The authoritative template and repository bootstrap declare the same explicit positive integer INSTALLER_VERSION. An installer behavior change advances that version intentionally and is established through behavior tests, never syntax-tree or hash comparison. Compatible repositories retain same- or higher-version installers and synchronize only missing or lower versions through task worktrees."
+      "pass_condition": "The external installer template and AI-Agent-Skills bootstrap declare the same explicit positive integer INSTALLER_VERSION but implement separate tiers. Behavior tests prove the bootstrap uses only its checkout lifecycle bundle and the standard-library external installer succeeds independently, ignores installed Ceratops bundles, and fails unresolved input without fallback. Compatible repositories retain same- or higher-version installers and synchronize only missing or lower versions through task worktrees."
     },
     {
       "id": "skill.frontmatter_and_layout",

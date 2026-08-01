@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Split installer version 8 into a checkout-only AI-Agent-Skills bootstrap and
+  a self-contained standard-library external-repository installer with no
+  Ceratops runtime dependency, fallback, lifecycle validation, or recovery.
 - Made repository shipping reuse completed `after_ship` work across pending
   cleanup retries, made cleanup progress durable per selected branch, and made
   promotion deployment include prior unpublished release batches.

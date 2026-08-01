@@ -42,7 +42,7 @@ MODEL_CALL_LEDGER = ROOT / "skills" / "ceratops-credit-savings-analysis" / "scri
 CLOSURE_SNAPSHOT = ROOT / "skills" / "ceratops-task-lifecycle" / "scripts" / "closure_snapshot.py"
 RUNTIME_MANIFEST = ".runtime-manifest.json"
 RUNTIME_MANIFEST_SCHEMA = "ceratops-runtime-skill.v3"
-INSTALLER_VERSION = 7
+INSTALLER_VERSION = 8
 
 
 def test_model_call_ledger_keeps_full_evidence_out_of_stdout(
@@ -2975,18 +2975,11 @@ def test_transaction_cleanup_blocker_keeps_new_batch_and_serializes_writers(
     assert isinstance(errors[0], lock_builder["InstallBusy"])
 
 
-def test_bootstrap_prefers_installed_bundle_for_external_repo(tmp_path: pathlib.Path) -> None:
+def test_external_installer_needs_no_ceratops_bundle(tmp_path: pathlib.Path) -> None:
     repo = tmp_path / "compatible"
     codex_home = tmp_path / "codex-home"
     install_root = tmp_path / "installed"
-    installed_bundle = codex_home / "skills" / "ceratops-skill-lifecycle"
     create_compatible_repo(repo, "example/external", ["alpha-tool"])
-    shutil.copytree(LIFECYCLE_SOURCE, installed_bundle)
-    shutil.copytree(
-        REPOSITORY_LIFECYCLE_SOURCE,
-        codex_home / "skills" / "ceratops-repo-lifecycle",
-    )
-    install_bundle_manifest(installed_bundle)
     env = {**os.environ, "CODEX_HOME": str(codex_home)}
 
     result = subprocess.run(
@@ -3008,96 +3001,44 @@ def test_bootstrap_prefers_installed_bundle_for_external_repo(tmp_path: pathlib.
     assert runtime_owner(install_root, "alpha-tool") == "example/external"
 
 
-def test_bootstrap_passes_base_revision_to_one_exact_transaction(
+def test_external_installer_rejects_unresolved_or_malformed_input_without_fallback(
     tmp_path: pathlib.Path,
 ) -> None:
     repo = tmp_path / "compatible"
     codex_home = tmp_path / "codex-home"
     install_root = tmp_path / "installed"
     installed_bundle = codex_home / "skills" / "ceratops-skill-lifecycle"
-    create_compatible_repo(
-        repo,
-        "example/external",
-        ["alpha-tool", "old-tool"],
-    )
+    create_compatible_repo(repo, "example/external", ["alpha-tool"])
     shutil.copytree(LIFECYCLE_SOURCE, installed_bundle)
-    shutil.copytree(
-        REPOSITORY_LIFECYCLE_SOURCE,
-        codex_home / "skills" / "ceratops-repo-lifecycle",
+    (installed_bundle / "scripts" / "runtime" / "resolve-lifecycle-bundle.py").write_text(
+        "raise SystemExit('installed fallback was selected')\n",
+        encoding="utf-8",
+        newline="\n",
     )
-    install_bundle_manifest(installed_bundle)
     environment = {**os.environ, "CODEX_HOME": str(codex_home)}
-    assert run_git(repo, "init", "-b", "main").returncode == 0
-    assert run_git(repo, "config", "user.email", "test@example.invalid").returncode == 0
-    assert run_git(repo, "config", "user.name", "Test Agent").returncode == 0
-    assert run_git(repo, "add", ".").returncode == 0
-    assert run_git(repo, "commit", "-m", "base").returncode == 0
-    base = run_git(repo, "rev-parse", "HEAD").stdout.strip()
-    initial = subprocess.run(
-        [
-            sys.executable,
-            str(repo / "scripts" / "install-skills.py"),
-            "--repo-root",
-            str(repo),
-            "--install-root",
-            str(install_root),
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-        env=environment,
+    manifest_path = repo / "skills" / "skill-sections.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["skills"]["alpha-tool"] = ["missing-section"]
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8", newline="\n")
+    unresolved = subprocess.run(
+        [sys.executable, str(repo / "scripts" / "install-skills.py"), "--repo-root", str(repo), "--install-root", str(install_root)],
+        capture_output=True, text=True, check=False, env=environment,
     )
-    assert initial.returncode == 0, initial.stderr
+    assert unresolved.returncode != 0
+    assert "unresolved section" in unresolved.stderr
+    assert not install_root.exists()
 
-    shutil.rmtree(repo / "skills" / "old-tool")
-    add_skill(repo, "beta-tool")
-    write_manifest(repo, "example/external")
-    assert run_git(repo, "add", "-A").returncode == 0
-    assert run_git(repo, "commit", "-m", "replace skill").returncode == 0
-    deployed = subprocess.run(
-        [
-            sys.executable,
-            str(repo / "scripts" / "install-skills.py"),
-            "--repo-root",
-            str(repo),
-            "--install-root",
-            str(install_root),
-            "--base-revision",
-            base,
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-        env=environment,
+    manifest_path.write_text("[]\n", encoding="utf-8", newline="\n")
+    malformed = subprocess.run(
+        [sys.executable, str(repo / "scripts" / "install-skills.py"), "--repo-root", str(repo), "--install-root", str(install_root)],
+        capture_output=True, text=True, check=False, env=environment,
     )
-
-    assert deployed.returncode == 0, deployed.stderr
-    assert (install_root / "alpha-tool").is_dir()
-    assert (install_root / "beta-tool").is_dir()
-    assert not (install_root / "old-tool").exists()
-    shutil.rmtree(repo / "skills" / "beta-tool")
-    write_manifest(repo, "example/external")
-    explicit_remove = subprocess.run(
-        [
-            sys.executable,
-            str(repo / "scripts" / "install-skills.py"),
-            "--repo-root",
-            str(repo),
-            "--install-root",
-            str(install_root),
-            "--remove-skill",
-            "beta-tool",
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-        env=environment,
-    )
-    assert explicit_remove.returncode == 0, explicit_remove.stderr
-    assert not (install_root / "beta-tool").exists()
+    assert malformed.returncode != 0
+    assert "must contain an object" in malformed.stderr
+    assert "installed fallback was selected" not in malformed.stderr
 
 
-def test_bootstrap_prefers_ceratops_checkout_over_same_version_installed_bundle(
+def test_source_bootstrap_ignores_every_installed_lifecycle_bundle(
     tmp_path: pathlib.Path,
 ) -> None:
     codex_home = tmp_path / "codex-home"
@@ -3165,7 +3106,7 @@ def test_bootstrap_uses_checkout_for_first_install(tmp_path: pathlib.Path) -> No
     assert runtime_owner(install_root, "ceratops-skill-lifecycle") == "Ceratops-Code/AI-Agent-Skills"
 
 
-def test_bootstrap_uses_checkout_resolver_for_outdated_installed_bundle(
+def test_external_installer_ignores_stale_broken_installed_bundle(
     tmp_path: pathlib.Path,
 ) -> None:
     codex_home = tmp_path / "codex-home"
@@ -3184,16 +3125,16 @@ def test_bootstrap_uses_checkout_resolver_for_outdated_installed_bundle(
         newline="\n",
     )
 
+    repo = tmp_path / "compatible"
+    create_compatible_repo(repo, "example/external", ["alpha-tool"])
     result = subprocess.run(
         [
             sys.executable,
-            str(BOOTSTRAP),
+            str(repo / "scripts" / "install-skills.py"),
             "--repo-root",
-            str(ROOT),
+            str(repo),
             "--install-root",
             str(install_root),
-            "--skill",
-            "ceratops-skill-lifecycle",
         ],
         capture_output=True,
         text=True,
@@ -3202,7 +3143,7 @@ def test_bootstrap_uses_checkout_resolver_for_outdated_installed_bundle(
     )
 
     assert result.returncode == 0, result.stderr
-    assert runtime_owner(install_root, "ceratops-skill-lifecycle") == "Ceratops-Code/AI-Agent-Skills"
+    assert runtime_owner(install_root, "alpha-tool") == "example/external"
 
 
 def test_runtime_manifest_records_source_profile_and_installer_version(tmp_path: pathlib.Path) -> None:
@@ -3361,28 +3302,21 @@ def test_installer_synchronization_compares_only_version(tmp_path: pathlib.Path)
     assert target.read_bytes() == INSTALLER_TEMPLATE.read_bytes()
 
 
-def test_installer_version_metadata_is_explicit_and_coupled(
+def test_installer_tiers_declare_the_same_explicit_version(
     tmp_path: pathlib.Path,
 ) -> None:
     validator = runpy.run_path(str(VALIDATOR))
     parse_version = validator["installer_version"]
-    synchronize = validator["synchronize_authoritative_installer_version"]
     template = tmp_path / "install-skills-template.py"
-    bootstrap = tmp_path / "install-skills.py"
     template.write_text(
         "INSTALLER_VERSION = 11\nprint('authoritative')\n",
         encoding="utf-8",
         newline="\n",
     )
-    bootstrap.write_text("stale\n", encoding="utf-8", newline="\n")
-    synchronize.__globals__["INSTALLER_TEMPLATE"] = template
-    synchronize.__globals__["BOOTSTRAP_INSTALLER"] = bootstrap
-
-    synchronize()
-    assert bootstrap.read_bytes() == template.read_bytes()
     assert parse_version(template) == 11
     assert parse_version(INSTALLER_TEMPLATE) == INSTALLER_VERSION
     assert parse_version(BOOTSTRAP) == INSTALLER_VERSION
+    assert INSTALLER_TEMPLATE.read_bytes() != BOOTSTRAP.read_bytes()
 
     template.write_text(
         "INSTALLER_VERSION = 11\nINSTALLER_VERSION = 12\n",

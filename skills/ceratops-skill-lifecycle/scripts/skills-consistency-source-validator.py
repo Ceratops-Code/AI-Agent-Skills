@@ -162,40 +162,6 @@ INSTALLER_VERSION_RE = re.compile(
 )
 
 
-def write_coupled_installer_state(changes: Mapping[pathlib.Path, bytes]) -> None:
-    """Write coupled producer outputs and restore all originals after a write failure."""
-
-    originals = {path: path.read_bytes() for path in changes}
-    try:
-        for path, payload in changes.items():
-            path.write_bytes(payload)
-    except OSError as exc:
-        try:
-            for path, payload in originals.items():
-                path.write_bytes(payload)
-        except OSError as rollback_exc:
-            raise RuntimeError("installer-version synchronization failed and rollback was incomplete") from rollback_exc
-        raise RuntimeError("installer-version synchronization failed; original files were restored") from exc
-
-
-def synchronize_authoritative_installer_version() -> None:
-    """Copy the explicit-version authoritative template into the bootstrap."""
-
-    template_bytes = INSTALLER_TEMPLATE.read_bytes()
-    if installer_version(INSTALLER_TEMPLATE) is None:
-        raise ValueError(
-            "authoritative installer template must declare one positive "
-            "INSTALLER_VERSION"
-        )
-    changes = (
-        {BOOTSTRAP_INSTALLER: template_bytes}
-        if BOOTSTRAP_INSTALLER.read_bytes() != template_bytes
-        else {}
-    )
-    if changes:
-        write_coupled_installer_state(changes)
-
-
 def parse_frontmatter(path: pathlib.Path) -> tuple[dict[str, str], str]:
     """Parse the simple YAML frontmatter format used by source skills."""
 
@@ -1254,13 +1220,8 @@ def main() -> int:
     parser.add_argument("--repo-root", type=pathlib.Path, help="Source skills repository root.")
     parser.add_argument("--mode", choices=["skill", "sections", "full"], default="full", help="Use skill for selected-skill installation, sections for shared-source changes, or full for source-repository validation.")
     parser.add_argument("--skill", action="append", help="Source skill to validate in skill mode; repeat for multiple skills.")
-    parser.add_argument("--sync-installer-version", action="store_true", help="Deterministically synchronize authoritative installer version state.")
     args = parser.parse_args()
     selected_skill_names = set(args.skill or [])
-    if args.sync_installer_version and args.repo_root is None:
-        parser.error("--sync-installer-version requires --repo-root")
-    if args.sync_installer_version and (args.mode != "full" or selected_skill_names):
-        parser.error("--sync-installer-version cannot be combined with skill or section validation")
     if args.mode == "skill" and not selected_skill_names:
         parser.error("--mode skill requires at least one --skill")
     if args.mode != "skill" and selected_skill_names:
@@ -1304,17 +1265,6 @@ def main() -> int:
         if SKILLS_DIR.is_dir()
         else []
     )
-    if args.sync_installer_version:
-        if profile != PROFILE_CERATOPS:
-            print("--sync-installer-version requires the ceratops validation profile", file=sys.stderr)
-            return 1
-        try:
-            synchronize_authoritative_installer_version()
-        except (OSError, RuntimeError, ValueError) as exc:
-            print(str(exc), file=sys.stderr)
-            return 1
-        print("OK")
-        return 0
     if args.mode == "skill":
         errors.extend(check_selected_skills(manifest, skill_dirs, selected_skill_names, profile))
         if errors:

@@ -83,10 +83,10 @@ without repository deduplication.
 
 | Script | Caller And Timing |
 | --- | --- |
-| `scripts/install-skills.py` | Versioned repository bootstrap that delegates exact runtime installation to the supported lifecycle bundle. |
-| `skills/ceratops-skill-lifecycle/scripts/templates/install-skills-template.py` | Authoritative installer copied into compatible repositories as `scripts/install-skills.py`; consistency compares only `INSTALLER_VERSION`. |
+| `scripts/install-skills.py` | Full AI-Agent-Skills bootstrap that always uses this checkout's lifecycle bundle and source validation. |
+| `skills/ceratops-skill-lifecycle/scripts/templates/install-skills-template.py` | Authoritative standard-library-only installer copied into compatible repositories as `scripts/install-skills.py`; it only resolves shared sections and copies rendered skills. |
 | `skills/ceratops-skill-lifecycle/scripts/runtime/install-managed-skills.py` | Classifies explicit, promotion-relative, or all-managed affected sets; owns direct-manifest inventory; and invokes one runtime transaction without source validation. |
-| `skills/ceratops-skill-lifecycle/scripts/runtime/resolve-lifecycle-bundle.py` | Source-checkout resolver for the Ceratops repository and installed-bundle resolver for other compatible repositories. |
+| `skills/ceratops-skill-lifecycle/scripts/runtime/resolve-lifecycle-bundle.py` | Checkout-only lifecycle-bundle resolver used by the AI-Agent-Skills bootstrap. |
 | `skills/ceratops-skill-lifecycle/scripts/runtime/synchronize-installers.py` | Copies the authoritative installer into an approved task worktree only when its parsed version is missing or lower, then runs explicit full source validation. |
 | `skills/ceratops-skill-lifecycle/scripts/runtime/managed_runtime_builder.py` | Stages, activates, rolls back, recovers, and cleans one locked selected-skill runtime transaction. |
 | `skills/ceratops-credit-savings-analysis/scripts/model-call-ledger.py` | Writes sanitized session evidence, emits artifact-free closure inventories, and validates caller classifications against every selected model call. |
@@ -321,20 +321,17 @@ For another Ceratops-compatible repo, run its versioned repository installer:
 python <target-repo>\scripts\install-skills.py --repo-root <target-repo>
 ```
 
-The Ceratops source repository bootstrap uses its checkout lifecycle bundle.
-Other compatible repositories prefer a supported installed lifecycle bundle.
-An install without a selection refreshes all source skills and removes only
-stale folders with the same `runtime_source_id`. Repeated `--skill` and
-`--remove-skill` values form one exact transaction. `--base-revision <sha>`
-derives the exact addition, removal, shared-section, payload, or global-runtime
-effect from structured Git and manifest data. Installation does not run source
-validation. Runtime manifests record source ownership, local source-repository
-root, validation profile, and installer version.
-Interrupted-state convergence is guaranteed when the same affected set or an
-all-managed install runs again; an unrelated targeted install does not claim
-to discover a fully activated orphan with no transaction remnant. A
-post-commit cleanup failure keeps the complete new batch active and reports
-`cleanup_blocked` with retained retired folders.
+The AI-Agent-Skills bootstrap always uses the lifecycle bundle in its own
+checkout and performs this source repository's full validation and managed
+transaction. Installed Ceratops copies are never candidates.
+
+An external repository's copied installer is independent: it uses only the
+Python standard library, reads declared skills, resolves shared sections and
+payloads, fully stages the requested output, and replaces same-source
+destinations. It does not locate or run Ceratops, validate repository lifecycle
+policy, negotiate compatibility, recover transactions, or fall back after an
+error. Managing an external repository through Ceratops is optional and
+requires separately installed Ceratops skills.
 
 For report-only global routing, the runtime installer can write direct managed
 manifest entries and malformed-entry blockers without comparing runtime files
@@ -349,8 +346,7 @@ local skills repo checkout used as the input path for the runtime installer.
 The active branch only selects which repo snapshot is installed: synced `main`
 for normal use, or a local `release/*` branch for an active unpublished preview.
 After changing the installed source snapshot, rerun `python
-scripts/install-skills.py --repo-root <repo>` so new, renamed, or deleted
-same-source managed skill folders match that snapshot.
+scripts/install-skills.py --repo-root <repo>` to refresh its declared skills.
 When shipping a staged batch, reuse the same `release/local` branch name locally
 and remotely by default. Use `$ceratops-repo-lifecycle` `promote` to assemble
 selected reviewed branches without installation, or `promote-and-deploy` to run

@@ -59,9 +59,10 @@ Infer missing inputs from the current repo state before asking.
   shared sections, and per-skill assignments. Skill names need not use a
   Ceratops prefix.
 - Treat `scripts/templates/install-skills-template.py` as the authoritative
-  installer source. Copy only `scripts/install-skills.py` into compatible
-  repositories, and compare installers only by their parsed integer
-  `INSTALLER_VERSION`.
+  self-contained external installer. It may only read declared skills, resolve
+  shared sections and payloads, and copy rendered skills; it must not depend on
+  Ceratops runtime installation, validation, fallback, or recovery. Keep the
+  AI-Agent-Skills bootstrap separate and checkout-only.
 - Use `fast-change` directly on the verified primary release checkout whenever
   its action contract and one-request orchestrator accept the complete intended
   scope. The orchestrator owns patch, repository-declared Markdown lint, exact
