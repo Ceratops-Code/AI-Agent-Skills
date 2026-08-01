@@ -31,7 +31,7 @@
     "ceratops-repo-lifecycle": [],
     "ceratops-skill-lifecycle": [
       "templates/deploy-template.yml",
-      "templates/skill-sections-template.json"
+      "skills/sections/*.md"
     ]
   },
   "skills": {

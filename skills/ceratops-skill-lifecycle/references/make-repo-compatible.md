@@ -28,8 +28,11 @@ Infer the source identity from stable repository evidence before asking.
 - (D) Installer synchronization after the compatibility sources exist: `python
   scripts/runtime/synchronize-installers.py --target-repo-root
   <task-worktree>` from the installed lifecycle bundle.
-- Reusable template root: the source repository root when using its lifecycle
-  source, or the installed lifecycle skill root when using its runtime bundle.
+- (D) Compatibility materialization: `python
+  scripts/materialize-compatible-repo.py --target-repo-root <task-worktree>
+  [--runtime-source-id <stable-id>]` from the installed or source lifecycle
+  bundle. It owns template loading, target inspection, section materialization,
+  marker cleanup, installer synchronization, validation, and compact output.
 
 ## Constraints
 
@@ -70,12 +73,12 @@ Infer the source identity from stable repository evidence before asking.
 
 ### 2. Establish compatible source surfaces
 
-- Create `skills/sections/core.md` from target-owned behavior required by
-  every source skill.
-- Copy the selected template root's `templates/skill-sections-template.json` to
-  `skills/skill-sections.json`, then populate the stable source identity,
-  `ceratops-compatible` profile, section paths, per-skill assignments,
-  target-owned maintenance workflows, and portable runtime payloads.
+- Run the compatibility materializer so it loads the lifecycle-owned
+  `scripts/templates/skill-sections-template.json`, derives or accepts the
+  stable source identity, inventories source skills and multi-action markers,
+  copies canonical shared sections to `skills/sections/`, writes
+  `skills/skill-sections.json`, and removes generated section blocks from
+  source skills.
 - Copy the selected template root's `templates/deploy-template.yml` to
   `deploy/deploy.yml`, then declare only the target repository's supported
   operations and lifecycle hooks.
@@ -85,10 +88,9 @@ Infer the source identity from stable repository evidence before asking.
 
 ### 3. Install the repository bootstrap
 
-- Run the installer synchronization helper only after the other compatibility
-  surfaces are ready so its required full validation can succeed.
-- Retain a same- or higher-version target installer; replace only a missing or
-  lower parsed integer `INSTALLER_VERSION`.
+- The compatibility materializer delegates installer replacement to the
+  synchronization helper after compatibility sources exist. Retain a same- or
+  higher-version installer and replace only a missing or lower version.
 
 ### 4. Validate and hand off
 

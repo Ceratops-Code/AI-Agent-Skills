@@ -173,6 +173,22 @@
       "decision": "Select the accepted rules-only fast-change action contract over ordinary instruction-edit verification in one repository-scoped rule.",
       "reason": "Rules-only fast changes intentionally run no readback, and isolating that exception keeps both governing rules canonical and narrowly scoped.",
       "regression": "Preserve SKILLS-VERIFY-01 for every instruction edit outside an accepted rules-only fast-change."
+    },
+    {
+      "rules": [
+        "SKILLS-SECTIONS-01"
+      ],
+      "decision": "Separate repository-owned live skill-section sources from the lifecycle-owned reusable compatibility template.",
+      "reason": "A reusable template must not carry or govern repository-specific identity, assignments, or live validation state.",
+      "regression": "Preserve live sources under skills/, keep the template in the lifecycle bundle, and reject using that template as a live manifest."
+    },
+    {
+      "rules": [
+        "SKILLS-SECTIONS-01"
+      ],
+      "decision": "Clarify the lifecycle template owner path without splitting one path inside a Markdown code span.",
+      "reason": "The accepted ownership invariant must remain mechanically readable and repository-relative.",
+      "regression": "Preserve live-source ownership, the exact lifecycle template location, and the template-as-live prohibition."
     }
   ]
 }

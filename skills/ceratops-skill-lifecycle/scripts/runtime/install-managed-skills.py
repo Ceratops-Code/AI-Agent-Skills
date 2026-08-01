@@ -40,7 +40,9 @@ KNOWN_MANIFEST_FIELDS = {
 }
 GLOBAL_RUNTIME_PATHS = {
     "scripts/install-skills.py",
+    "skills/ceratops-skill-lifecycle/scripts/materialize-compatible-repo.py",
     "skills/ceratops-skill-lifecycle/scripts/templates/install-skills-template.py",
+    "skills/ceratops-skill-lifecycle/scripts/templates/skill-sections-template.json",
     "skills/ceratops-skill-lifecycle/scripts/runtime/install-managed-skills.py",
     "skills/ceratops-skill-lifecycle/scripts/runtime/managed_runtime_builder.py",
     "skills/ceratops-skill-lifecycle/scripts/runtime/resolve-lifecycle-bundle.py",

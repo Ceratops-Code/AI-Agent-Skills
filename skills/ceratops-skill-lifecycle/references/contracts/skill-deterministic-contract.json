@@ -164,9 +164,11 @@
       "deterministic_evidence": [
         "skills/skill-sections.json",
         "skills/sections/*",
+        "skills/ceratops-skill-lifecycle/scripts/templates/skill-sections-template.json",
+        "skills/ceratops-skill-lifecycle/scripts/materialize-compatible-repo.py",
         "source SKILL.md"
       ],
-      "pass_condition": "Every source skill has a manifest assignment including core, source SKILL.md files remain delta-only, assigned shared sections render, and source files do not contain generated runtime shared-section blocks."
+      "pass_condition": "Every source skill has a manifest assignment including core, source SKILL.md files remain delta-only, assigned shared sections render, and source files do not contain generated runtime shared-section blocks. The reusable template remains repository-neutral and is rejected as a live manifest; materialization supplies the target identity and assignments, copies canonical sections, and removes generated marker blocks before validation."
     },
     {
       "id": "skill.multi_action_contract",

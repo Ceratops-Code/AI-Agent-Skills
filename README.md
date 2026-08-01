@@ -35,8 +35,9 @@ skills/
 deploy/
   deploy.yml
 templates/
-  skill-sections-template.json
   deploy-template.yml
+skills/ceratops-skill-lifecycle/scripts/templates/
+  skill-sections-template.json
 ```
 
 Source `SKILL.md` files are portable, delta-only skill definitions. Runtime
@@ -86,6 +87,8 @@ without repository deduplication.
 | `scripts/install-skills.py` | Versioned repository bootstrap that delegates exact runtime installation to the supported lifecycle bundle. |
 | `scripts/validate-repository.py` | Sole full local-and-CI validation owner; captures child output and writes first-failure evidence to a caller-selected file. |
 | `skills/ceratops-skill-lifecycle/scripts/templates/install-skills-template.py` | Authoritative installer copied into compatible repositories as `scripts/install-skills.py`; consistency compares only `INSTALLER_VERSION`. |
+| `skills/ceratops-skill-lifecycle/scripts/materialize-compatible-repo.py` | Deterministically instantiates a compatible repository's live section manifest and canonical shared sections, aligns generated markers, then delegates installer synchronization and validation. |
+| `skills/ceratops-skill-lifecycle/scripts/templates/skill-sections-template.json` | Repository-neutral template for materializing a target repository's live `skills/skill-sections.json`; never a live manifest. |
 | `skills/ceratops-skill-lifecycle/scripts/runtime/install-managed-skills.py` | Classifies explicit, promotion-relative, or all-managed affected sets; owns direct-manifest inventory; and invokes one runtime transaction without source validation. |
 | `skills/ceratops-skill-lifecycle/scripts/runtime/resolve-lifecycle-bundle.py` | Source-checkout resolver for the Ceratops repository and installed-bundle resolver for other compatible repositories. |
 | `skills/ceratops-skill-lifecycle/scripts/runtime/synchronize-installers.py` | Copies the authoritative installer into an approved task worktree only when its parsed version is missing or lower, then runs explicit full source validation. |

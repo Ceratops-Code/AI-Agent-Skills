@@ -62,6 +62,11 @@ Project-specific rules for this skills repository.
 - [SKILLS-DEPLOY-01] `deploy/deploy.yml` is this repository's live executable
   deployment contract. `templates/deploy-template.yml` is only a reusable
   starting file; agents must not execute prose deployment instructions.
+- [SKILLS-SECTIONS-01] Keep the live section manifest at
+  `skills/skill-sections.json`, its declared sources under `skills/sections/`,
+  and the reusable `skill-sections-template.json` in
+  `skills/ceratops-skill-lifecycle/scripts/templates/`; never use the template
+  as a live manifest.
 
 ## Instruction and skill maintenance
 

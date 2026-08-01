@@ -22,10 +22,11 @@ BOOTSTRAP = ROOT / "scripts" / "install-skills.py"
 LIFECYCLE_SOURCE = ROOT / "skills" / "ceratops-skill-lifecycle"
 REPOSITORY_LIFECYCLE_SOURCE = ROOT / "skills" / "ceratops-repo-lifecycle"
 LIVE_SECTION_MANIFEST = ROOT / "skills" / "skill-sections.json"
-SECTION_MANIFEST_TEMPLATE = ROOT / "templates" / "skill-sections-template.json"
+SECTION_MANIFEST_TEMPLATE = LIFECYCLE_SOURCE / "scripts" / "templates" / "skill-sections-template.json"
 DEPLOY_CONTRACT_TEMPLATE = ROOT / "templates" / "deploy-template.yml"
 INSTALLER_TEMPLATE = LIFECYCLE_SOURCE / "scripts" / "templates" / "install-skills-template.py"
 INSTALLER_SYNCHRONIZER = LIFECYCLE_SOURCE / "scripts" / "runtime" / "synchronize-installers.py"
+COMPATIBILITY_MATERIALIZER = LIFECYCLE_SOURCE / "scripts" / "materialize-compatible-repo.py"
 RUNTIME_INSTALLER = LIFECYCLE_SOURCE / "scripts" / "runtime" / "install-managed-skills.py"
 FAST_CHANGE = LIFECYCLE_SOURCE / "scripts" / "fast-change.py"
 DEPLOY_OPERATION = REPOSITORY_LIFECYCLE_SOURCE / "scripts" / "run-deploy-operation.py"
@@ -2126,6 +2127,102 @@ def test_skill_sections_template_contains_no_live_repository_inventory() -> None
     assert live["skills"]
 
 
+def test_source_validator_rejects_reusable_template_as_live_manifest(
+    tmp_path: pathlib.Path,
+) -> None:
+    repo = tmp_path / "compatible"
+    create_compatible_repo(repo, "example/compatible", ["alpha-tool"])
+    shutil.copy2(SECTION_MANIFEST_TEMPLATE, repo / "skills" / "skill-sections.json")
+
+    result = subprocess.run(
+        [sys.executable, str(VALIDATOR), "--repo-root", str(repo), "--mode", "sections"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "reusable skill-sections template cannot be a live manifest" in result.stderr
+
+
+def test_compatibility_materializer_supplies_target_identity_and_assignments(
+    tmp_path: pathlib.Path,
+) -> None:
+    repo = tmp_path / "compatible"
+    create_compatible_repo(repo, "stale/source", ["alpha-tool", "beta-tool"])
+    (repo / ".git").write_text("gitdir: test\n", encoding="utf-8", newline="\n")
+    shutil.rmtree(repo / "skills" / "sections")
+    (repo / "skills" / "skill-sections.json").unlink()
+    beta = repo / "skills" / "beta-tool" / "SKILL.md"
+    (beta.parent / "references").mkdir()
+    (beta.parent / "references" / "run.md").write_text(
+        "# Run Action\n\n## Goal\n\nRun the target workflow.\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    (beta.parent / "references" / "check.md").write_text(
+        "# Check Action\n\n## Goal\n\nCheck the target workflow.\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    beta.write_text(
+        beta.read_text(encoding="utf-8")
+        + "\n### Action References\n\n"
+        + "- Run: `references/run.md`\n"
+        + "- Check: `references/check.md`\n"
+        + "\n"
+        + "\n".join(
+            [
+                "<!-- CERATOPS_SHARED_SECTIONS_START -->",
+                "<!-- SECTION SOURCE: skills/sections/core.md -->",
+                "## Generated Core",
+                "",
+                "<!-- SECTION SOURCE: skills/sections/multi-action-skill.md -->",
+                "## Generated Multi Action",
+                "<!-- CERATOPS_SHARED_SECTIONS_END -->",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+        newline="\n",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(COMPATIBILITY_MATERIALIZER),
+            "--target-repo-root",
+            str(repo),
+            "--runtime-source-id",
+            "target/skills",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout
+    output = json.loads(result.stdout)
+    manifest = json.loads(
+        (repo / "skills" / "skill-sections.json").read_text(encoding="utf-8")
+    )
+    assert output["status"] == "ok"
+    assert output["markers_removed"] == ["beta-tool"]
+    assert manifest["runtime_source_id"] == "target/skills"
+    assert manifest["validation_profile"] == "ceratops-compatible"
+    assert manifest["skills"] == {
+        "alpha-tool": ["core"],
+        "beta-tool": ["core", "multi-action-skill"],
+    }
+    assert manifest["runtime_source_id"] != json.loads(
+        SECTION_MANIFEST_TEMPLATE.read_text(encoding="utf-8")
+    )["runtime_source_id"]
+    assert (repo / "skills" / "sections" / "core.md").read_bytes() == (
+        ROOT / "skills" / "sections" / "core.md"
+    ).read_bytes()
+    assert "SECTION SOURCE: skills/sections/" not in beta.read_text(encoding="utf-8")
+
+
 def test_source_validator_rejects_consecutive_name_hyphens(tmp_path: pathlib.Path) -> None:
     repo = tmp_path / "compatible"
     create_compatible_repo(repo, "example/compatible", ["alpha--tool"])
@@ -3157,6 +3254,36 @@ def test_bootstrap_uses_checkout_for_first_install(tmp_path: pathlib.Path) -> No
 
     assert result.returncode == 0, result.stderr
     assert runtime_owner(install_root, "ceratops-skill-lifecycle") == "Ceratops-Code/AI-Agent-Skills"
+    installed_lifecycle = install_root / "ceratops-skill-lifecycle"
+    assert (
+        installed_lifecycle / "scripts" / "templates" / "skill-sections-template.json"
+    ).is_file()
+    assert (installed_lifecycle / "skills" / "sections" / "core.md").is_file()
+    assert (
+        installed_lifecycle / "skills" / "sections" / "multi-action-skill.md"
+    ).is_file()
+    target_repo = tmp_path / "installed-bundle-target"
+    create_compatible_repo(target_repo, "stale/source", ["alpha-tool"])
+    (target_repo / ".git").write_text(
+        "gitdir: test\n", encoding="utf-8", newline="\n"
+    )
+    shutil.rmtree(target_repo / "skills" / "sections")
+    (target_repo / "skills" / "skill-sections.json").unlink()
+    materialized = subprocess.run(
+        [
+            sys.executable,
+            str(installed_lifecycle / "scripts" / "materialize-compatible-repo.py"),
+            "--target-repo-root",
+            str(target_repo),
+            "--runtime-source-id",
+            "installed/target",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert materialized.returncode == 0, materialized.stdout
+    assert json.loads(materialized.stdout)["runtime_source_id"] == "installed/target"
 
 
 def test_bootstrap_uses_checkout_resolver_for_outdated_installed_bundle(
