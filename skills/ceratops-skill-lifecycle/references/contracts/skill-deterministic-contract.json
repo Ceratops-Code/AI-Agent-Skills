@@ -37,7 +37,7 @@
       "lines": "live structured repository deployment operations"
     },
     {
-      "path": "$AI_AGENT_SKILLS_ROOT/templates/deploy-template.yml",
+      "path": "$AI_AGENT_SKILLS_ROOT/skills/ceratops-repo-lifecycle/references/deploy-template.yml",
       "lines": "reusable deployment-contract skeleton"
     },
     {
@@ -123,10 +123,10 @@
       "category": "runtime",
       "deterministic_evidence": [
         "deploy/deploy.yml",
-        "templates/deploy-template.yml",
+        "skills/ceratops-repo-lifecycle/references/deploy-template.yml",
         "deploy contract schema"
       ],
-      "pass_condition": "The live deployment file validates as version 1 structured operations with argv-array steps and repository-relative working directories; the reusable template remains an empty version 1 skeleton. The ceratops profile declares after_promote with one base_revision parameter and one affected-set installer invocation, declares after_ship with one all-managed installer invocation, and includes both reusable templates in the installed skill-lifecycle payload."
+      "pass_condition": "The live deployment file validates as version 1 structured operations with argv-array steps and repository-relative working directories; the reusable template remains an empty version 1 skeleton. The ceratops profile declares after_promote with one base_revision parameter and one affected-set installer invocation, declares after_ship with one all-managed installer invocation, and includes both reusable templates in the installed repository-lifecycle payload."
     },
     {
       "id": "skill.installer_version_consistency",

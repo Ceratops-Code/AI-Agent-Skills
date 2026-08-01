@@ -34,9 +34,9 @@ skills/
       <action-or-contract-reference>
 deploy/
   deploy.yml
-templates/
-  skill-sections-template.json
+skills/ceratops-repo-lifecycle/references/
   deploy-template.yml
+  skill-sections-template.json
 ```
 
 Source `SKILL.md` files are portable, delta-only skill definitions. Runtime
@@ -52,8 +52,8 @@ Skill names are independent of the profile and need no `ceratops-` prefix.
 skills that select among multiple action references.
 The `skills/` tree is authoritative skill source for this repository.
 `deploy/deploy.yml` is its authoritative structured deployment definition.
-Files under `templates/` are reusable skeletons to copy into other
-repositories, not live configuration.
+The templates under `skills/ceratops-repo-lifecycle/references/` are reusable
+skeletons to copy into other repositories, not live configuration.
 `agents/openai.yaml` is Codex UI metadata and may be ignored by other agents.
 Each Ceratops skill declares the runtime-local icon path
 `./assets/ceratops-logo-500.png`. The repo-root `assets/ceratops-logo-500.png`

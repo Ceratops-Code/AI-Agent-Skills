@@ -22,8 +22,14 @@ BOOTSTRAP = ROOT / "scripts" / "install-skills.py"
 LIFECYCLE_SOURCE = ROOT / "skills" / "ceratops-skill-lifecycle"
 REPOSITORY_LIFECYCLE_SOURCE = ROOT / "skills" / "ceratops-repo-lifecycle"
 LIVE_SECTION_MANIFEST = ROOT / "skills" / "skill-sections.json"
-SECTION_MANIFEST_TEMPLATE = ROOT / "templates" / "skill-sections-template.json"
-DEPLOY_CONTRACT_TEMPLATE = ROOT / "templates" / "deploy-template.yml"
+SECTION_MANIFEST_TEMPLATE = (
+    REPOSITORY_LIFECYCLE_SOURCE
+    / "references"
+    / "skill-sections-template.json"
+)
+DEPLOY_CONTRACT_TEMPLATE = (
+    REPOSITORY_LIFECYCLE_SOURCE / "references" / "deploy-template.yml"
+)
 INSTALLER_TEMPLATE = LIFECYCLE_SOURCE / "scripts" / "templates" / "install-skills-template.py"
 INSTALLER_SYNCHRONIZER = LIFECYCLE_SOURCE / "scripts" / "runtime" / "synchronize-installers.py"
 RUNTIME_INSTALLER = LIFECYCLE_SOURCE / "scripts" / "runtime" / "install-managed-skills.py"

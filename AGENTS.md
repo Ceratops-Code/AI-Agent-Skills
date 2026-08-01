@@ -59,9 +59,10 @@ Project-specific rules for this skills repository.
   branch; do not request per-commit inclusion confirmation.
 - [SKILLS-SHIP-03] Treat GitHub replies, thread resolutions, and review
   submissions required by the active Ceratops workflow as pre-approved.
-- [SKILLS-DEPLOY-01] `deploy/deploy.yml` is this repository's live executable
-  deployment contract. `templates/deploy-template.yml` is only a reusable
-  starting file; agents must not execute prose deployment instructions.
+- [SKILLS-DEPLOY-01] Use `deploy/deploy.yml` as this repository's only
+  executable deployment contract. Treat
+  `skills/ceratops-repo-lifecycle/references/deploy-template.yml` as a reusable,
+  non-executable template; never execute prose deployment instructions.
 
 ## Instruction and skill maintenance
 

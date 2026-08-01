@@ -28,11 +28,11 @@
     "*": [
       "assets/ceratops-logo-500.png"
     ],
-    "ceratops-repo-lifecycle": [],
-    "ceratops-skill-lifecycle": [
-      "templates/deploy-template.yml",
-      "templates/skill-sections-template.json"
-    ]
+    "ceratops-repo-lifecycle": [
+      "skills/ceratops-repo-lifecycle/references/deploy-template.yml",
+      "skills/ceratops-repo-lifecycle/references/skill-sections-template.json"
+    ],
+    "ceratops-skill-lifecycle": []
   },
   "skills": {
     "ceratops-automation-run": [

@@ -38,8 +38,20 @@ ALLOWED_EXTERNAL_PYTHON_MODULES = {"mypy", "pytest", "yamllint"}
 BOOTSTRAP_INSTALLER = ROOT / "scripts" / "install-skills.py"
 INSTALLER_TEMPLATE = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "templates" / "install-skills-template.py"
 DEPLOY_CONTRACT = ROOT / "deploy" / "deploy.yml"
-DEPLOY_TEMPLATE = ROOT / "templates" / "deploy-template.yml"
-SKILL_SECTIONS_TEMPLATE = ROOT / "templates" / "skill-sections-template.json"
+DEPLOY_TEMPLATE = (
+    ROOT
+    / "skills"
+    / "ceratops-repo-lifecycle"
+    / "references"
+    / "deploy-template.yml"
+)
+SKILL_SECTIONS_TEMPLATE = (
+    ROOT
+    / "skills"
+    / "ceratops-repo-lifecycle"
+    / "references"
+    / "skill-sections-template.json"
+)
 DEPLOY_SCHEMA = (
     VALIDATOR_BUNDLE_ROOT
     / "skills"
@@ -394,18 +406,19 @@ def check_deployment_contract(
 
     template, template_errors = load_yaml_mapping(
         DEPLOY_TEMPLATE,
-        "templates/deploy-template.yml",
+        "skills/ceratops-repo-lifecycle/references/deploy-template.yml",
     )
     errors.extend(template_errors)
     if template is not None and template != {"version": 1, "operations": {}}:
         errors.append(
-            "templates/deploy-template.yml must be the empty version 1 "
+            "skills/ceratops-repo-lifecycle/references/deploy-template.yml "
+            "must be the empty version 1 "
             "deployment skeleton"
         )
 
     payloads = manifest.get("runtime_payloads")
-    lifecycle_payloads = (
-        payloads.get("ceratops-skill-lifecycle")
+    repository_lifecycle_payloads = (
+        payloads.get("ceratops-repo-lifecycle")
         if isinstance(payloads, dict)
         else None
     )
@@ -413,16 +426,16 @@ def check_deployment_contract(
         str(DEPLOY_TEMPLATE.relative_to(ROOT)).replace("\\", "/"),
         str(SKILL_SECTIONS_TEMPLATE.relative_to(ROOT)).replace("\\", "/"),
     }
-    if not isinstance(lifecycle_payloads, list):
+    if not isinstance(repository_lifecycle_payloads, list):
         errors.append(
-            "runtime_payloads.ceratops-skill-lifecycle must include reusable "
+            "runtime_payloads.ceratops-repo-lifecycle must include reusable "
             "repository templates"
         )
     else:
         for template_path in sorted(required_templates):
-            if template_path not in lifecycle_payloads:
+            if template_path not in repository_lifecycle_payloads:
                 errors.append(
-                    "runtime_payloads.ceratops-skill-lifecycle is missing "
+                    "runtime_payloads.ceratops-repo-lifecycle is missing "
                     f"{template_path}"
                 )
     return errors
@@ -1262,8 +1275,20 @@ def main() -> int:
         BOOTSTRAP_INSTALLER = ROOT / "scripts" / "install-skills.py"
         INSTALLER_TEMPLATE = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "templates" / "install-skills-template.py"
         DEPLOY_CONTRACT = ROOT / "deploy" / "deploy.yml"
-        DEPLOY_TEMPLATE = ROOT / "templates" / "deploy-template.yml"
-        SKILL_SECTIONS_TEMPLATE = ROOT / "templates" / "skill-sections-template.json"
+        DEPLOY_TEMPLATE = (
+            ROOT
+            / "skills"
+            / "ceratops-repo-lifecycle"
+            / "references"
+            / "deploy-template.yml"
+        )
+        SKILL_SECTIONS_TEMPLATE = (
+            ROOT
+            / "skills"
+            / "ceratops-repo-lifecycle"
+            / "references"
+            / "skill-sections-template.json"
+        )
 
     errors: list[str] = []
     if not SKILLS_DIR.is_dir():
