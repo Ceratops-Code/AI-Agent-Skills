@@ -20,10 +20,52 @@ from typing import Any
 SCRIPT_ROOT = pathlib.Path(__file__).resolve().parent
 DEPLOY_RUNNER = SCRIPT_ROOT / "run-deploy-operation.py"
 PENDING_MANAGER = SCRIPT_ROOT / "manage-pending-work.py"
+DEFAULT_DEPLOY_CONTRACT = pathlib.Path("deploy/deploy.yml")
 
 
 class RepositoryShipError(RuntimeError):
     """Raised when a delegated lifecycle phase does not complete."""
+
+
+def _inside(path: pathlib.Path, parent: pathlib.Path) -> bool:
+    try:
+        path.relative_to(parent)
+    except ValueError:
+        return False
+    return True
+
+
+def _deployment_preflight(
+    repo_root: pathlib.Path,
+    contract: pathlib.Path,
+    operation: str,
+) -> dict[str, Any] | None:
+    """Classify an absent default after-ship contract before remote mutation."""
+
+    selected = (
+        contract if contract.is_absolute() else repo_root / contract
+    ).resolve()
+    default = (repo_root / DEFAULT_DEPLOY_CONTRACT).resolve()
+    if not _inside(selected, repo_root):
+        raise RepositoryShipError(
+            "Deployment contract must be a file inside the repository."
+        )
+    if selected.exists():
+        if not selected.is_file():
+            raise RepositoryShipError(
+                "Deployment contract must be a file inside the repository."
+            )
+        return None
+    if selected != default or operation != "after_ship":
+        raise RepositoryShipError(
+            "Selected deployment contract does not exist before shipping."
+        )
+    return {
+        "status": "no_op",
+        "operation": operation,
+        "steps": [],
+        "reason": "deployment_contract_absent",
+    }
 
 
 def _run_json(command: list[str]) -> tuple[int, dict[str, Any]]:
@@ -211,6 +253,11 @@ def ship_repository(args: argparse.Namespace) -> dict[str, object]:
     """Run the complete repository shipping and deployment workflow."""
 
     repo_root = args.repo_root.expanduser().resolve(strict=True)
+    deployment_preflight = _deployment_preflight(
+        repo_root,
+        args.deploy_contract,
+        args.deploy_operation,
+    )
     ship_code, shipped = _run_json(_ship_command(args, repo_root))
     if ship_code == 2:
         return shipped
@@ -251,8 +298,8 @@ def ship_repository(args: argparse.Namespace) -> dict[str, object]:
 
     checkpoint_path: pathlib.Path | None = None
     deployment_identity: dict[str, object] | None = None
-    deployed: dict[str, Any] | None = None
-    if pending_scope is not None:
+    deployed: dict[str, Any] | None = deployment_preflight
+    if pending_scope is not None and deployed is None:
         checkpoint_path = _deployment_checkpoint_path(pending_scope)
         deployment_identity = _deployment_identity(
             repo_root,
@@ -360,7 +407,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--deploy-contract",
         type=pathlib.Path,
-        default=pathlib.Path("deploy/deploy.yml"),
+        default=DEFAULT_DEPLOY_CONTRACT,
+        help=(
+            "Repository deployment contract. An absent default deploy/deploy.yml "
+            "makes after_ship an explicit no-op."
+        ),
     )
     parser.add_argument("--deploy-operation", default="after_ship")
     parser.add_argument("--ci-wait-seconds", type=int, default=900)

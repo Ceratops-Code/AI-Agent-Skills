@@ -625,6 +625,7 @@ def wait_for_ci_gate(
                 "base": summary.get("base"),
                 "head_oid": summary.get("head_oid"),
                 "pending": 0,
+                "review_required": review_authorization_required,
                 "review_authorization_required": (
                     review_authorization_required
                 ),
@@ -871,6 +872,7 @@ def ship(args: argparse.Namespace) -> dict[str, Any]:
     if not repo_root.is_dir():
         raise ShipError(f"Repository root is not a directory: {repo_root}")
     args.repo_root = repo_root
+    merge.restore_unfinished_checkpoints(repo_root)
     repository = _repository_name(repo_root, args.repo)
     commit = _resolve_commit(args, repo_root, repository)
     pending_work_identity, pending_work_scope = _load_pending_work_scope(
@@ -998,6 +1000,8 @@ def ship(args: argparse.Namespace) -> dict[str, Any]:
                 interval_seconds=args.interval_seconds,
             ),
             expected_head=commit,
+            readiness_summary=gate_result["ci"],
+            recover_checkpoints=False,
         )
         if merge_result.get("status") != "merged":
             raise ShipError("Ship requires a verified immediate merge result.")
@@ -1128,9 +1132,14 @@ def main(argv: list[str] | None = None) -> int:
         ValueError,
         json.JSONDecodeError,
     ) as exc:
+        payload = (
+            merge.error_payload(exc)
+            if isinstance(exc, merge.WorkflowError)
+            else {"status": "error", "message": str(exc)}
+        )
         print(
             json.dumps(
-                {"status": "error", "message": str(exc)},
+                payload,
                 separators=(",", ":"),
                 ensure_ascii=True,
             ),
