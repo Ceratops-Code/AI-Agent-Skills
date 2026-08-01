@@ -2389,6 +2389,11 @@ def test_repository_ship_absent_default_contract_is_no_op_and_finalizes(
     repo = tmp_path / "repo"
     repo.mkdir()
     scope = tmp_path / "scope.json"
+    scope.write_text(
+        json.dumps({"source_branches": []}),
+        encoding="utf-8",
+        newline="\n",
+    )
     shipped = {
         "status": "shipped",
         "repository": "example/repository",
@@ -2405,7 +2410,11 @@ def test_repository_ship_absent_default_contract_is_no_op_and_finalizes(
     ]
     commands: list[list[str]] = []
 
-    def run_json(command: list[str]) -> tuple[int, dict[str, Any]]:
+    def run_json(
+        command: list[str], *, cwd: pathlib.Path | None = None
+    ) -> tuple[int, dict[str, Any]]:
+        if cwd is not None:
+            assert cwd == repo
         commands.append(command)
         return responses[len(commands) - 1]
 

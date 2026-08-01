@@ -1653,15 +1653,24 @@ class GHContractStateEngineTests(unittest.TestCase):
             trace.append("review")
             return {"active_codex_thread_count": 0, "head_oid": head}
 
-        def merge_verified(_args, *, expected_head):
+        def merge_verified(
+            _args,
+            *,
+            expected_head,
+            readiness_summary,
+            recover_checkpoints,
+        ):
             trace.append("merge")
             self.assertEqual(expected_head, head)
+            self.assertEqual(readiness_summary["head_oid"], head)
+            self.assertFalse(recover_checkpoints)
             return {"status": "merged", "head": expected_head}
 
         args = argparse.Namespace(
             repo_root=ROOT,
             pr="17",
             admin=True,
+            auto=False,
             expected_head=head,
             repo="owner/repo",
             wait_seconds=0,
