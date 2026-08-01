@@ -1699,6 +1699,49 @@ class GHContractStateEngineTests(unittest.TestCase):
         self.assertEqual(trace, ["readiness", "review", "readiness", "merge"])
         self.assertEqual(validate.call_count, 2)
 
+    def test_merge_readiness_distinguishes_passing_and_pending_checks(self):
+        head = "a" * 40
+        passing = pr_validator.Finding(
+            level="PASS",
+            check="pr.status_checks",
+            message="All visible status checks are passing.",
+            actual=["validate"],
+        )
+        pending = pr_validator.Finding(
+            level="WARN",
+            check="pr.status_checks",
+            message="Status checks are still pending.",
+            actual=["validate"],
+        )
+
+        with mock.patch.object(
+            pr_merge.readiness,
+            "validate_readiness",
+            return_value=({"head_oid": head}, [passing]),
+        ):
+            result = pr_merge._validate_readiness(
+                "17",
+                ROOT,
+                allow_admin_review_bypass=False,
+            )
+
+        self.assertEqual(result["head_oid"], head)
+
+        with mock.patch.object(
+            pr_merge.readiness,
+            "validate_readiness",
+            return_value=({"head_oid": head}, [pending]),
+        ):
+            with self.assertRaisesRegex(
+                pr_merge.WorkflowError,
+                "Status checks are still pending",
+            ):
+                pr_merge._validate_readiness(
+                    "17",
+                    ROOT,
+                    allow_admin_review_bypass=False,
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

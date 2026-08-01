@@ -11,7 +11,7 @@ import sys
 from typing import Any
 from urllib.parse import quote
 
-from github_contract_engine.levels import ERROR, count_by_level
+from github_contract_engine.levels import ERROR, WARN, count_by_level
 
 from . import codex_review, readiness
 from .command import CommandError, require_output, require_success
@@ -79,7 +79,7 @@ def _validate_readiness(
         finding
         for finding in findings
         if finding.check == "pr.status_checks"
-        and finding.level != ERROR
+        and finding.level == WARN
         and isinstance(finding.actual, list)
         and bool(finding.actual)
     ]
