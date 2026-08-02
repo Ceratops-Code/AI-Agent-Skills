@@ -137,7 +137,7 @@
         "installed runtime manifest installer_version",
         "bootstrap installer CLI behavior tests"
       ],
-      "pass_condition": "The external installer template and AI-Agent-Skills installer declare the same explicit positive integer INSTALLER_VERSION but implement separate tiers. Behavior tests prove AI-Agent-Skills prefers an installed lifecycle runtime, falls back once to its independent checkout installer when that runtime is unavailable or unsuccessful, and fails nonzero when both paths fail. External installers remain standard-library-only, ignore installed Ceratops bundles, and fail unresolved input without fallback. Compatible repositories retain same- or higher-version installers and synchronize only missing or lower versions through task worktrees."
+      "pass_condition": "The external installer template and AI-Agent-Skills installer declare the same explicit positive integer INSTALLER_VERSION but implement separate tiers. Behavior tests prove AI-Agent-Skills executes a temporary snapshot of the installed lifecycle runtime outside the managed destination, falls back once to its independent checkout installer when that runtime is unavailable or unsuccessful, and fails nonzero when both paths fail. External installers remain standard-library-only, ignore installed Ceratops bundles, and fail unresolved input without fallback. Compatible repositories retain same- or higher-version installers and synchronize only missing or lower versions through task worktrees."
     },
     {
       "id": "skill.frontmatter_and_layout",

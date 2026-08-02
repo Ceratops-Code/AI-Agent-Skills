@@ -6,9 +6,10 @@
   non-publishing until a publish workflow or explicit artifact contract
   supplies external intent, so no-artifact repositories skip registry identity
   and version checks.
-- Made installer version 8 prefer installed Ceratops lifecycle handling for
-  AI-Agent-Skills, use one independent checkout fallback when unavailable or
-  unsuccessful, and keep external-repository installers Ceratops-independent.
+- Made installer version 9 execute installed Ceratops lifecycle behavior from a
+  temporary runtime snapshot outside the managed destination, use one
+  independent checkout fallback when unavailable or unsuccessful, and keep
+  external-repository installers Ceratops-independent.
 - Made repository shipping reuse completed `after_ship` work across pending
   cleanup retries, made cleanup progress durable per selected branch, and made
   promotion deployment include prior unpublished release batches.

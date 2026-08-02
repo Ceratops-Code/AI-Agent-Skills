@@ -45,7 +45,7 @@ MODEL_CALL_LEDGER = ROOT / "skills" / "ceratops-credit-savings-analysis" / "scri
 CLOSURE_SNAPSHOT = ROOT / "skills" / "ceratops-task-lifecycle" / "scripts" / "closure_snapshot.py"
 RUNTIME_MANIFEST = ".runtime-manifest.json"
 RUNTIME_MANIFEST_SCHEMA = "ceratops-runtime-skill.v3"
-INSTALLER_VERSION = 8
+INSTALLER_VERSION = 9
 
 
 def test_model_call_ledger_keeps_full_evidence_out_of_stdout(
@@ -5084,7 +5084,6 @@ def test_transaction_recovers_interrupted_and_blocks_ambiguous_remnants(
     install_root = tmp_path / "installed"
     create_compatible_repo(repo, "example/compatible", ["alpha-tool", "beta-tool"])
     assert run_builder(repo, install_root, "--all-managed").returncode == 0
-    old_text = runtime_skill_text(install_root, "alpha-tool")
     source = repo / "skills" / "alpha-tool" / "SKILL.md"
     source.write_text(
         source.read_text(encoding="utf-8") + "\nRecovered update.\n",
@@ -5549,7 +5548,7 @@ def test_source_installer_prefers_installed_lifecycle(
     )
     installed_runtime.write_text(
         "import pathlib\n"
-        f"pathlib.Path({str(marker)!r}).write_text('runtime', encoding='utf-8')\n",
+        f"pathlib.Path({str(marker)!r}).write_text(__file__, encoding='utf-8')\n",
         encoding="utf-8",
         newline="\n",
     )
@@ -5572,7 +5571,10 @@ def test_source_installer_prefers_installed_lifecycle(
     )
 
     assert result.returncode == 0, result.stderr
-    assert marker.read_text(encoding="utf-8") == "runtime"
+    selected_runtime = pathlib.Path(marker.read_text(encoding="utf-8")).resolve()
+    assert not selected_runtime.is_relative_to(installed_bundle.resolve())
+    assert selected_runtime.name == "install-managed-skills.py"
+    assert not selected_runtime.exists()
     assert not install_root.exists()
 
 
