@@ -11,7 +11,7 @@ Reusable Ceratops skills for Codex and other `SKILL.md`-compatible agents.
 | `ceratops-credit-savings-analysis` | Analyze recent Codex runs for avoidable credit spend and recommend low-maintenance controls. |
 | `ceratops-skill-lifecycle` | Route skill-domain work across create, make-repo-compatible, preferred eligible fast-change, update, skills-contract-review, and skills-consistency-review actions. |
 | `ceratops-automation-run` | Run recurring automations with shared Ceratops alert, memory, and completion policy. |
-| `ceratops-task-lifecycle` | Route task execution, same-thread resume, fix-loop break, handoff, and closure-check work across action references. |
+| `ceratops-task-lifecycle` | Route same-thread task resume, whole-task handoff, and closure-check work across action references. |
 | `ceratops-code-consistency-audit` | Audit merged refactors for contradictions, docs drift, comment sufficiency, stale follow-through, and merged-only edge cases. |
 
 ## Layout
@@ -92,9 +92,12 @@ without repository deduplication.
 | `skills/ceratops-skill-lifecycle/scripts/runtime/install-managed-skills.py` | Classifies explicit, promotion-relative, or all-managed affected sets; owns direct-manifest inventory; and invokes one runtime transaction without source validation. |
 | `skills/ceratops-skill-lifecycle/scripts/runtime/synchronize-installers.py` | Copies the authoritative installer into an approved task worktree only when its parsed version is missing or lower, then runs explicit full source validation. |
 | `skills/ceratops-skill-lifecycle/scripts/runtime/managed_runtime_builder.py` | Stages, activates, rolls back, recovers, and cleans one locked selected-skill runtime transaction. |
-| `skills/ceratops-credit-savings-analysis/scripts/model-call-ledger.py` | Writes sanitized session evidence, emits artifact-free closure inventories, and validates caller classifications against every selected model call. |
+| `skills/ceratops-skill-lifecycle/scripts/update-execution.py` | Records a task-worktree baseline, verifies declared cohesive update paths, runs closed structured checks once, and writes detailed evidence while preserving unrelated dirty state. |
+| `skills/ceratops-credit-savings-analysis/scripts/model-call-ledger.py` | Writes fingerprint, usage, and opt-in selected-semantic evidence; emits compact rankings or receipts; and preserves artifact-free closure and classification modes. |
 | `skills/ceratops-task-lifecycle/scripts/closure_snapshot.py` | Emits one compact snapshot for explicitly named closure targets and optionally removes exact task-created files validated inside the task temp root. |
 | `skills/ceratops-governance-lifecycle/scripts/apply_rules_update.py` | Applies one approved coupled rules/history request with stale-text checks, shared validation, rollback, and compact output. |
+| `skills/ceratops-governance-lifecycle/scripts/proposal-workflow.py` | Validates exact proposal inputs and structured history, writes context evidence, and delegates controller-owned prepare, atomic advance, and finalization operations. |
+| `skills/ceratops-governance-lifecycle/scripts/iteration_controller.py` | Atomically records proposal iterations, opens successors, enforces stopping, retains the champion, and safely finalizes owned artifacts. |
 | `skills/ceratops-governance-lifecycle/scripts/rule_graph.py` | Parses canonical AGENTS rules and rejects structural syntax or rule-local explicit-user override escape clauses. |
 | `skills/ceratops-repo-lifecycle/scripts/github_contract_engine/` | Package CLI for compact local audit snapshots, contract evaluation, shared GitHub API access, sanitized evidence, and evidence-gated CodeQL disposition. |
 | `skills/ceratops-repo-lifecycle/scripts/github_pr_workflow/` | Package CLI for individual PR operations, exact-commit checkpointed shipping, a scoped pending-work pre-push guard, concurrent gates, integrated post-gate admin merge, reusable-branch restoration, and terminal checkpoint cleanup. Standalone merge behavior is unchanged. |
@@ -121,7 +124,7 @@ compensation.
 Promotion and deployment are separate repository actions. `promote` assembles
 the selected branches into `release/local` without deployment;
 `promote-and-deploy` additionally runs the contract's `after_promote`
-operation. `run-operation` executes any explicitly named operation from the
+operation. Integrated deployment paths execute only operations named by the
 live contract. The runner never converts prose instructions into commands.
 
 `ship` takes either an exact pending-work scope or an explicit disabled-check
@@ -213,9 +216,9 @@ GH lifecycle validators use `ERROR`, `WARN`, and `NEEDS_AI_AGENT_REVIEW` for
 actionable findings. `ERROR` and `WARN` are blocking;
 `NEEDS_AI_AGENT_REVIEW` is judgment-required evidence that the review owner must
 classify before closure. Repo-health summary JSON includes compact stale-state
-inventory counts and samples for PRs,
-branches, tags, releases, and local path references when present; inventory
-alone is not a finding.
+inventory counts and samples for PRs, branches, tags, releases, and local path
+references when present. It also reports the observed community-profile health
+percentage and its 100% contract target; inventory alone is not a finding.
 
 Collect review evidence for non-deterministic checks with:
 

@@ -81,6 +81,16 @@ Infer missing inputs from current repo state before asking.
 
 #### 3. Apply updates at the real source
 
+- (D) Before the first edit of helper-runtime code or a multi-file contract
+  update, create one request declaring selected skills, allowed paths, cohesive
+  change groups, and structured checks; run `python
+  scripts/update-execution.py prepare --request REQUEST --state STATE`. After
+  the last edit, run `python scripts/update-execution.py verify --state STATE
+  --evidence-output EVIDENCE`. The helper must preserve the recorded
+  pre-existing worktree baseline, reject undeclared new changes or source drift,
+  run the declared checks once, treat declared zero-match searches as success,
+  write detailed evidence, and emit only `OK` or one compact actionable error.
+  Do not use it for skill-local text-only updates.
 - Update skills, shared sections, manifest, runtime payloads, runtime generation
   or validation scripts, helper-runtime files or claims, contracts, and repo
   docs only where ownership requires it.

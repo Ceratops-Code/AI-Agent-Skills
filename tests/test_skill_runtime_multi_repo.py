@@ -32,6 +32,10 @@ INSTALLER_SYNCHRONIZER = LIFECYCLE_SOURCE / "scripts" / "runtime" / "synchronize
 COMPATIBILITY_MATERIALIZER = LIFECYCLE_SOURCE / "scripts" / "materialize-compatible-repo.py"
 RUNTIME_INSTALLER = LIFECYCLE_SOURCE / "scripts" / "runtime" / "install-managed-skills.py"
 FAST_CHANGE = LIFECYCLE_SOURCE / "scripts" / "fast-change.py"
+UPDATE_EXECUTION = LIFECYCLE_SOURCE / "scripts" / "update-execution.py"
+GOVERNANCE_SOURCE = ROOT / "skills" / "ceratops-governance-lifecycle"
+PROPOSAL_WORKFLOW = GOVERNANCE_SOURCE / "scripts" / "proposal-workflow.py"
+ITERATION_CONTROLLER = GOVERNANCE_SOURCE / "scripts" / "iteration_controller.py"
 DEPLOY_OPERATION = REPOSITORY_LIFECYCLE_SOURCE / "scripts" / "run-deploy-operation.py"
 PROMOTE_REPOSITORY = REPOSITORY_LIFECYCLE_SOURCE / "scripts" / "promote-repository.py"
 MANAGE_PENDING_WORK = REPOSITORY_LIFECYCLE_SOURCE / "scripts" / "manage-pending-work.py"
@@ -49,6 +53,8 @@ def test_model_call_ledger_keeps_full_evidence_out_of_stdout(
 ) -> None:
     session = tmp_path / "session.jsonl"
     evidence = tmp_path / "ledger.json"
+    semantic_evidence = tmp_path / "semantic.json"
+    local_path = str(tmp_path / "private" / "command.txt")
     rows = [
         {
             "timestamp": "2026-07-25T00:00:00Z",
@@ -61,7 +67,12 @@ def test_model_call_ledger_keeps_full_evidence_out_of_stdout(
             "payload": {
                 "type": "function_call",
                 "name": "shell_command",
-                "arguments": '{"credential":"sentinel-secret"}',
+                "arguments": json.dumps(
+                    {
+                        "credential": "sentinel-secret",
+                        "path": local_path,
+                    }
+                ),
             },
         },
         {
@@ -133,7 +144,7 @@ def test_model_call_ledger_keeps_full_evidence_out_of_stdout(
     assert len(ledger["runs"][0]["calls"]) == 2
     assert "sentinel-secret" not in evidence.read_text(encoding="utf-8")
 
-    selected = subprocess.run(
+    missing_sidecar = subprocess.run(
         [
             sys.executable,
             str(MODEL_CALL_LEDGER),
@@ -148,18 +159,621 @@ def test_model_call_ledger_keeps_full_evidence_out_of_stdout(
         text=True,
         check=False,
     )
-    assert selected.returncode == 0, selected.stderr
-    assert "sentinel-secret" not in selected.stdout
-    selected_summary = json.loads(selected.stdout)
-    assert len(selected_summary["selected_runs"][0]["calls"]) == 2
-    semantic_action = selected_summary["selected_runs"][0]["calls"][0][
-        "semantic_actions"
-    ][0]
-    assert semantic_action == {
-        "kind": "tool",
-        "name": "shell_command",
-        "summary": '{"credential":"<redacted>"}',
+    assert missing_sidecar.returncode == 2
+    assert (
+        "--include-run requires --semantic-evidence-output"
+        in missing_sidecar.stderr
+    )
+    assert missing_sidecar.stdout == ""
+
+    sidecar = subprocess.run(
+        [
+            sys.executable,
+            str(MODEL_CALL_LEDGER),
+            "--session",
+            str(session),
+            "--evidence-output",
+            str(evidence),
+            "--semantic-evidence-output",
+            str(semantic_evidence),
+            "--include-run",
+            "turn-1",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert sidecar.returncode == 0, sidecar.stderr
+    assert "sentinel-secret" not in sidecar.stdout
+    assert local_path not in sidecar.stdout
+    sidecar_summary = json.loads(sidecar.stdout)
+    assert sidecar_summary["schema"] == (
+        "ceratops-model-call-semantic-summary.v1"
+    )
+    assert sidecar_summary["evidence_schemas"] == {
+        "ledger": "ceratops-model-call-ledger.v1",
+        "semantic": "ceratops-model-call-semantic-evidence.v1",
     }
+    assert sidecar_summary["written"] == {"ledger": True, "semantic": True}
+    assert sidecar_summary["totals"] == {
+        "selected_runs": 1,
+        "selected_model_calls": 2,
+    }
+    assert sidecar_summary["selected_runs"] == [
+        {"turn_id": "turn-1", "model_calls": 2}
+    ]
+    assert "evidence_output" not in sidecar_summary
+    assert json.loads(evidence.read_text(encoding="utf-8"))["schema"] == (
+        "ceratops-model-call-ledger.v1"
+    )
+    semantic_detail = json.loads(semantic_evidence.read_text(encoding="utf-8"))
+    assert semantic_detail["schema"] == (
+        "ceratops-model-call-semantic-evidence.v1"
+    )
+    serialized_semantics = json.dumps(semantic_detail)
+    assert "sentinel-secret" not in serialized_semantics
+    assert local_path not in serialized_semantics
+    assert semantic_detail["selected_runs"][0]["calls"][0][
+        "semantic_actions"
+    ][0]["summary"] == (
+        '{"credential":"<redacted>","path":"<local-path>"}'
+    )
+
+    missing_selection = subprocess.run(
+        [
+            sys.executable,
+            str(MODEL_CALL_LEDGER),
+            "--session",
+            str(session),
+            "--evidence-output",
+            str(evidence),
+            "--semantic-evidence-output",
+            str(semantic_evidence),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert missing_selection.returncode == 2
+    assert "requires --include-run" in missing_selection.stderr
+
+    classifications = tmp_path / "classifications.json"
+    classifications.write_text(
+        json.dumps(
+            {
+                "schema": "ceratops-model-call-classifications.v1",
+                "session": str(session),
+                "runs": [
+                    {
+                        "turn_id": "turn-1",
+                        "groups": [
+                            {"category": "necessary", "indices": [1, 2]}
+                        ],
+                    }
+                ],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    classified = subprocess.run(
+        [
+            sys.executable,
+            str(MODEL_CALL_LEDGER),
+            "--session",
+            str(session),
+            "--classifications",
+            str(classifications),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert classified.returncode == 0, classified.stderr
+    classified_summary = json.loads(classified.stdout)
+    assert classified_summary["schema"] == (
+        "ceratops-model-call-classified-summary.v1"
+    )
+    assert classified_summary["totals"]["model_calls"] == 2
+    assert classified_summary["totals"]["necessary"] == 2
+
+
+def test_model_call_ledger_usage_summary_is_ranked_and_evidence_based(
+    tmp_path: pathlib.Path,
+) -> None:
+    session = tmp_path / "session.jsonl"
+    evidence = tmp_path / "usage-evidence.json"
+    unpriced_evidence = tmp_path / "unpriced-evidence.json"
+    pricing = tmp_path / "pricing.json"
+    secret = "summary-sentinel-secret"
+    local_path = str(pathlib.Path.home() / "private" / "summary.txt")
+    repeated_arguments = json.dumps(
+        {"command": "check", "credential": secret},
+        sort_keys=True,
+    )
+    rows = [
+        {
+            "timestamp": "2026-07-25T00:00:00Z",
+            "type": "turn_context",
+            "payload": {"turn_id": "turn-1"},
+        },
+        {
+            "timestamp": "2026-07-25T00:00:01Z",
+            "type": "response_item",
+            "payload": {
+                "type": "custom_tool_call",
+                "name": "mcp_process",
+                "call_id": "call-1",
+                "input": repeated_arguments,
+            },
+        },
+        {
+            "timestamp": "2026-07-25T00:00:01.100Z",
+            "type": "event_msg",
+            "payload": {
+                "type": "mcp_tool_call_end",
+                "call_id": "call-1",
+                "duration": {"secs": 0, "nanos": 100_000_000},
+                "result": {
+                    "Ok": {
+                        "isError": True,
+                        "structuredContent": {
+                            "exit_code": 7,
+                            "timed_out": True,
+                            "path": local_path,
+                            "secret": secret,
+                        },
+                    }
+                },
+            },
+        },
+        {
+            "timestamp": "2026-07-25T00:00:01.200Z",
+            "type": "response_item",
+            "payload": {
+                "type": "custom_tool_call_output",
+                "call_id": "call-1",
+                "output": [{"type": "text", "text": f"{local_path} {secret}"}],
+            },
+        },
+        {
+            "timestamp": "2026-07-25T00:00:02Z",
+            "type": "event_msg",
+            "payload": {
+                "type": "token_count",
+                "info": {
+                    "last_token_usage": {
+                        "input_tokens": 100,
+                        "cached_input_tokens": 40,
+                        "output_tokens": 20,
+                        "reasoning_output_tokens": 5,
+                        "total_tokens": 120,
+                    }
+                },
+            },
+        },
+        {
+            "timestamp": "2026-07-25T00:00:03Z",
+            "type": "response_item",
+            "payload": {
+                "type": "custom_tool_call",
+                "name": "mcp_process",
+                "call_id": "call-2",
+                "input": repeated_arguments,
+            },
+        },
+        {
+            "timestamp": "2026-07-25T00:00:03.100Z",
+            "type": "event_msg",
+            "payload": {
+                "type": "mcp_tool_call_end",
+                "call_id": "call-2",
+                "duration": {"secs": 0, "nanos": 100_000_000},
+                "result": {
+                    "Ok": {
+                        "isError": False,
+                        "structuredContent": {
+                            "exit_code": 3,
+                            "timed_out": False,
+                        },
+                    }
+                },
+            },
+        },
+        {
+            "timestamp": "2026-07-25T00:00:03.200Z",
+            "type": "response_item",
+            "payload": {
+                "type": "custom_tool_call_output",
+                "call_id": "call-2",
+                "output": [{"type": "text", "text": "nonzero but handled"}],
+            },
+        },
+        {
+            "timestamp": "2026-07-25T00:00:04Z",
+            "type": "response_item",
+            "payload": {
+                "type": "function_call",
+                "name": "wait_agent",
+                "call_id": "call-3",
+                "arguments": "{}",
+            },
+        },
+        {
+            "timestamp": "2026-07-25T00:00:04.100Z",
+            "type": "response_item",
+            "payload": {
+                "type": "function_call_output",
+                "call_id": "call-3",
+                "output": json.dumps({"timed_out": True, "message": secret}),
+            },
+        },
+        {
+            "timestamp": "2026-07-25T00:00:05Z",
+            "type": "response_item",
+            "payload": {
+                "type": "custom_tool_call",
+                "name": "apply_patch",
+                "call_id": "call-4",
+                "input": {"patch": local_path, "credential": secret},
+            },
+        },
+        {
+            "timestamp": "2026-07-25T00:00:05.100Z",
+            "type": "event_msg",
+            "payload": {
+                "type": "patch_apply_end",
+                "call_id": "call-4",
+                "success": False,
+                "status": "failed",
+                "changes": {local_path: {"type": "update"}},
+            },
+        },
+        {
+            "timestamp": "2026-07-25T00:00:05.200Z",
+            "type": "response_item",
+            "payload": {
+                "type": "custom_tool_call_output",
+                "call_id": "call-4",
+                "output": [{"type": "text", "text": secret}],
+            },
+        },
+        {
+            "timestamp": "2026-07-25T00:00:06Z",
+            "type": "response_item",
+            "payload": {
+                "type": "function_call",
+                "name": "process_control",
+                "call_id": "call-5",
+                "arguments": json.dumps({"path": local_path}),
+            },
+        },
+        {
+            "timestamp": "2026-07-25T00:00:06.100Z",
+            "type": "response_item",
+            "payload": {
+                "type": "function_call_output",
+                "call_id": "call-5",
+                "output": json.dumps(
+                    {"terminated": True, "returncode": 0, "message": secret}
+                ),
+            },
+        },
+        {
+            "timestamp": "2026-07-25T00:00:07Z",
+            "type": "response_item",
+            "payload": {
+                "type": "custom_tool_call",
+                "name": "exec",
+                "call_id": "call-6",
+                "input": f"await tools.shell_command({local_path!r}, {secret!r})",
+            },
+        },
+        {
+            "timestamp": "2026-07-25T00:00:07.100Z",
+            "type": "response_item",
+            "payload": {
+                "type": "custom_tool_call_output",
+                "call_id": "call-6",
+                "output": [
+                    {
+                        "type": "text",
+                        "text": json.dumps(
+                            {
+                                "exit_code": 9,
+                                "timed_out": True,
+                                "path": local_path,
+                                "secret": secret,
+                            }
+                        ),
+                    }
+                ],
+            },
+        },
+        {
+            "timestamp": "2026-07-25T00:00:08Z",
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "assistant",
+                "phase": "final_answer",
+                "content": [{"type": "output_text", "text": secret}],
+            },
+        },
+        {
+            "timestamp": "2026-07-25T00:00:09Z",
+            "type": "event_msg",
+            "payload": {
+                "type": "token_count",
+                "info": {
+                    "last_token_usage": {
+                        "input_tokens": 120,
+                        "cached_input_tokens": 60,
+                        "output_tokens": 30,
+                        "reasoning_output_tokens": 10,
+                        "total_tokens": 150,
+                    }
+                },
+            },
+        },
+        {
+            "timestamp": "2026-07-25T00:00:10Z",
+            "type": "event_msg",
+            "payload": {
+                "type": "task_complete",
+                "turn_id": "turn-1",
+                "duration_ms": 2500,
+            },
+        },
+        {
+            "timestamp": "2026-07-25T00:01:00Z",
+            "type": "turn_context",
+            "payload": {"turn_id": "turn-2"},
+        },
+        {
+            "timestamp": "2026-07-25T00:01:01Z",
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "assistant",
+                "phase": "final_answer",
+            },
+        },
+        {
+            "timestamp": "2026-07-25T00:01:02Z",
+            "type": "event_msg",
+            "payload": {
+                "type": "token_count",
+                "info": {
+                    "last_token_usage": {
+                        "input_tokens": 1000,
+                        "cached_input_tokens": 900,
+                        "output_tokens": 100,
+                        "reasoning_output_tokens": 80,
+                        "total_tokens": 1100,
+                    }
+                },
+            },
+        },
+        {
+            "timestamp": "2026-07-25T00:01:03Z",
+            "type": "event_msg",
+            "payload": {
+                "type": "task_complete",
+                "turn_id": "turn-2",
+                "duration_ms": 1000,
+            },
+        },
+        {
+            "timestamp": "2026-07-25T00:02:00Z",
+            "type": "turn_context",
+            "payload": {"turn_id": "incomplete-turn"},
+        },
+        {
+            "timestamp": "2026-07-25T00:02:01Z",
+            "type": "event_msg",
+            "payload": {
+                "type": "token_count",
+                "info": {
+                    "last_token_usage": {
+                        "input_tokens": 9000,
+                        "cached_input_tokens": 0,
+                        "output_tokens": 900,
+                        "reasoning_output_tokens": 90,
+                        "total_tokens": 9900,
+                    }
+                },
+            },
+        },
+    ]
+    session.write_text(
+        "".join(json.dumps(row) + "\n" for row in rows),
+        encoding="utf-8",
+        newline="\n",
+    )
+    pricing.write_text(
+        json.dumps(
+            {
+                "schema": "ceratops-model-call-pricing-profile.v1",
+                "input_per_million_tokens": 2,
+                "cached_input_per_million_tokens": 0.5,
+                "output_per_million_tokens": 8,
+                "mode_multiplier": 1.5,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(MODEL_CALL_LEDGER),
+            "--session",
+            str(session),
+            "--summary",
+            "--evidence-output",
+            str(evidence),
+            "--pricing-profile",
+            str(pricing),
+            "--top",
+            "1",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    summary_text = completed.stdout
+    evidence_text = evidence.read_text(encoding="utf-8")
+    for sensitive in (secret, local_path, str(session), str(evidence)):
+        assert sensitive not in summary_text
+        assert sensitive not in evidence_text
+    summary = json.loads(summary_text)
+    assert summary["schema"] == "ceratops-model-call-usage-summary.v1"
+    assert summary["evidence_schema"] == "ceratops-model-call-usage-evidence.v1"
+    assert summary["top_n"] == 1
+    assert summary["totals"] == {
+        "model_calls": 3,
+        "input_tokens": 1220,
+        "cached_input_tokens": 1000,
+        "uncached_input_tokens": 220,
+        "output_tokens": 150,
+        "reasoning_output_tokens": 95,
+        "total_tokens": 1370,
+        "input_of_total_pct": 89.05,
+        "cache_rate_pct": 81.97,
+        "output_of_total_pct": 10.95,
+        "reasoning_of_output_pct": 63.33,
+        "duration_ms": 3500,
+        "waits": 1,
+        "actions": 8,
+        "tool_actions": 6,
+        "distinct_calls": 5,
+        "repeated_calls": 1,
+        "retries": 1,
+        "explicit_failures": 4,
+        "structured_tool_errors": 2,
+        "nonzero_process_results": 2,
+        "timeouts": 2,
+        "terminations": 1,
+        "estimated_credit_cost": 0.00321,
+    }
+    expected_rankings = {
+        "total_tokens": "turn-2",
+        "uncached_input_tokens": "turn-1",
+        "output_tokens": "turn-2",
+        "reasoning_output_tokens": "turn-2",
+        "model_calls": "turn-1",
+        "explicit_failures": "turn-1",
+        "retries": "turn-1",
+        "duration_ms": "turn-1",
+        "estimated_credit_cost": "turn-2",
+    }
+    assert {
+        metric: ranked[0]["turn_id"]
+        for metric, ranked in summary["rankings"].items()
+    } == expected_rankings
+    assert all(len(ranked) == 1 for ranked in summary["rankings"].values())
+    assert summary["telemetry"]["functions_exec"] == {
+        "outer_actions": 1,
+        "child_calls": "unavailable",
+    }
+    assert "functions_exec_child_calls_unavailable" in summary["telemetry"][
+        "limitations"
+    ]
+
+    detailed = json.loads(evidence_text)
+    assert detailed["schema"] == "ceratops-model-call-usage-evidence.v1"
+    assert [run["turn_id"] for run in detailed["runs"]] == ["turn-1", "turn-2"]
+    first = detailed["runs"][0]
+    assert first["totals"]["estimated_credit_cost"] == 0.001035
+    assert first["tool_action_results"][1]["retry"] is True
+    assert first["tool_action_results"][1]["explicit_failure"] is False
+    assert first["tool_action_results"][1]["outcomes"][
+        "nonzero_process_result"
+    ] is True
+    assert first["tool_action_results"][-1]["name"] == "exec"
+    assert first["tool_action_results"][-1]["result_telemetry"] == "unstructured"
+    assert detailed["telemetry"]["structured_process_result_actions"] == 3
+    assert detailed["telemetry"][
+        "nonzero_process_results_are_semantic_failures"
+    ] is False
+
+    unpriced = subprocess.run(
+        [
+            sys.executable,
+            str(MODEL_CALL_LEDGER),
+            "--session",
+            str(session),
+            "--summary",
+            "--evidence-output",
+            str(unpriced_evidence),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert unpriced.returncode == 0, unpriced.stderr
+    unpriced_summary = json.loads(unpriced.stdout)
+    assert unpriced_summary["pricing"] == {"provided": False}
+    assert unpriced_summary["totals"]["estimated_credit_cost"] is None
+    assert unpriced_summary["rankings"]["estimated_credit_cost"] == []
+    assert "pricing_profile_not_provided" in unpriced_summary["telemetry"][
+        "limitations"
+    ]
+
+    invalid = subprocess.run(
+        [
+            sys.executable,
+            str(MODEL_CALL_LEDGER),
+            "--session",
+            str(session),
+            "--summary",
+            "--evidence-output",
+            str(tmp_path / "invalid.json"),
+            "--include-run",
+            "turn-1",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert invalid.returncode == 2
+    assert "--summary does not accept --include-run" in invalid.stderr
+    assert not (tmp_path / "invalid.json").exists()
+
+    invalid_pricing = tmp_path / "invalid-pricing.json"
+    invalid_pricing.write_text(
+        pricing.read_text(encoding="utf-8").replace(
+            "ceratops-model-call-pricing-profile.v1",
+            "ceratops-model-call-pricing-profile.v0",
+        ),
+        encoding="utf-8",
+        newline="\n",
+    )
+    rejected_pricing = subprocess.run(
+        [
+            sys.executable,
+            str(MODEL_CALL_LEDGER),
+            "--session",
+            str(session),
+            "--summary",
+            "--evidence-output",
+            str(tmp_path / "rejected-pricing-evidence.json"),
+            "--pricing-profile",
+            str(invalid_pricing),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert rejected_pricing.returncode == 2
+    assert "pricing profile schema must be" in rejected_pricing.stderr
+    assert not (tmp_path / "rejected-pricing-evidence.json").exists()
 
 
 def test_model_call_ledger_closure_mode_is_artifact_free(
@@ -363,6 +977,32 @@ def test_model_call_ledger_closure_mode_is_artifact_free(
     assert [call["index"] for call in summary["runs"][0]["calls"]] == [1, 2]
     assert "tokens" not in summary["runs"][0]["calls"][0]
     assert "selected_runs" not in summary
+
+    usage_evidence = tmp_path / "thread-usage.json"
+    usage = subprocess.run(
+        [
+            sys.executable,
+            str(MODEL_CALL_LEDGER),
+            "--summary",
+            "--thread-id",
+            thread_id,
+            "--evidence-output",
+            str(usage_evidence),
+            "--top",
+            "1",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=environment,
+    )
+    assert usage.returncode == 0, usage.stderr
+    usage_summary = json.loads(usage.stdout)
+    assert usage_summary["schema"] == "ceratops-model-call-usage-summary.v1"
+    assert usage_summary["window"]["completed_runs"] == 2
+    assert json.loads(usage_evidence.read_text(encoding="utf-8"))["schema"] == (
+        "ceratops-model-call-usage-evidence.v1"
+    )
 
     semantic = subprocess.run(
         [
@@ -656,6 +1296,418 @@ def fast_change_request(
     }
 
 
+def prepare_update_execution_worktree(
+    tmp_path: pathlib.Path,
+) -> tuple[pathlib.Path, pathlib.Path]:
+    """Create one linked task worktree with an existing helper behavior test."""
+
+    scope = tmp_path / "update-execution"
+    scope.mkdir()
+    source = prepare_fast_change_repo(scope)
+    tests = source / "tests"
+    tests.mkdir()
+    (tests / "test_helper.py").write_text(
+        "import pathlib\n\n"
+        "def test_helper_value():\n"
+        "    root = pathlib.Path(__file__).resolve().parents[1]\n"
+        "    namespace = {}\n"
+        "    source = root / 'skills' / 'alpha-tool' / 'scripts' / 'tool.py'\n"
+        "    exec(source.read_text(encoding='utf-8'), namespace)\n"
+        "    assert namespace['VALUE'] == 2\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    assert run_git(source, "add", "tests/test_helper.py").returncode == 0
+    assert run_git(source, "commit", "-m", "add helper behavior test").returncode == 0
+    worktree = scope / "task-worktree"
+    added = run_git(
+        source,
+        "worktree",
+        "add",
+        "-b",
+        "codex/update-execution-test",
+        str(worktree),
+        "HEAD",
+    )
+    assert added.returncode == 0, added.stderr
+    return worktree, scope
+
+
+def run_update_execution(*arguments: str) -> subprocess.CompletedProcess[str]:
+    """Run one update-execution command with captured compact output."""
+
+    return subprocess.run(
+        [sys.executable, str(UPDATE_EXECUTION), *arguments],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def test_update_execution_preserves_baseline_and_runs_declared_checks_once(
+    tmp_path: pathlib.Path,
+) -> None:
+    worktree, scope = prepare_update_execution_worktree(tmp_path)
+    baseline = worktree / "preexisting.txt"
+    baseline.write_text("keep me\n", encoding="utf-8", newline="\n")
+    check_log = scope / "check.log"
+    check_script = scope / "check-once.py"
+    check_script.write_text(
+        "import pathlib\n"
+        "path = pathlib.Path(__file__).with_name('check.log')\n"
+        "prior = path.read_text(encoding='utf-8') if path.exists() else ''\n"
+        "path.write_text(prior + 'run\\n', encoding='utf-8')\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    request_path = scope / "request.json"
+    state_path = scope / "state.json"
+    evidence_path = scope / "evidence.json"
+    request_path.write_text(
+        json.dumps(
+            {
+                "schema": "ceratops-skill-update-request.v1",
+                "repo_root": str(worktree),
+                "selected_skills": ["alpha-tool"],
+                "allowed_paths": [
+                    "skills/alpha-tool/scripts/tool.py",
+                ],
+                "change_groups": [
+                    {
+                        "name": "helper-runtime",
+                        "paths": ["skills/alpha-tool/scripts/tool.py"],
+                    }
+                ],
+                "checks": [
+                    {
+                        "kind": "search",
+                        "pattern": "FORBIDDEN",
+                        "paths": ["skills/alpha-tool/scripts/tool.py"],
+                        "expected_matches": 0,
+                    },
+                    {"kind": "command", "argv": [sys.executable, str(check_script)]},
+                    {
+                        "kind": "pytest",
+                        "nodes": ["tests/test_helper.py::test_helper_value"],
+                    },
+                ],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    prepared = run_update_execution(
+        "prepare",
+        "--request",
+        str(request_path),
+        "--state",
+        str(state_path),
+    )
+    assert prepared.returncode == 0, prepared.stderr
+    assert prepared.stdout.strip() == "OK"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["schema"] == "ceratops-skill-update-state.v1"
+    assert "preexisting.txt" in state["baseline_dirty"]
+
+    helper = worktree / "skills" / "alpha-tool" / "scripts" / "tool.py"
+    helper.write_text("VALUE = 2\n", encoding="utf-8", newline="\n")
+    verified = run_update_execution(
+        "verify",
+        "--state",
+        str(state_path),
+        "--evidence-output",
+        str(evidence_path),
+    )
+    assert verified.returncode == 0, verified.stderr
+    assert verified.stdout.strip() == "OK"
+    evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+    assert evidence["schema"] == "ceratops-skill-update-evidence.v1"
+    assert evidence["status"] == "passed"
+    assert evidence["changed_paths"] == ["skills/alpha-tool/scripts/tool.py"]
+    assert [check["kind"] for check in evidence["checks"]] == [
+        "search",
+        "command",
+        "pytest",
+    ]
+    assert evidence["checks"][0]["actual_matches"] == 0
+    assert check_log.read_text(encoding="utf-8").splitlines() == ["run"]
+    assert baseline.read_text(encoding="utf-8") == "keep me\n"
+
+    baseline.write_text("changed\n", encoding="utf-8", newline="\n")
+    baseline_failure_path = scope / "baseline-failure.json"
+    baseline_failure = run_update_execution(
+        "verify",
+        "--state",
+        str(state_path),
+        "--evidence-output",
+        str(baseline_failure_path),
+    )
+    assert baseline_failure.returncode == 2
+    assert "pre-existing dirty path changed" in baseline_failure.stderr
+    assert json.loads(baseline_failure_path.read_text(encoding="utf-8"))[
+        "status"
+    ] == "failed"
+
+    baseline.write_text("keep me\n", encoding="utf-8", newline="\n")
+    (worktree / "rogue.txt").write_text("rogue\n", encoding="utf-8", newline="\n")
+    rogue_failure_path = scope / "rogue-failure.json"
+    rogue_failure = run_update_execution(
+        "verify",
+        "--state",
+        str(state_path),
+        "--evidence-output",
+        str(rogue_failure_path),
+    )
+    assert rogue_failure.returncode == 2
+    assert "undeclared working-tree change" in rogue_failure.stderr
+    assert check_log.read_text(encoding="utf-8").splitlines() == ["run"]
+
+
+def test_proposal_workflow_validates_context_and_owns_iteration_transition(
+    tmp_path: pathlib.Path,
+) -> None:
+    original = tmp_path / "original.md"
+    regressions = tmp_path / "regressions.md"
+    target_dir = tmp_path / "governed"
+    target_dir.mkdir()
+    target = target_dir / "contract.md"
+    request_path = tmp_path / "proposal-request.json"
+    state = tmp_path / "proposal-state.json"
+    evidence = tmp_path / "proposal-context.json"
+    original.write_text("Observed failure\n", encoding="utf-8", newline="\n")
+    regressions.write_text("Preserve current scope\n", encoding="utf-8", newline="\n")
+    target.write_text(
+        "# Contract\n\nCurrent exact target.\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    current_text = (
+        "- [SKILLS-GOV-01] Before proposing or editing a repository control surface,\n"
+        "  including `AGENTS.md`, `automation.toml`, `SKILL.md`, skill manifests, shared\n"
+        "  sections, or helper contracts, re-open the relevant files from disk and use\n"
+        "  the current contents as the source of truth.\n"
+        "  - self: list-heavy"
+    )
+    assert current_text in (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+    history_source: dict[str, object] = {
+        "rules": str(ROOT / "AGENTS.md"),
+        "history": str(ROOT / "AGENTS.history.json"),
+        "rule_ids": ["SKILLS-GOV-01"],
+        "expected_text": [current_text],
+    }
+    target_source: dict[str, object] = {
+        "rules": str(target),
+        "history": None,
+        "rule_ids": [],
+        "expected_text": ["Current exact target."],
+    }
+    request: dict[str, object] = {
+        "schema": "ceratops-governance-proposal-request.v1",
+        "state": str(state),
+        "original": str(original),
+        "regressions": str(regressions),
+        "evidence_output": str(evidence),
+        "max_iterations": 1,
+        "mutation_authorized": False,
+        "expected_side_effects": [
+            "write context evidence",
+            "write controller artifacts",
+        ],
+        "sources": [history_source, target_source],
+    }
+    request_path.write_text(
+        json.dumps(request) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    prepared = subprocess.run(
+        [
+            sys.executable,
+            str(PROPOSAL_WORKFLOW),
+            "prepare",
+            "--request",
+            str(request_path),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert prepared.returncode == 0, prepared.stderr
+    pending = json.loads(prepared.stdout)
+    assert pending["iteration"] == 1
+    context = json.loads(evidence.read_text(encoding="utf-8"))
+    assert context["schema"] == "ceratops-governance-proposal-context.v1"
+    assert context["history_lookup"]["unknown"] == []
+    assert context["sources"][1]["history"] is None
+    pathlib.Path(pending["candidate"]).write_text(
+        "Exact candidate\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    pathlib.Path(pending["assessment"]).write_text(
+        "Regression assessment\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    advanced = subprocess.run(
+        [
+            sys.executable,
+            str(PROPOSAL_WORKFLOW),
+            "advance",
+            "--state",
+            str(state),
+            "--outcome",
+            "improved",
+            "--regressions",
+            "passed",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert advanced.returncode == 0, advanced.stderr
+    status = json.loads(advanced.stdout)
+    assert status["complete"] is True
+    assert status["pending"] is None
+    finalized = subprocess.run(
+        [
+            sys.executable,
+            str(PROPOSAL_WORKFLOW),
+            "finalize",
+            "--state",
+            str(state),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert finalized.returncode == 0, finalized.stderr
+    assert finalized.stdout.strip() == "OK"
+    assert not state.exists()
+    assert not (tmp_path / "iterations").exists()
+    assert original.is_file() and regressions.is_file() and evidence.is_file()
+
+    invalid_request = dict(request)
+    invalid_state = tmp_path / "invalid-state.json"
+    invalid_evidence = tmp_path / "invalid-context.json"
+    invalid_request["state"] = str(invalid_state)
+    invalid_request["evidence_output"] = str(invalid_evidence)
+    invalid_request["sources"] = [
+        {
+            **history_source,
+            "expected_text": ["missing exact current text"],
+        }
+    ]
+    invalid_path = tmp_path / "invalid-request.json"
+    invalid_path.write_text(
+        json.dumps(invalid_request) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    rejected = subprocess.run(
+        [
+            sys.executable,
+            str(PROPOSAL_WORKFLOW),
+            "prepare",
+            "--request",
+            str(invalid_path),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert rejected.returncode == 2
+    assert "expected_text must occur exactly once" in rejected.stderr
+    assert not invalid_state.exists()
+    assert not invalid_evidence.exists()
+
+
+def test_iteration_controller_preserves_legacy_commands(
+    tmp_path: pathlib.Path,
+) -> None:
+    original = tmp_path / "legacy-original.md"
+    state = tmp_path / "legacy-state.json"
+    original.write_text("Original\n", encoding="utf-8", newline="\n")
+    initialized = subprocess.run(
+        [
+            sys.executable,
+            str(ITERATION_CONTROLLER),
+            "init",
+            "--state",
+            str(state),
+            "--original",
+            str(original),
+            "--max-iterations",
+            "1",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert initialized.returncode == 0, initialized.stderr
+    assert initialized.stdout.strip() == "OK"
+    opened = subprocess.run(
+        [sys.executable, str(ITERATION_CONTROLLER), "next", "--state", str(state)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert opened.returncode == 0, opened.stderr
+    pending = json.loads(opened.stdout)
+    pathlib.Path(pending["candidate"]).write_text(
+        "Candidate\n", encoding="utf-8", newline="\n"
+    )
+    pathlib.Path(pending["assessment"]).write_text(
+        "Assessment\n", encoding="utf-8", newline="\n"
+    )
+    submitted = subprocess.run(
+        [
+            sys.executable,
+            str(ITERATION_CONTROLLER),
+            "submit",
+            "--state",
+            str(state),
+            "--iteration",
+            str(pending["iteration"]),
+            "--token",
+            pending["token"],
+            "--outcome",
+            "improved",
+            "--regressions",
+            "passed",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert submitted.returncode == 0, submitted.stderr
+    assert json.loads(submitted.stdout)["complete"] is True
+    status = subprocess.run(
+        [sys.executable, str(ITERATION_CONTROLLER), "status", "--state", str(state)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert status.returncode == 0, status.stderr
+    assert json.loads(status.stdout)["champion_iteration"] == 1
+    finalized = subprocess.run(
+        [
+            sys.executable,
+            str(ITERATION_CONTROLLER),
+            "finalize",
+            "--state",
+            str(state),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert finalized.returncode == 0, finalized.stderr
+    assert finalized.stdout.strip() == "OK"
+    assert original.is_file() and not state.exists()
+
+
 def test_fast_change_commits_cohesive_rules_only_multi_skill_scope(
     tmp_path: pathlib.Path,
 ) -> None:
@@ -925,6 +1977,85 @@ def merged_pr_state(head: str) -> str:
             "mergeCommit": {"oid": "c" * 40},
         }
     )
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_read_admin_enforcement_preserves_boolean_state(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    enabled: bool,
+) -> None:
+    merge = load_pr_workflow_module(monkeypatch, "merge")
+    monkeypatch.setattr(
+        merge,
+        "require_output",
+        lambda command, *, cwd: json.dumps({"enabled": enabled}),
+    )
+
+    assert merge._read_admin_enforcement("endpoint", cwd=tmp_path) is enabled
+
+
+def test_private_free_plan_limit_skips_admin_protection_mutation(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    merge = load_pr_workflow_module(monkeypatch, "merge")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    head = "a" * 40
+    commands: list[tuple[str, ...]] = []
+
+    def require_output(command: list[str], *, cwd: pathlib.Path) -> str:
+        commands.append(tuple(command))
+        if command[:2] == ["gh", "api"]:
+            raise merge.CommandError(
+                "gh api failed\n"
+                "Upgrade to GitHub Pro or make this repository public "
+                "to enable this feature. (HTTP 403)"
+            )
+        if command[:3] == ["gh", "pr", "view"]:
+            return merged_pr_state(head)
+        raise AssertionError(command)
+
+    def require_success(command: list[str], *, cwd: pathlib.Path) -> None:
+        commands.append(tuple(command))
+        if command[:3] != ["gh", "pr", "merge"]:
+            raise AssertionError(command)
+
+    monkeypatch.setattr(merge, "require_output", require_output)
+    monkeypatch.setattr(merge, "require_success", require_success)
+
+    result = merge.merge_verified_pr(
+        merge_args(repo, admin=True),
+        expected_head=head,
+        readiness_summary={
+            "base": "main",
+            "head_oid": head,
+            "review_required": True,
+        },
+        recover_checkpoints=False,
+    )
+
+    assert result["status"] == "merged"
+    assert not any(
+        command[:2] == ("gh", "api") and "--method" in command
+        for command in commands
+    )
+
+
+def test_read_admin_enforcement_rejects_unrelated_forbidden_error(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    merge = load_pr_workflow_module(monkeypatch, "merge")
+
+    def require_output(command: list[str], *, cwd: pathlib.Path) -> str:
+        raise merge.CommandError("Resource not accessible by integration (HTTP 403)")
+
+    monkeypatch.setattr(merge, "require_output", require_output)
+
+    with pytest.raises(merge.CommandError, match="Resource not accessible"):
+        merge._read_admin_enforcement("endpoint", cwd=tmp_path)
 
 
 @pytest.mark.parametrize("initial", [True, False])

@@ -569,6 +569,36 @@ class GHContractStateEngineTests(unittest.TestCase):
         )
         self.assertTrue(condition_matches("artifact_type contains npm_package", states))
 
+    def test_release_attestation_verification_uses_workflow_or_immutability(self):
+        rule = next(
+            item
+            for item in self.contracts["artifact"]["checks"]
+            if item["id"] == "github_release_assets.attestation_verification"
+        )
+        repository: dict[str, Any] = {
+            "types": {"artifact_surface": ["github_release_binary"]},
+            "stale": {
+                "releases": {
+                    "inventory": [{"immutable": True, "assets": [{"name": "cli.zip"}]}]
+                }
+            },
+        }
+        local = {"workflows": {"publish_detected": False, "attestation_detected": False}}
+        artifact = _artifact_state({}, repository, local, {})
+        states = {
+            "artifact_type": repository["types"]["artifact_surface"],
+            "workflow_emits_attestation_or_provenance": artifact[
+                "attestation_detected"
+            ],
+            "immutable_release_detected": artifact["immutable_release_detected"],
+        }
+
+        self.assertTrue(condition_matches(rule["applies_when"], states))
+        states["immutable_release_detected"] = False
+        self.assertFalse(condition_matches(rule["applies_when"], states))
+        states["workflow_emits_attestation_or_provenance"] = True
+        self.assertTrue(condition_matches(rule["applies_when"], states))
+
     def test_classifier_ignores_tool_only_manifests(self):
         local = {
             "files": [
@@ -594,22 +624,50 @@ class GHContractStateEngineTests(unittest.TestCase):
         self.assertEqual(types["artifact_surface"], ["no_artifact"])
         self.assertIn("python", types["language_or_iac"])
 
-    def test_classifier_keeps_publishable_manifests(self):
-        local = {
-            "files": ["pyproject.toml", "package.json"],
+    def test_classifier_requires_publish_evidence(self):
+        local: dict[str, Any] = {
+            "files": ["pyproject.toml"],
             "texts": {
                 "pyproject.toml": '[project]\nname = "demo"\nversion = "1.0.0"\n',
-                "package.json": json.dumps(
-                    {"name": "demo", "version": "1.0.0", "license": "MIT"}
-                ),
             },
         }
-        types = classify_repository(
+        manifest_only = classify_repository(
             {}, local, [], self.contracts["artifact"]["artifact_type_system"]
         )
-        self.assertEqual(
-            types["artifact_surface"], ["npm_package", "pypi_python_package"]
+        self.assertEqual(manifest_only["artifact_surface"], ["no_artifact"])
+
+        local["files"].append(".github/workflows/publish.yml")
+        local["texts"][".github/workflows/publish.yml"] = (
+            "uses: pypa/gh-action-pypi-publish@release/v1\n"
         )
+        workflow_backed = classify_repository(
+            {}, local, [], self.contracts["artifact"]["artifact_type_system"]
+        )
+        self.assertEqual(workflow_backed["artifact_surface"], ["pypi_python_package"])
+
+        local["files"].remove(".github/workflows/publish.yml")
+        local["texts"].pop(".github/workflows/publish.yml")
+        contract_backed = classify_repository(
+            {},
+            local,
+            [],
+            self.contracts["artifact"]["artifact_type_system"],
+            declared_artifact_types=["pypi_python_package"],
+        )
+        self.assertEqual(contract_backed["artifact_surface"], ["pypi_python_package"])
+
+        npm_local = {
+            "files": ["package.json"],
+            "texts": {
+                "package.json": json.dumps(
+                    {"name": "demo", "version": "1.0.0", "license": "MIT"}
+                )
+            },
+        }
+        npm_types = classify_repository(
+            {}, npm_local, [], self.contracts["artifact"]["artifact_type_system"]
+        )
+        self.assertEqual(npm_types["artifact_surface"], ["npm_package"])
 
     def test_aggregate_live_metadata_activates_registry_collectors(self):
         rules = [{"assertions": [{"path": "/artifact/live_metadata/all_resolved"}]}]
@@ -830,6 +888,45 @@ class GHContractStateEngineTests(unittest.TestCase):
         self.assertEqual(release["asset_names"], ["bundle.zip"])
         self.assertNotIn("body", release)
         self.assertEqual(summary["findings"][0]["level"], "NEEDS_AI_AGENT_REVIEW")
+
+    def test_community_profile_requires_and_reports_one_hundred_percent(self):
+        rule = next(
+            item
+            for item in self.contracts["repo"]["checks"]
+            if item["id"] == "content.community_profile_public"
+        )
+        score_assertion = next(
+            item
+            for item in rule["assertions"]
+            if item["path"]
+            == "/repository/content/community_profile/health_percentage"
+        )
+        self.assertEqual(score_assertion["expected"], 100)
+
+        desired_state = {
+            "parameters": {"owner": "owner", "repo": "repo"},
+            "contract_paths": {},
+            "selected_ids": {"repo": [rule["id"]]},
+            "rules": [rule],
+        }
+        observed = {
+            "repository": {
+                "content": {"community_profile": {"health_percentage": 87}}
+            },
+            "local": {"available": True, "root": ".", "errors": []},
+        }
+        report = build_report(
+            desired_state,
+            observed,
+            {"findings": [], "approved_drift": []},
+        )
+        summary = build_summary_report(
+            report, ["ERROR", "WARN", "NEEDS_AI_AGENT_REVIEW"]
+        )
+        self.assertEqual(
+            summary["community_profile"],
+            {"health_percentage": 87, "target_percentage": 100},
+        )
 
     def test_machine_output_removes_sensitive_and_raw_collected_content(self):
         report = {

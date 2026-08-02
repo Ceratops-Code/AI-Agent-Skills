@@ -137,7 +137,7 @@
     {
       "id": "ND.release-assets.contract-quality",
       "applies_when": "GitHub release assets, binaries, archives, installers, or CLI binaries are in scope.",
-      "review_required": "Confirm asset naming, checksums, release notes, prerelease or draft state, platform matrix, download path, and install or run smoke check are meaningful.",
+      "review_required": "Confirm asset naming, checksums, release notes, immutable-release policy, draft-before-publish ordering, automatic attestation verification, prerelease state, platform matrix, download path, and install or run smoke checks fit the release.",
       "evidence_keys": ["artifact.release_assets", "repository.stale.releases"]
     },
     {

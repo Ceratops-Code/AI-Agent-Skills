@@ -68,6 +68,9 @@ Infer missing inputs from live repo state and local files before asking.
 - (D) Treat checker output as the source of truth for machine-checkable GitHub
   settings, repo-content posture, stale queues, local checks, and artifact
   registry evidence.
+- Report the returned community-profile health percentage against its contract
+  target for every audited repository, including repositories with no other
+  finding.
 - Treat stale-state inventory counts as evidence, not findings; only
   policy-matching stale candidates should produce `NEEDS_AI_AGENT_REVIEW`.
 - If the checker reports `WARN`, `NEEDS_AI_AGENT_REVIEW`, or a blind spot,
@@ -121,6 +124,7 @@ Infer missing inputs from live repo state and local files before asking.
 
 Report only:
 
+- observed community-profile health percentage and contract target
 - health gaps fixed
 - alerts or findings left open with name or id, blocking status, reason, and
   concrete work needed

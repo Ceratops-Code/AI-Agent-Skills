@@ -1,0 +1,750 @@
+#!/usr/bin/env python3
+"""Prepare and verify one declared skill update in a task worktree.
+
+The helper records the caller's pre-existing Git baseline before source edits,
+then verifies that only declared paths changed and that undeclared dirty state
+was preserved. Checks use closed structured forms and run without a shell.
+Source files are never patched, staged, committed, installed, promoted, or
+rolled back. State and detailed evidence must be written outside the repository;
+stdout is only ``OK`` and failures are one compact stderr line.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import pathlib
+import re
+import subprocess
+import sys
+from collections.abc import Mapping, Sequence
+from typing import Any
+
+
+REQUEST_SCHEMA = "ceratops-skill-update-request.v1"
+STATE_SCHEMA = "ceratops-skill-update-state.v1"
+EVIDENCE_SCHEMA = "ceratops-skill-update-evidence.v1"
+REQUEST_FIELDS = {
+    "schema",
+    "repo_root",
+    "selected_skills",
+    "allowed_paths",
+    "change_groups",
+    "checks",
+}
+GROUP_FIELDS = {"name", "paths"}
+CHECK_FIELDS = {
+    "pytest": {"kind", "nodes"},
+    "command": {"kind", "argv"},
+    "search": {"kind", "pattern", "paths", "expected_matches"},
+}
+STATE_FIELDS = {
+    "schema",
+    "repo_root",
+    "branch",
+    "head",
+    "selected_skills",
+    "allowed_paths",
+    "change_groups",
+    "checks",
+    "baseline_dirty",
+    "baseline_targets",
+}
+SKILL_NAME_RE = re.compile(
+    r"^(?![a-z0-9-]*--)[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$"
+)
+PYTEST_NODE_RE = re.compile(r"^tests/[A-Za-z0-9_./-]+\.py::\S+$")
+MAX_CAPTURE = 32_000
+
+
+class UpdateExecutionError(RuntimeError):
+    """One compact request, baseline, check, or evidence failure."""
+
+
+def _run(
+    arguments: Sequence[str],
+    *,
+    cwd: pathlib.Path,
+) -> subprocess.CompletedProcess[str]:
+    """Run one declared process without shell interpretation."""
+
+    try:
+        return subprocess.run(
+            list(arguments),
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError as exc:
+        raise UpdateExecutionError(
+            f"could not start {arguments[0]}: {exc}"
+        ) from exc
+
+
+def _git(repo_root: pathlib.Path, *arguments: str) -> str:
+    result = _run(["git", "-C", str(repo_root), *arguments], cwd=repo_root)
+    if result.returncode:
+        detail = (result.stderr or result.stdout).strip()
+        message = f"git {' '.join(arguments)} failed"
+        raise UpdateExecutionError(f"{message}: {detail}" if detail else message)
+    return result.stdout
+
+
+def _read_json(path: pathlib.Path, label: str) -> Mapping[str, object]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise UpdateExecutionError(f"{label} is unreadable: {exc}") from exc
+    if not isinstance(value, Mapping):
+        raise UpdateExecutionError(f"{label} must be a JSON object")
+    return value
+
+
+def _closed_fields(
+    value: Mapping[str, object],
+    fields: set[str],
+    label: str,
+) -> None:
+    actual = set(value)
+    if actual == fields:
+        return
+    missing = sorted(fields - actual)
+    extra = sorted(actual - fields)
+    details: list[str] = []
+    if missing:
+        details.append("missing " + ", ".join(missing))
+    if extra:
+        details.append("unknown " + ", ".join(extra))
+    raise UpdateExecutionError(f"{label} fields are invalid: {'; '.join(details)}")
+
+
+def _string_list(value: object, label: str) -> list[str]:
+    if (
+        not isinstance(value, Sequence)
+        or isinstance(value, (str, bytes))
+        or not value
+        or not all(isinstance(item, str) and item for item in value)
+    ):
+        raise UpdateExecutionError(f"{label} must be a nonempty string list")
+    result = list(value)
+    if len(result) != len(set(result)):
+        raise UpdateExecutionError(f"{label} values must be unique")
+    return result
+
+
+def _safe_relative(value: str, label: str) -> pathlib.PurePosixPath:
+    pure = pathlib.PurePosixPath(value)
+    windows = pathlib.PureWindowsPath(value)
+    if (
+        not value
+        or "\\" in value
+        or pure.is_absolute()
+        or windows.is_absolute()
+        or windows.drive
+        or ".." in pure.parts
+        or str(pure) != value
+    ):
+        raise UpdateExecutionError(f"{label} is not a safe repo-relative path: {value}")
+    return pure
+
+
+def _target(repo_root: pathlib.Path, value: str) -> pathlib.Path:
+    pure = _safe_relative(value, "path")
+    target = repo_root.joinpath(*pure.parts)
+    try:
+        target.resolve(strict=False).relative_to(repo_root)
+    except ValueError as exc:
+        raise UpdateExecutionError(f"path escapes the repository: {value}") from exc
+    return target
+
+
+def _outside_repo(path: pathlib.Path, repo_root: pathlib.Path, label: str) -> None:
+    try:
+        path.relative_to(repo_root)
+    except ValueError:
+        return
+    raise UpdateExecutionError(f"{label} must be outside the repository")
+
+
+def _write_json(path: pathlib.Path, value: Mapping[str, object], label: str) -> None:
+    if not path.parent.is_dir():
+        raise UpdateExecutionError(f"{label} directory does not exist: {path.parent}")
+    try:
+        path.write_text(
+            json.dumps(value, separators=(",", ":")) + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+    except OSError as exc:
+        raise UpdateExecutionError(f"could not write {label}: {exc}") from exc
+
+
+def _git_path(repo_root: pathlib.Path, value: str) -> pathlib.Path:
+    path = pathlib.Path(value.strip())
+    if not path.is_absolute():
+        path = repo_root / path
+    return path.resolve()
+
+
+def _verify_task_worktree(repo_root: pathlib.Path) -> tuple[str, str]:
+    if _git(repo_root, "rev-parse", "--is-inside-work-tree").strip() != "true":
+        raise UpdateExecutionError("repo_root is not a Git worktree")
+    top = pathlib.Path(_git(repo_root, "rev-parse", "--show-toplevel").strip()).resolve()
+    if top != repo_root:
+        raise UpdateExecutionError("repo_root must be the Git worktree root")
+    git_dir = _git_path(repo_root, _git(repo_root, "rev-parse", "--git-dir"))
+    common_dir = _git_path(
+        repo_root,
+        _git(repo_root, "rev-parse", "--git-common-dir"),
+    )
+    if git_dir == common_dir:
+        raise UpdateExecutionError("repo_root must be a linked task worktree")
+    branch = _git(repo_root, "branch", "--show-current").strip()
+    if not branch:
+        raise UpdateExecutionError("task worktree must not use detached HEAD")
+    if branch in {"main", "release/local"}:
+        raise UpdateExecutionError(f"protected branch is not a task branch: {branch}")
+    return branch, _git(repo_root, "rev-parse", "HEAD").strip()
+
+
+def _dirty_paths(repo_root: pathlib.Path) -> set[str]:
+    commands = (
+        ("diff", "--name-only", "--no-renames", "-z"),
+        ("diff", "--cached", "--name-only", "--no-renames", "-z"),
+        ("ls-files", "--others", "--exclude-standard", "-z"),
+    )
+    paths: set[str] = set()
+    for command in commands:
+        output = _git(repo_root, *command)
+        paths.update(path.replace("\\", "/") for path in output.split("\0") if path)
+    return paths
+
+
+def _is_tracked(repo_root: pathlib.Path, path: str) -> bool:
+    """Allow existing ancillary files without permitting undeclared new surfaces."""
+
+    result = _run(
+        ["git", "-C", str(repo_root), "ls-files", "--error-unmatch", "--", path],
+        cwd=repo_root,
+    )
+    return result.returncode == 0
+
+
+def _content_snapshot(target: pathlib.Path) -> dict[str, object]:
+    if target.is_symlink():
+        return {
+            "kind": "symlink",
+            "sha256": hashlib.sha256(os.readlink(target).encode()).hexdigest(),
+        }
+    if not target.exists():
+        return {"kind": "missing"}
+    if not target.is_file():
+        return {"kind": "other"}
+    try:
+        content = target.read_bytes()
+    except OSError as exc:
+        raise UpdateExecutionError(f"could not read baseline path {target.name}: {exc}") from exc
+    return {
+        "kind": "file",
+        "size": len(content),
+        "sha256": hashlib.sha256(content).hexdigest(),
+    }
+
+
+def _snapshot(repo_root: pathlib.Path, path: str) -> dict[str, object]:
+    target = repo_root.joinpath(*pathlib.PurePosixPath(path).parts)
+    return {
+        "content": _content_snapshot(target),
+        "index": _git(repo_root, "ls-files", "--stage", "-z", "--", path),
+        "status": _git(
+            repo_root,
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "--untracked-files=all",
+            "--",
+            path,
+        ),
+    }
+
+
+def _validate_checks(
+    raw_checks: object,
+    repo_root: pathlib.Path,
+    allowed_paths: set[str],
+) -> list[dict[str, object]]:
+    if (
+        not isinstance(raw_checks, Sequence)
+        or isinstance(raw_checks, (str, bytes))
+        or not raw_checks
+    ):
+        raise UpdateExecutionError("checks must be a nonempty list")
+    checks: list[dict[str, object]] = []
+    for index, raw in enumerate(raw_checks, start=1):
+        if not isinstance(raw, Mapping):
+            raise UpdateExecutionError(f"check {index} must be an object")
+        kind = raw.get("kind")
+        if not isinstance(kind, str) or kind not in CHECK_FIELDS:
+            raise UpdateExecutionError(f"check {index} kind is invalid")
+        _closed_fields(raw, CHECK_FIELDS[kind], f"check {index}")
+        check = dict(raw)
+        if kind == "pytest":
+            nodes = _string_list(raw["nodes"], f"check {index} nodes")
+            for node in nodes:
+                if PYTEST_NODE_RE.fullmatch(node) is None:
+                    raise UpdateExecutionError(f"pytest node is invalid: {node}")
+                test_path = node.split("::", 1)[0]
+                target = _target(repo_root, test_path)
+                if target.is_symlink() or not target.is_file():
+                    raise UpdateExecutionError(f"pytest node file does not exist: {node}")
+            check["nodes"] = nodes
+        elif kind == "command":
+            argv = _string_list(raw["argv"], f"check {index} argv")
+            if any("\0" in value for value in argv):
+                raise UpdateExecutionError(f"check {index} argv contains NUL")
+            check["argv"] = argv
+        else:
+            pattern = raw["pattern"]
+            expected = raw["expected_matches"]
+            if not isinstance(pattern, str) or not pattern:
+                raise UpdateExecutionError(f"check {index} pattern must be text")
+            try:
+                re.compile(pattern)
+            except re.error as exc:
+                raise UpdateExecutionError(f"check {index} pattern is invalid: {exc}") from exc
+            paths = _string_list(raw["paths"], f"check {index} paths")
+            if not isinstance(expected, int) or isinstance(expected, bool) or expected < 0:
+                raise UpdateExecutionError(
+                    f"check {index} expected_matches must be a nonnegative integer"
+                )
+            for path in paths:
+                target = _target(repo_root, path)
+                if path not in allowed_paths and (target.is_symlink() or not target.is_file()):
+                    raise UpdateExecutionError(f"search path does not exist: {path}")
+            check["paths"] = paths
+        checks.append(check)
+    return checks
+
+
+def _validated_request(path: pathlib.Path) -> dict[str, object]:
+    request = _read_json(path, "request")
+    _closed_fields(request, REQUEST_FIELDS, "request")
+    if request.get("schema") != REQUEST_SCHEMA:
+        raise UpdateExecutionError(f"request schema must be {REQUEST_SCHEMA}")
+    repo_value = request["repo_root"]
+    if not isinstance(repo_value, str) or not repo_value:
+        raise UpdateExecutionError("repo_root must be nonempty text")
+    repo_root = pathlib.Path(repo_value).expanduser().resolve(strict=True)
+    if not repo_root.is_dir():
+        raise UpdateExecutionError("repo_root must be a directory")
+    branch, head = _verify_task_worktree(repo_root)
+
+    selected = _string_list(request["selected_skills"], "selected_skills")
+    for skill in selected:
+        if SKILL_NAME_RE.fullmatch(skill) is None:
+            raise UpdateExecutionError(f"selected skill name is unsafe: {skill}")
+        root = repo_root / "skills" / skill
+        if root.is_symlink() or not (root / "SKILL.md").is_file():
+            raise UpdateExecutionError(f"selected skill is not an existing source: {skill}")
+
+    allowed = _string_list(request["allowed_paths"], "allowed_paths")
+    allowed_set = set(allowed)
+    owners: set[str] = set()
+    for value in allowed:
+        pure = _safe_relative(value, "allowed path")
+        target = _target(repo_root, value)
+        matches = [
+            skill
+            for skill in selected
+            if pure.is_relative_to(pathlib.PurePosixPath("skills") / skill)
+        ]
+        if matches:
+            owners.update(matches)
+        existing_ancillary = target.is_file() and _is_tracked(repo_root, value)
+        if not matches and not existing_ancillary:
+            raise UpdateExecutionError(
+                "allowed path must be selected-skill source or an existing "
+                f"tracked ancillary file: {value}"
+            )
+        if target.is_symlink() or (target.exists() and not target.is_file()):
+            raise UpdateExecutionError(f"allowed path must be a regular file target: {value}")
+        if not target.exists() and not target.parent.is_dir():
+            raise UpdateExecutionError(f"allowed path parent does not exist: {value}")
+    missing_owners = sorted(set(selected) - owners)
+    if missing_owners:
+        raise UpdateExecutionError(
+            f"selected skill has no allowed source path: {missing_owners[0]}"
+        )
+
+    raw_groups = request["change_groups"]
+    if (
+        not isinstance(raw_groups, Sequence)
+        or isinstance(raw_groups, (str, bytes))
+        or not raw_groups
+    ):
+        raise UpdateExecutionError("change_groups must be a nonempty list")
+    groups: list[dict[str, object]] = []
+    covered: list[str] = []
+    names: set[str] = set()
+    for index, raw in enumerate(raw_groups, start=1):
+        if not isinstance(raw, Mapping):
+            raise UpdateExecutionError(f"change group {index} must be an object")
+        _closed_fields(raw, GROUP_FIELDS, f"change group {index}")
+        name = raw["name"]
+        if not isinstance(name, str) or not name.strip() or name in names:
+            raise UpdateExecutionError(f"change group {index} name is invalid")
+        paths = _string_list(raw["paths"], f"change group {index} paths")
+        unknown = sorted(set(paths) - allowed_set)
+        if unknown:
+            raise UpdateExecutionError(f"change group path is not allowed: {unknown[0]}")
+        names.add(name)
+        covered.extend(paths)
+        groups.append({"name": name, "paths": paths})
+    if len(covered) != len(set(covered)) or set(covered) != allowed_set:
+        raise UpdateExecutionError(
+            "change groups must cover every allowed path exactly once"
+        )
+
+    checks = _validate_checks(request["checks"], repo_root, allowed_set)
+    dirty = sorted(_dirty_paths(repo_root))
+    baseline_dirty = {path: _snapshot(repo_root, path) for path in dirty}
+    baseline_targets = {path: _snapshot(repo_root, path) for path in allowed}
+    return {
+        "schema": STATE_SCHEMA,
+        "repo_root": str(repo_root),
+        "branch": branch,
+        "head": head,
+        "selected_skills": selected,
+        "allowed_paths": allowed,
+        "change_groups": groups,
+        "checks": checks,
+        "baseline_dirty": baseline_dirty,
+        "baseline_targets": baseline_targets,
+    }
+
+
+def command_prepare(request_path: pathlib.Path, state_path: pathlib.Path) -> None:
+    state = _validated_request(request_path)
+    repo_root = pathlib.Path(str(state["repo_root"]))
+    resolved_state = state_path.expanduser().resolve()
+    _outside_repo(resolved_state, repo_root, "state output")
+    if resolved_state == request_path.expanduser().resolve():
+        raise UpdateExecutionError("state output must differ from request")
+    if resolved_state.is_symlink() or resolved_state.exists():
+        raise UpdateExecutionError(f"refusing to overwrite state output: {resolved_state}")
+    _write_json(resolved_state, state, "state output")
+
+
+def _validated_state(path: pathlib.Path) -> dict[str, object]:
+    raw = _read_json(path, "state")
+    _closed_fields(raw, STATE_FIELDS, "state")
+    if raw.get("schema") != STATE_SCHEMA:
+        raise UpdateExecutionError(f"state schema must be {STATE_SCHEMA}")
+    repo_value = raw["repo_root"]
+    if not isinstance(repo_value, str) or not repo_value:
+        raise UpdateExecutionError("state repo_root is invalid")
+    repo_root = pathlib.Path(repo_value).resolve(strict=True)
+    branch, head = _verify_task_worktree(repo_root)
+    if raw["branch"] != branch:
+        raise UpdateExecutionError("task branch changed after prepare")
+    if raw["head"] != head:
+        raise UpdateExecutionError("task HEAD changed after prepare")
+    allowed = _string_list(raw["allowed_paths"], "state allowed_paths")
+    selected = _string_list(raw["selected_skills"], "state selected_skills")
+    for skill in selected:
+        if SKILL_NAME_RE.fullmatch(skill) is None:
+            raise UpdateExecutionError(f"state selected skill is unsafe: {skill}")
+        root = repo_root / "skills" / skill
+        if root.is_symlink() or not (root / "SKILL.md").is_file():
+            raise UpdateExecutionError(f"selected skill source changed after prepare: {skill}")
+    owners: set[str] = set()
+    for value in allowed:
+        pure = _safe_relative(value, "state allowed path")
+        _target(repo_root, value)
+        matches = [
+            skill
+            for skill in selected
+            if pure.is_relative_to(pathlib.PurePosixPath("skills") / skill)
+        ]
+        owners.update(matches)
+        if not matches and not _is_tracked(repo_root, value):
+            raise UpdateExecutionError(
+                f"state ancillary path is not tracked: {value}"
+            )
+    if owners != set(selected):
+        raise UpdateExecutionError("state selected skills lack allowed source paths")
+    baseline_dirty = raw["baseline_dirty"]
+    baseline_targets = raw["baseline_targets"]
+    if not isinstance(baseline_dirty, Mapping) or not isinstance(baseline_targets, Mapping):
+        raise UpdateExecutionError("state baselines must be objects")
+    if not all(
+        isinstance(path, str) and isinstance(snapshot, Mapping)
+        for path, snapshot in baseline_dirty.items()
+    ):
+        raise UpdateExecutionError("state dirty baseline is invalid")
+    for raw_path in baseline_dirty:
+        assert isinstance(raw_path, str)
+        _target(repo_root, raw_path)
+    if not all(
+        isinstance(path, str) and isinstance(snapshot, Mapping)
+        for path, snapshot in baseline_targets.items()
+    ):
+        raise UpdateExecutionError("state target baseline is invalid")
+    if set(baseline_targets) != set(allowed):
+        raise UpdateExecutionError("state target baseline does not match allowed_paths")
+    raw_groups = raw["change_groups"]
+    if not isinstance(raw_groups, list) or not raw_groups:
+        raise UpdateExecutionError("state change_groups must be a nonempty list")
+    groups: list[dict[str, object]] = []
+    covered: list[str] = []
+    names: set[str] = set()
+    for index, group in enumerate(raw_groups, start=1):
+        if not isinstance(group, Mapping):
+            raise UpdateExecutionError(f"state change group {index} is invalid")
+        _closed_fields(group, GROUP_FIELDS, f"state change group {index}")
+        name = group["name"]
+        paths = _string_list(group["paths"], f"state change group {index} paths")
+        if not isinstance(name, str) or not name.strip() or name in names:
+            raise UpdateExecutionError(f"state change group {index} name is invalid")
+        if not set(paths).issubset(allowed):
+            raise UpdateExecutionError(f"state change group {index} path is not allowed")
+        names.add(name)
+        covered.extend(paths)
+        groups.append({"name": name, "paths": paths})
+    if len(covered) != len(set(covered)) or set(covered) != set(allowed):
+        raise UpdateExecutionError(
+            "state change groups must cover every allowed path exactly once"
+        )
+    checks = _validate_checks(raw["checks"], repo_root, set(allowed))
+    return {
+        **raw,
+        "repo_root": str(repo_root),
+        "selected_skills": selected,
+        "allowed_paths": allowed,
+        "baseline_dirty": dict(baseline_dirty),
+        "baseline_targets": dict(baseline_targets),
+        "change_groups": groups,
+        "checks": checks,
+    }
+
+
+def _baseline_changes(state: Mapping[str, object]) -> tuple[list[str], list[dict[str, object]]]:
+    repo_root = pathlib.Path(str(state["repo_root"]))
+    allowed_paths = state["allowed_paths"]
+    assert isinstance(allowed_paths, list)
+    allowed = {str(path) for path in allowed_paths}
+    baseline_dirty = state["baseline_dirty"]
+    baseline_targets = state["baseline_targets"]
+    assert isinstance(baseline_dirty, Mapping)
+    assert isinstance(baseline_targets, Mapping)
+    current_dirty = _dirty_paths(repo_root)
+    undeclared_new = sorted(current_dirty - set(baseline_dirty) - allowed)
+    if undeclared_new:
+        raise UpdateExecutionError(f"undeclared working-tree change: {undeclared_new[0]}")
+    for path, snapshot in baseline_dirty.items():
+        if path in allowed:
+            continue
+        if _snapshot(repo_root, path) != snapshot:
+            raise UpdateExecutionError(f"pre-existing dirty path changed: {path}")
+    changed = sorted(
+        path
+        for path, snapshot in baseline_targets.items()
+        if _snapshot(repo_root, path) != snapshot
+    )
+    if not changed:
+        raise UpdateExecutionError("no declared path changed after prepare")
+    group_results: list[dict[str, object]] = []
+    change_groups = state["change_groups"]
+    assert isinstance(change_groups, list)
+    for raw_group in change_groups:
+        if not isinstance(raw_group, Mapping):
+            raise UpdateExecutionError("state change group is invalid")
+        paths = raw_group.get("paths")
+        name = raw_group.get("name")
+        if not isinstance(name, str) or not isinstance(paths, list):
+            raise UpdateExecutionError("state change group is invalid")
+        group_changed = [path for path in paths if path in changed]
+        if not group_changed:
+            raise UpdateExecutionError(f"change group has no changed path: {name}")
+        group_results.append({"name": name, "changed_paths": group_changed})
+    return changed, group_results
+
+
+def _bounded(value: str) -> str:
+    return value if len(value) <= MAX_CAPTURE else value[:MAX_CAPTURE] + "\n[truncated]"
+
+
+def _run_check(
+    repo_root: pathlib.Path,
+    check: Mapping[str, object],
+) -> dict[str, object]:
+    kind = check.get("kind")
+    if kind == "pytest":
+        nodes = check.get("nodes")
+        if not isinstance(nodes, list) or not all(isinstance(node, str) for node in nodes):
+            raise UpdateExecutionError("state pytest check is invalid")
+        argv = [sys.executable, "-m", "pytest", "-q", *nodes]
+        result = _run(argv, cwd=repo_root)
+        evidence = {
+            "kind": kind,
+            "nodes": nodes,
+            "returncode": result.returncode,
+            "stdout": _bounded(result.stdout),
+            "stderr": _bounded(result.stderr),
+        }
+        if result.returncode:
+            raise CheckFailure("pytest check failed", evidence)
+        return evidence
+    if kind == "command":
+        raw_argv = check.get("argv")
+        if not isinstance(raw_argv, list) or not all(
+            isinstance(item, str) for item in raw_argv
+        ):
+            raise UpdateExecutionError("state command check is invalid")
+        command_argv = [str(item) for item in raw_argv]
+        result = _run(command_argv, cwd=repo_root)
+        evidence = {
+            "kind": kind,
+            "argv": command_argv,
+            "returncode": result.returncode,
+            "stdout": _bounded(result.stdout),
+            "stderr": _bounded(result.stderr),
+        }
+        if result.returncode:
+            raise CheckFailure(f"command check failed with {result.returncode}", evidence)
+        return evidence
+    if kind != "search":
+        raise UpdateExecutionError("state check kind is invalid")
+    pattern = check.get("pattern")
+    paths = check.get("paths")
+    expected = check.get("expected_matches")
+    if (
+        not isinstance(pattern, str)
+        or not isinstance(paths, list)
+        or not all(isinstance(path, str) for path in paths)
+        or not isinstance(expected, int)
+        or isinstance(expected, bool)
+    ):
+        raise UpdateExecutionError("state search check is invalid")
+    regex = re.compile(pattern)
+    matches = 0
+    for path in paths:
+        target = _target(repo_root, path)
+        if target.is_symlink() or not target.is_file():
+            raise UpdateExecutionError(f"search path does not exist: {path}")
+        try:
+            text = target.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            raise UpdateExecutionError(f"search path is unreadable: {path}: {exc}") from exc
+        matches += sum(1 for _ in regex.finditer(text))
+    evidence = {
+        "kind": kind,
+        "pattern": pattern,
+        "paths": paths,
+        "expected_matches": expected,
+        "actual_matches": matches,
+        "returncode": 0 if matches == expected else 1,
+    }
+    if matches != expected:
+        raise CheckFailure(
+            f"search expected {expected} matches, found {matches}", evidence
+        )
+    return evidence
+
+
+class CheckFailure(UpdateExecutionError):
+    """A check failure that carries its detailed evidence record."""
+
+    def __init__(self, message: str, evidence: dict[str, object]) -> None:
+        super().__init__(message)
+        self.evidence = evidence
+
+
+def command_verify(state_path: pathlib.Path, evidence_path: pathlib.Path) -> None:
+    state = _validated_state(state_path)
+    repo_root = pathlib.Path(str(state["repo_root"]))
+    resolved_evidence = evidence_path.expanduser().resolve()
+    _outside_repo(resolved_evidence, repo_root, "evidence output")
+    if resolved_evidence == state_path.expanduser().resolve():
+        raise UpdateExecutionError("evidence output must differ from state")
+    changed: list[str] = []
+    groups: list[dict[str, object]] = []
+    results: list[dict[str, object]] = []
+    failures: list[str] = []
+    try:
+        changed, groups = _baseline_changes(state)
+    except UpdateExecutionError as exc:
+        failures.append(str(exc))
+    checks = state["checks"]
+    assert isinstance(checks, list)
+    for raw_check in (checks if not failures else []):
+        if not isinstance(raw_check, Mapping):
+            failures.append("state check is invalid")
+            break
+        try:
+            results.append(_run_check(repo_root, raw_check))
+        except CheckFailure as exc:
+            results.append(exc.evidence)
+            failures.append(str(exc))
+            break
+        except UpdateExecutionError as exc:
+            results.append(
+                {
+                    "kind": raw_check.get("kind", "unknown"),
+                    "error": str(exc),
+                }
+            )
+            failures.append(str(exc))
+            break
+    if not failures or results:
+        try:
+            _baseline_changes(state)
+        except UpdateExecutionError as exc:
+            failures.append(str(exc))
+    evidence = {
+        "schema": EVIDENCE_SCHEMA,
+        "status": "failed" if failures else "passed",
+        "branch": state["branch"],
+        "head": state["head"],
+        "selected_skills": state["selected_skills"],
+        "changed_paths": changed,
+        "change_groups": groups,
+        "checks": results,
+        "failures": failures,
+    }
+    _write_json(resolved_evidence, evidence, "evidence output")
+    if failures:
+        raise UpdateExecutionError(failures[0])
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    commands = parser.add_subparsers(dest="command", required=True)
+    prepare = commands.add_parser("prepare")
+    prepare.add_argument("--request", required=True, type=pathlib.Path)
+    prepare.add_argument("--state", required=True, type=pathlib.Path)
+    verify = commands.add_parser("verify")
+    verify.add_argument("--state", required=True, type=pathlib.Path)
+    verify.add_argument("--evidence-output", required=True, type=pathlib.Path)
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    try:
+        if args.command == "prepare":
+            command_prepare(args.request, args.state)
+        else:
+            command_verify(args.state, args.evidence_output)
+    except (UpdateExecutionError, OSError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    print("OK")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

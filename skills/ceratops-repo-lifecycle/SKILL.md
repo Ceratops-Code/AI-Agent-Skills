@@ -1,6 +1,6 @@
 ---
 name: ceratops-repo-lifecycle
-description: Route Ceratops repository lifecycle work to action references for repository creation, contracts, health, dependencies, local promotion, deterministic deployment, GitHub shipping, and PR merge. Use when Codex should create or harden a repository, review its contracts, disposition CodeQL, maintain dependencies, promote selected task branches into a local release branch with or without deployment, execute a named deploy/deploy.yml operation, ship a staged branch through guarded GitHub merge and post-merge deployment, or finalize an already-ready PR.
+description: Route Ceratops repository lifecycle work to action references for repository creation, contracts, health, dependencies, local promotion, deterministic deployment, GitHub shipping, and PR merge. Use when Codex should create or harden a repository, review its contracts, disposition CodeQL, maintain dependencies, promote selected task branches into a local release branch with or without deployment, ship a staged branch through guarded GitHub merge and post-merge deployment, or finalize an already-ready PR.
 ---
 
 # Ceratops Repository Lifecycle
@@ -22,10 +22,8 @@ owns its executable deployment behavior in `deploy/deploy.yml`.
   `references/codeql-disposition.md`
 - Audit or repair repository health: `references/health-audit.md`
 - Maintain dependency PRs or alerts: `references/dependency-maintenance.md`
-- Push a prepared branch and ensure its PR: `references/ensure-pr.md`
 - Promote selected branches with or without deployment:
   `references/promote-change.md`
-- Execute one named deployment operation: `references/run-operation.md`
 - Ship, synchronize, deploy, and finalize selected work: `references/ship.md`
 - Finalize an already-ready PR: `references/merge-pr.md`
 
@@ -77,12 +75,11 @@ remotes, manifests, and live repository data before asking.
 #### 1. Classify the action
 
 - Use `create-or-publish`, `contracts-review`, `codeql-disposition`,
-  `health-audit`, `dependency-maintenance`, or `ensure-pr` for their named
-  repository surfaces.
+  `health-audit`, or `dependency-maintenance` for their named repository
+  surfaces.
 - Use `promote` when selected committed branches should join a local
   `release/local` branch without deployment.
 - Use `promote-and-deploy` when the same promotion should run `after_promote`.
-- Use `run-operation` when one named deployment operation is the entire task.
 - Use `ship` for the complete staged-branch PR, gate, merge, main sync,
   `after_ship`, late recheck, and selected-source cleanup workflow.
 - Use `merge-pr` only when standalone PR finalization is the whole task.

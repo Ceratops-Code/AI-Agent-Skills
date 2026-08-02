@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Made artifact classification treat Python project manifests as buildable but
+  non-publishing until a publish workflow or explicit artifact contract
+  supplies external intent, so no-artifact repositories skip registry identity
+  and version checks.
 - Made installer version 8 prefer installed Ceratops lifecycle handling for
   AI-Agent-Skills, use one independent checkout fallback when unavailable or
   unsuccessful, and keep external-repository installers Ceratops-independent.

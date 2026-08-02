@@ -381,6 +381,7 @@ def _artifact_types(
     local: dict[str, Any],
     type_system: dict[str, Any] | None,
     release_assets_count: int,
+    declared_artifact_types: list[str] | None = None,
 ) -> list[str]:
     """Interpret contract-declared artifact detectors over factual local signals."""
 
@@ -391,7 +392,7 @@ def _artifact_types(
         text for path, text in texts.items() if path.startswith(".github/workflows/")
     )
     package, _ = _json(texts.get("package.json", ""))
-    result: set[str] = set()
+    result = set(declared_artifact_types or [])
     no_artifact_detector = False
     for detector in type_system.get("detectors", []):
         artifact_type = str(detector.get("artifact_type") or "")
@@ -453,6 +454,7 @@ def classify_repository(
     topics: list[str],
     artifact_type_system: dict[str, Any] | None = None,
     release_assets_count: int = 0,
+    declared_artifact_types: list[str] | None = None,
 ) -> dict[str, Any]:
     """Derive reusable type facts from raw repository, path, and topic signals."""
 
@@ -486,7 +488,13 @@ def classify_repository(
         r"(?m)^kind:\s*(?:Deployment|Service|Ingress)\s*$", yaml_text
     ):
         languages.add("kubernetes")
-    artifacts = _artifact_types(repo, local, artifact_type_system, release_assets_count)
+    artifacts = _artifact_types(
+        repo,
+        local,
+        artifact_type_system,
+        release_assets_count,
+        declared_artifact_types,
+    )
     project: set[str] = set()
     if path_matches(
         files,

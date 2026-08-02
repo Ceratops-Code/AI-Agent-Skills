@@ -59,6 +59,8 @@ PRIVATE_KEY_RE = re.compile(
     re.DOTALL,
 )
 URL_CREDENTIAL_RE = re.compile(r"(https?://)[^/\s:@]+:[^/\s@]+@", re.IGNORECASE)
+COMMUNITY_PROFILE_CHECK = "content.community_profile_public"
+COMMUNITY_PROFILE_PATH = "/repository/content/community_profile/health_percentage"
 
 
 def _sensitive_key(name: str) -> bool:
@@ -235,7 +237,7 @@ def build_report(
 
     findings = comparison["findings"]
     approved = comparison["approved_drift"]
-    return {
+    result = {
         "target": desired_state["parameters"].get("org_login")
         or f"{desired_state['parameters'].get('owner')}/{desired_state['parameters'].get('repo')}",
         "contract_paths": desired_state["contract_paths"],
@@ -250,6 +252,34 @@ def build_report(
         "findings": findings,
         "observed_states": observed_states,
     }
+    community_rule = next(
+        (
+            rule
+            for rule in desired_state["rules"]
+            if rule.get("id") == COMMUNITY_PROFILE_CHECK
+        ),
+        None,
+    )
+    if community_rule is not None:
+        target = next(
+            (
+                assertion.get("expected")
+                for assertion in community_rule.get("assertions", [])
+                if assertion.get("path") == COMMUNITY_PROFILE_PATH
+            ),
+            None,
+        )
+        score = (
+            observed_states.get("repository", {})
+            .get("content", {})
+            .get("community_profile", {})
+            .get("health_percentage")
+        )
+        result["community_profile"] = {
+            "health_percentage": score if type(score) is int else None,
+            "target_percentage": target if type(target) is int else None,
+        }
+    return result
 
 
 def build_summary_report(
@@ -258,7 +288,7 @@ def build_summary_report(
     """Return the credit-efficient report used by default automation paths."""
 
     selected = set(levels)
-    return {
+    summary = {
         "target": report["target"],
         "selection": report["selection"],
         "levels": levels,
@@ -282,6 +312,9 @@ def build_summary_report(
             for key in ("available", "root", "errors")
         },
     }
+    if "community_profile" in report:
+        summary["community_profile"] = report["community_profile"]
+    return summary
 
 
 def print_human(report: dict[str, Any], levels: list[str]) -> None:
@@ -292,6 +325,13 @@ def print_human(report: dict[str, Any], levels: list[str]) -> None:
     print(
         f"Selected checks: {sum(report['selected_counts'].values())}; result counts: {report['result_counts']}"
     )
+    profile = summary.get("community_profile")
+    if isinstance(profile, dict):
+        print(
+            "Community profile: "
+            f"{profile.get('health_percentage')}% "
+            f"(target {profile.get('target_percentage')}%)"
+        )
     if report["applied"]:
         print("Applied:")
         for item in report["applied"]:

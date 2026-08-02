@@ -26,22 +26,30 @@ materially reduce recurrence.
   `model-call-ledger.py --include-run TURN_ID`; do not parse session rows with
   ad hoc helpers. Visible context may identify scope but is not analysis
   evidence.
-- (D) For non-closure analysis, run `python scripts/model-call-ledger.py
-  --session PATH --evidence-output LEDGER_PATH [--last-runs N]
-  [--include-run TURN_ID]`; it writes every completed run and model call to the
-  sanitized ledger, emits only the run reconciliation summary, and includes
-  full call details only for explicitly requested runs.
-- (D) For closure analysis, run `python scripts/model-call-ledger.py
-  (--thread-id THREAD_ID | --session SESSION) --closure [--last-runs N]
-  [--include-run TURN_ID]`. For an `incremental closure`, set `N` to the
-  completed runs strictly after the previous completed closure and exclude the
-  boundary and active runs; omit `--last-runs` only for a full-thread closure.
-  The helper emits one fingerprint-only selected-window call inventory by
-  default, adds bounded sanitized action summaries only for explicitly included
-  completed runs, and creates no evidence artifact.
+- (D) Before inspecting calls for either non-closure or closure analysis, run
+  `python scripts/model-call-ledger.py (--thread-id THREAD_ID | --session
+  SESSION) --summary --evidence-output USAGE_PATH [--last-runs N] [--top N]
+  [--pricing-profile PRICING_PATH]`. For an `incremental closure`, set `N` to
+  the completed runs strictly after the previous completed closure and exclude
+  the boundary and active runs; omit `--last-runs` only for a full-thread
+  window. The helper writes versioned sanitized per-run evidence, emits only
+  compact totals and ranked turn IDs, and reports estimated credit cost only
+  when the caller supplied valid rates.
+- Treat `--summary` as evidence selection, not an analysis result. For every
+  analysis request, continue through selected-turn semantic inspection and
+  classification validation before answering.
+- (D) Request semantic evidence only for selected turns with `python
+  scripts/model-call-ledger.py --session PATH --evidence-output LEDGER_PATH
+  --semantic-evidence-output SEMANTIC_PATH [--last-runs N] --include-run
+  TURN_ID`; repeat `--include-run` only for additional turns justified by the
+  compact rankings. The helper must preserve the fingerprint ledger at
+  `LEDGER_PATH`, write versioned sanitized selected-run semantic evidence to
+  `SEMANTIC_PATH`, and emit only compact selected-run IDs and counts. Keep
+  `--closure` for callers that explicitly require its artifact-free fingerprint
+  inventory; neither detail mode replaces the compact summary.
 - (D) Before reporting, rerun `model-call-ledger.py` for the same source and
-  window with `--classifications CLASSIFICATIONS_PATH`; the existing helper
-  must reject missing, duplicate, or multiply classified calls and emit only
+  window with `--classifications CLASSIFICATIONS_PATH`; the helper must reject
+  missing, duplicate, or multiply classified calls and emit only
   validated per-run category totals.
 - Whether the task is analysis-only or the user explicitly asked to apply a
   named control change.
@@ -88,8 +96,9 @@ blocked; do not fall back to visible context.
   change before mutating; otherwise name the target artifact and target
   behavior.
 - Before reporting, classify each finding's control as implemented or still
-  unimplemented; expose both call counts in the run table, but omit detailed
-  implemented findings and recommendations.
+  unimplemented. Keep complete per-run category counts in caller-selected
+  machine evidence; mention implemented findings only when they materially
+  change the recommendation.
 - Before classification, inspect highest-call runs covering at least 80% of
   calls for avoidable call clusters; do not treat lack of inspection as
   evidence that a call was necessary.
@@ -110,19 +119,17 @@ blocked; do not fall back to visible context.
   evidence; state assumptions and a plausible range, use observations only as
   calibration, and test ROI at the range's low end.
 - Merge recommendations that share the same producer and control.
-- When still-unimplemented prompt-level savings cases exist, rank the top five
-  evidence-backed cases, or all available cases when fewer exist, using only
-  information available when each prompt was written; present them as
-  `Original prompt | What happened | Cheaper wording` and exclude
-  hindsight-dependent rewrites.
+- When prompt wording is a selected recommendation, show only the highest-value
+  case as `Cheaper wording: <replacement>` with one brief cause statement; keep
+  the original prompt and remaining cases in machine evidence.
 
 ### Boundaries
 
 - Use this skill for avoidable credit spend, including rework, repeated artifact
   iterations, failed output loops, stale cleanup, oversized validation,
   inefficient evidence gathering, and producer-failure analysis.
-- If the active issue is one unresolved bug, use `$ceratops-task-lifecycle` with
-  the `fixloop-break` or `execute-in-stages` action first.
+- If the active issue is one unresolved bug, use normal diagnosis and fix flow
+  before this analysis.
 - If the user already knows the specific rule to change, use
   `$ceratops-governance-lifecycle` action `propose-rules-update`.
 
@@ -150,9 +157,9 @@ blocked; do not fall back to visible context.
 
 ### Completion Gate
 
-- The inspected window and ledger evidence mode are stated; every model call is
-  reconciled in the ledger and every completed run appears in the compact run
-  table.
+- The inspected window and ledger evidence mode are recorded; every model call
+  is reconciled and every completed run appears in caller-selected machine
+  evidence.
 - The existing ledger helper validated the final classifications against the
   exact selected source and window; inventory evidence alone does not satisfy
   this gate.
@@ -167,29 +174,26 @@ blocked; do not fall back to visible context.
 
 ### Output Contract
 
-Start with `Blocked: <specific missing evidence or target>.` when missing
-evidence prevents analysis. Otherwise start with
-`Unimplemented avoidable spend: found.` or
-`Unimplemented avoidable spend: none found.`
+Start with `Blocked: <specific missing evidence or target>.` only when missing
+evidence prevents analysis. Otherwise lead with
+`Recommendation: <highest-value control>.` or `Recommendation: none.`
 
-First show this exact run table:
+Add at most two secondary recommendations, only when each requires a distinct
+user action. For every reported recommendation, state only:
 
-```text
-Completed run | Total model calls |
-Avoidable calls - Fix Implemented |
-Avoidable calls - Fix Unimplemented |
-Token usage (total; input % of total/cached % of input/output % of total/reasoning output % of output)
-```
+- `Why:` the concrete episode, cause, and earliest prevention point.
+- `Impact:` observed calls saved per affected run and estimated calls saved per
+  similar run; add at most one other statistic when it changes priority.
+- `Action:` `Implement` or `Defer`, with the material confidence assumption or
+  range.
 
-Use each run's `started_at` date/time, not its turn ID, for `Completed run`, and
-include a totals row. Show total tokens as an integer and each percentage to two
-decimal places; do not show raw category token counts. For each
-still-unimplemented control, show this exact control table:
-`Proposed control | Calls saved per affected run |
-Est. Percent of Affected Similar Runs |
-Additional Calls per Affected Run for Implemented Fix |
-Est. Calls Saving by Fix per Similar Run |
-New Complexity Introduced by Fix |
-One-time implementation cost (model calls) | Recommendation`.
-Then report only still-unimplemented findings in detail, any required ranked
-prompt-level table, excluded ordinary failures, and important evidence limits.
+When scale materially changes the decision, add one sentence with avoidable
+calls versus total calls and either raw-token share or priced cost. Never
+describe token volume as monetary or credit cost without a valid pricing
+profile.
+
+Keep exhaustive reconciliation, detailed classifications, timelines, matrices,
+implemented findings, ordinary-failure inventories, and routine evidence limits
+in caller-selected machine evidence. Emit them only when the user requests that
+detail, and mention by default only a limitation that could change the
+recommendation.

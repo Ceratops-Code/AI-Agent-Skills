@@ -219,8 +219,20 @@ def _admin_endpoint(repository: str, base_branch: str) -> str:
     )
 
 
+_ADMIN_ENFORCEMENT_PLAN_LIMIT = (
+    "Upgrade to GitHub Pro or make this repository public to enable this feature."
+)
+
+
 def _read_admin_enforcement(endpoint: str, *, cwd: pathlib.Path) -> bool:
-    value = json.loads(require_output(["gh", "api", endpoint], cwd=cwd))
+    try:
+        raw = require_output(["gh", "api", endpoint], cwd=cwd)
+    except CommandError as exc:
+        message = str(exc)
+        if "HTTP 403" in message and _ADMIN_ENFORCEMENT_PLAN_LIMIT in message:
+            return False
+        raise
+    value = json.loads(raw)
     enabled = value.get("enabled") if isinstance(value, dict) else None
     if not isinstance(enabled, bool):
         raise WorkflowError(
