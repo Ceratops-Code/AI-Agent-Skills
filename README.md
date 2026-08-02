@@ -84,7 +84,7 @@ without repository deduplication.
 
 | Script | Caller And Timing |
 | --- | --- |
-| `scripts/install-skills.py` | Prefers the installed lifecycle runtime for AI-Agent-Skills, then runs one independent checkout fallback when that runtime is unavailable or unsuccessful. |
+| `scripts/install-skills.py` | Executes a temporary snapshot of the installed lifecycle runtime outside the managed destination for AI-Agent-Skills, then runs one independent checkout fallback when that runtime is unavailable or unsuccessful. |
 | `scripts/validate-repository.py` | Sole full local-and-CI validation owner; captures child output and writes first-failure evidence to a caller-selected file. |
 | `skills/ceratops-skill-lifecycle/scripts/templates/install-skills-template.py` | Authoritative standard-library-only installer copied into compatible repositories as `scripts/install-skills.py`; it only resolves shared sections and copies rendered skills. |
 | `skills/ceratops-skill-lifecycle/scripts/materialize-compatible-repo.py` | Deterministically instantiates a compatible repository's live section manifest, preserves valid target identity and custom assignments, aligns canonical sections and generated markers, then delegates installer synchronization and validation with rollback on caught blockers. |
@@ -317,9 +317,11 @@ python -m pip install -r requirements-runtime.txt
 python .\scripts\install-skills.py
 ```
 
-With installed Ceratops lifecycle skills, the installer uses their managed
-runtime transaction. If that path is unavailable or unsuccessful, it runs the
-checkout's independent installer once. The fallback performs an ordinary full
+With installed Ceratops lifecycle skills, the installer copies their runtime to
+a temporary directory and uses it for the managed transaction, allowing the
+installed lifecycle itself to be replaced safely. If that path is unavailable
+or unsuccessful, it runs the checkout's independent installer once. The
+fallback performs an ordinary full
 or explicitly selected reinstall; it does not preserve removal or
 base-revision selection.
 

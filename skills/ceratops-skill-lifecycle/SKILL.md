@@ -58,11 +58,12 @@ Infer missing inputs from the current repo state before asking.
   declares `runtime_source_id`, `validation_profile: ceratops-compatible`,
   shared sections, and per-skill assignments. Skill names need not use a
   Ceratops prefix.
-- Use installed Ceratops lifecycle skills to install or deploy AI-Agent-Skills;
-  if unavailable or unsuccessful, run the checkout's independent
-  `scripts/install-skills.py` once. Compatible-repository installers remain
-  self-contained and Ceratops-independent, only resolving declarations and
-  rendering or copying skills.
+- Use the installed Ceratops lifecycle runtime to install or deploy
+  AI-Agent-Skills, executing a temporary runtime snapshot outside the managed
+  destination; if unavailable or unsuccessful, run the checkout's independent
+  installer once. Compatible-repository installers remain self-contained and
+  Ceratops-independent, only resolving declarations and rendering or copying
+  skills.
 - Use `fast-change` directly on verified primary `release/local` whenever
   its action contract and one-request orchestrator accept the complete intended
   scope. The orchestrator owns patch, repository-declared Markdown lint, exact

@@ -6,11 +6,13 @@ from __future__ import annotations
 import argparse
 import os
 import pathlib
+import shutil
 import subprocess
 import sys
+import tempfile
 
 
-INSTALLER_VERSION = 8
+INSTALLER_VERSION = 9
 LIFECYCLE_SKILL = "ceratops-skill-lifecycle"
 RUNTIME_INSTALLER_RELATIVE = pathlib.Path(
     "scripts/runtime/install-managed-skills.py"
@@ -53,22 +55,27 @@ def detail(result: subprocess.CompletedProcess[str]) -> str:
     return (result.stderr or result.stdout).strip()
 
 
-def runtime_command(
-    repo_root: pathlib.Path,
-    install_root: pathlib.Path | None,
-    skills: list[str],
-    removed_skills: list[str],
-    base_revision: str | None,
-) -> list[str] | None:
-    """Build the installed lifecycle command when its runtime helper exists."""
+def installed_runtime_installer() -> pathlib.Path | None:
+    """Return the installed lifecycle entrypoint when it is available."""
 
     installer = (
         codex_skills_root()
         / LIFECYCLE_SKILL
         / RUNTIME_INSTALLER_RELATIVE
     )
-    if not installer.is_file():
-        return None
+    return installer if installer.is_file() else None
+
+
+def runtime_command(
+    installer: pathlib.Path,
+    repo_root: pathlib.Path,
+    install_root: pathlib.Path | None,
+    skills: list[str],
+    removed_skills: list[str],
+    base_revision: str | None,
+) -> list[str]:
+    """Build one installed lifecycle command from a selected entrypoint."""
+
     command = [
         sys.executable,
         str(installer),
@@ -86,6 +93,42 @@ def runtime_command(
     if base_revision is not None:
         command.extend(("--base-revision", base_revision))
     return command
+
+
+def run_installed_lifecycle(
+    repo_root: pathlib.Path,
+    install_root: pathlib.Path | None,
+    skills: list[str],
+    removed_skills: list[str],
+    base_revision: str | None,
+) -> subprocess.CompletedProcess[str] | None:
+    """Run installed lifecycle behavior outside its managed destination.
+
+    An all-managed Windows transaction may replace the lifecycle skill that
+    owns this helper. Copying its complete runtime directory before launch
+    prevents executable source files from blocking that transactional rename.
+    """
+
+    installer = installed_runtime_installer()
+    if installer is None:
+        return None
+    try:
+        with tempfile.TemporaryDirectory(prefix="installed-lifecycle-runtime-") as raw:
+            detached_runtime = pathlib.Path(raw) / "runtime"
+            shutil.copytree(installer.parent, detached_runtime)
+            command = runtime_command(
+                detached_runtime / installer.name,
+                repo_root,
+                install_root,
+                skills,
+                removed_skills,
+                base_revision,
+            )
+            return run(command)
+    except OSError as exc:
+        return subprocess.CompletedProcess(
+            args=[], returncode=1, stdout="", stderr=str(exc)
+        )
 
 
 def independent_command(
@@ -148,7 +191,7 @@ def main() -> int:
                 "This installer only installs the AI-Agent-Skills checkout "
                 "that contains it."
             )
-        lifecycle = runtime_command(
+        lifecycle = run_installed_lifecycle(
             repo_root,
             install_root,
             args.skill or [],
@@ -157,11 +200,10 @@ def main() -> int:
         )
         lifecycle_failure = ""
         if lifecycle is not None:
-            result = run(lifecycle)
-            if result.returncode == 0:
-                print(result.stdout.strip() or "OK")
+            if lifecycle.returncode == 0:
+                print(lifecycle.stdout.strip() or "OK")
                 return 0
-            lifecycle_failure = detail(result)
+            lifecycle_failure = detail(lifecycle)
 
         fallback = run(
             independent_command(repo_root, install_root, args.skill or [])
