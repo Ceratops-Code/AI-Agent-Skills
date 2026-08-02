@@ -624,22 +624,50 @@ class GHContractStateEngineTests(unittest.TestCase):
         self.assertEqual(types["artifact_surface"], ["no_artifact"])
         self.assertIn("python", types["language_or_iac"])
 
-    def test_classifier_keeps_publishable_manifests(self):
+    def test_classifier_requires_publish_evidence(self):
         local = {
-            "files": ["pyproject.toml", "package.json"],
+            "files": ["pyproject.toml"],
             "texts": {
                 "pyproject.toml": '[project]\nname = "demo"\nversion = "1.0.0"\n',
-                "package.json": json.dumps(
-                    {"name": "demo", "version": "1.0.0", "license": "MIT"}
-                ),
             },
         }
-        types = classify_repository(
+        manifest_only = classify_repository(
             {}, local, [], self.contracts["artifact"]["artifact_type_system"]
         )
-        self.assertEqual(
-            types["artifact_surface"], ["npm_package", "pypi_python_package"]
+        self.assertEqual(manifest_only["artifact_surface"], ["no_artifact"])
+
+        local["files"].append(".github/workflows/publish.yml")
+        local["texts"][".github/workflows/publish.yml"] = (
+            "uses: pypa/gh-action-pypi-publish@release/v1\n"
         )
+        workflow_backed = classify_repository(
+            {}, local, [], self.contracts["artifact"]["artifact_type_system"]
+        )
+        self.assertEqual(workflow_backed["artifact_surface"], ["pypi_python_package"])
+
+        local["files"].remove(".github/workflows/publish.yml")
+        local["texts"].pop(".github/workflows/publish.yml")
+        contract_backed = classify_repository(
+            {},
+            local,
+            [],
+            self.contracts["artifact"]["artifact_type_system"],
+            declared_artifact_types=["pypi_python_package"],
+        )
+        self.assertEqual(contract_backed["artifact_surface"], ["pypi_python_package"])
+
+        npm_local = {
+            "files": ["package.json"],
+            "texts": {
+                "package.json": json.dumps(
+                    {"name": "demo", "version": "1.0.0", "license": "MIT"}
+                )
+            },
+        }
+        npm_types = classify_repository(
+            {}, npm_local, [], self.contracts["artifact"]["artifact_type_system"]
+        )
+        self.assertEqual(npm_types["artifact_surface"], ["npm_package"])
 
     def test_aggregate_live_metadata_activates_registry_collectors(self):
         rules = [{"assertions": [{"path": "/artifact/live_metadata/all_resolved"}]}]

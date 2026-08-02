@@ -292,8 +292,20 @@ def collect_repository(
         for release in releases
         if isinstance(release, dict)
     )
+    declared_artifact_types = [
+        str(contract["artifact_type"])
+        for contract in parameters.get("artifact_contracts", [])
+        if isinstance(contract, dict)
+        and contract.get("artifact_type")
+        and contract.get("artifact_type") != "no_artifact"
+    ]
     types = classify_repository(
-        repo, local_for_types, topics, artifact_type_system, release_assets_count
+        repo,
+        local_for_types,
+        topics,
+        artifact_type_system,
+        release_assets_count,
+        declared_artifact_types,
     )
 
     protection = _result(

@@ -284,9 +284,14 @@
           "[project]",
           "[tool.poetry]",
           "[tool.flit.metadata]",
-          "[metadata]",
+          "[metadata]"
+        ],
+        "and_when_workflow_contains_any": [
           "pypa/gh-action-pypi-publish",
-          "twine upload"
+          "twine upload",
+          "uv publish",
+          "hatch publish",
+          "poetry publish"
         ]
       },
       {
