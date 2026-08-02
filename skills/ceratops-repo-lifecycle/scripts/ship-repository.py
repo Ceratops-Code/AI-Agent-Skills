@@ -41,7 +41,7 @@ def _deployment_preflight(
     contract: pathlib.Path,
     operation: str,
 ) -> dict[str, Any] | None:
-    """Classify an absent default after-ship contract before remote mutation."""
+    """Classify an absent default deployment contract before remote mutation."""
 
     selected = (
         contract if contract.is_absolute() else repo_root / contract
@@ -57,7 +57,7 @@ def _deployment_preflight(
                 "Deployment contract must be a file inside the repository."
             )
         return None
-    if selected != default or operation != "after_ship":
+    if selected != default or operation != "deploy":
         raise RepositoryShipError(
             "Selected deployment contract does not exist before shipping."
         )
@@ -417,6 +417,7 @@ def ship_repository(args: argparse.Namespace) -> dict[str, object]:
                 str(args.deploy_contract),
                 "--operation",
                 args.deploy_operation,
+                "--if-declared",
             ]
         )
         if deploy_code:
@@ -509,10 +510,10 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_DEPLOY_CONTRACT,
         help=(
             "Repository deployment contract. An absent default deploy/deploy.yml "
-            "makes after_ship an explicit no-op."
+            "makes deploy an explicit no-op."
         ),
     )
-    parser.add_argument("--deploy-operation", default="after_ship")
+    parser.add_argument("--deploy-operation", default="deploy")
     parser.add_argument("--ci-wait-seconds", type=int, default=900)
     parser.add_argument("--review-wait-seconds", type=int, default=260)
     parser.add_argument("--interval-seconds", type=int, default=10)

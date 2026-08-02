@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import pathlib
 import re
 import subprocess
@@ -74,6 +75,32 @@ class ChangeSpec:
     commit_message: str
     install_root: pathlib.Path | None
     paths: tuple[str, ...]
+
+
+def _runtime_installer(repo_root: pathlib.Path) -> pathlib.Path:
+    """Resolve this repository's lifecycle runtime, then installed fallback."""
+
+    codex_home = pathlib.Path(
+        os.environ.get("CODEX_HOME", pathlib.Path.home() / ".codex")
+    ).expanduser()
+    candidates = (
+        repo_root
+        / "skills"
+        / "ceratops-skill-lifecycle"
+        / "scripts"
+        / "runtime"
+        / "install-managed-skills.py",
+        codex_home
+        / "skills"
+        / "ceratops-skill-lifecycle"
+        / "scripts"
+        / "runtime"
+        / "install-managed-skills.py",
+    )
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    raise DecisionRequired("managed lifecycle runtime installer is missing")
 
 
 def _run(
@@ -419,8 +446,7 @@ def classify_request(path: pathlib.Path) -> ChangeSpec:
                 ) from exc
             if test_file.is_symlink() or not test_file.is_file():
                 raise DecisionRequired(f"pytest node file does not exist: {test}")
-    if not (repo_root / "scripts" / "install-skills.py").is_file():
-        raise DecisionRequired("repository targeted installer is missing")
+    _runtime_installer(repo_root)
     run_markdown_lint = _declares_markdown_lint(repo_root, paths)
     return ChangeSpec(
         repo_root=repo_root,
@@ -443,7 +469,7 @@ def classify_request(path: pathlib.Path) -> ChangeSpec:
 def _installer_command(spec: ChangeSpec) -> list[str]:
     command = [
         sys.executable,
-        str(spec.repo_root / "scripts" / "install-skills.py"),
+        str(_runtime_installer(spec.repo_root)),
         "--repo-root",
         str(spec.repo_root),
     ]

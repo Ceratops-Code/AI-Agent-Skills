@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Materialize shared-section compatibility sources in one task worktree.
+"""Materialize compatible repository sources in one task worktree.
 
 The lifecycle bundle owns the reusable template and canonical shared sections.
 This helper derives repository identity and skill assignments, removes only
 generated marker blocks from source skills, delegates installer ownership to
-``runtime/synchronize-installers.py``, and emits one compact JSON result.
+``synchronize-bootstrap-installer.py``, and emits one compact JSON result.
 """
 
 from __future__ import annotations
@@ -20,15 +20,21 @@ import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
 
+import yaml
+
 
 BUNDLE_ROOT = pathlib.Path(__file__).resolve().parents[1]
-TEMPLATE = BUNDLE_ROOT / "scripts" / "templates" / "skill-sections-template.json"
+TEMPLATE = BUNDLE_ROOT / "references" / "templates" / "skill-sections-template.json"
+DEPLOY_TEMPLATE = BUNDLE_ROOT / "references" / "templates" / "deploy-template.yml"
 SOURCE_REPO_ROOT = BUNDLE_ROOT.parents[1]
 SOURCE_CANONICAL_SECTIONS = SOURCE_REPO_ROOT / "skills" / "sections"
 INSTALLED_CANONICAL_SECTIONS = BUNDLE_ROOT / "skills" / "sections"
-SYNCHRONIZER = BUNDLE_ROOT / "scripts" / "runtime" / "synchronize-installers.py"
+SYNCHRONIZER = BUNDLE_ROOT / "scripts" / "synchronize-bootstrap-installer.py"
+VALIDATOR = BUNDLE_ROOT / "scripts" / "skills-consistency-source-validator.py"
 MANIFEST_RELATIVE = pathlib.Path("skills/skill-sections.json")
-INSTALLER_RELATIVE = pathlib.Path("scripts/install-skills.py")
+INSTALLER_RELATIVE = pathlib.Path("scripts/install-skills-bootstrap.py")
+DEPLOY_RELATIVE = pathlib.Path("deploy/deploy.yml")
+MANAGED_SKILL_HANDOFF = "ceratops-skill-lifecycle/deploy"
 START = "<!-- CERATOPS_SHARED_SECTIONS_START -->"
 END = "<!-- CERATOPS_SHARED_SECTIONS_END -->"
 SOURCE_RE = re.compile(r"<!-- SECTION SOURCE: skills/sections/([^ ]+) -->")
@@ -36,6 +42,15 @@ GITHUB_REMOTE_RE = re.compile(
     r"(?:github\.com[:/])(?P<owner>[^/]+)/(?P<repo>[^/]+?)(?:\.git)?$",
     re.IGNORECASE,
 )
+
+
+class IndentedSafeDumper(yaml.SafeDumper):
+    """Emit block sequences indented beneath their mapping keys."""
+
+    def increase_indent(
+        self, flow: bool = False, indentless: bool = False
+    ) -> object:
+        return super().increase_indent(flow, False)
 
 
 @dataclass(frozen=True)
@@ -54,6 +69,7 @@ class MaterializationPlan:
     manifest: dict[str, object]
     skill_updates: dict[pathlib.Path, tuple[str, str]]
     canonical_sources: dict[str, pathlib.Path]
+    deploy_contract: dict[str, object] | None
     skills: list[str]
     updated_markers: list[str]
 
@@ -100,6 +116,17 @@ def load_mapping(path: pathlib.Path) -> dict[str, object]:
     return value
 
 
+def load_yaml_mapping(path: pathlib.Path) -> dict[str, object]:
+    """Load one YAML mapping without constructing custom objects."""
+
+    value = yaml.safe_load(path.read_text(encoding="utf-8"))
+    if not isinstance(value, dict) or not all(
+        isinstance(key, str) for key in value
+    ):
+        raise RuntimeError(f"YAML root must be a string-keyed object: {path}")
+    return value
+
+
 def validate_template(template: Mapping[str, object]) -> None:
     """Require the closed repository-neutral compatibility skeleton."""
 
@@ -113,6 +140,74 @@ def validate_template(template: Mapping[str, object]) -> None:
     }
     if template != expected:
         raise RuntimeError("skill-sections template is not repository-neutral")
+
+
+def deploy_contract(
+    repo_root: pathlib.Path,
+    *,
+    has_skills: bool,
+    materialize: bool,
+) -> dict[str, object] | None:
+    """Preserve operations and own default skill bootstrap and handoff entries."""
+
+    if not materialize:
+        return None
+    reusable = load_yaml_mapping(DEPLOY_TEMPLATE)
+    expected = {
+        "version": 1,
+        "kind": "ceratops-deploy",
+        "operations": {},
+    }
+    if reusable != expected:
+        raise RuntimeError("deploy template is not the empty version 1 skeleton")
+    target = repo_root / DEPLOY_RELATIVE
+    contract = load_yaml_mapping(target) if target.is_file() else dict(reusable)
+    if contract.get("version") != 1:
+        raise RuntimeError("existing deploy contract version must remain 1")
+    if contract.get("kind") != "ceratops-deploy":
+        raise RuntimeError("existing deploy contract kind must be ceratops-deploy")
+    operations = contract.get("operations")
+    if not isinstance(operations, Mapping) or not all(
+        isinstance(name, str) and isinstance(operation, Mapping)
+        for name, operation in operations.items()
+    ):
+        raise RuntimeError("existing deploy contract operations must be objects")
+    updated_operations = dict(operations)
+    if has_skills:
+        existing_deploy = updated_operations.get("deploy")
+        updated_deploy = (
+            dict(existing_deploy)
+            if isinstance(existing_deploy, Mapping)
+            else {}
+        )
+        updated_deploy.setdefault("handoff", MANAGED_SKILL_HANDOFF)
+        updated_operations["deploy"] = updated_deploy
+        updated_operations["bootstrap"] = {
+            "steps": [
+                {
+                    "id": "bootstrap-skills",
+                    "run": ["python", "scripts/install-skills-bootstrap.py"],
+                }
+            ]
+        }
+    else:
+        updated_operations.pop("bootstrap", None)
+        existing_deploy = updated_operations.get("deploy")
+        if (
+            isinstance(existing_deploy, Mapping)
+            and existing_deploy.get("handoff") == MANAGED_SKILL_HANDOFF
+        ):
+            updated_deploy = dict(existing_deploy)
+            updated_deploy.pop("handoff")
+            if updated_deploy:
+                updated_operations["deploy"] = updated_deploy
+            else:
+                updated_operations.pop("deploy")
+    return {
+        "version": 1,
+        "kind": "ceratops-deploy",
+        "operations": updated_operations,
+    }
 
 
 def portable_section_path(repo_root: pathlib.Path, value: object) -> pathlib.Path:
@@ -262,13 +357,12 @@ def plan_materialization(
     source_id: str,
     template: Mapping[str, object],
     existing: Mapping[str, object],
+    *,
+    materialize_deploy: bool,
 ) -> MaterializationPlan:
     """Validate target evidence and compose writes without changing files."""
 
     skill_paths = sorted((repo_root / "skills").glob("*/SKILL.md"))
-    if not skill_paths:
-        raise RuntimeError("target repository has no skills/*/SKILL.md sources")
-
     skill_names = {path.parent.name for path in skill_paths}
     custom_sections = existing_custom_sections(repo_root, existing)
     prior_assignments = existing_skill_assignments(
@@ -284,7 +378,7 @@ def plan_materialization(
         raise RuntimeError("existing runtime_payloads must be an object")
 
     assignments: dict[str, list[str]] = {}
-    required_sections = {"core"}
+    required_sections: set[str] = {"core"} if skill_paths else set()
     updated_markers: list[str] = []
     skill_updates: dict[pathlib.Path, tuple[str, str]] = {}
     for skill_path in skill_paths:
@@ -339,7 +433,9 @@ def plan_materialization(
             selected.append(marker_section_name)
         assignments[skill_path.parent.name] = list(dict.fromkeys(selected))
 
-    sections: dict[str, str] = {"core": "skills/sections/core.md"}
+    sections: dict[str, str] = {}
+    if "core" in required_sections:
+        sections["core"] = "skills/sections/core.md"
     if "multi-action-skill" in required_sections:
         sections["multi-action-skill"] = (
             "skills/sections/multi-action-skill.md"
@@ -350,11 +446,13 @@ def plan_materialization(
     profile = existing.get("validation_profile", template["validation_profile"])
     if profile not in {"ceratops", "ceratops-compatible"}:
         raise RuntimeError(f"unsupported validation_profile: {profile!r}")
-    canonical_sections = canonical_sections_root()
-    canonical_sources = {
-        section_name: canonical_sections / f"{section_name}.md"
-        for section_name in required_sections
-    }
+    canonical_sources: dict[str, pathlib.Path] = {}
+    if required_sections:
+        canonical_sections = canonical_sections_root()
+        canonical_sources = {
+            section_name: canonical_sections / f"{section_name}.md"
+            for section_name in required_sections
+        }
     for source in canonical_sources.values():
         if not source.is_file():
             raise RuntimeError(f"canonical shared section is missing: {source}")
@@ -374,6 +472,11 @@ def plan_materialization(
         manifest=manifest,
         skill_updates=skill_updates,
         canonical_sources=canonical_sources,
+        deploy_contract=deploy_contract(
+            repo_root,
+            has_skills=bool(skill_names),
+            materialize=materialize_deploy,
+        ),
         skills=sorted(assignments),
         updated_markers=sorted(updated_markers),
     )
@@ -385,10 +488,13 @@ def apply_materialization(
 ) -> None:
     """Apply one fully validated plan inside the caller's rollback boundary."""
 
-    sections_dir = repo_root / "skills" / "sections"
-    sections_dir.mkdir(parents=True, exist_ok=True)
-    for section_name, source in sorted(plan.canonical_sources.items()):
-        shutil.copy2(source, sections_dir / f"{section_name}.md")
+    if plan.canonical_sources:
+        sections_dir = repo_root / "skills" / "sections"
+        sections_dir.mkdir(parents=True, exist_ok=True)
+        for section_name, source in sorted(plan.canonical_sources.items()):
+            destination = sections_dir / f"{section_name}.md"
+            if source.resolve() != destination.resolve():
+                shutil.copy2(source, destination)
     for skill_path, (updated, newline) in plan.skill_updates.items():
         skill_path.write_text(
             updated,
@@ -402,16 +508,33 @@ def apply_materialization(
         encoding="utf-8",
         newline="\n",
     )
+    if plan.deploy_contract is not None:
+        deploy_path = repo_root / DEPLOY_RELATIVE
+        deploy_path.parent.mkdir(parents=True, exist_ok=True)
+        deploy_path.write_text(
+            yaml.dump(
+                plan.deploy_contract,
+                Dumper=IndentedSafeDumper,
+                sort_keys=False,
+            ),
+            encoding="utf-8",
+            newline="\n",
+        )
 
 
 def main() -> int:
     """Materialize compatibility inputs, synchronize installer, and validate."""
 
     parser = argparse.ArgumentParser(
-        description="Materialize Ceratops-compatible shared-section sources."
+        description="Materialize Ceratops-compatible repository sources."
     )
     parser.add_argument("--target-repo-root", required=True, type=pathlib.Path)
     parser.add_argument("--runtime-source-id")
+    parser.add_argument(
+        "--no-deploy-contract",
+        action="store_true",
+        help="Leave deploy/deploy.yml absent or unchanged.",
+    )
     args = parser.parse_args()
     repo_root = args.target_repo_root.resolve()
     phase = "preflight"
@@ -436,41 +559,87 @@ def main() -> int:
             source_id,
             template,
             existing,
+            materialize_deploy=not args.no_deploy_contract,
         )
         skill_paths = sorted((repo_root / "skills").glob("*/SKILL.md"))
-        mutable_paths = [
-            *skill_paths,
-            existing_path,
-            repo_root / "skills" / "sections" / "core.md",
-            repo_root / "skills" / "sections" / "multi-action-skill.md",
-            repo_root / INSTALLER_RELATIVE,
-        ]
+        mutable_paths = [*skill_paths, existing_path]
+        mutable_paths.extend(
+            repo_root / "skills" / "sections" / f"{section_name}.md"
+            for section_name in plan.canonical_sources
+        )
+        if plan.skills:
+            mutable_paths.append(repo_root / INSTALLER_RELATIVE)
+        if plan.deploy_contract is not None:
+            mutable_paths.append(repo_root / DEPLOY_RELATIVE)
         snapshots = [snapshot_file(path) for path in dict.fromkeys(mutable_paths)]
         created_dirs = [
             path
             for path in (
+                repo_root / "skills",
                 repo_root / "skills" / "sections",
                 repo_root / "scripts",
+                repo_root / "deploy",
             )
             if not path.exists()
+            and (
+                path.name != "sections" or bool(plan.canonical_sources)
+            )
+            and (
+                path.name not in {"scripts"} or bool(plan.skills)
+            )
+            and (
+                path.name not in {"deploy"}
+                or plan.deploy_contract is not None
+            )
         ]
         phase = "materialization"
         mutation_started = True
         apply_materialization(repo_root, plan)
-        phase = "installer_validation"
-        result = subprocess.run(
-            [sys.executable, str(SYNCHRONIZER), "--target-repo-root", str(repo_root)],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if result.returncode != 0:
-            raise RuntimeError((result.stderr or result.stdout).strip())
-        installer = json.loads(result.stdout)
-        if not isinstance(installer, Mapping) or not isinstance(
-            installer.get("status"), str
-        ):
-            raise RuntimeError("installer synchronizer returned invalid JSON")
+        bootstrap_status = "skipped"
+        if plan.skills:
+            phase = "bootstrap_synchronization"
+            synchronization = subprocess.run(
+                [
+                    sys.executable,
+                    str(SYNCHRONIZER),
+                    "--target-repo-root",
+                    str(repo_root),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if synchronization.returncode != 0:
+                raise RuntimeError(
+                    (synchronization.stderr or synchronization.stdout).strip()
+                )
+            bootstrap = json.loads(synchronization.stdout)
+            bootstrap_status_value = (
+                bootstrap.get("status") if isinstance(bootstrap, Mapping) else None
+            )
+            if not isinstance(bootstrap_status_value, str):
+                raise RuntimeError("bootstrap synchronizer returned invalid JSON")
+            bootstrap_status = bootstrap_status_value
+
+            phase = "source_validation"
+            validation = subprocess.run(
+                [
+                    sys.executable,
+                    str(VALIDATOR),
+                    "--repo-root",
+                    str(repo_root),
+                    "--mode",
+                    "full",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if validation.returncode != 0:
+                detail = (validation.stderr or validation.stdout).strip()
+                raise RuntimeError(
+                    f"full source-repository validation failed: {detail}"
+                )
     except (OSError, RuntimeError, ValueError, json.JSONDecodeError) as exc:
         reason = str(exc)
         if mutation_started:
@@ -496,7 +665,12 @@ def main() -> int:
     print(
         json.dumps(
             {
-                "installer": installer["status"],
+                "bootstrap": bootstrap_status,
+                "deploy_contract": (
+                    "materialized"
+                    if plan.deploy_contract is not None
+                    else "unchanged"
+                ),
                 "markers_removed": plan.updated_markers,
                 "rollback": "not_needed",
                 "runtime_source_id": source_id,

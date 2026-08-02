@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Synchronize the versioned bootstrap installer into a target task worktree.
+"""Synchronize the versioned first-install bootstrap installer into a task worktree.
 
 Only the parsed integer ``INSTALLER_VERSION`` controls replacement. Missing or
 lower-version targets are copied from the authoritative template; same- or
-higher-version files are retained even when their contents differ. A full
-target-repository validation follows every synchronization decision.
+higher-version files are retained even when their contents differ. Repository
+validation belongs to the caller.
 """
 
 from __future__ import annotations
@@ -14,14 +14,17 @@ import json
 import pathlib
 import re
 import shutil
-import subprocess
 import sys
 
 
-BUNDLE_ROOT = pathlib.Path(__file__).resolve().parents[2]
-TEMPLATE = BUNDLE_ROOT / "scripts" / "templates" / "install-skills-template.py"
-VALIDATOR = BUNDLE_ROOT / "scripts" / "skills-consistency-source-validator.py"
-TARGET_RELATIVE = pathlib.Path("scripts/install-skills.py")
+BUNDLE_ROOT = pathlib.Path(__file__).resolve().parents[1]
+TEMPLATE = (
+    BUNDLE_ROOT
+    / "references"
+    / "templates"
+    / "install-skills-bootstrap-template.py"
+)
+TARGET_RELATIVE = pathlib.Path("scripts/install-skills-bootstrap.py")
 INSTALLER_VERSION_RE = re.compile(
     r"^[ \t]*INSTALLER_VERSION[ \t]*=[ \t]*"
     r"(?P<version>[1-9][0-9]*)[ \t]*(?:#.*)?$",
@@ -53,24 +56,12 @@ def require_linked_worktree(repo_root: pathlib.Path) -> None:
         raise RuntimeError(f"target repository must be a linked task worktree: {repo_root}")
 
 
-def run_validation(repo_root: pathlib.Path) -> None:
-    """Run full target validation after the installer decision."""
-
-    result = subprocess.run(
-        [sys.executable, str(VALIDATOR), "--repo-root", str(repo_root), "--mode", "full"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if result.returncode != 0:
-        detail = (result.stderr or result.stdout).strip()
-        raise RuntimeError(f"full source-repository validation failed: {detail}")
-
-
 def main() -> int:
     """Update one task-worktree installer when its parsed version is outdated."""
 
-    parser = argparse.ArgumentParser(description="Synchronize a compatible-repo installer by version.")
+    parser = argparse.ArgumentParser(
+        description="Synchronize a compatible-repo bootstrap by version."
+    )
     parser.add_argument("--target-repo-root", required=True, type=pathlib.Path)
     args = parser.parse_args()
     repo_root = args.target_repo_root.resolve()
@@ -86,7 +77,6 @@ def main() -> int:
         if updated:
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(TEMPLATE, target)
-        run_validation(repo_root)
     except (OSError, RuntimeError) as exc:
         print(str(exc), file=sys.stderr)
         return 1
@@ -94,7 +84,7 @@ def main() -> int:
     print(
         json.dumps(
             {
-                "installer_version": source_version,
+                "bootstrap_version": source_version,
                 "previous_version": target_version,
                 "status": "updated" if updated else "retained",
             },

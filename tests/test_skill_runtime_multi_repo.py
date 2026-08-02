@@ -15,20 +15,28 @@ import time
 from typing import Any
 
 import pytest
+import yaml
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 VALIDATOR = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "skills-consistency-source-validator.py"
 BUILDER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "runtime" / "managed_runtime_builder.py"
-BOOTSTRAP = ROOT / "scripts" / "install-skills.py"
+BOOTSTRAP = ROOT / "scripts" / "install-skills-bootstrap.py"
 LIFECYCLE_SOURCE = ROOT / "skills" / "ceratops-skill-lifecycle"
 REPOSITORY_LIFECYCLE_SOURCE = ROOT / "skills" / "ceratops-repo-lifecycle"
 LIVE_SECTION_MANIFEST = ROOT / "skills" / "skill-sections.json"
-SECTION_MANIFEST_TEMPLATE = LIFECYCLE_SOURCE / "scripts" / "templates" / "skill-sections-template.json"
-DEPLOY_CONTRACT_TEMPLATE = (
-    REPOSITORY_LIFECYCLE_SOURCE / "references" / "deploy-template.yml"
+SECTION_MANIFEST_TEMPLATE = (
+    LIFECYCLE_SOURCE / "references" / "templates" / "skill-sections-template.json"
 )
-INSTALLER_TEMPLATE = LIFECYCLE_SOURCE / "scripts" / "templates" / "install-skills-template.py"
-INSTALLER_SYNCHRONIZER = LIFECYCLE_SOURCE / "scripts" / "runtime" / "synchronize-installers.py"
+DEPLOY_CONTRACT_TEMPLATE = (
+    LIFECYCLE_SOURCE / "references" / "templates" / "deploy-template.yml"
+)
+INSTALLER_TEMPLATE = (
+    LIFECYCLE_SOURCE
+    / "references"
+    / "templates"
+    / "install-skills-bootstrap-template.py"
+)
+INSTALLER_SYNCHRONIZER = LIFECYCLE_SOURCE / "scripts" / "synchronize-bootstrap-installer.py"
 COMPATIBILITY_MATERIALIZER = LIFECYCLE_SOURCE / "scripts" / "materialize-compatible-repo.py"
 RUNTIME_INSTALLER = LIFECYCLE_SOURCE / "scripts" / "runtime" / "install-managed-skills.py"
 FAST_CHANGE = LIFECYCLE_SOURCE / "scripts" / "fast-change.py"
@@ -45,7 +53,7 @@ MODEL_CALL_LEDGER = ROOT / "skills" / "ceratops-credit-savings-analysis" / "scri
 CLOSURE_SNAPSHOT = ROOT / "skills" / "ceratops-task-lifecycle" / "scripts" / "closure_snapshot.py"
 RUNTIME_MANIFEST = ".runtime-manifest.json"
 RUNTIME_MANIFEST_SCHEMA = "ceratops-runtime-skill.v3"
-INSTALLER_VERSION = 9
+INSTALLER_VERSION = 10
 
 
 def test_model_call_ledger_keeps_full_evidence_out_of_stdout(
@@ -1147,7 +1155,7 @@ def run_git(repo: pathlib.Path, *args: str) -> subprocess.CompletedProcess[str]:
 
 
 def prepare_fast_change_repo(tmp_path: pathlib.Path) -> pathlib.Path:
-    """Create one clean release checkout with a logging installer."""
+    """Create one clean release checkout with a logging runtime installer."""
 
     repo = tmp_path / "skills-repo"
     repo.mkdir()
@@ -1178,10 +1186,17 @@ def prepare_fast_change_repo(tmp_path: pathlib.Path) -> pathlib.Path:
             encoding="utf-8",
             newline="\n",
         )
-    (repo / "scripts").mkdir()
-    (repo / "scripts" / "install-skills.py").write_text(
+    runtime = (
+        repo
+        / "skills"
+        / "ceratops-skill-lifecycle"
+        / "scripts"
+        / "runtime"
+    )
+    runtime.mkdir(parents=True)
+    (runtime / "install-managed-skills.py").write_text(
         "import os, pathlib, sys\n"
-        "log = pathlib.Path(__file__).resolve().parents[2] / 'install.log'\n"
+        "log = pathlib.Path(__file__).resolve().parents[5] / 'install.log'\n"
         "with log.open('a', encoding='utf-8') as stream:\n"
         "    stream.write(' '.join(sys.argv[1:]) + '\\n')\n"
         "raise SystemExit(1 if os.environ.get('FAST_INSTALL_FAIL') else 0)\n",
@@ -2724,7 +2739,15 @@ def write_deploy_contract(
     contract = repo / "deploy" / "deploy.yml"
     contract.parent.mkdir(parents=True, exist_ok=True)
     contract.write_text(
-        json.dumps({"version": 1, "operations": operations}, indent=2) + "\n",
+        json.dumps(
+            {
+                "version": 1,
+                "kind": "ceratops-deploy",
+                "operations": operations,
+            },
+            indent=2,
+        )
+        + "\n",
         encoding="utf-8",
         newline="\n",
     )
@@ -2738,6 +2761,7 @@ def run_deploy_operation(
     contract: pathlib.Path | None = None,
     parameters: tuple[str, ...] = (),
     parameters_if_declared: tuple[str, ...] = (),
+    if_declared: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     """Run one isolated deployment operation."""
 
@@ -2755,6 +2779,8 @@ def run_deploy_operation(
         command.extend(("--parameter", parameter))
     for parameter in parameters_if_declared:
         command.extend(("--parameter-if-declared", parameter))
+    if if_declared:
+        command.append("--if-declared")
     return subprocess.run(
         command,
         capture_output=True,
@@ -2777,6 +2803,15 @@ def test_deploy_template_is_a_schema_valid_empty_skeleton(
     assert payload["status"] == "error"
     assert payload["message"] == "Deployment operation is not declared: missing"
 
+    optional = run_deploy_operation(repo, "missing", if_declared=True)
+    assert optional.returncode == 0, optional.stderr
+    assert json.loads(optional.stdout) == {
+        "status": "no_op",
+        "operation": "missing",
+        "steps": [],
+        "reason": "operation_not_declared",
+    }
+
 
 def test_deploy_operation_preserves_argv_without_a_shell(
     tmp_path: pathlib.Path,
@@ -2798,6 +2833,7 @@ def test_deploy_operation_preserves_argv_without_a_shell(
         repo,
         {
             "verify": {
+                "handoff": "ceratops-skill-lifecycle/deploy",
                 "steps": [
                     {
                         "id": "argv",
@@ -2821,6 +2857,7 @@ def test_deploy_operation_preserves_argv_without_a_shell(
         "status": "deployed",
         "operation": "verify",
         "steps": ["argv"],
+        "handoff": "ceratops-skill-lifecycle/deploy",
     }
     assert json.loads(output.read_text(encoding="utf-8")) == [
         "value with spaces",
@@ -2932,15 +2969,15 @@ def test_deploy_operation_requires_and_expands_exact_declared_parameters(
     assert output.read_text(encoding="utf-8") == "0123456789abcdef"
 
 
-def test_after_ship_runs_source_installer_once_from_repository_directory(
+def test_deploy_runs_repository_command_once_from_repository_directory(
     tmp_path: pathlib.Path,
 ) -> None:
     repo = tmp_path / "repo"
     installed_skill = tmp_path / "runtime" / "ceratops-repo-lifecycle"
     installed_skill.mkdir(parents=True)
     (repo / "scripts").mkdir(parents=True)
-    log = tmp_path / "install-invocations.jsonl"
-    (repo / "scripts" / "install-skills.py").write_text(
+    log = tmp_path / "deploy-invocations.jsonl"
+    (repo / "scripts" / "deploy-repository.py").write_text(
         "import json, os, pathlib, sys\n"
         "with pathlib.Path(os.environ['INSTALL_LOG']).open('a', encoding='utf-8') as stream:\n"
         "    stream.write(json.dumps({'cwd': str(pathlib.Path.cwd()), 'argv': sys.argv[1:]}) + '\\n')\n",
@@ -2950,11 +2987,11 @@ def test_after_ship_runs_source_installer_once_from_repository_directory(
     write_deploy_contract(
         repo,
         {
-            "after_ship": {
+            "deploy": {
                 "steps": [
                     {
-                        "id": "install-managed-skills",
-                        "run": [sys.executable, "scripts/install-skills.py"],
+                        "id": "deploy-repository",
+                        "run": [sys.executable, "scripts/deploy-repository.py"],
                     }
                 ]
             }
@@ -2968,7 +3005,7 @@ def test_after_ship_runs_source_installer_once_from_repository_directory(
             "--repo-root",
             str(repo),
             "--operation",
-            "after_ship",
+            "deploy",
         ],
         cwd=installed_skill,
         capture_output=True,
@@ -3298,10 +3335,27 @@ def create_compatible_repo(repo: pathlib.Path, source_id: str, skill_names: list
         encoding="utf-8",
         newline="\n",
     )
-    (repo / "deploy").mkdir()
-    shutil.copy2(DEPLOY_CONTRACT_TEMPLATE, repo / "deploy" / "deploy.yml")
+    write_deploy_contract(
+        repo,
+        {
+            "bootstrap": {
+                "steps": [
+                    {
+                        "id": "bootstrap-skills",
+                        "run": [
+                            "python",
+                            "scripts/install-skills-bootstrap.py",
+                        ],
+                    }
+                ]
+            }
+        },
+    )
     (repo / "scripts").mkdir()
-    shutil.copy2(INSTALLER_TEMPLATE, repo / "scripts" / "install-skills.py")
+    shutil.copy2(
+        INSTALLER_TEMPLATE,
+        repo / "scripts" / "install-skills-bootstrap.py",
+    )
     for skill_name in skill_names:
         add_skill(repo, skill_name)
     write_manifest(repo, source_id)
@@ -3348,8 +3402,6 @@ def run_builder(
             str(repo),
             "--install-root",
             str(install_root),
-            "--installer-version",
-            str(INSTALLER_VERSION),
             *extra,
         ],
         capture_output=True,
@@ -3390,7 +3442,9 @@ def runtime_owner(install_root: pathlib.Path, skill_name: str) -> str:
 def prepare_repository_lifecycle_repo(
     tmp_path: pathlib.Path,
     *,
-    declares_base_revision: bool = True,
+    declares_base_revision: bool = False,
+    managed_skills: bool = False,
+    handoff: str | None = None,
 ) -> tuple[pathlib.Path, str, pathlib.Path, dict[str, str]]:
     """Create one isolated repository with a promotable source branch."""
 
@@ -3425,10 +3479,19 @@ def prepare_repository_lifecycle_repo(
     }
     if declares_base_revision:
         operation["parameters"] = ["base_revision"]
+    if handoff is not None:
+        operation["handoff"] = handoff
     write_deploy_contract(
         repo,
-        {"after_promote": operation},
+        {"deploy": operation},
     )
+    if managed_skills:
+        (repo / "skills").mkdir()
+        (repo / "skills" / "skill-sections.json").write_text(
+            json.dumps({"skills": {"sample-skill": []}}),
+            encoding="utf-8",
+            newline="\n",
+        )
     assert run_git(repo, "add", ".").returncode == 0
     assert run_git(repo, "commit", "-m", "base").returncode == 0
     assert run_git(repo, "remote", "add", "origin", str(remote)).returncode == 0
@@ -3450,29 +3513,56 @@ def prepare_repository_lifecycle_repo(
     (
         "operation_arguments",
         "declares_base_revision",
+        "managed_skills",
+        "declared_handoff",
         "expected_operation",
+        "expected_managed_skills",
+        "expected_handoff",
         "expects_base_revision",
     ),
     [
-        (["--no-run-operation"], True, None, None),
+        (["--no-run-operation"], False, False, None, None, None, None, None),
         (
-            ["--run-operation", "after_promote"],
-            True,
+            ["--run-operation", "deploy"],
+            False,
+            False,
+            None,
             {
                 "status": "deployed",
-                "operation": "after_promote",
+                "operation": "deploy",
                 "steps": ["record"],
             },
-            True,
+            False,
+            None,
+            False,
         ),
         (
-            ["--run-operation", "after_promote"],
+            ["--run-operation", "deploy"],
             False,
+            True,
+            None,
             {
                 "status": "deployed",
-                "operation": "after_promote",
+                "operation": "deploy",
                 "steps": ["record"],
             },
+            True,
+            None,
+            False,
+        ),
+        (
+            ["--run-operation", "deploy"],
+            False,
+            True,
+            "ceratops-skill-lifecycle/deploy",
+            {
+                "status": "deployed",
+                "operation": "deploy",
+                "steps": ["record"],
+                "handoff": "ceratops-skill-lifecycle/deploy",
+            },
+            True,
+            "ceratops-skill-lifecycle/deploy",
             False,
         ),
     ],
@@ -3481,12 +3571,18 @@ def test_promote_repository_requires_an_explicit_deployment_choice(
     tmp_path: pathlib.Path,
     operation_arguments: list[str],
     declares_base_revision: bool,
+    managed_skills: bool,
+    declared_handoff: str | None,
     expected_operation: dict[str, object] | None,
+    expected_managed_skills: bool | None,
+    expected_handoff: str | None,
     expects_base_revision: bool | None,
 ) -> None:
     repo, approved_head, log, environment = prepare_repository_lifecycle_repo(
         tmp_path,
         declares_base_revision=declares_base_revision,
+        managed_skills=managed_skills,
+        handoff=declared_handoff,
     )
     release_start = run_git(repo, "rev-parse", "main").stdout.strip()
 
@@ -3514,6 +3610,12 @@ def test_promote_repository_requires_an_explicit_deployment_choice(
     assert result["head"] == approved_head
     assert result["release_start"] == release_start
     assert result["operation"] == expected_operation
+    if expected_managed_skills is None:
+        assert "managed_skills" not in result
+        assert "handoff" not in result
+    else:
+        assert result["managed_skills"] is expected_managed_skills
+        assert result["handoff"] == expected_handoff
     scope_path = pathlib.Path(result["pending_work_scope"])
     assert json.loads(scope_path.read_text(encoding="utf-8")) == {
         "source_branches": ["approved"],
@@ -3531,11 +3633,10 @@ def test_promote_repository_requires_an_explicit_deployment_choice(
         assert log.read_text(encoding="utf-8") == "no-base\n"
 
 
-def test_promote_and_deploy_includes_prior_unpublished_batch(
+def test_promote_and_deploy_does_not_inject_base_revision(
     tmp_path: pathlib.Path,
 ) -> None:
     repo, approved_head, log, environment = prepare_repository_lifecycle_repo(tmp_path)
-    deployed_baseline = run_git(repo, "rev-parse", "main").stdout.strip()
     first = subprocess.run(
         [
             sys.executable,
@@ -3571,7 +3672,7 @@ def test_promote_and_deploy_includes_prior_unpublished_batch(
             "--source-branch",
             "approved-second",
             "--run-operation",
-            "after_promote",
+            "deploy",
         ],
         capture_output=True,
         text=True,
@@ -3581,7 +3682,7 @@ def test_promote_and_deploy_includes_prior_unpublished_batch(
 
     assert second.returncode == 0, second.stderr
     assert json.loads(second.stdout)["release_start"] == approved_head
-    assert log.read_text(encoding="utf-8") == f"{deployed_baseline}\n"
+    assert log.read_text(encoding="utf-8") == "no-base\n"
 
 
 def test_promote_repository_rejects_noncanonical_release_branch_before_mutation(
@@ -3639,7 +3740,7 @@ def test_promote_and_deploy_rejects_operation_created_repository_work(
             "--source-branch",
             "approved",
             "--run-operation",
-            "after_promote",
+            "deploy",
         ],
         capture_output=True,
         text=True,
@@ -3709,7 +3810,7 @@ def test_repository_ship_absent_default_contract_is_no_op_and_finalizes(
             delete_branch=False,
             reusable_head=True,
             deploy_contract=pathlib.Path("deploy/deploy.yml"),
-            deploy_operation="after_ship",
+            deploy_operation="deploy",
             ci_wait_seconds=1,
             review_wait_seconds=1,
             interval_seconds=1,
@@ -3718,7 +3819,7 @@ def test_repository_ship_absent_default_contract_is_no_op_and_finalizes(
 
     assert result["deployment"] == {
         "status": "no_op",
-        "operation": "after_ship",
+        "operation": "deploy",
         "steps": [],
         "reason": "deployment_contract_absent",
     }
@@ -3764,7 +3865,7 @@ def test_repository_ship_missing_custom_contract_blocks_before_remote_mutation(
                 delete_branch=False,
                 reusable_head=False,
                 deploy_contract=pathlib.Path("deploy/custom.yml"),
-                deploy_operation="after_ship",
+                deploy_operation="deploy",
                 ci_wait_seconds=1,
                 review_wait_seconds=1,
                 interval_seconds=1,
@@ -3818,7 +3919,7 @@ def test_repository_ship_late_pending_work_reports_remote_mutation(
     }
     deployed = {
         "status": "deployed",
-        "operation": "after_ship",
+        "operation": "deploy",
         "steps": ["install"],
     }
     responses: list[tuple[int, dict[str, Any]]] = (
@@ -3860,7 +3961,7 @@ def test_repository_ship_late_pending_work_reports_remote_mutation(
         delete_branch=False,
         reusable_head=True,
         deploy_contract=pathlib.Path("deploy/deploy.yml"),
-        deploy_operation="after_ship",
+        deploy_operation="deploy",
         ci_wait_seconds=1,
         review_wait_seconds=1,
         interval_seconds=1,
@@ -3871,12 +3972,12 @@ def test_repository_ship_late_pending_work_reports_remote_mutation(
             target_branch="release/local",
             target_commit="d" * 40,
             contract=args.deploy_contract,
-            operation="after_ship",
+            operation="deploy",
         )
         loaded["_write_deployment_checkpoint"](
             scope.with_suffix(".after-ship.json"),
             stale_identity,
-            {"status": "deployed", "operation": "after_ship", "steps": ["old"]},
+            {"status": "deployed", "operation": "deploy", "steps": ["old"]},
         )
 
     result = ship_repository(args)
@@ -3925,7 +4026,7 @@ def test_repository_ship_rejects_malformed_deployment_checkpoint(
         "target_branch": "release/local",
         "target_commit": "a" * 40,
         "contract": str(tmp_path / "deploy.yml"),
-        "operation": "after_ship",
+        "operation": "deploy",
     }
 
     with pytest.raises(
@@ -4307,10 +4408,7 @@ def test_pending_work_finalization_persists_partial_cleanup_progress(
     assert run_git(repo, "show-ref", "--verify", "refs/heads/selected-b").returncode != 0
 
 
-def install_bundle_manifest(
-    bundle_root: pathlib.Path,
-    installer_version: int = INSTALLER_VERSION,
-) -> None:
+def install_bundle_manifest(bundle_root: pathlib.Path) -> None:
     """Mark one copied lifecycle source folder as a supported installed bundle."""
 
     shutil.copytree(
@@ -4343,7 +4441,6 @@ def install_bundle_manifest(
                 "schema": RUNTIME_MANIFEST_SCHEMA,
                 "skill": "ceratops-skill-lifecycle",
                 "validation_profile": "ceratops",
-                "installer_version": installer_version,
             }
         )
         + "\n",
@@ -4492,6 +4589,107 @@ def test_compatibility_materializer_supplies_target_identity_and_assignments(
         ROOT / "skills" / "sections" / "core.md"
     ).read_bytes()
     assert "SECTION SOURCE: skills/sections/" not in beta.read_text(encoding="utf-8")
+    contract = yaml.safe_load(
+        (repo / "deploy" / "deploy.yml").read_text(encoding="utf-8")
+    )
+    assert contract["kind"] == "ceratops-deploy"
+    assert contract["operations"]["deploy"] == {
+        "handoff": "ceratops-skill-lifecycle/deploy"
+    }
+    assert contract["operations"]["bootstrap"] == {
+        "steps": [
+            {
+                "id": "bootstrap-skills",
+                "run": ["python", "scripts/install-skills-bootstrap.py"],
+            }
+        ]
+    }
+    assert (repo / "scripts" / "install-skills-bootstrap.py").is_file()
+
+
+def test_compatibility_materializer_supports_repositories_without_skills(
+    tmp_path: pathlib.Path,
+) -> None:
+    lifecycle_bundle = tmp_path / "lifecycle-bundle"
+    shutil.copytree(LIFECYCLE_SOURCE, lifecycle_bundle)
+    (lifecycle_bundle / "scripts" / "skills-consistency-source-validator.py").write_text(
+        "raise SystemExit('source validator must not run')\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    (
+        lifecycle_bundle / "scripts" / "synchronize-bootstrap-installer.py"
+    ).write_text(
+        "raise SystemExit('bootstrap synchronizer must not run')\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    zero_skill_materializer = (
+        lifecycle_bundle / "scripts" / "materialize-compatible-repo.py"
+    )
+    repo = tmp_path / "empty-compatible"
+    repo.mkdir()
+    (repo / ".git").write_text(
+        "gitdir: test\n", encoding="utf-8", newline="\n"
+    )
+    (repo / "README.md").write_text(
+        "# Empty Compatible Repository\n\n"
+        "## Skills\n\n"
+        "| Skill | Purpose |\n"
+        "| --- | --- |\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(zero_skill_materializer),
+            "--target-repo-root",
+            str(repo),
+            "--runtime-source-id",
+            "example/empty-compatible",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout
+    manifest = json.loads(
+        (repo / "skills" / "skill-sections.json").read_text(encoding="utf-8")
+    )
+    contract = yaml.safe_load(
+        (repo / "deploy" / "deploy.yml").read_text(encoding="utf-8")
+    )
+    assert manifest["skills"] == {}
+    assert manifest["sections"] == {}
+    assert json.loads(result.stdout)["bootstrap"] == "skipped"
+    assert contract == {
+        "version": 1,
+        "kind": "ceratops-deploy",
+        "operations": {},
+    }
+    assert not (repo / "skills" / "sections").exists()
+    assert not (repo / "scripts" / "install-skills-bootstrap.py").exists()
+
+    omitted = tmp_path / "empty-without-deploy"
+    shutil.copytree(repo, omitted)
+    (omitted / "deploy" / "deploy.yml").unlink()
+    omitted_result = subprocess.run(
+        [
+            sys.executable,
+            str(zero_skill_materializer),
+            "--target-repo-root",
+            str(omitted),
+            "--no-deploy-contract",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert omitted_result.returncode == 0, omitted_result.stdout
+    assert not (omitted / "deploy" / "deploy.yml").exists()
 
 
 def test_compatibility_materializer_preserves_existing_identity_and_custom_sections(
@@ -4580,7 +4778,8 @@ def test_compatibility_materializer_rolls_back_every_target_write_on_blocker(
         skill_md,
         repo / "skills" / "sections" / "core.md",
         repo / "skills" / "skill-sections.json",
-        repo / "scripts" / "install-skills.py",
+        repo / "scripts" / "install-skills-bootstrap.py",
+        repo / "deploy" / "deploy.yml",
     )
     original = {path: path.read_bytes() for path in changed_paths}
 
@@ -4599,7 +4798,7 @@ def test_compatibility_materializer_rolls_back_every_target_write_on_blocker(
     assert result.returncode == 1
     output = json.loads(result.stdout)
     assert output["status"] == "blocked"
-    assert output["phase"] == "installer_validation"
+    assert output["phase"] == "source_validation"
     assert output["rollback"] == "completed"
     assert {path: path.read_bytes() for path in changed_paths} == original
 
@@ -4622,7 +4821,8 @@ def test_compatibility_materializer_blocks_invalid_assignments_before_writes(
         repo / "skills" / "alpha-tool" / "SKILL.md",
         repo / "skills" / "sections" / "core.md",
         manifest_path,
-        repo / "scripts" / "install-skills.py",
+        repo / "scripts" / "install-skills-bootstrap.py",
+        repo / "deploy" / "deploy.yml",
     )
     original = {
         path: (path.read_bytes(), path.stat().st_mtime_ns)
@@ -4943,7 +5143,6 @@ def test_transaction_stages_complete_batch_before_canonical_mutation(
     result = builder["install_transaction"](
         repo,
         install_root,
-        INSTALLER_VERSION,
         selected=("alpha-tool", "beta-tool"),
     )
 
@@ -4993,7 +5192,6 @@ def test_transaction_staging_or_activation_failure_restores_prior_batch(
         staging_builder["install_transaction"](
             repo,
             install_root,
-            INSTALLER_VERSION,
             selected=("alpha-tool", "beta-tool"),
         )
     assert staging_error.value.phase == "staging"
@@ -5023,7 +5221,6 @@ def test_transaction_staging_or_activation_failure_restores_prior_batch(
         activation_builder["install_transaction"](
             repo,
             install_root,
-            INSTALLER_VERSION,
             selected=("alpha-tool", "beta-tool"),
         )
     assert activation_error.value.phase == "activation"
@@ -5092,7 +5289,6 @@ def test_transaction_retry_policy_and_acl_order(
     builder["install_transaction"](
         repo,
         install_root,
-        INSTALLER_VERSION,
         selected=("alpha-tool",),
     )
     assert order[0].startswith("acl:.alpha-tool-deployed-")
@@ -5123,13 +5319,11 @@ def test_transaction_recovers_interrupted_and_blocks_ambiguous_remnants(
         "alpha-tool",
         deployed,
         manifest,
-        INSTALLER_VERSION,
     )
 
     recovered = builder["install_transaction"](
         repo,
         install_root,
-        INSTALLER_VERSION,
         selected=("alpha-tool",),
     )
 
@@ -5144,7 +5338,6 @@ def test_transaction_recovers_interrupted_and_blocks_ambiguous_remnants(
         builder["install_transaction"](
             repo,
             install_root,
-            INSTALLER_VERSION,
             selected=("beta-tool",),
         )
     assert blocked.value.phase == "recovery"
@@ -5169,7 +5362,6 @@ def test_transaction_rejects_conflicting_remnant_ids(
         builder["install_transaction"](
             repo,
             install_root,
-            INSTALLER_VERSION,
             selected=("alpha-tool",),
         )
 
@@ -5330,13 +5522,20 @@ def test_base_revision_resolves_payload_global_and_ambiguous_changes(
     assert run_git(global_repo, "add", ".").returncode == 0
     assert run_git(global_repo, "commit", "-m", "base").returncode == 0
     global_base = run_git(global_repo, "rev-parse", "HEAD").stdout.strip()
-    bootstrap = global_repo / "scripts" / "install-skills.py"
+    bootstrap = global_repo / "scripts" / "install-skills-bootstrap.py"
     bootstrap.write_text(
         bootstrap.read_text(encoding="utf-8") + "\n# changed generator\n",
         encoding="utf-8",
         newline="\n",
     )
-    assert run_git(global_repo, "add", "scripts/install-skills.py").returncode == 0
+    assert (
+        run_git(
+            global_repo,
+            "add",
+            "scripts/install-skills-bootstrap.py",
+        ).returncode
+        == 0
+    )
     assert run_git(global_repo, "commit", "-m", "global").returncode == 0
     global_affected = installer["affected_from_base"](global_repo, global_base)
     assert global_affected.deploy == ("alpha-tool", "beta-tool")
@@ -5350,8 +5549,6 @@ def test_base_revision_resolves_payload_global_and_ambiguous_changes(
             str(global_repo),
             "--install-root",
             str(global_install_root),
-            "--installer-version",
-            str(INSTALLER_VERSION),
             "--base-revision",
             global_base,
         ],
@@ -5402,7 +5599,6 @@ def test_transaction_hard_crash_converges_only_matching_scope(
         "beta-tool",
         install_root / "beta-tool",
         manifest,
-        INSTALLER_VERSION,
     )
     source = repo / "skills" / "beta-tool" / "SKILL.md"
     source.write_text(
@@ -5450,7 +5646,6 @@ def test_transaction_cleanup_blocker_keeps_new_batch_and_serializes_writers(
     result = builder["install_transaction"](
         repo,
         install_root,
-        INSTALLER_VERSION,
         selected=("alpha-tool",),
     )
     assert result.status == "cleanup_blocked"
@@ -5464,7 +5659,6 @@ def test_transaction_cleanup_blocker_keeps_new_batch_and_serializes_writers(
     recovered = builder["install_transaction"](
         repo,
         install_root,
-        INSTALLER_VERSION,
         selected=("alpha-tool",),
     )
     assert recovered.status == "ok"
@@ -5478,7 +5672,6 @@ def test_transaction_cleanup_blocker_keeps_new_batch_and_serializes_writers(
             lock_builder["install_transaction"](
                 repo,
                 install_root,
-                INSTALLER_VERSION,
                 selected=("alpha-tool",),
             )
         except BaseException as exc:
@@ -5503,7 +5696,7 @@ def test_external_installer_needs_no_ceratops_bundle(tmp_path: pathlib.Path) -> 
     result = subprocess.run(
         [
             sys.executable,
-            str(repo / "scripts" / "install-skills.py"),
+            str(repo / "scripts" / "install-skills-bootstrap.py"),
             "--repo-root",
             str(repo),
             "--install-root",
@@ -5539,16 +5732,17 @@ def test_external_installer_rejects_unresolved_or_malformed_input_without_fallba
     manifest["skills"]["alpha-tool"] = ["missing-section"]
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8", newline="\n")
     unresolved = subprocess.run(
-        [sys.executable, str(repo / "scripts" / "install-skills.py"), "--repo-root", str(repo), "--install-root", str(install_root)],
+        [sys.executable, str(repo / "scripts" / "install-skills-bootstrap.py"), "--repo-root", str(repo), "--install-root", str(install_root)],
         capture_output=True, text=True, check=False, env=environment,
     )
     assert unresolved.returncode != 0
     assert "unresolved section" in unresolved.stderr
-    assert not install_root.exists()
+    assert install_root.is_dir()
+    assert not list(install_root.iterdir())
 
     manifest_path.write_text("[]\n", encoding="utf-8", newline="\n")
     malformed = subprocess.run(
-        [sys.executable, str(repo / "scripts" / "install-skills.py"), "--repo-root", str(repo), "--install-root", str(install_root)],
+        [sys.executable, str(repo / "scripts" / "install-skills-bootstrap.py"), "--repo-root", str(repo), "--install-root", str(install_root)],
         capture_output=True, text=True, check=False, env=environment,
     )
     assert malformed.returncode != 0
@@ -5556,14 +5750,13 @@ def test_external_installer_rejects_unresolved_or_malformed_input_without_fallba
     assert "installed runtime was selected" not in malformed.stderr
 
 
-def test_source_installer_prefers_installed_lifecycle(
+def test_bootstrap_never_calls_installed_lifecycle(
     tmp_path: pathlib.Path,
 ) -> None:
     codex_home = tmp_path / "codex-home"
     install_root = tmp_path / "installed"
     installed_bundle = codex_home / "skills" / "ceratops-skill-lifecycle"
     shutil.copytree(LIFECYCLE_SOURCE, installed_bundle)
-    install_bundle_manifest(installed_bundle)
     marker = tmp_path / "runtime-selected.txt"
     installed_runtime = (
         installed_bundle / "scripts" / "runtime" / "install-managed-skills.py"
@@ -5593,14 +5786,13 @@ def test_source_installer_prefers_installed_lifecycle(
     )
 
     assert result.returncode == 0, result.stderr
-    selected_runtime = pathlib.Path(marker.read_text(encoding="utf-8")).resolve()
-    assert not selected_runtime.is_relative_to(installed_bundle.resolve())
-    assert selected_runtime.name == "install-managed-skills.py"
-    assert not selected_runtime.exists()
-    assert not install_root.exists()
+    assert not marker.exists()
+    assert runtime_owner(
+        install_root, "ceratops-skill-lifecycle"
+    ) == "Ceratops-Code/AI-Agent-Skills"
 
 
-def test_source_installer_falls_back_when_installed_lifecycle_fails(
+def test_bootstrap_is_first_install_only_and_cleans_owned_state(
     tmp_path: pathlib.Path,
 ) -> None:
     codex_home = tmp_path / "codex-home"
@@ -5637,9 +5829,28 @@ def test_source_installer_falls_back_when_installed_lifecycle_fails(
     assert runtime_owner(install_root, "ceratops-skill-lifecycle") == (
         "Ceratops-Code/AI-Agent-Skills"
     )
+    repeated = subprocess.run(
+        [
+            sys.executable,
+            str(BOOTSTRAP),
+            "--repo-root",
+            str(ROOT),
+            "--install-root",
+            str(install_root),
+            "--skill",
+            "ceratops-skill-lifecycle",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={**os.environ, "CODEX_HOME": str(codex_home)},
+    )
+    assert repeated.returncode == 1
+    assert "bootstrap is first-install-only" in repeated.stderr
+    assert not list(install_root.glob(".ceratops-bootstrap*"))
 
 
-def test_source_installer_fails_when_runtime_and_independent_paths_fail(
+def test_bootstrap_rejects_undeclared_selection_without_runtime_fallback(
     tmp_path: pathlib.Path,
 ) -> None:
     codex_home = tmp_path / "codex-home"
@@ -5672,11 +5883,11 @@ def test_source_installer_fails_when_runtime_and_independent_paths_fail(
     )
 
     assert result.returncode != 0
-    assert "Installed lifecycle failed: installed runtime failed" in result.stderr
-    assert "independent installer failed: undeclared skill" in result.stderr
+    assert "undeclared skill" in result.stderr
+    assert "installed runtime failed" not in result.stderr
 
 
-def test_source_installer_falls_back_when_lifecycle_is_unavailable(
+def test_bootstrap_full_install_materializes_self_contained_lifecycle_bundle(
     tmp_path: pathlib.Path,
 ) -> None:
     codex_home = tmp_path / "empty-codex-home"
@@ -5691,8 +5902,6 @@ def test_source_installer_falls_back_when_lifecycle_is_unavailable(
             str(ROOT),
             "--install-root",
             str(install_root),
-            "--base-revision",
-            "unavailable-runtime-falls-back-to-full-install",
         ],
         capture_output=True,
         text=True,
@@ -5704,7 +5913,10 @@ def test_source_installer_falls_back_when_lifecycle_is_unavailable(
     assert runtime_owner(install_root, "ceratops-skill-lifecycle") == "Ceratops-Code/AI-Agent-Skills"
     installed_lifecycle = install_root / "ceratops-skill-lifecycle"
     assert (
-        installed_lifecycle / "scripts" / "templates" / "skill-sections-template.json"
+        installed_lifecycle
+        / "references"
+        / "templates"
+        / "skill-sections-template.json"
     ).is_file()
     assert (installed_lifecycle / "skills" / "sections" / "core.md").is_file()
     assert (
@@ -5758,10 +5970,7 @@ def test_source_installer_falls_back_when_lifecycle_is_unavailable(
         env=env,
     )
     assert rejected.returncode != 0
-    assert (
-        "only installs the AI-Agent-Skills checkout that contains it"
-        in rejected.stderr
-    )
+    assert "skill-sections.json" in rejected.stderr
     assert not (tmp_path / "rejected-install").exists()
 
 
@@ -5818,7 +6027,7 @@ def test_lifecycle_only_installed_bundle_materializes_compatible_repo(
     assert json.loads(result.stdout)["runtime_source_id"] == "installed/only"
 
 
-def test_external_installer_ignores_stale_broken_installed_bundle(
+def test_bootstrap_ignores_stale_broken_installed_bundle(
     tmp_path: pathlib.Path,
 ) -> None:
     codex_home = tmp_path / "codex-home"
@@ -5829,7 +6038,7 @@ def test_external_installer_ignores_stale_broken_installed_bundle(
         REPOSITORY_LIFECYCLE_SOURCE,
         codex_home / "skills" / "ceratops-repo-lifecycle",
     )
-    install_bundle_manifest(installed_bundle, installer_version=1)
+    install_bundle_manifest(installed_bundle)
     installed_runtime = installed_bundle / "scripts" / "runtime" / "install-managed-skills.py"
     installed_runtime.write_text(
         "raise SystemExit('broken installed runtime was selected')\n",
@@ -5842,7 +6051,7 @@ def test_external_installer_ignores_stale_broken_installed_bundle(
     result = subprocess.run(
         [
             sys.executable,
-            str(repo / "scripts" / "install-skills.py"),
+            str(repo / "scripts" / "install-skills-bootstrap.py"),
             "--repo-root",
             str(repo),
             "--install-root",
@@ -5858,7 +6067,9 @@ def test_external_installer_ignores_stale_broken_installed_bundle(
     assert runtime_owner(install_root, "alpha-tool") == "example/external"
 
 
-def test_runtime_manifest_records_source_profile_and_installer_version(tmp_path: pathlib.Path) -> None:
+def test_runtime_manifest_uses_schema_without_installer_version(
+    tmp_path: pathlib.Path,
+) -> None:
     repo = tmp_path / "compatible"
     install_root = tmp_path / "installed"
     create_compatible_repo(repo, "example/compatible", ["alpha-tool"])
@@ -5873,7 +6084,7 @@ def test_runtime_manifest_records_source_profile_and_installer_version(tmp_path:
     assert manifest["source_path"] == "skills/alpha-tool"
     assert manifest["source_repository_root"] == str(repo.resolve())
     assert manifest["validation_profile"] == "ceratops-compatible"
-    assert manifest["installer_version"] == INSTALLER_VERSION
+    assert "installer_version" not in manifest
 
 
 def test_full_install_does_not_run_source_validation(tmp_path: pathlib.Path) -> None:
@@ -5900,7 +6111,7 @@ def test_full_install_does_not_run_source_validation(tmp_path: pathlib.Path) -> 
     result = subprocess.run(
         [
             sys.executable,
-            str(repo / "scripts" / "install-skills.py"),
+            str(repo / "scripts" / "install-skills-bootstrap.py"),
             "--repo-root",
             str(repo),
             "--install-root",
@@ -5935,7 +6146,7 @@ def test_targeted_install_checks_only_selected_rendering_inputs(
     result = subprocess.run(
         [
             sys.executable,
-            str(repo / "scripts" / "install-skills.py"),
+            str(repo / "scripts" / "install-skills-bootstrap.py"),
             "--repo-root",
             str(repo),
             "--install-root",
@@ -5957,11 +6168,11 @@ def test_targeted_install_checks_only_selected_rendering_inputs(
     invalid_selected = subprocess.run(
         [
             sys.executable,
-            str(repo / "scripts" / "install-skills.py"),
+            str(repo / "scripts" / "install-skills-bootstrap.py"),
             "--repo-root",
             str(repo),
             "--install-root",
-            str(install_root),
+            str(tmp_path / "invalid-installed"),
             "--skill",
             "alpha-tool",
         ],
@@ -5976,11 +6187,15 @@ def test_targeted_install_checks_only_selected_rendering_inputs(
     assert (install_root / "alpha-tool" / "SKILL.md").is_file()
 
 
-def test_installer_synchronization_compares_only_version(tmp_path: pathlib.Path) -> None:
+def test_bootstrap_synchronization_compares_only_version(
+    tmp_path: pathlib.Path,
+) -> None:
     repo = tmp_path / "compatible"
-    create_compatible_repo(repo, "example/compatible", ["alpha-tool"])
+    repo.mkdir()
     (repo / ".git").write_text("gitdir: test\n", encoding="utf-8", newline="\n")
-    target = repo / "scripts" / "install-skills.py"
+    (repo / "scripts").mkdir()
+    target = repo / "scripts" / "install-skills-bootstrap.py"
+    shutil.copy2(INSTALLER_TEMPLATE, target)
     custom = target.read_text(encoding="utf-8") + "\n# same-version local difference\n"
     target.write_text(custom, encoding="utf-8", newline="\n")
 
@@ -6013,13 +6228,23 @@ def test_installer_synchronization_compares_only_version(tmp_path: pathlib.Path)
     assert json.loads(updated.stdout)["status"] == "updated"
     assert target.read_bytes() == INSTALLER_TEMPLATE.read_bytes()
 
+    help_result = subprocess.run(
+        [sys.executable, str(INSTALLER_SYNCHRONIZER), "--help"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert help_result.returncode == 0
+    assert "--target-repo-root" in help_result.stdout
+    assert "--validate-only" not in help_result.stdout
 
-def test_installer_tiers_declare_the_same_explicit_version(
+
+def test_bootstrap_copies_declare_the_same_explicit_version(
     tmp_path: pathlib.Path,
 ) -> None:
     validator = runpy.run_path(str(VALIDATOR))
     parse_version = validator["installer_version"]
-    template = tmp_path / "install-skills-template.py"
+    template = tmp_path / "install-skills-bootstrap-template.py"
     template.write_text(
         "INSTALLER_VERSION = 11\nprint('authoritative')\n",
         encoding="utf-8",
@@ -6028,7 +6253,22 @@ def test_installer_tiers_declare_the_same_explicit_version(
     assert parse_version(template) == 11
     assert parse_version(INSTALLER_TEMPLATE) == INSTALLER_VERSION
     assert parse_version(BOOTSTRAP) == INSTALLER_VERSION
-    assert INSTALLER_TEMPLATE.read_bytes() != BOOTSTRAP.read_bytes()
+    assert INSTALLER_TEMPLATE.read_bytes() == BOOTSTRAP.read_bytes()
+    help_result = subprocess.run(
+        [sys.executable, str(BOOTSTRAP), "--help"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert help_result.returncode == 0
+    for option in ("--repo-root", "--install-root", "--skill"):
+        assert option in help_result.stdout
+    for removed in (
+        "--base-revision",
+        "--remove-skill",
+        "--installer-version",
+    ):
+        assert removed not in help_result.stdout
 
     template.write_text(
         "INSTALLER_VERSION = 11\nINSTALLER_VERSION = 12\n",

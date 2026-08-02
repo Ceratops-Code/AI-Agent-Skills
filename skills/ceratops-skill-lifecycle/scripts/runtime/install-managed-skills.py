@@ -39,10 +39,12 @@ KNOWN_MANIFEST_FIELDS = {
     "skills",
 }
 GLOBAL_RUNTIME_PATHS = {
-    "scripts/install-skills.py",
+    "scripts/install-skills-bootstrap.py",
     "skills/ceratops-skill-lifecycle/scripts/materialize-compatible-repo.py",
-    "skills/ceratops-skill-lifecycle/scripts/templates/install-skills-template.py",
-    "skills/ceratops-skill-lifecycle/scripts/templates/skill-sections-template.json",
+    "skills/ceratops-skill-lifecycle/references/templates/"
+    "install-skills-bootstrap-template.py",
+    "skills/ceratops-skill-lifecycle/references/templates/"
+    "skill-sections-template.json",
     "skills/ceratops-skill-lifecycle/scripts/runtime/install-managed-skills.py",
     "skills/ceratops-skill-lifecycle/scripts/runtime/managed_runtime_builder.py",
 }
@@ -427,7 +429,6 @@ def _routing_manifest_errors(
         "source_path",
         "source_repository_root",
         "validation_profile",
-        "installer_version",
     }
     missing = sorted(required - set(manifest))
     if missing:
@@ -456,13 +457,6 @@ def _routing_manifest_errors(
         errors.append("source_repository_root must be an absolute path")
     if manifest.get("validation_profile") not in VALIDATION_PROFILES:
         errors.append("unsupported runtime validation profile")
-    version = manifest.get("installer_version")
-    if (
-        not isinstance(version, int)
-        or isinstance(version, bool)
-        or version < 1
-    ):
-        errors.append("installer_version must be a positive integer")
     return errors
 
 
@@ -542,7 +536,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--repo-root", type=pathlib.Path)
     parser.add_argument("--install-root", type=pathlib.Path)
-    parser.add_argument("--installer-version", type=int)
     parser.add_argument("--skill", action="append")
     parser.add_argument("--remove-skill", action="append")
     parser.add_argument("--base-revision")
@@ -560,7 +553,6 @@ def main(argv: list[str] | None = None) -> int:
             value is not None
             for value in (
                 args.repo_root,
-                args.installer_version,
                 args.skill,
                 args.remove_skill,
                 args.base_revision,
@@ -585,12 +577,8 @@ def main(argv: list[str] | None = None) -> int:
         print("OK")
         return 0
 
-    if args.repo_root is None or args.installer_version is None:
-        raise SystemExit(
-            "--repo-root and --installer-version are required for installation"
-        )
-    if args.installer_version < 1:
-        raise SystemExit("--installer-version must be positive")
+    if args.repo_root is None:
+        raise SystemExit("--repo-root is required for installation")
     if args.base_revision is not None and (
         args.skill is not None or args.remove_skill is not None
     ):
@@ -613,7 +601,6 @@ def main(argv: list[str] | None = None) -> int:
         result = runtime_builder.install_transaction(
             repo_root,
             install_root,
-            args.installer_version,
             selected=() if affected.all_managed else affected.deploy,
             remove=affected.remove,
             all_managed=affected.all_managed,

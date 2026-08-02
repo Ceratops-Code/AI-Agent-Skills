@@ -457,7 +457,6 @@ def write_expected_skill(
     skill_name: str,
     target_skill: pathlib.Path,
     manifest: Mapping[str, object],
-    installer_version: int,
     *,
     source_repository_root: pathlib.Path | None = None,
 ) -> None:
@@ -494,7 +493,6 @@ def write_expected_skill(
         "validation_profile": validation_profile,
         "source_path": source_dir.relative_to(ROOT).as_posix(),
         "source_repository_root": str(source_repository_root or ROOT),
-        "installer_version": installer_version,
         "generated_from": SECTION_MANIFEST.relative_to(ROOT).as_posix(),
         "payload_patterns": payload_patterns_for(skill_name, manifest),
     }
@@ -785,7 +783,6 @@ def _rollback(
 def install_transaction(
     repo_root: pathlib.Path,
     install_root: pathlib.Path,
-    installer_version: int,
     *,
     selected: Sequence[str] = (),
     remove: Sequence[str] = (),
@@ -793,10 +790,6 @@ def install_transaction(
 ) -> TransactionResult:
     """Install one exact selected batch under a single writer transaction."""
 
-    if installer_version < 1:
-        raise TransactionError(
-            "installer version must be positive", phase="preflight"
-        )
     configure_repo(repo_root)
     manifest = load_manifest()
     source_names = set(source_skill_names())
@@ -883,9 +876,7 @@ def install_transaction(
                 current_skill = skill
                 staged = install_root / f".{skill}-deployed-{transaction_id}"
                 deployed_paths[skill] = staged
-                write_expected_skill(
-                    skill, staged, manifest, installer_version
-                )
+                write_expected_skill(skill, staged, manifest)
                 enable_windows_acl_inheritance(staged)
                 staged_manifest = read_runtime_manifest(staged)
                 if (
@@ -961,7 +952,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--repo-root", required=True, type=pathlib.Path)
     parser.add_argument("--install-root", required=True, type=pathlib.Path)
-    parser.add_argument("--installer-version", required=True, type=int)
     parser.add_argument("--skill", action="append")
     parser.add_argument("--remove-skill", action="append")
     parser.add_argument("--all-managed", action="store_true")
@@ -976,7 +966,6 @@ def main(argv: list[str] | None = None) -> int:
         result = install_transaction(
             args.repo_root.resolve(),
             args.install_root.resolve(),
-            args.installer_version,
             selected=args.skill or (),
             remove=args.remove_skill or (),
             all_managed=args.all_managed,

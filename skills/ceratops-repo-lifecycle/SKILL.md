@@ -32,7 +32,7 @@ owns its executable deployment behavior in `deploy/deploy.yml`.
 - Target repository, checkout, branch, selected source branches, PR, artifact,
   dependency queue, or creation request that identifies the action.
 - Whether promotion must stop after assembling `release/local` or run the
-  repository's `after_promote` operation.
+  repository's optional `deploy` operation and any returned handoff.
 - Whether shipping has a selected pending-work scope or explicitly disables
   that check.
 - Required live GitHub, local repository, CI, artifact, credential, and
@@ -63,8 +63,8 @@ remotes, manifests, and live repository data before asking.
   work, deterministic deployment, dependency maintenance, CodeQL disposition,
   and PR merge decisions.
 - Use `$ceratops-skill-lifecycle` for skill-domain creation, mutation,
-  compatibility, contract review, or consistency review; accept its explicit
-  promotion or shipping handoff.
+  compatibility, managed deployment, contract review, or consistency review;
+  accept its promotion or shipping handoff and return the managed-skill phase.
 - Use `references/contracts-review.md` for contract review rather than
   lifecycle execution.
 - Use a generic GitHub capability only when no Ceratops repository action fits
@@ -79,9 +79,12 @@ remotes, manifests, and live repository data before asking.
   surfaces.
 - Use `promote` when selected committed branches should join a local
   `release/local` branch without deployment.
-- Use `promote-and-deploy` when the same promotion should run `after_promote`.
+- Use `promote-and-deploy` when the same promotion should run optional
+  repository deployment, execute a returned handoff, and report managed skills
+  when no handoff is declared.
 - Use `ship` for the complete staged-branch PR, gate, merge, main sync,
-  `after_ship`, late recheck, and selected-source cleanup workflow.
+  optional repository deployment, returned handoff handling, late recheck, and
+  selected-source cleanup workflow.
 - Use `merge-pr` only when standalone PR finalization is the whole task.
 
 #### 2. Close from action evidence

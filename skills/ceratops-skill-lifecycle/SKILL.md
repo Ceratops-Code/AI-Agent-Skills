@@ -1,6 +1,6 @@
 ---
 name: ceratops-skill-lifecycle
-description: Route Ceratops or compatible skill lifecycle work to action references for create, make-repo-compatible, fast-change, update, skills-contract-review, and skills-consistency-review work. Use when Codex should create a skill, make a skills repository Ceratops-compatible, apply an eligible direct-release skill change with targeted installation, update skill source or shared governance surfaces, refresh Ceratops skill-design contracts, or audit one manifest-backed installed skill and its coupled source.
+description: Route Ceratops or compatible skill lifecycle work to action references for create, make-repo-compatible, deploy, fast-change, update, skills-contract-review, and skills-consistency-review work. Use when Codex should create or deploy managed skills, make a repository Ceratops-compatible, apply an eligible direct-release skill change with targeted installation, update skill source or shared governance surfaces, refresh Ceratops skill-design contracts, or audit one manifest-backed installed skill and its coupled source.
 ---
 
 # Ceratops Skill Lifecycle
@@ -16,8 +16,9 @@ surface for standards refresh, repository consistency, creation, and mutation.
 ### Action References
 
 - Create a new skill: `references/create.md`
-- Make an existing skills repository Ceratops-compatible:
+- Make an existing repository Ceratops-compatible:
   `references/make-repo-compatible.md`
+- Deploy manifest-managed skills: `references/deploy.md`
 - Apply an eligible direct-release skill change: `references/fast-change.md`
 - Update an existing skill or shared maintenance surface: `references/update.md`
 - Refresh Ceratops skill-design contracts from current standards evidence:
@@ -55,15 +56,12 @@ Infer missing inputs from the current repo state before asking.
   validators, contracts, helper scripts, and docs as one coupled maintenance
   surface when they exist.
 - Treat another repo as Ceratops-compatible only when its section manifest
-  declares `runtime_source_id`, `validation_profile: ceratops-compatible`,
-  shared sections, and per-skill assignments. Skill names need not use a
-  Ceratops prefix.
-- Use the installed Ceratops lifecycle runtime to install or deploy
-  AI-Agent-Skills, executing a temporary runtime snapshot outside the managed
-  destination; if unavailable or unsuccessful, run the checkout's independent
-  installer once. Compatible-repository installers remain self-contained and
-  Ceratops-independent, only resolving declarations and rendering or copying
-  skills.
+  declares `runtime_source_id`, `validation_profile: ceratops-compatible`, an
+  assignment for every source skill, and shared sections when source skills
+  exist. Skill names need not use a Ceratops prefix.
+- Use the managed runtime installer for ordinary skill deployment. Use
+  `scripts/install-skills-bootstrap.py` only for an explicit first install; it
+  remains self-contained and never dispatches to lifecycle runtime code.
 - Use `fast-change` directly on verified primary `release/local` whenever
   its action contract and one-request orchestrator accept the complete intended
   scope. The orchestrator owns patch, repository-declared Markdown lint, exact
@@ -73,9 +71,9 @@ Infer missing inputs from the current repo state before asking.
 
 ### Boundaries
 
-- Use this skill for creating skills, eligible direct-release changes, updating
-  existing skills, skill repository compatibility, consistency audits, and
-  skill-design contract upkeep.
+- Use this skill for creating or deploying managed skills, eligible
+  direct-release changes, updating existing skills, repository compatibility,
+  consistency audits, and skill-design contract upkeep.
 - If the task is advisory-only skill optimization, use
   `$ceratops-governance-lifecycle` action `optimize-skill`.
 - If the task is Ceratops skill-contract standards upkeep, use
@@ -84,7 +82,8 @@ Infer missing inputs from the current repo state before asking.
   compliance, use
   `references/skills-consistency-review.md`.
 - If the task is repository promotion, deployment, shipping, or another Git or
-  GitHub lifecycle operation, use `$ceratops-repo-lifecycle`.
+  GitHub lifecycle operation, enter through `$ceratops-repo-lifecycle`; its
+  declared managed-skill handoff may route to this skill's `deploy` action.
 
 ### Workflow
 
@@ -92,9 +91,11 @@ Infer missing inputs from the current repo state before asking.
 
 - Use `create` when a brand-new skill must be added and integrated with
   available repo governance surfaces.
-- Use `make-repo-compatible` when a target skills repository lacks the manifest,
-  shared-section, metadata, documentation, installer, or validation surfaces
-  required by the `ceratops-compatible` profile.
+- Use `make-repo-compatible` when a target repository lacks compatibility
+  surfaces required by the `ceratops-compatible` profile; add shared-section,
+  metadata, and installer surfaces only when source skills exist.
+- Use `deploy` for the managed-skill phase after repository-specific deployment
+  work has completed or explicitly no-oped.
 - Use `fast-change` whenever the request is exact and its complete selected
   skill-local scope satisfies `references/fast-change.md`.
 - Use `update` when an existing skill, shared section, manifest, runtime

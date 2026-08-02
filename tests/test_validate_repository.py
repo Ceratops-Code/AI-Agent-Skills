@@ -29,11 +29,9 @@ def test_build_checks_owns_order_both_platforms_and_space_safe_paths(
     tmp_path: pathlib.Path,
 ) -> None:
     repo_root = tmp_path / "repository with spaces"
-    render_dir = tmp_path / "rendered skills"
 
     checks = VALIDATOR.build_checks(
         repo_root,
-        render_dir,
         python_executable="python executable",
         npm_executable="npm executable",
     )
@@ -45,7 +43,6 @@ def test_build_checks_owns_order_both_platforms_and_space_safe_paths(
         ("mypy", "win32"),
         ("pytest", None),
         ("source-contract-validator", None),
-        ("managed-skill-render", None),
         ("repo-lifecycle-promote-help", None),
         ("repo-lifecycle-pending-work-help", None),
         ("repo-lifecycle-deploy-operation-help", None),
@@ -55,9 +52,8 @@ def test_build_checks_owns_order_both_platforms_and_space_safe_paths(
     ]
     assert checks[2].command[-2:] == ("--platform", "linux")
     assert checks[3].command[-2:] == ("--platform", "win32")
-    assert checks[6].command[-1] == str(render_dir)
     assert "repository with spaces" in checks[5].command[1]
-    assert checks[7].cwd == repo_root / "skills/ceratops-repo-lifecycle/scripts"
+    assert checks[6].cwd == repo_root / "skills/ceratops-repo-lifecycle/scripts"
 
 
 def test_run_process_captures_output_without_a_shell(
@@ -97,7 +93,6 @@ def test_success_prints_exactly_ok_and_suppresses_child_output(
     result = VALIDATOR.main(
         [],
         environ={
-            VALIDATOR.RENDER_DIR_ENV: str(tmp_path / "rendered skills"),
             VALIDATOR.EVIDENCE_FILE_ENV: str(evidence_file),
         },
         process_runner=fake_runner,
@@ -107,7 +102,7 @@ def test_success_prints_exactly_ok_and_suppresses_child_output(
     assert result == 0
     assert captured.out == "OK\n"
     assert captured.err == ""
-    assert len(calls) == 13
+    assert len(calls) == 12
     assert not evidence_file.exists()
 
 
@@ -134,7 +129,6 @@ def test_failure_is_fail_fast_compact_and_writes_complete_evidence(
     result = VALIDATOR.main(
         [],
         environ={
-            VALIDATOR.RENDER_DIR_ENV: str(tmp_path / "rendered skills"),
             VALIDATOR.EVIDENCE_FILE_ENV: str(evidence_file),
         },
         process_runner=fake_runner,

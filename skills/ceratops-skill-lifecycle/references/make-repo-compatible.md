@@ -2,46 +2,41 @@
 
 ## Goal
 
-Make an existing skills repository satisfy the `ceratops-compatible` source,
-validation, installer, and managed-runtime contract without changing its
-skills' intended behavior.
+Make an existing repository satisfy the `ceratops-compatible` source and
+validation contract without changing any skill's intended behavior. Repositories
+with no skills remain valid and omit canonical shared-section and bootstrap work.
 
 ## Context
 
 ### Inputs To Capture
 
-- Target repository task worktree, source skill inventory, and intended stable
-  `runtime_source_id`.
+- Target repository task worktree, optional source skill inventory, and
+  intended stable `runtime_source_id`.
 - Existing shared skill rules, metadata, README skill inventory, runtime
   resources, installer, deployment definition, and validation surfaces.
 - Whether compatibility is standalone work or a prerequisite for `create` or
-  `update`, and whether repository deployment is explicitly requested.
+  `update`, and whether `deploy/deploy.yml` should be omitted.
 
 Infer the source identity from stable repository evidence before asking.
 
 ### Script Bundle
 
-- (D) Full compatible-repository validation: `python
-  scripts/skills-consistency-source-validator.py --repo-root
-  <repo-root>
-  --mode full` from the installed lifecycle bundle.
-- (D) Installer synchronization after the compatibility sources exist: `python
-  scripts/runtime/synchronize-installers.py --target-repo-root
-  <task-worktree>` from the installed lifecycle bundle.
-- (D) Compatibility materialization: `python
-  scripts/materialize-compatible-repo.py --target-repo-root <task-worktree>
-  [--runtime-source-id <stable-id>]` from the installed or source lifecycle
-  bundle. It owns template loading, target inspection, section materialization,
-  marker cleanup, installer synchronization, validation, rollback, and compact
-  output. Identity precedence is explicit input, existing stable manifest
-  identity, then derivable GitHub origin.
+- (D) Skill-bearing compatible-repository validation invoked by the
+  materializer: `python scripts/skills-consistency-source-validator.py
+  --repo-root <repo-root> --mode full` from the lifecycle bundle.
+- (D) Compatibility materialization:
+  `python scripts/materialize-compatible-repo.py --target-repo-root
+  <task-worktree> [--runtime-source-id <stable-id>]`; it performs the
+  compatibility transaction and emits one compact result.
+  Add `--no-deploy-contract` only when the caller chooses to leave
+  `deploy/deploy.yml` absent or unchanged.
 
 ## Constraints
 
 ### Boundaries
 
-- Use this action only when an existing skills repository does not yet satisfy
-  the `ceratops-compatible` profile.
+- Use this action only when an existing repository does not yet satisfy the
+  `ceratops-compatible` profile.
 - Work only in the target repository's task-specific linked worktree.
 - Do not add Ceratops naming, branding, icons, or Ceratops-only contracts to a
   compatible repository unless that repository independently requires them.
@@ -58,8 +53,10 @@ Infer the source identity from stable repository evidence before asking.
   skill-specific behavior in the source `SKILL.md`.
 - Use one stable `runtime_source_id` unique among repositories sharing an
   install root and set `validation_profile` to `ceratops-compatible`.
-- Assign every source skill to `core`; preserve valid target-owned custom
-  sections and assignments, portable runtime payloads, and maintenance commands.
+- Assign every source skill to `core`; when none exist, keep the skill map
+  empty, add no canonical sections, and skip bootstrap materialization.
+  Preserve valid target-owned custom sections and assignments, portable
+  runtime payloads, and maintenance commands.
 - Block malformed or unsafe existing declarations before mutation. After the
   first write, restore every changed target file after any caught blocker and
   report the failed phase and rollback state.
@@ -70,38 +67,42 @@ Infer the source identity from stable repository evidence before asking.
 
 ### 1. Inventory the target repository
 
-- Enumerate every source `skills/*/SKILL.md`, metadata file, reference and
-  script resource, README skill entry, shared rule candidate, runtime resource,
-  and existing installer or manifest.
+- Enumerate every optional source `skills/*/SKILL.md`, metadata file, reference
+  and script resource, README skill entry, shared rule candidate, runtime
+  resource, and existing installer or manifest.
 - Identify source-of-truth files, generated files, repeated shared behavior,
   and any existing naming or layout that the compatible profile must preserve.
 
 ### 2. Establish compatible source surfaces
 
 - Run the compatibility materializer so it loads the lifecycle-owned
-  `scripts/templates/skill-sections-template.json`, derives or accepts the
+  `references/templates/skill-sections-template.json`, derives or accepts the
   stable source identity, inventories source skills and multi-action markers,
-  copies canonical shared sections to `skills/sections/`, writes
-  `skills/skill-sections.json`, preserves valid target-owned custom sections
-  and assignments, and removes generated section blocks from source skills.
-- Copy the selected repository-lifecycle bundle's
-  `references/deploy-template.yml` to
-  `deploy/deploy.yml`, then declare only the target repository's supported
-  operations and lifecycle hooks.
-- Make every source `SKILL.md` delta-only, add or align
+  writes `skills/skill-sections.json`, and preserves valid target-owned custom
+  sections and assignments. Only when source skills exist, copy canonical
+  shared sections to `skills/sections/` and remove generated section blocks
+  from source skills.
+- Unless omitted, materialize `deploy/deploy.yml` from
+  `references/templates/deploy-template.yml`, preserve target-owned operations,
+  and declare the canonical `bootstrap` operation and default
+  `ceratops-skill-lifecycle/deploy` handoff only when skills exist.
+- When skills exist, make every source `SKILL.md` delta-only, add or align
   `skills/<name>/agents/openai.yaml`, and align the README Skills table without
   changing skill behavior.
 
-### 3. Install the repository bootstrap
+### 3. Materialize the repository bootstrap
 
-- The compatibility materializer delegates installer replacement to the
-  synchronization helper after compatibility sources exist. Retain a same- or
-  higher-version installer and replace only a missing or lower version.
+- When skills exist, the compatibility materializer synchronizes the
+  first-install-only `scripts/install-skills-bootstrap.py`. Retain a same- or
+  higher-version bootstrap and replace only a missing or lower version.
+- When no skills exist, do not add a bootstrap script or bootstrap deployment
+  operation.
 
 ### 4. Validate and hand off
 
-- Run full source-repository validation and repair every compatibility finding
-  in the task worktree.
+- When source skills exist, require the materializer's full source-validation
+  phase to pass and repair every compatibility finding. Repositories without
+  source skills skip that phase.
 - Commit the validated compatibility change in the task worktree.
 - If only local release staging was requested, hand off to
   `$ceratops-repo-lifecycle` `promote`; if deployment was requested, hand off
@@ -114,10 +115,13 @@ Infer the source identity from stable repository evidence before asking.
 ### Completion Gate
 
 - The repository has a stable source identity, `ceratops-compatible` manifest,
-  target-owned shared sections, complete per-skill assignments, aligned source
-  skills, metadata, README inventory, portable payload declarations, a live
-  deployment definition, and a supported versioned installer.
-- Full target-repository validation passes.
+  complete optional per-skill assignments, and an optional live deployment
+  definition. Skill-bearing repositories also have target-owned shared
+  sections, aligned source skills, metadata, README inventory, portable
+  payload declarations, a default deploy handoff, and a supported versioned
+  bootstrap.
+- Skill-bearing target source validation passes; zero-skill targets pass the
+  materializer's structural checks without source validation.
 - Any caught blocker after mutation restores the exact prior target files and
   reports completed or failed rollback state.
 - Any requested repository-lifecycle handoff completed or its blocker is

@@ -36,14 +36,18 @@ PROFILE_CERATOPS = "ceratops"
 PROFILE_COMPATIBLE = "ceratops-compatible"
 VALIDATION_PROFILES = {PROFILE_CERATOPS, PROFILE_COMPATIBLE}
 ALLOWED_EXTERNAL_PYTHON_MODULES = {"mypy", "pytest", "yamllint"}
-BOOTSTRAP_INSTALLER = ROOT / "scripts" / "install-skills.py"
-INSTALLER_TEMPLATE = LIFECYCLE_BUNDLE_ROOT / "scripts" / "templates" / "install-skills-template.py"
+BOOTSTRAP_INSTALLER = ROOT / "scripts" / "install-skills-bootstrap.py"
+INSTALLER_TEMPLATE = (
+    LIFECYCLE_BUNDLE_ROOT
+    / "references"
+    / "templates"
+    / "install-skills-bootstrap-template.py"
+)
 DEPLOY_CONTRACT = ROOT / "deploy" / "deploy.yml"
 DEPLOY_TEMPLATE = (
-    ROOT
-    / "skills"
-    / "ceratops-repo-lifecycle"
+    LIFECYCLE_BUNDLE_ROOT
     / "references"
+    / "templates"
     / "deploy-template.yml"
 )
 SKILL_SECTIONS_TEMPLATE = INSTALLER_TEMPLATE.parent / "skill-sections-template.json"
@@ -228,7 +232,10 @@ def check_source_installer(profile: str) -> list[str]:
     errors: list[str] = []
     source_version = installer_version(BOOTSTRAP_INSTALLER)
     if source_version is None:
-        errors.append("scripts/install-skills.py must declare one positive integer INSTALLER_VERSION")
+        errors.append(
+            "scripts/install-skills-bootstrap.py must declare one positive "
+            "integer INSTALLER_VERSION"
+        )
     if profile != PROFILE_CERATOPS:
         return errors
     template_version = installer_version(INSTALLER_TEMPLATE)
@@ -286,11 +293,15 @@ def check_deployment_contract(
         errors.append(f"{schema_label}: invalid deploy contract schema: {exc}")
         return errors
 
-    contract, contract_errors = load_yaml_mapping(
-        DEPLOY_CONTRACT,
-        "deploy/deploy.yml",
-    )
-    errors.extend(contract_errors)
+    contract: dict[str, object] | None = None
+    if DEPLOY_CONTRACT.is_file():
+        contract, contract_errors = load_yaml_mapping(
+            DEPLOY_CONTRACT,
+            "deploy/deploy.yml",
+        )
+        errors.extend(contract_errors)
+    elif profile == PROFILE_CERATOPS:
+        errors.append("missing deploy/deploy.yml")
     if contract is not None:
         validation_errors = sorted(
             validator.iter_errors(contract),
@@ -307,7 +318,7 @@ def check_deployment_contract(
             operations = cast(Mapping[str, object], contract["operations"])
             for operation_name, operation_value in operations.items():
                 operation = cast(Mapping[str, object], operation_value)
-                steps = cast(Sequence[object], operation["steps"])
+                steps = cast(Sequence[object], operation.get("steps", []))
                 for index, step_value in enumerate(steps):
                     step = cast(Mapping[str, object], step_value)
                     cwd = step.get("cwd")
@@ -327,107 +338,60 @@ def check_deployment_contract(
                             f"{operation_name}.steps[{index}].cwd must be "
                             "repository-relative"
                         )
-            if profile == PROFILE_CERATOPS:
-                for operation_name in ("after_promote", "after_ship"):
-                    if operation_name not in operations:
-                        errors.append(
-                            "deploy/deploy.yml: Ceratops profile requires "
-                            f"operation {operation_name}"
-                        )
-                after_promote = operations.get("after_promote")
-                if isinstance(after_promote, Mapping):
-                    if after_promote.get("parameters") != ["base_revision"]:
-                        errors.append(
-                            "deploy/deploy.yml: after_promote must declare "
-                            "base_revision"
-                        )
-                    promote_runs = [
-                        step.get("run")
-                        for step in cast(
-                            Sequence[Mapping[str, object]],
-                            after_promote.get("steps", []),
-                        )
-                    ]
-                    if not any(
-                        isinstance(argv, list)
-                        and "scripts/install-skills.py" in argv
-                        and "--base-revision" in argv
-                        and "{base_revision}" in argv
-                        for argv in promote_runs
-                    ):
-                        errors.append(
-                            "deploy/deploy.yml: after_promote must pass its "
-                            "base revision to the installer"
-                        )
-                for operation_name in ("after_promote", "after_ship"):
-                    selected_operation = operations.get(operation_name)
-                    if not isinstance(selected_operation, Mapping):
-                        continue
-                    runs = [
-                        step.get("run")
-                        for step in cast(
-                            Sequence[Mapping[str, object]],
-                            selected_operation.get("steps", []),
-                        )
-                    ]
-                    installer_runs = [
-                        argv
-                        for argv in runs
-                        if isinstance(argv, list)
-                        and "scripts/install-skills.py" in argv
-                    ]
-                    if len(installer_runs) != 1:
-                        errors.append(
-                            "deploy/deploy.yml: "
-                            f"{operation_name} must run the installer once"
-                        )
-
+            assignments = manifest.get("skills")
+            has_skills = isinstance(assignments, Mapping) and bool(assignments)
+            bootstrap = operations.get("bootstrap")
+            expected_bootstrap = {
+                "steps": [
+                    {
+                        "id": "bootstrap-skills",
+                        "run": [
+                            "python",
+                            "scripts/install-skills-bootstrap.py",
+                        ],
+                    }
+                ]
+            }
+            if has_skills and bootstrap != expected_bootstrap:
+                errors.append(
+                    "deploy/deploy.yml: repositories with skills must declare "
+                    "the canonical bootstrap operation"
+                )
+            if not has_skills and bootstrap is not None:
+                errors.append(
+                    "deploy/deploy.yml: repositories without skills must not "
+                    "declare the bootstrap operation"
+                )
     if profile != PROFILE_CERATOPS:
         return errors
 
     template, template_errors = load_yaml_mapping(
         DEPLOY_TEMPLATE,
-        "skills/ceratops-repo-lifecycle/references/deploy-template.yml",
+        "skills/ceratops-skill-lifecycle/references/templates/"
+        "deploy-template.yml",
     )
     errors.extend(template_errors)
-    if template is not None and template != {"version": 1, "operations": {}}:
+    if template is not None and template != {
+        "version": 1,
+        "kind": "ceratops-deploy",
+        "operations": {},
+    }:
         errors.append(
-            "skills/ceratops-repo-lifecycle/references/deploy-template.yml "
-            "must be the empty version 1 "
-            "deployment skeleton"
+            "lifecycle deploy template must be the empty version 1 "
+            "ceratops-deploy skeleton"
         )
 
     payloads = manifest.get("runtime_payloads")
-    repository_lifecycle_payloads = (
-        payloads.get("ceratops-repo-lifecycle")
-        if isinstance(payloads, dict)
-        else None
-    )
     lifecycle_payloads = (
         payloads.get("ceratops-skill-lifecycle")
         if isinstance(payloads, dict)
         else None
     )
-    deploy_template_path = str(DEPLOY_TEMPLATE.relative_to(ROOT)).replace("\\", "/")
-    required_repository_payloads = {deploy_template_path}
     required_lifecycle_payloads = {
-        deploy_template_path,
         "skills/sections/*.md",
         "skills/ceratops-repo-lifecycle/references/schemas/"
         "deploy-contract.schema.json",
     }
-    if not isinstance(repository_lifecycle_payloads, list):
-        errors.append(
-            "runtime_payloads.ceratops-repo-lifecycle must include its "
-            "reusable deployment template"
-        )
-    else:
-        for payload_path in sorted(required_repository_payloads):
-            if payload_path not in repository_lifecycle_payloads:
-                errors.append(
-                    "runtime_payloads.ceratops-repo-lifecycle is missing "
-                    f"{payload_path}"
-                )
     if not isinstance(lifecycle_payloads, list):
         errors.append(
             "runtime_payloads.ceratops-skill-lifecycle must include reusable "
@@ -1009,7 +973,7 @@ def check_section_sources(manifest: dict[str, object], skill_dirs: list[pathlib.
     if not isinstance(assignments, dict):
         errors.append("section manifest skills must be an object")
         return errors
-    if "core" not in sections:
+    if skill_names and "core" not in sections:
         errors.append("section manifest must define core")
     for section_name, rel_path in sections.items():
         if not isinstance(rel_path, str):
@@ -1112,6 +1076,7 @@ def check_resource_layout(skill_dir: pathlib.Path, profile: str) -> list[str]:
             references_dir,
             references_dir / "contracts",
             references_dir / "schemas",
+            references_dir / "templates",
         }
         for path in references_dir.rglob("*"):
             if path.is_file() and path.parent not in allowed_parents:
@@ -1259,7 +1224,7 @@ def main() -> int:
 
     global ROOT, SKILLS_DIR, README, SECTION_MANIFEST, CERATOPS_ICON_SOURCE
     global BOOTSTRAP_INSTALLER
-    global DEPLOY_CONTRACT, DEPLOY_TEMPLATE
+    global DEPLOY_CONTRACT
 
     parser = argparse.ArgumentParser(description="Validate Ceratops-compatible skill source and runtime-generation inputs.")
     parser.add_argument("--repo-root", type=pathlib.Path, help="Source skills repository root.")
@@ -1278,15 +1243,8 @@ def main() -> int:
         README = ROOT / "README.md"
         SECTION_MANIFEST = ROOT / "skills" / "skill-sections.json"
         CERATOPS_ICON_SOURCE = ROOT / "assets" / "ceratops-logo-500.png"
-        BOOTSTRAP_INSTALLER = ROOT / "scripts" / "install-skills.py"
+        BOOTSTRAP_INSTALLER = ROOT / "scripts" / "install-skills-bootstrap.py"
         DEPLOY_CONTRACT = ROOT / "deploy" / "deploy.yml"
-        DEPLOY_TEMPLATE = (
-            ROOT
-            / "skills"
-            / "ceratops-repo-lifecycle"
-            / "references"
-            / "deploy-template.yml"
-        )
 
     errors: list[str] = []
     if not SKILLS_DIR.is_dir():
@@ -1314,7 +1272,8 @@ def main() -> int:
         print(f"ok: skill {len(selected_skill_names)}")
         return 0
 
-    errors.extend(check_source_installer(profile))
+    if skill_dirs:
+        errors.extend(check_source_installer(profile))
     if args.mode == "sections":
         errors.extend(check_section_sources(manifest, skill_dirs))
         errors.extend(check_multi_action_skill_contract(manifest))
@@ -1347,7 +1306,7 @@ def main() -> int:
         errors.append("section manifest sections must be an object")
     if not isinstance(assignments_obj, dict):
         errors.append("section manifest skills must be an object")
-    if "core" not in sections:
+    if skill_dirs and "core" not in sections:
         errors.append("section manifest must define core")
     if not isinstance(workflow_hints_obj, dict):
         errors.append("section manifest maintenance_workflows must be an object")
@@ -1380,9 +1339,6 @@ def main() -> int:
 
     readme_text = README.read_text(encoding="utf-8") if README.is_file() else ""
     readme_rows = readme_skill_rows(readme_text)
-    if not skill_dirs:
-        errors.append("no skill directories found")
-
     skill_names = {skill_dir.name for skill_dir in skill_dirs}
     if isinstance(workflow_hints, dict):
         for workflow_name, commands in workflow_hints.items():
