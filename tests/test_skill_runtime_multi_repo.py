@@ -32,6 +32,10 @@ INSTALLER_SYNCHRONIZER = LIFECYCLE_SOURCE / "scripts" / "runtime" / "synchronize
 COMPATIBILITY_MATERIALIZER = LIFECYCLE_SOURCE / "scripts" / "materialize-compatible-repo.py"
 RUNTIME_INSTALLER = LIFECYCLE_SOURCE / "scripts" / "runtime" / "install-managed-skills.py"
 FAST_CHANGE = LIFECYCLE_SOURCE / "scripts" / "fast-change.py"
+UPDATE_EXECUTION = LIFECYCLE_SOURCE / "scripts" / "update-execution.py"
+GOVERNANCE_SOURCE = ROOT / "skills" / "ceratops-governance-lifecycle"
+PROPOSAL_WORKFLOW = GOVERNANCE_SOURCE / "scripts" / "proposal-workflow.py"
+ITERATION_CONTROLLER = GOVERNANCE_SOURCE / "scripts" / "iteration_controller.py"
 DEPLOY_OPERATION = REPOSITORY_LIFECYCLE_SOURCE / "scripts" / "run-deploy-operation.py"
 PROMOTE_REPOSITORY = REPOSITORY_LIFECYCLE_SOURCE / "scripts" / "promote-repository.py"
 MANAGE_PENDING_WORK = REPOSITORY_LIFECYCLE_SOURCE / "scripts" / "manage-pending-work.py"
@@ -49,6 +53,8 @@ def test_model_call_ledger_keeps_full_evidence_out_of_stdout(
 ) -> None:
     session = tmp_path / "session.jsonl"
     evidence = tmp_path / "ledger.json"
+    semantic_evidence = tmp_path / "semantic.json"
+    local_path = str(tmp_path / "private" / "command.txt")
     rows = [
         {
             "timestamp": "2026-07-25T00:00:00Z",
@@ -61,7 +67,12 @@ def test_model_call_ledger_keeps_full_evidence_out_of_stdout(
             "payload": {
                 "type": "function_call",
                 "name": "shell_command",
-                "arguments": '{"credential":"sentinel-secret"}',
+                "arguments": json.dumps(
+                    {
+                        "credential": "sentinel-secret",
+                        "path": local_path,
+                    }
+                ),
             },
         },
         {
@@ -158,8 +169,81 @@ def test_model_call_ledger_keeps_full_evidence_out_of_stdout(
     assert semantic_action == {
         "kind": "tool",
         "name": "shell_command",
-        "summary": '{"credential":"<redacted>"}',
+        "summary": (
+            '{"credential":"<redacted>","path":"<local-path>"}'
+        ),
     }
+
+    sidecar = subprocess.run(
+        [
+            sys.executable,
+            str(MODEL_CALL_LEDGER),
+            "--session",
+            str(session),
+            "--evidence-output",
+            str(evidence),
+            "--semantic-evidence-output",
+            str(semantic_evidence),
+            "--include-run",
+            "turn-1",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert sidecar.returncode == 0, sidecar.stderr
+    assert "sentinel-secret" not in sidecar.stdout
+    assert local_path not in sidecar.stdout
+    sidecar_summary = json.loads(sidecar.stdout)
+    assert sidecar_summary["schema"] == (
+        "ceratops-model-call-semantic-summary.v1"
+    )
+    assert sidecar_summary["evidence_schemas"] == {
+        "ledger": "ceratops-model-call-ledger.v1",
+        "semantic": "ceratops-model-call-semantic-evidence.v1",
+    }
+    assert sidecar_summary["written"] == {"ledger": True, "semantic": True}
+    assert sidecar_summary["totals"] == {
+        "selected_runs": 1,
+        "selected_model_calls": 2,
+    }
+    assert sidecar_summary["selected_runs"] == [
+        {"turn_id": "turn-1", "model_calls": 2}
+    ]
+    assert "evidence_output" not in sidecar_summary
+    assert json.loads(evidence.read_text(encoding="utf-8"))["schema"] == (
+        "ceratops-model-call-ledger.v1"
+    )
+    semantic_detail = json.loads(semantic_evidence.read_text(encoding="utf-8"))
+    assert semantic_detail["schema"] == (
+        "ceratops-model-call-semantic-evidence.v1"
+    )
+    serialized_semantics = json.dumps(semantic_detail)
+    assert "sentinel-secret" not in serialized_semantics
+    assert local_path not in serialized_semantics
+    assert semantic_detail["selected_runs"][0]["calls"][0][
+        "semantic_actions"
+    ][0]["summary"] == (
+        '{"credential":"<redacted>","path":"<local-path>"}'
+    )
+
+    missing_selection = subprocess.run(
+        [
+            sys.executable,
+            str(MODEL_CALL_LEDGER),
+            "--session",
+            str(session),
+            "--evidence-output",
+            str(evidence),
+            "--semantic-evidence-output",
+            str(semantic_evidence),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert missing_selection.returncode == 2
+    assert "requires --include-run" in missing_selection.stderr
 
     classifications = tmp_path / "classifications.json"
     classifications.write_text(
@@ -1218,6 +1302,417 @@ def fast_change_request(
         "tests": tests or [],
         "commit_message": "Apply exact fast change",
     }
+
+
+def prepare_update_execution_worktree(
+    tmp_path: pathlib.Path,
+) -> tuple[pathlib.Path, pathlib.Path]:
+    """Create one linked task worktree with an existing helper behavior test."""
+
+    scope = tmp_path / "update-execution"
+    scope.mkdir()
+    source = prepare_fast_change_repo(scope)
+    tests = source / "tests"
+    tests.mkdir()
+    (tests / "test_helper.py").write_text(
+        "import pathlib\n\n"
+        "def test_helper_value():\n"
+        "    root = pathlib.Path(__file__).resolve().parents[1]\n"
+        "    namespace = {}\n"
+        "    source = root / 'skills' / 'alpha-tool' / 'scripts' / 'tool.py'\n"
+        "    exec(source.read_text(encoding='utf-8'), namespace)\n"
+        "    assert namespace['VALUE'] == 2\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    assert run_git(source, "add", "tests/test_helper.py").returncode == 0
+    assert run_git(source, "commit", "-m", "add helper behavior test").returncode == 0
+    worktree = scope / "task-worktree"
+    added = run_git(
+        source,
+        "worktree",
+        "add",
+        "-b",
+        "codex/update-execution-test",
+        str(worktree),
+        "HEAD",
+    )
+    assert added.returncode == 0, added.stderr
+    return worktree, scope
+
+
+def run_update_execution(*arguments: str) -> subprocess.CompletedProcess[str]:
+    """Run one update-execution command with captured compact output."""
+
+    return subprocess.run(
+        [sys.executable, str(UPDATE_EXECUTION), *arguments],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def test_update_execution_preserves_baseline_and_runs_declared_checks_once(
+    tmp_path: pathlib.Path,
+) -> None:
+    worktree, scope = prepare_update_execution_worktree(tmp_path)
+    baseline = worktree / "preexisting.txt"
+    baseline.write_text("keep me\n", encoding="utf-8", newline="\n")
+    check_log = scope / "check.log"
+    check_script = scope / "check-once.py"
+    check_script.write_text(
+        "import pathlib\n"
+        "path = pathlib.Path(__file__).with_name('check.log')\n"
+        "prior = path.read_text(encoding='utf-8') if path.exists() else ''\n"
+        "path.write_text(prior + 'run\\n', encoding='utf-8')\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    request_path = scope / "request.json"
+    state_path = scope / "state.json"
+    evidence_path = scope / "evidence.json"
+    request_path.write_text(
+        json.dumps(
+            {
+                "schema": "ceratops-skill-update-request.v1",
+                "repo_root": str(worktree),
+                "selected_skills": ["alpha-tool"],
+                "allowed_paths": [
+                    "skills/alpha-tool/scripts/tool.py",
+                ],
+                "change_groups": [
+                    {
+                        "name": "helper-runtime",
+                        "paths": ["skills/alpha-tool/scripts/tool.py"],
+                    }
+                ],
+                "checks": [
+                    {
+                        "kind": "search",
+                        "pattern": "FORBIDDEN",
+                        "paths": ["skills/alpha-tool/scripts/tool.py"],
+                        "expected_matches": 0,
+                    },
+                    {"kind": "command", "argv": [sys.executable, str(check_script)]},
+                    {
+                        "kind": "pytest",
+                        "nodes": ["tests/test_helper.py::test_helper_value"],
+                    },
+                ],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    prepared = run_update_execution(
+        "prepare",
+        "--request",
+        str(request_path),
+        "--state",
+        str(state_path),
+    )
+    assert prepared.returncode == 0, prepared.stderr
+    assert prepared.stdout.strip() == "OK"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["schema"] == "ceratops-skill-update-state.v1"
+    assert "preexisting.txt" in state["baseline_dirty"]
+
+    helper = worktree / "skills" / "alpha-tool" / "scripts" / "tool.py"
+    helper.write_text("VALUE = 2\n", encoding="utf-8", newline="\n")
+    verified = run_update_execution(
+        "verify",
+        "--state",
+        str(state_path),
+        "--evidence-output",
+        str(evidence_path),
+    )
+    assert verified.returncode == 0, verified.stderr
+    assert verified.stdout.strip() == "OK"
+    evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+    assert evidence["schema"] == "ceratops-skill-update-evidence.v1"
+    assert evidence["status"] == "passed"
+    assert evidence["changed_paths"] == ["skills/alpha-tool/scripts/tool.py"]
+    assert [check["kind"] for check in evidence["checks"]] == [
+        "search",
+        "command",
+        "pytest",
+    ]
+    assert evidence["checks"][0]["actual_matches"] == 0
+    assert check_log.read_text(encoding="utf-8").splitlines() == ["run"]
+    assert baseline.read_text(encoding="utf-8") == "keep me\n"
+
+    baseline.write_text("changed\n", encoding="utf-8", newline="\n")
+    baseline_failure_path = scope / "baseline-failure.json"
+    baseline_failure = run_update_execution(
+        "verify",
+        "--state",
+        str(state_path),
+        "--evidence-output",
+        str(baseline_failure_path),
+    )
+    assert baseline_failure.returncode == 2
+    assert "pre-existing dirty path changed" in baseline_failure.stderr
+    assert json.loads(baseline_failure_path.read_text(encoding="utf-8"))[
+        "status"
+    ] == "failed"
+
+    baseline.write_text("keep me\n", encoding="utf-8", newline="\n")
+    (worktree / "rogue.txt").write_text("rogue\n", encoding="utf-8", newline="\n")
+    rogue_failure_path = scope / "rogue-failure.json"
+    rogue_failure = run_update_execution(
+        "verify",
+        "--state",
+        str(state_path),
+        "--evidence-output",
+        str(rogue_failure_path),
+    )
+    assert rogue_failure.returncode == 2
+    assert "undeclared working-tree change" in rogue_failure.stderr
+    assert check_log.read_text(encoding="utf-8").splitlines() == ["run"]
+
+
+def test_proposal_workflow_validates_context_and_owns_iteration_transition(
+    tmp_path: pathlib.Path,
+) -> None:
+    original = tmp_path / "original.md"
+    regressions = tmp_path / "regressions.md"
+    target_dir = tmp_path / "governed"
+    target_dir.mkdir()
+    target = target_dir / "contract.md"
+    request_path = tmp_path / "proposal-request.json"
+    state = tmp_path / "proposal-state.json"
+    evidence = tmp_path / "proposal-context.json"
+    original.write_text("Observed failure\n", encoding="utf-8", newline="\n")
+    regressions.write_text("Preserve current scope\n", encoding="utf-8", newline="\n")
+    target.write_text(
+        "# Contract\n\nCurrent exact target.\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    current_text = (
+        "- [SKILLS-GOV-01] Before proposing or editing a repository control surface,\n"
+        "  including `AGENTS.md`, `automation.toml`, `SKILL.md`, skill manifests, shared\n"
+        "  sections, or helper contracts, re-open the relevant files from disk and use\n"
+        "  the current contents as the source of truth.\n"
+        "  - self: list-heavy"
+    )
+    assert current_text in (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+    request = {
+        "schema": "ceratops-governance-proposal-request.v1",
+        "state": str(state),
+        "original": str(original),
+        "regressions": str(regressions),
+        "evidence_output": str(evidence),
+        "max_iterations": 1,
+        "mutation_authorized": False,
+        "expected_side_effects": [
+            "write context evidence",
+            "write controller artifacts",
+        ],
+        "sources": [
+            {
+                "rules": str(ROOT / "AGENTS.md"),
+                "history": str(ROOT / "AGENTS.history.json"),
+                "rule_ids": ["SKILLS-GOV-01"],
+                "expected_text": [current_text],
+            },
+            {
+                "rules": str(target),
+                "history": None,
+                "rule_ids": [],
+                "expected_text": ["Current exact target."],
+            },
+        ],
+    }
+    request_path.write_text(
+        json.dumps(request) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    prepared = subprocess.run(
+        [
+            sys.executable,
+            str(PROPOSAL_WORKFLOW),
+            "prepare",
+            "--request",
+            str(request_path),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert prepared.returncode == 0, prepared.stderr
+    pending = json.loads(prepared.stdout)
+    assert pending["iteration"] == 1
+    context = json.loads(evidence.read_text(encoding="utf-8"))
+    assert context["schema"] == "ceratops-governance-proposal-context.v1"
+    assert context["history_lookup"]["unknown"] == []
+    assert context["sources"][1]["history"] is None
+    pathlib.Path(pending["candidate"]).write_text(
+        "Exact candidate\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    pathlib.Path(pending["assessment"]).write_text(
+        "Regression assessment\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    advanced = subprocess.run(
+        [
+            sys.executable,
+            str(PROPOSAL_WORKFLOW),
+            "advance",
+            "--state",
+            str(state),
+            "--outcome",
+            "improved",
+            "--regressions",
+            "passed",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert advanced.returncode == 0, advanced.stderr
+    status = json.loads(advanced.stdout)
+    assert status["complete"] is True
+    assert status["pending"] is None
+    finalized = subprocess.run(
+        [
+            sys.executable,
+            str(PROPOSAL_WORKFLOW),
+            "finalize",
+            "--state",
+            str(state),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert finalized.returncode == 0, finalized.stderr
+    assert finalized.stdout.strip() == "OK"
+    assert not state.exists()
+    assert not (tmp_path / "iterations").exists()
+    assert original.is_file() and regressions.is_file() and evidence.is_file()
+
+    invalid_request = dict(request)
+    invalid_request["state"] = str(tmp_path / "invalid-state.json")
+    invalid_request["evidence_output"] = str(tmp_path / "invalid-context.json")
+    invalid_request["sources"] = [
+        {
+            **request["sources"][0],
+            "expected_text": ["missing exact current text"],
+        }
+    ]
+    invalid_path = tmp_path / "invalid-request.json"
+    invalid_path.write_text(
+        json.dumps(invalid_request) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    rejected = subprocess.run(
+        [
+            sys.executable,
+            str(PROPOSAL_WORKFLOW),
+            "prepare",
+            "--request",
+            str(invalid_path),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert rejected.returncode == 2
+    assert "expected_text must occur exactly once" in rejected.stderr
+    assert not pathlib.Path(invalid_request["state"]).exists()
+    assert not pathlib.Path(invalid_request["evidence_output"]).exists()
+
+
+def test_iteration_controller_preserves_legacy_commands(
+    tmp_path: pathlib.Path,
+) -> None:
+    original = tmp_path / "legacy-original.md"
+    state = tmp_path / "legacy-state.json"
+    original.write_text("Original\n", encoding="utf-8", newline="\n")
+    initialized = subprocess.run(
+        [
+            sys.executable,
+            str(ITERATION_CONTROLLER),
+            "init",
+            "--state",
+            str(state),
+            "--original",
+            str(original),
+            "--max-iterations",
+            "1",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert initialized.returncode == 0, initialized.stderr
+    assert initialized.stdout.strip() == "OK"
+    opened = subprocess.run(
+        [sys.executable, str(ITERATION_CONTROLLER), "next", "--state", str(state)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert opened.returncode == 0, opened.stderr
+    pending = json.loads(opened.stdout)
+    pathlib.Path(pending["candidate"]).write_text(
+        "Candidate\n", encoding="utf-8", newline="\n"
+    )
+    pathlib.Path(pending["assessment"]).write_text(
+        "Assessment\n", encoding="utf-8", newline="\n"
+    )
+    submitted = subprocess.run(
+        [
+            sys.executable,
+            str(ITERATION_CONTROLLER),
+            "submit",
+            "--state",
+            str(state),
+            "--iteration",
+            str(pending["iteration"]),
+            "--token",
+            pending["token"],
+            "--outcome",
+            "improved",
+            "--regressions",
+            "passed",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert submitted.returncode == 0, submitted.stderr
+    assert json.loads(submitted.stdout)["complete"] is True
+    status = subprocess.run(
+        [sys.executable, str(ITERATION_CONTROLLER), "status", "--state", str(state)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert status.returncode == 0, status.stderr
+    assert json.loads(status.stdout)["champion_iteration"] == 1
+    finalized = subprocess.run(
+        [
+            sys.executable,
+            str(ITERATION_CONTROLLER),
+            "finalize",
+            "--state",
+            str(state),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert finalized.returncode == 0, finalized.stderr
+    assert finalized.stdout.strip() == "OK"
+    assert original.is_file() and not state.exists()
 
 
 def test_fast_change_commits_cohesive_rules_only_multi_skill_scope(

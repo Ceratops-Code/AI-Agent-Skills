@@ -38,12 +38,15 @@ materially reduce recurrence.
 - Treat `--summary` as evidence selection, not an analysis result. For every
   analysis request, continue through selected-turn semantic inspection and
   classification validation before answering.
-- (D) Request semantic evidence only for selected turns through the existing
-  ordinary command `python scripts/model-call-ledger.py --session PATH
-  --evidence-output LEDGER_PATH [--last-runs N] --include-run TURN_ID`; repeat
-  `--include-run` only for additional turns justified by the compact rankings.
-  Keep `--closure` for callers that explicitly require its artifact-free
-  fingerprint inventory; neither detail mode replaces the compact summary.
+- (D) Request semantic evidence only for selected turns with `python
+  scripts/model-call-ledger.py --session PATH --evidence-output LEDGER_PATH
+  --semantic-evidence-output SEMANTIC_PATH [--last-runs N] --include-run
+  TURN_ID`; repeat `--include-run` only for additional turns justified by the
+  compact rankings. The helper must preserve the fingerprint ledger at
+  `LEDGER_PATH`, write versioned sanitized selected-run semantic evidence to
+  `SEMANTIC_PATH`, and emit only compact selected-run IDs and counts. Keep
+  `--closure` for callers that explicitly require its artifact-free fingerprint
+  inventory; neither detail mode replaces the compact summary.
 - (D) Before reporting, rerun `model-call-ledger.py` for the same source and
   window with `--classifications CLASSIFICATIONS_PATH`; the helper must reject
   missing, duplicate, or multiply classified calls and emit only

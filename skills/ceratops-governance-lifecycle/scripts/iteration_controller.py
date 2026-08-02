@@ -163,33 +163,38 @@ def command_next(args: argparse.Namespace) -> None:
     print(json.dumps(pending, separators=(",", ":")))
 
 
-def command_submit(args: argparse.Namespace) -> None:
-    """Record one iteration and update deterministic stop state."""
-    state_path = args.state.resolve()
-    state = load_state(state_path)
-    verify_sources(state)
+def record_iteration(
+    state: dict[str, Any],
+    *,
+    iteration: int,
+    token: str,
+    outcome: str,
+    regressions: str,
+) -> None:
+    """Validate and record the current pending iteration without saving state."""
+
     pending = state.get("pending")
     if not pending:
         raise ValueError("no iteration is pending")
-    if pending["iteration"] != args.iteration or pending["token"] != args.token:
+    if pending["iteration"] != iteration or pending["token"] != token:
         raise ValueError("iteration or token does not match pending state")
     candidate = Path(pending["candidate"])
     assessment = Path(pending["assessment"])
     read_nonempty(candidate, "candidate")
     read_nonempty(assessment, "assessment")
-    if args.outcome == "improved" and args.regressions != "passed":
+    if outcome == "improved" and regressions != "passed":
         raise ValueError("an improved candidate must pass regressions")
     record = {
-        "iteration": args.iteration,
-        "outcome": args.outcome,
-        "regressions": args.regressions,
+        "iteration": iteration,
+        "outcome": outcome,
+        "regressions": regressions,
         "candidate": str(candidate),
         "candidate_sha256": file_hash(candidate),
         "assessment": str(assessment),
         "assessment_sha256": file_hash(assessment),
     }
     state["records"].append(record)
-    if args.outcome == "improved":
+    if outcome == "improved":
         state["champion"] = record
         state["no_improvement_streak"] = 0
     else:
@@ -202,8 +207,46 @@ def command_submit(args: argparse.Namespace) -> None:
     elif len(state["records"]) >= state["max_iterations"]:
         state["complete"] = True
         state["stop_reason"] = "max_iterations"
+
+
+def command_submit(args: argparse.Namespace) -> None:
+    """Record one iteration and update deterministic stop state."""
+
+    state_path = args.state.resolve()
+    state = load_state(state_path)
+    verify_sources(state)
+    record_iteration(
+        state,
+        iteration=args.iteration,
+        token=args.token,
+        outcome=args.outcome,
+        regressions=args.regressions,
+    )
     save_state(state_path, state)
     print(json.dumps(public_status(state), separators=(",", ":")))
+
+
+def command_advance(args: argparse.Namespace) -> None:
+    """Atomically submit the pending iteration and open its successor."""
+
+    state_path = args.state.resolve()
+    state = load_state(state_path)
+    verify_sources(state)
+    pending = state.get("pending")
+    if not pending:
+        raise ValueError("no iteration is pending")
+    record_iteration(
+        state,
+        iteration=pending["iteration"],
+        token=pending["token"],
+        outcome=args.outcome,
+        regressions=args.regressions,
+    )
+    next_pending = None if state["complete"] else open_iteration(state_path, state)
+    save_state(state_path, state)
+    result = public_status(state)
+    result["pending"] = next_pending
+    print(json.dumps(result, separators=(",", ":")))
 
 
 def command_status(args: argparse.Namespace) -> None:
@@ -344,6 +387,18 @@ def build_parser() -> argparse.ArgumentParser:
         "--regressions", choices=("passed", "failed"), required=True
     )
     submit.set_defaults(handler=command_submit)
+
+    advance = commands.add_parser(
+        "advance", help="record pending iteration and open the next atomically"
+    )
+    advance.add_argument("--state", type=Path, required=True)
+    advance.add_argument(
+        "--outcome", choices=("improved", "no-improvement"), required=True
+    )
+    advance.add_argument(
+        "--regressions", choices=("passed", "failed"), required=True
+    )
+    advance.set_defaults(handler=command_advance)
 
     status = commands.add_parser("status", help="report recorded progress")
     status.add_argument("--state", type=Path, required=True)

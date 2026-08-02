@@ -108,9 +108,9 @@ targeted local state before asking.
 
 - Invoke `$ceratops-credit-savings-analysis` for the current thread and
   selected closure window. Require its versioned compact usage summary before
-  semantic inspection, keep detailed sanitized usage evidence at the
-  caller-selected task-temp path, reuse fresh closure evidence, and include
-  the completed analysis or blocker under `Credit savings`.
+  semantic inspection, keep detailed sanitized evidence at caller-selected
+  task-temp paths, reuse fresh closure evidence, and include the completed
+  analysis or blocker under `Credit savings`.
 
 #### 6. Classify Closure State
 

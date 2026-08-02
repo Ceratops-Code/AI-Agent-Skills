@@ -6,10 +6,12 @@ runs, and fingerprints tool arguments instead of reproducing potentially
 sensitive command text. Ordinary mode writes detailed evidence to a
 caller-selected file. Closure mode emits the minimum sanitized selected-window
 call inventory in one invocation and creates no cleanup artifact. Repeated
-``--include-run`` options add bounded sanitized action summaries to stdout only
-for explicitly selected completed runs; default and written evidence remain
-fingerprint-only. Summary mode writes versioned per-turn usage and structured
-result evidence while emitting only compact totals and top-turn rankings. The
+``--include-run`` options preserve the existing bounded stdout summaries unless
+``--semantic-evidence-output`` writes the selected sanitized actions to a
+separate versioned sidecar and emits only selected-run IDs and counts. The
+ordinary ledger remains fingerprint-only. Summary mode writes versioned
+per-turn usage and structured result evidence while emitting only compact
+totals and top-turn rankings. The
 same helper validates a caller-owned classification file before reporting,
 while the model remains responsible for deciding whether a call was necessary
 or avoidable.
@@ -32,6 +34,8 @@ from typing import Any
 
 SCHEMA = "ceratops-model-call-ledger.v1"
 SUMMARY_SCHEMA = "ceratops-model-call-ledger-summary.v1"
+SEMANTIC_EVIDENCE_SCHEMA = "ceratops-model-call-semantic-evidence.v1"
+SEMANTIC_SUMMARY_SCHEMA = "ceratops-model-call-semantic-summary.v1"
 CLOSURE_SCHEMA = "ceratops-model-call-ledger-closure.v1"
 CLASSIFICATIONS_SCHEMA = "ceratops-model-call-classifications.v1"
 CLASSIFIED_SUMMARY_SCHEMA = "ceratops-model-call-classified-summary.v1"
@@ -70,6 +74,7 @@ TERMINATION_STATUSES = frozenset(
 )
 REDACTED = "<redacted>"
 USER_HOME = "<user-home>"
+LOCAL_PATH = "<local-path>"
 SEMANTIC_SUMMARY_LIMIT = 240
 SENSITIVE_KEY_RE = re.compile(
     r"(?:^|_)(?:api_?key|authorization|client_?secret|cookie|credentials?|"
@@ -97,6 +102,19 @@ URL_CREDENTIAL_RE = re.compile(r"(https?://)[^/\s:@]+:[^/\s@]+@", re.IGNORECASE)
 USER_HOME_RE = re.compile(
     r"(?:[A-Z]:[\\/]+Users[\\/]+[^\\/\s\"']+|"
     r"[\\/]+(?:Users|home)[\\/]+[^\\/\s\"']+)",
+    re.IGNORECASE,
+)
+WINDOWS_PATH_RE = re.compile(
+    r"(?<![A-Za-z0-9])(?:[A-Z]:[\\/])[^\s\"'<>|]+",
+    re.IGNORECASE,
+)
+POSIX_PATH_RE = re.compile(r"(?<![:/A-Za-z0-9])/[^\s\"'<>|]+")
+RELATIVE_PATH_RE = re.compile(
+    r"(?<![:/A-Za-z0-9])(?:\.{1,2}[\\/])?[A-Za-z0-9_.-]+"
+    r"(?:[\\/][A-Za-z0-9_.@-]+)+"
+)
+PATH_KEY_RE = re.compile(
+    r"(?:^|_)(?:cwd|dirs?|directories|files?|paths?)(?:$|_)",
     re.IGNORECASE,
 )
 
@@ -267,6 +285,9 @@ def sanitize_text(value: str) -> str:
 
     result = PRIVATE_KEY_RE.sub(REDACTED, value)
     result = USER_HOME_RE.sub(USER_HOME, result)
+    result = WINDOWS_PATH_RE.sub(LOCAL_PATH, result)
+    result = POSIX_PATH_RE.sub(LOCAL_PATH, result)
+    result = RELATIVE_PATH_RE.sub(LOCAL_PATH, result)
     result = URL_CREDENTIAL_RE.sub(rf"\1{REDACTED}@", result)
     result = AUTH_VALUE_RE.sub(
         lambda match: f"{match.group(1)} {REDACTED}", result
@@ -277,20 +298,22 @@ def sanitize_text(value: str) -> str:
     )
 
 
-def sanitize_semantic_value(value: Any) -> Any:
+def sanitize_semantic_value(value: Any, *, key: object | None = None) -> Any:
     """Recursively redact structured tool arguments for opt-in semantic output."""
 
     if isinstance(value, str):
+        if key is not None and PATH_KEY_RE.search(str(key)):
+            return LOCAL_PATH
         return sanitize_text(value)
     if isinstance(value, list):
-        return [sanitize_semantic_value(item) for item in value]
+        return [sanitize_semantic_value(item, key=key) for item in value]
     if not isinstance(value, dict):
         return value
     return {
         str(key): (
             REDACTED
             if sensitive_key(key)
-            else sanitize_semantic_value(item)
+            else sanitize_semantic_value(item, key=key)
         )
         for key, item in value.items()
     }
@@ -810,6 +833,56 @@ def build_summary(
             include_runs,
             semantic_runs,
         ),
+    }
+
+
+def build_semantic_evidence(
+    ledger: dict[str, Any],
+    include_runs: list[str],
+    semantic_runs: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Build a path-free sidecar for explicitly selected completed runs."""
+
+    return {
+        "schema": SEMANTIC_EVIDENCE_SCHEMA,
+        "ledger_schema": ledger["schema"],
+        "window": ledger["window"],
+        "selected_runs": selected_runs_with_semantics(
+            ledger,
+            list(dict.fromkeys(include_runs)),
+            semantic_runs,
+        ),
+    }
+
+
+def build_semantic_summary(
+    ledger: dict[str, Any],
+    semantic_evidence: dict[str, Any],
+) -> dict[str, Any]:
+    """Emit only the decision-sized receipt for the two written artifacts."""
+
+    selected_runs = semantic_evidence["selected_runs"]
+    return {
+        "schema": SEMANTIC_SUMMARY_SCHEMA,
+        "evidence_schemas": {
+            "ledger": ledger["schema"],
+            "semantic": semantic_evidence["schema"],
+        },
+        "written": {"ledger": True, "semantic": True},
+        "window": ledger["window"],
+        "totals": {
+            "selected_runs": len(selected_runs),
+            "selected_model_calls": sum(
+                run["model_calls"] for run in selected_runs
+            ),
+        },
+        "selected_runs": [
+            {
+                "turn_id": run["turn_id"],
+                "model_calls": run["model_calls"],
+            }
+            for run in selected_runs
+        ],
     }
 
 
@@ -1550,6 +1623,14 @@ def build_parser() -> argparse.ArgumentParser:
     source.add_argument("--thread-id")
     parser.add_argument("--evidence-output", type=pathlib.Path)
     parser.add_argument(
+        "--semantic-evidence-output",
+        type=pathlib.Path,
+        help=(
+            "write versioned sanitized evidence for explicitly selected runs "
+            "and keep semantic action bodies out of stdout"
+        ),
+    )
+    parser.add_argument(
         "--classifications",
         type=pathlib.Path,
         help=(
@@ -1611,6 +1692,10 @@ def main(argv: list[str] | None = None) -> int:
                 raise LedgerError("--summary does not accept --classifications")
             if args.include_run:
                 raise LedgerError("--summary does not accept --include-run")
+            if args.semantic_evidence_output is not None:
+                raise LedgerError(
+                    "--summary does not accept --semantic-evidence-output"
+                )
             if args.evidence_output is None:
                 raise LedgerError("--summary requires --evidence-output")
         elif args.classifications is not None:
@@ -1622,14 +1707,26 @@ def main(argv: list[str] | None = None) -> int:
                 raise LedgerError(
                     "--classifications validates every completed run"
                 )
+            if args.semantic_evidence_output is not None:
+                raise LedgerError(
+                    "--classifications does not accept --semantic-evidence-output"
+                )
         elif args.closure:
             if args.evidence_output is not None:
                 raise LedgerError("--closure does not accept --evidence-output")
+            if args.semantic_evidence_output is not None:
+                raise LedgerError(
+                    "--closure does not accept --semantic-evidence-output"
+                )
         else:
             if args.thread_id is not None:
                 raise LedgerError("--thread-id requires --closure")
             if args.evidence_output is None:
                 raise LedgerError("ordinary mode requires --evidence-output")
+            if args.semantic_evidence_output is not None and not args.include_run:
+                raise LedgerError(
+                    "--semantic-evidence-output requires --include-run"
+                )
 
         if not args.summary and args.top is not None:
             raise LedgerError("--top requires --summary")
@@ -1685,13 +1782,44 @@ def main(argv: list[str] | None = None) -> int:
             evidence_output = args.evidence_output.expanduser().resolve()
             if evidence_output == session:
                 raise LedgerError("evidence output must not overwrite the session")
-            result = build_summary(
-                ledger,
-                evidence_output=evidence_output,
-                include_runs=args.include_run,
-                semantic_runs=semantic_runs,
-            )
-            write_evidence(evidence_output, ledger)
+            if args.semantic_evidence_output is None:
+                result = build_summary(
+                    ledger,
+                    evidence_output=evidence_output,
+                    include_runs=args.include_run,
+                    semantic_runs=semantic_runs,
+                )
+                write_evidence(evidence_output, ledger)
+            else:
+                semantic_output = (
+                    args.semantic_evidence_output.expanduser().resolve()
+                )
+                if semantic_output == session:
+                    raise LedgerError(
+                        "semantic evidence output must not overwrite the session"
+                    )
+                if semantic_output == evidence_output:
+                    raise LedgerError(
+                        "semantic evidence output must differ from evidence output"
+                    )
+                if not evidence_output.parent.is_dir():
+                    raise LedgerError(
+                        "evidence output directory does not exist: "
+                        f"{evidence_output.parent}"
+                    )
+                if not semantic_output.parent.is_dir():
+                    raise LedgerError(
+                        "semantic evidence output directory does not exist: "
+                        f"{semantic_output.parent}"
+                    )
+                semantic_evidence = build_semantic_evidence(
+                    ledger,
+                    args.include_run,
+                    semantic_runs,
+                )
+                result = build_semantic_summary(ledger, semantic_evidence)
+                write_evidence(evidence_output, ledger)
+                write_evidence(semantic_output, semantic_evidence)
     except (LedgerError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2

@@ -80,20 +80,27 @@ Append one decision per approved rule change under the history contract in
 
 ## Iterative optimization
 
-- (D) For every proposal, run `python scripts/iteration_controller.py init
-  --state <path> --original <path> [--regressions <path>]
-  [--max-iterations <count>] --open-first` to initialize state and open
-  iteration 1; use `python scripts/iteration_controller.py next --state
-  <path>` only for later iterations. The controller must record iterations,
-  retain the champion, and enforce stopping.
-- (D) Before final output, after the accepted proposal or approved mutation no
-  longer needs controller artifacts, run `python
-  scripts/iteration_controller.py finalize --state <path>`. Finalization must
-  require complete state, delete only that state and its recorded candidate and
-  assessment files under the sibling `iterations/` directory, remove that
-  directory only when empty, preserve original and regression inputs, reject
-  unexpected paths or contents before deletion, and emit only `OK` or one
-  compact actionable error.
+- (D) For every proposal, create one request naming applicable rule sources and
+  histories, applicable rule IDs, exact current target text, original and
+  regression inputs, controller state and evidence paths, mutation authority,
+  and expected side effects; use a null history only for a target source with
+  no companion history and include at least one applicable history-backed
+  source. Run
+  `python scripts/proposal-workflow.py prepare --request REQUEST`. The helper
+  must validate complete current inputs, write compact context evidence,
+  initialize the existing iteration controller, and open iteration 1 without
+  mutating a governed target. The controller must continue to record
+  iterations, retain the champion, and enforce stopping.
+- (D) After writing each pending candidate and assessment, run `python
+  scripts/proposal-workflow.py advance --state STATE --outcome OUTCOME
+  --regressions RESULT`. The helper must use the controller-owned atomic advance
+  operation to submit the exact pending iteration and open the next one only
+  when stopping has not occurred.
+- (D) Before final output, run `python scripts/proposal-workflow.py finalize
+  --state STATE`. The helper must delegate the existing controller's safe
+  finalization, which preserves original and regression inputs, rejects
+  unexpected artifact paths or contents, and deletes only completed-run state
+  and owned iteration artifacts; emit only `OK` or one compact actionable error.
 - For each issued iteration, complete steps 5-7. After submission, post one
   compact commentary status; do not repeat iteration logs in the final answer.
 
