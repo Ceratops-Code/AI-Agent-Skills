@@ -575,7 +575,7 @@ class GHContractStateEngineTests(unittest.TestCase):
             for item in self.contracts["artifact"]["checks"]
             if item["id"] == "github_release_assets.attestation_verification"
         )
-        repository = {
+        repository: dict[str, Any] = {
             "types": {"artifact_surface": ["github_release_binary"]},
             "stale": {
                 "releases": {
