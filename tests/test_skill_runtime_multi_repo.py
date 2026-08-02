@@ -144,7 +144,7 @@ def test_model_call_ledger_keeps_full_evidence_out_of_stdout(
     assert len(ledger["runs"][0]["calls"]) == 2
     assert "sentinel-secret" not in evidence.read_text(encoding="utf-8")
 
-    selected = subprocess.run(
+    missing_sidecar = subprocess.run(
         [
             sys.executable,
             str(MODEL_CALL_LEDGER),
@@ -159,20 +159,12 @@ def test_model_call_ledger_keeps_full_evidence_out_of_stdout(
         text=True,
         check=False,
     )
-    assert selected.returncode == 0, selected.stderr
-    assert "sentinel-secret" not in selected.stdout
-    selected_summary = json.loads(selected.stdout)
-    assert len(selected_summary["selected_runs"][0]["calls"]) == 2
-    semantic_action = selected_summary["selected_runs"][0]["calls"][0][
-        "semantic_actions"
-    ][0]
-    assert semantic_action == {
-        "kind": "tool",
-        "name": "shell_command",
-        "summary": (
-            '{"credential":"<redacted>","path":"<local-path>"}'
-        ),
-    }
+    assert missing_sidecar.returncode == 2
+    assert (
+        "--include-run requires --semantic-evidence-output"
+        in missing_sidecar.stderr
+    )
+    assert missing_sidecar.stdout == ""
 
     sidecar = subprocess.run(
         [

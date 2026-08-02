@@ -801,16 +801,10 @@ def build_summary(
     ledger: dict[str, Any],
     *,
     evidence_output: pathlib.Path,
-    include_runs: list[str],
-    semantic_runs: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    """Keep stdout small while exposing explicitly requested run details."""
+    """Keep ordinary stdout free of selected-run semantic details."""
 
     runs = ledger["runs"]
-    runs_by_id = {run["turn_id"]: run for run in runs}
-    unknown = sorted(set(include_runs) - runs_by_id.keys())
-    if unknown:
-        raise LedgerError(f"requested run is outside the completed window: {unknown[0]}")
     return {
         "schema": SUMMARY_SCHEMA,
         "evidence_schema": ledger["schema"],
@@ -828,11 +822,7 @@ def build_summary(
             }
             for run in runs
         ],
-        "selected_runs": selected_runs_with_semantics(
-            ledger,
-            include_runs,
-            semantic_runs,
-        ),
+        "selected_runs": [],
     }
 
 
@@ -1727,6 +1717,10 @@ def main(argv: list[str] | None = None) -> int:
                 raise LedgerError(
                     "--semantic-evidence-output requires --include-run"
                 )
+            if args.include_run and args.semantic_evidence_output is None:
+                raise LedgerError(
+                    "--include-run requires --semantic-evidence-output"
+                )
 
         if not args.summary and args.top is not None:
             raise LedgerError("--top requires --summary")
@@ -1786,8 +1780,6 @@ def main(argv: list[str] | None = None) -> int:
                 result = build_summary(
                     ledger,
                     evidence_output=evidence_output,
-                    include_runs=args.include_run,
-                    semantic_runs=semantic_runs,
                 )
                 write_evidence(evidence_output, ledger)
             else:
