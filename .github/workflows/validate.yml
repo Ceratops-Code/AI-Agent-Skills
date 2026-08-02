@@ -12,8 +12,8 @@ permissions:
   contents: read
 
 jobs:
-  validate-skills-consistency:
-    name: validate-skills-consistency
+  validate-repository:
+    name: validate-repository
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -29,7 +29,6 @@ jobs:
       - name: Validate repository
         env:
           REPOSITORY_VALIDATION_EVIDENCE_FILE: ${{ runner.temp }}/repository-validation.log
-          REPOSITORY_VALIDATION_RENDER_DIR: ${{ runner.temp }}/ceratops-skills
         run: python scripts/validate-repository.py
 
       - name: Upload validation evidence

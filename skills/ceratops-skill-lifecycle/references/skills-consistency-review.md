@@ -20,8 +20,12 @@ installed-runtime surface.
   malformed direct-manifest blockers without auditing any skill, then emits
   `OK`.
 - (D) Installer synchronization when repair is authorized: `python
-  scripts/runtime/synchronize-installers.py --target-repo-root
-  <task-worktree>` from the installed lifecycle bundle.
+  scripts/synchronize-bootstrap-installer.py --target-repo-root
+  <task-worktree>` from the installed lifecycle bundle; it only compares and
+  copies bootstrap versions.
+- (D) Full source validation after approved bootstrap repair: `python
+  scripts/skills-consistency-source-validator.py --repo-root
+  <task-worktree> --mode full` from the installed lifecycle bundle.
 - (D) Markdown lint when the repository declares it and skill Markdown is in
   scope: `npm run lint:markdown`.
 - (D) Python type check when the repository declares it and skill helpers or
@@ -137,13 +141,13 @@ Infer missing inputs from the repository and installed manifests before asking.
 
 - Reject a malformed selected manifest; compare manifest schema, skill,
   `runtime_source_id`, `source_path`, `source_repository_root`,
-  `validation_profile`, and `installer_version` with source ownership.
+  and `validation_profile` with source ownership.
 - Detect unresolved source or local resources, source/runtime ownership
   conflicts, and stale cross-skill references attributable to the selected
   skill through structured source and manifest evidence.
-- When an installer is missing or lower-version and repair is approved, run the
-  synchronization helper in the task worktree and require successful full
-  target-repository validation before continuing.
+- When a bootstrap is missing or lower-version and repair is approved, run the
+  synchronization helper and then the full source validator in the task
+  worktree before continuing.
 - When runtime regeneration is approved, run one targeted transactional
   installation. Installer success is the post-install runtime evidence.
 

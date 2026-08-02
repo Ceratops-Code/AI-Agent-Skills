@@ -1,23 +1,11 @@
 version: 1
+kind: ceratops-deploy
 operations:
-  after_promote:
-    parameters:
-      - base_revision
+  deploy:
+    handoff: ceratops-skill-lifecycle/deploy
+  bootstrap:
     steps:
-      - id: type-check
+      - id: bootstrap-skills
         run:
           - python
-          - -m
-          - mypy
-      - id: install-managed-skills
-        run:
-          - python
-          - scripts/install-skills.py
-          - --base-revision
-          - "{base_revision}"
-  after_ship:
-    steps:
-      - id: install-managed-skills
-        run:
-          - python
-          - scripts/install-skills.py
+          - scripts/install-skills-bootstrap.py

@@ -27,6 +27,7 @@ SCRIPT_ROOT = pathlib.Path(__file__).resolve().parent
 PENDING_MANAGER = SCRIPT_ROOT / "manage-pending-work.py"
 DEPLOY_RUNNER = SCRIPT_ROOT / "run-deploy-operation.py"
 RELEASE_BRANCH = "release/local"
+MANAGED_SKILLS_MANIFEST = pathlib.Path("skills/skill-sections.json")
 
 
 class PromotionError(RuntimeError):
@@ -109,6 +110,23 @@ def _run_json(command: list[str], cwd: pathlib.Path) -> tuple[int, dict[str, Any
     if not isinstance(payload, dict):
         raise PromotionError("Lifecycle helper returned a non-object result.")
     return result.returncode, payload
+
+
+def _has_managed_skills(repo_root: pathlib.Path) -> bool:
+    """Detect manifest-managed skills without inferring from directory names."""
+
+    manifest_path = repo_root / MANAGED_SKILLS_MANIFEST
+    if not manifest_path.exists():
+        return False
+    if not manifest_path.is_file():
+        raise PromotionError("Managed-skill manifest must be a file.")
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise PromotionError("Managed-skill manifest is unreadable.") from exc
+    if not isinstance(manifest, dict) or not isinstance(manifest.get("skills"), dict):
+        raise PromotionError("Managed-skill manifest must declare a skills object.")
+    return bool(manifest["skills"])
 
 
 def promote(args: argparse.Namespace) -> dict[str, object]:
@@ -244,7 +262,10 @@ def promote(args: argparse.Namespace) -> dict[str, object]:
         raise PromotionError(str(record.get("message", "Scope recording failed.")))
 
     operation: dict[str, Any] | None = None
+    managed_skills: bool | None = None
+    handoff: str | None = None
     if args.run_operation is not None:
+        managed_skills = _has_managed_skills(repo_root)
         operation_command = [
             sys.executable,
             str(DEPLOY_RUNNER),
@@ -254,32 +275,20 @@ def promote(args: argparse.Namespace) -> dict[str, object]:
             str(args.deploy_contract),
             "--operation",
             args.run_operation,
+            "--if-declared",
         ]
-        if args.run_operation == "after_promote":
-            deployment_base = require_output(
-                _git(
-                    repo_root,
-                    "merge-base",
-                    args.main_branch,
-                    release_start,
-                ),
-                cwd=repo_root,
-            ).splitlines()[0]
-            operation_command.extend(
-                (
-                    "--parameter-if-declared",
-                    f"base_revision={deployment_base}",
-                )
-            )
         operation_code, operation = _run_json(
             operation_command,
             SCRIPT_ROOT,
         )
         if operation_code:
             raise PromotionError(str(operation.get("message", "Deployment failed.")))
+        declared_handoff = operation.get("handoff")
+        if managed_skills and isinstance(declared_handoff, str):
+            handoff = declared_handoff
 
     _clean(repo_root, "before reporting ready state")
-    return {
+    result: dict[str, object] = {
         "status": "ready",
         "release_branch": args.release_branch,
         "head": target_commit,
@@ -288,6 +297,10 @@ def promote(args: argparse.Namespace) -> dict[str, object]:
         "pending_work_scope": record["pending_work_scope"],
         "operation": operation,
     }
+    if managed_skills is not None:
+        result["managed_skills"] = managed_skills
+        result["handoff"] = handoff
+    return result
 
 
 def build_parser() -> argparse.ArgumentParser:

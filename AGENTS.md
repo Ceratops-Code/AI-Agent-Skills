@@ -28,19 +28,13 @@ Project-specific rules for this skills repository.
   whenever its action contract and one-request orchestrator accept the complete
   intended scope. The action may update the verified primary `release/local`
   checkout and install its selected skills; otherwise use `update`.
-  - overrides: SKILLS-WORKTREE-01, SKILLS-PREVIEW-01, SKILLS-STAGE-01
+  - overrides: SKILLS-WORKTREE-01, SKILLS-STAGE-01
 - [SKILLS-FAST-02] An accepted rules-only `fast-change` uses its action
   contract instead of the ordinary instruction-edit verification requirement.
   - overrides: SKILLS-VERIFY-01
-- [SKILLS-PREVIEW-01] Keep installed Ceratops skill folders generated from the
-  skills repo checkout, not task worktrees. For an unpublished local preview,
-  use `$ceratops-repo-lifecycle` action `promote-and-deploy`; it must assemble
-  `release/local` before running `deploy/deploy.yml`.
-  - self: list-heavy
 - [SKILLS-STAGE-01] Stage skill-source changes into `release/local`
   only when the task explicitly requests staging, shipping, or local preview
   sync.
-  - limits: SKILLS-PREVIEW-01
   - self: gate
 - [SKILLS-SHIP-01] Skills-repo changes must ship from `release/local`, never
   directly from task or feature branches.
@@ -49,20 +43,11 @@ Project-specific rules for this skills repository.
   `$ceratops-repo-lifecycle` action `promote-and-deploy` and finish with
   deployment verification.
   - overrides: SKILLS-STAGE-01
-- [SKILLS-SHIP-02] For promotion or shipping, use
-  `$ceratops-repo-lifecycle` action `promote`, `promote-and-deploy`, or `ship`.
-  `ship` must update the checkout from `origin/main` after merge, run
-  `deploy/deploy.yml`, and report retained worktrees or release branches.
-  - self: list-heavy
 - [SKILLS-BATCH-01] Treat an explicit request to promote or ship
   `release/local` as authorization for every commit currently on that
   branch; do not request per-commit inclusion confirmation.
 - [SKILLS-SHIP-03] Treat GitHub replies, thread resolutions, and review
   submissions required by the active Ceratops workflow as pre-approved.
-- [SKILLS-DEPLOY-01] Use `deploy/deploy.yml` as this repository's only
-  executable deployment contract. Treat
-  `skills/ceratops-repo-lifecycle/references/deploy-template.yml` as a reusable,
-  non-executable template; never execute prose deployment instructions.
 - [SKILLS-SECTIONS-01] Keep the live section manifest at
   `skills/skill-sections.json`, its declared sources under `skills/sections/`,
   and the reusable `skill-sections-template.json` in

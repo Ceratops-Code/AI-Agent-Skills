@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Validate and execute one named repository deployment operation.
 
-The contract contains argv arrays, never shell text. Every working directory
+The contract contains argv arrays, never shell text, and may declare one agent
+handoff that this helper returns without executing. Every working directory
 must resolve inside the selected repository. Explicit parameters are strict;
 lifecycle context is used only when declared. Successful commands emit no
 captured output; failures retain only a bounded tail for diagnosis.
@@ -82,7 +83,7 @@ def _operation_steps(
     selected = operations[operation]
     if not isinstance(selected, Mapping):
         raise DeployError(f"Deployment operation is invalid: {operation}")
-    steps = selected.get("steps")
+    steps = selected.get("steps", [])
     if not isinstance(steps, Sequence) or isinstance(steps, (str, bytes)):
         raise DeployError(f"Deployment operation has no valid steps: {operation}")
     return selected, steps
@@ -147,6 +148,8 @@ def run_operation(
     contract_path: pathlib.Path = DEFAULT_CONTRACT,
     parameters: Mapping[str, str] | None = None,
     parameters_if_declared: Mapping[str, str] | None = None,
+    *,
+    if_declared: bool = False,
 ) -> dict[str, object]:
     """Run one operation with strict parameters and conditional caller context."""
 
@@ -154,6 +157,18 @@ def run_operation(
     if not root.is_dir():
         raise DeployError("Repository root is not a directory.")
     contract = _read_contract(root, contract_path)
+    operations = contract.get("operations")
+    if (
+        if_declared
+        and isinstance(operations, Mapping)
+        and operation not in operations
+    ):
+        return {
+            "status": "no_op",
+            "operation": operation,
+            "steps": [],
+            "reason": "operation_not_declared",
+        }
     selected, steps = _operation_steps(contract, operation)
     expected = selected.get("parameters", [])
     if (
@@ -205,7 +220,7 @@ def run_operation(
     completed: list[str] = []
     for step_id, argv, working_directory in prepared:
         try:
-            result = subprocess.run(
+            completed_process = subprocess.run(
                 argv,
                 cwd=working_directory,
                 capture_output=True,
@@ -214,16 +229,20 @@ def run_operation(
             )
         except OSError as exc:
             raise DeployError(f"Deployment step could not start: {step_id}: {exc}") from exc
-        if result.returncode != 0:
-            tail = _failure_tail(result)
+        if completed_process.returncode != 0:
+            tail = _failure_tail(completed_process)
             suffix = f"\n{tail}" if tail else ""
             raise DeployError(f"Deployment step failed: {step_id}{suffix}")
         completed.append(step_id)
-    return {
+    operation_result: dict[str, object] = {
         "status": "deployed",
         "operation": operation,
         "steps": completed,
     }
+    handoff = selected.get("handoff")
+    if isinstance(handoff, str):
+        operation_result["handoff"] = handoff
+    return operation_result
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -237,6 +256,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--operation", required=True)
     parser.add_argument("--parameter", action="append", default=[])
     parser.add_argument("--parameter-if-declared", action="append", default=[])
+    parser.add_argument(
+        "--if-declared",
+        action="store_true",
+        help="Return an explicit no-op when the selected operation is absent.",
+    )
     return parser
 
 
@@ -251,6 +275,7 @@ def main(argv: list[str] | None = None) -> int:
             args.contract,
             _parameters(args.parameter),
             _parameters(args.parameter_if_declared),
+            if_declared=args.if_declared,
         )
     except (DeployError, OSError, ValueError) as exc:
         print(

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Made update execution collect every declared pytest node during prepare so
+  missing classes or functions fail before source edits without running tests.
 - Made artifact classification treat Python project manifests as buildable but
   non-publishing until a publish workflow or explicit artifact contract
   supplies external intent, so no-artifact repositories skip registry identity

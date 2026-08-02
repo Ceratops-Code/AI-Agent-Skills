@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Run the complete local and CI repository validation sequence.
 
-The caller selects disposable rendering and evidence paths through
-``REPOSITORY_VALIDATION_RENDER_DIR`` and
+The caller may select an evidence path through
 ``REPOSITORY_VALIDATION_EVIDENCE_FILE``. Child commands never inherit the
 terminal: their output is suppressed on success and written in full only for
 the first failed check. Commands use argv lists so paths containing spaces are
-not reparsed by a shell.
+not reparsed by a shell. Managed runtime installation is intentionally outside
+this aggregate repository validator.
 """
 
 from __future__ import annotations
@@ -20,7 +20,6 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 
 
-RENDER_DIR_ENV = "REPOSITORY_VALIDATION_RENDER_DIR"
 EVIDENCE_FILE_ENV = "REPOSITORY_VALIDATION_EVIDENCE_FILE"
 COMMAND_NOT_FOUND_EXIT_CODE = 127
 
@@ -69,7 +68,6 @@ def run_process(
 
 def build_checks(
     repo_root: pathlib.Path,
-    render_dir: pathlib.Path,
     *,
     python_executable: str | None = None,
     npm_executable: str | None = None,
@@ -112,16 +110,6 @@ def build_checks(
         Check(
             "source-contract-validator",
             (python, str(source_validator), "--mode", "full"),
-            repo_root,
-        ),
-        Check(
-            "managed-skill-render",
-            (
-                python,
-                str(repo_root / "scripts" / "install-skills.py"),
-                "--install-root",
-                str(render_dir),
-            ),
             repo_root,
         ),
         Check(
@@ -255,40 +243,28 @@ def main(
 
     arguments = list(sys.argv[1:] if argv is None else argv)
     environment = os.environ if environ is None else environ
-    render_value = environment.get(RENDER_DIR_ENV)
     evidence_value = environment.get(EVIDENCE_FILE_ENV)
-    missing = [
-        name
-        for name, value in (
-            (RENDER_DIR_ENV, render_value),
-            (EVIDENCE_FILE_ENV, evidence_value),
-        )
-        if not value
-    ]
-    if arguments or missing:
+    repo_root = pathlib.Path(__file__).resolve().parents[1]
+    evidence_file = (
+        pathlib.Path(evidence_value).expanduser().resolve()
+        if evidence_value
+        else repo_root
+        / "build"
+        / "deploy-validation"
+        / "repository-validation.log"
+    )
+    if arguments:
         payload: dict[str, object] = {
             "check": "configuration",
             "exit_code": 2,
-            "evidence_file": (
-                str(pathlib.Path(evidence_value).expanduser().resolve())
-                if evidence_value
-                else None
-            ),
+            "evidence_file": str(evidence_file),
         }
-        if arguments:
-            payload["unexpected_arguments"] = arguments
-        if missing:
-            payload["missing_environment"] = missing
+        payload["unexpected_arguments"] = arguments
         print(json.dumps(payload, separators=(",", ":"), ensure_ascii=True))
         return 2
 
-    assert render_value is not None
-    assert evidence_value is not None
-    repo_root = pathlib.Path(__file__).resolve().parents[1]
-    render_dir = pathlib.Path(render_value).expanduser().resolve()
-    evidence_file = pathlib.Path(evidence_value).expanduser().resolve()
     failure = run_checks(
-        build_checks(repo_root, render_dir),
+        build_checks(repo_root),
         evidence_file,
         process_runner=process_runner,
     )

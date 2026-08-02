@@ -210,6 +210,46 @@
       "decision": "Narrow the skills repository's sole release-batch identity from arbitrary release/* branches to release/local and require owning helpers to reject alternatives.",
       "reason": "One canonical release line prevents task-named release branches from becoming reusable or retained release state.",
       "regression": "Continue allowing main for normal installed-source checkout, keep task work in thread worktrees, and do not ship or fast-change from any branch other than release/local."
+    },
+    {
+      "rules": [
+        "SKILLS-FAST-01"
+      ],
+      "decision": "Remove the retired preview rule from SKILLS-FAST-01's override relation while preserving its worktree and staging overrides.",
+      "reason": "An override must not reference a deleted rule, and fast-change still needs only its two surviving exceptions.",
+      "regression": "Preserve the complete fast-change action wording and its overrides of SKILLS-WORKTREE-01 and SKILLS-STAGE-01."
+    },
+    {
+      "rules": [
+        "SKILLS-PREVIEW-01"
+      ],
+      "decision": "Retire SKILLS-PREVIEW-01 without replacement deployment prose.",
+      "reason": "The lifecycle action and deterministic helpers own preview execution; duplicating that flow in repository policy creates source-of-truth drift.",
+      "regression": "Preserve the checkout, staging, creation, and shipping rules that independently constrain preview-related state changes."
+    },
+    {
+      "rules": [
+        "SKILLS-STAGE-01"
+      ],
+      "decision": "Remove SKILLS-STAGE-01's relation to the retired preview rule while preserving its authorization gate.",
+      "reason": "The limits edge becomes invalid when SKILLS-PREVIEW-01 is removed and does not add an independent constraint.",
+      "regression": "Continue requiring an explicit staging, shipping, or local-preview-sync request before staging skill changes."
+    },
+    {
+      "rules": [
+        "SKILLS-SHIP-02"
+      ],
+      "decision": "Retire SKILLS-SHIP-02 without replacement deployment prose.",
+      "reason": "Repository-lifecycle routing and its deterministic promote and ship actions already own this behavior.",
+      "regression": "Preserve release/local shipping, batch authorization, and GitHub workflow constraints in the surviving rules."
+    },
+    {
+      "rules": [
+        "SKILLS-DEPLOY-01"
+      ],
+      "decision": "Retire SKILLS-DEPLOY-01 without replacement deployment prose.",
+      "reason": "Deployment schema, lifecycle actions, and deterministic helpers are the executable owners; a repository rule would duplicate their contract.",
+      "regression": "Do not weaken surviving checkout, staging, creation, shipping, or section-manifest ownership rules."
     }
   ]
 }

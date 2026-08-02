@@ -15,7 +15,7 @@
     ],
     "runtime_generation_changes": [
       "python -m pytest -q tests/test_skill_runtime_multi_repo.py",
-      "python scripts/install-skills.py --install-root <task-temp-root>"
+      "python scripts/install-skills-bootstrap.py --install-root <task-temp-root>"
     ],
     "contract_checker_changes": [
       "python -m pytest -q tests/test_gh_validator_summary.py"
@@ -28,11 +28,7 @@
     "*": [
       "assets/ceratops-logo-500.png"
     ],
-    "ceratops-repo-lifecycle": [
-      "skills/ceratops-repo-lifecycle/references/deploy-template.yml"
-    ],
     "ceratops-skill-lifecycle": [
-      "skills/ceratops-repo-lifecycle/references/deploy-template.yml",
       "skills/sections/*.md",
       "skills/ceratops-repo-lifecycle/references/schemas/deploy-contract.schema.json"
     ]
@@ -41,21 +37,21 @@
     "ceratops-automation-run": [
       "core"
     ],
-    "ceratops-governance-lifecycle": [
-      "core",
-      "multi-action-skill"
+    "ceratops-code-consistency-audit": [
+      "core"
     ],
     "ceratops-credit-savings-analysis": [
       "core"
     ],
-    "ceratops-code-consistency-audit": [
-      "core"
-    ],
-    "ceratops-skill-lifecycle": [
+    "ceratops-governance-lifecycle": [
       "core",
       "multi-action-skill"
     ],
     "ceratops-repo-lifecycle": [
+      "core",
+      "multi-action-skill"
+    ],
+    "ceratops-skill-lifecycle": [
       "core",
       "multi-action-skill"
     ],

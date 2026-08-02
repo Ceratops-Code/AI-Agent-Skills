@@ -14,10 +14,10 @@ repo docs, then update the narrowest correct source that exists.
 
 - Existing skills or shared files in scope: `skills/*`,
   `skills/skill-sections.json`, `skills/sections/`,
-  `skills/ceratops-skill-lifecycle/scripts/templates/skill-sections-template.json`,
-  `skills/ceratops-repo-lifecycle/references/deploy-template.yml`,
-  `skills/ceratops-skill-lifecycle/scripts/templates/install-skills-template.py`,
-  `scripts/install-skills.py`,
+  `skills/ceratops-skill-lifecycle/references/templates/skill-sections-template.json`,
+  `skills/ceratops-skill-lifecycle/references/templates/deploy-template.yml`,
+  `skills/ceratops-skill-lifecycle/references/templates/install-skills-bootstrap-template.py`,
+  `scripts/install-skills-bootstrap.py`,
   `skills/ceratops-skill-lifecycle/scripts/runtime/managed_runtime_builder.py`,
   installer resolution, synchronization, and repository-consistency helpers,
   `skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py`,
@@ -88,9 +88,10 @@ Infer missing inputs from current repo state before asking.
   the last edit, run `python scripts/update-execution.py verify --state STATE
   --evidence-output EVIDENCE`. The helper must preserve the recorded
   pre-existing worktree baseline, reject undeclared new changes or source drift,
-  run the declared checks once, treat declared zero-match searches as success,
-  write detailed evidence, and emit only `OK` or one compact actionable error.
-  Do not use it for skill-local text-only updates.
+  collect every declared pytest node before edits without executing tests, run
+  the declared checks once, treat declared zero-match searches as success, write
+  detailed evidence, and emit only `OK` or one compact actionable error. Do not
+  use it for skill-local text-only updates.
 - Update skills, shared sections, manifest, runtime payloads, runtime generation
   or validation scripts, helper-runtime files or claims, contracts, and repo
   docs only where ownership requires it.
