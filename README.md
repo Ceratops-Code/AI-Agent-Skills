@@ -216,9 +216,9 @@ GH lifecycle validators use `ERROR`, `WARN`, and `NEEDS_AI_AGENT_REVIEW` for
 actionable findings. `ERROR` and `WARN` are blocking;
 `NEEDS_AI_AGENT_REVIEW` is judgment-required evidence that the review owner must
 classify before closure. Repo-health summary JSON includes compact stale-state
-inventory counts and samples for PRs,
-branches, tags, releases, and local path references when present; inventory
-alone is not a finding.
+inventory counts and samples for PRs, branches, tags, releases, and local path
+references when present. It also reports the observed community-profile health
+percentage and its 100% contract target; inventory alone is not a finding.
 
 Collect review evidence for non-deterministic checks with:
 

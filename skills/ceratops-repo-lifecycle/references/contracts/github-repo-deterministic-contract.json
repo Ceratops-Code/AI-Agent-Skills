@@ -934,7 +934,7 @@
         {
           "path": "/repository/content/community_profile/health_percentage",
           "operator": "gte",
-          "expected": 70
+          "expected": 100
         },
         {
           "path": "/repository/content/community_profile/content_reports_enabled",

@@ -861,6 +861,45 @@ class GHContractStateEngineTests(unittest.TestCase):
         self.assertNotIn("body", release)
         self.assertEqual(summary["findings"][0]["level"], "NEEDS_AI_AGENT_REVIEW")
 
+    def test_community_profile_requires_and_reports_one_hundred_percent(self):
+        rule = next(
+            item
+            for item in self.contracts["repo"]["checks"]
+            if item["id"] == "content.community_profile_public"
+        )
+        score_assertion = next(
+            item
+            for item in rule["assertions"]
+            if item["path"]
+            == "/repository/content/community_profile/health_percentage"
+        )
+        self.assertEqual(score_assertion["expected"], 100)
+
+        desired_state = {
+            "parameters": {"owner": "owner", "repo": "repo"},
+            "contract_paths": {},
+            "selected_ids": {"repo": [rule["id"]]},
+            "rules": [rule],
+        }
+        observed = {
+            "repository": {
+                "content": {"community_profile": {"health_percentage": 87}}
+            },
+            "local": {"available": True, "root": ".", "errors": []},
+        }
+        report = build_report(
+            desired_state,
+            observed,
+            {"findings": [], "approved_drift": []},
+        )
+        summary = build_summary_report(
+            report, ["ERROR", "WARN", "NEEDS_AI_AGENT_REVIEW"]
+        )
+        self.assertEqual(
+            summary["community_profile"],
+            {"health_percentage": 87, "target_percentage": 100},
+        )
+
     def test_machine_output_removes_sensitive_and_raw_collected_content(self):
         report = {
             "private": True,
