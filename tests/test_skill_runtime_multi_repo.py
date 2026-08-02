@@ -161,6 +161,544 @@ def test_model_call_ledger_keeps_full_evidence_out_of_stdout(
         "summary": '{"credential":"<redacted>"}',
     }
 
+    classifications = tmp_path / "classifications.json"
+    classifications.write_text(
+        json.dumps(
+            {
+                "schema": "ceratops-model-call-classifications.v1",
+                "session": str(session),
+                "runs": [
+                    {
+                        "turn_id": "turn-1",
+                        "groups": [
+                            {"category": "necessary", "indices": [1, 2]}
+                        ],
+                    }
+                ],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    classified = subprocess.run(
+        [
+            sys.executable,
+            str(MODEL_CALL_LEDGER),
+            "--session",
+            str(session),
+            "--classifications",
+            str(classifications),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert classified.returncode == 0, classified.stderr
+    classified_summary = json.loads(classified.stdout)
+    assert classified_summary["schema"] == (
+        "ceratops-model-call-classified-summary.v1"
+    )
+    assert classified_summary["totals"]["model_calls"] == 2
+    assert classified_summary["totals"]["necessary"] == 2
+
+
+def test_model_call_ledger_usage_summary_is_ranked_and_evidence_based(
+    tmp_path: pathlib.Path,
+) -> None:
+    session = tmp_path / "session.jsonl"
+    evidence = tmp_path / "usage-evidence.json"
+    unpriced_evidence = tmp_path / "unpriced-evidence.json"
+    pricing = tmp_path / "pricing.json"
+    secret = "summary-sentinel-secret"
+    local_path = str(pathlib.Path.home() / "private" / "summary.txt")
+    repeated_arguments = json.dumps(
+        {"command": "check", "credential": secret},
+        sort_keys=True,
+    )
+    rows = [
+        {
+            "timestamp": "2026-07-25T00:00:00Z",
+            "type": "turn_context",
+            "payload": {"turn_id": "turn-1"},
+        },
+        {
+            "timestamp": "2026-07-25T00:00:01Z",
+            "type": "response_item",
+            "payload": {
+                "type": "custom_tool_call",
+                "name": "mcp_process",
+                "call_id": "call-1",
+                "input": repeated_arguments,
+            },
+        },
+        {
+            "timestamp": "2026-07-25T00:00:01.100Z",
+            "type": "event_msg",
+            "payload": {
+                "type": "mcp_tool_call_end",
+                "call_id": "call-1",
+                "duration": {"secs": 0, "nanos": 100_000_000},
+                "result": {
+                    "Ok": {
+                        "isError": True,
+                        "structuredContent": {
+                            "exit_code": 7,
+                            "timed_out": True,
+                            "path": local_path,
+                            "secret": secret,
+                        },
+                    }
+                },
+            },
+        },
+        {
+            "timestamp": "2026-07-25T00:00:01.200Z",
+            "type": "response_item",
+            "payload": {
+                "type": "custom_tool_call_output",
+                "call_id": "call-1",
+                "output": [{"type": "text", "text": f"{local_path} {secret}"}],
+            },
+        },
+        {
+            "timestamp": "2026-07-25T00:00:02Z",
+            "type": "event_msg",
+            "payload": {
+                "type": "token_count",
+                "info": {
+                    "last_token_usage": {
+                        "input_tokens": 100,
+                        "cached_input_tokens": 40,
+                        "output_tokens": 20,
+                        "reasoning_output_tokens": 5,
+                        "total_tokens": 120,
+                    }
+                },
+            },
+        },
+        {
+            "timestamp": "2026-07-25T00:00:03Z",
+            "type": "response_item",
+            "payload": {
+                "type": "custom_tool_call",
+                "name": "mcp_process",
+                "call_id": "call-2",
+                "input": repeated_arguments,
+            },
+        },
+        {
+            "timestamp": "2026-07-25T00:00:03.100Z",
+            "type": "event_msg",
+            "payload": {
+                "type": "mcp_tool_call_end",
+                "call_id": "call-2",
+                "duration": {"secs": 0, "nanos": 100_000_000},
+                "result": {
+                    "Ok": {
+                        "isError": False,
+                        "structuredContent": {
+                            "exit_code": 3,
+                            "timed_out": False,
+                        },
+                    }
+                },
+            },
+        },
+        {
+            "timestamp": "2026-07-25T00:00:03.200Z",
+            "type": "response_item",
+            "payload": {
+                "type": "custom_tool_call_output",
+                "call_id": "call-2",
+                "output": [{"type": "text", "text": "nonzero but handled"}],
+            },
+        },
+        {
+            "timestamp": "2026-07-25T00:00:04Z",
+            "type": "response_item",
+            "payload": {
+                "type": "function_call",
+                "name": "wait_agent",
+                "call_id": "call-3",
+                "arguments": "{}",
+            },
+        },
+        {
+            "timestamp": "2026-07-25T00:00:04.100Z",
+            "type": "response_item",
+            "payload": {
+                "type": "function_call_output",
+                "call_id": "call-3",
+                "output": json.dumps({"timed_out": True, "message": secret}),
+            },
+        },
+        {
+            "timestamp": "2026-07-25T00:00:05Z",
+            "type": "response_item",
+            "payload": {
+                "type": "custom_tool_call",
+                "name": "apply_patch",
+                "call_id": "call-4",
+                "input": {"patch": local_path, "credential": secret},
+            },
+        },
+        {
+            "timestamp": "2026-07-25T00:00:05.100Z",
+            "type": "event_msg",
+            "payload": {
+                "type": "patch_apply_end",
+                "call_id": "call-4",
+                "success": False,
+                "status": "failed",
+                "changes": {local_path: {"type": "update"}},
+            },
+        },
+        {
+            "timestamp": "2026-07-25T00:00:05.200Z",
+            "type": "response_item",
+            "payload": {
+                "type": "custom_tool_call_output",
+                "call_id": "call-4",
+                "output": [{"type": "text", "text": secret}],
+            },
+        },
+        {
+            "timestamp": "2026-07-25T00:00:06Z",
+            "type": "response_item",
+            "payload": {
+                "type": "function_call",
+                "name": "process_control",
+                "call_id": "call-5",
+                "arguments": json.dumps({"path": local_path}),
+            },
+        },
+        {
+            "timestamp": "2026-07-25T00:00:06.100Z",
+            "type": "response_item",
+            "payload": {
+                "type": "function_call_output",
+                "call_id": "call-5",
+                "output": json.dumps(
+                    {"terminated": True, "returncode": 0, "message": secret}
+                ),
+            },
+        },
+        {
+            "timestamp": "2026-07-25T00:00:07Z",
+            "type": "response_item",
+            "payload": {
+                "type": "custom_tool_call",
+                "name": "exec",
+                "call_id": "call-6",
+                "input": f"await tools.shell_command({local_path!r}, {secret!r})",
+            },
+        },
+        {
+            "timestamp": "2026-07-25T00:00:07.100Z",
+            "type": "response_item",
+            "payload": {
+                "type": "custom_tool_call_output",
+                "call_id": "call-6",
+                "output": [
+                    {
+                        "type": "text",
+                        "text": json.dumps(
+                            {
+                                "exit_code": 9,
+                                "timed_out": True,
+                                "path": local_path,
+                                "secret": secret,
+                            }
+                        ),
+                    }
+                ],
+            },
+        },
+        {
+            "timestamp": "2026-07-25T00:00:08Z",
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "assistant",
+                "phase": "final_answer",
+                "content": [{"type": "output_text", "text": secret}],
+            },
+        },
+        {
+            "timestamp": "2026-07-25T00:00:09Z",
+            "type": "event_msg",
+            "payload": {
+                "type": "token_count",
+                "info": {
+                    "last_token_usage": {
+                        "input_tokens": 120,
+                        "cached_input_tokens": 60,
+                        "output_tokens": 30,
+                        "reasoning_output_tokens": 10,
+                        "total_tokens": 150,
+                    }
+                },
+            },
+        },
+        {
+            "timestamp": "2026-07-25T00:00:10Z",
+            "type": "event_msg",
+            "payload": {
+                "type": "task_complete",
+                "turn_id": "turn-1",
+                "duration_ms": 2500,
+            },
+        },
+        {
+            "timestamp": "2026-07-25T00:01:00Z",
+            "type": "turn_context",
+            "payload": {"turn_id": "turn-2"},
+        },
+        {
+            "timestamp": "2026-07-25T00:01:01Z",
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "assistant",
+                "phase": "final_answer",
+            },
+        },
+        {
+            "timestamp": "2026-07-25T00:01:02Z",
+            "type": "event_msg",
+            "payload": {
+                "type": "token_count",
+                "info": {
+                    "last_token_usage": {
+                        "input_tokens": 1000,
+                        "cached_input_tokens": 900,
+                        "output_tokens": 100,
+                        "reasoning_output_tokens": 80,
+                        "total_tokens": 1100,
+                    }
+                },
+            },
+        },
+        {
+            "timestamp": "2026-07-25T00:01:03Z",
+            "type": "event_msg",
+            "payload": {
+                "type": "task_complete",
+                "turn_id": "turn-2",
+                "duration_ms": 1000,
+            },
+        },
+        {
+            "timestamp": "2026-07-25T00:02:00Z",
+            "type": "turn_context",
+            "payload": {"turn_id": "incomplete-turn"},
+        },
+        {
+            "timestamp": "2026-07-25T00:02:01Z",
+            "type": "event_msg",
+            "payload": {
+                "type": "token_count",
+                "info": {
+                    "last_token_usage": {
+                        "input_tokens": 9000,
+                        "cached_input_tokens": 0,
+                        "output_tokens": 900,
+                        "reasoning_output_tokens": 90,
+                        "total_tokens": 9900,
+                    }
+                },
+            },
+        },
+    ]
+    session.write_text(
+        "".join(json.dumps(row) + "\n" for row in rows),
+        encoding="utf-8",
+        newline="\n",
+    )
+    pricing.write_text(
+        json.dumps(
+            {
+                "schema": "ceratops-model-call-pricing-profile.v1",
+                "input_per_million_tokens": 2,
+                "cached_input_per_million_tokens": 0.5,
+                "output_per_million_tokens": 8,
+                "mode_multiplier": 1.5,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(MODEL_CALL_LEDGER),
+            "--session",
+            str(session),
+            "--summary",
+            "--evidence-output",
+            str(evidence),
+            "--pricing-profile",
+            str(pricing),
+            "--top",
+            "1",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    summary_text = completed.stdout
+    evidence_text = evidence.read_text(encoding="utf-8")
+    for sensitive in (secret, local_path, str(session), str(evidence)):
+        assert sensitive not in summary_text
+        assert sensitive not in evidence_text
+    summary = json.loads(summary_text)
+    assert summary["schema"] == "ceratops-model-call-usage-summary.v1"
+    assert summary["evidence_schema"] == "ceratops-model-call-usage-evidence.v1"
+    assert summary["top_n"] == 1
+    assert summary["totals"] == {
+        "model_calls": 3,
+        "input_tokens": 1220,
+        "cached_input_tokens": 1000,
+        "uncached_input_tokens": 220,
+        "output_tokens": 150,
+        "reasoning_output_tokens": 95,
+        "total_tokens": 1370,
+        "input_of_total_pct": 89.05,
+        "cache_rate_pct": 81.97,
+        "output_of_total_pct": 10.95,
+        "reasoning_of_output_pct": 63.33,
+        "duration_ms": 3500,
+        "waits": 1,
+        "actions": 8,
+        "tool_actions": 6,
+        "distinct_calls": 5,
+        "repeated_calls": 1,
+        "retries": 1,
+        "explicit_failures": 4,
+        "structured_tool_errors": 2,
+        "nonzero_process_results": 2,
+        "timeouts": 2,
+        "terminations": 1,
+        "estimated_credit_cost": 0.00321,
+    }
+    expected_rankings = {
+        "total_tokens": "turn-2",
+        "uncached_input_tokens": "turn-1",
+        "output_tokens": "turn-2",
+        "reasoning_output_tokens": "turn-2",
+        "model_calls": "turn-1",
+        "explicit_failures": "turn-1",
+        "retries": "turn-1",
+        "duration_ms": "turn-1",
+        "estimated_credit_cost": "turn-2",
+    }
+    assert {
+        metric: ranked[0]["turn_id"]
+        for metric, ranked in summary["rankings"].items()
+    } == expected_rankings
+    assert all(len(ranked) == 1 for ranked in summary["rankings"].values())
+    assert summary["telemetry"]["functions_exec"] == {
+        "outer_actions": 1,
+        "child_calls": "unavailable",
+    }
+    assert "functions_exec_child_calls_unavailable" in summary["telemetry"][
+        "limitations"
+    ]
+
+    detailed = json.loads(evidence_text)
+    assert detailed["schema"] == "ceratops-model-call-usage-evidence.v1"
+    assert [run["turn_id"] for run in detailed["runs"]] == ["turn-1", "turn-2"]
+    first = detailed["runs"][0]
+    assert first["totals"]["estimated_credit_cost"] == 0.001035
+    assert first["tool_action_results"][1]["retry"] is True
+    assert first["tool_action_results"][1]["explicit_failure"] is False
+    assert first["tool_action_results"][1]["outcomes"][
+        "nonzero_process_result"
+    ] is True
+    assert first["tool_action_results"][-1]["name"] == "exec"
+    assert first["tool_action_results"][-1]["result_telemetry"] == "unstructured"
+    assert detailed["telemetry"]["structured_process_result_actions"] == 3
+    assert detailed["telemetry"][
+        "nonzero_process_results_are_semantic_failures"
+    ] is False
+
+    unpriced = subprocess.run(
+        [
+            sys.executable,
+            str(MODEL_CALL_LEDGER),
+            "--session",
+            str(session),
+            "--summary",
+            "--evidence-output",
+            str(unpriced_evidence),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert unpriced.returncode == 0, unpriced.stderr
+    unpriced_summary = json.loads(unpriced.stdout)
+    assert unpriced_summary["pricing"] == {"provided": False}
+    assert unpriced_summary["totals"]["estimated_credit_cost"] is None
+    assert unpriced_summary["rankings"]["estimated_credit_cost"] == []
+    assert "pricing_profile_not_provided" in unpriced_summary["telemetry"][
+        "limitations"
+    ]
+
+    invalid = subprocess.run(
+        [
+            sys.executable,
+            str(MODEL_CALL_LEDGER),
+            "--session",
+            str(session),
+            "--summary",
+            "--evidence-output",
+            str(tmp_path / "invalid.json"),
+            "--include-run",
+            "turn-1",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert invalid.returncode == 2
+    assert "--summary does not accept --include-run" in invalid.stderr
+    assert not (tmp_path / "invalid.json").exists()
+
+    invalid_pricing = tmp_path / "invalid-pricing.json"
+    invalid_pricing.write_text(
+        pricing.read_text(encoding="utf-8").replace(
+            "ceratops-model-call-pricing-profile.v1",
+            "ceratops-model-call-pricing-profile.v0",
+        ),
+        encoding="utf-8",
+        newline="\n",
+    )
+    rejected_pricing = subprocess.run(
+        [
+            sys.executable,
+            str(MODEL_CALL_LEDGER),
+            "--session",
+            str(session),
+            "--summary",
+            "--evidence-output",
+            str(tmp_path / "rejected-pricing-evidence.json"),
+            "--pricing-profile",
+            str(invalid_pricing),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert rejected_pricing.returncode == 2
+    assert "pricing profile schema must be" in rejected_pricing.stderr
+    assert not (tmp_path / "rejected-pricing-evidence.json").exists()
+
 
 def test_model_call_ledger_closure_mode_is_artifact_free(
     tmp_path: pathlib.Path,
@@ -363,6 +901,32 @@ def test_model_call_ledger_closure_mode_is_artifact_free(
     assert [call["index"] for call in summary["runs"][0]["calls"]] == [1, 2]
     assert "tokens" not in summary["runs"][0]["calls"][0]
     assert "selected_runs" not in summary
+
+    usage_evidence = tmp_path / "thread-usage.json"
+    usage = subprocess.run(
+        [
+            sys.executable,
+            str(MODEL_CALL_LEDGER),
+            "--summary",
+            "--thread-id",
+            thread_id,
+            "--evidence-output",
+            str(usage_evidence),
+            "--top",
+            "1",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=environment,
+    )
+    assert usage.returncode == 0, usage.stderr
+    usage_summary = json.loads(usage.stdout)
+    assert usage_summary["schema"] == "ceratops-model-call-usage-summary.v1"
+    assert usage_summary["window"]["completed_runs"] == 2
+    assert json.loads(usage_evidence.read_text(encoding="utf-8"))["schema"] == (
+        "ceratops-model-call-usage-evidence.v1"
+    )
 
     semantic = subprocess.run(
         [

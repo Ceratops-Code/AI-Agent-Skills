@@ -26,9 +26,10 @@ targeted local state before asking.
 
 ### Skill-Specific Rules
 
-- Closure invocation authorizes creating task-required temporary artifacts only
-  inside the verified task temp root and requires their helper-validated cleanup
-  before completion; remain advisory and ask before any other mutation.
+- Closure invocation authorizes creating task-required temporary artifacts,
+  including sanitized credit-analysis evidence, only inside the verified task
+  temp root and requires their helper-validated cleanup before completion;
+  remain advisory and ask before any other mutation.
 - For an `incremental closure`, scope new work and credit analysis to completed
   runs after the previous completed closure and carry forward only unresolved
   or intentionally retained boundary state; otherwise scope from the beginning
@@ -105,9 +106,11 @@ targeted local state before asking.
 
 #### 5. Include Credit-Saving Analysis
 
-- Invoke `$ceratops-credit-savings-analysis` for the current thread and selected
-  closure window, reuse fresh closure evidence, and include its completed result
-  or blocker under `Credit savings`.
+- Invoke `$ceratops-credit-savings-analysis` for the current thread and
+  selected closure window. Require its versioned compact usage summary before
+  semantic inspection, keep detailed sanitized usage evidence at the
+  caller-selected task-temp path, reuse fresh closure evidence, and include
+  the completed analysis or blocker under `Credit savings`.
 
 #### 6. Classify Closure State
 
@@ -132,8 +135,9 @@ targeted local state before asking.
 - A completed `$ceratops-credit-savings-analysis` result or its blocker is
   included under `Credit savings`; ledger evidence alone does not satisfy this
   gate.
-- The credit analysis used category totals validated by the existing ledger
-  helper; an unvalidated classification is a blocker.
+- The credit analysis consumed the versioned compact usage summary and used
+  category totals validated by the existing ledger helper; a missing summary
+  or unvalidated classification is a blocker.
 - No mutation occurred except creation and helper-validated cleanup of
   task-required temporary artifacts inside the verified task temp root, unless
   the user explicitly requested another exact action.

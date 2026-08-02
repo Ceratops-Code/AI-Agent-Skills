@@ -8,9 +8,11 @@ caller-selected file. Closure mode emits the minimum sanitized selected-window
 call inventory in one invocation and creates no cleanup artifact. Repeated
 ``--include-run`` options add bounded sanitized action summaries to stdout only
 for explicitly selected completed runs; default and written evidence remain
-fingerprint-only. The same helper validates a caller-owned classification file
-before reporting, while the model remains responsible for deciding whether a
-call was necessary or avoidable.
+fingerprint-only. Summary mode writes versioned per-turn usage and structured
+result evidence while emitting only compact totals and top-turn rankings. The
+same helper validates a caller-owned classification file before reporting,
+while the model remains responsible for deciding whether a call was necessary
+or avoidable.
 """
 
 from __future__ import annotations
@@ -18,6 +20,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import pathlib
 import re
@@ -32,6 +35,10 @@ SUMMARY_SCHEMA = "ceratops-model-call-ledger-summary.v1"
 CLOSURE_SCHEMA = "ceratops-model-call-ledger-closure.v1"
 CLASSIFICATIONS_SCHEMA = "ceratops-model-call-classifications.v1"
 CLASSIFIED_SUMMARY_SCHEMA = "ceratops-model-call-classified-summary.v1"
+USAGE_EVIDENCE_SCHEMA = "ceratops-model-call-usage-evidence.v1"
+USAGE_SUMMARY_SCHEMA = "ceratops-model-call-usage-summary.v1"
+PRICING_PROFILE_SCHEMA = "ceratops-model-call-pricing-profile.v1"
+DEFAULT_TOP = 5
 CLASSIFICATION_CATEGORIES = (
     "necessary",
     "avoidable_implemented",
@@ -43,6 +50,23 @@ TOKEN_FIELDS = (
     "output_tokens",
     "reasoning_output_tokens",
     "total_tokens",
+)
+PRICING_FIELDS = (
+    "input_per_million_tokens",
+    "cached_input_per_million_tokens",
+    "output_per_million_tokens",
+    "mode_multiplier",
+)
+WAIT_ACTION_NAMES = frozenset({"wait", "wait_agent", "wait_threads"})
+PROCESS_CODE_FIELDS = frozenset(
+    {"exit_code", "return_code", "returncode", "process_exit_code"}
+)
+TIMEOUT_FIELDS = frozenset({"timed_out", "timeout"})
+TERMINATION_FIELDS = frozenset({"terminated", "termination"})
+ERROR_STATUSES = frozenset({"error", "failed", "failure"})
+TIMEOUT_STATUSES = frozenset({"timed_out", "timeout"})
+TERMINATION_STATUSES = frozenset(
+    {"cancelled", "canceled", "killed", "terminated"}
 )
 REDACTED = "<redacted>"
 USER_HOME = "<user-home>"
@@ -88,6 +112,68 @@ def positive_int(value: str) -> int:
     if parsed < 1:
         raise argparse.ArgumentTypeError("must be a positive integer")
     return parsed
+
+
+def safe_rate(value: Any, field: str, *, positive: bool = False) -> float:
+    """Validate one finite pricing rate without accepting booleans or strings."""
+
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        raise LedgerError(f"pricing field {field} must be a number")
+    parsed = float(value)
+    if not math.isfinite(parsed) or parsed < 0 or (positive and parsed == 0):
+        qualifier = "positive finite" if positive else "non-negative finite"
+        raise LedgerError(f"pricing field {field} must be {qualifier}")
+    return parsed
+
+
+def load_pricing_profile(path: pathlib.Path) -> dict[str, float | str]:
+    """Load one exact versioned credit-rate profile."""
+
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise LedgerError(f"could not read pricing profile: {exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise LedgerError("pricing profile is not valid JSON") from exc
+    if not isinstance(value, dict):
+        raise LedgerError("pricing profile must be a JSON object")
+    expected = {"schema", *PRICING_FIELDS}
+    missing = sorted(expected - value.keys())
+    extra = sorted(value.keys() - expected)
+    if missing:
+        raise LedgerError(f"pricing profile is missing field: {missing[0]}")
+    if extra:
+        raise LedgerError(f"pricing profile has unsupported field: {extra[0]}")
+    if value.get("schema") != PRICING_PROFILE_SCHEMA:
+        raise LedgerError(f"pricing profile schema must be {PRICING_PROFILE_SCHEMA}")
+    return {
+        "schema": PRICING_PROFILE_SCHEMA,
+        "input_per_million_tokens": safe_rate(
+            value["input_per_million_tokens"],
+            "input_per_million_tokens",
+        ),
+        "cached_input_per_million_tokens": safe_rate(
+            value["cached_input_per_million_tokens"],
+            "cached_input_per_million_tokens",
+        ),
+        "output_per_million_tokens": safe_rate(
+            value["output_per_million_tokens"],
+            "output_per_million_tokens",
+        ),
+        "mode_multiplier": safe_rate(
+            value["mode_multiplier"],
+            "mode_multiplier",
+            positive=True,
+        ),
+    }
+
+
+def percentage(numerator: int, denominator: int) -> float | None:
+    """Return one deterministic two-decimal percentage when defined."""
+
+    if denominator <= 0:
+        return None
+    return round(numerator * 100 / denominator, 2)
 
 
 def load_rows(path: pathlib.Path) -> list[dict[str, Any]]:
@@ -316,6 +402,140 @@ def action_from_item(payload: dict[str, Any]) -> dict[str, str] | None:
         "name": name if isinstance(name, str) else "unknown",
         "fingerprint": payload_fingerprint(arguments),
     }
+
+
+def empty_outcomes() -> dict[str, bool]:
+    """Return the closed structured-result signal set for one tool action."""
+
+    return {
+        "structured_tool_error": False,
+        "nonzero_process_result": False,
+        "timeout": False,
+        "termination": False,
+        "structured_outcome": False,
+        "process_result_observed": False,
+    }
+
+
+def scan_structured_signals(
+    value: Any,
+    signals: dict[str, bool],
+    *,
+    envelope: bool,
+) -> None:
+    """Read explicit result fields without interpreting prose result content."""
+
+    if isinstance(value, list):
+        for item in value:
+            scan_structured_signals(item, signals, envelope=False)
+        return
+    if not isinstance(value, dict):
+        return
+
+    if envelope:
+        if "Err" in value:
+            signals["structured_outcome"] = True
+            signals["structured_tool_error"] = True
+        success = value.get("success")
+        if isinstance(success, bool):
+            signals["structured_outcome"] = True
+            signals["structured_tool_error"] |= not success
+        status = value.get("status")
+        if isinstance(status, str):
+            normalized_status = status.casefold()
+            signals["structured_outcome"] = True
+            signals["structured_tool_error"] |= normalized_status in ERROR_STATUSES
+            signals["timeout"] |= normalized_status in TIMEOUT_STATUSES
+            signals["termination"] |= normalized_status in TERMINATION_STATUSES
+
+    for key, item in value.items():
+        normalized_key = str(key).casefold()
+        if normalized_key in {"iserror", "is_error"} and isinstance(item, bool):
+            signals["structured_outcome"] = True
+            signals["structured_tool_error"] |= item
+        elif normalized_key in PROCESS_CODE_FIELDS and (
+            isinstance(item, int) and not isinstance(item, bool)
+        ):
+            signals["structured_outcome"] = True
+            signals["process_result_observed"] = True
+            signals["nonzero_process_result"] |= item != 0
+        elif normalized_key in TIMEOUT_FIELDS and isinstance(item, bool):
+            signals["structured_outcome"] = True
+            signals["timeout"] |= item
+        elif normalized_key in TERMINATION_FIELDS and isinstance(item, bool):
+            signals["structured_outcome"] = True
+            signals["termination"] |= item
+        if isinstance(item, (dict, list)):
+            scan_structured_signals(item, signals, envelope=False)
+
+
+def structured_function_output(payload: dict[str, Any]) -> Any | None:
+    """Decode only a complete JSON function result, never prose output text."""
+
+    if payload.get("type") != "function_call_output":
+        return None
+    output = payload.get("output")
+    if isinstance(output, (dict, list)):
+        return output
+    if not isinstance(output, str):
+        return None
+    try:
+        decoded = json.loads(output)
+    except json.JSONDecodeError:
+        return None
+    return decoded if isinstance(decoded, (dict, list)) else None
+
+
+def response_outcomes(payload: dict[str, Any]) -> dict[str, bool]:
+    """Collect structured signals exposed directly by one tool-result item."""
+
+    signals = empty_outcomes()
+    scan_structured_signals(payload, signals, envelope=True)
+    decoded = structured_function_output(payload)
+    if decoded is not None:
+        scan_structured_signals(decoded, signals, envelope=True)
+    return signals
+
+
+def mcp_outcomes(payload: dict[str, Any]) -> dict[str, bool]:
+    """Collect the MCP result envelope and structured process signals."""
+
+    signals = empty_outcomes()
+    result = payload.get("result")
+    if not isinstance(result, dict):
+        return signals
+    if "Err" in result:
+        signals["structured_outcome"] = True
+        signals["structured_tool_error"] = True
+    ok = result.get("Ok")
+    if not isinstance(ok, dict):
+        return signals
+    is_error = ok.get("isError")
+    if isinstance(is_error, bool):
+        signals["structured_outcome"] = True
+        signals["structured_tool_error"] |= is_error
+    structured = ok.get("structuredContent")
+    if isinstance(structured, (dict, list)):
+        scan_structured_signals(structured, signals, envelope=False)
+    return signals
+
+
+def patch_outcomes(payload: dict[str, Any]) -> dict[str, bool]:
+    """Collect the explicit apply-patch completion signal."""
+
+    signals = empty_outcomes()
+    success = payload.get("success")
+    if isinstance(success, bool):
+        signals["structured_outcome"] = True
+        signals["structured_tool_error"] = not success
+    return signals
+
+
+def merge_outcomes(target: dict[str, Any], source: dict[str, bool]) -> None:
+    """Merge multiple recorded result events for one top-level tool action."""
+
+    for field, value in source.items():
+        target[field] = bool(target.get(field)) or value
 
 
 def token_usage(payload: dict[str, Any]) -> dict[str, int]:
@@ -629,6 +849,486 @@ def build_closure_summary(
     return result
 
 
+def call_id_from_payload(payload: dict[str, Any]) -> str | None:
+    """Return the opaque result-correlation ID without emitting it."""
+
+    call_id = payload.get("call_id") or payload.get("id")
+    return call_id if isinstance(call_id, str) and call_id else None
+
+
+def estimated_credit_cost(
+    tokens: dict[str, int],
+    pricing: dict[str, float | str] | None,
+) -> float | None:
+    """Apply caller-supplied rates without double-charging reasoning output."""
+
+    if pricing is None:
+        return None
+    input_tokens = tokens.get("input_tokens", 0)
+    cached_tokens = tokens.get("cached_input_tokens", 0)
+    uncached_tokens = max(input_tokens - cached_tokens, 0)
+    raw_cost = (
+        uncached_tokens * float(pricing["input_per_million_tokens"])
+        + cached_tokens * float(pricing["cached_input_per_million_tokens"])
+        + tokens.get("output_tokens", 0)
+        * float(pricing["output_per_million_tokens"])
+    ) / 1_000_000
+    result = raw_cost * float(pricing["mode_multiplier"])
+    if not math.isfinite(result):
+        raise LedgerError("pricing profile produces a non-finite credit cost")
+    return round(result, 12)
+
+
+def usage_metrics(
+    *,
+    tokens: dict[str, int],
+    model_calls: int,
+    duration_ms: int | None,
+    actions: int,
+    tool_actions: list[dict[str, Any]],
+    distinct_calls: int,
+    repeated_calls: int,
+    retries: int,
+    pricing: dict[str, float | str] | None,
+) -> dict[str, Any]:
+    """Build the common per-turn and thread metric contract."""
+
+    input_tokens = tokens.get("input_tokens", 0)
+    cached_tokens = tokens.get("cached_input_tokens", 0)
+    output_tokens = tokens.get("output_tokens", 0)
+    reasoning_tokens = tokens.get("reasoning_output_tokens", 0)
+    total_tokens = tokens.get("total_tokens", 0)
+    explicit_failures = sum(
+        1 for action in tool_actions if action["explicit_failure"]
+    )
+    return {
+        "model_calls": model_calls,
+        "input_tokens": input_tokens,
+        "cached_input_tokens": cached_tokens,
+        "uncached_input_tokens": max(input_tokens - cached_tokens, 0),
+        "output_tokens": output_tokens,
+        "reasoning_output_tokens": reasoning_tokens,
+        "total_tokens": total_tokens,
+        "input_of_total_pct": percentage(input_tokens, total_tokens),
+        "cache_rate_pct": percentage(cached_tokens, input_tokens),
+        "output_of_total_pct": percentage(output_tokens, total_tokens),
+        "reasoning_of_output_pct": percentage(reasoning_tokens, output_tokens),
+        "duration_ms": duration_ms,
+        "waits": sum(
+            1 for action in tool_actions if action["name"] in WAIT_ACTION_NAMES
+        ),
+        "actions": actions,
+        "tool_actions": len(tool_actions),
+        "distinct_calls": distinct_calls,
+        "repeated_calls": repeated_calls,
+        "retries": retries,
+        "explicit_failures": explicit_failures,
+        "structured_tool_errors": sum(
+            1
+            for action in tool_actions
+            if action["outcomes"]["structured_tool_error"]
+        ),
+        "nonzero_process_results": sum(
+            1
+            for action in tool_actions
+            if action["outcomes"]["nonzero_process_result"]
+        ),
+        "timeouts": sum(
+            1 for action in tool_actions if action["outcomes"]["timeout"]
+        ),
+        "terminations": sum(
+            1 for action in tool_actions if action["outcomes"]["termination"]
+        ),
+        "estimated_credit_cost": estimated_credit_cost(tokens, pricing),
+    }
+
+
+def public_tool_action(action: dict[str, Any]) -> dict[str, Any]:
+    """Remove correlation-only state from one sanitized top-level action."""
+
+    if action["structured_outcome"]:
+        telemetry = "structured"
+    elif action["result_recorded"]:
+        telemetry = "unstructured"
+    else:
+        telemetry = "missing"
+    return {
+        "index": action["index"],
+        "model_call_index": action["model_call_index"],
+        "name": action["name"],
+        "fingerprint": action["fingerprint"],
+        "repeated": action["repeated"],
+        "retry": action["retry"],
+        "explicit_failure": action["explicit_failure"],
+        "result_telemetry": telemetry,
+        "process_result_observed": action["process_result_observed"],
+        "outcomes": {
+            field: action[field]
+            for field in (
+                "structured_tool_error",
+                "nonzero_process_result",
+                "timeout",
+                "termination",
+            )
+        },
+    }
+
+
+def build_usage_evidence(
+    rows: list[dict[str, Any]],
+    ledger: dict[str, Any],
+    pricing: dict[str, float | str] | None,
+) -> dict[str, Any]:
+    """Build sanitized per-turn metrics and structured top-level outcomes."""
+
+    run_states: dict[str, dict[str, Any]] = {}
+    for order, run in enumerate(ledger["runs"]):
+        run_states[run["turn_id"]] = {
+            "order": order,
+            "turn_id": run["turn_id"],
+            "started_at": run["started_at"],
+            "tokens": dict(run["tokens"]),
+            "model_calls": run["model_calls"],
+            "calls": [
+                {
+                    "index": call["index"],
+                    "tokens": dict(call["tokens"]),
+                    "actions": [dict(action) for action in call["actions"]],
+                }
+                for call in run["calls"]
+            ],
+            "actions": 0,
+            "tool_actions": [],
+            "duration_ms": 0,
+            "duration_events": 0,
+            "next_model_call": 0,
+        }
+
+    selected_turns = set(run_states)
+    call_actions: dict[str, dict[str, Any]] = {}
+    active_turn: str | None = None
+    pending_tool_actions: list[dict[str, Any]] = []
+
+    for row in rows:
+        row_type = row.get("type")
+        payload = row.get("payload")
+        if not isinstance(payload, dict):
+            continue
+
+        if row_type == "turn_context":
+            turn_id = payload.get("turn_id")
+            active_turn = (
+                turn_id
+                if isinstance(turn_id, str) and turn_id in selected_turns
+                else None
+            )
+            pending_tool_actions = []
+            continue
+
+        if row_type == "event_msg" and payload.get("type") == "task_complete":
+            turn_id = payload.get("turn_id")
+            duration = payload.get("duration_ms")
+            if (
+                isinstance(turn_id, str)
+                and turn_id in run_states
+                and isinstance(duration, int)
+                and not isinstance(duration, bool)
+                and duration >= 0
+            ):
+                state = run_states[turn_id]
+                state["duration_ms"] += duration
+                state["duration_events"] += 1
+            continue
+
+        if row_type == "event_msg" and payload.get("type") in {
+            "mcp_tool_call_end",
+            "patch_apply_end",
+        }:
+            call_id = call_id_from_payload(payload)
+            result_action = call_actions.get(call_id) if call_id else None
+            if result_action is None:
+                continue
+            result_action["result_recorded"] = True
+            signals = (
+                mcp_outcomes(payload)
+                if payload.get("type") == "mcp_tool_call_end"
+                else patch_outcomes(payload)
+            )
+            merge_outcomes(result_action, signals)
+            continue
+
+        if row_type == "response_item" and str(payload.get("type", "")).endswith(
+            "_output"
+        ):
+            call_id = call_id_from_payload(payload)
+            result_action = call_actions.get(call_id) if call_id else None
+            if result_action is not None:
+                result_action["result_recorded"] = True
+                merge_outcomes(result_action, response_outcomes(payload))
+            continue
+
+        if active_turn is None:
+            continue
+        state = run_states[active_turn]
+
+        if row_type == "response_item":
+            compact_action = action_from_item(payload)
+            if compact_action is None:
+                continue
+            state["actions"] += 1
+            if compact_action["kind"] != "tool":
+                continue
+            new_action: dict[str, Any] = {
+                "index": len(state["tool_actions"]) + 1,
+                "model_call_index": None,
+                "name": compact_action["name"],
+                "fingerprint": compact_action["fingerprint"],
+                "result_recorded": False,
+                "repeated": False,
+                "retry": False,
+                "explicit_failure": False,
+                **empty_outcomes(),
+            }
+            state["tool_actions"].append(new_action)
+            pending_tool_actions.append(new_action)
+            call_id = call_id_from_payload(payload)
+            if call_id is not None:
+                call_actions[call_id] = new_action
+            continue
+
+        if row_type != "event_msg" or payload.get("type") != "token_count":
+            continue
+        usage = token_usage(payload)
+        if not any(
+            usage.get(field, 0) > 0
+            for field in ("input_tokens", "output_tokens", "reasoning_output_tokens")
+        ):
+            pending_tool_actions = []
+            continue
+        state["next_model_call"] += 1
+        for pending_action in pending_tool_actions:
+            pending_action["model_call_index"] = state["next_model_call"]
+        pending_tool_actions = []
+
+    evidence_runs: list[dict[str, Any]] = []
+    all_actions: list[dict[str, Any]] = []
+    total_retries = 0
+    total_actions = 0
+    duration_total = 0
+    duration_covered_turns = 0
+    for state in run_states.values():
+        previous: dict[tuple[str, str], dict[str, Any]] = {}
+        for action in state["tool_actions"]:
+            action["explicit_failure"] = bool(
+                action["structured_tool_error"]
+                or action["timeout"]
+                or action["termination"]
+            )
+            signature = (action["name"], action["fingerprint"])
+            earlier = previous.get(signature)
+            action["repeated"] = earlier is not None
+            action["retry"] = bool(earlier and earlier["explicit_failure"])
+            previous[signature] = action
+        public_actions = [public_tool_action(action) for action in state["tool_actions"]]
+        distinct_calls = len(
+            {(action["name"], action["fingerprint"]) for action in public_actions}
+        )
+        repeated_calls = len(public_actions) - distinct_calls
+        retries = sum(1 for action in public_actions if action["retry"])
+        duration = (
+            state["duration_ms"] if state["duration_events"] > 0 else None
+        )
+        if duration is not None:
+            duration_total += duration
+            duration_covered_turns += 1
+        metrics = usage_metrics(
+            tokens=state["tokens"],
+            model_calls=state["model_calls"],
+            duration_ms=duration,
+            actions=state["actions"],
+            tool_actions=public_actions,
+            distinct_calls=distinct_calls,
+            repeated_calls=repeated_calls,
+            retries=retries,
+            pricing=pricing,
+        )
+        tool_counts = Counter(action["name"] for action in public_actions)
+        evidence_runs.append(
+            {
+                "turn_id": state["turn_id"],
+                "started_at": state["started_at"],
+                "totals": metrics,
+                "tool_counts": dict(sorted(tool_counts.items())),
+                "calls": state["calls"],
+                "tool_action_results": public_actions,
+            }
+        )
+        all_actions.extend(public_actions)
+        total_retries += retries
+        total_actions += state["actions"]
+
+    thread_signatures = {
+        (action["name"], action["fingerprint"]) for action in all_actions
+    }
+    thread_tokens = {
+        field: ledger["totals"][field]
+        for field in TOKEN_FIELDS
+    }
+    thread_metrics = usage_metrics(
+        tokens=thread_tokens,
+        model_calls=ledger["totals"]["model_calls"],
+        duration_ms=(duration_total if duration_covered_turns else None),
+        actions=total_actions,
+        tool_actions=all_actions,
+        distinct_calls=len(thread_signatures),
+        repeated_calls=len(all_actions) - len(thread_signatures),
+        retries=total_retries,
+        pricing=pricing,
+    )
+
+    result_recorded = sum(1 for action in all_actions if action["result_telemetry"] != "missing")
+    structured_results = sum(
+        1 for action in all_actions if action["result_telemetry"] == "structured"
+    )
+    process_results = sum(
+        1 for action in all_actions if action["process_result_observed"]
+    )
+    exec_actions = sum(
+        1 for action in all_actions if action["name"] in {"exec", "functions.exec"}
+    )
+    limitations: list[str] = []
+    if exec_actions:
+        limitations.append("functions_exec_child_calls_unavailable")
+    if result_recorded > structured_results:
+        limitations.append("unstructured_tool_result_outcomes")
+    if duration_covered_turns < len(evidence_runs):
+        limitations.append("turn_duration_unavailable")
+
+    pricing_contract: dict[str, Any]
+    if pricing is None:
+        pricing_contract = {"provided": False}
+    else:
+        pricing_contract = {"provided": True, **pricing}
+
+    return {
+        "schema": USAGE_EVIDENCE_SCHEMA,
+        "window": ledger["window"],
+        "pricing": pricing_contract,
+        "totals": thread_metrics,
+        "runs": evidence_runs,
+        "repeated_tool_calls": ledger["repeated_tool_calls"],
+        "telemetry": {
+            "action_scope": "top_level_response_items",
+            "duration_source": "task_complete.duration_ms",
+            "retry_definition": "same_turn_repeat_after_explicit_failure",
+            "result_signal_source": "structured_result_fields_only",
+            "top_level_tool_actions": len(all_actions),
+            "result_recorded_actions": result_recorded,
+            "structured_outcome_actions": structured_results,
+            "unstructured_result_actions": result_recorded - structured_results,
+            "missing_result_actions": len(all_actions) - result_recorded,
+            "structured_process_result_actions": process_results,
+            "duration_covered_turns": duration_covered_turns,
+            "duration_total_turns": len(evidence_runs),
+            "functions_exec": {
+                "outer_actions": exec_actions,
+                "child_calls": "unavailable" if exec_actions else "not_observed",
+            },
+            "nonzero_process_results_are_semantic_failures": False,
+            "limitations": limitations,
+        },
+    }
+
+
+def build_usage_rankings(
+    evidence: dict[str, Any],
+    top_n: int,
+) -> dict[str, list[dict[str, Any]]]:
+    """Rank turns by numeric metrics while preserving selected-order ties."""
+
+    ranking_fields = (
+        "total_tokens",
+        "uncached_input_tokens",
+        "output_tokens",
+        "reasoning_output_tokens",
+        "model_calls",
+        "explicit_failures",
+        "retries",
+        "duration_ms",
+        "estimated_credit_cost",
+    )
+    order = {
+        run["turn_id"]: index
+        for index, run in enumerate(evidence["runs"])
+    }
+    rankings: dict[str, list[dict[str, Any]]] = {}
+    for field in ranking_fields:
+        candidates = [
+            (run["turn_id"], run["totals"].get(field))
+            for run in evidence["runs"]
+            if isinstance(run["totals"].get(field), (int, float))
+            and not isinstance(run["totals"].get(field), bool)
+            and run["totals"][field] > 0
+        ]
+        candidates.sort(key=lambda item: (-item[1], order[item[0]]))
+        rankings[field] = [
+            {"turn_id": turn_id, "value": value}
+            for turn_id, value in candidates[:top_n]
+        ]
+    return rankings
+
+
+def build_usage_summary(
+    evidence: dict[str, Any],
+    *,
+    top_n: int,
+) -> dict[str, Any]:
+    """Emit decision-sized totals and rankings without paths or call inventory."""
+
+    limitations = list(evidence["telemetry"]["limitations"])
+    if not evidence["pricing"]["provided"]:
+        limitations.append("pricing_profile_not_provided")
+    return {
+        "schema": USAGE_SUMMARY_SCHEMA,
+        "evidence_schema": evidence["schema"],
+        "evidence_written": True,
+        "window": evidence["window"],
+        "top_n": top_n,
+        "pricing": evidence["pricing"],
+        "totals": evidence["totals"],
+        "rankings": build_usage_rankings(evidence, top_n),
+        "telemetry": {
+            "action_scope": evidence["telemetry"]["action_scope"],
+            "duration_source": evidence["telemetry"]["duration_source"],
+            "retry_definition": evidence["telemetry"]["retry_definition"],
+            "result_signal_source": evidence["telemetry"][
+                "result_signal_source"
+            ],
+            "top_level_tool_actions": evidence["telemetry"][
+                "top_level_tool_actions"
+            ],
+            "structured_outcome_actions": evidence["telemetry"][
+                "structured_outcome_actions"
+            ],
+            "unstructured_result_actions": evidence["telemetry"][
+                "unstructured_result_actions"
+            ],
+            "missing_result_actions": evidence["telemetry"][
+                "missing_result_actions"
+            ],
+            "duration_covered_turns": evidence["telemetry"][
+                "duration_covered_turns"
+            ],
+            "duration_total_turns": evidence["telemetry"][
+                "duration_total_turns"
+            ],
+            "functions_exec": evidence["telemetry"]["functions_exec"],
+            "nonzero_process_results_are_semantic_failures": False,
+            "limitations": limitations,
+        },
+    }
+
+
 def classification_input_contract() -> dict[str, Any]:
     """Describe the compact caller-owned classification file shape."""
 
@@ -841,8 +1541,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     parser = argparse.ArgumentParser(
         description=(
-            "Write full model-call evidence, or emit one artifact-free closure "
-            "inventory."
+            "Write model-call evidence, emit one artifact-free closure inventory, "
+            "or write detailed usage evidence with a compact summary."
         )
     )
     source = parser.add_mutually_exclusive_group(required=True)
@@ -875,16 +1575,45 @@ def build_parser() -> argparse.ArgumentParser:
             "artifact"
         ),
     )
+    parser.add_argument(
+        "--summary",
+        action="store_true",
+        help=(
+            "write versioned sanitized usage evidence and emit compact totals "
+            "and top-turn rankings"
+        ),
+    )
+    parser.add_argument(
+        "--top",
+        type=positive_int,
+        help=f"number of turns per summary ranking (default: {DEFAULT_TOP})",
+    )
+    parser.add_argument(
+        "--pricing-profile",
+        type=pathlib.Path,
+        help=(
+            "optional versioned input, cached-input, output, and mode credit rates"
+        ),
+    )
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Run ordinary evidence mode or the single-call closure path."""
+    """Run one preserved ledger mode or the additive compact usage summary."""
 
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
-        if args.classifications is not None:
+        if args.summary and args.closure:
+            raise LedgerError("--summary does not accept --closure")
+        if args.summary:
+            if args.classifications is not None:
+                raise LedgerError("--summary does not accept --classifications")
+            if args.include_run:
+                raise LedgerError("--summary does not accept --include-run")
+            if args.evidence_output is None:
+                raise LedgerError("--summary requires --evidence-output")
+        elif args.classifications is not None:
             if args.evidence_output is not None:
                 raise LedgerError(
                     "--classifications does not accept --evidence-output"
@@ -901,6 +1630,11 @@ def main(argv: list[str] | None = None) -> int:
                 raise LedgerError("--thread-id requires --closure")
             if args.evidence_output is None:
                 raise LedgerError("ordinary mode requires --evidence-output")
+
+        if not args.summary and args.top is not None:
+            raise LedgerError("--top requires --summary")
+        if not args.summary and args.pricing_profile is not None:
+            raise LedgerError("--pricing-profile requires --summary")
 
         if args.thread_id is not None:
             session = resolve_thread_session(args.thread_id)
@@ -925,6 +1659,26 @@ def main(argv: list[str] | None = None) -> int:
             )
         elif args.closure:
             result = build_closure_summary(ledger, semantic_runs)
+        elif args.summary:
+            if args.evidence_output is None:
+                raise LedgerError("--summary requires --evidence-output")
+            evidence_output = args.evidence_output.expanduser().resolve()
+            if evidence_output == session:
+                raise LedgerError("evidence output must not overwrite the session")
+            pricing: dict[str, float | str] | None = None
+            if args.pricing_profile is not None:
+                pricing_path = args.pricing_profile.expanduser().resolve(strict=True)
+                if evidence_output == pricing_path:
+                    raise LedgerError(
+                        "evidence output must not overwrite the pricing profile"
+                    )
+                pricing = load_pricing_profile(pricing_path)
+            evidence = build_usage_evidence(rows, ledger, pricing)
+            result = build_usage_summary(
+                evidence,
+                top_n=args.top or DEFAULT_TOP,
+            )
+            write_evidence(evidence_output, evidence)
         else:
             if args.evidence_output is None:
                 raise LedgerError("ordinary mode requires --evidence-output")
