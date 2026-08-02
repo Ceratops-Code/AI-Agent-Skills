@@ -3,7 +3,8 @@
 
 The helper records the caller's pre-existing Git baseline before source edits,
 then verifies that only declared paths changed and that undeclared dirty state
-was preserved. Checks use closed structured forms and run without a shell.
+was preserved. Prepare collects declared pytest nodes without running tests.
+Checks use closed structured forms and run without a shell.
 Source files are never patched, staged, committed, installed, promoted, or
 rolled back. State and detailed evidence must be written outside the repository;
 stdout is only ``OK`` and failures are one compact stderr line.
@@ -57,6 +58,7 @@ SKILL_NAME_RE = re.compile(
 )
 PYTEST_NODE_RE = re.compile(r"^tests/[A-Za-z0-9_./-]+\.py::\S+$")
 MAX_CAPTURE = 32_000
+MAX_COMPACT_DETAIL = 1_000
 
 
 class UpdateExecutionError(RuntimeError):
@@ -329,6 +331,37 @@ def _validate_checks(
     return checks
 
 
+def _collect_declared_pytest_nodes(
+    repo_root: pathlib.Path,
+    checks: Sequence[Mapping[str, object]],
+) -> None:
+    """Reject uncollectable declared pytest nodes before source edits begin."""
+
+    nodes: list[str] = []
+    for check in checks:
+        if check.get("kind") != "pytest":
+            continue
+        raw_nodes = check.get("nodes")
+        if not isinstance(raw_nodes, list) or not all(
+            isinstance(node, str) for node in raw_nodes
+        ):
+            raise UpdateExecutionError("validated pytest check is invalid")
+        nodes.extend(raw_nodes)
+    unique_nodes = list(dict.fromkeys(nodes))
+    if not unique_nodes:
+        return
+    result = _run(
+        [sys.executable, "-m", "pytest", "--collect-only", "-q", *unique_nodes],
+        cwd=repo_root,
+    )
+    if result.returncode:
+        detail = " ".join((result.stderr or result.stdout).split())
+        if len(detail) > MAX_COMPACT_DETAIL:
+            detail = detail[:MAX_COMPACT_DETAIL] + " [truncated]"
+        message = "pytest node collection failed"
+        raise UpdateExecutionError(f"{message}: {detail}" if detail else message)
+
+
 def _validated_request(path: pathlib.Path) -> dict[str, object]:
     request = _read_json(path, "request")
     _closed_fields(request, REQUEST_FIELDS, "request")
@@ -409,6 +442,7 @@ def _validated_request(path: pathlib.Path) -> dict[str, object]:
         )
 
     checks = _validate_checks(request["checks"], repo_root, allowed_set)
+    _collect_declared_pytest_nodes(repo_root, checks)
     dirty = sorted(_dirty_paths(repo_root))
     baseline_dirty = {path: _snapshot(repo_root, path) for path in dirty}
     baseline_targets = {path: _snapshot(repo_root, path) for path in allowed}

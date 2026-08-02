@@ -1363,40 +1363,62 @@ def test_update_execution_preserves_baseline_and_runs_declared_checks_once(
     request_path = scope / "request.json"
     state_path = scope / "state.json"
     evidence_path = scope / "evidence.json"
-    request_path.write_text(
-        json.dumps(
+    request = {
+        "schema": "ceratops-skill-update-request.v1",
+        "repo_root": str(worktree),
+        "selected_skills": ["alpha-tool"],
+        "allowed_paths": [
+            "skills/alpha-tool/scripts/tool.py",
+        ],
+        "change_groups": [
             {
-                "schema": "ceratops-skill-update-request.v1",
-                "repo_root": str(worktree),
-                "selected_skills": ["alpha-tool"],
-                "allowed_paths": [
-                    "skills/alpha-tool/scripts/tool.py",
-                ],
-                "change_groups": [
-                    {
-                        "name": "helper-runtime",
-                        "paths": ["skills/alpha-tool/scripts/tool.py"],
-                    }
-                ],
-                "checks": [
-                    {
-                        "kind": "search",
-                        "pattern": "FORBIDDEN",
-                        "paths": ["skills/alpha-tool/scripts/tool.py"],
-                        "expected_matches": 0,
-                    },
-                    {"kind": "command", "argv": [sys.executable, str(check_script)]},
-                    {
-                        "kind": "pytest",
-                        "nodes": ["tests/test_helper.py::test_helper_value"],
-                    },
-                ],
+                "name": "helper-runtime",
+                "paths": ["skills/alpha-tool/scripts/tool.py"],
             }
-        )
-        + "\n",
+        ],
+        "checks": [
+            {
+                "kind": "search",
+                "pattern": "FORBIDDEN",
+                "paths": ["skills/alpha-tool/scripts/tool.py"],
+                "expected_matches": 0,
+            },
+            {"kind": "command", "argv": [sys.executable, str(check_script)]},
+            {
+                "kind": "pytest",
+                "nodes": ["tests/test_helper.py::test_helper_value"],
+            },
+        ],
+    }
+    request_path.write_text(
+        json.dumps(request) + "\n",
         encoding="utf-8",
         newline="\n",
     )
+    invalid_request_path = scope / "invalid-request.json"
+    invalid_state_path = scope / "invalid-state.json"
+    invalid_request = json.loads(json.dumps(request))
+    invalid_request["checks"][-1]["nodes"] = [
+        "tests/test_helper.py::test_missing_helper_value"
+    ]
+    invalid_request_path.write_text(
+        json.dumps(invalid_request) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    invalid_prepare = run_update_execution(
+        "prepare",
+        "--request",
+        str(invalid_request_path),
+        "--state",
+        str(invalid_state_path),
+    )
+    assert invalid_prepare.returncode == 2
+    assert invalid_prepare.stdout == ""
+    assert "pytest node collection failed" in invalid_prepare.stderr
+    assert "test_missing_helper_value" in invalid_prepare.stderr
+    assert not invalid_state_path.exists()
+
     prepared = run_update_execution(
         "prepare",
         "--request",
