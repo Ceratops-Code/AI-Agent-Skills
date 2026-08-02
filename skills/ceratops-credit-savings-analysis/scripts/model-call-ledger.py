@@ -6,9 +6,9 @@ runs, and fingerprints tool arguments instead of reproducing potentially
 sensitive command text. Ordinary mode writes detailed evidence to a
 caller-selected file. Closure mode emits the minimum sanitized selected-window
 call inventory in one invocation and creates no cleanup artifact. Repeated
-``--include-run`` options preserve the existing bounded stdout summaries unless
-``--semantic-evidence-output`` writes the selected sanitized actions to a
-separate versioned sidecar and emits only selected-run IDs and counts. The
+``--include-run`` requires ``--semantic-evidence-output``. The helper writes
+selected sanitized actions to a separate versioned sidecar and emits only
+selected-run IDs and counts. The
 ordinary ledger remains fingerprint-only. Summary mode writes versioned
 per-turn usage and structured result evidence while emitting only compact
 totals and top-turn rankings. The
