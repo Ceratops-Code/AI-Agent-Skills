@@ -1498,7 +1498,19 @@ def test_proposal_workflow_validates_context_and_owns_iteration_transition(
         "  - self: list-heavy"
     )
     assert current_text in (ROOT / "AGENTS.md").read_text(encoding="utf-8")
-    request = {
+    history_source: dict[str, object] = {
+        "rules": str(ROOT / "AGENTS.md"),
+        "history": str(ROOT / "AGENTS.history.json"),
+        "rule_ids": ["SKILLS-GOV-01"],
+        "expected_text": [current_text],
+    }
+    target_source: dict[str, object] = {
+        "rules": str(target),
+        "history": None,
+        "rule_ids": [],
+        "expected_text": ["Current exact target."],
+    }
+    request: dict[str, object] = {
         "schema": "ceratops-governance-proposal-request.v1",
         "state": str(state),
         "original": str(original),
@@ -1510,20 +1522,7 @@ def test_proposal_workflow_validates_context_and_owns_iteration_transition(
             "write context evidence",
             "write controller artifacts",
         ],
-        "sources": [
-            {
-                "rules": str(ROOT / "AGENTS.md"),
-                "history": str(ROOT / "AGENTS.history.json"),
-                "rule_ids": ["SKILLS-GOV-01"],
-                "expected_text": [current_text],
-            },
-            {
-                "rules": str(target),
-                "history": None,
-                "rule_ids": [],
-                "expected_text": ["Current exact target."],
-            },
-        ],
+        "sources": [history_source, target_source],
     }
     request_path.write_text(
         json.dumps(request) + "\n",
@@ -1598,11 +1597,13 @@ def test_proposal_workflow_validates_context_and_owns_iteration_transition(
     assert original.is_file() and regressions.is_file() and evidence.is_file()
 
     invalid_request = dict(request)
-    invalid_request["state"] = str(tmp_path / "invalid-state.json")
-    invalid_request["evidence_output"] = str(tmp_path / "invalid-context.json")
+    invalid_state = tmp_path / "invalid-state.json"
+    invalid_evidence = tmp_path / "invalid-context.json"
+    invalid_request["state"] = str(invalid_state)
+    invalid_request["evidence_output"] = str(invalid_evidence)
     invalid_request["sources"] = [
         {
-            **request["sources"][0],
+            **history_source,
             "expected_text": ["missing exact current text"],
         }
     ]
@@ -1626,8 +1627,8 @@ def test_proposal_workflow_validates_context_and_owns_iteration_transition(
     )
     assert rejected.returncode == 2
     assert "expected_text must occur exactly once" in rejected.stderr
-    assert not pathlib.Path(invalid_request["state"]).exists()
-    assert not pathlib.Path(invalid_request["evidence_output"]).exists()
+    assert not invalid_state.exists()
+    assert not invalid_evidence.exists()
 
 
 def test_iteration_controller_preserves_legacy_commands(
