@@ -187,6 +187,10 @@ def _artifact_state(
         if isinstance(item, dict)
     ]
     releases = repository.get("stale", {}).get("releases", {}).get("inventory", [])
+    immutable_release_detected = any(
+        isinstance(release, dict) and release.get("immutable") is True
+        for release in releases
+    )
     release_assets = [
         asset
         for release in releases
@@ -215,6 +219,7 @@ def _artifact_state(
         "attestation_detected": bool(
             local.get("workflows", {}).get("attestation_detected")
         ),
+        "immutable_release_detected": immutable_release_detected,
         "release_assets": release_assets,
         "live_metadata": {
             "identity_count": len(registry_resolutions),
@@ -308,6 +313,7 @@ def collect_observed_states(desired_state: dict[str, Any]) -> dict[str, Any]:
         "audit_only": artifact["audit_only"],
         "publish_workflow_detected": artifact["publish_workflow_detected"],
         "workflow_emits_attestation_or_provenance": artifact["attestation_detected"],
+        "immutable_release_detected": artifact["immutable_release_detected"],
         "workflow_contains_artifact_metadata_write": bool(
             local.get("workflows", {}).get("any_write", {}).get("artifact-metadata")
         ),

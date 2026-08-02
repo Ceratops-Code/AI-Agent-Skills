@@ -1411,7 +1411,7 @@
       "id": "github_release_assets.attestation_verification",
       "category": "github_release_binary",
       "kind": "github_api_and_cli",
-      "applies_when": "artifact_type intersects github_release_binary,generic_binary_archive,installer_or_cli_binary && workflow_emits_attestation_or_provenance == true",
+      "applies_when": "artifact_type intersects github_release_binary,generic_binary_archive,installer_or_cli_binary && (workflow_emits_attestation_or_provenance == true || immutable_release_detected == true)",
       "assertions": [
         {
           "path": "/local/workflows/verification_command_detected",

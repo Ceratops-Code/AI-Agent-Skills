@@ -569,6 +569,36 @@ class GHContractStateEngineTests(unittest.TestCase):
         )
         self.assertTrue(condition_matches("artifact_type contains npm_package", states))
 
+    def test_release_attestation_verification_uses_workflow_or_immutability(self):
+        rule = next(
+            item
+            for item in self.contracts["artifact"]["checks"]
+            if item["id"] == "github_release_assets.attestation_verification"
+        )
+        repository = {
+            "types": {"artifact_surface": ["github_release_binary"]},
+            "stale": {
+                "releases": {
+                    "inventory": [{"immutable": True, "assets": [{"name": "cli.zip"}]}]
+                }
+            },
+        }
+        local = {"workflows": {"publish_detected": False, "attestation_detected": False}}
+        artifact = _artifact_state({}, repository, local, {})
+        states = {
+            "artifact_type": repository["types"]["artifact_surface"],
+            "workflow_emits_attestation_or_provenance": artifact[
+                "attestation_detected"
+            ],
+            "immutable_release_detected": artifact["immutable_release_detected"],
+        }
+
+        self.assertTrue(condition_matches(rule["applies_when"], states))
+        states["immutable_release_detected"] = False
+        self.assertFalse(condition_matches(rule["applies_when"], states))
+        states["workflow_emits_attestation_or_provenance"] = True
+        self.assertTrue(condition_matches(rule["applies_when"], states))
+
     def test_classifier_ignores_tool_only_manifests(self):
         local = {
             "files": [
