@@ -11,7 +11,7 @@ Reusable Ceratops skills for Codex and other `SKILL.md`-compatible agents.
 | `ceratops-credit-savings-analysis` | Analyze recent Codex runs for avoidable credit spend and recommend low-maintenance controls. |
 | `ceratops-skill-lifecycle` | Route skill-domain work across create, make-repo-compatible, preferred eligible fast-change, update, skills-contract-review, and skills-consistency-review actions. |
 | `ceratops-automation-run` | Run recurring automations with shared Ceratops alert, memory, and completion policy. |
-| `ceratops-task-lifecycle` | Route task execution, same-thread resume, fix-loop break, handoff, and closure-check work across action references. |
+| `ceratops-task-lifecycle` | Route same-thread task resume, whole-task handoff, and closure-check work across action references. |
 | `ceratops-code-consistency-audit` | Audit merged refactors for contradictions, docs drift, comment sufficiency, stale follow-through, and merged-only edge cases. |
 
 ## Layout
@@ -124,7 +124,7 @@ compensation.
 Promotion and deployment are separate repository actions. `promote` assembles
 the selected branches into `release/local` without deployment;
 `promote-and-deploy` additionally runs the contract's `after_promote`
-operation. `run-operation` executes any explicitly named operation from the
+operation. Integrated deployment paths execute only operations named by the
 live contract. The runner never converts prose instructions into commands.
 
 `ship` takes either an exact pending-work scope or an explicit disabled-check
