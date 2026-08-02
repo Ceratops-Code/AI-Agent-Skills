@@ -625,7 +625,7 @@ class GHContractStateEngineTests(unittest.TestCase):
         self.assertIn("python", types["language_or_iac"])
 
     def test_classifier_requires_publish_evidence(self):
-        local = {
+        local: dict[str, Any] = {
             "files": ["pyproject.toml"],
             "texts": {
                 "pyproject.toml": '[project]\nname = "demo"\nversion = "1.0.0"\n',
