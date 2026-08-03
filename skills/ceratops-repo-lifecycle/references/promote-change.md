@@ -41,6 +41,11 @@ Infer missing branch and checkout inputs from local Git state before asking.
 
 ### Workflow
 
+When branch selection and deployment mode are resolved, execute the numbered
+workflow directly without `update_plan`; use the promotion helper result for
+reported fields and inspect only omitted, contradictory, stale, or externally
+mutable state.
+
 1. Require clean selected worktrees, Git ancestry, and `git diff --check`
    through the promotion helper.
 2. For `promote`, run the helper with `--no-run-operation`.

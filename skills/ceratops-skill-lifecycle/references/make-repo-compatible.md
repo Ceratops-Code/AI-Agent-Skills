@@ -65,6 +65,11 @@ Infer the source identity from stable repository evidence before asking.
 
 ## Workflow
 
+When repository identity and action choices are resolved, execute the
+numbered workflow directly without `update_plan`; use the materializer result
+for reported fields and inspect only omitted, contradictory, stale, or
+externally mutable state.
+
 ### 1. Inventory the target repository
 
 - Enumerate every optional source `skills/*/SKILL.md`, metadata file, reference
