@@ -18,26 +18,34 @@ import pytest
 import yaml
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-VALIDATOR = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "skills-consistency-source-validator.py"
-BUILDER = ROOT / "skills" / "ceratops-skill-lifecycle" / "scripts" / "runtime" / "managed_runtime_builder.py"
-BOOTSTRAP = ROOT / "scripts" / "install-skills-bootstrap.py"
 LIFECYCLE_SOURCE = ROOT / "skills" / "ceratops-skill-lifecycle"
 REPOSITORY_LIFECYCLE_SOURCE = ROOT / "skills" / "ceratops-repo-lifecycle"
+REPOSITORY_LIFECYCLE_SCRIPTS = REPOSITORY_LIFECYCLE_SOURCE / "scripts"
+sys.path.insert(0, str(REPOSITORY_LIFECYCLE_SCRIPTS))
+VALIDATOR = REPOSITORY_LIFECYCLE_SOURCE / "scripts" / "skills-consistency-source-validator.py"
+BUILDER = LIFECYCLE_SOURCE / "scripts" / "runtime" / "managed_runtime_builder.py"
+BOOTSTRAP = ROOT / "scripts" / "install-skills-bootstrap.py"
 LIVE_SECTION_MANIFEST = ROOT / "skills" / "skill-sections.json"
 SECTION_MANIFEST_TEMPLATE = (
-    LIFECYCLE_SOURCE / "references" / "templates" / "skill-sections-template.json"
+    REPOSITORY_LIFECYCLE_SOURCE
+    / "references"
+    / "templates"
+    / "skill-sections-template.json"
 )
 DEPLOY_CONTRACT_TEMPLATE = (
-    LIFECYCLE_SOURCE / "references" / "templates" / "deploy-template.yml"
+    REPOSITORY_LIFECYCLE_SOURCE
+    / "references"
+    / "templates"
+    / "deploy-template.yml"
 )
 INSTALLER_TEMPLATE = (
-    LIFECYCLE_SOURCE
+    REPOSITORY_LIFECYCLE_SOURCE
     / "references"
     / "templates"
     / "install-skills-bootstrap-template.py"
 )
-INSTALLER_SYNCHRONIZER = LIFECYCLE_SOURCE / "scripts" / "synchronize-bootstrap-installer.py"
-COMPATIBILITY_MATERIALIZER = LIFECYCLE_SOURCE / "scripts" / "materialize-compatible-repo.py"
+INSTALLER_SYNCHRONIZER = REPOSITORY_LIFECYCLE_SOURCE / "scripts" / "synchronize-bootstrap-installer.py"
+COMPATIBILITY_MATERIALIZER = REPOSITORY_LIFECYCLE_SOURCE / "scripts" / "make-repo-compatible.py"
 RUNTIME_INSTALLER = LIFECYCLE_SOURCE / "scripts" / "runtime" / "install-managed-skills.py"
 FAST_CHANGE = LIFECYCLE_SOURCE / "scripts" / "fast-change.py"
 UPDATE_EXECUTION = LIFECYCLE_SOURCE / "scripts" / "update-execution.py"
@@ -3330,14 +3338,16 @@ def create_compatible_repo(repo: pathlib.Path, source_id: str, skill_names: list
     """Create the smallest complete Ceratops-compatible source repository."""
 
     (repo / "skills" / "sections").mkdir(parents=True)
-    (repo / "skills" / "sections" / "core.md").write_text(
-        "## Shared Runtime Rules\n\nUse the source repository contract.\n",
-        encoding="utf-8",
-        newline="\n",
+    shutil.copy2(
+        ROOT / "skills" / "sections" / "core.md",
+        repo / "skills" / "sections" / "core.md",
     )
     write_deploy_contract(
         repo,
         {
+            "deploy": {
+                "handoff": "ceratops-skill-lifecycle/deploy",
+            },
             "bootstrap": {
                 "steps": [
                     {
@@ -4500,6 +4510,21 @@ def test_source_validator_rejects_reusable_template_as_live_manifest(
 ) -> None:
     repo = tmp_path / "compatible"
     create_compatible_repo(repo, "example/compatible", ["alpha-tool"])
+    (repo / "skills" / "sections" / "core.md").write_text(
+        "# Drifted core\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+
+    drifted = subprocess.run(
+        [sys.executable, str(VALIDATOR), "--repo-root", str(repo), "--mode", "full"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert drifted.returncode == 1
+    assert "canonical materialized section differs" in drifted.stderr
+
     shutil.copy2(SECTION_MANIFEST_TEMPLATE, repo / "skills" / "skill-sections.json")
 
     result = subprocess.run(
@@ -4611,7 +4636,7 @@ def test_compatibility_materializer_supports_repositories_without_skills(
     tmp_path: pathlib.Path,
 ) -> None:
     lifecycle_bundle = tmp_path / "lifecycle-bundle"
-    shutil.copytree(LIFECYCLE_SOURCE, lifecycle_bundle)
+    shutil.copytree(REPOSITORY_LIFECYCLE_SOURCE, lifecycle_bundle)
     (lifecycle_bundle / "scripts" / "skills-consistency-source-validator.py").write_text(
         "raise SystemExit('source validator must not run')\n",
         encoding="utf-8",
@@ -4625,7 +4650,7 @@ def test_compatibility_materializer_supports_repositories_without_skills(
         newline="\n",
     )
     zero_skill_materializer = (
-        lifecycle_bundle / "scripts" / "materialize-compatible-repo.py"
+        lifecycle_bundle / "scripts" / "make-repo-compatible.py"
     )
     repo = tmp_path / "empty-compatible"
     repo.mkdir()
@@ -5910,8 +5935,8 @@ def test_bootstrap_full_install_materializes_self_contained_lifecycle_bundle(
     )
 
     assert result.returncode == 0, result.stderr
-    assert runtime_owner(install_root, "ceratops-skill-lifecycle") == "Ceratops-Code/AI-Agent-Skills"
-    installed_lifecycle = install_root / "ceratops-skill-lifecycle"
+    assert runtime_owner(install_root, "ceratops-repo-lifecycle") == "Ceratops-Code/AI-Agent-Skills"
+    installed_lifecycle = install_root / "ceratops-repo-lifecycle"
     assert (
         installed_lifecycle
         / "references"
@@ -5924,8 +5949,6 @@ def test_bootstrap_full_install_materializes_self_contained_lifecycle_bundle(
     ).is_file()
     assert (
         installed_lifecycle
-        / "skills"
-        / "ceratops-repo-lifecycle"
         / "references"
         / "schemas"
         / "deploy-contract.schema.json"
@@ -5940,7 +5963,7 @@ def test_bootstrap_full_install_materializes_self_contained_lifecycle_bundle(
     materialized = subprocess.run(
         [
             sys.executable,
-            str(installed_lifecycle / "scripts" / "materialize-compatible-repo.py"),
+            str(installed_lifecycle / "scripts" / "make-repo-compatible.py"),
             "--target-repo-root",
             str(target_repo),
             "--runtime-source-id",
@@ -5989,7 +6012,7 @@ def test_lifecycle_only_installed_bundle_materializes_compatible_repo(
             "--install-root",
             str(install_root),
             "--skill",
-            "ceratops-skill-lifecycle",
+            "ceratops-repo-lifecycle",
         ],
         capture_output=True,
         text=True,
@@ -6009,9 +6032,9 @@ def test_lifecycle_only_installed_bundle_materializes_compatible_repo(
             sys.executable,
             str(
                 install_root
-                / "ceratops-skill-lifecycle"
+                / "ceratops-repo-lifecycle"
                 / "scripts"
-                / "materialize-compatible-repo.py"
+                / "make-repo-compatible.py"
             ),
             "--target-repo-root",
             str(target_repo),
@@ -6033,10 +6056,11 @@ def test_bootstrap_ignores_stale_broken_installed_bundle(
     codex_home = tmp_path / "codex-home"
     install_root = tmp_path / "installed"
     installed_bundle = codex_home / "skills" / "ceratops-skill-lifecycle"
+    repository_bundle = codex_home / "skills" / "ceratops-repo-lifecycle"
     shutil.copytree(LIFECYCLE_SOURCE, installed_bundle)
     shutil.copytree(
         REPOSITORY_LIFECYCLE_SOURCE,
-        codex_home / "skills" / "ceratops-repo-lifecycle",
+        repository_bundle,
     )
     install_bundle_manifest(installed_bundle)
     installed_runtime = installed_bundle / "scripts" / "runtime" / "install-managed-skills.py"
@@ -6092,16 +6116,17 @@ def test_full_install_does_not_run_source_validation(tmp_path: pathlib.Path) -> 
     codex_home = tmp_path / "codex-home"
     install_root = tmp_path / "installed"
     installed_bundle = codex_home / "skills" / "ceratops-skill-lifecycle"
+    repository_bundle = codex_home / "skills" / "ceratops-repo-lifecycle"
     create_compatible_repo(repo, "example/external", ["alpha-tool"])
     shutil.copytree(LIFECYCLE_SOURCE, installed_bundle)
     shutil.copytree(
         REPOSITORY_LIFECYCLE_SOURCE,
-        codex_home / "skills" / "ceratops-repo-lifecycle",
+        repository_bundle,
     )
     install_bundle_manifest(installed_bundle)
     (repo / "README.md").write_text("# Invalid\n", encoding="utf-8", newline="\n")
     (
-        installed_bundle / "scripts" / "skills-consistency-source-validator.py"
+        repository_bundle / "scripts" / "skills-consistency-source-validator.py"
     ).write_text(
         "raise SystemExit('source validator must not run during installation')\n",
         encoding="utf-8",

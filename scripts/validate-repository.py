@@ -82,7 +82,7 @@ def build_checks(
     source_validator = (
         repo_root
         / "skills"
-        / "ceratops-skill-lifecycle"
+        / "ceratops-repo-lifecycle"
         / "scripts"
         / "skills-consistency-source-validator.py"
     )

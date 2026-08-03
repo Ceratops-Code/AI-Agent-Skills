@@ -20,8 +20,9 @@ import sys
 from collections.abc import Mapping, Sequence
 from typing import cast
 
-import jsonschema
 import yaml
+
+from deploy_contract import read_contract
 
 
 LIFECYCLE_BUNDLE_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -51,26 +52,10 @@ DEPLOY_TEMPLATE = (
     / "deploy-template.yml"
 )
 SKILL_SECTIONS_TEMPLATE = INSTALLER_TEMPLATE.parent / "skill-sections-template.json"
-SOURCE_DEPLOY_SCHEMA = (
-    LIFECYCLE_BUNDLE_ROOT.parent
-    / "ceratops-repo-lifecycle"
-    / "references"
-    / "schemas"
-    / "deploy-contract.schema.json"
+SOURCE_CANONICAL_SECTIONS = (
+    LIFECYCLE_BUNDLE_ROOT.parents[1] / "skills" / "sections"
 )
-INSTALLED_DEPLOY_SCHEMA = (
-    LIFECYCLE_BUNDLE_ROOT
-    / "skills"
-    / "ceratops-repo-lifecycle"
-    / "references"
-    / "schemas"
-    / "deploy-contract.schema.json"
-)
-DEPLOY_SCHEMA = (
-    SOURCE_DEPLOY_SCHEMA
-    if SOURCE_DEPLOY_SCHEMA.is_file()
-    else INSTALLED_DEPLOY_SCHEMA
-)
+INSTALLED_CANONICAL_SECTIONS = LIFECYCLE_BUNDLE_ROOT / "skills" / "sections"
 SKILL_DETERMINISTIC_CONTRACT = pathlib.Path("skills/ceratops-skill-lifecycle/references/contracts/skill-deterministic-contract.json")
 SKILL_NONDETERMINISTIC_CONTRACT = pathlib.Path("skills/ceratops-skill-lifecycle/references/contracts/skill-nondeterministic-contract.json")
 REQUIRED_CONTRACT_FILES = [
@@ -106,7 +91,14 @@ INTERFACE_FIELD_RE = re.compile(
     re.MULTILINE,
 )
 CERATOPS_ICON_REL = "./assets/ceratops-logo-500.png"
-CERATOPS_ICON_SOURCE = ROOT / "assets" / "ceratops-logo-500.png"
+CERATOPS_ICON_SOURCE = (
+    ROOT
+    / "skills"
+    / "ceratops-skill-lifecycle"
+    / "references"
+    / "templates"
+    / "ceratops-logo-500.png"
+)
 ALLOWED_SKILL_RESOURCE_DIRS = {"agents", "assets", "scripts", "references"}
 SHORT_DESC_STOPWORDS = {
     "a",
@@ -279,95 +271,87 @@ def check_deployment_contract(
     """Validate the live deploy contract and Ceratops reusable sources."""
 
     errors: list[str] = []
-    try:
-        schema = read_json(DEPLOY_SCHEMA)
-        jsonschema.Draft202012Validator.check_schema(schema)
-        validator = jsonschema.Draft202012Validator(schema)
-    except (
-        OSError,
-        UnicodeError,
-        json.JSONDecodeError,
-        jsonschema.SchemaError,
-    ) as exc:
-        schema_label = DEPLOY_SCHEMA
-        errors.append(f"{schema_label}: invalid deploy contract schema: {exc}")
-        return errors
-
     contract: dict[str, object] | None = None
     if DEPLOY_CONTRACT.is_file():
-        contract, contract_errors = load_yaml_mapping(
-            DEPLOY_CONTRACT,
-            "deploy/deploy.yml",
+        contract, contract_errors = read_contract(DEPLOY_CONTRACT)
+        errors.extend(
+            f"deploy/deploy.yml: {error}" for error in contract_errors
         )
-        errors.extend(contract_errors)
     elif profile == PROFILE_CERATOPS:
         errors.append("missing deploy/deploy.yml")
     if contract is not None:
-        validation_errors = sorted(
-            validator.iter_errors(contract),
-            key=lambda error: tuple(str(part) for part in error.absolute_path),
-        )
-        for error in validation_errors:
-            location = ".".join(str(part) for part in error.absolute_path)
-            suffix = f" at {location}" if location else ""
+        operations = cast(Mapping[str, object], contract["operations"])
+        for operation_name, operation_value in operations.items():
+            operation = cast(Mapping[str, object], operation_value)
+            steps = cast(Sequence[object], operation.get("steps", []))
+            for index, step_value in enumerate(steps):
+                step = cast(Mapping[str, object], step_value)
+                cwd = step.get("cwd")
+                if cwd is None:
+                    continue
+                normalized = cast(str, cwd).replace("\\", "/")
+                posix_path = pathlib.PurePosixPath(normalized)
+                windows_path = pathlib.PureWindowsPath(cast(str, cwd))
+                if (
+                    posix_path.is_absolute()
+                    or windows_path.is_absolute()
+                    or bool(windows_path.drive)
+                    or ".." in posix_path.parts
+                ):
+                    errors.append(
+                        "deploy/deploy.yml: "
+                        f"{operation_name}.steps[{index}].cwd must be "
+                        "repository-relative"
+                    )
+        assignments = manifest.get("skills")
+        has_skills = isinstance(assignments, Mapping) and bool(assignments)
+        bootstrap = operations.get("bootstrap")
+        expected_bootstrap = {
+            "steps": [
+                {
+                    "id": "bootstrap-skills",
+                    "run": [
+                        "python",
+                        "scripts/install-skills-bootstrap.py",
+                    ],
+                }
+            ]
+        }
+        if has_skills and bootstrap != expected_bootstrap:
             errors.append(
-                f"deploy/deploy.yml: schema validation failed{suffix}: "
-                f"{error.message}"
+                "deploy/deploy.yml: repositories with skills must declare "
+                "the canonical bootstrap operation"
             )
-        if not validation_errors:
-            operations = cast(Mapping[str, object], contract["operations"])
-            for operation_name, operation_value in operations.items():
-                operation = cast(Mapping[str, object], operation_value)
-                steps = cast(Sequence[object], operation.get("steps", []))
-                for index, step_value in enumerate(steps):
-                    step = cast(Mapping[str, object], step_value)
-                    cwd = step.get("cwd")
-                    if cwd is None:
-                        continue
-                    normalized = cast(str, cwd).replace("\\", "/")
-                    posix_path = pathlib.PurePosixPath(normalized)
-                    windows_path = pathlib.PureWindowsPath(cast(str, cwd))
-                    if (
-                        posix_path.is_absolute()
-                        or windows_path.is_absolute()
-                        or bool(windows_path.drive)
-                        or ".." in posix_path.parts
-                    ):
-                        errors.append(
-                            "deploy/deploy.yml: "
-                            f"{operation_name}.steps[{index}].cwd must be "
-                            "repository-relative"
-                        )
-            assignments = manifest.get("skills")
-            has_skills = isinstance(assignments, Mapping) and bool(assignments)
-            bootstrap = operations.get("bootstrap")
-            expected_bootstrap = {
-                "steps": [
-                    {
-                        "id": "bootstrap-skills",
-                        "run": [
-                            "python",
-                            "scripts/install-skills-bootstrap.py",
-                        ],
-                    }
-                ]
-            }
-            if has_skills and bootstrap != expected_bootstrap:
-                errors.append(
-                    "deploy/deploy.yml: repositories with skills must declare "
-                    "the canonical bootstrap operation"
-                )
-            if not has_skills and bootstrap is not None:
-                errors.append(
-                    "deploy/deploy.yml: repositories without skills must not "
-                    "declare the bootstrap operation"
-                )
+        if not has_skills and bootstrap is not None:
+            errors.append(
+                "deploy/deploy.yml: repositories without skills must not "
+                "declare the bootstrap operation"
+            )
+        deploy = operations.get("deploy")
+        default_handoff = "ceratops-skill-lifecycle/deploy"
+        if has_skills and (
+            not isinstance(deploy, Mapping)
+            or deploy.get("handoff") != default_handoff
+        ):
+            errors.append(
+                "deploy/deploy.yml: repositories with skills must declare "
+                "the default managed-skill deploy handoff"
+            )
+        if (
+            not has_skills
+            and isinstance(deploy, Mapping)
+            and deploy.get("handoff") == default_handoff
+        ):
+            errors.append(
+                "deploy/deploy.yml: repositories without skills must not "
+                "declare the default managed-skill deploy handoff"
+            )
     if profile != PROFILE_CERATOPS:
         return errors
 
     template, template_errors = load_yaml_mapping(
         DEPLOY_TEMPLATE,
-        "skills/ceratops-skill-lifecycle/references/templates/"
+        "skills/ceratops-repo-lifecycle/references/templates/"
         "deploy-template.yml",
     )
     errors.extend(template_errors)
@@ -383,25 +367,23 @@ def check_deployment_contract(
 
     payloads = manifest.get("runtime_payloads")
     lifecycle_payloads = (
-        payloads.get("ceratops-skill-lifecycle")
+        payloads.get("ceratops-repo-lifecycle")
         if isinstance(payloads, dict)
         else None
     )
     required_lifecycle_payloads = {
         "skills/sections/*.md",
-        "skills/ceratops-repo-lifecycle/references/schemas/"
-        "deploy-contract.schema.json",
     }
     if not isinstance(lifecycle_payloads, list):
         errors.append(
-            "runtime_payloads.ceratops-skill-lifecycle must include reusable "
+            "runtime_payloads.ceratops-repo-lifecycle must include reusable "
             "compatibility inputs"
         )
     else:
         for payload_path in sorted(required_lifecycle_payloads):
             if payload_path not in lifecycle_payloads:
                 errors.append(
-                    "runtime_payloads.ceratops-skill-lifecycle is missing "
+                    "runtime_payloads.ceratops-repo-lifecycle is missing "
                     f"{payload_path}"
                 )
     try:
@@ -1012,6 +994,62 @@ def check_section_sources(manifest: dict[str, object], skill_dirs: list[pathlib.
     return errors
 
 
+def check_materialized_canonical_sections(
+    manifest: Mapping[str, object],
+    skill_dirs: Sequence[pathlib.Path],
+) -> list[str]:
+    """Verify the canonical section bytes established by materialization."""
+
+    sections = manifest.get("sections")
+    assignments = manifest.get("skills")
+    if not isinstance(sections, Mapping) or not isinstance(assignments, Mapping):
+        return []
+    if not skill_dirs:
+        retained = sorted(
+            name for name in ("core", "multi-action-skill") if name in sections
+        )
+        return (
+            [
+                "repositories without skills must not retain canonical section "
+                f"declarations: {', '.join(retained)}"
+            ]
+            if retained
+            else []
+        )
+    canonical_root = next(
+        (
+            candidate
+            for candidate in (
+                SOURCE_CANONICAL_SECTIONS,
+                INSTALLED_CANONICAL_SECTIONS,
+            )
+            if (candidate / "core.md").is_file()
+        ),
+        None,
+    )
+    if canonical_root is None:
+        return ["canonical shared sections are missing from repository lifecycle"]
+    required = {"core"}
+    if any(
+        isinstance(selected, list) and "multi-action-skill" in selected
+        for selected in assignments.values()
+    ):
+        required.add("multi-action-skill")
+    errors: list[str] = []
+    for section_name in sorted(required):
+        relative = sections.get(section_name)
+        source = canonical_root / f"{section_name}.md"
+        if not isinstance(relative, str):
+            continue
+        target = ROOT / relative
+        if source.is_file() and target.is_file() and target.read_bytes() != source.read_bytes():
+            errors.append(
+                f"{relative}: canonical materialized section differs from "
+                f"{source.name}"
+            )
+    return errors
+
+
 def check_selected_skills(
     manifest: dict[str, object],
     skill_dirs: list[pathlib.Path],
@@ -1242,7 +1280,14 @@ def main() -> int:
         SKILLS_DIR = ROOT / "skills"
         README = ROOT / "README.md"
         SECTION_MANIFEST = ROOT / "skills" / "skill-sections.json"
-        CERATOPS_ICON_SOURCE = ROOT / "assets" / "ceratops-logo-500.png"
+        CERATOPS_ICON_SOURCE = (
+            ROOT
+            / "skills"
+            / "ceratops-skill-lifecycle"
+            / "references"
+            / "templates"
+            / "ceratops-logo-500.png"
+        )
         BOOTSTRAP_INSTALLER = ROOT / "scripts" / "install-skills-bootstrap.py"
         DEPLOY_CONTRACT = ROOT / "deploy" / "deploy.yml"
 
@@ -1327,6 +1372,7 @@ def main() -> int:
     for section_name, section_rel_path in sections.items():
         if not isinstance(section_rel_path, str) or not (ROOT / section_rel_path).is_file():
             errors.append(f"missing section file for {section_name}: {section_rel_path}")
+    errors.extend(check_materialized_canonical_sections(manifest, skill_dirs))
     for skill_name, section_names in assignments.items():
         if not isinstance(section_names, list) or not all(isinstance(item, str) for item in section_names):
             errors.append(f"{skill_name}: section assignment must be a list of strings")

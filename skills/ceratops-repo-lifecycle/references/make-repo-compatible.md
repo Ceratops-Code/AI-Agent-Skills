@@ -23,13 +23,16 @@ Infer the source identity from stable repository evidence before asking.
 
 - (D) Skill-bearing compatible-repository validation invoked by the
   materializer: `python scripts/skills-consistency-source-validator.py
-  --repo-root <repo-root> --mode full` from the lifecycle bundle.
+  --repo-root <repo-root> --mode full` from the repository-lifecycle bundle.
 - (D) Compatibility materialization:
-  `python scripts/materialize-compatible-repo.py --target-repo-root
+  `python scripts/make-repo-compatible.py --target-repo-root
   <task-worktree> [--runtime-source-id <stable-id>]`; it performs the
   compatibility transaction and emits one compact result.
   Add `--no-deploy-contract` only when the caller chooses to leave
   `deploy/deploy.yml` absent or unchanged.
+- (D) The materializer and repo health use the same full source validator, and
+  every materialized deployment definition must pass
+  `references/schemas/deploy-contract.schema.json` before any target write.
 
 ## Constraints
 
@@ -42,8 +45,9 @@ Infer the source identity from stable repository evidence before asking.
   compatible repository unless that repository independently requires them.
 - Do not create the requested new skill in this action; return to `create` after
   compatibility passes.
-- Do not promote or deploy the completed compatibility change here; hand those
-  operations to `$ceratops-repo-lifecycle` only when requested.
+- Do not promote or deploy the completed compatibility change here; return to
+  the parent skill and select `promote` or `promote-and-deploy` only when
+  requested.
 
 ### Skill-Specific Rules
 
@@ -104,9 +108,9 @@ Infer the source identity from stable repository evidence before asking.
   phase to pass and repair every compatibility finding. Repositories without
   source skills skip that phase.
 - Commit the validated compatibility change in the task worktree.
-- If only local release staging was requested, hand off to
-  `$ceratops-repo-lifecycle` `promote`; if deployment was requested, hand off
-  to `promote-and-deploy`; otherwise stop at committed source compatibility.
+- If only local release staging was requested, return to the parent skill and
+  select `promote`; if deployment was requested, select `promote-and-deploy`;
+  otherwise stop at committed source compatibility.
 - Resume the owning `create` or `update` action when compatibility was a
   prerequisite.
 

@@ -1,6 +1,6 @@
 ---
 name: ceratops-skill-lifecycle
-description: Route Ceratops or compatible skill lifecycle work to action references for create, make-repo-compatible, deploy, fast-change, update, skills-contract-review, and skills-consistency-review work. Use when Codex should create or deploy managed skills, make a repository Ceratops-compatible, apply an eligible direct-release skill change with targeted installation, update skill source or shared governance surfaces, refresh Ceratops skill-design contracts, or audit one manifest-backed installed skill and its coupled source.
+description: Route Ceratops or compatible skill lifecycle work to action references for create, deploy, fast-change, update, skills-contract-review, and skills-consistency-review work. Use when Codex should create or deploy managed skills, apply an eligible direct-release skill change with targeted installation, update skill source or shared governance surfaces, refresh Ceratops skill-design contracts, or audit one manifest-backed installed skill and its coupled source.
 ---
 
 # Ceratops Skill Lifecycle
@@ -16,8 +16,6 @@ surface for standards refresh, repository consistency, creation, and mutation.
 ### Action References
 
 - Create a new skill: `references/create.md`
-- Make an existing repository Ceratops-compatible:
-  `references/make-repo-compatible.md`
 - Deploy manifest-managed skills: `references/deploy.md`
 - Apply an eligible direct-release skill change: `references/fast-change.md`
 - Update an existing skill or shared maintenance surface: `references/update.md`
@@ -48,9 +46,9 @@ Infer missing inputs from the current repo state before asking.
 
 - Use the action references as the source of truth for skill-source edits,
   validation, and output contracts.
-- Keep skill creation, repository compatibility, fast change, update, contract
-  review, and repository consistency review inside this multi-action skill and
-  its `references/` files; do not introduce alias skills or old-name shims.
+- Keep skill creation, fast change, update, contract review, and repository
+  consistency review inside this multi-action skill and its `references/`
+  files; do not introduce alias skills or old-name shims.
 - For skill-source mutation in this repo, treat source skill text, metadata,
   shared sections, `skills/skill-sections.json`, runtime payloads,
   validators, contracts, helper scripts, and docs as one coupled maintenance
@@ -72,8 +70,8 @@ Infer missing inputs from the current repo state before asking.
 ### Boundaries
 
 - Use this skill for creating or deploying managed skills, eligible
-  direct-release changes, updating existing skills, repository compatibility,
-  consistency audits, and skill-design contract upkeep.
+  direct-release changes, updating existing skills, consistency audits, and
+  skill-design contract upkeep.
 - If the task is advisory-only skill optimization, use
   `$ceratops-governance-lifecycle` action `optimize-skill`.
 - If the task is Ceratops skill-contract standards upkeep, use
@@ -84,6 +82,9 @@ Infer missing inputs from the current repo state before asking.
 - If the task is repository promotion, deployment, shipping, or another Git or
   GitHub lifecycle operation, enter through `$ceratops-repo-lifecycle`; its
   declared managed-skill handoff may route to this skill's `deploy` action.
+- If the repository itself needs the `ceratops-compatible` surfaces, use
+  `$ceratops-repo-lifecycle` action `make-repo-compatible`, then resume the
+  owning skill action when required.
 
 ### Workflow
 
@@ -91,9 +92,6 @@ Infer missing inputs from the current repo state before asking.
 
 - Use `create` when a brand-new skill must be added and integrated with
   available repo governance surfaces.
-- Use `make-repo-compatible` when a target repository lacks compatibility
-  surfaces required by the `ceratops-compatible` profile; add shared-section,
-  metadata, and installer surfaces only when source skills exist.
 - Use `deploy` for the managed-skill phase after repository-specific deployment
   work has completed or explicitly no-oped.
 - Use `fast-change` whenever the request is exact and its complete selected

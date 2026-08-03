@@ -14,13 +14,12 @@ repo docs, then update the narrowest correct source that exists.
 
 - Existing skills or shared files in scope: `skills/*`,
   `skills/skill-sections.json`, `skills/sections/`,
-  `skills/ceratops-skill-lifecycle/references/templates/skill-sections-template.json`,
-  `skills/ceratops-skill-lifecycle/references/templates/deploy-template.yml`,
-  `skills/ceratops-skill-lifecycle/references/templates/install-skills-bootstrap-template.py`,
+  `skills/ceratops-skill-lifecycle/references/templates/ceratops-logo-500.png`,
+  repository-lifecycle compatibility templates,
   `scripts/install-skills-bootstrap.py`,
   `skills/ceratops-skill-lifecycle/scripts/runtime/managed_runtime_builder.py`,
   installer resolution, synchronization, and repository-consistency helpers,
-  `skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py`,
+  `skills/ceratops-repo-lifecycle/scripts/skills-consistency-source-validator.py`,
   skill-local `references/`, helper-runtime files, and repo docs.
 - Whether the change belongs in skill-local text, shared sections, manifests,
   runtime generation, validation, helper-runtime code or claims, contracts, or
@@ -147,8 +146,8 @@ Infer missing inputs from current repo state before asking.
   and runtime builder when those surfaces exist and changed.
 - Manifest, runtime builder, validation script, repo docs, and touched metadata
   remain aligned when present.
-- Ceratops skill-local icons match the repo-root icon and metadata icon paths
-  are runtime-local.
+- Ceratops skill-local icons match the canonical skill-lifecycle logo template
+  and metadata icon paths are runtime-local.
 - Removed, merged, or renamed sections leave no stale assignment or stale
   runtime payload.
 

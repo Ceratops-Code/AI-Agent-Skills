@@ -22,6 +22,11 @@ credential-bound fixes precisely.
   scoped findings.
 - (D) Prefer `--summary-json` for agent-readable repo-health output; use
   `--json` only when a parser needs the full report.
+- (D) Local health collection validates every present `deploy/deploy.yml`
+  against `references/schemas/deploy-contract.schema.json`. When a section
+  manifest or source skill exists, it also runs
+  `scripts/skills-consistency-source-validator.py --repo-root PATH --mode full`
+  so health and `make-repo-compatible` share one postcondition verifier.
 
 ### Inputs To Capture
 
@@ -57,6 +62,9 @@ Infer missing inputs from live repo state and local files before asking.
   are classified from file evidence.
 - Inspect validation configs, dependency pins, CI wiring, and local validation
   guidance when repository contents are part of the health surface.
+- Inspect the compatibility manifest, shared sections, source skills, metadata,
+  README inventory, bootstrap, runtime payloads, and deploy definition through
+  the bundled verifier when those surfaces are present.
 - Expand to open PRs, releases, tags, branches, Actions runs, moderation detail,
   or published artifacts only when script output, repo type, touched files, or
   the user request makes them relevant.
@@ -114,6 +122,9 @@ Infer missing inputs from live repo state and local files before asking.
 - Any broad current-health claim is backed by
   `python -m github_contract_engine validate repo` or equivalent command-result
   evidence.
+- Every present deployment contract passed the lifecycle-owned schema, and
+  every applicable compatible-repository postcondition passed the same full
+  verifier used after materialization.
 - Actions hardening claims are backed by a fresh local workflow scan when repo
   files were available.
 - Local state is verified for every touched repo, worktree, generated file,

@@ -1,21 +1,24 @@
 ---
 name: ceratops-repo-lifecycle
-description: Route Ceratops repository lifecycle work to action references for repository creation, contracts, health, dependencies, local promotion, deterministic deployment, GitHub shipping, and PR merge. Use when Codex should create or harden a repository, review its contracts, disposition CodeQL, maintain dependencies, promote selected task branches into a local release branch with or without deployment, ship a staged branch through guarded GitHub merge and post-merge deployment, or finalize an already-ready PR.
+description: Route Ceratops repository lifecycle work to action references for repository creation, compatibility, contracts, health, dependencies, local promotion, deterministic deployment, GitHub shipping, and PR merge. Use when Codex should create or harden a repository, make it Ceratops-compatible, review its contracts, disposition CodeQL, maintain dependencies, promote selected task branches into a local release branch with or without deployment, ship a staged branch through guarded GitHub merge and post-merge deployment, or finalize an already-ready PR.
 ---
 
 # Ceratops Repository Lifecycle
 
 ## Goal
 
-Route local Git, GitHub, and deployment lifecycle work to the narrowest action
-reference. Keep repository state transitions in one skill while each repository
-owns its executable deployment behavior in `deploy/deploy.yml`.
+Route repository compatibility, local Git, GitHub, and deployment lifecycle
+work to the narrowest action reference. Keep repository state transitions in
+one skill while each repository owns its executable deployment behavior in
+`deploy/deploy.yml`.
 
 ## Context
 
 ### Action References
 
 - Create or publish a repository: `references/create-or-publish.md`
+- Make an existing repository Ceratops-compatible:
+  `references/make-repo-compatible.md`
 - Review GitHub, code, PR, artifact, registry, and release contracts:
   `references/contracts-review.md`
 - Validate or apply a CodeQL alert disposition:
@@ -29,8 +32,9 @@ owns its executable deployment behavior in `deploy/deploy.yml`.
 
 ### Inputs To Capture
 
-- Target repository, checkout, branch, selected source branches, PR, artifact,
-  dependency queue, or creation request that identifies the action.
+- Target repository, checkout, task worktree, branch, selected source branches,
+  PR, artifact, dependency queue, compatibility gap, or creation request that
+  identifies the action.
 - Whether promotion must stop after assembling `release/local` or run the
   repository's optional `deploy` operation and any returned handoff.
 - Whether shipping has a selected pending-work scope or explicitly disables
@@ -48,8 +52,8 @@ remotes, manifests, and live repository data before asking.
 - Use action references as the source of truth for deterministic helpers,
   readiness gates, cleanup, and output contracts.
 - Keep local promotion, GitHub publication, guarded merge, synchronization,
-  deployment routing, and selected-source cleanup in this skill; do not create
-  alias skills or old-name shims.
+  deployment routing, repository compatibility, and selected-source cleanup in
+  this skill; do not create alias skills or old-name shims.
 - Execute only named structured operations from `deploy/deploy.yml` through
   the operation runner. Do not interpret prose as deployment commands.
 - Use `references/merge-pr.md` for standalone PR finalization. Integrated ship
@@ -59,12 +63,12 @@ remotes, manifests, and live repository data before asking.
 
 ### Boundaries
 
-- Use this skill for repository creation, local Git promotion, GitHub lifecycle
-  work, deterministic deployment, dependency maintenance, CodeQL disposition,
-  and PR merge decisions.
-- Use `$ceratops-skill-lifecycle` for skill-domain creation, mutation,
-  compatibility, managed deployment, contract review, or consistency review;
-  accept its promotion or shipping handoff and return the managed-skill phase.
+- Use this skill for repository creation, compatibility, local Git promotion,
+  GitHub lifecycle work, deterministic deployment, dependency maintenance,
+  CodeQL disposition, and PR merge decisions.
+- Use `$ceratops-skill-lifecycle` for skill-domain creation, mutation, managed
+  deployment, contract review, or consistency review; accept its promotion or
+  shipping handoff and return the managed-skill phase.
 - Use `references/contracts-review.md` for contract review rather than
   lifecycle execution.
 - Use a generic GitHub capability only when no Ceratops repository action fits
@@ -74,9 +78,9 @@ remotes, manifests, and live repository data before asking.
 
 #### 1. Classify the action
 
-- Use `create-or-publish`, `contracts-review`, `codeql-disposition`,
-  `health-audit`, or `dependency-maintenance` for their named repository
-  surfaces.
+- Use `create-or-publish`, `make-repo-compatible`, `contracts-review`,
+  `codeql-disposition`, `health-audit`, or `dependency-maintenance` for their
+  named repository surfaces.
 - Use `promote` when selected committed branches should join a local
   `release/local` branch without deployment.
 - Use `promote-and-deploy` when the same promotion should run optional

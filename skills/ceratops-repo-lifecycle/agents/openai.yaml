@@ -1,6 +1,6 @@
 interface:
   display_name: "Ceratops Repository Lifecycle"
-  short_description: "Promote, deploy, and ship repositories safely"
+  short_description: "Make, audit, deploy, and ship repositories"
   icon_small: "./assets/ceratops-logo-500.png"
   icon_large: "./assets/ceratops-logo-500.png"
-  default_prompt: "Use $ceratops-repo-lifecycle to select and complete the narrowest repository promotion, deployment, GitHub shipping, or merge action."
+  default_prompt: "Use $ceratops-repo-lifecycle to select and complete the narrowest repository compatibility, health, promotion, deployment, GitHub shipping, or merge action."

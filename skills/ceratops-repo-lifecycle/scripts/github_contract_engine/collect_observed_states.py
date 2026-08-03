@@ -33,6 +33,8 @@ PRODUCER_REGISTRY = {
     ),
     "local_repository": (
         "/local/available",
+        "/local/compatibility/*",
+        "/local/deploy_contract/*",
         "/local/git/*",
         "/local/manifests/*",
         "/local/scans/*",
