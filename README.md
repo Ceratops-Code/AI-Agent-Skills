@@ -395,8 +395,9 @@ $env:REPOSITORY_VALIDATION_EVIDENCE_FILE = Join-Path $env:TEMP "repository-valid
 python scripts/validate-repository.py
 ```
 
-The validator runs Markdown and YAML lint, mypy for Linux and Win32, pytest,
-full source-contract validation, and repository lifecycle CLI smoke checks.
+The validator runs Markdown and YAML lint, Ruff over repository bootstrap and
+validation producers, mypy for Linux and Win32, pytest, full source-contract
+validation, and repository lifecycle CLI smoke checks.
 Full source validation checks the kind-qualified version 1 deployment contract,
 repository-bounded working directories, the Ceratops `deploy` validation step,
 and reusable template skeletons without executing deployment. Runtime rendering
