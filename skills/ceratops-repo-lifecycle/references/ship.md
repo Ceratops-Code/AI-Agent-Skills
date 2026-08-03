@@ -37,11 +37,6 @@ Infer missing values from the checkout, scope file, and live PR before asking.
 
 ### Workflow
 
-When scope mode and reusable-head choice are resolved, execute the numbered
-workflow directly without `update_plan`; use the ship helper result for
-reported fields and inspect only omitted, contradictory, stale, or externally
-mutable state.
-
 1. Run the complete ship helper once with the selected scope mode. The initial
    ship request authorizes its full deterministic workflow; do not request
    another confirmation after gates pass.
