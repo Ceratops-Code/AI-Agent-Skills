@@ -21,7 +21,7 @@ import uuid
 from collections.abc import Mapping, Sequence
 from typing import cast
 
-INSTALLER_VERSION = 11
+INSTALLER_VERSION = 10
 MANIFEST_NAME = ".runtime-manifest.json"
 RUNTIME_MANIFEST_SCHEMA = "ceratops-runtime-skill.v3"
 START = "<!-- CERATOPS_SHARED_SECTIONS_START -->"
