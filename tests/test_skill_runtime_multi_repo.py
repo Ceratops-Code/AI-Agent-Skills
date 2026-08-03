@@ -4927,6 +4927,32 @@ def test_source_validator_enforces_description_boundaries(
         assert expected_error in result.stderr
 
 
+def test_openai_example_comparison_is_not_a_per_skill_check() -> None:
+    contract = json.loads(
+        (
+            ROOT
+            / "skills"
+            / "ceratops-skill-lifecycle"
+            / "references"
+            / "contracts"
+            / "skill-nondeterministic-contract.json"
+        ).read_text(encoding="utf-8")
+    )
+    check_ids = {check["id"] for check in contract["checks"]}
+    assert "ND.skill.openai-example-comparison" not in check_ids
+
+    action_root = (
+        ROOT / "skills" / "ceratops-skill-lifecycle" / "references"
+    )
+    ownership_phrase = "installed OpenAI skill examples"
+    assert ownership_phrase in (
+        action_root / "skills-contract-review.md"
+    ).read_text(encoding="utf-8")
+    assert ownership_phrase not in (
+        action_root / "skills-consistency-review.md"
+    ).read_text(encoding="utf-8")
+
+
 def test_multi_action_membership_is_owned_by_the_skill_index(
     tmp_path: pathlib.Path,
 ) -> None:

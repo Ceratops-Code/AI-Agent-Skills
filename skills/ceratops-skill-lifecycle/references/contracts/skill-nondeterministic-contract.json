@@ -94,12 +94,6 @@
       "applies_when": "Every skill source review.",
       "review_required": "Confirm the output contract says what to report and omit, which blockers or retained state remain visible, and what completion claim the evidence supports.",
       "evidence_keys": ["skill.SKILL.md", "skill.references"]
-    },
-    {
-      "id": "ND.skill.openai-example-comparison",
-      "applies_when": "An explicit skill-design refresh leaves a concrete high-quality-skill decision unresolved after registered official evidence.",
-      "review_required": "Compare two or three relevant installed OpenAI skill examples and record the concrete pattern borrowed or rejected.",
-      "evidence_keys": ["skill-contract-source-docs.json", "installed_openai_skill_examples"]
     }
   ]
 }
