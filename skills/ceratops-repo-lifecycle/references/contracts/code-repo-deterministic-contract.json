@@ -13,11 +13,11 @@
       "lines": "contract owner"
     },
     {
-      "path": "$AI_AGENT_SKILLS_ROOT/skills/ceratops-repo-lifecycle/scripts/deploy_contract.py",
+      "path": "$AI_AGENT_SKILLS_ROOT/skills/ceratops-repo-lifecycle/scripts/ceratops_repo_compatibility_engine/deploy_contract_validation.py",
       "lines": "shared deploy schema validation"
     },
     {
-      "path": "$AI_AGENT_SKILLS_ROOT/skills/ceratops-repo-lifecycle/scripts/compatibility_check.py",
+      "path": "$AI_AGENT_SKILLS_ROOT/skills/ceratops-repo-lifecycle/scripts/ceratops_repo_compatibility_engine/compatibility_check.py",
       "lines": "shared repository compatibility checker"
     }
   ],

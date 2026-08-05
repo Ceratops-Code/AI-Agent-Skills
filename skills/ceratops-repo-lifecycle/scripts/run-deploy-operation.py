@@ -19,8 +19,10 @@ import sys
 from collections.abc import Mapping, Sequence
 from typing import Any, cast
 
-from deploy_contract import DeployContractError, load_contract
-
+from ceratops_repo_compatibility_engine.deploy_contract_validation import (
+    DeployContractError,
+    load_contract,
+)
 
 DEFAULT_CONTRACT = pathlib.Path("deploy/deploy.yml")
 PARAMETER_NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")

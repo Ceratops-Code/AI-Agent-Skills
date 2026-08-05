@@ -20,9 +20,9 @@ installed-runtime surface.
   malformed direct-manifest blockers without auditing any skill, then emits
   `OK`.
 - (D) Installer synchronization when repair is authorized, run from the
-  repository-lifecycle bundle's `scripts` folder: `python
-  synchronize-bootstrap-installer.py --target-repo-root <task-worktree>`; it
-  only compares and copies bootstrap versions.
+  repository-lifecycle bundle's `scripts` folder: `python -m
+  ceratops_repo_compatibility_engine synchronize-bootstrap --target-repo-root
+  <task-worktree>`; it only compares and copies bootstrap versions.
 - (D) Full source validation after approved bootstrap repair, run from the
   skill-lifecycle folder: `python skills-consistency-source-validator.py --repo-root
   <task-worktree> --mode full`.

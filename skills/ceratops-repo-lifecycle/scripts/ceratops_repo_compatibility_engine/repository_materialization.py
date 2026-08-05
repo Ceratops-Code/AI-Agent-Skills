@@ -2,9 +2,9 @@
 """Make one repository Ceratops-compatible in its task worktree.
 
 The lifecycle bundle owns the reusable template and canonical shared sections.
-This helper derives repository identity and skill assignments, removes only
-generated marker blocks from source skills, delegates installer ownership to
-``synchronize-bootstrap-installer.py``, and emits one compact JSON result.
+This module derives repository identity and skill assignments, removes only
+generated marker blocks from source skills, synchronizes the bootstrap through
+the package-owned helper, and emits one compact JSON result.
 """
 
 from __future__ import annotations
@@ -16,21 +16,20 @@ import pathlib
 import re
 import shutil
 import subprocess
-import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
 
 import yaml
-from compatibility_check import check_repository
-from deploy_contract import DeployContractError, validation_errors
 
-BUNDLE_ROOT = pathlib.Path(__file__).resolve().parents[1]
+from .compatibility_check import check_repository
+from .deploy_contract_validation import DeployContractError, validation_errors
+
+BUNDLE_ROOT = pathlib.Path(__file__).resolve().parents[2]
 TEMPLATE = BUNDLE_ROOT / "references" / "templates" / "skill-sections-template.json"
 DEPLOY_TEMPLATE = BUNDLE_ROOT / "references" / "templates" / "deploy-template.yml"
 SOURCE_REPO_ROOT = BUNDLE_ROOT.parents[1]
 SOURCE_CANONICAL_SECTIONS = SOURCE_REPO_ROOT / "skills" / "sections"
 INSTALLED_CANONICAL_SECTIONS = BUNDLE_ROOT / "skills" / "sections"
-SYNCHRONIZER = BUNDLE_ROOT / "scripts" / "synchronize-bootstrap-installer.py"
 VALIDATION_CATALOG = BUNDLE_ROOT / "references" / "repository-validation-catalog.json"
 VALIDATOR_TEMPLATE = BUNDLE_ROOT / "references" / "templates" / "validate-repository.py.tmpl"
 WORKFLOW_TEMPLATE = BUNDLE_ROOT / "references" / "templates" / "validate.yml.tmpl"
@@ -326,7 +325,7 @@ def validate_template(template: Mapping[str, object]) -> None:
         raise RuntimeError("skill-sections template is not repository-neutral")
 
 
-def deploy_contract(
+def build_deploy_contract_candidate(
     repo_root: pathlib.Path,
     *,
     has_skills: bool,
@@ -664,7 +663,7 @@ def plan_materialization(
         manifest=manifest,
         skill_updates=skill_updates,
         canonical_sources=canonical_sources,
-        deploy_contract=deploy_contract(
+        deploy_contract=build_deploy_contract_candidate(
             repo_root,
             has_skills=bool(skill_names),
             materialize=materialize_deploy,
@@ -733,8 +732,8 @@ def apply_materialization(
         )
 
 
-def main() -> int:
-    """Materialize compatibility inputs, synchronize installer, and validate."""
+def main(argv: list[str] | None = None) -> int:
+    """Run repository materialization as the package CLI subcommand."""
 
     parser = argparse.ArgumentParser(
         description="Make repository sources Ceratops-compatible."
@@ -746,7 +745,7 @@ def main() -> int:
         action="store_true",
         help="Leave deploy/deploy.yml absent or unchanged.",
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     repo_root = args.target_repo_root.resolve()
     phase = "preflight"
     rollback = "not_started"
@@ -821,27 +820,16 @@ def main() -> int:
         bootstrap_status = "skipped"
         if plan.skills:
             phase = "bootstrap_synchronization"
-            synchronization = subprocess.run(
-                [
-                    sys.executable,
-                    str(SYNCHRONIZER),
-                    "--target-repo-root",
-                    str(repo_root),
-                ],
-                capture_output=True,
-                text=True,
-                check=False,
+            from .bootstrap_installer_synchronization import (
+                synchronize_bootstrap_installer,
             )
-            if synchronization.returncode != 0:
-                raise RuntimeError(
-                    (synchronization.stderr or synchronization.stdout).strip()
-                )
-            bootstrap = json.loads(synchronization.stdout)
+
+            bootstrap = synchronize_bootstrap_installer(repo_root)
             bootstrap_status_value = (
                 bootstrap.get("status") if isinstance(bootstrap, Mapping) else None
             )
             if not isinstance(bootstrap_status_value, str):
-                raise RuntimeError("bootstrap synchronizer returned invalid JSON")
+                raise RuntimeError("bootstrap synchronizer returned an invalid result")
             bootstrap_status = bootstrap_status_value
 
         phase = "compatibility_validation"

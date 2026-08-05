@@ -44,8 +44,7 @@ INSTALLER_TEMPLATE = (
     / "templates"
     / "install-skills-bootstrap-template.py"
 )
-INSTALLER_SYNCHRONIZER = REPOSITORY_LIFECYCLE_SOURCE / "scripts" / "synchronize-bootstrap-installer.py"
-COMPATIBILITY_MATERIALIZER = REPOSITORY_LIFECYCLE_SOURCE / "scripts" / "make-repo-compatible.py"
+COMPATIBILITY_ENGINE = "ceratops_repo_compatibility_engine"
 RUNTIME_INSTALLER = LIFECYCLE_SOURCE / "scripts" / "runtime" / "install-managed-skills.py"
 FAST_CHANGE = LIFECYCLE_SOURCE / "scripts" / "fast-change.py"
 UPDATE_EXECUTION = LIFECYCLE_SOURCE / "scripts" / "update-execution.py"
@@ -62,6 +61,22 @@ CLOSURE_SNAPSHOT = ROOT / "skills" / "ceratops-task-lifecycle" / "scripts" / "cl
 RUNTIME_MANIFEST = ".runtime-manifest.json"
 RUNTIME_MANIFEST_SCHEMA = "ceratops-runtime-skill.v3"
 INSTALLER_VERSION = 10
+
+
+def run_compatibility_engine(
+    scripts_root: pathlib.Path,
+    command: str,
+    *arguments: str,
+) -> subprocess.CompletedProcess[str]:
+    """Run one package command from its source or installed scripts folder."""
+
+    return subprocess.run(
+        [sys.executable, "-m", COMPATIBILITY_ENGINE, command, *arguments],
+        cwd=scripts_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
 
 
 def test_model_call_ledger_keeps_full_evidence_out_of_stdout(
@@ -4713,18 +4728,13 @@ def test_compatibility_materializer_supplies_target_identity_and_assignments(
         newline="\n",
     )
 
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(COMPATIBILITY_MATERIALIZER),
-            "--target-repo-root",
-            str(repo),
-            "--runtime-source-id",
-            "target/skills",
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
+    result = run_compatibility_engine(
+        REPOSITORY_LIFECYCLE_SCRIPTS,
+        "materialize",
+        "--target-repo-root",
+        str(repo),
+        "--runtime-source-id",
+        "target/skills",
     )
 
     assert result.returncode == 0, result.stdout
@@ -4778,15 +4788,16 @@ def test_compatibility_materializer_supports_repositories_without_skills(
     lifecycle_bundle = tmp_path / "lifecycle-bundle"
     shutil.copytree(REPOSITORY_LIFECYCLE_SOURCE, lifecycle_bundle)
     (
-        lifecycle_bundle / "scripts" / "synchronize-bootstrap-installer.py"
+        lifecycle_bundle
+        / "scripts"
+        / COMPATIBILITY_ENGINE
+        / "bootstrap_installer_synchronization.py"
     ).write_text(
         "raise SystemExit('bootstrap synchronizer must not run')\n",
         encoding="utf-8",
         newline="\n",
     )
-    zero_skill_materializer = (
-        lifecycle_bundle / "scripts" / "make-repo-compatible.py"
-    )
+    engine_scripts = lifecycle_bundle / "scripts"
     repo = tmp_path / "empty-compatible"
     repo.mkdir()
     (repo / ".git").write_text(
@@ -4806,18 +4817,13 @@ def test_compatibility_materializer_supports_repositories_without_skills(
         newline="\n",
     )
 
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(zero_skill_materializer),
-            "--target-repo-root",
-            str(repo),
-            "--runtime-source-id",
-            "example/empty-compatible",
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
+    result = run_compatibility_engine(
+        engine_scripts,
+        "materialize",
+        "--target-repo-root",
+        str(repo),
+        "--runtime-source-id",
+        "example/empty-compatible",
     )
 
     assert result.returncode == 0, result.stdout
@@ -4863,17 +4869,12 @@ def test_compatibility_materializer_supports_repositories_without_skills(
     omitted = tmp_path / "empty-without-deploy"
     shutil.copytree(repo, omitted)
     (omitted / "deploy" / "deploy.yml").unlink()
-    omitted_result = subprocess.run(
-        [
-            sys.executable,
-            str(zero_skill_materializer),
-            "--target-repo-root",
-            str(omitted),
-            "--no-deploy-contract",
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
+    omitted_result = run_compatibility_engine(
+        engine_scripts,
+        "materialize",
+        "--target-repo-root",
+        str(omitted),
+        "--no-deploy-contract",
     )
     assert omitted_result.returncode == 0, omitted_result.stdout
     assert not (omitted / "deploy" / "deploy.yml").exists()
@@ -4913,16 +4914,11 @@ def test_compatibility_materializer_preserves_existing_validator_and_ci(
         for path in (validator, workflow)
     }
 
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(COMPATIBILITY_MATERIALIZER),
-            "--target-repo-root",
-            str(repo),
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
+    result = run_compatibility_engine(
+        REPOSITORY_LIFECYCLE_SCRIPTS,
+        "materialize",
+        "--target-repo-root",
+        str(repo),
     )
 
     assert result.returncode == 0, result.stdout
@@ -4959,16 +4955,11 @@ def test_compatibility_materializer_preserves_existing_identity_and_custom_secti
         newline="\n",
     )
 
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(COMPATIBILITY_MATERIALIZER),
-            "--target-repo-root",
-            str(repo),
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
+    result = run_compatibility_engine(
+        REPOSITORY_LIFECYCLE_SCRIPTS,
+        "materialize",
+        "--target-repo-root",
+        str(repo),
     )
 
     assert result.returncode == 0, result.stdout
@@ -4983,18 +4974,13 @@ def test_compatibility_materializer_preserves_existing_identity_and_custom_secti
         "Preserve this target behavior.\n"
     )
 
-    overridden = subprocess.run(
-        [
-            sys.executable,
-            str(COMPATIBILITY_MATERIALIZER),
-            "--target-repo-root",
-            str(repo),
-            "--runtime-source-id",
-            "explicit/source",
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
+    overridden = run_compatibility_engine(
+        REPOSITORY_LIFECYCLE_SCRIPTS,
+        "materialize",
+        "--target-repo-root",
+        str(repo),
+        "--runtime-source-id",
+        "explicit/source",
     )
     assert overridden.returncode == 0, overridden.stdout
     assert json.loads(manifest_path.read_text(encoding="utf-8"))[
@@ -5022,7 +5008,7 @@ def test_compatibility_materializer_rolls_back_every_target_write_on_blocker(
         encoding="utf-8",
         newline="\n",
     )
-    broken_materializer = lifecycle_bundle / "scripts" / "make-repo-compatible.py"
+    engine_scripts = lifecycle_bundle / "scripts"
     repo = tmp_path / "compatible"
     create_compatible_repo(repo, "preserved/source", ["alpha-tool"])
     (repo / ".git").write_text("gitdir: test\n", encoding="utf-8", newline="\n")
@@ -5045,16 +5031,11 @@ def test_compatibility_materializer_rolls_back_every_target_write_on_blocker(
     )
     original = {path: path.read_bytes() for path in changed_paths}
 
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(broken_materializer),
-            "--target-repo-root",
-            str(repo),
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
+    result = run_compatibility_engine(
+        engine_scripts,
+        "materialize",
+        "--target-repo-root",
+        str(repo),
     )
 
     assert result.returncode == 1
@@ -5093,16 +5074,11 @@ def test_compatibility_materializer_blocks_invalid_assignments_before_writes(
         for path in observed_paths
     }
 
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(COMPATIBILITY_MATERIALIZER),
-            "--target-repo-root",
-            str(repo),
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
+    result = run_compatibility_engine(
+        REPOSITORY_LIFECYCLE_SCRIPTS,
+        "materialize",
+        "--target-repo-root",
+        str(repo),
     )
 
     assert result.returncode == 1
@@ -5540,7 +5516,7 @@ def test_transaction_retry_policy_and_acl_order(
                     errno.EBUSY if self.transient else errno.EACCES,
                     "rename failure",
                 )
-                setattr(error, "winerror", 32 if self.transient else 5)
+                error.winerror = 32 if self.transient else 5
                 raise error
 
     monkeypatch.setattr(builder["time"], "sleep", lambda _seconds: None)
@@ -6218,6 +6194,9 @@ def test_bootstrap_full_install_materializes_self_contained_lifecycle_bundle(
         / "schemas"
         / "deploy-contract.schema.json"
     ).is_file()
+    assert (
+        installed_lifecycle / "scripts" / COMPATIBILITY_ENGINE / "__main__.py"
+    ).is_file()
     target_repo = tmp_path / "installed-bundle-target"
     create_compatible_repo(target_repo, "stale/source", ["alpha-tool"])
     (target_repo / ".git").write_text(
@@ -6225,18 +6204,13 @@ def test_bootstrap_full_install_materializes_self_contained_lifecycle_bundle(
     )
     shutil.rmtree(target_repo / "skills" / "sections")
     (target_repo / "skills" / "skill-sections.json").unlink()
-    materialized = subprocess.run(
-        [
-            sys.executable,
-            str(installed_lifecycle / "scripts" / "make-repo-compatible.py"),
-            "--target-repo-root",
-            str(target_repo),
-            "--runtime-source-id",
-            "installed/target",
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
+    materialized = run_compatibility_engine(
+        installed_lifecycle / "scripts",
+        "materialize",
+        "--target-repo-root",
+        str(target_repo),
+        "--runtime-source-id",
+        "installed/target",
     )
     assert materialized.returncode == 0, materialized.stdout
     assert json.loads(materialized.stdout)["runtime_source_id"] == "installed/target"
@@ -6292,23 +6266,13 @@ def test_lifecycle_only_installed_bundle_materializes_compatible_repo(
     shutil.rmtree(target_repo / "skills" / "sections")
     (target_repo / "skills" / "skill-sections.json").unlink()
 
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(
-                install_root
-                / "ceratops-repo-lifecycle"
-                / "scripts"
-                / "make-repo-compatible.py"
-            ),
-            "--target-repo-root",
-            str(target_repo),
-            "--runtime-source-id",
-            "installed/only",
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
+    result = run_compatibility_engine(
+        install_root / "ceratops-repo-lifecycle" / "scripts",
+        "materialize",
+        "--target-repo-root",
+        str(target_repo),
+        "--runtime-source-id",
+        "installed/only",
     )
 
     assert result.returncode == 0, result.stdout
@@ -6489,11 +6453,11 @@ def test_bootstrap_synchronization_compares_only_version(
     custom = target.read_text(encoding="utf-8") + "\n# same-version local difference\n"
     target.write_text(custom, encoding="utf-8", newline="\n")
 
-    retained = subprocess.run(
-        [sys.executable, str(INSTALLER_SYNCHRONIZER), "--target-repo-root", str(repo)],
-        capture_output=True,
-        text=True,
-        check=False,
+    retained = run_compatibility_engine(
+        REPOSITORY_LIFECYCLE_SCRIPTS,
+        "synchronize-bootstrap",
+        "--target-repo-root",
+        str(repo),
     )
 
     assert retained.returncode == 0, retained.stderr
@@ -6507,22 +6471,21 @@ def test_bootstrap_synchronization_compares_only_version(
         encoding="utf-8",
         newline="\n",
     )
-    updated = subprocess.run(
-        [sys.executable, str(INSTALLER_SYNCHRONIZER), "--target-repo-root", str(repo)],
-        capture_output=True,
-        text=True,
-        check=False,
+    updated = run_compatibility_engine(
+        REPOSITORY_LIFECYCLE_SCRIPTS,
+        "synchronize-bootstrap",
+        "--target-repo-root",
+        str(repo),
     )
 
     assert updated.returncode == 0, updated.stderr
     assert json.loads(updated.stdout)["status"] == "updated"
     assert target.read_bytes() == INSTALLER_TEMPLATE.read_bytes()
 
-    help_result = subprocess.run(
-        [sys.executable, str(INSTALLER_SYNCHRONIZER), "--help"],
-        capture_output=True,
-        text=True,
-        check=False,
+    help_result = run_compatibility_engine(
+        REPOSITORY_LIFECYCLE_SCRIPTS,
+        "synchronize-bootstrap",
+        "--help",
     )
     assert help_result.returncode == 0
     assert "--target-repo-root" in help_result.stdout

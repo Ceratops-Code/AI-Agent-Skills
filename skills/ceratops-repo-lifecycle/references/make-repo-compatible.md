@@ -21,16 +21,25 @@ Infer the source identity from stable repository evidence before asking.
 
 ### Script Bundle
 
-- (D) `scripts/compatibility_check.py` exposes
-  `check_repository(repo_root) -> {applicable, valid, errors}` and performs
-  read-only manifest, deployment, and validation-wiring checks. It never runs
-  skill-source validation.
-- (D) Compatibility materialization:
-  `python scripts/make-repo-compatible.py --target-repo-root
+- (D) Run the skill-owned compatibility engine from the repository-lifecycle
+  bundle's `scripts` folder. The engine operates on `--target-repo-root` and is
+  never materialized into the target repository.
+- (D) `ceratops_repo_compatibility_engine.compatibility_check.check_repository`
+  exposes `check_repository(repo_root) -> {applicable, valid, errors}` and
+  performs read-only manifest, deployment, and validation-wiring checks. It
+  never runs skill-source validation.
+- (D) Compatibility materialization: `python -m
+  ceratops_repo_compatibility_engine materialize --target-repo-root
   <task-worktree> [--runtime-source-id <stable-id>]`; it performs the
   compatibility transaction and emits one compact result.
   Add `--no-deploy-contract` only when the caller chooses to leave
   `deploy/deploy.yml` absent or unchanged.
+- (D) Bootstrap-only repair: `python -m ceratops_repo_compatibility_engine
+  synchronize-bootstrap --target-repo-root <task-worktree>`; it only compares
+  parsed installer versions and copies a missing or lower version.
+- (D) `ceratops_repo_compatibility_engine.deploy_contract_validation` reads and
+  validates deployment contracts for materialization, execution, and health;
+  it never creates or modifies them.
 - (D) Missing repository-validation surfaces come from
   `references/repository-validation-catalog.json` and the templates under
   `references/templates/`.

@@ -24,7 +24,8 @@ credential-bound fixes precisely.
   scoped findings.
 - (D) Prefer `--summary-json` for agent-readable repo-health output; use
   `--json` only when a parser needs the full report.
-- (D) Local health records `compatibility_check.check_repository(repo_root)`
+- (D) Local health records
+  `ceratops_repo_compatibility_engine.compatibility_check.check_repository(repo_root)`
   unchanged. It also runs a present `scripts/validate-repository.py` once with
   `--evidence-file` outside the target; a missing validator or CI validation
   workflow is a finding. External-only health runs no local validator.
@@ -67,8 +68,8 @@ Infer missing inputs from live repo state and local files before asking.
 - Inspect validation configs, dependency pins, CI wiring, and local validation
   guidance when repository contents are part of the health surface.
 - Inspect generic manifest structure, deployment schema, and repository
-  validation wiring through `compatibility_check.py` when local contents are
-  present. Skill-source validation remains outside repo health.
+  validation wiring through `ceratops_repo_compatibility_engine` when local
+  contents are present. Skill-source validation remains outside repo health.
 - Expand to open PRs, releases, tags, branches, Actions runs, moderation detail,
   or published artifacts only when script output, repo type, touched files, or
   the user request makes them relevant.

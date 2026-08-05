@@ -91,11 +91,9 @@ without repository deduplication.
 | `skills/ceratops-repo-lifecycle/references/templates/install-skills-bootstrap-template.py` | Authoritative standard-library-only bootstrap copied into compatible skill repositories as `scripts/install-skills-bootstrap.py`. |
 | `skills/ceratops-repo-lifecycle/references/repository-validation-catalog.json` | Closed catalog of repository checks that compatibility materialization may select without additional approval. |
 | `skills/ceratops-repo-lifecycle/references/templates/validate-repository.py.tmpl` and `validate.yml.tmpl` | Repository-neutral validator and CI templates materialized only when their target files are absent. |
-| `skills/ceratops-repo-lifecycle/scripts/compatibility_check.py` | Shared read-only generic manifest, deployment, and validation-wiring checker used by materialization and local health. |
-| `skills/ceratops-repo-lifecycle/scripts/make-repo-compatible.py` | Deterministically instantiates compatible surfaces and repository validation for every repository, checks the result, and rolls back caught blockers. |
+| `skills/ceratops-repo-lifecycle/scripts/ceratops_repo_compatibility_engine/` | Skill-owned package for read-only compatibility checks, deployment-contract validation, rollback-protected repository materialization, and version-only bootstrap synchronization; it operates on explicit target repositories and is never copied into them. |
 | `skills/ceratops-repo-lifecycle/references/templates/skill-sections-template.json` | Repository-neutral template for materializing a target repository's live `skills/skill-sections.json`; never a live manifest. |
 | `skills/ceratops-skill-lifecycle/scripts/runtime/install-managed-skills.py` | Classifies explicit, promotion-relative, or all-managed affected sets; owns direct-manifest inventory; and invokes one runtime transaction without source validation. |
-| `skills/ceratops-repo-lifecycle/scripts/synchronize-bootstrap-installer.py` | Copies the authoritative bootstrap into an approved task worktree only when its parsed version is missing or lower; callers own validation. |
 | `skills/ceratops-skill-lifecycle/scripts/runtime/managed_runtime_builder.py` | Stages, activates, rolls back, recovers, and cleans one locked selected-skill runtime transaction. |
 | `skills/ceratops-skill-lifecycle/scripts/update-execution.py` | Collects declared pytest nodes before edits, records a task-worktree baseline, verifies declared cohesive update paths, runs closed structured checks once, and writes detailed evidence while preserving unrelated dirty state. |
 | `skills/ceratops-credit-savings-analysis/scripts/model-call-ledger.py` | Writes fingerprint, usage, and opt-in selected-semantic evidence; emits compact rankings or receipts; and preserves artifact-free closure and classification modes. |
@@ -108,7 +106,6 @@ without repository deduplication.
 | `skills/ceratops-repo-lifecycle/scripts/github_pr_workflow/` | Package CLI for individual PR operations, exact-commit checkpointed shipping, a scoped pending-work pre-push guard, concurrent gates, integrated post-gate admin merge, reusable-branch restoration, and terminal checkpoint cleanup. Standalone merge behavior is unchanged. |
 | `skills/ceratops-repo-lifecycle/scripts/promote-repository.py` | Prepares `release/local`, or promotes selected branches, runs one named operation, and returns its declared handoff only when the promoted manifest has managed skills. |
 | `skills/ceratops-repo-lifecycle/scripts/manage-pending-work.py` | Records, checks, and progressively finalizes the exact selected branch and worktree scope used by promotion and shipping. |
-| `skills/ceratops-repo-lifecycle/scripts/deploy_contract.py` | Owns schema validation shared by deployment execution, repository compatibility, and health collection. |
 | `skills/ceratops-repo-lifecycle/scripts/run-deploy-operation.py` | Uses the shared validator for `deploy/deploy.yml`, executes ordered argv steps without a shell, and returns any optional declarative agent handoff. |
 | `skills/ceratops-repo-lifecycle/scripts/ship-repository.py` | Orchestrates scoped pre-push checking, guarded GitHub shipping, main synchronization, a pre-deploy recheck, checkpointed optional `deploy`, and resumable selected-source cleanup. |
 | `skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py` | Skill-lifecycle-owned source, metadata, runtime-input, contract, and portability validator used only by explicit skill workflows. |
@@ -407,8 +404,9 @@ Without the flag, evidence defaults to
 The validator runs Markdown and YAML lint, Ruff, mypy for Linux and Win32, and
 pytest. It does not invoke skill-local validators. Generic compatibility and
 health validate deployment definitions through the repository-lifecycle
-`deploy_contract.py` helper. Runtime rendering is owned only by bootstrap and
-managed deployment under the selected install root.
+`ceratops_repo_compatibility_engine.deploy_contract_validation` module. Runtime
+rendering is owned only by bootstrap and managed deployment under the selected
+install root.
 
 Run full skill-source validation explicitly when that source surface is in
 scope:

@@ -11,8 +11,13 @@ import subprocess
 import sys
 from typing import Any
 
-from compatibility_check import CompatibilityResult, check_repository
-from deploy_contract import read_contract
+from ceratops_repo_compatibility_engine.compatibility_check import (
+    CompatibilityResult,
+    check_repository,
+)
+from ceratops_repo_compatibility_engine.deploy_contract_validation import (
+    read_contract,
+)
 
 USES_RE = re.compile(r"^\s*uses:\s*([^@\s]+)@([^\s#]+)", re.MULTILINE)
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")

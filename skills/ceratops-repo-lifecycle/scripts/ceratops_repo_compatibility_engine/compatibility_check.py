@@ -14,7 +14,8 @@ from collections.abc import Mapping
 from typing import TypedDict
 
 import yaml
-from deploy_contract import read_contract
+
+from .deploy_contract_validation import read_contract
 
 
 class CompatibilityResult(TypedDict):
