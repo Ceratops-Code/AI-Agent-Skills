@@ -14,7 +14,6 @@ from .collectors import (
 from .compare_states import condition_matches
 from .github_api import ApiResult, run_gh_api, substitute
 
-
 PRODUCER_REGISTRY = {
     "github_api": ("/api/*",),
     "organization": ("/organization/avatar/*",),
@@ -37,6 +36,7 @@ PRODUCER_REGISTRY = {
         "/local/deploy_contract/*",
         "/local/git/*",
         "/local/manifests/*",
+        "/local/repository_validation/*",
         "/local/scans/*",
         "/local/workflows/*",
     ),
@@ -244,7 +244,10 @@ def collect_observed_states(desired_state: dict[str, Any]) -> dict[str, Any]:
     rules = desired_state["rules"]
     fetched = _fetch_all(desired_state)
     local = collect_local_repository(
-        parameters.get("local_repo_path"), rules, parameters.get("default_branch")
+        parameters.get("local_repo_path"),
+        rules,
+        parameters.get("default_branch"),
+        parameters.get("repository_validation_evidence_file"),
     )
     if parameters.get("owner") and parameters.get("repo"):
         artifact_type_system = next(

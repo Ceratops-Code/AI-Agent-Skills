@@ -2,7 +2,7 @@
 
 ## Goal
 
-Make an existing repository satisfy the `ceratops-compatible` source and
+Make an existing repository satisfy the `ceratops-compatible` repository and
 validation contract without changing any skill's intended behavior. Repositories
 with no skills remain valid and omit canonical shared-section and bootstrap work.
 
@@ -21,18 +21,19 @@ Infer the source identity from stable repository evidence before asking.
 
 ### Script Bundle
 
-- (D) Skill-bearing compatible-repository validation invoked by the
-  materializer: `python scripts/skills-consistency-source-validator.py
-  --repo-root <repo-root> --mode full` from the repository-lifecycle bundle.
+- (D) `scripts/compatibility_check.py` exposes
+  `check_repository(repo_root) -> {applicable, valid, errors}` and performs
+  read-only manifest, deployment, and validation-wiring checks. It never runs
+  skill-source validation.
 - (D) Compatibility materialization:
   `python scripts/make-repo-compatible.py --target-repo-root
   <task-worktree> [--runtime-source-id <stable-id>]`; it performs the
   compatibility transaction and emits one compact result.
   Add `--no-deploy-contract` only when the caller chooses to leave
   `deploy/deploy.yml` absent or unchanged.
-- (D) The materializer and repo health use the same full source validator, and
-  every materialized deployment definition must pass
-  `references/schemas/deploy-contract.schema.json` before any target write.
+- (D) Missing repository-validation surfaces come from
+  `references/repository-validation-catalog.json` and the templates under
+  `references/templates/`.
 
 ## Constraints
 
@@ -48,6 +49,10 @@ Infer the source identity from stable repository evidence before asking.
 - Do not promote or deploy the completed compatibility change here; return to
   the parent skill and select `promote` or `promote-and-deploy` only when
   requested.
+- Do not modify an existing repository validator or CI validation workflow
+  (`scripts/validate-repository.py`, `.github/workflows/validate.yml`); preserve
+  their bytes and mode. If compatibility requires either to change, stop for
+  approval.
 
 ### Skill-Specific Rules
 
@@ -64,6 +69,8 @@ Infer the source identity from stable repository evidence before asking.
 - Block malformed or unsafe existing declarations before mutation. After the
   first write, restore every changed target file after any caught blocker and
   report the failed phase and rollback state.
+- Generate a missing validator and CI workflow only from catalogued checks;
+  obtain approval before adding a check absent from the catalog.
 - Keep source skill folders portable and keep generated shared-section blocks
   out of source `SKILL.md` files.
 
@@ -94,8 +101,11 @@ Infer the source identity from stable repository evidence before asking.
   `skills/<name>/agents/openai.yaml`, and align the README Skills table without
   changing skill behavior.
 
-### 3. Materialize the repository bootstrap
+### 3. Materialize repository validation and bootstrap
 
+- Materialize a missing `scripts/validate-repository.py` and
+  `.github/workflows/validate.yml` for every repository, including repositories
+  with no skills. CI calls the repository-owned validator.
 - When skills exist, the compatibility materializer synchronizes the
   first-install-only `scripts/install-skills-bootstrap.py`. Retain a same- or
   higher-version bootstrap and replace only a missing or lower version.
@@ -104,9 +114,9 @@ Infer the source identity from stable repository evidence before asking.
 
 ### 4. Validate and hand off
 
-- When source skills exist, require the materializer's full source-validation
-  phase to pass and repair every compatibility finding. Repositories without
-  source skills skip that phase.
+- After every materialization, including zero-skill repositories, call
+  `check_repository` inside the rollback boundary and require every applicable
+  result to be valid with no errors.
 - Commit the validated compatibility change in the task worktree.
 - If only local release staging was requested, return to the parent skill and
   select `promote`; if deployment was requested, select `promote-and-deploy`;
@@ -124,8 +134,8 @@ Infer the source identity from stable repository evidence before asking.
   sections, aligned source skills, metadata, README inventory, portable
   payload declarations, a default deploy handoff, and a supported versioned
   bootstrap.
-- Skill-bearing target source validation passes; zero-skill targets pass the
-  materializer's structural checks without source validation.
+- Every target has repository validation and CI wiring; every applicable
+  `check_repository` result is valid with no errors.
 - Any caught blocker after mutation restores the exact prior target files and
   reports completed or failed rollback state.
 - Any requested repository-lifecycle handoff completed or its blocker is

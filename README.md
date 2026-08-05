@@ -89,7 +89,10 @@ without repository deduplication.
 | `scripts/install-skills-bootstrap.py` | Self-contained first-install bootstrap; stages and validates one complete selected batch under the install root and never calls lifecycle runtime code. |
 | `scripts/validate-repository.py` | Sole full local-and-CI validation owner; captures child output and writes first-failure evidence to a caller-selected file. |
 | `skills/ceratops-repo-lifecycle/references/templates/install-skills-bootstrap-template.py` | Authoritative standard-library-only bootstrap copied into compatible skill repositories as `scripts/install-skills-bootstrap.py`. |
-| `skills/ceratops-repo-lifecycle/scripts/make-repo-compatible.py` | Deterministically instantiates compatible surfaces and their default managed-skill handoff, synchronizes and source-validates only skill-bearing repositories, and rolls back caught blockers. |
+| `skills/ceratops-repo-lifecycle/references/repository-validation-catalog.json` | Closed catalog of repository checks that compatibility materialization may select without additional approval. |
+| `skills/ceratops-repo-lifecycle/references/templates/validate-repository.py.tmpl` and `validate.yml.tmpl` | Repository-neutral validator and CI templates materialized only when their target files are absent. |
+| `skills/ceratops-repo-lifecycle/scripts/compatibility_check.py` | Shared read-only generic manifest, deployment, and validation-wiring checker used by materialization and local health. |
+| `skills/ceratops-repo-lifecycle/scripts/make-repo-compatible.py` | Deterministically instantiates compatible surfaces and repository validation for every repository, checks the result, and rolls back caught blockers. |
 | `skills/ceratops-repo-lifecycle/references/templates/skill-sections-template.json` | Repository-neutral template for materializing a target repository's live `skills/skill-sections.json`; never a live manifest. |
 | `skills/ceratops-skill-lifecycle/scripts/runtime/install-managed-skills.py` | Classifies explicit, promotion-relative, or all-managed affected sets; owns direct-manifest inventory; and invokes one runtime transaction without source validation. |
 | `skills/ceratops-repo-lifecycle/scripts/synchronize-bootstrap-installer.py` | Copies the authoritative bootstrap into an approved task worktree only when its parsed version is missing or lower; callers own validation. |
@@ -108,7 +111,7 @@ without repository deduplication.
 | `skills/ceratops-repo-lifecycle/scripts/deploy_contract.py` | Owns schema validation shared by deployment execution, repository compatibility, and health collection. |
 | `skills/ceratops-repo-lifecycle/scripts/run-deploy-operation.py` | Uses the shared validator for `deploy/deploy.yml`, executes ordered argv steps without a shell, and returns any optional declarative agent handoff. |
 | `skills/ceratops-repo-lifecycle/scripts/ship-repository.py` | Orchestrates scoped pre-push checking, guarded GitHub shipping, main synchronization, a pre-deploy recheck, checkpointed optional `deploy`, and resumable selected-source cleanup. |
-| `skills/ceratops-repo-lifecycle/scripts/skills-consistency-source-validator.py` | Profile-aware compatibility postcondition verifier used by materialization, repo health, and explicit skill maintenance. |
+| `skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py` | Skill-lifecycle-owned source, metadata, runtime-input, contract, and portability validator used only by explicit skill workflows. |
 | `skills/ceratops-skill-lifecycle/scripts/fast-change.py` | Classifies and owns one eligible direct-release patch through declared Markdown lint, exact helper tests, targeted installation, commit, and failure compensation. |
 
 Lifecycle helpers suppress successful subcommand output and print only compact
@@ -193,18 +196,18 @@ setting:
 ```powershell
 Push-Location .\skills\ceratops-repo-lifecycle\scripts
 python -m github_contract_engine audit-snapshot --repo-root ..\..\..
-python -m github_contract_engine validate org --org ORG --subset all
+python -m github_contract_engine validate org --org ORG --subset all --params-file PATH
 python -m github_contract_engine validate repo --repo OWNER/REPO --surface repo --subset settings --local-repo-path PATH
 python -m github_contract_engine validate repo --repo OWNER/REPO --surface code --subset content --local-repo-path PATH
 python -m github_contract_engine validate repo --repo OWNER/REPO --select repo:dependency --select code:dependency --local-repo-path PATH
 python -m github_contract_engine validate repo --repo OWNER/REPO --surface artifact --subset artifact --local-repo-path PATH
-python -m github_contract_engine validate repo --repo OWNER/REPO --surface all --subset health --local-repo-path PATH --summary-json --levels ERROR,WARN,NEEDS_AI_AGENT_REVIEW
+python -m github_contract_engine validate repo --repo OWNER/REPO --surface all --subset health --local-repo-path PATH --evidence-file EVIDENCE --summary-json --levels ERROR,WARN,NEEDS_AI_AGENT_REVIEW
 python -m github_pr_workflow validate --pr NUMBER_OR_URL --cwd PATH
 python -m github_pr_workflow ship --help
 python -m github_contract_engine codeql-disposition --help
 python -m github_contract_engine validate consistency
 Pop-Location
-python .\skills\ceratops-repo-lifecycle\scripts\skills-consistency-source-validator.py --mode full
+python .\skills\ceratops-skill-lifecycle\scripts\skills-consistency-source-validator.py --mode full
 ```
 
 The organization and repository/artifact commands are package operations over
@@ -216,6 +219,9 @@ and `format_report.py` renders the result. Collectors produce facts rather than
 per-check verdicts. GitHub remediations are separately registered under
 `remediations/`; Docker Hub, PyPI, npm, Maven Central, NuGet, crates.io,
 RubyGems, and PowerShell Gallery collectors are read-only.
+Organization parameters resolve from contract defaults, the `--params-file`
+(default `$CODEX_HOME/gh-contract-params.json`), named flags, then repeatable
+`--param KEY=VALUE` overrides.
 
 GH lifecycle validators use `ERROR`, `WARN`, and `NEEDS_AI_AGENT_REVIEW` for
 actionable findings. `ERROR` and `WARN` are blocking;
@@ -225,8 +231,9 @@ inventory counts and samples for PRs, branches, tags, releases, and local path
 references when present. It also reports the observed community-profile health
 percentage and its 100% contract target; inventory alone is not a finding.
 Local health collection validates every present `deploy/deploy.yml` with the
-repository-lifecycle schema and runs the compatibility materializer's full
-postcondition verifier whenever a section manifest or source skill is present.
+repository-lifecycle schema and runs the generic compatibility postcondition
+checker whenever a manifest, source skill, deploy definition, or repository
+validation surface is present. It does not run skill-source validation.
 
 Collect review evidence for non-deterministic checks with:
 
@@ -245,7 +252,7 @@ surfaces are read by `github_contract_engine` and `github_pr_workflow` package
 commands.
 The skill surface is represented by
 `skills/ceratops-skill-lifecycle/references/skill-*` and
-`skills/ceratops-repo-lifecycle/scripts/skills-consistency-source-validator.py`.
+`skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py`.
 Skills pass or choose a surface only when they are doing an explicit audit,
 drift check, uncertain-state check, or broad closeout claim.
 
@@ -391,31 +398,37 @@ CI:
 ```powershell
 npm ci
 python -m pip install -r requirements-dev.txt
-$env:REPOSITORY_VALIDATION_EVIDENCE_FILE = Join-Path $env:TEMP "repository-validation.log"
-python scripts/validate-repository.py
+$validationEvidence = Join-Path $env:TEMP "repository-validation.log"
+python scripts/validate-repository.py --evidence-file $validationEvidence
 ```
 
-The validator runs Markdown and YAML lint, Ruff over repository bootstrap and
-validation producers, mypy for Linux and Win32, pytest, full source-contract
-validation, and repository lifecycle CLI smoke checks.
-Full source validation checks the kind-qualified version 1 deployment contract,
-repository-bounded working directories, the Ceratops `deploy` validation step,
-and reusable template skeletons without executing deployment. Runtime rendering
-is owned only by bootstrap and managed deployment under the selected install
-root.
+Without the flag, evidence defaults to
+`build/deploy-validation/repository-validation.log`.
+The validator runs Markdown and YAML lint, Ruff, mypy for Linux and Win32, and
+pytest. It does not invoke skill-local validators. Generic compatibility and
+health validate deployment definitions through the repository-lifecycle
+`deploy_contract.py` helper. Runtime rendering is owned only by bootstrap and
+managed deployment under the selected install root.
+
+Run full skill-source validation explicitly when that source surface is in
+scope:
+
+```powershell
+python .\skills\ceratops-skill-lifecycle\scripts\skills-consistency-source-validator.py --mode full
+```
 
 Targeted installation validates only explicitly selected skills and their
 rendering inputs:
 
 ```powershell
-python .\skills\ceratops-repo-lifecycle\scripts\skills-consistency-source-validator.py --mode skill --skill <skill-name>
+python .\skills\ceratops-skill-lifecycle\scripts\skills-consistency-source-validator.py --mode skill --skill <skill-name>
 ```
 
 Run section validation only when shared section source files or
 `skills/skill-sections.json` assignments changed:
 
 ```powershell
-python .\skills\ceratops-repo-lifecycle\scripts\skills-consistency-source-validator.py --mode sections
+python .\skills\ceratops-skill-lifecycle\scripts\skills-consistency-source-validator.py --mode sections
 ```
 
 The section mode validates that source skills are delta-only;

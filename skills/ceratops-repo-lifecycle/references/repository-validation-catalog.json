@@ -1,0 +1,101 @@
+{
+  "version": 1,
+  "checks": [
+    {
+      "id": "markdown-lint",
+      "when": [
+        {"kind": "package-script", "value": "lint:markdown"}
+      ],
+      "command": ["{npm}", "run", "lint:markdown"],
+      "cwd": "."
+    },
+    {
+      "id": "npm-lint",
+      "when": [
+        {"kind": "package-script", "value": "lint"}
+      ],
+      "command": ["{npm}", "run", "lint"],
+      "cwd": "."
+    },
+    {
+      "id": "npm-test",
+      "when": [
+        {"kind": "package-script", "value": "test"}
+      ],
+      "command": ["{npm}", "test"],
+      "cwd": "."
+    },
+    {
+      "id": "npm-build",
+      "when": [
+        {"kind": "package-script", "value": "build"}
+      ],
+      "command": ["{npm}", "run", "build"],
+      "cwd": "."
+    },
+    {
+      "id": "pytest",
+      "when": [
+        {
+          "kind": "path-any",
+          "value": ["pytest.ini", "conftest.py", "tests/test_*.py"]
+        }
+      ],
+      "command": ["{python}", "-m", "pytest", "-q"],
+      "cwd": "."
+    },
+    {
+      "id": "ruff",
+      "when": [
+        {"kind": "path-any", "value": ["ruff.toml", ".ruff.toml"]},
+        {
+          "kind": "file-contains",
+          "path": "pyproject.toml",
+          "value": "[tool.ruff"
+        }
+      ],
+      "command": ["{python}", "-m", "ruff", "check", "."],
+      "cwd": "."
+    },
+    {
+      "id": "mypy",
+      "when": [
+        {"kind": "path-any", "value": ["mypy.ini", ".mypy.ini"]},
+        {
+          "kind": "file-contains",
+          "path": "pyproject.toml",
+          "value": "[tool.mypy]"
+        }
+      ],
+      "command": ["{python}", "-m", "mypy"],
+      "cwd": "."
+    },
+    {
+      "id": "yaml-lint",
+      "when": [
+        {
+          "kind": "path-any",
+          "value": [".yamllint", ".yamllint.yml", ".yamllint.yaml"]
+        }
+      ],
+      "command": ["{python}", "-m", "yamllint", "."],
+      "cwd": "."
+    },
+    {
+      "id": "go-test",
+      "when": [
+        {"kind": "path-any", "value": ["go.mod"]}
+      ],
+      "command": ["go", "test", "./..."],
+      "cwd": "."
+    },
+    {
+      "id": "cargo-test",
+      "when": [
+        {"kind": "path-any", "value": ["Cargo.toml"]}
+      ],
+      "command": ["cargo", "test"],
+      "cwd": "."
+    }
+  ]
+}

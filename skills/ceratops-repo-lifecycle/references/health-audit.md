@@ -13,20 +13,24 @@ credential-bound fixes precisely.
 
 - (D) Full GitHub, code, and artifact contract check, run from the lifecycle
   skill's `scripts` folder: `python -m github_contract_engine validate repo
-  --repo OWNER/REPO --surface all --subset health --local-repo-path PATH`
+  --repo OWNER/REPO --surface all --subset health --local-repo-path PATH
+  --evidence-file EVIDENCE`
 - (D) Optional org contract check when org posture is in scope, run from the
   same folder: `python -m github_contract_engine validate org
-  --org ORG`
+  --org ORG [--params-file PATH] [--billing-email EMAIL]
+  [--owner-login LOGIN]`
 - (D) Add `--summary-json --levels ERROR,WARN,NEEDS_AI_AGENT_REVIEW`, `--json`,
   `--check-id`, or a narrower `--subset` when another step needs structured or
   scoped findings.
 - (D) Prefer `--summary-json` for agent-readable repo-health output; use
   `--json` only when a parser needs the full report.
-- (D) Local health collection validates every present `deploy/deploy.yml`
-  against `references/schemas/deploy-contract.schema.json`. When a section
-  manifest or source skill exists, it also runs
-  `scripts/skills-consistency-source-validator.py --repo-root PATH --mode full`
-  so health and `make-repo-compatible` share one postcondition verifier.
+- (D) Local health records `compatibility_check.check_repository(repo_root)`
+  unchanged. It also runs a present `scripts/validate-repository.py` once with
+  `--evidence-file` outside the target; a missing validator or CI validation
+  workflow is a finding. External-only health runs no local validator.
+- (D) Organization parameters resolve in this order: contract defaults,
+  `--params-file`, named flags, then `--param`. The parameter file defaults to
+  `$CODEX_HOME/gh-contract-params.json`.
 
 ### Inputs To Capture
 
@@ -62,9 +66,9 @@ Infer missing inputs from live repo state and local files before asking.
   are classified from file evidence.
 - Inspect validation configs, dependency pins, CI wiring, and local validation
   guidance when repository contents are part of the health surface.
-- Inspect the compatibility manifest, shared sections, source skills, metadata,
-  README inventory, bootstrap, runtime payloads, and deploy definition through
-  the bundled verifier when those surfaces are present.
+- Inspect generic manifest structure, deployment schema, and repository
+  validation wiring through `compatibility_check.py` when local contents are
+  present. Skill-source validation remains outside repo health.
 - Expand to open PRs, releases, tags, branches, Actions runs, moderation detail,
   or published artifacts only when script output, repo type, touched files, or
   the user request makes them relevant.
@@ -107,9 +111,9 @@ Infer missing inputs from live repo state and local files before asking.
 
 #### 5. Validate and close
 
-- Run local checks needed to prove repo-file changes are still valid.
-- Run lint or type checks only when repository contents are in scope; otherwise
-  repo health verifies validation wiring instead of re-running content checks.
+- For local health, run the repository validator once after the last content
+  change and before a broad health claim; do not rerun its checks. External-only
+  health runs no local validator.
 - Verify live GitHub and registry state when not already proven by
   command-result evidence or when asynchronous external state matters.
 - Re-run relevant contract checks only for unresolved audit scope or broad
@@ -122,9 +126,8 @@ Infer missing inputs from live repo state and local files before asking.
 - Any broad current-health claim is backed by
   `python -m github_contract_engine validate repo` or equivalent command-result
   evidence.
-- Every present deployment contract passed the lifecycle-owned schema, and
-  every applicable compatible-repository postcondition passed the same full
-  verifier used after materialization.
+- Every applicable `check_repository` result is valid with no errors; every
+  local health run's repository validator also passes.
 - Actions hardening claims are backed by a fresh local workflow scan when repo
   files were available.
 - Local state is verified for every touched repo, worktree, generated file,

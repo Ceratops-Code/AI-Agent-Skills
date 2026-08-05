@@ -1,25 +1,21 @@
 #!/usr/bin/env python3
-"""Run the complete local and CI repository validation sequence.
+"""Run the complete repository-owned local and CI validation sequence.
 
-The caller may select an evidence path through
-``REPOSITORY_VALIDATION_EVIDENCE_FILE``. Child commands never inherit the
-terminal: their output is suppressed on success and written in full only for
-the first failed check. Commands use argv lists so paths containing spaces are
-not reparsed by a shell. Managed runtime installation is intentionally outside
-this aggregate repository validator.
+``--evidence-file`` selects first-failure evidence. Child output is suppressed
+on success and written in full only for the first failed check. Commands use
+argv lists, and managed runtime installation remains outside this aggregate.
 """
 
 from __future__ import annotations
 
+import argparse
 import json
-import os
 import pathlib
 import subprocess
 import sys
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
-EVIDENCE_FILE_ENV = "REPOSITORY_VALIDATION_EVIDENCE_FILE"
 COMMAND_NOT_FOUND_EXIT_CODE = 127
 
 
@@ -75,17 +71,6 @@ def build_checks(
 
     python = python_executable or sys.executable
     npm = npm_executable or ("npm.cmd" if sys.platform == "win32" else "npm")
-    lifecycle_scripts = (
-        repo_root / "skills" / "ceratops-repo-lifecycle" / "scripts"
-    )
-    source_validator = (
-        repo_root
-        / "skills"
-        / "ceratops-repo-lifecycle"
-        / "scripts"
-        / "skills-consistency-source-validator.py"
-    )
-
     return (
         Check("markdown-lint", (npm, "run", "lint:markdown"), repo_root),
         Check(
@@ -119,47 +104,6 @@ def build_checks(
             "win32",
         ),
         Check("pytest", (python, "-m", "pytest", "-q"), repo_root),
-        Check(
-            "source-contract-validator",
-            (python, str(source_validator), "--mode", "full"),
-            repo_root,
-        ),
-        Check(
-            "repo-lifecycle-promote-help",
-            (python, "promote-repository.py", "--help"),
-            lifecycle_scripts,
-        ),
-        Check(
-            "repo-lifecycle-pending-work-help",
-            (python, "manage-pending-work.py", "--help"),
-            lifecycle_scripts,
-        ),
-        Check(
-            "repo-lifecycle-deploy-operation-help",
-            (python, "run-deploy-operation.py", "--help"),
-            lifecycle_scripts,
-        ),
-        Check(
-            "repo-lifecycle-ship-help",
-            (python, "ship-repository.py", "--help"),
-            lifecycle_scripts,
-        ),
-        Check(
-            "repo-lifecycle-pr-ship-help",
-            (python, "-m", "github_pr_workflow", "ship", "--help"),
-            lifecycle_scripts,
-        ),
-        Check(
-            "repo-lifecycle-codeql-disposition-help",
-            (
-                python,
-                "-m",
-                "github_contract_engine",
-                "codeql-disposition",
-                "--help",
-            ),
-            lifecycle_scripts,
-        ),
     )
 
 
@@ -248,30 +192,30 @@ def failure_payload(failure: Failure) -> dict[str, object]:
 def main(
     argv: Sequence[str] | None = None,
     *,
-    environ: Mapping[str, str] | None = None,
     process_runner: ProcessRunner = run_process,
 ) -> int:
     """Resolve caller paths, execute validation, and emit one bounded result."""
 
     arguments = list(sys.argv[1:] if argv is None else argv)
-    environment = os.environ if environ is None else environ
-    evidence_value = environment.get(EVIDENCE_FILE_ENV)
     repo_root = pathlib.Path(__file__).resolve().parents[1]
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--evidence-file", type=pathlib.Path)
+    parsed, unexpected = parser.parse_known_args(arguments)
     evidence_file = (
-        pathlib.Path(evidence_value).expanduser().resolve()
-        if evidence_value
+        parsed.evidence_file.expanduser().resolve()
+        if parsed.evidence_file
         else repo_root
         / "build"
         / "deploy-validation"
         / "repository-validation.log"
     )
-    if arguments:
+    if unexpected:
         payload: dict[str, object] = {
             "check": "configuration",
             "exit_code": 2,
             "evidence_file": str(evidence_file),
         }
-        payload["unexpected_arguments"] = arguments
+        payload["unexpected_arguments"] = unexpected
         print(json.dumps(payload, separators=(",", ":"), ensure_ascii=True))
         return 2
 

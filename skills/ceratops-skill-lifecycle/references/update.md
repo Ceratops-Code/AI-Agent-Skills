@@ -19,7 +19,7 @@ repo docs, then update the narrowest correct source that exists.
   `scripts/install-skills-bootstrap.py`,
   `skills/ceratops-skill-lifecycle/scripts/runtime/managed_runtime_builder.py`,
   installer resolution, synchronization, and repository-consistency helpers,
-  `skills/ceratops-repo-lifecycle/scripts/skills-consistency-source-validator.py`,
+  `skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py`,
   skill-local `references/`, helper-runtime files, and repo docs.
 - Whether the change belongs in skill-local text, shared sections, manifests,
   runtime generation, validation, helper-runtime code or claims, contracts, or

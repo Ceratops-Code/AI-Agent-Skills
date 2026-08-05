@@ -43,13 +43,6 @@ def test_build_checks_owns_order_both_platforms_and_space_safe_paths(
         ("mypy", "linux"),
         ("mypy", "win32"),
         ("pytest", None),
-        ("source-contract-validator", None),
-        ("repo-lifecycle-promote-help", None),
-        ("repo-lifecycle-pending-work-help", None),
-        ("repo-lifecycle-deploy-operation-help", None),
-        ("repo-lifecycle-ship-help", None),
-        ("repo-lifecycle-pr-ship-help", None),
-        ("repo-lifecycle-codeql-disposition-help", None),
     ]
     assert checks[2].command == (
         "python executable",
@@ -62,8 +55,6 @@ def test_build_checks_owns_order_both_platforms_and_space_safe_paths(
     )
     assert checks[3].command[-2:] == ("--platform", "linux")
     assert checks[4].command[-2:] == ("--platform", "win32")
-    assert "repository with spaces" in checks[6].command[1]
-    assert checks[7].cwd == repo_root / "skills/ceratops-repo-lifecycle/scripts"
 
 
 def test_run_process_captures_output_without_a_shell(
@@ -101,10 +92,7 @@ def test_success_prints_exactly_ok_and_suppresses_child_output(
 
     evidence_file = tmp_path / "evidence file.log"
     result = VALIDATOR.main(
-        [],
-        environ={
-            VALIDATOR.EVIDENCE_FILE_ENV: str(evidence_file),
-        },
+        ["--evidence-file", str(evidence_file)],
         process_runner=fake_runner,
     )
 
@@ -112,7 +100,7 @@ def test_success_prints_exactly_ok_and_suppresses_child_output(
     assert result == 0
     assert captured.out == "OK\n"
     assert captured.err == ""
-    assert len(calls) == 13
+    assert len(calls) == 6
     assert not evidence_file.exists()
 
 
@@ -137,10 +125,7 @@ def test_failure_is_fail_fast_compact_and_writes_complete_evidence(
 
     evidence_file = tmp_path / "evidence directory" / "failure evidence.log"
     result = VALIDATOR.main(
-        [],
-        environ={
-            VALIDATOR.EVIDENCE_FILE_ENV: str(evidence_file),
-        },
+        ["--evidence-file", str(evidence_file)],
         process_runner=fake_runner,
     )
 
@@ -162,3 +147,25 @@ def test_failure_is_fail_fast_compact_and_writes_complete_evidence(
     assert "complete stderr diagnostics" in evidence
     assert "complete stdout diagnostics" not in captured.out
     assert "complete stderr diagnostics" not in captured.out
+
+
+def test_omitted_evidence_flag_keeps_repository_default(
+    tmp_path: pathlib.Path, monkeypatch: Any, capsys: Any
+) -> None:
+    repo_root = tmp_path / "repository"
+    validator_path = repo_root / "scripts" / "validate-repository.py"
+    monkeypatch.setattr(VALIDATOR, "__file__", str(validator_path))
+
+    def failing_runner(
+        command: tuple[str, ...], cwd: pathlib.Path
+    ) -> subprocess.CompletedProcess[str]:
+        del cwd
+        return completed(command, returncode=3, stderr="failure")
+
+    result = VALIDATOR.main([], process_runner=failing_runner)
+
+    payload = json.loads(capsys.readouterr().out)
+    expected = repo_root / "build" / "deploy-validation" / "repository-validation.log"
+    assert result == 3
+    assert payload["evidence_file"] == str(expected)
+    assert expected.is_file()

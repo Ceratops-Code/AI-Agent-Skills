@@ -22,6 +22,7 @@ from github_contract_engine import schema_validation  # noqa: E402
 from github_contract_engine import github_api  # noqa: E402
 from github_contract_engine import codeql_disposition  # noqa: E402
 from github_contract_engine import audit_snapshot  # noqa: E402
+from github_contract_engine import organization_validator  # noqa: E402
 from github_contract_engine.operations import (  # noqa: E402
     TOP_LEVEL_COMMANDS,
     VALIDATION_TARGETS,
@@ -249,16 +250,25 @@ class GHContractStateEngineTests(unittest.TestCase):
             root = pathlib.Path(temporary_directory)
             skills = root / "skills"
             skills.mkdir()
+            skill = skills / "alpha-tool"
+            skill.mkdir()
+            (skill / "SKILL.md").write_text(
+                "invalid skill source that generic repo health must ignore\n",
+                encoding="utf-8",
+            )
+            sections = skills / "sections"
+            sections.mkdir()
+            (sections / "core.md").write_text("## Core\n", encoding="utf-8")
             manifest = skills / "skill-sections.json"
             manifest.write_text(
                 json.dumps(
                     {
                         "runtime_source_id": "example/compatible",
                         "validation_profile": "ceratops-compatible",
-                        "sections": {},
+                        "sections": {"core": "skills/sections/core.md"},
                         "maintenance_workflows": {},
                         "runtime_payloads": {},
-                        "skills": {},
+                        "skills": {"alpha-tool": ["core"]},
                     }
                 ),
                 encoding="utf-8",
@@ -268,10 +278,32 @@ class GHContractStateEngineTests(unittest.TestCase):
                 "| Skill | Purpose |\n| --- | --- |\n",
                 encoding="utf-8",
             )
+            validator = root / "scripts" / "validate-repository.py"
+            validator.parent.mkdir()
+            validator.write_text(
+                "import argparse\n"
+                "parser = argparse.ArgumentParser()\n"
+                "parser.add_argument('--evidence-file')\n"
+                "parser.parse_args()\n"
+                "print('OK')\n",
+                encoding="utf-8",
+            )
+            workflow = root / ".github" / "workflows" / "validate.yml"
+            workflow.parent.mkdir(parents=True)
+            workflow.write_text(
+                "jobs:\n"
+                "  validate:\n"
+                "    steps:\n"
+                "      - run: python scripts/validate-repository.py "
+                "--evidence-file evidence.log\n",
+                encoding="utf-8",
+            )
 
             valid = collect_local_repository(temporary_directory, [])
+            self.assertEqual(
+                set(valid["compatibility"]), {"applicable", "valid", "errors"}
+            )
             self.assertTrue(valid["compatibility"]["applicable"])
-            self.assertTrue(valid["compatibility"]["validator_available"])
             self.assertTrue(valid["compatibility"]["valid"])
             self.assertEqual(valid["compatibility"]["errors"], [])
 
@@ -285,6 +317,144 @@ class GHContractStateEngineTests(unittest.TestCase):
                     "runtime_source_id" in error
                     for error in invalid["compatibility"]["errors"]
                 )
+            )
+
+    def test_local_health_runs_repository_validator_once(self):
+        with tempfile.TemporaryDirectory() as repository_directory:
+            with tempfile.TemporaryDirectory() as evidence_directory:
+                root = pathlib.Path(repository_directory)
+                evidence = pathlib.Path(evidence_directory) / "health.log"
+                validator = root / "scripts" / "validate-repository.py"
+                validator.parent.mkdir()
+                validator.write_text(
+                    "import argparse, pathlib\n"
+                    "parser = argparse.ArgumentParser()\n"
+                    "parser.add_argument('--evidence-file', required=True)\n"
+                    "args = parser.parse_args()\n"
+                    "path = pathlib.Path(args.evidence_file)\n"
+                    "path.write_text('once', encoding='utf-8')\n"
+                    "print('OK')\n",
+                    encoding="utf-8",
+                )
+                workflow = root / ".github" / "workflows" / "validate.yml"
+                workflow.parent.mkdir(parents=True)
+                workflow.write_text(
+                    "jobs:\n"
+                    "  validate:\n"
+                    "    steps:\n"
+                    "      - run: python scripts/validate-repository.py "
+                    "--evidence-file evidence.log\n",
+                    encoding="utf-8",
+                )
+
+                local = collect_local_repository(
+                    repository_directory,
+                    [{"id": "content.repository_validation"}],
+                    repository_validation_evidence_file=str(evidence),
+                )
+
+                self.assertEqual(evidence.read_text(encoding="utf-8"), "once")
+                self.assertEqual(
+                    local["repository_validation"],
+                    {
+                        "applicable": True,
+                        "validator_present": True,
+                        "workflow_present": True,
+                        "valid": True,
+                        "errors": [],
+                    },
+                )
+
+    def test_local_health_reports_missing_repository_validation(self):
+        with tempfile.TemporaryDirectory() as repository_directory:
+            with tempfile.TemporaryDirectory() as evidence_directory:
+                evidence = pathlib.Path(evidence_directory) / "health.log"
+                local = collect_local_repository(
+                    repository_directory,
+                    [{"id": "content.repository_validation"}],
+                    repository_validation_evidence_file=str(evidence),
+                )
+
+                facts = local["repository_validation"]
+                self.assertFalse(facts["valid"])
+                self.assertFalse(facts["validator_present"])
+                self.assertFalse(facts["workflow_present"])
+                self.assertFalse(evidence.exists())
+
+    def test_local_health_external_only_runs_no_repository_validator(self):
+        local = collect_local_repository(
+            None,
+            [{"id": "content.repository_validation"}],
+            repository_validation_evidence_file="unused.log",
+        )
+
+        self.assertEqual(
+            local["repository_validation"],
+            {"applicable": False, "valid": None, "errors": []},
+        )
+
+    def test_local_health_selection_avoids_targeted_aggregate_reruns(self):
+        health = repo_subset_ids(self.contracts, "health")
+        content = repo_subset_ids(self.contracts, "content")
+        create = repo_subset_ids(self.contracts, "create")
+
+        self.assertIsNone(health["code"])
+        self.assertNotIn("content.repository_validation", content["code"] or set())
+        self.assertNotIn("content.repository_validation", create["code"] or set())
+
+    def test_organization_parameter_precedence_is_cli_only(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            params_file = pathlib.Path(temporary_directory) / "params.json"
+            params_file.write_text(
+                json.dumps(
+                    {
+                        "orgs": {
+                            "selected-org": {
+                                "org_login": "file-org",
+                                "billing_email": "file@example.com",
+                                "owner_login": "file-owner",
+                                "tier": "file",
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            args = argparse.Namespace(
+                org="selected-org",
+                params_file=params_file,
+                billing_email="flag@example.com",
+                owner_login="flag-owner",
+                param=['billing_email="param@example.com"', "extra=7"],
+            )
+            contract = {
+                "parameters": {
+                    "billing_email": {"default": "default@example.com"},
+                    "owner_login": {"default": "default-owner"},
+                    "tier": {"default": "default"},
+                }
+            }
+
+            parameters = organization_validator._parameters(args, contract)
+
+            self.assertEqual(
+                parameters,
+                {
+                    "billing_email": "param@example.com",
+                    "owner_login": "flag-owner",
+                    "tier": "file",
+                    "org_login": "selected-org",
+                    "extra": 7,
+                },
+            )
+
+    def test_organization_parameter_file_default_uses_codex_home(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            with mock.patch.dict(os.environ, {"CODEX_HOME": temporary_directory}):
+                path = organization_validator.local_param_path()
+
+            self.assertEqual(
+                path, pathlib.Path(temporary_directory) / "gh-contract-params.json"
             )
 
     def test_local_path_scan_ignores_configured_windows_roots(self):
@@ -469,7 +639,7 @@ class GHContractStateEngineTests(unittest.TestCase):
             {"owner": "owner", "repo": "repo", "default_branch": "main"},
             repo_subset_ids(self.contracts, "all"),
         )
-        self.assertEqual(len(desired_state["rules"]), 77)
+        self.assertEqual(len(desired_state["rules"]), 78)
         self.assertTrue(all(rule["assertions"] for rule in desired_state["rules"]))
         self.assertTrue(
             any(

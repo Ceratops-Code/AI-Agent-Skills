@@ -7,7 +7,7 @@
   },
   "maintenance_workflows": {
     "shared_source_changes": [
-      "python skills/ceratops-repo-lifecycle/scripts/skills-consistency-source-validator.py --mode sections"
+      "python skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py --mode sections"
     ],
     "skill_local_or_metadata_changes": [],
     "helper_runtime_changes": [
@@ -26,6 +26,9 @@
   },
   "runtime_payloads": {
     "ceratops-repo-lifecycle": [
+      "skills/sections/*.md"
+    ],
+    "ceratops-skill-lifecycle": [
       "skills/sections/*.md"
     ]
   },

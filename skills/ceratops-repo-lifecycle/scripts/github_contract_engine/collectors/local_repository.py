@@ -11,8 +11,8 @@ import subprocess
 import sys
 from typing import Any
 
+from compatibility_check import CompatibilityResult, check_repository
 from deploy_contract import read_contract
-
 
 USES_RE = re.compile(r"^\s*uses:\s*([^@\s]+)@([^\s#]+)", re.MULTILINE)
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -103,12 +103,6 @@ WINDOWS_PATH_PREFIX_DEFAULTS = {
     "%SystemRoot%": ("SystemRoot", r"C:\Windows"),
 }
 WINDOWS_PATH_BOUNDARIES = frozenset("\\/\"'`,;)]}\r\n\t")
-COMPATIBILITY_VALIDATOR = (
-    pathlib.Path(__file__).resolve().parents[2]
-    / "skills-consistency-source-validator.py"
-)
-
-
 def path_matches(paths: list[str], patterns: list[str]) -> bool:
     """Return whether any normalized repository path matches any glob."""
 
@@ -735,77 +729,81 @@ def _deploy_contract_facts(local: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _validator_errors(
-    result: subprocess.CompletedProcess[str],
-) -> list[str]:
-    """Reduce compatibility-validator output to stable actionable lines."""
+def _compatibility_facts(local: dict[str, Any]) -> CompatibilityResult:
+    """Return the shared read-only compatibility result unchanged."""
 
-    lines = [
-        line.strip()
-        for line in (result.stderr or result.stdout).splitlines()
-        if line.strip()
-    ]
-    if lines and re.fullmatch(r"errors: \d+", lines[0]):
-        lines = lines[1:]
-    if result.returncode and not lines:
-        return [f"compatibility validator exited {result.returncode}"]
-    return lines if result.returncode else []
+    if not local["available"] or not local["root"]:
+        return {"applicable": False, "valid": None, "errors": []}
+    return check_repository(pathlib.Path(local["root"]))
 
 
-def _compatibility_facts(local: dict[str, Any]) -> dict[str, Any]:
-    """Run the materializer's verifier when compatibility surfaces exist."""
+def _repository_validation_facts(
+    local: dict[str, Any],
+    rules: list[dict[str, Any]],
+    evidence_file: str | None,
+) -> dict[str, Any]:
+    """Run the selected target-owned aggregate once and retain bounded facts."""
 
-    root = pathlib.Path(local["root"]) if local["root"] else None
-    manifest = root / "skills" / "skill-sections.json" if root else None
-    applicable = bool(
-        manifest
-        and (manifest.exists() or manifest.is_symlink())
-    ) or any(
-        re.fullmatch(r"skills/[^/]+/SKILL\.md", path)
-        for path in local["files"]
-    )
-    validator_available = COMPATIBILITY_VALIDATOR.is_file()
-    if (
-        not applicable
-        or not local["available"]
-        or not local["root"]
-        or not validator_available
-    ):
-        errors = (
-            ["compatibility validator is unavailable"]
-            if applicable and not validator_available
-            else []
-        )
+    selected = any(rule.get("id") == "content.repository_validation" for rule in rules)
+    if not selected or not local["available"] or not local["root"]:
+        return {"applicable": False, "valid": None, "errors": []}
+
+    root = pathlib.Path(local["root"]).resolve()
+    validator = root / "scripts" / "validate-repository.py"
+    workflow = root / ".github" / "workflows" / "validate.yml"
+    validator_present = validator.is_file() and not validator.is_symlink()
+    workflow_present = workflow.is_file() and not workflow.is_symlink()
+    errors: list[str] = []
+    if not validator_present:
+        errors.append("scripts/validate-repository.py must be a regular file")
+    if not workflow_present:
+        errors.append(".github/workflows/validate.yml must be a regular file")
+    if not evidence_file:
+        errors.append("--evidence-file is required for local repository validation")
+        resolved_evidence = None
+    else:
+        resolved_evidence = pathlib.Path(evidence_file).expanduser().resolve()
+        if resolved_evidence.is_relative_to(root):
+            errors.append("--evidence-file must be outside --local-repo-path")
+    if errors:
         return {
-            "applicable": applicable,
-            "validator_available": validator_available,
-            "valid": None if not applicable else False,
+            "applicable": True,
+            "validator_present": validator_present,
+            "workflow_present": workflow_present,
+            "valid": False,
             "errors": errors,
         }
+
+    assert resolved_evidence is not None
     result = subprocess.run(
         [
             sys.executable,
-            str(COMPATIBILITY_VALIDATOR),
-            "--repo-root",
-            str(root),
-            "--mode",
-            "full",
+            str(validator),
+            "--evidence-file",
+            str(resolved_evidence),
         ],
+        cwd=root,
         capture_output=True,
         text=True,
         check=False,
     )
-    errors = _validator_errors(result)
+    if result.returncode:
+        message = (result.stdout or result.stderr).strip()
+        errors = [message or f"repository validator exited {result.returncode}"]
     return {
         "applicable": True,
-        "validator_available": True,
+        "validator_present": True,
+        "workflow_present": True,
         "valid": result.returncode == 0,
         "errors": errors,
     }
 
 
 def collect_local_repository(
-    path: str | None, rules: list[dict[str, Any]], default_branch: str | None = None
+    path: str | None,
+    rules: list[dict[str, Any]],
+    default_branch: str | None = None,
+    repository_validation_evidence_file: str | None = None,
 ) -> dict[str, Any]:
     """Collect local paths, text-derived facts, configured scans, and git state."""
 
@@ -888,6 +886,9 @@ def collect_local_repository(
         "manifests": _manifest_facts(local),
         "deploy_contract": _deploy_contract_facts(local),
         "compatibility": _compatibility_facts(local),
+        "repository_validation": _repository_validation_facts(
+            local, rules, repository_validation_evidence_file
+        ),
         "git": _git_state(local, default_branch),
         "scans": scans,
     }

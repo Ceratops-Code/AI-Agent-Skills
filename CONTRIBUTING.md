@@ -41,21 +41,26 @@ Run before opening a pull request:
 ```powershell
 npm ci
 python -m pip install -r requirements-dev.txt
-$env:REPOSITORY_VALIDATION_RENDER_DIR = Join-Path $env:TEMP "ceratops-skills"
-$env:REPOSITORY_VALIDATION_EVIDENCE_FILE = Join-Path $env:TEMP "repository-validation.log"
-python scripts/validate-repository.py
+$validationEvidence = Join-Path $env:TEMP "repository-validation.log"
+python scripts/validate-repository.py --evidence-file $validationEvidence
 ```
 
 This is the same validation entrypoint used by CI. It assumes the declared
 development dependencies are installed and writes complete first-failure
-diagnostics only to the selected evidence file. Full source validation checks
-`deploy/deploy.yml` and both reusable templates without executing a deployment
-operation.
+diagnostics only to the selected evidence file. It does not invoke skill-local
+validators.
+
+Run full skill-source validation separately when skill source, metadata, shared
+sections, runtime inputs, or skill contracts change:
+
+```powershell
+python .\skills\ceratops-skill-lifecycle\scripts\skills-consistency-source-validator.py --mode full
+```
 
 If the change affects workflow behavior, include a short test note in the PR
 explaining how the skill was exercised or reviewed.
 For targeted skill work, run `python
-.\skills\ceratops-repo-lifecycle\scripts\skills-consistency-source-validator.py
+.\skills\ceratops-skill-lifecycle\scripts\skills-consistency-source-validator.py
 --mode sections` only when shared section source files or
 `skills/skill-sections.json` changed. Run the touched package or repository
 lifecycle helper command with `--help` from

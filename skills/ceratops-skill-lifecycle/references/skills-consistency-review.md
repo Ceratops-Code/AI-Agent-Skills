@@ -11,7 +11,7 @@ installed-runtime surface.
 
 ### Script Bundle
 
-- (D) Source consistency validator, run from the repository-lifecycle bundle's
+- (D) Source consistency validator, run from the skill-lifecycle bundle's
   `scripts` folder: `python skills-consistency-source-validator.py --repo-root
   <repo-root> --mode skill --skill <skill-name>`.
 - (D) Global inventory helper: `python
@@ -23,8 +23,8 @@ installed-runtime surface.
   repository-lifecycle bundle's `scripts` folder: `python
   synchronize-bootstrap-installer.py --target-repo-root <task-worktree>`; it
   only compares and copies bootstrap versions.
-- (D) Full source validation after approved bootstrap repair, run from the same
-  folder: `python skills-consistency-source-validator.py --repo-root
+- (D) Full source validation after approved bootstrap repair, run from the
+  skill-lifecycle folder: `python skills-consistency-source-validator.py --repo-root
   <task-worktree> --mode full`.
 - (D) Markdown lint when the repository declares it and skill Markdown is in
   scope: `npm run lint:markdown`.

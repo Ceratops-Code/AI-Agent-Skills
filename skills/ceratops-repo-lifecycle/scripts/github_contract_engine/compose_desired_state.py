@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
 import fnmatch
+from collections.abc import Iterable, Mapping
 from typing import Any
 
 from .collect_observed_states import state_producer
 from .compare_states import OPERATORS
 from .github_api import load_json, substitute
-
 
 REPO_SURFACES = ("repo", "code", "artifact")
 
@@ -58,7 +57,8 @@ def repo_subset_ids(
     if subset == "content":
         return {
             "repo": _prefixes(ids["repo"], "content."),
-            "code": _prefixes(ids["code"], "content.", "actions."),
+            "code": _prefixes(ids["code"], "content.", "actions.")
+            - {"content.repository_validation"},
             "artifact": set(),
         }
     if subset == "artifact":
@@ -75,7 +75,8 @@ def repo_subset_ids(
             "code": {
                 item
                 for item in ids["code"]
-                if not item.startswith("stale_state.") and item != "local.git_state"
+                if not item.startswith("stale_state.")
+                and item not in {"local.git_state", "content.repository_validation"}
             },
             "artifact": None,
         }

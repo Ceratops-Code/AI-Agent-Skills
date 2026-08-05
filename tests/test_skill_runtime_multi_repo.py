@@ -22,7 +22,7 @@ LIFECYCLE_SOURCE = ROOT / "skills" / "ceratops-skill-lifecycle"
 REPOSITORY_LIFECYCLE_SOURCE = ROOT / "skills" / "ceratops-repo-lifecycle"
 REPOSITORY_LIFECYCLE_SCRIPTS = REPOSITORY_LIFECYCLE_SOURCE / "scripts"
 sys.path.insert(0, str(REPOSITORY_LIFECYCLE_SCRIPTS))
-VALIDATOR = REPOSITORY_LIFECYCLE_SOURCE / "scripts" / "skills-consistency-source-validator.py"
+VALIDATOR = LIFECYCLE_SOURCE / "scripts" / "skills-consistency-source-validator.py"
 BUILDER = LIFECYCLE_SOURCE / "scripts" / "runtime" / "managed_runtime_builder.py"
 BOOTSTRAP = ROOT / "scripts" / "install-skills-bootstrap.py"
 LIVE_SECTION_MANIFEST = ROOT / "skills" / "skill-sections.json"
@@ -3410,8 +3410,6 @@ def create_compatible_repo(repo: pathlib.Path, source_id: str, skill_names: list
         encoding="utf-8",
         newline="\n",
     )
-
-
 def write_manifest(repo: pathlib.Path, source_id: str) -> None:
     """Rewrite assignments after a test adds or removes source skills."""
 
@@ -4633,7 +4631,7 @@ def test_skill_sections_template_contains_no_live_repository_inventory() -> None
     assert live["skills"]
 
 
-def test_source_validator_rejects_reusable_template_as_live_manifest(
+def test_source_validator_rejects_section_drift_and_empty_source_identity(
     tmp_path: pathlib.Path,
 ) -> None:
     repo = tmp_path / "compatible"
@@ -4653,7 +4651,14 @@ def test_source_validator_rejects_reusable_template_as_live_manifest(
     assert drifted.returncode == 1
     assert "canonical materialized section differs" in drifted.stderr
 
-    shutil.copy2(SECTION_MANIFEST_TEMPLATE, repo / "skills" / "skill-sections.json")
+    manifest_path = repo / "skills" / "skill-sections.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["runtime_source_id"] = ""
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
 
     result = subprocess.run(
         [sys.executable, str(VALIDATOR), "--repo-root", str(repo), "--mode", "sections"],
@@ -4663,7 +4668,7 @@ def test_source_validator_rejects_reusable_template_as_live_manifest(
     )
 
     assert result.returncode == 1
-    assert "reusable skill-sections template cannot be a live manifest" in result.stderr
+    assert "runtime_source_id must be a nonempty string" in result.stderr
 
 
 def test_compatibility_materializer_supplies_target_identity_and_assignments(
@@ -4758,6 +4763,13 @@ def test_compatibility_materializer_supplies_target_identity_and_assignments(
         ]
     }
     assert (repo / "scripts" / "install-skills-bootstrap.py").is_file()
+    assert (repo / "scripts" / "validate-repository.py").is_file()
+    assert (repo / ".github" / "workflows" / "validate.yml").is_file()
+    assert output["repository_validation"] == {
+        "checks": [],
+        "validator": "materialized",
+        "workflow": "materialized",
+    }
 
 
 def test_compatibility_materializer_supports_repositories_without_skills(
@@ -4765,11 +4777,6 @@ def test_compatibility_materializer_supports_repositories_without_skills(
 ) -> None:
     lifecycle_bundle = tmp_path / "lifecycle-bundle"
     shutil.copytree(REPOSITORY_LIFECYCLE_SOURCE, lifecycle_bundle)
-    (lifecycle_bundle / "scripts" / "skills-consistency-source-validator.py").write_text(
-        "raise SystemExit('source validator must not run')\n",
-        encoding="utf-8",
-        newline="\n",
-    )
     (
         lifecycle_bundle / "scripts" / "synchronize-bootstrap-installer.py"
     ).write_text(
@@ -4790,6 +4797,11 @@ def test_compatibility_materializer_supports_repositories_without_skills(
         "## Skills\n\n"
         "| Skill | Purpose |\n"
         "| --- | --- |\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    (repo / "package.json").write_text(
+        json.dumps({"scripts": {"lint": "echo lint"}}) + "\n",
         encoding="utf-8",
         newline="\n",
     )
@@ -4825,6 +4837,28 @@ def test_compatibility_materializer_supports_repositories_without_skills(
     }
     assert not (repo / "skills" / "sections").exists()
     assert not (repo / "scripts" / "install-skills-bootstrap.py").exists()
+    output = json.loads(result.stdout)
+    assert output["repository_validation"] == {
+        "checks": ["npm-lint"],
+        "validator": "materialized",
+        "workflow": "materialized",
+    }
+    assert (repo / "scripts" / "validate-repository.py").is_file()
+    assert (repo / ".github" / "workflows" / "validate.yml").is_file()
+    validation = subprocess.run(
+        [
+            sys.executable,
+            str(repo / "scripts" / "validate-repository.py"),
+            "--evidence-file",
+            str(tmp_path / "zero-skill-validation.log"),
+        ],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert validation.returncode == 0, validation.stdout
+    assert validation.stdout == "OK\n"
 
     omitted = tmp_path / "empty-without-deploy"
     shutil.copytree(repo, omitted)
@@ -4843,6 +4877,64 @@ def test_compatibility_materializer_supports_repositories_without_skills(
     )
     assert omitted_result.returncode == 0, omitted_result.stdout
     assert not (omitted / "deploy" / "deploy.yml").exists()
+    assert json.loads(omitted_result.stdout)["repository_validation"] == {
+        "checks": [],
+        "validator": "preserved",
+        "workflow": "preserved",
+    }
+
+
+def test_compatibility_materializer_preserves_existing_validator_and_ci(
+    tmp_path: pathlib.Path,
+) -> None:
+    repo = tmp_path / "compatible"
+    create_compatible_repo(repo, "preserved/source", ["alpha-tool"])
+    (repo / ".git").write_text("gitdir: test\n", encoding="utf-8", newline="\n")
+    validator = repo / "scripts" / "validate-repository.py"
+    validator.write_text(
+        "#!/usr/bin/env python3\nprint('target-owned')\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    validator.chmod(0o744)
+    workflow = repo / ".github" / "workflows" / "validate.yml"
+    workflow.parent.mkdir(parents=True)
+    workflow.write_text(
+        "jobs:\n"
+        "  validate:\n"
+        "    steps:\n"
+        "      - run: python scripts/validate-repository.py "
+        "--evidence-file evidence.log\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    before = {
+        path: (path.read_bytes(), path.stat().st_mode)
+        for path in (validator, workflow)
+    }
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(COMPATIBILITY_MATERIALIZER),
+            "--target-repo-root",
+            str(repo),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout
+    assert {
+        path: (path.read_bytes(), path.stat().st_mode)
+        for path in (validator, workflow)
+    } == before
+    assert json.loads(result.stdout)["repository_validation"] == {
+        "checks": [],
+        "validator": "preserved",
+        "workflow": "preserved",
+    }
 
 
 def test_compatibility_materializer_preserves_existing_identity_and_custom_sections(
@@ -4913,6 +5005,24 @@ def test_compatibility_materializer_preserves_existing_identity_and_custom_secti
 def test_compatibility_materializer_rolls_back_every_target_write_on_blocker(
     tmp_path: pathlib.Path,
 ) -> None:
+    lifecycle_bundle = tmp_path / "lifecycle-bundle"
+    shutil.copytree(REPOSITORY_LIFECYCLE_SOURCE, lifecycle_bundle)
+    shutil.copytree(
+        ROOT / "skills" / "sections",
+        lifecycle_bundle / "skills" / "sections",
+    )
+    workflow_template = (
+        lifecycle_bundle / "references" / "templates" / "validate.yml.tmpl"
+    )
+    workflow_template.write_text(
+        workflow_template.read_text(encoding="utf-8").replace(
+            "python scripts/validate-repository.py",
+            "python scripts/not-the-repository-validator.py",
+        ),
+        encoding="utf-8",
+        newline="\n",
+    )
+    broken_materializer = lifecycle_bundle / "scripts" / "make-repo-compatible.py"
     repo = tmp_path / "compatible"
     create_compatible_repo(repo, "preserved/source", ["alpha-tool"])
     (repo / ".git").write_text("gitdir: test\n", encoding="utf-8", newline="\n")
@@ -4926,7 +5036,6 @@ def test_compatibility_materializer_rolls_back_every_target_write_on_blocker(
         encoding="utf-8",
         newline="\n",
     )
-    (repo / "README.md").unlink()
     changed_paths = (
         skill_md,
         repo / "skills" / "sections" / "core.md",
@@ -4939,7 +5048,7 @@ def test_compatibility_materializer_rolls_back_every_target_write_on_blocker(
     result = subprocess.run(
         [
             sys.executable,
-            str(COMPATIBILITY_MATERIALIZER),
+            str(broken_materializer),
             "--target-repo-root",
             str(repo),
         ],
@@ -4951,9 +5060,11 @@ def test_compatibility_materializer_rolls_back_every_target_write_on_blocker(
     assert result.returncode == 1
     output = json.loads(result.stdout)
     assert output["status"] == "blocked"
-    assert output["phase"] == "source_validation"
+    assert output["phase"] == "compatibility_validation"
     assert output["rollback"] == "completed"
     assert {path: path.read_bytes() for path in changed_paths} == original
+    assert not (repo / "scripts" / "validate-repository.py").exists()
+    assert not (repo / ".github" / "workflows" / "validate.yml").exists()
 
 
 def test_compatibility_materializer_blocks_invalid_assignments_before_writes(
@@ -6280,7 +6391,7 @@ def test_full_install_does_not_run_source_validation(tmp_path: pathlib.Path) -> 
     install_bundle_manifest(installed_bundle)
     (repo / "README.md").write_text("# Invalid\n", encoding="utf-8", newline="\n")
     (
-        repository_bundle / "scripts" / "skills-consistency-source-validator.py"
+        installed_bundle / "scripts" / "skills-consistency-source-validator.py"
     ).write_text(
         "raise SystemExit('source validator must not run during installation')\n",
         encoding="utf-8",
