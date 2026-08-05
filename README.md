@@ -6,19 +6,17 @@ Reusable Ceratops skills for Codex and other `SKILL.md`-compatible agents.
 
 | Skill | Purpose |
 | --- | --- |
-| `ceratops-repo-lifecycle` | Route repository lifecycle work across local promotion, structured deployment, guarded shipping, GitHub creation, contracts, health, dependencies, and PR merge actions. |
+| `ceratops-repo-lifecycle` | Route repository lifecycle work across compatibility, local promotion, structured deployment, guarded shipping, GitHub creation, contracts, health, dependencies, and PR merge actions. |
 | `ceratops-governance-lifecycle` | Route prompt optimization, advisory skill optimization, regression-safe instruction updates, and cross-scope governance consistency audits across action references. |
 | `ceratops-credit-savings-analysis` | Analyze recent Codex runs for avoidable credit spend and recommend low-maintenance controls. |
-| `ceratops-skill-lifecycle` | Route skill-domain work across create, make-repo-compatible, deploy, preferred eligible fast-change, update, skills-contract-review, and skills-consistency-review actions. |
+| `ceratops-skill-lifecycle` | Route skill-domain work across create, deploy, preferred eligible fast-change, update, skills-contract-review, and skills-consistency-review actions. |
 | `ceratops-automation-run` | Run recurring automations with shared Ceratops alert, memory, and completion policy. |
-| `ceratops-task-lifecycle` | Route same-thread task resume, whole-task handoff, and closure-check work across action references. |
+| `ceratops-task-lifecycle` | Route failed-fix-loop breaks, same-thread task resume, whole-task handoff, and closure checks across action references. |
 | `ceratops-code-consistency-audit` | Audit merged refactors for contradictions, docs drift, comment sufficiency, stale follow-through, and merged-only edge cases. |
 
 ## Layout
 
 ```text
-assets/
-  ceratops-logo-500.png
 skills/
   skill-sections.json
   sections/
@@ -34,10 +32,12 @@ skills/
       <action-or-contract-reference>
 deploy/
   deploy.yml
-skills/ceratops-skill-lifecycle/references/templates/
+skills/ceratops-repo-lifecycle/references/templates/
   deploy-template.yml
   install-skills-bootstrap-template.py
   skill-sections-template.json
+skills/ceratops-skill-lifecycle/references/templates/
+  ceratops-logo-500.png
 ```
 
 Source `SKILL.md` files are portable, delta-only skill definitions. Runtime
@@ -53,13 +53,13 @@ Skill names are independent of the profile and need no `ceratops-` prefix.
 skills that select among multiple action references.
 The `skills/` tree is authoritative skill source for this repository.
 `deploy/deploy.yml` is its authoritative structured deployment definition.
-The templates under
-`skills/ceratops-skill-lifecycle/references/templates/` are reusable
-skeletons to copy into other repositories, not live configuration.
+The repository-compatibility templates under
+`skills/ceratops-repo-lifecycle/references/templates/` are reusable skeletons
+to copy into other repositories, not live configuration.
 `agents/openai.yaml` is Codex UI metadata and may be ignored by other agents.
 Each Ceratops skill declares the runtime-local icon path
-`./assets/ceratops-logo-500.png`. The repo-root `assets/ceratops-logo-500.png`
-is the source copied into each skill by the skill-lifecycle runtime installer.
+`./assets/ceratops-logo-500.png`; every source copy matches the canonical
+`skills/ceratops-skill-lifecycle/references/templates/ceratops-logo-500.png`.
 Reusable helper logic lives in skill-local lifecycle scripts under
 `skills/*/scripts/`, not in an installed Python package.
 Contract sources live inside their owning lifecycle skill.
@@ -88,11 +88,11 @@ without repository deduplication.
 | --- | --- |
 | `scripts/install-skills-bootstrap.py` | Self-contained first-install bootstrap; stages and validates one complete selected batch under the install root and never calls lifecycle runtime code. |
 | `scripts/validate-repository.py` | Sole full local-and-CI validation owner; captures child output and writes first-failure evidence to a caller-selected file. |
-| `skills/ceratops-skill-lifecycle/references/templates/install-skills-bootstrap-template.py` | Authoritative standard-library-only bootstrap copied into compatible skill repositories as `scripts/install-skills-bootstrap.py`. |
-| `skills/ceratops-skill-lifecycle/scripts/materialize-compatible-repo.py` | Deterministically instantiates compatible surfaces and their default managed-skill handoff, synchronizes and source-validates only skill-bearing repositories, and rolls back caught blockers. |
-| `skills/ceratops-skill-lifecycle/references/templates/skill-sections-template.json` | Repository-neutral template for materializing a target repository's live `skills/skill-sections.json`; never a live manifest. |
+| `skills/ceratops-repo-lifecycle/references/templates/install-skills-bootstrap-template.py` | Authoritative standard-library-only bootstrap copied into compatible skill repositories as `scripts/install-skills-bootstrap.py`. |
+| `skills/ceratops-repo-lifecycle/scripts/make-repo-compatible.py` | Deterministically instantiates compatible surfaces and their default managed-skill handoff, synchronizes and source-validates only skill-bearing repositories, and rolls back caught blockers. |
+| `skills/ceratops-repo-lifecycle/references/templates/skill-sections-template.json` | Repository-neutral template for materializing a target repository's live `skills/skill-sections.json`; never a live manifest. |
 | `skills/ceratops-skill-lifecycle/scripts/runtime/install-managed-skills.py` | Classifies explicit, promotion-relative, or all-managed affected sets; owns direct-manifest inventory; and invokes one runtime transaction without source validation. |
-| `skills/ceratops-skill-lifecycle/scripts/synchronize-bootstrap-installer.py` | Copies the authoritative bootstrap into an approved task worktree only when its parsed version is missing or lower; callers own validation. |
+| `skills/ceratops-repo-lifecycle/scripts/synchronize-bootstrap-installer.py` | Copies the authoritative bootstrap into an approved task worktree only when its parsed version is missing or lower; callers own validation. |
 | `skills/ceratops-skill-lifecycle/scripts/runtime/managed_runtime_builder.py` | Stages, activates, rolls back, recovers, and cleans one locked selected-skill runtime transaction. |
 | `skills/ceratops-skill-lifecycle/scripts/update-execution.py` | Collects declared pytest nodes before edits, records a task-worktree baseline, verifies declared cohesive update paths, runs closed structured checks once, and writes detailed evidence while preserving unrelated dirty state. |
 | `skills/ceratops-credit-savings-analysis/scripts/model-call-ledger.py` | Writes fingerprint, usage, and opt-in selected-semantic evidence; emits compact rankings or receipts; and preserves artifact-free closure and classification modes. |
@@ -105,10 +105,11 @@ without repository deduplication.
 | `skills/ceratops-repo-lifecycle/scripts/github_pr_workflow/` | Package CLI for individual PR operations, exact-commit checkpointed shipping, a scoped pending-work pre-push guard, concurrent gates, integrated post-gate admin merge, reusable-branch restoration, and terminal checkpoint cleanup. Standalone merge behavior is unchanged. |
 | `skills/ceratops-repo-lifecycle/scripts/promote-repository.py` | Prepares `release/local`, or promotes selected branches, runs one named operation, and returns its declared handoff only when the promoted manifest has managed skills. |
 | `skills/ceratops-repo-lifecycle/scripts/manage-pending-work.py` | Records, checks, and progressively finalizes the exact selected branch and worktree scope used by promotion and shipping. |
-| `skills/ceratops-repo-lifecycle/scripts/run-deploy-operation.py` | Validates `deploy/deploy.yml`, executes ordered argv steps without a shell, and returns any optional declarative agent handoff. |
+| `skills/ceratops-repo-lifecycle/scripts/deploy_contract.py` | Owns schema validation shared by deployment execution, repository compatibility, and health collection. |
+| `skills/ceratops-repo-lifecycle/scripts/run-deploy-operation.py` | Uses the shared validator for `deploy/deploy.yml`, executes ordered argv steps without a shell, and returns any optional declarative agent handoff. |
 | `skills/ceratops-repo-lifecycle/scripts/ship-repository.py` | Orchestrates scoped pre-push checking, guarded GitHub shipping, main synchronization, a pre-deploy recheck, checkpointed optional `deploy`, and resumable selected-source cleanup. |
+| `skills/ceratops-repo-lifecycle/scripts/skills-consistency-source-validator.py` | Profile-aware compatibility postcondition verifier used by materialization, repo health, and explicit skill maintenance. |
 | `skills/ceratops-skill-lifecycle/scripts/fast-change.py` | Classifies and owns one eligible direct-release patch through declared Markdown lint, exact helper tests, targeted installation, commit, and failure compensation. |
-| `skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py` | Profile-aware source validator used by explicit maintenance and skill-bearing compatibility materialization. |
 
 Lifecycle helpers suppress successful subcommand output and print only compact
 JSON on success. This repo keeps scripts only where they add reusable safety
@@ -203,7 +204,7 @@ python -m github_pr_workflow ship --help
 python -m github_contract_engine codeql-disposition --help
 python -m github_contract_engine validate consistency
 Pop-Location
-python .\skills\ceratops-skill-lifecycle\scripts\skills-consistency-source-validator.py --mode full
+python .\skills\ceratops-repo-lifecycle\scripts\skills-consistency-source-validator.py --mode full
 ```
 
 The organization and repository/artifact commands are package operations over
@@ -223,6 +224,9 @@ classify before closure. Repo-health summary JSON includes compact stale-state
 inventory counts and samples for PRs, branches, tags, releases, and local path
 references when present. It also reports the observed community-profile health
 percentage and its 100% contract target; inventory alone is not a finding.
+Local health collection validates every present `deploy/deploy.yml` with the
+repository-lifecycle schema and runs the compatibility materializer's full
+postcondition verifier whenever a section manifest or source skill is present.
 
 Collect review evidence for non-deterministic checks with:
 
@@ -241,7 +245,7 @@ surfaces are read by `github_contract_engine` and `github_pr_workflow` package
 commands.
 The skill surface is represented by
 `skills/ceratops-skill-lifecycle/references/skill-*` and
-`skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py`.
+`skills/ceratops-repo-lifecycle/scripts/skills-consistency-source-validator.py`.
 Skills pass or choose a surface only when they are doing an explicit audit,
 drift check, uncertain-state check, or broad closeout claim.
 
@@ -391,8 +395,9 @@ $env:REPOSITORY_VALIDATION_EVIDENCE_FILE = Join-Path $env:TEMP "repository-valid
 python scripts/validate-repository.py
 ```
 
-The validator runs Markdown and YAML lint, mypy for Linux and Win32, pytest,
-full source-contract validation, and repository lifecycle CLI smoke checks.
+The validator runs Markdown and YAML lint, Ruff over repository bootstrap and
+validation producers, mypy for Linux and Win32, pytest, full source-contract
+validation, and repository lifecycle CLI smoke checks.
 Full source validation checks the kind-qualified version 1 deployment contract,
 repository-bounded working directories, the Ceratops `deploy` validation step,
 and reusable template skeletons without executing deployment. Runtime rendering
@@ -403,14 +408,14 @@ Targeted installation validates only explicitly selected skills and their
 rendering inputs:
 
 ```powershell
-python .\skills\ceratops-skill-lifecycle\scripts\skills-consistency-source-validator.py --mode skill --skill <skill-name>
+python .\skills\ceratops-repo-lifecycle\scripts\skills-consistency-source-validator.py --mode skill --skill <skill-name>
 ```
 
 Run section validation only when shared section source files or
 `skills/skill-sections.json` assignments changed:
 
 ```powershell
-python .\skills\ceratops-skill-lifecycle\scripts\skills-consistency-source-validator.py --mode sections
+python .\skills\ceratops-repo-lifecycle\scripts\skills-consistency-source-validator.py --mode sections
 ```
 
 The section mode validates that source skills are delta-only;

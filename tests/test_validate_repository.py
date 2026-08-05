@@ -39,6 +39,7 @@ def test_build_checks_owns_order_both_platforms_and_space_safe_paths(
     assert [(check.name, check.platform) for check in checks] == [
         ("markdown-lint", None),
         ("yaml-lint", None),
+        ("ruff", None),
         ("mypy", "linux"),
         ("mypy", "win32"),
         ("pytest", None),
@@ -50,10 +51,19 @@ def test_build_checks_owns_order_both_platforms_and_space_safe_paths(
         ("repo-lifecycle-pr-ship-help", None),
         ("repo-lifecycle-codeql-disposition-help", None),
     ]
-    assert checks[2].command[-2:] == ("--platform", "linux")
-    assert checks[3].command[-2:] == ("--platform", "win32")
-    assert "repository with spaces" in checks[5].command[1]
-    assert checks[6].cwd == repo_root / "skills/ceratops-repo-lifecycle/scripts"
+    assert checks[2].command == (
+        "python executable",
+        "-m",
+        "ruff",
+        "check",
+        "scripts",
+        "skills/ceratops-repo-lifecycle/references/templates/"
+        "install-skills-bootstrap-template.py",
+    )
+    assert checks[3].command[-2:] == ("--platform", "linux")
+    assert checks[4].command[-2:] == ("--platform", "win32")
+    assert "repository with spaces" in checks[6].command[1]
+    assert checks[7].cwd == repo_root / "skills/ceratops-repo-lifecycle/scripts"
 
 
 def test_run_process_captures_output_without_a_shell(
@@ -102,7 +112,7 @@ def test_success_prints_exactly_ok_and_suppresses_child_output(
     assert result == 0
     assert captured.out == "OK\n"
     assert captured.err == ""
-    assert len(calls) == 12
+    assert len(calls) == 13
     assert not evidence_file.exists()
 
 
@@ -116,7 +126,7 @@ def test_failure_is_fail_fast_compact_and_writes_complete_evidence(
     ) -> subprocess.CompletedProcess[str]:
         del cwd
         calls.append(command)
-        if len(calls) == 4:
+        if len(calls) == 5:
             return completed(
                 command,
                 returncode=7,
@@ -137,7 +147,7 @@ def test_failure_is_fail_fast_compact_and_writes_complete_evidence(
     captured = capsys.readouterr()
     payload = json.loads(captured.out)
     assert result == 7
-    assert len(calls) == 4
+    assert len(calls) == 5
     assert payload == {
         "check": "mypy",
         "platform": "win32",

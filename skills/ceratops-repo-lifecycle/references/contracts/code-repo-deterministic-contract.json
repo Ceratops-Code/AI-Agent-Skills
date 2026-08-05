@@ -11,6 +11,14 @@
     {
       "path": "$AI_AGENT_SKILLS_ROOT/skills/ceratops-repo-lifecycle/references/health-audit.md",
       "lines": "contract owner"
+    },
+    {
+      "path": "$AI_AGENT_SKILLS_ROOT/skills/ceratops-repo-lifecycle/scripts/deploy_contract.py",
+      "lines": "shared deploy schema validation"
+    },
+    {
+      "path": "$AI_AGENT_SKILLS_ROOT/skills/ceratops-repo-lifecycle/scripts/skills-consistency-source-validator.py",
+      "lines": "repository compatibility postcondition validation"
     }
   ],
   "parameters": {
@@ -123,6 +131,8 @@
         "actions.workflow_sha_pinning",
         "security.dependabot_config_file",
         "content.required_files_presence",
+        "content.deploy_contract_schema",
+        "content.ceratops_compatibility",
         "local.git_state",
         "content.local_secret_pattern_scan",
         "stale_state.local_path_references"
@@ -257,6 +267,33 @@
         },
         {
           "path": "/repository/content/codeowners_errors",
+          "operator": "empty"
+        }
+      ]
+    },
+    {
+      "id": "content.deploy_contract_schema",
+      "kind": "local_contract",
+      "applies_when": "local_repo_path is provided && local.deploy_contract.present == true",
+      "assertions": [
+        {
+          "path": "/local/deploy_contract/errors",
+          "operator": "empty"
+        }
+      ]
+    },
+    {
+      "id": "content.ceratops_compatibility",
+      "kind": "local_contract",
+      "applies_when": "local_repo_path is provided && local.compatibility.applicable == true",
+      "assertions": [
+        {
+          "path": "/local/compatibility/validator_available",
+          "operator": "equal",
+          "expected": true
+        },
+        {
+          "path": "/local/compatibility/errors",
           "operator": "empty"
         }
       ]

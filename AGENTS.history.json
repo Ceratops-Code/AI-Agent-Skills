@@ -250,6 +250,14 @@
       "decision": "Retire SKILLS-DEPLOY-01 without replacement deployment prose.",
       "reason": "Deployment schema, lifecycle actions, and deterministic helpers are the executable owners; a repository rule would duplicate their contract.",
       "regression": "Do not weaken surviving checkout, staging, creation, shipping, or section-manifest ownership rules."
+    },
+    {
+      "rules": [
+        "SKILLS-SECTIONS-01"
+      ],
+      "decision": "Move reusable repository-compatibility template ownership from skill lifecycle to repository lifecycle.",
+      "reason": "Repository compatibility is a repository lifecycle action, so its materializer inputs and health verification require one owner.",
+      "regression": "Keep the live manifest under skills/skill-sections.json, shared sources under skills/sections/, and the reusable template distinct from live configuration."
     }
   ]
 }

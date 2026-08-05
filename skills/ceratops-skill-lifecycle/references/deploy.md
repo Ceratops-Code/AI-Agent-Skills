@@ -10,8 +10,9 @@ deployment operations or the first-install bootstrap.
 ### Script Bundle
 
 - (D) Source validation: `python
-  scripts/skills-consistency-source-validator.py --repo-root <repo-root>
-  --mode full` from the installed or source lifecycle bundle.
+  skills/ceratops-repo-lifecycle/scripts/skills-consistency-source-validator.py
+  --repo-root <repo-root> --mode full` from a source checkout, or the same
+  script from the installed repository-lifecycle bundle.
 - (D) Managed runtime transaction: `python
   scripts/runtime/install-managed-skills.py --repo-root <repo-root>
   [--install-root <skills-root>] [--skill <name>...]

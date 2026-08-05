@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Materialize compatible repository sources in one task worktree.
+"""Make one repository Ceratops-compatible in its task worktree.
 
 The lifecycle bundle owns the reusable template and canonical shared sections.
 This helper derives repository identity and skill assignments, removes only
@@ -21,6 +21,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 
 import yaml
+
+from deploy_contract import DeployContractError, validation_errors
 
 
 BUNDLE_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -203,11 +205,18 @@ def deploy_contract(
                 updated_operations["deploy"] = updated_deploy
             else:
                 updated_operations.pop("deploy")
-    return {
+    candidate = {
         "version": 1,
         "kind": "ceratops-deploy",
         "operations": updated_operations,
     }
+    try:
+        errors = validation_errors(candidate)
+    except DeployContractError as exc:
+        raise RuntimeError(str(exc)) from exc
+    if errors:
+        raise RuntimeError(f"invalid deploy contract: {errors[0]}")
+    return candidate
 
 
 def portable_section_path(repo_root: pathlib.Path, value: object) -> pathlib.Path:
@@ -526,7 +535,7 @@ def main() -> int:
     """Materialize compatibility inputs, synchronize installer, and validate."""
 
     parser = argparse.ArgumentParser(
-        description="Materialize Ceratops-compatible repository sources."
+        description="Make repository sources Ceratops-compatible."
     )
     parser.add_argument("--target-repo-root", required=True, type=pathlib.Path)
     parser.add_argument("--runtime-source-id")

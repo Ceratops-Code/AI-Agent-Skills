@@ -55,7 +55,7 @@ operation.
 If the change affects workflow behavior, include a short test note in the PR
 explaining how the skill was exercised or reviewed.
 For targeted skill work, run `python
-.\skills\ceratops-skill-lifecycle\scripts\skills-consistency-source-validator.py
+.\skills\ceratops-repo-lifecycle\scripts\skills-consistency-source-validator.py
 --mode sections` only when shared section source files or
 `skills/skill-sections.json` changed. Run the touched package or repository
 lifecycle helper command with `--help` from

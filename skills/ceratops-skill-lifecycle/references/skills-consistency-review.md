@@ -11,21 +11,21 @@ installed-runtime surface.
 
 ### Script Bundle
 
-- (D) Source consistency validator: `python
-  scripts/skills-consistency-source-validator.py --repo-root <repo-root>
-  --mode skill --skill <skill-name>` from the lifecycle bundle.
+- (D) Source consistency validator, run from the repository-lifecycle bundle's
+  `scripts` folder: `python skills-consistency-source-validator.py --repo-root
+  <repo-root> --mode skill --skill <skill-name>`.
 - (D) Global inventory helper: `python
   scripts/runtime/install-managed-skills.py --inventory-output <file>` writes
   compact routing data for every direct manifest-backed installed skill and
   malformed direct-manifest blockers without auditing any skill, then emits
   `OK`.
-- (D) Installer synchronization when repair is authorized: `python
-  scripts/synchronize-bootstrap-installer.py --target-repo-root
-  <task-worktree>` from the installed lifecycle bundle; it only compares and
-  copies bootstrap versions.
-- (D) Full source validation after approved bootstrap repair: `python
-  scripts/skills-consistency-source-validator.py --repo-root
-  <task-worktree> --mode full` from the installed lifecycle bundle.
+- (D) Installer synchronization when repair is authorized, run from the
+  repository-lifecycle bundle's `scripts` folder: `python
+  synchronize-bootstrap-installer.py --target-repo-root <task-worktree>`; it
+  only compares and copies bootstrap versions.
+- (D) Full source validation after approved bootstrap repair, run from the same
+  folder: `python skills-consistency-source-validator.py --repo-root
+  <task-worktree> --mode full`.
 - (D) Markdown lint when the repository declares it and skill Markdown is in
   scope: `npm run lint:markdown`.
 - (D) Python type check when the repository declares it and skill helpers or

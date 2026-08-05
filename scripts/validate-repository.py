@@ -19,7 +19,6 @@ import sys
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 
-
 EVIDENCE_FILE_ENV = "REPOSITORY_VALIDATION_EVIDENCE_FILE"
 COMMAND_NOT_FOUND_EXIT_CODE = 127
 
@@ -82,7 +81,7 @@ def build_checks(
     source_validator = (
         repo_root
         / "skills"
-        / "ceratops-skill-lifecycle"
+        / "ceratops-repo-lifecycle"
         / "scripts"
         / "skills-consistency-source-validator.py"
     )
@@ -92,6 +91,19 @@ def build_checks(
         Check(
             "yaml-lint",
             (python, "-m", "yamllint", "."),
+            repo_root,
+        ),
+        Check(
+            "ruff",
+            (
+                python,
+                "-m",
+                "ruff",
+                "check",
+                "scripts",
+                "skills/ceratops-repo-lifecycle/references/templates/"
+                "install-skills-bootstrap-template.py",
+            ),
             repo_root,
         ),
         Check(

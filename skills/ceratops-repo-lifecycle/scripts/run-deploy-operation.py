@@ -19,17 +19,9 @@ import sys
 from collections.abc import Mapping, Sequence
 from typing import Any, cast
 
-import jsonschema
-import yaml
+from deploy_contract import DeployContractError, load_contract
 
 
-SCRIPT_ROOT = pathlib.Path(__file__).resolve().parent
-SCHEMA = (
-    SCRIPT_ROOT.parent
-    / "references"
-    / "schemas"
-    / "deploy-contract.schema.json"
-)
 DEFAULT_CONTRACT = pathlib.Path("deploy/deploy.yml")
 PARAMETER_NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 PLACEHOLDER_RE = re.compile(r"^\{(?P<name>[a-z][a-z0-9_]*)\}$")
@@ -58,19 +50,9 @@ def _read_contract(
     if not resolved.is_file() or not _inside(resolved, repo_root):
         raise DeployError("Deployment contract must be a file inside the repository.")
     try:
-        value = yaml.safe_load(resolved.read_text(encoding="utf-8"))
-        schema = json.loads(SCHEMA.read_text(encoding="utf-8"))
-        jsonschema.Draft202012Validator(schema).validate(value)
-    except (
-        OSError,
-        yaml.YAMLError,
-        json.JSONDecodeError,
-        jsonschema.ValidationError,
-        jsonschema.SchemaError,
-    ) as exc:
+        value = load_contract(resolved)
+    except DeployContractError as exc:
         raise DeployError(f"Invalid deployment contract: {exc}") from exc
-    if not isinstance(value, Mapping):
-        raise DeployError("Deployment contract must be a mapping.")
     return value
 
 

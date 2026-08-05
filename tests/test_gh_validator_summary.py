@@ -198,6 +198,95 @@ class GHContractStateEngineTests(unittest.TestCase):
                 },
             )
 
+    def test_local_health_validates_present_deploy_contract_schema(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = pathlib.Path(temporary_directory)
+            contract = root / "deploy" / "deploy.yml"
+            contract.parent.mkdir()
+            contract.write_text(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "kind": "ceratops-deploy",
+                        "operations": {
+                            "invalid": {
+                                "steps": [
+                                    {"id": "invalid", "run": "python -V"}
+                                ]
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            invalid = collect_local_repository(temporary_directory, [])
+            self.assertTrue(invalid["deploy_contract"]["present"])
+            self.assertFalse(invalid["deploy_contract"]["valid"])
+            self.assertTrue(
+                any(
+                    "schema validation failed" in error
+                    for error in invalid["deploy_contract"]["errors"]
+                )
+            )
+
+            contract.write_text(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "kind": "ceratops-deploy",
+                        "operations": {},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            valid = collect_local_repository(temporary_directory, [])
+            self.assertTrue(valid["deploy_contract"]["valid"])
+            self.assertEqual(valid["deploy_contract"]["errors"], [])
+
+    def test_local_health_reuses_compatibility_postcondition_validator(self):
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = pathlib.Path(temporary_directory)
+            skills = root / "skills"
+            skills.mkdir()
+            manifest = skills / "skill-sections.json"
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "runtime_source_id": "example/compatible",
+                        "validation_profile": "ceratops-compatible",
+                        "sections": {},
+                        "maintenance_workflows": {},
+                        "runtime_payloads": {},
+                        "skills": {},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (root / "README.md").write_text(
+                "# Compatible\n\n## Skills\n\n"
+                "| Skill | Purpose |\n| --- | --- |\n",
+                encoding="utf-8",
+            )
+
+            valid = collect_local_repository(temporary_directory, [])
+            self.assertTrue(valid["compatibility"]["applicable"])
+            self.assertTrue(valid["compatibility"]["validator_available"])
+            self.assertTrue(valid["compatibility"]["valid"])
+            self.assertEqual(valid["compatibility"]["errors"], [])
+
+            value = json.loads(manifest.read_text(encoding="utf-8"))
+            value["runtime_source_id"] = ""
+            manifest.write_text(json.dumps(value), encoding="utf-8")
+            invalid = collect_local_repository(temporary_directory, [])
+            self.assertFalse(invalid["compatibility"]["valid"])
+            self.assertTrue(
+                any(
+                    "runtime_source_id" in error
+                    for error in invalid["compatibility"]["errors"]
+                )
+            )
+
     def test_local_path_scan_ignores_configured_windows_roots(self):
         rule = next(
             item
@@ -380,7 +469,7 @@ class GHContractStateEngineTests(unittest.TestCase):
             {"owner": "owner", "repo": "repo", "default_branch": "main"},
             repo_subset_ids(self.contracts, "all"),
         )
-        self.assertEqual(len(desired_state["rules"]), 75)
+        self.assertEqual(len(desired_state["rules"]), 77)
         self.assertTrue(all(rule["assertions"] for rule in desired_state["rules"]))
         self.assertTrue(
             any(

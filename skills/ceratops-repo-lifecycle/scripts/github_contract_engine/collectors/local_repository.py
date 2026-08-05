@@ -8,7 +8,10 @@ import os
 import pathlib
 import re
 import subprocess
+import sys
 from typing import Any
+
+from deploy_contract import read_contract
 
 
 USES_RE = re.compile(r"^\s*uses:\s*([^@\s]+)@([^\s#]+)", re.MULTILINE)
@@ -100,6 +103,10 @@ WINDOWS_PATH_PREFIX_DEFAULTS = {
     "%SystemRoot%": ("SystemRoot", r"C:\Windows"),
 }
 WINDOWS_PATH_BOUNDARIES = frozenset("\\/\"'`,;)]}\r\n\t")
+COMPATIBILITY_VALIDATOR = (
+    pathlib.Path(__file__).resolve().parents[2]
+    / "skills-consistency-source-validator.py"
+)
 
 
 def path_matches(paths: list[str], patterns: list[str]) -> bool:
@@ -705,6 +712,98 @@ def _manifest_facts(local: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _deploy_contract_facts(local: dict[str, Any]) -> dict[str, Any]:
+    """Validate a present deployment definition with the lifecycle schema."""
+
+    if not local["available"] or not local["root"]:
+        return {"present": False, "valid": None, "errors": []}
+    path = pathlib.Path(local["root"]) / "deploy" / "deploy.yml"
+    present = path.exists() or path.is_symlink()
+    if not present:
+        return {"present": False, "valid": None, "errors": []}
+    if path.is_symlink() or not path.is_file():
+        return {
+            "present": True,
+            "valid": False,
+            "errors": ["deploy/deploy.yml must be a regular file"],
+        }
+    contract, errors = read_contract(path)
+    return {
+        "present": True,
+        "valid": contract is not None and not errors,
+        "errors": errors,
+    }
+
+
+def _validator_errors(
+    result: subprocess.CompletedProcess[str],
+) -> list[str]:
+    """Reduce compatibility-validator output to stable actionable lines."""
+
+    lines = [
+        line.strip()
+        for line in (result.stderr or result.stdout).splitlines()
+        if line.strip()
+    ]
+    if lines and re.fullmatch(r"errors: \d+", lines[0]):
+        lines = lines[1:]
+    if result.returncode and not lines:
+        return [f"compatibility validator exited {result.returncode}"]
+    return lines if result.returncode else []
+
+
+def _compatibility_facts(local: dict[str, Any]) -> dict[str, Any]:
+    """Run the materializer's verifier when compatibility surfaces exist."""
+
+    root = pathlib.Path(local["root"]) if local["root"] else None
+    manifest = root / "skills" / "skill-sections.json" if root else None
+    applicable = bool(
+        manifest
+        and (manifest.exists() or manifest.is_symlink())
+    ) or any(
+        re.fullmatch(r"skills/[^/]+/SKILL\.md", path)
+        for path in local["files"]
+    )
+    validator_available = COMPATIBILITY_VALIDATOR.is_file()
+    if (
+        not applicable
+        or not local["available"]
+        or not local["root"]
+        or not validator_available
+    ):
+        errors = (
+            ["compatibility validator is unavailable"]
+            if applicable and not validator_available
+            else []
+        )
+        return {
+            "applicable": applicable,
+            "validator_available": validator_available,
+            "valid": None if not applicable else False,
+            "errors": errors,
+        }
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(COMPATIBILITY_VALIDATOR),
+            "--repo-root",
+            str(root),
+            "--mode",
+            "full",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    errors = _validator_errors(result)
+    return {
+        "applicable": True,
+        "validator_available": True,
+        "valid": result.returncode == 0,
+        "errors": errors,
+    }
+
+
 def collect_local_repository(
     path: str | None, rules: list[dict[str, Any]], default_branch: str | None = None
 ) -> dict[str, Any]:
@@ -787,6 +886,8 @@ def collect_local_repository(
             "ecosystems": _dependabot_ecosystems(local["files"]),
         },
         "manifests": _manifest_facts(local),
+        "deploy_contract": _deploy_contract_facts(local),
+        "compatibility": _compatibility_facts(local),
         "git": _git_state(local, default_branch),
         "scans": scans,
     }
