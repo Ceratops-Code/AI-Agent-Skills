@@ -1709,8 +1709,6 @@ def main(argv: list[str] | None = None) -> int:
                     "--closure does not accept --semantic-evidence-output"
                 )
         else:
-            if args.thread_id is not None:
-                raise LedgerError("--thread-id requires --closure")
             if args.evidence_output is None:
                 raise LedgerError("ordinary mode requires --evidence-output")
             if args.semantic_evidence_output is not None and not args.include_run:

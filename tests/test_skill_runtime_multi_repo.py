@@ -1020,6 +1020,38 @@ def test_model_call_ledger_closure_mode_is_artifact_free(
         "ceratops-model-call-usage-evidence.v1"
     )
 
+    thread_ledger = tmp_path / "thread-ledger.json"
+    thread_semantic_evidence = tmp_path / "thread-semantic.json"
+    thread_semantic = subprocess.run(
+        [
+            sys.executable,
+            str(MODEL_CALL_LEDGER),
+            "--thread-id",
+            thread_id,
+            "--evidence-output",
+            str(thread_ledger),
+            "--semantic-evidence-output",
+            str(thread_semantic_evidence),
+            "--include-run",
+            "turn-1",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=environment,
+    )
+    assert thread_semantic.returncode == 0, thread_semantic.stderr
+    thread_semantic_summary = json.loads(thread_semantic.stdout)
+    assert thread_semantic_summary["selected_runs"] == [
+        {"turn_id": "turn-1", "model_calls": 2}
+    ]
+    assert pathlib.Path(
+        json.loads(thread_ledger.read_text(encoding="utf-8"))["session"]
+    ) == session.resolve()
+    assert json.loads(
+        thread_semantic_evidence.read_text(encoding="utf-8")
+    )["selected_runs"][0]["turn_id"] == "turn-1"
+
     semantic = subprocess.run(
         [
             sys.executable,
