@@ -283,9 +283,10 @@ def check_scope(
         target_commit=target_commit,
     )
     findings = ship._pending_work_findings(repo_root, scope)
-    scope, findings = _prune_missing_branches(path, scope, findings)
-    if scope is None:
+    pruned_scope, findings = _prune_missing_branches(path, scope, findings)
+    if pruned_scope is None:
         return _ready_without_scope()
+    scope = pruned_scope
     if findings:
         return {
             "status": "pending_work",
