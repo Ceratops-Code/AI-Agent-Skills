@@ -3766,8 +3766,10 @@ def test_promote_and_deploy_rejects_operation_created_repository_work(
     assert (repo / "generated-by-deploy.txt").is_file()
 
 
+@pytest.mark.parametrize("scope_present", [False, True])
 def test_repository_ship_absent_default_contract_is_no_op_and_finalizes(
     tmp_path: pathlib.Path,
+    scope_present: bool,
 ) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -3786,11 +3788,22 @@ def test_repository_ship_absent_default_contract_is_no_op_and_finalizes(
         "merge_commit": "c" * 40,
         "synchronized_head": "b" * 40,
     }
+    prepared = {
+        "status": "ready",
+        "source_branches": [] if not scope_present else ["selected"],
+        "pending_work_scope": str(scope) if scope_present else "",
+    }
     responses: list[tuple[int, dict[str, Any]]] = [
+        (0, prepared),
         (0, shipped),
-        (0, {"status": "ready"}),
-        (0, {"status": "finalized"}),
     ]
+    if scope_present:
+        responses.extend(
+            [
+                (0, prepared),
+                (0, {"status": "finalized"}),
+            ]
+        )
     commands: list[list[str]] = []
 
     def run_json(
@@ -3802,6 +3815,11 @@ def test_repository_ship_absent_default_contract_is_no_op_and_finalizes(
         return responses[len(commands) - 1]
 
     loaded = runpy.run_path(str(SHIP_REPOSITORY))
+    parsed = loaded["build_parser"]().parse_args(
+        ["--head-branch", "release/local"]
+    )
+    assert not hasattr(parsed, "pending_work_scope")
+    assert not hasattr(parsed, "no_pending_work_check")
     ship_repository = loaded["ship_repository"]
     ship_repository.__globals__["_run_json"] = run_json
     result = ship_repository(
@@ -3815,8 +3833,6 @@ def test_repository_ship_absent_default_contract_is_no_op_and_finalizes(
             title=None,
             body=None,
             merge_method="merge",
-            pending_work_scope=scope,
-            no_pending_work_check=False,
             delete_branch=False,
             reusable_head=True,
             deploy_contract=pathlib.Path("deploy/deploy.yml"),
@@ -3833,10 +3849,19 @@ def test_repository_ship_absent_default_contract_is_no_op_and_finalizes(
         "steps": [],
         "reason": "deployment_contract_absent",
     }
-    assert result["finalization"] == {"status": "finalized"}
-    assert len(commands) == 3
-    assert "check" in commands[1]
-    assert "finalize" in commands[2]
+    assert result["finalization"] == (
+        {"status": "finalized"} if scope_present else None
+    )
+    assert "prepare" in commands[0]
+    if scope_present:
+        assert len(commands) == 4
+        assert "--pending-work-check" in commands[1]
+        assert str(scope.resolve()) in commands[1]
+        assert "check" in commands[2]
+        assert "finalize" in commands[3]
+    else:
+        assert len(commands) == 2
+        assert "--no-pending-work-check" in commands[1]
     deploy_runner = str(SHIP_REPOSITORY.parent / "run-deploy-operation.py")
     assert all(deploy_runner not in command for command in commands)
 
@@ -3870,8 +3895,6 @@ def test_repository_ship_missing_custom_contract_blocks_before_remote_mutation(
                 title=None,
                 body=None,
                 merge_method="merge",
-                pending_work_scope=None,
-                no_pending_work_check=True,
                 delete_branch=False,
                 reusable_head=False,
                 deploy_contract=pathlib.Path("deploy/custom.yml"),
@@ -3901,7 +3924,6 @@ def test_repository_ship_late_pending_work_reports_remote_mutation(
         newline="\n",
     )
     scope = repo / "scope.json" if relative_scope else tmp_path / "scope.json"
-    scope_argument = pathlib.Path("scope.json") if relative_scope else scope
     scope.write_text(
         json.dumps({"source_branches": ["selected"]}),
         encoding="utf-8",
@@ -3932,12 +3954,18 @@ def test_repository_ship_late_pending_work_reports_remote_mutation(
         "operation": "deploy",
         "steps": ["install"],
     }
+    prepared = {
+        "status": "ready",
+        "source_branches": ["selected"],
+        "pending_work_scope": str(scope.resolve()),
+    }
     responses: list[tuple[int, dict[str, Any]]] = (
-        [(0, shipped), (2, pending)]
+        [(0, prepared), (0, shipped), (2, pending)]
         if late_phase == "post_sync"
         else [
+            (0, prepared),
             (0, shipped),
-            (0, {"status": "ready"}),
+            (0, prepared),
             (0, deployed),
             (2, pending),
         ]
@@ -3966,8 +3994,6 @@ def test_repository_ship_late_pending_work_reports_remote_mutation(
         title=None,
         body=None,
         merge_method="merge",
-        pending_work_scope=scope_argument,
-        no_pending_work_check=False,
         delete_branch=False,
         reusable_head=True,
         deploy_contract=pathlib.Path("deploy/deploy.yml"),
@@ -3993,24 +4019,25 @@ def test_repository_ship_late_pending_work_reports_remote_mutation(
     result = ship_repository(args)
 
     assert result["status"] == "pending_work"
-    assert args.pending_work_scope == scope.resolve()
     assert result["remote_mutation"] is True
     assert result["repository"] == "example/repository"
     assert result["commit"] == "a" * 40
-    assert "check" in commands[1]
+    assert "prepare" in commands[0]
+    assert "check" in commands[2]
     if late_phase == "post_sync":
-        assert len(commands) == 2
+        assert len(commands) == 3
         assert "deployment" not in result
     else:
-        assert len(commands) == 4
-        assert "finalize" in commands[3]
+        assert len(commands) == 5
+        assert "finalize" in commands[4]
         assert result["deployment"] == deployed
         checkpoint = scope.with_suffix(".after-ship.json")
         assert checkpoint.is_file()
         responses.extend(
             [
+                (0, prepared),
                 (0, {**shipped, "status": "already_shipped"}),
-                (0, {"status": "ready"}),
+                (0, prepared),
                 (0, {"status": "finalized"}),
             ]
         )
@@ -4019,9 +4046,9 @@ def test_repository_ship_late_pending_work_reports_remote_mutation(
 
         assert resumed["status"] == "already_shipped"
         assert resumed["deployment"] == deployed
-        assert len(commands) == 7
+        assert len(commands) == 9
         deploy_runner = str(SHIP_REPOSITORY.parent / "run-deploy-operation.py")
-        assert all(deploy_runner not in command for command in commands[4:])
+        assert all(deploy_runner not in command for command in commands[5:])
         assert not checkpoint.exists()
 
 
@@ -4069,7 +4096,6 @@ def test_repository_ship_rejects_noncanonical_release_branch_before_remote_proce
             argparse.Namespace(
                 repo_root=repo,
                 head_branch="release/task",
-                pending_work_scope=None,
             )
         )
 
@@ -4140,7 +4166,11 @@ def test_repository_ship_blocks_selected_worktree_caller_before_remote_process(
 
     def run_json(command: list[str]) -> tuple[int, dict[str, Any]]:
         child_calls.append(command)
-        return 0, {}
+        return 0, {
+            "status": "ready",
+            "source_branches": ["selected"],
+            "pending_work_scope": str(scope),
+        }
 
     ship_repository = loaded["ship_repository"]
     ship_repository.__globals__["_branch_worktree"] = branch_worktree
@@ -4154,12 +4184,26 @@ def test_repository_ship_blocks_selected_worktree_caller_before_remote_process(
         ship_repository(
             argparse.Namespace(
                 repo_root=repo,
+                repo="example/repository",
                 head_branch="release/local",
-                pending_work_scope=scope,
+                base_branch="main",
+                remote_name="origin",
+                commit="a" * 40,
+                title=None,
+                body=None,
+                merge_method="merge",
+                delete_branch=False,
+                reusable_head=True,
+                deploy_contract=pathlib.Path("deploy/deploy.yml"),
+                deploy_operation="deploy",
+                ci_wait_seconds=1,
+                review_wait_seconds=1,
+                interval_seconds=1,
             )
         )
 
-    assert child_calls == []
+    assert len(child_calls) == 1
+    assert "prepare" in child_calls[0]
 
 
 def run_pending_work(
@@ -4241,6 +4285,18 @@ def test_pending_work_scope_is_selected_generic_and_finalized_late(
         "target_commit": target_commit,
         "version": 1,
     }
+    scope_path.write_text(
+        json.dumps(
+            {
+                "source_branches": ["missing", "selected"],
+                "target_branch": "release/local",
+                "target_commit": target_commit,
+                "version": 1,
+            }
+        ),
+        encoding="utf-8",
+        newline="\n",
+    )
 
     (selected_worktree / "README.md").write_text(
         "base\nselected\nlater commit\n",
@@ -4269,13 +4325,9 @@ def test_pending_work_scope_is_selected_generic_and_finalized_late(
 
     checked = run_pending_work(
         repo,
-        "check",
-        "--scope",
-        str(scope_path),
+        "prepare",
         "--target-branch",
         "release/local",
-        "--target-commit",
-        target_commit,
     )
 
     assert checked.returncode == 2, checked.stderr
@@ -4285,6 +4337,9 @@ def test_pending_work_scope_is_selected_generic_and_finalized_late(
     assert [(item["kind"], item["subject"]) for item in checked_payload["findings"]] == [
         ("dirty_worktree", "selected"),
         ("unmerged_branch_commits", "selected"),
+    ]
+    assert json.loads(scope_path.read_text(encoding="utf-8"))["source_branches"] == [
+        "selected"
     ]
     assert all(
         item["subject"] != "unrelated" for item in checked_payload["findings"]
@@ -4319,6 +4374,47 @@ def test_pending_work_scope_is_selected_generic_and_finalized_late(
     assert unrelated_worktree.is_dir()
     assert run_git(repo, "show-ref", "--verify", "refs/heads/unrelated").returncode == 0
     assert not scope_path.exists()
+
+    scope_path.write_text(
+        json.dumps(
+            {
+                "source_branches": ["already-gone"],
+                "target_branch": "release/local",
+                "target_commit": target_commit,
+                "version": 1,
+            }
+        ),
+        encoding="utf-8",
+        newline="\n",
+    )
+    prepared = run_pending_work(
+        repo,
+        "prepare",
+        "--target-branch",
+        "release/local",
+    )
+
+    assert prepared.returncode == 0, prepared.stderr
+    assert json.loads(prepared.stdout) == {
+        "status": "ready",
+        "source_branches": [],
+        "pending_work_scope": "",
+    }
+    assert not scope_path.exists()
+
+    absent = run_pending_work(
+        repo,
+        "prepare",
+        "--target-branch",
+        "release/local",
+    )
+
+    assert absent.returncode == 0, absent.stderr
+    assert json.loads(absent.stdout) == {
+        "status": "ready",
+        "source_branches": [],
+        "pending_work_scope": "",
+    }
 
 
 def test_pending_work_finalization_persists_partial_cleanup_progress(
