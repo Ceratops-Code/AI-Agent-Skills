@@ -4817,6 +4817,37 @@ def test_compatibility_materializer_supports_repositories_without_skills(
         newline="\n",
     )
 
+    blocked_result = run_compatibility_engine(
+        engine_scripts,
+        "materialize",
+        "--target-repo-root",
+        str(repo),
+        "--runtime-source-id",
+        "example/empty-compatible",
+    )
+
+    assert blocked_result.returncode == 1
+    assert json.loads(blocked_result.stdout) == {
+        "phase": "materialization_planning",
+        "reason": (
+            "npm validation checks require package-lock.json for "
+            "deterministic npm ci setup"
+        ),
+        "rollback": "not_started",
+        "status": "blocked",
+    }
+    assert not (repo / "skills").exists()
+    assert not (repo / "deploy").exists()
+    assert not (repo / "scripts").exists()
+    assert not (repo / ".github").exists()
+
+    (repo / "package-lock.json").write_text(
+        json.dumps({"lockfileVersion": 3, "requires": True, "packages": {}})
+        + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+
     result = run_compatibility_engine(
         engine_scripts,
         "materialize",

@@ -248,7 +248,12 @@ def _validation_setup_step(
             setup.append("python -m pip install -r requirements-dev.txt")
         elif (repo_root / "requirements.txt").is_file():
             setup.append("python -m pip install -r requirements.txt")
-    if "{npm}" in commands and (repo_root / "package-lock.json").is_file():
+    if "{npm}" in commands:
+        if not (repo_root / "package-lock.json").is_file():
+            raise RuntimeError(
+                "npm validation checks require package-lock.json for "
+                "deterministic npm ci setup"
+            )
         setup.append("npm ci")
     if not setup:
         return ""

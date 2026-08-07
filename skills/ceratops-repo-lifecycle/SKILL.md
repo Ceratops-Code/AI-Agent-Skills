@@ -37,8 +37,6 @@ one skill while each repository owns its executable deployment behavior in
   identifies the action.
 - Whether promotion must stop after assembling `release/local` or run the
   repository's optional `deploy` operation and any returned handoff.
-- Whether shipping has a selected pending-work scope or explicitly disables
-  that check.
 - Required live GitHub, local repository, CI, artifact, credential, and
   deployment context named by the selected action reference.
 
