@@ -2847,6 +2847,71 @@ def _batch_manifest(
     }
 
 
+def _batch_item_record(
+    candidate: Mapping[str, Any],
+    child_paths: Mapping[str, pathlib.Path],
+    *,
+    ordinal: int,
+    source_fingerprint: str,
+) -> dict[str, Any]:
+    analysis_root = child_paths["analysis_root"]
+    return {
+        "ordinal": ordinal,
+        "thread_id": candidate["thread_id"],
+        "thread_name": candidate["thread_name"],
+        "updated_at": candidate["updated_at"],
+        "project": candidate["project"],
+        "session": candidate["session"],
+        "source_fingerprint": source_fingerprint,
+        "request_path": str(child_paths["request"]),
+        "state_path": str(analysis_root / "state.json"),
+        "evidence_path": str(child_paths["evidence"]),
+        "final_result_path": str(analysis_root / "final-machine-result.json"),
+    }
+
+
+def _recover_prepared_batch_item(
+    candidate: Mapping[str, Any],
+    child_paths: Mapping[str, pathlib.Path],
+    contract: Mapping[str, Any],
+    *,
+    ordinal: int,
+) -> dict[str, Any] | None:
+    """Recover a child committed before its outer batch-state checkpoint."""
+
+    state_path = child_paths["analysis_root"] / "state.json"
+    if not state_path.exists():
+        return None
+    child_state, evidence, _ = _load_state(state_path)
+    request_path = pathlib.Path(child_state["immutable_artifacts"]["request"]["path"])
+    if request_path.resolve() != child_paths["request"].resolve():
+        raise CreditAnalysisError("prepared batch child request path changed")
+    if pathlib.Path(child_state["evidence"]["path"]).resolve() != child_paths[
+        "evidence"
+    ].resolve():
+        raise CreditAnalysisError("prepared batch child evidence path changed")
+    if (
+        child_state["action"] != "full-analysis"
+        or child_state["mode"] != "full-analysis"
+        or child_state["queue"] != contract["full_queue"]
+        or child_state["source"].get("kind") != "thread_id"
+        or child_state["source"].get("value") != candidate["thread_id"]
+        or pathlib.Path(child_state["source"]["resolved_session"]).resolve()
+        != pathlib.Path(candidate["session"]).resolve()
+        or pathlib.Path(str(evidence.get("session"))).resolve()
+        != pathlib.Path(candidate["session"]).resolve()
+        or evidence.get("source_fingerprint") != child_state["source"]["fingerprint"]
+        or evidence.get("collection", {}).get("session_reads") != 1
+    ):
+        raise CreditAnalysisError("prepared batch child identity is invalid")
+    return _batch_item_record(
+        candidate,
+        child_paths,
+        ordinal=ordinal,
+        source_fingerprint=child_state["source"]["fingerprint"],
+    )
+
+
 def _resume_batch_preparation(
     state: dict[str, Any],
     contract: Mapping[str, Any],
@@ -2868,6 +2933,19 @@ def _resume_batch_preparation(
         if isinstance(target_count, int) and len(state["items"]) >= target_count:
             break
         candidate = state["candidates"][state["candidate_index"]]
+        ordinal = len(state["items"]) + 1
+        child_paths = _batch_item_paths(state, ordinal, candidate["thread_id"])
+        recovered = _recover_prepared_batch_item(
+            candidate,
+            child_paths,
+            contract,
+            ordinal=ordinal,
+        )
+        if recovered is not None:
+            state["items"].append(recovered)
+            state["candidate_index"] += 1
+            _save_batch_state(state)
+            continue
         session = pathlib.Path(candidate["session"])
         try:
             rows, source_fingerprint = ledger.load_rows_with_fingerprint(session)
@@ -2897,8 +2975,6 @@ def _resume_batch_preparation(
             state["candidate_index"] += 1
             _save_batch_state(state)
             continue
-        ordinal = len(state["items"]) + 1
-        child_paths = _batch_item_paths(state, ordinal, candidate["thread_id"])
         child_paths["analysis_root"].mkdir()
         child_request = {
             "schema": contract["request_schema"],
@@ -2921,22 +2997,12 @@ def _resume_batch_preparation(
         )
         validated = _validate_request(child_paths["request"], dict(contract), ledger)
         _initialize_analysis(validated, contract, collected)
-        child_state = child_paths["analysis_root"] / "state.json"
-        item = {
-            "ordinal": ordinal,
-            "thread_id": candidate["thread_id"],
-            "thread_name": candidate["thread_name"],
-            "updated_at": candidate["updated_at"],
-            "project": candidate["project"],
-            "session": candidate["session"],
-            "source_fingerprint": source_fingerprint,
-            "request_path": str(child_paths["request"]),
-            "state_path": str(child_state),
-            "evidence_path": str(child_paths["evidence"]),
-            "final_result_path": str(
-                child_paths["analysis_root"] / "final-machine-result.json"
-            ),
-        }
+        item = _batch_item_record(
+            candidate,
+            child_paths,
+            ordinal=ordinal,
+            source_fingerprint=source_fingerprint,
+        )
         state["items"].append(item)
         state["candidate_index"] += 1
         _save_batch_state(state)

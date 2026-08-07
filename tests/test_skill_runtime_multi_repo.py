@@ -1544,8 +1544,23 @@ def test_credit_analysis_batch_resumes_and_preserves_every_thread_finding(
     assert prepared.returncode == 0, prepared.stderr
     status = json.loads(prepared.stdout)
     state_path = pathlib.Path(status["batch_state_path"])
+    prepared_state = json.loads(state_path.read_text(encoding="utf-8"))
+    prepared_items = prepared_state["items"]
+    pathlib.Path(prepared_state["paths"]["manifest"]).unlink()
+    prepared_state["phase"] = "preparing"
+    prepared_state["candidate_index"] = 0
+    prepared_state["items"] = []
+    prepared_state["immutable_artifacts"]["manifest"] = None
+    write_json_file(state_path, prepared_state)
     for index, session in enumerate(sessions):
         session.rename(session.with_name(f"retired-{index}.jsonl"))
+    resumed_prepare = run_credit_analysis_workflow(
+        "prepare-batch", "--request", str(request)
+    )
+    assert resumed_prepare.returncode == 0, resumed_prepare.stderr
+    status = json.loads(resumed_prepare.stdout)
+    resumed_state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert resumed_state["items"] == prepared_items
 
     first_final = complete_credit_analysis_with_instruction_finding(
         status["child_status"]
