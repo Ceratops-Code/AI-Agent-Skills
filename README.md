@@ -1,8 +1,6 @@
 # Ceratops Codex Skills
 
-Reusable Ceratops skills for Codex and other `SKILL.md`-compatible agents.
-
-
+Reusable Ceratops skills for Codex and other agents compatible with `SKILL.md`.
 
 ## Skills
 
