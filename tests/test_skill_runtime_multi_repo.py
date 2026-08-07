@@ -103,10 +103,32 @@ def write_json_file(path: pathlib.Path, value: Any) -> None:
     )
 
 
-def credit_analysis_session(path: pathlib.Path) -> None:
+def credit_analysis_session(
+    path: pathlib.Path,
+    *,
+    thread_id: str | None = None,
+    cwd: pathlib.Path | None = None,
+    repository_url: str | None = None,
+) -> None:
     """Create three completed synthetic runs with six model calls."""
 
     rows: list[dict[str, Any]] = []
+    if thread_id is not None:
+        rows.append(
+            {
+                "timestamp": "2026-08-01T00:00:00Z",
+                "type": "session_meta",
+                "payload": {
+                    "id": thread_id,
+                    "cwd": str(cwd or path.parent),
+                    "git": (
+                        {"repository_url": repository_url}
+                        if repository_url is not None
+                        else None
+                    ),
+                },
+            }
+        )
 
     def add_call(
         timestamp: str,
@@ -262,6 +284,75 @@ def credit_analysis_request(
     return request, session, task_root
 
 
+def indexed_credit_analysis_session(
+    codex_home: pathlib.Path,
+    *,
+    thread_id: str,
+    thread_name: str,
+    updated_at: str,
+    project_name: str,
+    repository_owner: str = "example",
+) -> pathlib.Path:
+    """Create one indexed Codex session with deterministic project metadata."""
+
+    session_root = codex_home / "sessions" / "2026" / "08" / "01"
+    session_root.mkdir(parents=True, exist_ok=True)
+    session = session_root / f"rollout-2026-08-01T00-00-00-{thread_id}.jsonl"
+    project = codex_home / "projects" / project_name
+    credit_analysis_session(
+        session,
+        thread_id=thread_id,
+        cwd=project,
+        repository_url=f"https://example.test/{repository_owner}/{project_name}.git",
+    )
+    index = codex_home / "session_index.jsonl"
+    with index.open("a", encoding="utf-8", newline="\n") as handle:
+        handle.write(
+            json.dumps(
+                {
+                    "id": thread_id,
+                    "thread_name": thread_name,
+                    "updated_at": updated_at,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n"
+        )
+    return session
+
+
+def credit_analysis_batch_request(
+    tmp_path: pathlib.Path,
+    *,
+    selector: dict[str, Any],
+    name: str,
+    as_of: str = "2026-08-07T18:00:00Z",
+) -> pathlib.Path:
+    """Create one caller-bounded per-thread batch request."""
+
+    task_root = tmp_path / f"batch-{name}"
+    task_root.mkdir()
+    request = tmp_path / f"batch-request-{name}.json"
+    write_json_file(
+        request,
+        {
+            "schema": "ceratops-credit-analysis-batch-request.v1",
+            "action": "full-analysis",
+            "mode": "per-thread-batch",
+            "selector": selector,
+            "as_of": as_of,
+            "task_temp_root": str(task_root),
+            "manifest_output": str(tmp_path / f"batch-manifest-{name}.json"),
+            "pricing_profile": None,
+            "expected_surface_contract_version": 1,
+            "expected_source_selection_contract_version": 1,
+            "mutation_authority": False,
+        },
+    )
+    return request
+
+
 def finding_record(
     finding_id: str,
     calls: list[str],
@@ -366,6 +457,138 @@ def surface_result_record(
         "helper_category_reviews": helper_reviews or [],
         "remediation_groups": remediation_groups or [],
     }
+
+
+def complete_credit_analysis_with_instruction_finding(
+    child_status: Mapping[str, Any],
+) -> pathlib.Path:
+    """Finalize one prepared full analysis with one preserved synthetic finding."""
+
+    status = dict(child_status)
+    evidence = json.loads(
+        pathlib.Path(status["evidence_path"]).read_text(encoding="utf-8")
+    )
+    categories = json.loads(CREDIT_ANALYSIS_CONTRACT.read_text(encoding="utf-8"))[
+        "helper_categories"
+    ]
+    finding: dict[str, Any] | None = None
+    while status["pending_surface"] != "synthesis":
+        context = json.loads(
+            pathlib.Path(status["context_path"]).read_text(encoding="utf-8")
+        )
+        findings: list[dict[str, Any]] = []
+        helper_reviews: list[dict[str, Any]] = []
+        if status["pending_surface"] == "helper-contracts":
+            helper_reviews = [
+                {
+                    "category": category,
+                    "status": "not-applicable",
+                    "finding_ids": [],
+                    "reason": "synthetic evidence confirms no helper gap",
+                }
+                for category in categories
+            ]
+        if status["pending_surface"] == "instruction-reasoning":
+            finding = finding_record(
+                "instruction-gap",
+                [context["candidate_call_ids"][0]],
+                producer_type="prompt",
+                owner="synthetic request",
+            )
+            findings = [finding]
+        result = surface_result_record(
+            status,
+            context,
+            evidence["evidence_fingerprint"],
+            findings=findings,
+            helper_reviews=helper_reviews,
+        )
+        result_path = pathlib.Path(status["required_result_path"])
+        write_json_file(result_path, result)
+        advanced = run_credit_analysis_workflow(
+            "advance",
+            "--state",
+            status["state_path"],
+            "--result",
+            str(result_path),
+        )
+        assert advanced.returncode == 0, advanced.stderr
+        status = json.loads(advanced.stdout)
+    assert finding is not None
+    context = json.loads(
+        pathlib.Path(status["context_path"]).read_text(encoding="utf-8")
+    )
+    primary_call = finding["affected_call_ids"][0]
+    classifications = []
+    for call_id in evidence["call_inventory"]:
+        if call_id == primary_call:
+            classifications.append(
+                {
+                    "call_id": call_id,
+                    "classification": "avoidable_unimplemented",
+                    "primary_finding_id": finding["id"],
+                    "reason_code": None,
+                    "reason": "synthetic avoidable instruction call",
+                }
+            )
+        else:
+            classifications.append(
+                {
+                    "call_id": call_id,
+                    "classification": "necessary",
+                    "primary_finding_id": None,
+                    "reason_code": "required-workflow",
+                    "reason": "synthetic required workflow call",
+                }
+            )
+    synthesis = {
+        "schema": "ceratops-credit-analysis-synthesis-result.v1",
+        "analysis_id": status["analysis_id"],
+        "pass_id": status["pass_id"],
+        "surface_id": "synthesis",
+        "evidence_fingerprint": evidence["evidence_fingerprint"],
+        "artifact_paths": {
+            "state": status["state_path"],
+            "evidence": status["evidence_path"],
+            "context": status["context_path"],
+            "result": status["required_result_path"],
+        },
+        "finding_order": [finding["id"]],
+        "risk_order": [],
+        "finding_dispositions": [
+            {
+                "finding_id": finding["id"],
+                "primary_call_ids": [primary_call],
+                "secondary_call_ids": [],
+            }
+        ],
+        "call_classifications": classifications,
+        "secondary_call_mappings": [],
+        "producer_groups": [
+            {
+                "id": "synthetic-prompt-group",
+                "producer_type": finding["producer_type"],
+                "owner": finding["producer_owner"],
+                "finding_ids": [finding["id"]],
+                "recommended_control": finding["proposed_durable_control"],
+                "targeted_verification": finding["targeted_verification"],
+            }
+        ],
+    }
+    synthesis_path = pathlib.Path(status["required_result_path"])
+    write_json_file(synthesis_path, synthesis)
+    finalized = run_credit_analysis_workflow(
+        "finalize",
+        "--state",
+        status["state_path"],
+        "--result",
+        str(synthesis_path),
+    )
+    assert finalized.returncode == 0, finalized.stderr
+    final_state = json.loads(
+        pathlib.Path(status["state_path"]).read_text(encoding="utf-8")
+    )
+    return pathlib.Path(final_state["final_result"]["path"])
 
 
 def test_credit_analysis_workflow_full_analysis_persists_every_finding(
@@ -1004,6 +1227,426 @@ def test_credit_analysis_workflow_each_surface_is_independently_callable(
     state = json.loads(pathlib.Path(status["state_path"]).read_text(encoding="utf-8"))
     assert state["mode"] == "standalone"
     assert state["queue"] == [action]
+
+
+def test_credit_analysis_workflow_resolves_current_and_named_threads(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    codex_home = tmp_path / "codex-home"
+    codex_home.mkdir()
+    current_id = "00000000-0000-4000-8000-000000000001"
+    named_id = "00000000-0000-4000-8000-000000000002"
+    indexed_credit_analysis_session(
+        codex_home,
+        thread_id=current_id,
+        thread_name="Current Thread",
+        updated_at="2026-08-07T17:00:00Z",
+        project_name="alpha",
+    )
+    indexed_credit_analysis_session(
+        codex_home,
+        thread_id=named_id,
+        thread_name="Named Thread",
+        updated_at="2026-08-07T16:00:00Z",
+        project_name="alpha",
+    )
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.setenv("CODEX_THREAD_ID", current_id)
+
+    def request_for(name: str, source: dict[str, Any]) -> pathlib.Path:
+        root = tmp_path / f"single-{name}"
+        root.mkdir()
+        request = tmp_path / f"single-request-{name}.json"
+        write_json_file(
+            request,
+            {
+                "schema": "ceratops-credit-analysis-request.v1",
+                "action": "full-analysis",
+                "mode": "full-analysis",
+                "source": source,
+                "window": {
+                    "mode": "full_thread",
+                    "last_runs": None,
+                    "turn_ids": [],
+                },
+                "task_temp_root": str(root),
+                "evidence_output": str(tmp_path / f"single-evidence-{name}.json"),
+                "pricing_profile": None,
+                "expected_surface_contract_version": 1,
+                "mutation_authority": False,
+            },
+        )
+        return request
+
+    current = run_credit_analysis_workflow(
+        "prepare",
+        "--request",
+        str(request_for("current", {"current_thread": True})),
+    )
+    assert current.returncode == 0, current.stderr
+    current_state = json.loads(
+        pathlib.Path(json.loads(current.stdout)["state_path"]).read_text(
+            encoding="utf-8"
+        )
+    )
+    assert current_state["source"]["kind"] == "current_thread"
+    assert current_state["source"]["value"] == current_id
+
+    named = run_credit_analysis_workflow(
+        "prepare",
+        "--request",
+        str(request_for("named", {"thread_name": "named thread"})),
+    )
+    assert named.returncode == 0, named.stderr
+    named_state = json.loads(
+        pathlib.Path(json.loads(named.stdout)["state_path"]).read_text(
+            encoding="utf-8"
+        )
+    )
+    assert named_state["source"]["kind"] == "thread_name"
+    assert named_state["source"]["thread_id"] == named_id
+    assert len(named_state["source"]["thread_index_fingerprint"]) == 64
+
+    duplicate_id = "00000000-0000-4000-8000-000000000003"
+    indexed_credit_analysis_session(
+        codex_home,
+        thread_id=duplicate_id,
+        thread_name="NAMED THREAD",
+        updated_at="2026-08-07T15:00:00Z",
+        project_name="beta",
+    )
+    ambiguous = run_credit_analysis_workflow(
+        "prepare",
+        "--request",
+        str(request_for("ambiguous", {"thread_name": "Named Thread"})),
+    )
+    assert ambiguous.returncode == 2
+    assert "ambiguous" in ambiguous.stderr
+
+    monkeypatch.delenv("CODEX_THREAD_ID")
+    missing_current = run_credit_analysis_workflow(
+        "prepare",
+        "--request",
+        str(request_for("missing-current", {"current_thread": True})),
+    )
+    assert missing_current.returncode == 2
+    assert "CODEX_THREAD_ID" in missing_current.stderr
+
+
+def test_credit_analysis_batch_selects_recent_threads_and_projects_once(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    codex_home = tmp_path / "codex-home"
+    codex_home.mkdir()
+    thread_ids = {
+        "alpha_new": "00000000-0000-4000-8000-000000000011",
+        "alpha_old": "00000000-0000-4000-8000-000000000012",
+        "beta_old": "00000000-0000-4000-8000-000000000013",
+        "alpha_stale": "00000000-0000-4000-8000-000000000014",
+        "beta_new": "00000000-0000-4000-8000-000000000015",
+    }
+    indexed_credit_analysis_session(
+        codex_home,
+        thread_id=thread_ids["alpha_new"],
+        thread_name="Alpha new",
+        updated_at="2026-08-07T17:00:00Z",
+        project_name="alpha",
+    )
+    indexed_credit_analysis_session(
+        codex_home,
+        thread_id=thread_ids["alpha_old"],
+        thread_name="Alpha old",
+        updated_at="2026-08-06T17:00:00Z",
+        project_name="alpha",
+    )
+    indexed_credit_analysis_session(
+        codex_home,
+        thread_id=thread_ids["beta_old"],
+        thread_name="Beta old",
+        updated_at="2026-08-05T17:00:00Z",
+        project_name="beta",
+    )
+    indexed_credit_analysis_session(
+        codex_home,
+        thread_id=thread_ids["alpha_stale"],
+        thread_name="Alpha stale",
+        updated_at="2026-08-01T17:00:00Z",
+        project_name="alpha",
+    )
+    indexed_credit_analysis_session(
+        codex_home,
+        thread_id=thread_ids["beta_new"],
+        thread_name="Beta new",
+        updated_at="2026-08-07T17:00:00Z",
+        project_name="beta",
+    )
+    with (codex_home / "session_index.jsonl").open(
+        "a", encoding="utf-8", newline="\n"
+    ) as handle:
+        handle.write(
+            json.dumps(
+                {
+                    "id": thread_ids["alpha_new"],
+                    "thread_name": "stale name",
+                    "updated_at": "2026-08-01T00:00:00Z",
+                }
+            )
+            + "\n"
+        )
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    cases: list[tuple[str, dict[str, Any], list[str]]] = [
+        (
+            "count-overall",
+            {
+                "kind": "recent_threads",
+                "count": 2,
+                "days": None,
+                "project": None,
+            },
+            [thread_ids["alpha_new"], thread_ids["beta_new"]],
+        ),
+        (
+            "days-overall",
+            {
+                "kind": "recent_days",
+                "count": None,
+                "days": 3,
+                "project": None,
+            },
+            [
+                thread_ids["alpha_new"],
+                thread_ids["beta_new"],
+                thread_ids["alpha_old"],
+                thread_ids["beta_old"],
+            ],
+        ),
+        (
+            "count-project",
+            {
+                "kind": "recent_threads",
+                "count": 2,
+                "days": None,
+                "project": {"kind": "name", "value": "alpha"},
+            },
+            [thread_ids["alpha_new"], thread_ids["alpha_old"]],
+        ),
+        (
+            "days-project",
+            {
+                "kind": "recent_days",
+                "count": None,
+                "days": 3,
+                "project": {"kind": "name", "value": "alpha"},
+            },
+            [thread_ids["alpha_new"], thread_ids["alpha_old"]],
+        ),
+    ]
+    for name, selector, expected_ids in cases:
+        request = credit_analysis_batch_request(
+            tmp_path,
+            selector=selector,
+            name=name,
+        )
+        prepared = run_credit_analysis_workflow(
+            "prepare-batch", "--request", str(request)
+        )
+        assert prepared.returncode == 0, prepared.stderr
+        status = json.loads(prepared.stdout)
+        manifest = json.loads(
+            pathlib.Path(status["manifest_path"]).read_text(encoding="utf-8")
+        )
+        assert [item["thread_id"] for item in manifest["items"]] == expected_ids
+        assert manifest["estimated_semantic_passes"] == 6 * len(expected_ids)
+        assert status["estimated_semantic_passes"] == 6 * len(expected_ids)
+        for item in manifest["items"]:
+            evidence = json.loads(
+                pathlib.Path(item["evidence_path"]).read_text(encoding="utf-8")
+            )
+            assert evidence["collection"]["session_reads"] == 1
+            child_state = json.loads(
+                pathlib.Path(item["state_path"]).read_text(encoding="utf-8")
+            )
+            assert child_state["queue"] == [
+                "helper-contracts",
+                "context-evidence",
+                "rework-validation",
+                "tool-flow",
+                "instruction-reasoning",
+                "synthesis",
+            ]
+        resumed = run_credit_analysis_workflow(
+            "prepare-batch", "--request", str(request)
+        )
+        assert resumed.returncode == 0, resumed.stderr
+        assert json.loads(resumed.stdout) == status
+
+    indexed_credit_analysis_session(
+        codex_home,
+        thread_id="00000000-0000-4000-8000-000000000016",
+        thread_name="Other alpha",
+        updated_at="2026-08-07T16:30:00Z",
+        project_name="alpha",
+        repository_owner="other",
+    )
+    ambiguous_request = credit_analysis_batch_request(
+        tmp_path,
+        selector={
+            "kind": "recent_days",
+            "count": None,
+            "days": 3,
+            "project": {"kind": "name", "value": "alpha"},
+        },
+        name="ambiguous-project",
+    )
+    ambiguous = run_credit_analysis_workflow(
+        "prepare-batch", "--request", str(ambiguous_request)
+    )
+    assert ambiguous.returncode == 2
+    assert "project name is ambiguous" in ambiguous.stderr
+
+
+def test_credit_analysis_batch_resumes_and_preserves_every_thread_finding(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    codex_home = tmp_path / "codex-home"
+    codex_home.mkdir()
+    ids = [
+        "00000000-0000-4000-8000-000000000021",
+        "00000000-0000-4000-8000-000000000022",
+    ]
+    sessions = [
+        indexed_credit_analysis_session(
+            codex_home,
+            thread_id=thread_id,
+            thread_name=f"Batch thread {index}",
+            updated_at=f"2026-08-07T1{8 - index}:00:00Z",
+            project_name="alpha",
+        )
+        for index, thread_id in enumerate(ids, start=1)
+    ]
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    request = credit_analysis_batch_request(
+        tmp_path,
+        selector={
+            "kind": "recent_threads",
+            "count": 2,
+            "days": None,
+            "project": None,
+        },
+        name="finalize",
+    )
+    prepared = run_credit_analysis_workflow(
+        "prepare-batch", "--request", str(request)
+    )
+    assert prepared.returncode == 0, prepared.stderr
+    status = json.loads(prepared.stdout)
+    state_path = pathlib.Path(status["batch_state_path"])
+    for index, session in enumerate(sessions):
+        session.rename(session.with_name(f"retired-{index}.jsonl"))
+
+    first_final = complete_credit_analysis_with_instruction_finding(
+        status["child_status"]
+    )
+    before_recovery = json.loads(state_path.read_text(encoding="utf-8"))
+    first_payload = json.loads(first_final.read_text(encoding="utf-8"))
+    first_content_hash = hashlib.sha256(
+        (
+            json.dumps(
+                first_payload,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=True,
+            )
+            + "\n"
+        ).encode("utf-8")
+    ).hexdigest()
+    with pathlib.Path(before_recovery["paths"]["index"]).open(
+        "a", encoding="utf-8", newline="\n"
+    ) as handle:
+        handle.write(
+            json.dumps(
+                {
+                    "schema": "ceratops-credit-analysis-batch-index-record.v1",
+                    "ordinal": 1,
+                    "thread_id": ids[0],
+                    "path": str(first_final.resolve()),
+                    "sha256": hashlib.sha256(first_final.read_bytes()).hexdigest(),
+                    "content_hash": first_content_hash,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n"
+        )
+    recovered = run_credit_analysis_workflow(
+        "status-batch", "--state", str(state_path)
+    )
+    assert recovered.returncode == 0, recovered.stderr
+    second_status = json.loads(recovered.stdout)
+    assert second_status["pending_thread_id"] == ids[1]
+    idempotent = run_credit_analysis_workflow(
+        "advance-batch",
+        "--state",
+        str(state_path),
+        "--result",
+        str(first_final),
+    )
+    assert idempotent.returncode == 0, idempotent.stderr
+    assert json.loads(idempotent.stdout) == second_status
+    resumed = run_credit_analysis_workflow(
+        "status-batch", "--state", str(state_path)
+    )
+    assert resumed.returncode == 0, resumed.stderr
+    assert json.loads(resumed.stdout) == second_status
+
+    second_final = complete_credit_analysis_with_instruction_finding(
+        second_status["child_status"]
+    )
+    ready = run_credit_analysis_workflow(
+        "advance-batch",
+        "--state",
+        str(state_path),
+        "--result",
+        str(second_final),
+    )
+    assert ready.returncode == 0, ready.stderr
+    assert json.loads(ready.stdout)["ready_to_finalize"] is True
+    finalized = run_credit_analysis_workflow(
+        "finalize-batch", "--state", str(state_path)
+    )
+    assert finalized.returncode == 0, finalized.stderr
+    assert finalized.stdout.strip() == "OK"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    final = json.loads(
+        pathlib.Path(state["final_result"]["path"]).read_text(encoding="utf-8")
+    )
+    assert [item["thread_id"] for item in final["confirmed_findings"]] == ids
+    assert [item["finding"]["id"] for item in final["confirmed_findings"]] == [
+        "instruction-gap",
+        "instruction-gap",
+    ]
+    assert final["totals"]["analyzed_threads"] == 2
+    assert final["totals"]["session_collections"] == 2
+    assert final["totals"]["avoidable_calls"] == 2
+    assert "without cross-thread semantic synthesis" in final["scope_limitation"]
+    assert len(
+        pathlib.Path(state["paths"]["index"]).read_text(encoding="utf-8").splitlines()
+    ) == 2
+    assert state["cleanup"]["transient_paths"] == []
+    for item in state["items"]:
+        child_root = pathlib.Path(item["state_path"]).parent
+        assert not (child_root / "context").exists()
+        assert not (child_root / "pending").exists()
+        assert pathlib.Path(item["request_path"]).is_file()
+        assert pathlib.Path(item["evidence_path"]).is_file()
+    complete = run_credit_analysis_workflow(
+        "status-batch", "--state", str(state_path)
+    )
+    assert complete.returncode == 0, complete.stderr
+    assert json.loads(complete.stdout)["complete"] is True
 
 
 def run_compatibility_engine(

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Own one resumable, analysis-only credit-savings workflow.
+"""Own resumable single-thread and per-thread-batch credit analyses.
 
 The controller validates a closed request, invokes the reusable ledger
 collector exactly once, fingerprints one retained evidence bundle, opens a
@@ -8,12 +8,15 @@ append-only index. It makes no model calls and no semantic findings. Surface
 judgment belongs to the pending action reference; synthesis is an internal
 model-gated phase. All state writes are atomic, stdout is decision-sized, and
 successful finalization deletes only recorded controller-owned context and
-pending-result files.
+pending-result files. Batch commands freeze indexed source selection, prepare
+one ordinary controller per selected thread, and aggregate only validated child
+results without cross-thread semantic reconciliation.
 """
 
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import hashlib
 import importlib.util
 import json
@@ -29,7 +32,6 @@ from collections.abc import Mapping, Sequence
 from types import ModuleType
 from typing import Any
 
-
 SCRIPT_DIR = pathlib.Path(__file__).resolve().parent
 SKILL_DIR = SCRIPT_DIR.parent
 CONTRACT_PATH = SCRIPT_DIR / "credit-analysis-contract.json"
@@ -37,7 +39,10 @@ LEDGER_PATH = SCRIPT_DIR / "model-call-ledger.py"
 STATE_SCHEMA = "ceratops-credit-analysis-state.v1"
 CONTEXT_SCHEMA = "ceratops-credit-analysis-context.v1"
 INDEX_SCHEMA = "ceratops-credit-analysis-index-record.v1"
+BATCH_STATE_SCHEMA = "ceratops-credit-analysis-batch-state.v1"
+BATCH_INDEX_SCHEMA = "ceratops-credit-analysis-batch-index-record.v1"
 STATE_VERSION = 1
+BATCH_STATE_VERSION = 1
 STATE_FIELDS = {
     "schema",
     "version",
@@ -82,8 +87,68 @@ REQUEST_FIELDS = {
     "expected_surface_contract_version",
     "mutation_authority",
 }
-SOURCE_FIELDS = {"thread_id", "session"}
+SOURCE_ALLOWED_FIELDS = {"thread_id", "session", "current_thread", "thread_name"}
 WINDOW_FIELDS = {"mode", "last_runs", "turn_ids"}
+BATCH_REQUEST_FIELDS = {
+    "schema",
+    "action",
+    "mode",
+    "selector",
+    "as_of",
+    "task_temp_root",
+    "manifest_output",
+    "pricing_profile",
+    "expected_surface_contract_version",
+    "expected_source_selection_contract_version",
+    "mutation_authority",
+}
+BATCH_SELECTOR_FIELDS = {"kind", "count", "days", "project"}
+PROJECT_SELECTOR_FIELDS = {"kind", "value"}
+BATCH_STATE_FIELDS = {
+    "schema",
+    "version",
+    "batch_id",
+    "phase",
+    "action",
+    "mode",
+    "mutation_authority",
+    "surface_contract_version",
+    "source_selection_contract_version",
+    "selector",
+    "as_of",
+    "source_index",
+    "candidates",
+    "candidate_index",
+    "items",
+    "exclusions",
+    "current_index",
+    "completed",
+    "paths",
+    "immutable_artifacts",
+    "cleanup",
+    "finalized",
+    "final_result",
+}
+BATCH_ITEM_FIELDS = {
+    "ordinal",
+    "thread_id",
+    "thread_name",
+    "updated_at",
+    "project",
+    "session",
+    "source_fingerprint",
+    "request_path",
+    "state_path",
+    "evidence_path",
+    "final_result_path",
+}
+BATCH_COMPLETED_FIELDS = {
+    "ordinal",
+    "thread_id",
+    "path",
+    "sha256",
+    "content_hash",
+}
 SURFACE_RESULT_FIELDS = {
     "schema",
     "analysis_id",
@@ -244,6 +309,18 @@ def _closed(value: Mapping[str, Any], expected: set[str], label: str) -> None:
     raise CreditAnalysisError(f"{label} fields are invalid: {'; '.join(details)}")
 
 
+def _allowed_fields(
+    value: Mapping[str, Any],
+    allowed: set[str],
+    label: str,
+) -> None:
+    unknown = sorted(set(value) - allowed)
+    if unknown:
+        raise CreditAnalysisError(
+            f"{label} fields are invalid: unknown {', '.join(unknown)}"
+        )
+
+
 def _strings(
     value: Any,
     label: str,
@@ -383,6 +460,47 @@ def _load_contract() -> dict[str, Any]:
     version = contract.get("surface_contract_version")
     if not isinstance(version, int) or isinstance(version, bool) or version < 1:
         raise CreditAnalysisError("surface contract version must be positive")
+    source_version = contract.get("source_selection_contract_version")
+    if (
+        not isinstance(source_version, int)
+        or isinstance(source_version, bool)
+        or source_version < 1
+    ):
+        raise CreditAnalysisError("source selection contract version must be positive")
+    source_selectors = _objects(
+        contract.get("source_selectors"), "source selectors"
+    )
+    expected_source_selectors = [
+        "current-thread",
+        "thread-id",
+        "session",
+        "thread-name",
+        "recent-threads",
+        "recent-days",
+    ]
+    if [item.get("id") for item in source_selectors] != expected_source_selectors:
+        raise CreditAnalysisError("source selectors do not match the fixed contract")
+    for item in source_selectors:
+        if set(item) != {"id", "cardinality"} or item.get("cardinality") not in {
+            "single",
+            "batch",
+        }:
+            raise CreditAnalysisError("source selector metadata is invalid")
+    passes = contract.get("full_analysis_semantic_passes_per_thread")
+    if passes != len(contract.get("full_queue", [])):
+        raise CreditAnalysisError("per-thread semantic pass count disagrees with full queue")
+    if contract.get("single_controller_commands") != [
+        "prepare",
+        "advance",
+        "status",
+        "finalize",
+    ] or contract.get("batch_controller_commands") != [
+        "prepare-batch",
+        "advance-batch",
+        "status-batch",
+        "finalize-batch",
+    ]:
+        raise CreditAnalysisError("controller command contract is invalid")
     public = _objects(contract.get("public_actions"), "public actions")
     surfaces = _objects(contract.get("surfaces"), "surfaces")
     surface_order = _strings(contract.get("surface_order"), "surface order")
@@ -456,23 +574,51 @@ def _request_source(
 ) -> tuple[dict[str, Any], pathlib.Path]:
     if not isinstance(raw, dict):
         raise CreditAnalysisError("source must be an object")
-    _closed(raw, SOURCE_FIELDS, "source")
+    _allowed_fields(raw, SOURCE_ALLOWED_FIELDS, "source")
     thread_id = raw.get("thread_id")
     session = raw.get("session")
+    current_thread = raw.get("current_thread")
+    thread_name = raw.get("thread_name")
+    string_values = (thread_id, session, thread_name)
+    if any(
+        value not in (None, "") and not isinstance(value, str)
+        for value in string_values
+    ) or current_thread not in (None, False, True):
+        raise CreditAnalysisError("source selector values are invalid")
     selected = sum(
-        1
-        for value in (thread_id, session)
-        if isinstance(value, str) and value
+        [
+            isinstance(thread_id, str) and bool(thread_id),
+            isinstance(session, str) and bool(session),
+            current_thread is True,
+            isinstance(thread_name, str) and bool(thread_name.strip()),
+        ]
     )
-    if selected != 1 or any(value not in (None, "") and not isinstance(value, str) for value in (thread_id, session)):
-        raise CreditAnalysisError("source must name exactly one thread ID or session")
+    if selected != 1:
+        raise CreditAnalysisError(
+            "source must name exactly one thread ID, session, current thread, or thread name"
+        )
     try:
         if isinstance(thread_id, str) and thread_id:
-            resolved = ledger.resolve_thread_session(thread_id)
-            descriptor = {"kind": "thread_id", "value": thread_id}
-        else:
+            canonical_id = ledger.canonical_thread_id(thread_id)
+            resolved = ledger.resolve_thread_session(canonical_id)
+            descriptor = {"kind": "thread_id", "value": canonical_id}
+        elif isinstance(session, str) and session:
             resolved = pathlib.Path(str(session)).expanduser().resolve(strict=True)
             descriptor = {"kind": "session", "value": str(resolved)}
+        elif current_thread is True:
+            canonical_id, resolved = ledger.resolve_current_thread_source()
+            descriptor = {"kind": "current_thread", "value": canonical_id}
+        else:
+            assert isinstance(thread_name, str)
+            canonical_id, resolved, index_fingerprint = (
+                ledger.resolve_named_thread_source(thread_name)
+            )
+            descriptor = {
+                "kind": "thread_name",
+                "value": thread_name.strip(),
+                "thread_id": canonical_id,
+                "thread_index_fingerprint": index_fingerprint,
+            }
     except (OSError, ValueError, RuntimeError) as exc:
         raise CreditAnalysisError(f"could not resolve selected session: {exc}") from exc
     if resolved.is_symlink() or not resolved.is_file():
@@ -802,21 +948,14 @@ def _public_status(state: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def command_prepare(request_path: pathlib.Path) -> dict[str, Any]:
-    contract = _load_contract()
-    ledger = _load_ledger()
-    request = _validate_request(request_path, contract, ledger)
+def _initialize_analysis(
+    request: Mapping[str, Any],
+    contract: Mapping[str, Any],
+    collected: dict[str, Any],
+) -> dict[str, Any]:
+    """Persist one validated controller from an already collected evidence set."""
+
     analysis_id = secrets.token_hex(12)
-    collector_window = request["collector_window"]
-    try:
-        collected = ledger.collect_session_evidence(
-            request["session"],
-            last_runs=collector_window["last_runs"],
-            completed_turn_ids=collector_window["completed_turn_ids"],
-            pricing_profile=request["pricing"],
-        )
-    except (OSError, RuntimeError, ValueError) as exc:
-        raise CreditAnalysisError(f"session collection failed: {exc}") from exc
     if collected["collection"]["model_calls"] < 1:
         raise CreditAnalysisError("selected completed-run window has no model calls")
     collector_schema = collected.pop("schema")
@@ -899,6 +1038,23 @@ def command_prepare(request_path: pathlib.Path) -> dict[str, Any]:
     _open_pending(state, evidence, contract)
     _exclusive_json(request["state_path"], state, "controller state")
     return _public_status(state)
+
+
+def command_prepare(request_path: pathlib.Path) -> dict[str, Any]:
+    contract = _load_contract()
+    ledger = _load_ledger()
+    request = _validate_request(request_path, contract, ledger)
+    collector_window = request["collector_window"]
+    try:
+        collected = ledger.collect_session_evidence(
+            request["session"],
+            last_runs=collector_window["last_runs"],
+            completed_turn_ids=collector_window["completed_turn_ids"],
+            pricing_profile=request["pricing"],
+        )
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise CreditAnalysisError(f"session collection failed: {exc}") from exc
+    return _initialize_analysis(request, contract, collected)
 
 
 def _read_index(path: pathlib.Path) -> list[dict[str, Any]]:
@@ -2377,6 +2533,917 @@ def command_finalize(
     _save_state(state)
 
 
+def _project_selector(raw: Any) -> dict[str, str] | None:
+    """Normalize one exact project selector without filesystem discovery."""
+
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise CreditAnalysisError("project selector must be an object or null")
+    _closed(raw, PROJECT_SELECTOR_FIELDS, "project selector")
+    kind = raw.get("kind")
+    value = raw.get("value")
+    if kind not in {"name", "path", "repository_url"}:
+        raise CreditAnalysisError("project selector kind is invalid")
+    if not isinstance(value, str) or not value.strip():
+        raise CreditAnalysisError("project selector value must be nonempty")
+    normalized = value.strip()
+    if kind == "name":
+        normalized = normalized.casefold()
+    elif kind == "repository_url":
+        normalized = normalized.rstrip("/").removesuffix(".git").casefold()
+    else:
+        candidate = pathlib.Path(normalized).expanduser()
+        if not candidate.is_absolute():
+            raise CreditAnalysisError("project path selector must be absolute")
+        normalized = os.path.normcase(os.path.normpath(str(candidate.resolve())))
+    return {"kind": str(kind), "value": normalized}
+
+
+def _project_matches(
+    metadata: Mapping[str, Any],
+    selector: Mapping[str, str] | None,
+) -> bool:
+    if selector is None:
+        return True
+    kind = selector["kind"]
+    value = selector["value"]
+    if kind == "name":
+        aliases = metadata.get("project_aliases")
+        return isinstance(aliases, list) and value in aliases
+    if kind == "repository_url":
+        return metadata.get("normalized_repository_url") == value
+    cwd = metadata.get("normalized_cwd")
+    if not isinstance(cwd, str):
+        return False
+    try:
+        return pathlib.Path(cwd) == pathlib.Path(value) or pathlib.Path(
+            cwd
+        ).is_relative_to(pathlib.Path(value))
+    except (OSError, ValueError):
+        return False
+
+
+def _batch_request_paths(
+    request: Mapping[str, Any],
+) -> tuple[pathlib.Path, dict[str, pathlib.Path]]:
+    task_root = _existing_directory(request.get("task_temp_root"), "task_temp_root")
+    manifest_value = request.get("manifest_output")
+    if not isinstance(manifest_value, str) or not manifest_value:
+        raise CreditAnalysisError("manifest_output must be nonempty text")
+    manifest = pathlib.Path(manifest_value).expanduser().resolve()
+    if not manifest.parent.is_dir():
+        raise CreditAnalysisError("manifest output directory does not exist")
+    if manifest.is_symlink() or manifest.is_dir():
+        raise CreditAnalysisError("manifest output must be a regular-file path")
+    paths = {
+        "state": task_root / "batch-state.json",
+        "manifest": manifest,
+        "requests_dir": task_root / "requests",
+        "analyses_dir": task_root / "analyses",
+        "evidence_dir": task_root / "evidence",
+        "index": task_root / "batch-results.jsonl",
+        "final_result": task_root / "batch-final-machine-result.json",
+    }
+    collisions = [path.resolve() for path in paths.values()]
+    if len(collisions) != len(set(collisions)):
+        raise CreditAnalysisError("batch controller paths must be distinct")
+    for key in ("requests_dir", "analyses_dir", "evidence_dir"):
+        try:
+            paths[key].resolve().relative_to(task_root)
+        except ValueError as exc:
+            raise CreditAnalysisError(f"batch {key} escapes task_temp_root") from exc
+    return task_root, paths
+
+
+def _validated_batch_request(
+    request_path: pathlib.Path,
+    contract: Mapping[str, Any],
+    ledger: ModuleType,
+) -> dict[str, Any]:
+    """Validate one bounded, analysis-only batch request before side effects."""
+
+    request = _read_json(request_path, "batch request")
+    _closed(request, BATCH_REQUEST_FIELDS, "batch request")
+    if request.get("schema") != contract["batch_request_schema"]:
+        raise CreditAnalysisError(
+            f"batch request schema must be {contract['batch_request_schema']}"
+        )
+    if request.get("action") != "full-analysis" or request.get("mode") != "per-thread-batch":
+        raise CreditAnalysisError("batch requests must use full-analysis per-thread-batch")
+    if request.get("mutation_authority") is not False:
+        raise CreditAnalysisError("mutation_authority must be false")
+    if request.get("expected_surface_contract_version") != contract[
+        "surface_contract_version"
+    ]:
+        raise CreditAnalysisError("surface contract version mismatch")
+    if request.get("expected_source_selection_contract_version") != contract[
+        "source_selection_contract_version"
+    ]:
+        raise CreditAnalysisError("source selection contract version mismatch")
+    selector_raw = request.get("selector")
+    if not isinstance(selector_raw, dict):
+        raise CreditAnalysisError("batch selector must be an object")
+    _closed(selector_raw, BATCH_SELECTOR_FIELDS, "batch selector")
+    kind = selector_raw.get("kind")
+    count = selector_raw.get("count")
+    days = selector_raw.get("days")
+    if kind == "recent_threads":
+        if (
+            not isinstance(count, int)
+            or isinstance(count, bool)
+            or count < 1
+            or days is not None
+        ):
+            raise CreditAnalysisError(
+                "recent_threads requires a positive count and null days"
+            )
+    elif kind == "recent_days":
+        if (
+            not isinstance(days, int)
+            or isinstance(days, bool)
+            or days < 1
+            or count is not None
+        ):
+            raise CreditAnalysisError(
+                "recent_days requires positive days and a null count"
+            )
+    else:
+        raise CreditAnalysisError("batch selector kind is invalid")
+    project = _project_selector(selector_raw.get("project"))
+    try:
+        as_of = ledger.parse_utc_timestamp(request.get("as_of"), "batch as_of")
+    except RuntimeError as exc:
+        raise CreditAnalysisError(str(exc)) from exc
+    if as_of > dt.datetime.now(dt.timezone.utc) + dt.timedelta(minutes=5):
+        raise CreditAnalysisError("batch as_of cannot be in the future")
+    task_root, paths = _batch_request_paths(request)
+    reserved_existing = [
+        path for path in paths.values() if path.exists() or path.is_symlink()
+    ]
+    if reserved_existing:
+        raise CreditAnalysisError(
+            f"task_temp_root already contains batch controller state: {reserved_existing[0].name}"
+        )
+    pricing_value = request.get("pricing_profile")
+    pricing = (
+        None
+        if pricing_value is None
+        else _existing_file(pricing_value, "pricing profile")
+    )
+    if pricing is not None and pricing.resolve() in {
+        path.resolve() for path in paths.values()
+    }:
+        raise CreditAnalysisError("pricing profile collides with a batch path")
+    selector = {
+        "kind": kind,
+        "count": count,
+        "days": days,
+        "project": project,
+    }
+    return {
+        "request": request,
+        "request_path": request_path,
+        "request_hash": _file_hash(request_path),
+        "task_root": task_root,
+        "paths": paths,
+        "selector": selector,
+        "as_of": as_of,
+        "pricing": pricing,
+    }
+
+
+def _select_batch_candidates(
+    request: Mapping[str, Any],
+    ledger: ModuleType,
+) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, str]]]:
+    """Freeze index-ordered candidates and reject ambiguous project names."""
+
+    index = ledger.load_thread_index()
+    as_of = request["as_of"]
+    selector = request["selector"]
+    assert isinstance(as_of, dt.datetime)
+    assert isinstance(selector, Mapping)
+    start = (
+        as_of - dt.timedelta(days=int(selector["days"]))
+        if selector["kind"] == "recent_days"
+        else None
+    )
+    candidates: list[dict[str, Any]] = []
+    exclusions: list[dict[str, str]] = []
+    for entry in index["entries"]:
+        updated_at = ledger.parse_utc_timestamp(
+            entry["updated_at"], "thread index updated_at"
+        )
+        if updated_at > as_of or start is not None and updated_at < start:
+            continue
+        thread_id = entry["thread_id"]
+        try:
+            session = ledger.resolve_thread_session(thread_id)
+            metadata = ledger.read_session_source_metadata(
+                session,
+                expected_thread_id=thread_id,
+            )
+        except (OSError, RuntimeError, ValueError):
+            exclusions.append(
+                {
+                    "thread_id": thread_id,
+                    "reason": "unresolvable-session-or-metadata",
+                }
+            )
+            continue
+        if not _project_matches(metadata, selector["project"]):
+            continue
+        candidates.append(
+            {
+                "thread_id": thread_id,
+                "thread_name": entry["thread_name"],
+                "updated_at": entry["updated_at"],
+                "session": str(session),
+                "project": {
+                    "key": metadata["project_key"],
+                    "cwd": metadata["cwd"],
+                    "repository_url": metadata["repository_url"],
+                },
+            }
+        )
+    project = selector["project"]
+    if isinstance(project, Mapping) and project.get("kind") == "name":
+        project_keys = {
+            candidate["project"]["key"]
+            for candidate in candidates
+            if candidate["project"]["key"] is not None
+        }
+        if len(project_keys) > 1:
+            raise CreditAnalysisError(
+                "project name is ambiguous; use an exact path or repository URL"
+            )
+    if not candidates:
+        raise CreditAnalysisError("batch selector matched no resolvable threads")
+    return index, candidates, exclusions
+
+
+def _batch_item_paths(
+    state: Mapping[str, Any],
+    ordinal: int,
+    thread_id: str,
+) -> dict[str, pathlib.Path]:
+    stem = f"{ordinal:03d}-{thread_id}"
+    paths = state["paths"]
+    return {
+        "request": pathlib.Path(paths["requests_dir"]) / f"{stem}.json",
+        "analysis_root": pathlib.Path(paths["analyses_dir"]) / stem,
+        "evidence": pathlib.Path(paths["evidence_dir"]) / f"{stem}.json",
+    }
+
+
+def _write_or_verify_json(
+    path: pathlib.Path,
+    value: Mapping[str, Any],
+    label: str,
+) -> None:
+    if path.exists():
+        if path.is_symlink() or not path.is_file():
+            raise CreditAnalysisError(f"{label} must be a regular file")
+        if _content_hash(_read_json(path, label)) != _content_hash(value):
+            raise CreditAnalysisError(f"conflicting {label} already exists")
+        return
+    _exclusive_json(path, value, label)
+
+
+def _save_batch_state(state: Mapping[str, Any]) -> None:
+    _atomic_json(pathlib.Path(state["paths"]["state"]), state, "batch state")
+
+
+def _batch_manifest(
+    state: Mapping[str, Any],
+    contract: Mapping[str, Any],
+) -> dict[str, Any]:
+    requested_count = state["selector"]["count"]
+    return {
+        "schema": contract["batch_manifest_schema"],
+        "batch_id": state["batch_id"],
+        "action": "full-analysis",
+        "mode": "per-thread-batch",
+        "mutation_authority": False,
+        "surface_contract_version": state["surface_contract_version"],
+        "source_selection_contract_version": state[
+            "source_selection_contract_version"
+        ],
+        "selector": state["selector"],
+        "as_of": state["as_of"],
+        "source_index": state["source_index"],
+        "selection": {
+            "requested_count": requested_count,
+            "selected_count": len(state["items"]),
+            "excluded_count": len(state["exclusions"]),
+            "unexamined_candidate_count": len(state["candidates"])
+            - state["candidate_index"],
+        },
+        "estimated_semantic_passes": len(state["items"])
+        * contract["full_analysis_semantic_passes_per_thread"],
+        "items": state["items"],
+        "exclusions": state["exclusions"],
+    }
+
+
+def _resume_batch_preparation(
+    state: dict[str, Any],
+    contract: Mapping[str, Any],
+    ledger: ModuleType,
+) -> None:
+    """Prepare each child once and checkpoint after every retained controller."""
+
+    if state["phase"] != "preparing":
+        return
+    selector = state["selector"]
+    target_count = selector["count"]
+    pricing_record = state["immutable_artifacts"]["pricing_profile"]
+    pricing = (
+        pathlib.Path(pricing_record["path"])
+        if isinstance(pricing_record, Mapping)
+        else None
+    )
+    while state["candidate_index"] < len(state["candidates"]):
+        if isinstance(target_count, int) and len(state["items"]) >= target_count:
+            break
+        candidate = state["candidates"][state["candidate_index"]]
+        session = pathlib.Path(candidate["session"])
+        try:
+            rows, source_fingerprint = ledger.load_rows_with_fingerprint(session)
+            metadata = ledger.session_source_metadata(
+                rows,
+                expected_thread_id=candidate["thread_id"],
+            )
+            if metadata["project_key"] != candidate["project"]["key"]:
+                raise CreditAnalysisError("session project identity changed during prepare")
+            collected = ledger.collect_session_evidence_from_rows(
+                rows,
+                session=session,
+                source_fingerprint=source_fingerprint,
+                pricing_profile=pricing,
+            )
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise CreditAnalysisError(
+                f"batch session collection failed for {candidate['thread_id']}: {exc}"
+            ) from exc
+        if collected["collection"]["model_calls"] < 1:
+            state["exclusions"].append(
+                {
+                    "thread_id": candidate["thread_id"],
+                    "reason": "no-completed-model-calls",
+                }
+            )
+            state["candidate_index"] += 1
+            _save_batch_state(state)
+            continue
+        ordinal = len(state["items"]) + 1
+        child_paths = _batch_item_paths(state, ordinal, candidate["thread_id"])
+        child_paths["analysis_root"].mkdir()
+        child_request = {
+            "schema": contract["request_schema"],
+            "action": "full-analysis",
+            "mode": "full-analysis",
+            "source": {"thread_id": candidate["thread_id"], "session": None},
+            "window": {
+                "mode": "full_thread",
+                "last_runs": None,
+                "turn_ids": [],
+            },
+            "task_temp_root": str(child_paths["analysis_root"]),
+            "evidence_output": str(child_paths["evidence"]),
+            "pricing_profile": str(pricing) if pricing is not None else None,
+            "expected_surface_contract_version": state["surface_contract_version"],
+            "mutation_authority": False,
+        }
+        _write_or_verify_json(
+            child_paths["request"], child_request, "batch child request"
+        )
+        validated = _validate_request(child_paths["request"], dict(contract), ledger)
+        _initialize_analysis(validated, contract, collected)
+        child_state = child_paths["analysis_root"] / "state.json"
+        item = {
+            "ordinal": ordinal,
+            "thread_id": candidate["thread_id"],
+            "thread_name": candidate["thread_name"],
+            "updated_at": candidate["updated_at"],
+            "project": candidate["project"],
+            "session": candidate["session"],
+            "source_fingerprint": source_fingerprint,
+            "request_path": str(child_paths["request"]),
+            "state_path": str(child_state),
+            "evidence_path": str(child_paths["evidence"]),
+            "final_result_path": str(
+                child_paths["analysis_root"] / "final-machine-result.json"
+            ),
+        }
+        state["items"].append(item)
+        state["candidate_index"] += 1
+        _save_batch_state(state)
+    if not state["items"]:
+        raise CreditAnalysisError("batch selector found no threads with completed model calls")
+    manifest = _batch_manifest(state, contract)
+    manifest_path = pathlib.Path(state["paths"]["manifest"])
+    _write_or_verify_json(manifest_path, manifest, "retained batch manifest")
+    state["immutable_artifacts"]["manifest"] = {
+        "path": str(manifest_path),
+        "sha256": _file_hash(manifest_path),
+        "content_hash": _content_hash(manifest),
+    }
+    state["phase"] = "ready"
+    _save_batch_state(state)
+
+
+def _read_batch_index(path: pathlib.Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    if path.is_symlink() or not path.is_file():
+        raise CreditAnalysisError("batch result index must be a regular file")
+    records: list[dict[str, Any]] = []
+    try:
+        with path.open(encoding="utf-8") as handle:
+            for line_number, line in enumerate(handle, start=1):
+                if not line.strip():
+                    raise CreditAnalysisError(
+                        f"batch result index has a blank record at line {line_number}"
+                    )
+                value = json.loads(line)
+                if not isinstance(value, dict):
+                    raise CreditAnalysisError("batch result index record must be an object")
+                records.append(value)
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise CreditAnalysisError(f"batch result index is unreadable: {exc}") from exc
+    return records
+
+
+def _recover_batch_indexed_result(state: dict[str, Any]) -> None:
+    """Recover one child result indexed before its atomic batch-state checkpoint."""
+
+    index = _read_batch_index(pathlib.Path(state["paths"]["index"]))
+    completed_count = len(state["completed"])
+    if len(index) == completed_count:
+        return
+    if len(index) != completed_count + 1 or completed_count >= len(state["items"]):
+        raise CreditAnalysisError("batch result index contains unrecoverable records")
+    raw = index[-1]
+    if not isinstance(raw, dict):
+        raise CreditAnalysisError("batch recovery index record must be an object")
+    _closed(raw, {"schema", *BATCH_COMPLETED_FIELDS}, "batch recovery record")
+    item = state["items"][completed_count]
+    path = _existing_file(raw["path"], "recoverable batch child result")
+    expected = {
+        "schema": BATCH_INDEX_SCHEMA,
+        "ordinal": item["ordinal"],
+        "thread_id": item["thread_id"],
+        "path": str(path),
+        "sha256": _file_hash(path),
+        "content_hash": _content_hash(
+            _read_json(path, "recoverable batch child result")
+        ),
+    }
+    if raw != expected or path.resolve() != pathlib.Path(
+        item["final_result_path"]
+    ).resolve():
+        raise CreditAnalysisError("recoverable batch result does not match pending thread")
+    state["completed"].append({key: raw[key] for key in BATCH_COMPLETED_FIELDS})
+    state["current_index"] = completed_count + 1
+    _save_batch_state(state)
+
+
+def _verify_batch_completed(state: Mapping[str, Any]) -> None:
+    completed = state.get("completed")
+    if not isinstance(completed, list):
+        raise CreditAnalysisError("batch completed records must be a list")
+    index = _read_batch_index(pathlib.Path(state["paths"]["index"]))
+    if len(index) != len(completed):
+        raise CreditAnalysisError("batch result index and state counts differ")
+    for position, raw in enumerate(completed):
+        if not isinstance(raw, dict):
+            raise CreditAnalysisError("batch completed record must be an object")
+        _closed(raw, BATCH_COMPLETED_FIELDS, "batch completed record")
+        item = state["items"][position]
+        if raw["ordinal"] != position + 1 or raw["thread_id"] != item["thread_id"]:
+            raise CreditAnalysisError("batch completed records are reordered")
+        path = _existing_file(raw["path"], "batch child final result")
+        if path.resolve() != pathlib.Path(item["final_result_path"]).resolve():
+            raise CreditAnalysisError("batch completed result path is invalid")
+        if _file_hash(path) != raw["sha256"]:
+            raise CreditAnalysisError("batch completed result hash mismatch")
+        if _content_hash(_read_json(path, "batch child final result")) != raw[
+            "content_hash"
+        ]:
+            raise CreditAnalysisError("batch completed result content hash mismatch")
+        expected_index = {"schema": BATCH_INDEX_SCHEMA, **raw}
+        if index[position] != expected_index:
+            raise CreditAnalysisError("batch result index record mismatch")
+
+
+def _load_batch_state(
+    state_path: pathlib.Path,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Validate bounded batch ownership and recover one indexed child result."""
+
+    resolved = _existing_file(str(state_path), "batch state")
+    state = _read_json(resolved, "batch state")
+    _closed(state, BATCH_STATE_FIELDS, "batch state")
+    if (
+        state.get("schema") != BATCH_STATE_SCHEMA
+        or state.get("version") != BATCH_STATE_VERSION
+    ):
+        raise CreditAnalysisError("unsupported batch state schema or version")
+    if state.get("mutation_authority") is not False:
+        raise CreditAnalysisError("batch mutation authority must remain false")
+    paths = state.get("paths")
+    if not isinstance(paths, dict) or set(paths) != {
+        "state",
+        "manifest",
+        "requests_dir",
+        "analyses_dir",
+        "evidence_dir",
+        "index",
+        "final_result",
+    }:
+        raise CreditAnalysisError("batch state paths are invalid")
+    root = resolved.parent
+    expected = {
+        "state": root / "batch-state.json",
+        "requests_dir": root / "requests",
+        "analyses_dir": root / "analyses",
+        "evidence_dir": root / "evidence",
+        "index": root / "batch-results.jsonl",
+        "final_result": root / "batch-final-machine-result.json",
+    }
+    for key, path in expected.items():
+        if pathlib.Path(paths[key]).resolve() != path.resolve():
+            raise CreditAnalysisError(f"batch {key} path escapes controller ownership")
+    contract = _load_contract()
+    if state["surface_contract_version"] != contract["surface_contract_version"]:
+        raise CreditAnalysisError("batch surface contract version is stale")
+    if state["source_selection_contract_version"] != contract[
+        "source_selection_contract_version"
+    ]:
+        raise CreditAnalysisError("batch source selection contract is stale")
+    artifacts = state.get("immutable_artifacts")
+    if not isinstance(artifacts, dict):
+        raise CreditAnalysisError("batch immutable artifacts are invalid")
+    for label in ("request", "surface_contract"):
+        record = artifacts.get(label)
+        if not isinstance(record, dict):
+            raise CreditAnalysisError(f"batch {label} artifact is invalid")
+        path = _existing_file(record.get("path"), f"batch {label} artifact")
+        if _file_hash(path) != record.get("sha256"):
+            raise CreditAnalysisError(f"batch {label} artifact changed")
+    pricing = artifacts.get("pricing_profile")
+    if pricing is not None:
+        if not isinstance(pricing, dict):
+            raise CreditAnalysisError("batch pricing artifact is invalid")
+        path = _existing_file(pricing.get("path"), "batch pricing artifact")
+        if _file_hash(path) != pricing.get("sha256"):
+            raise CreditAnalysisError("batch pricing artifact changed")
+    phase = state.get("phase")
+    if phase not in {"preparing", "ready", "finalized"}:
+        raise CreditAnalysisError("batch phase is invalid")
+    manifest = artifacts.get("manifest")
+    if phase == "preparing":
+        if manifest is not None:
+            raise CreditAnalysisError("preparing batch must not freeze a manifest")
+    else:
+        if not isinstance(manifest, dict):
+            raise CreditAnalysisError("ready batch lacks an immutable manifest")
+        path = _existing_file(manifest.get("path"), "batch manifest")
+        if path.resolve() != pathlib.Path(paths["manifest"]).resolve():
+            raise CreditAnalysisError("batch manifest path changed")
+        if _file_hash(path) != manifest.get("sha256"):
+            raise CreditAnalysisError("batch manifest hash mismatch")
+    items = state.get("items")
+    if not isinstance(items, list):
+        raise CreditAnalysisError("batch items must be a list")
+    seen_threads: set[str] = set()
+    for position, item in enumerate(items, start=1):
+        if not isinstance(item, dict):
+            raise CreditAnalysisError("batch item must be an object")
+        _closed(item, BATCH_ITEM_FIELDS, "batch item")
+        if item["ordinal"] != position or item["thread_id"] in seen_threads:
+            raise CreditAnalysisError("batch item order or identity is invalid")
+        seen_threads.add(item["thread_id"])
+        for key in ("request_path", "state_path", "evidence_path"):
+            _existing_file(item[key], f"batch item {key}")
+    _recover_batch_indexed_result(state)
+    current_index = state.get("current_index")
+    if (
+        not isinstance(current_index, int)
+        or isinstance(current_index, bool)
+        or current_index < 0
+        or current_index > len(items)
+    ):
+        raise CreditAnalysisError("batch current index is invalid")
+    _verify_batch_completed(state)
+    if current_index != len(state["completed"]):
+        raise CreditAnalysisError("batch current index does not match completed results")
+    cleanup = state.get("cleanup")
+    if cleanup != {
+        "owner": "credit-analysis-workflow",
+        "trigger": "successful-child-finalization",
+        "transient_paths": [],
+    }:
+        raise CreditAnalysisError("batch cleanup contract is invalid")
+    if state.get("finalized") is True:
+        final = state.get("final_result")
+        if phase != "finalized" or not isinstance(final, dict):
+            raise CreditAnalysisError("finalized batch state is incomplete")
+        final_path = _existing_file(final.get("path"), "batch final result")
+        if _file_hash(final_path) != final.get("sha256"):
+            raise CreditAnalysisError("batch final result hash mismatch")
+    return state, contract
+
+
+def _batch_public_status(
+    state: Mapping[str, Any],
+    contract: Mapping[str, Any],
+) -> dict[str, Any]:
+    if state["finalized"] is True:
+        return {
+            "batch_id": state["batch_id"],
+            "complete": True,
+            "selected_threads": len(state["items"]),
+            "batch_state_path": state["paths"]["state"],
+            "manifest_path": state["paths"]["manifest"],
+            "final_result_path": state["final_result"]["path"],
+        }
+    common = {
+        "batch_id": state["batch_id"],
+        "selected_threads": len(state["items"]),
+        "estimated_semantic_passes": len(state["items"])
+        * contract["full_analysis_semantic_passes_per_thread"],
+        "batch_state_path": state["paths"]["state"],
+        "manifest_path": state["paths"]["manifest"],
+    }
+    if state["phase"] == "preparing":
+        return {**common, "preparing": True, "resume_with": "prepare-batch"}
+    if state["current_index"] >= len(state["items"]):
+        return {**common, "ready_to_finalize": True}
+    item = state["items"][state["current_index"]]
+    child_status = command_status(pathlib.Path(item["state_path"]))
+    return {
+        **common,
+        "current_ordinal": item["ordinal"],
+        "pending_thread_id": item["thread_id"],
+        "pending_thread_name": item["thread_name"],
+        "child_request_path": item["request_path"],
+        "child_state_path": item["state_path"],
+        "child_status": child_status,
+    }
+
+
+def command_prepare_batch(request_path: pathlib.Path) -> dict[str, Any]:
+    """Freeze and prepare one resumable per-thread batch from an exact request."""
+
+    raw = _read_json(request_path, "batch request")
+    _closed(raw, BATCH_REQUEST_FIELDS, "batch request")
+    task_root, paths = _batch_request_paths(raw)
+    state_path = paths["state"]
+    if state_path.exists():
+        state, contract = _load_batch_state(state_path)
+        request_record = state["immutable_artifacts"]["request"]
+        if pathlib.Path(request_record["path"]).resolve() != request_path.resolve():
+            raise CreditAnalysisError("batch request path does not match resumable state")
+        if _file_hash(request_path) != request_record["sha256"]:
+            raise CreditAnalysisError("batch request changed during resume")
+        if state["phase"] == "preparing":
+            _resume_batch_preparation(state, contract, _load_ledger())
+        return _batch_public_status(state, contract)
+    contract = _load_contract()
+    ledger = _load_ledger()
+    request = _validated_batch_request(request_path, contract, ledger)
+    index, candidates, exclusions = _select_batch_candidates(request, ledger)
+    for key in ("requests_dir", "analyses_dir", "evidence_dir"):
+        request["paths"][key].mkdir()
+    state = {
+        "schema": BATCH_STATE_SCHEMA,
+        "version": BATCH_STATE_VERSION,
+        "batch_id": secrets.token_hex(12),
+        "phase": "preparing",
+        "action": "full-analysis",
+        "mode": "per-thread-batch",
+        "mutation_authority": False,
+        "surface_contract_version": contract["surface_contract_version"],
+        "source_selection_contract_version": contract[
+            "source_selection_contract_version"
+        ],
+        "selector": request["selector"],
+        "as_of": request["as_of"].isoformat().replace("+00:00", "Z"),
+        "source_index": {
+            "path": index["path"],
+            "fingerprint": index["fingerprint"],
+        },
+        "candidates": candidates,
+        "candidate_index": 0,
+        "items": [],
+        "exclusions": exclusions,
+        "current_index": 0,
+        "completed": [],
+        "paths": {key: str(value) for key, value in request["paths"].items()},
+        "immutable_artifacts": {
+            "request": {
+                "path": str(request_path),
+                "sha256": request["request_hash"],
+            },
+            "surface_contract": {
+                "path": str(CONTRACT_PATH),
+                "sha256": _file_hash(CONTRACT_PATH),
+            },
+            "manifest": None,
+            "pricing_profile": (
+                {
+                    "path": str(request["pricing"]),
+                    "sha256": _file_hash(request["pricing"]),
+                }
+                if request["pricing"] is not None
+                else None
+            ),
+        },
+        "cleanup": {
+            "owner": "credit-analysis-workflow",
+            "trigger": "successful-child-finalization",
+            "transient_paths": [],
+        },
+        "finalized": False,
+        "final_result": None,
+    }
+    _exclusive_json(state_path, state, "batch state")
+    _resume_batch_preparation(state, contract, ledger)
+    return _batch_public_status(state, contract)
+
+
+def command_status_batch(state_path: pathlib.Path) -> dict[str, Any]:
+    state, contract = _load_batch_state(state_path)
+    return _batch_public_status(state, contract)
+
+
+def command_advance_batch(
+    state_path: pathlib.Path,
+    result_path: pathlib.Path,
+) -> dict[str, Any]:
+    """Accept the exact finalized child and advance the immutable batch order."""
+
+    state, contract = _load_batch_state(state_path)
+    result = _existing_file(str(result_path), "batch child final result")
+    if state["completed"]:
+        previous = state["completed"][-1]
+        if result.resolve() == pathlib.Path(previous["path"]).resolve():
+            if _file_hash(result) != previous["sha256"]:
+                raise CreditAnalysisError("conflicting batch result resubmission")
+            return _batch_public_status(state, contract)
+    if state["finalized"] or state["current_index"] >= len(state["items"]):
+        raise CreditAnalysisError("batch has no pending thread result")
+    item = state["items"][state["current_index"]]
+    if result.resolve() != pathlib.Path(item["final_result_path"]).resolve():
+        raise CreditAnalysisError("batch result is not for the exact pending thread")
+    child_state, _, _ = _load_state(pathlib.Path(item["state_path"]))
+    if child_state["finalized"] is not True:
+        raise CreditAnalysisError("pending thread analysis is not finalized")
+    payload = _read_json(result, "batch child final result")
+    if (
+        payload.get("schema") != contract["final_result_schema"]
+        or payload.get("mode") != "full-analysis"
+        or child_state["source"].get("value") != item["thread_id"]
+    ):
+        raise CreditAnalysisError("batch child final result identity is invalid")
+    record = {
+        "ordinal": item["ordinal"],
+        "thread_id": item["thread_id"],
+        "path": str(result),
+        "sha256": _file_hash(result),
+        "content_hash": _content_hash(payload),
+    }
+    _append_index(
+        pathlib.Path(state["paths"]["index"]),
+        {"schema": BATCH_INDEX_SCHEMA, **record},
+    )
+    state["completed"].append(record)
+    state["current_index"] += 1
+    _save_batch_state(state)
+    return _batch_public_status(state, contract)
+
+
+def _build_batch_final(
+    state: Mapping[str, Any],
+    contract: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Aggregate every child result without cross-thread semantic deduplication."""
+
+    thread_results: list[dict[str, Any]] = []
+    findings: list[dict[str, Any]] = []
+    risks: list[dict[str, Any]] = []
+    dismissals: list[dict[str, Any]] = []
+    exclusions: list[dict[str, Any]] = []
+    primary: list[dict[str, Any]] = []
+    secondary: list[dict[str, Any]] = []
+    producer_groups: list[dict[str, Any]] = []
+    totals: Counter[str] = Counter()
+    priced_totals: defaultdict[str, float] = defaultdict(float)
+    pricing_complete = True
+    for item, record in zip(state["items"], state["completed"], strict=True):
+        result = _read_json(pathlib.Path(record["path"]), "batch child final result")
+        if result.get("schema") != contract["final_result_schema"]:
+            raise CreditAnalysisError("batch child final result schema changed")
+        identity = {
+            "thread_id": item["thread_id"],
+            "thread_name": item["thread_name"],
+            "analysis_id": result["analysis_id"],
+        }
+        thread_results.append({**identity, "path": record["path"], "result": result})
+        findings.extend({**identity, "finding": value} for value in result["confirmed_findings"])
+        risks.extend({**identity, "risk": value} for value in result["plausible_risks"])
+        dismissals.extend({**identity, "dismissal": value} for value in result["dismissals"])
+        exclusions.extend(
+            {**identity, "exclusion": value}
+            for value in result["necessary_call_exclusions"]
+        )
+        primary.extend(
+            {**identity, "mapping": value}
+            for value in result["primary_call_mappings"]
+        )
+        secondary.extend(
+            {**identity, "mapping": value}
+            for value in result["secondary_call_mappings"]
+        )
+        producer_groups.extend(
+            {**identity, "group": value}
+            for value in result["producer_grouped_recommendations"]
+        )
+        for key, value in result["totals"].items():
+            if isinstance(value, int) and not isinstance(value, bool):
+                totals[key] += value
+        priced = result.get("priced_cost")
+        if not isinstance(priced, Mapping):
+            pricing_complete = False
+        else:
+            for key, value in priced.items():
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    priced_totals[key] += float(value)
+    return {
+        "schema": contract["batch_final_result_schema"],
+        "batch_id": state["batch_id"],
+        "mode": "per-thread-batch",
+        "scope_limitation": (
+            "Results are complete per-thread full analyses aggregated without "
+            "cross-thread semantic synthesis or cross-thread savings deduplication."
+        ),
+        "selector": state["selector"],
+        "as_of": state["as_of"],
+        "source_index": state["source_index"],
+        "selection_exclusions": state["exclusions"],
+        "thread_results": thread_results,
+        "confirmed_findings": findings,
+        "plausible_risks": risks,
+        "dismissals": dismissals,
+        "necessary_call_exclusions": exclusions,
+        "primary_call_mappings": primary,
+        "secondary_call_mappings": secondary,
+        "producer_grouped_recommendations": producer_groups,
+        "totals": {
+            "analyzed_threads": len(state["items"]),
+            "session_collections": len(state["items"]),
+            **dict(sorted(totals.items())),
+        },
+        "priced_cost": (
+            {key: round(value, 12) for key, value in sorted(priced_totals.items())}
+            if pricing_complete
+            else None
+        ),
+        "retained_paths": {
+            "manifest": state["paths"]["manifest"],
+            "batch_state": state["paths"]["state"],
+            "batch_index": state["paths"]["index"],
+            "child_final_results": [record["path"] for record in state["completed"]],
+            "batch_final_machine_result": state["paths"]["final_result"],
+        },
+    }
+
+
+def command_finalize_batch(state_path: pathlib.Path) -> None:
+    """Verify every child and retain one complete deterministic batch result."""
+
+    state, contract = _load_batch_state(state_path)
+    if state["finalized"]:
+        return
+    if state["phase"] != "ready" or state["current_index"] != len(state["items"]):
+        raise CreditAnalysisError("batch still has unfinished thread analyses")
+    _verify_batch_completed(state)
+    final = _build_batch_final(state, contract)
+    path = pathlib.Path(state["paths"]["final_result"])
+    sha256 = _write_final_result(path, final)
+    state["phase"] = "finalized"
+    state["finalized"] = True
+    state["final_result"] = {
+        "path": str(path),
+        "sha256": sha256,
+        "content_hash": _content_hash(final),
+    }
+    _save_batch_state(state)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -2390,6 +3457,15 @@ def build_parser() -> argparse.ArgumentParser:
     finalize = commands.add_parser("finalize")
     finalize.add_argument("--state", required=True, type=pathlib.Path)
     finalize.add_argument("--result", required=True, type=pathlib.Path)
+    prepare_batch = commands.add_parser("prepare-batch")
+    prepare_batch.add_argument("--request", required=True, type=pathlib.Path)
+    advance_batch = commands.add_parser("advance-batch")
+    advance_batch.add_argument("--state", required=True, type=pathlib.Path)
+    advance_batch.add_argument("--result", required=True, type=pathlib.Path)
+    status_batch = commands.add_parser("status-batch")
+    status_batch.add_argument("--state", required=True, type=pathlib.Path)
+    finalize_batch = commands.add_parser("finalize-batch")
+    finalize_batch.add_argument("--state", required=True, type=pathlib.Path)
     return parser
 
 
@@ -2402,8 +3478,19 @@ def main(argv: list[str] | None = None) -> int:
             output = command_advance(args.state, args.result)
         elif args.command == "status":
             output = command_status(args.state)
-        else:
+        elif args.command == "finalize":
             command_finalize(args.state, args.result)
+            output = "OK"
+        elif args.command == "prepare-batch":
+            output = command_prepare_batch(
+                args.request.expanduser().resolve(strict=True)
+            )
+        elif args.command == "advance-batch":
+            output = command_advance_batch(args.state, args.result)
+        elif args.command == "status-batch":
+            output = command_status_batch(args.state)
+        else:
+            command_finalize_batch(args.state)
             output = "OK"
     except (CreditAnalysisError, OSError, ValueError, json.JSONDecodeError) as exc:
         print(f"error: {exc}", file=sys.stderr)

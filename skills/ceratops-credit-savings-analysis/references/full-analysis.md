@@ -10,6 +10,19 @@ present every confirmed finding.
 
 - Use the source, completed-run window, task temporary root, retained evidence
   path, optional pricing profile, and contract version required by the parent.
+- For one source, accept an explicit thread ID or session path, the current
+  thread, or one exact thread name. Resolve the current thread only from
+  `CODEX_THREAD_ID`; resolve a name against the latest thread-index records and
+  stop on zero or multiple matches.
+- For a per-thread batch, accept either the latest positive thread count or all
+  threads updated during a positive day interval, optionally filtered by one
+  exact project name, absolute path, or repository URL. Freeze an exact UTC
+  `as_of` boundary. Date selection uses thread-index `updated_at`; every
+  selected thread is then analyzed over all of its completed runs.
+- Use the controller-owned batch request schema with action `full-analysis`,
+  mode `per-thread-batch`, selector, `as_of`, caller-selected task root and
+  retained manifest output, optional pricing profile, both expected contract
+  versions, and mutation authority fixed to false.
 - Prepare with action and mode `full-analysis`. Do not run a standalone surface
   in parallel or collect another bundle.
 - Follow only the pending surface. Do not draft findings for later surfaces.
@@ -32,11 +45,21 @@ present every confirmed finding.
 5. Run controller `finalize`. On interruption, retain state and accepted results
    and resume with `status`.
 
+For a batch, run `prepare-batch` once. It freezes the index fingerprint,
+deterministic update-time and thread-ID ordering, project identity, selection
+manifest, exact child requests, and one prepared controller per selected
+thread. Complete and finalize the pending child, submit its final machine result
+through `advance-batch`, and resume through `status-batch`. After every child is
+accepted, run `finalize-batch`; do not create a temporary discovery script or
+recollect a prepared session.
+
 ## Completion Gate
 
 Complete only when finalization returns `OK` and retained machine evidence
 contains every accepted pass, finding, risk, dismissal, exclusion, primary and
 secondary mapping, category and surface total, producer group, and ROI input.
+For a batch, every selected child must also be finalized and indexed exactly
+once before batch finalization succeeds.
 
 ## Output Contract
 
@@ -51,3 +74,8 @@ Also report plausible unverified risks separately; necessary and
 protocol-overhead totals; avoidable versus total calls; priced cost only when
 available; and the retained final machine-evidence path. Never limit the output
 to a champion or top recommendation.
+
+For a batch, present every finding with its thread identity, report aggregate
+per-thread totals and the retained batch result, and state that no cross-thread
+semantic reconciliation or savings deduplication was performed. A full batch
+plans six semantic passes per selected thread before any correction retries.

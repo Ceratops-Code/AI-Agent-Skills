@@ -8,7 +8,7 @@ Reusable Ceratops skills for Codex and other `SKILL.md`-compatible agents.
 | --- | --- |
 | `ceratops-repo-lifecycle` | Route repository lifecycle work across compatibility, local promotion, structured deployment, guarded shipping, GitHub creation, contracts, health, dependencies, and PR merge actions. |
 | `ceratops-governance-lifecycle` | Route prompt optimization, advisory skill optimization, regression-safe instruction updates, and cross-scope governance consistency audits across action references. |
-| `ceratops-credit-savings-analysis` | Analyze one credit-waste surface or run a fixed multi-pass session analysis that preserves every confirmed finding. |
+| `ceratops-credit-savings-analysis` | Analyze one credit-waste surface or run fixed per-thread analyses for the current, named, or recent project-filtered threads while preserving every confirmed finding. |
 | `ceratops-skill-lifecycle` | Route skill-domain work across create, deploy, preferred eligible fast-change, update, skills-contract-review, and skills-consistency-review actions. |
 | `ceratops-automation-run` | Run recurring automations with shared Ceratops alert, memory, and completion policy. |
 | `ceratops-task-lifecycle` | Route failed-fix-loop breaks, same-thread task resume, whole-task handoff, and closure checks across action references. |
@@ -96,8 +96,8 @@ without repository deduplication.
 | `skills/ceratops-skill-lifecycle/scripts/runtime/install-managed-skills.py` | Classifies explicit, promotion-relative, or all-managed affected sets; owns direct-manifest inventory; and invokes one runtime transaction without source validation. |
 | `skills/ceratops-skill-lifecycle/scripts/runtime/managed_runtime_builder.py` | Stages, activates, rolls back, recovers, and cleans one locked selected-skill runtime transaction. |
 | `skills/ceratops-skill-lifecycle/scripts/update-execution.py` | Collects declared pytest nodes before edits, records a task-worktree baseline, verifies declared cohesive update paths, runs closed structured checks once, and writes detailed evidence while preserving unrelated dirty state. |
-| `skills/ceratops-credit-savings-analysis/scripts/model-call-ledger.py` | Collects one sanitized session traversal for controller evidence while preserving fingerprint, usage, selected-semantic, closure, and classification CLI modes. |
-| `skills/ceratops-credit-savings-analysis/scripts/credit-analysis-workflow.py` | Owns fixed credit-analysis queues, evidence fingerprints, immutable pass persistence, append-only indexing, resume state, synthesis validation, ROI arithmetic, and scoped cleanup. |
+| `skills/ceratops-credit-savings-analysis/scripts/model-call-ledger.py` | Resolves current, named, indexed, and project-identified sessions and collects one sanitized traversal per analysis while preserving fingerprint, usage, selected-semantic, closure, and classification CLI modes. |
+| `skills/ceratops-credit-savings-analysis/scripts/credit-analysis-workflow.py` | Owns fixed credit-analysis queues, per-thread batch manifests, evidence fingerprints, immutable pass persistence, append-only indexing, resume state, synthesis validation, aggregation, ROI arithmetic, and scoped cleanup. |
 | `skills/ceratops-task-lifecycle/scripts/closure_snapshot.py` | Emits one compact snapshot for explicitly named closure targets and optionally removes exact task-created files validated inside the task temp root. |
 | `skills/ceratops-governance-lifecycle/scripts/apply_rules_update.py` | Applies one approved coupled rules/history request with stale-text checks, shared validation, rollback, and compact output. |
 | `skills/ceratops-governance-lifecycle/scripts/proposal-workflow.py` | Validates exact proposal inputs and structured history, writes context evidence, and delegates controller-owned prepare, atomic advance, and finalization operations. |
