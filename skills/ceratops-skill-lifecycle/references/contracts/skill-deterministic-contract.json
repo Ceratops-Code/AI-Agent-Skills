@@ -9,7 +9,7 @@
       "lines": "source-doc registry, skill standards, and installed skill references"
     },
     {
-      "path": "$AI_AGENT_SKILLS_ROOT/skills/ceratops-repo-lifecycle/scripts/skills-consistency-source-validator.py",
+      "path": "$AI_AGENT_SKILLS_ROOT/skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py",
       "lines": "deterministic skill source, metadata, runtime, contract, and portability checks"
     },
     {
@@ -25,24 +25,12 @@
       "lines": "selected-batch staging, activation, rollback, locking, ownership, and stale cleanup"
     },
     {
-      "path": "$AI_AGENT_SKILLS_ROOT/skills/ceratops-repo-lifecycle/references/templates/install-skills-bootstrap-template.py",
-      "lines": "authoritative versioned first-install bootstrap"
+      "path": "$AI_AGENT_SKILLS_ROOT/scripts/install-skills-bootstrap.py",
+      "lines": "versioned first-install skill bootstrap"
     },
     {
       "path": "$AI_AGENT_SKILLS_ROOT/skills/skill-sections.json",
       "lines": "shared section and runtime payload ownership"
-    },
-    {
-      "path": "$AI_AGENT_SKILLS_ROOT/deploy/deploy.yml",
-      "lines": "live structured repository deployment operations"
-    },
-    {
-      "path": "$AI_AGENT_SKILLS_ROOT/skills/ceratops-repo-lifecycle/references/templates/deploy-template.yml",
-      "lines": "reusable deployment-contract skeleton"
-    },
-    {
-      "path": "$AI_AGENT_SKILLS_ROOT/skills/ceratops-repo-lifecycle/references/schemas/deploy-contract.schema.json",
-      "lines": "deployment operation, argv-step, and optional agent-handoff schema"
     },
     {
       "path": "$AI_AGENT_SKILLS_ROOT/AGENTS.md",
@@ -84,7 +72,6 @@
     "auto_apply_check_ids": [],
     "ai_agent_check_ids": [
       "skill.repository_identity_and_profile",
-      "skill.repository_deployment_contract",
       "skill.bootstrap_version_consistency",
       "skill.frontmatter_and_layout",
       "skill.metadata_alignment",
@@ -101,10 +88,10 @@
     "destructive_or_irreversible": "always_report_only"
   },
   "execution": {
-    "source_validator": "skills/ceratops-repo-lifecycle/scripts/skills-consistency-source-validator.py",
-    "skill_validation_command": "python skills/ceratops-repo-lifecycle/scripts/skills-consistency-source-validator.py --mode skill --skill <skill-name>",
-    "full_validation_command": "python skills/ceratops-repo-lifecycle/scripts/skills-consistency-source-validator.py --mode full",
-    "section_validation_command": "python skills/ceratops-repo-lifecycle/scripts/skills-consistency-source-validator.py --mode sections",
+    "source_validator": "skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py",
+    "skill_validation_command": "python skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py --mode skill --skill <skill-name>",
+    "full_validation_command": "python skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py --mode full",
+    "section_validation_command": "python skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py --mode sections",
     "runtime_inventory_command": "python skills/ceratops-skill-lifecycle/scripts/runtime/install-managed-skills.py --inventory-output <caller-selected-file>",
     "result_contract": "Source validation emits compact mode results; installation emits OK on payload-free success or one structured phase, skill, rollback, and reason blocker; inventory writes valid routing entries and malformed direct-manifest blockers to the caller-selected file and emits OK."
   },
@@ -119,24 +106,13 @@
       "pass_condition": "The source manifest declares a nonempty stable runtime_source_id and either the ceratops or ceratops-compatible validation profile; full validation always applies common checks and only the ceratops profile adds Ceratops-specific icon, contract, retired-artifact, and repository-governance checks."
     },
     {
-      "id": "skill.repository_deployment_contract",
-      "category": "runtime",
-      "deterministic_evidence": [
-        "deploy/deploy.yml",
-        "skills/ceratops-repo-lifecycle/references/templates/deploy-template.yml",
-        "deploy contract schema"
-      ],
-      "pass_condition": "A present live deployment file validates against the repository-lifecycle schema as kind ceratops-deploy with version 1 structured operations containing executable argv-array steps, one declarative agent handoff, or both; working directories remain repository-relative, and the reusable template remains an empty kind-qualified version 1 skeleton. Skill-bearing repositories with a live deployment definition require the canonical bootstrap operation and default ceratops-skill-lifecycle/deploy handoff, while zero-skill repositories omit both. The compatibility action may explicitly leave the deployment definition absent."
-    },
-    {
       "id": "skill.bootstrap_version_consistency",
       "category": "runtime",
       "deterministic_evidence": [
         "scripts/install-skills-bootstrap.py INSTALLER_VERSION",
-        "authoritative bootstrap template INSTALLER_VERSION",
         "bootstrap installer CLI behavior tests"
       ],
-      "pass_condition": "The authoritative template and repository bootstrap declare the same positive internal INSTALLER_VERSION. The bootstrap is standard-library-only, first-install-only, stages and validates a complete selected batch under the install root, never calls lifecycle runtime code, exposes only repo-root, install-root, and skill inputs, and cleans only bootstrap-owned state. Compatible repositories retain same- or higher-version bootstraps and synchronize only missing or lower versions through task worktrees. Synchronization performs no repository validation. Managed runtime CLI and manifests contain no installer-version field."
+      "pass_condition": "A skill-bearing source repository bootstrap declares one positive internal INSTALLER_VERSION. The bootstrap is standard-library-only, first-install-only, stages and validates a complete selected batch under the install root, never calls lifecycle runtime code, exposes only repo-root, install-root, and skill inputs, and cleans only bootstrap-owned state. Managed runtime CLI and manifests contain no installer-version field."
     },
     {
       "id": "skill.frontmatter_and_layout",
@@ -164,11 +140,9 @@
       "deterministic_evidence": [
         "skills/skill-sections.json",
         "skills/sections/*",
-        "skills/ceratops-repo-lifecycle/references/templates/skill-sections-template.json",
-        "skills/ceratops-repo-lifecycle/scripts/make-repo-compatible.py",
         "source SKILL.md"
       ],
-      "pass_condition": "Every source skill has a manifest assignment including core, source SKILL.md files remain delta-only, assigned shared sections render, and source files do not contain generated runtime shared-section blocks. A repository with no source skills has empty assignment and canonical-section maps and skips bootstrap synchronization and source validation. The reusable template remains repository-neutral and is rejected as a live manifest. Materialization prefers explicit, existing stable, then origin-derived identity; preserves valid target-owned custom sections and assignments; copies canonical sections only when source skills exist; removes generated marker blocks; invokes the repository-lifecycle bundle's full source validation only for repositories with source skills; restores exact prior target files after any caught blocker; and works from source or a self-contained supported installed bundle."
+      "pass_condition": "Every source skill has a manifest assignment including core, source SKILL.md files remain delta-only, assigned shared sections render from skill-lifecycle-owned canonical inputs, and source files do not contain generated runtime shared-section blocks. A repository with no source skills has empty assignment and canonical-section maps."
     },
     {
       "id": "skill.multi_action_contract",

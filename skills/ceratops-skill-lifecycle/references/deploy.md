@@ -10,9 +10,9 @@ deployment operations or the first-install bootstrap.
 ### Script Bundle
 
 - (D) Source validation: `python
-  skills/ceratops-repo-lifecycle/scripts/skills-consistency-source-validator.py
+  skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py
   --repo-root <repo-root> --mode full` from a source checkout, or the same
-  script from the installed repository-lifecycle bundle.
+  script from the installed skill-lifecycle bundle.
 - (D) Managed runtime transaction: `python
   scripts/runtime/install-managed-skills.py --repo-root <repo-root>
   [--install-root <skills-root>] [--skill <name>...]
@@ -38,7 +38,7 @@ deployment operations or the first-install bootstrap.
 
 ## Workflow
 
-1. Run full source validation from the lifecycle bundle. Do not run the
+1. Run full source validation from the skill-lifecycle bundle. Do not run the
    repository aggregate validator here.
 2. Select exactly one runtime mode: all-managed by default, explicit selected
    and removed skills, or affected-set deployment from one full base revision.

@@ -20,25 +20,13 @@ from .levels import has_blocking_findings
 from .remediations import apply_remediations
 
 
-LOCAL_PARAM_FILE_ENV = "CERATOPS_GH_CONTRACT_PARAMS"
-ENV_PARAM_NAMES = {
-    "billing_email": "CERATOPS_GH_CONTRACT_BILLING_EMAIL",
-    "owner_login": "CERATOPS_GH_CONTRACT_OWNER_LOGIN",
-}
-
-
 def local_param_path() -> pathlib.Path:
-    configured = os.environ.get(LOCAL_PARAM_FILE_ENV)
     root = pathlib.Path(os.environ.get("CODEX_HOME", pathlib.Path.home() / ".codex"))
-    return (
-        pathlib.Path(configured).expanduser()
-        if configured
-        else root / "gh-contract-params.json"
-    )
+    return root / "gh-contract-params.json"
 
 
-def _local_parameters(org: str) -> dict[str, Any]:
-    path = local_param_path()
+def _local_parameters(org: str, path: pathlib.Path) -> dict[str, Any]:
+    path = path.expanduser()
     if not path.exists():
         return {}
     payload = load_json(path)
@@ -56,15 +44,8 @@ def _parameters(args: argparse.Namespace, contract: dict[str, Any]) -> dict[str,
         for name, specification in contract.get("parameters", {}).items()
         if "default" in specification
     }
+    parameters.update(_local_parameters(args.org, args.params_file))
     parameters["org_login"] = args.org
-    parameters.update(_local_parameters(args.org))
-    parameters.update(
-        {
-            name: value
-            for name, environment in ENV_PARAM_NAMES.items()
-            if (value := os.environ.get(environment))
-        }
-    )
     if args.billing_email:
         parameters["billing_email"] = args.billing_email
     if args.owner_login:
@@ -99,6 +80,12 @@ def main(argv: list[str] | None = None) -> int:
         default=default_contract_path("github-org-deterministic-contract.json"),
     )
     parser.add_argument("--org", required=True)
+    parser.add_argument(
+        "--params-file",
+        type=pathlib.Path,
+        default=local_param_path(),
+        help="Organization parameter JSON; defaults to $CODEX_HOME/gh-contract-params.json.",
+    )
     parser.add_argument("--billing-email")
     parser.add_argument("--owner-login")
     parser.add_argument(

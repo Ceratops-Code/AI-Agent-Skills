@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Record, recheck, and finalize one selected repository work scope.
+"""Record, prepare, recheck, and finalize one selected repository work scope.
 
 Scope files live under the repository's common Git directory and name only the
 source branches approved for one integration target. Unrelated branches and
@@ -107,6 +107,50 @@ def _validated_scope(
     if scope is None:
         raise PendingWorkError("Pending-work scope unexpectedly disabled its check.")
     return scope
+
+
+def _ready_without_scope() -> dict[str, object]:
+    """Return the compact no-op result used when no selected work remains."""
+
+    return {
+        "status": "ready",
+        "source_branches": [],
+        "pending_work_scope": "",
+    }
+
+
+def _prune_missing_branches(
+    path: pathlib.Path,
+    scope: dict[str, Any],
+    findings: list[dict[str, str]],
+) -> tuple[dict[str, Any] | None, list[dict[str, str]]]:
+    """Atomically remove stale branch entries without weakening real findings."""
+
+    missing = {
+        finding["subject"]
+        for finding in findings
+        if finding.get("kind") == "missing_branch"
+        and isinstance(finding.get("subject"), str)
+    }
+    if not missing:
+        return scope, findings
+    retained = [
+        branch for branch in scope["source_branches"] if branch not in missing
+    ]
+    remaining_findings = [
+        finding
+        for finding in findings
+        if not (
+            finding.get("kind") == "missing_branch"
+            and finding.get("subject") in missing
+        )
+    ]
+    if retained:
+        scope = {**scope, "source_branches": retained}
+        _write_scope(path, scope)
+        return scope, remaining_findings
+    path.unlink()
+    return None, remaining_findings
 
 
 def _validate_branch(repo_root: pathlib.Path, branch: str) -> None:
@@ -225,6 +269,13 @@ def check_scope(
 ) -> dict[str, object]:
     """Recheck every branch named by one exact persisted scope."""
 
+    expected_path = _scope_path(repo_root, target_branch)
+    if path.resolve() != expected_path:
+        raise PendingWorkError(
+            "Pending-work manager accepts only its generated scope path."
+        )
+    if not path.exists():
+        return _ready_without_scope()
     scope = _validated_scope(
         repo_root,
         path,
@@ -232,6 +283,10 @@ def check_scope(
         target_commit=target_commit,
     )
     findings = ship._pending_work_findings(repo_root, scope)
+    pruned_scope, findings = _prune_missing_branches(path, scope, findings)
+    if pruned_scope is None:
+        return _ready_without_scope()
+    scope = pruned_scope
     if findings:
         return {
             "status": "pending_work",
@@ -244,6 +299,29 @@ def check_scope(
         "source_branches": scope["source_branches"],
         "pending_work_scope": str(path.resolve()),
     }
+
+
+def prepare_scope(
+    repo_root: pathlib.Path,
+    *,
+    target_branch: str,
+) -> dict[str, object]:
+    """Resolve and check the target branch's optional canonical scope."""
+
+    _validate_branch(repo_root, target_branch)
+    path = _scope_path(repo_root, target_branch)
+    if not path.exists():
+        return _ready_without_scope()
+    target_commit = require_output(
+        _git(repo_root, "rev-parse", f"refs/heads/{target_branch}"),
+        cwd=repo_root,
+    ).splitlines()[0]
+    return check_scope(
+        repo_root,
+        path,
+        target_branch=target_branch,
+        target_commit=target_commit,
+    )
 
 
 def _selected_worktree(repo_root: pathlib.Path, branch: str) -> pathlib.Path | None:
@@ -305,6 +383,12 @@ def finalize_scope(
     )
     if checked["status"] != "ready":
         return checked
+    if not checked["pending_work_scope"]:
+        return {
+            "status": "finalized",
+            "removed": [],
+            "pending_work_scope": "",
+        }
     if require_output(
         _git(repo_root, "branch", "--show-current"), cwd=repo_root
     ).strip() != current_branch:
@@ -353,6 +437,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--repo-root", type=pathlib.Path, default=pathlib.Path.cwd())
     subparsers = parser.add_subparsers(dest="command", required=True)
 
+    prepare = subparsers.add_parser("prepare")
+    prepare.add_argument("--target-branch", required=True)
+
     record = subparsers.add_parser("record")
     record.add_argument("--target-branch", required=True)
     record.add_argument("--target-commit", required=True)
@@ -384,7 +471,12 @@ def main(argv: list[str] | None = None) -> int:
             else repo_root / args.scope
         ).resolve()
     try:
-        if args.command == "record":
+        if args.command == "prepare":
+            result = prepare_scope(
+                repo_root,
+                target_branch=args.target_branch,
+            )
+        elif args.command == "record":
             result = record_scope(
                 repo_root,
                 target_branch=args.target_branch,

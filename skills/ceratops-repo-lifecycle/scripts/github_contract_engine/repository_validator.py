@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import pathlib
 from typing import Any
 
 from . import (
@@ -32,7 +33,6 @@ from .format_report import (
 from .github_api import default_contract_path, load_json
 from .levels import has_blocking_findings, parse_levels
 from .remediations import apply_remediations
-
 
 SURFACE_CHOICES = ("all", *REPO_SURFACES)
 SUBSET_CHOICES = (
@@ -66,6 +66,10 @@ def _parameters(
                 parameters.setdefault(name, specification["default"])
     if args.local_repo_path:
         parameters["local_repo_path"] = args.local_repo_path
+    if args.evidence_file:
+        parameters["repository_validation_evidence_file"] = str(
+            args.evidence_file.expanduser().resolve()
+        )
     for item in args.param or []:
         name, separator, raw = item.partition("=")
         if not separator:
@@ -153,6 +157,11 @@ def _parser() -> argparse.ArgumentParser:
         default=default_contract_path("artifact-deterministic-contract.json"),
     )
     parser.add_argument("--local-repo-path")
+    parser.add_argument(
+        "--evidence-file",
+        type=pathlib.Path,
+        help="Repository-validator evidence path outside --local-repo-path.",
+    )
     parser.add_argument(
         "--param",
         action="append",

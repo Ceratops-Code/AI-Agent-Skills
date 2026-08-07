@@ -13,12 +13,12 @@
       "lines": "contract owner"
     },
     {
-      "path": "$AI_AGENT_SKILLS_ROOT/skills/ceratops-repo-lifecycle/scripts/deploy_contract.py",
+      "path": "$AI_AGENT_SKILLS_ROOT/skills/ceratops-repo-lifecycle/scripts/ceratops_repo_compatibility_engine/deploy_contract_validation.py",
       "lines": "shared deploy schema validation"
     },
     {
-      "path": "$AI_AGENT_SKILLS_ROOT/skills/ceratops-repo-lifecycle/scripts/skills-consistency-source-validator.py",
-      "lines": "repository compatibility postcondition validation"
+      "path": "$AI_AGENT_SKILLS_ROOT/skills/ceratops-repo-lifecycle/scripts/ceratops_repo_compatibility_engine/compatibility_check.py",
+      "lines": "shared repository compatibility checker"
     }
   ],
   "parameters": {
@@ -51,6 +51,10 @@
       "default": []
     },
     "local_repo_path": {
+      "type": "string",
+      "required": false
+    },
+    "repository_validation_evidence_file": {
       "type": "string",
       "required": false
     },
@@ -133,6 +137,7 @@
         "content.required_files_presence",
         "content.deploy_contract_schema",
         "content.ceratops_compatibility",
+        "content.repository_validation",
         "local.git_state",
         "content.local_secret_pattern_scan",
         "stale_state.local_path_references"
@@ -288,12 +293,33 @@
       "applies_when": "local_repo_path is provided && local.compatibility.applicable == true",
       "assertions": [
         {
-          "path": "/local/compatibility/validator_available",
+          "path": "/local/compatibility/errors",
+          "operator": "empty"
+        }
+      ]
+    },
+    {
+      "id": "content.repository_validation",
+      "kind": "local_contract",
+      "applies_when": "local_repo_path is provided",
+      "assertions": [
+        {
+          "path": "/local/repository_validation/validator_present",
           "operator": "equal",
           "expected": true
         },
         {
-          "path": "/local/compatibility/errors",
+          "path": "/local/repository_validation/workflow_present",
+          "operator": "equal",
+          "expected": true
+        },
+        {
+          "path": "/local/repository_validation/valid",
+          "operator": "equal",
+          "expected": true
+        },
+        {
+          "path": "/local/repository_validation/errors",
           "operator": "empty"
         }
       ]

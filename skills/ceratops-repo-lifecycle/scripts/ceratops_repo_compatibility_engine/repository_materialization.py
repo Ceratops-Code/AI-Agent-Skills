@@ -2,9 +2,9 @@
 """Make one repository Ceratops-compatible in its task worktree.
 
 The lifecycle bundle owns the reusable template and canonical shared sections.
-This helper derives repository identity and skill assignments, removes only
-generated marker blocks from source skills, delegates installer ownership to
-``synchronize-bootstrap-installer.py``, and emits one compact JSON result.
+This module derives repository identity and skill assignments, removes only
+generated marker blocks from source skills, synchronizes the bootstrap through
+the package-owned helper, and emits one compact JSON result.
 """
 
 from __future__ import annotations
@@ -16,26 +16,28 @@ import pathlib
 import re
 import shutil
 import subprocess
-import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
 
 import yaml
 
-from deploy_contract import DeployContractError, validation_errors
+from .compatibility_check import check_repository
+from .deploy_contract_validation import DeployContractError, validation_errors
 
-
-BUNDLE_ROOT = pathlib.Path(__file__).resolve().parents[1]
+BUNDLE_ROOT = pathlib.Path(__file__).resolve().parents[2]
 TEMPLATE = BUNDLE_ROOT / "references" / "templates" / "skill-sections-template.json"
 DEPLOY_TEMPLATE = BUNDLE_ROOT / "references" / "templates" / "deploy-template.yml"
 SOURCE_REPO_ROOT = BUNDLE_ROOT.parents[1]
 SOURCE_CANONICAL_SECTIONS = SOURCE_REPO_ROOT / "skills" / "sections"
 INSTALLED_CANONICAL_SECTIONS = BUNDLE_ROOT / "skills" / "sections"
-SYNCHRONIZER = BUNDLE_ROOT / "scripts" / "synchronize-bootstrap-installer.py"
-VALIDATOR = BUNDLE_ROOT / "scripts" / "skills-consistency-source-validator.py"
+VALIDATION_CATALOG = BUNDLE_ROOT / "references" / "repository-validation-catalog.json"
+VALIDATOR_TEMPLATE = BUNDLE_ROOT / "references" / "templates" / "validate-repository.py.tmpl"
+WORKFLOW_TEMPLATE = BUNDLE_ROOT / "references" / "templates" / "validate.yml.tmpl"
 MANIFEST_RELATIVE = pathlib.Path("skills/skill-sections.json")
 INSTALLER_RELATIVE = pathlib.Path("scripts/install-skills-bootstrap.py")
 DEPLOY_RELATIVE = pathlib.Path("deploy/deploy.yml")
+VALIDATOR_RELATIVE = pathlib.Path("scripts/validate-repository.py")
+WORKFLOW_RELATIVE = pathlib.Path(".github/workflows/validate.yml")
 MANAGED_SKILL_HANDOFF = "ceratops-skill-lifecycle/deploy"
 START = "<!-- CERATOPS_SHARED_SECTIONS_START -->"
 END = "<!-- CERATOPS_SHARED_SECTIONS_END -->"
@@ -72,6 +74,9 @@ class MaterializationPlan:
     skill_updates: dict[pathlib.Path, tuple[str, str]]
     canonical_sources: dict[str, pathlib.Path]
     deploy_contract: dict[str, object] | None
+    validator_text: str | None
+    workflow_text: str | None
+    validation_checks: list[str]
     skills: list[str]
     updated_markers: list[str]
 
@@ -118,6 +123,187 @@ def load_mapping(path: pathlib.Path) -> dict[str, object]:
     return value
 
 
+def _safe_catalog_path(value: object, label: str) -> pathlib.PurePosixPath:
+    if not isinstance(value, str) or not value:
+        raise RuntimeError(f"{label} must be a nonempty relative path")
+    path = pathlib.PurePosixPath(value)
+    if path.is_absolute() or ".." in path.parts:
+        raise RuntimeError(f"{label} must stay inside the target repository")
+    return path
+
+
+def _package_scripts(repo_root: pathlib.Path) -> set[str]:
+    path = repo_root / "package.json"
+    if not path.is_file() or path.is_symlink():
+        return set()
+    payload = load_mapping(path)
+    scripts = payload.get("scripts", {})
+    if not isinstance(scripts, Mapping):
+        raise RuntimeError("package.json scripts must be an object")
+    return {str(name) for name in scripts}
+
+
+def _catalog_condition_matches(
+    repo_root: pathlib.Path,
+    condition: Mapping[str, object],
+    package_scripts: set[str],
+) -> bool:
+    kind = condition.get("kind")
+    if kind == "package-script" and set(condition) == {"kind", "value"}:
+        value = condition["value"]
+        if not isinstance(value, str) or not value:
+            raise RuntimeError("catalog package-script value must be text")
+        return value in package_scripts
+    if kind == "path-any" and set(condition) == {"kind", "value"}:
+        patterns = condition["value"]
+        if (
+            not isinstance(patterns, list)
+            or not patterns
+            or not all(isinstance(pattern, str) and pattern for pattern in patterns)
+        ):
+            raise RuntimeError("catalog path-any value must be a string list")
+        return any(
+            candidate.is_file() and not candidate.is_symlink()
+            for pattern in patterns
+            for candidate in repo_root.glob(pattern)
+        )
+    if kind == "file-contains" and set(condition) == {"kind", "path", "value"}:
+        relative = _safe_catalog_path(condition["path"], "catalog condition path")
+        value = condition["value"]
+        if not isinstance(value, str) or not value:
+            raise RuntimeError("catalog file-contains value must be text")
+        path = repo_root.joinpath(*relative.parts)
+        return (
+            path.is_file()
+            and not path.is_symlink()
+            and value in path.read_text(encoding="utf-8")
+        )
+    raise RuntimeError(f"unsupported repository-validation condition: {kind!r}")
+
+
+def catalog_checks(repo_root: pathlib.Path) -> list[dict[str, object]]:
+    """Select fully declared checks from the closed lifecycle catalog."""
+
+    catalog = load_mapping(VALIDATION_CATALOG)
+    if set(catalog) != {"version", "checks"} or catalog.get("version") != 1:
+        raise RuntimeError("repository-validation catalog must be version 1")
+    entries = catalog.get("checks")
+    if not isinstance(entries, list):
+        raise RuntimeError("repository-validation catalog checks must be a list")
+    scripts = _package_scripts(repo_root)
+    selected: list[dict[str, object]] = []
+    seen: set[str] = set()
+    for raw in entries:
+        if not isinstance(raw, Mapping) or set(raw) != {
+            "id",
+            "when",
+            "command",
+            "cwd",
+        }:
+            raise RuntimeError("repository-validation catalog entry is invalid")
+        check_id = raw["id"]
+        conditions = raw["when"]
+        command = raw["command"]
+        if (
+            not isinstance(check_id, str)
+            or re.fullmatch(r"[a-z0-9][a-z0-9-]*", check_id) is None
+            or check_id in seen
+        ):
+            raise RuntimeError(f"invalid or duplicate catalog check id: {check_id!r}")
+        if not isinstance(conditions, list) or not conditions or not all(
+            isinstance(condition, Mapping) for condition in conditions
+        ):
+            raise RuntimeError(f"catalog check {check_id} has invalid conditions")
+        if not isinstance(command, list) or not command or not all(
+            isinstance(value, str) and value for value in command
+        ):
+            raise RuntimeError(f"catalog check {check_id} has invalid command")
+        cwd = _safe_catalog_path(raw["cwd"], f"catalog check {check_id} cwd")
+        seen.add(check_id)
+        if any(
+            _catalog_condition_matches(repo_root, condition, scripts)
+            for condition in conditions
+        ):
+            selected.append(
+                {"id": check_id, "command": list(command), "cwd": cwd.as_posix()}
+            )
+    return selected
+
+
+def _validation_setup_step(
+    repo_root: pathlib.Path, checks: list[dict[str, object]]
+) -> str:
+    commands: list[str] = []
+    for check in checks:
+        command = check["command"]
+        if not isinstance(command, list):
+            raise RuntimeError("catalog check command must be a list")
+        for value in command:
+            if not isinstance(value, str):
+                raise RuntimeError("catalog check command values must be text")
+            commands.append(value)
+    setup: list[str] = []
+    if "{python}" in commands:
+        if (repo_root / "requirements-dev.txt").is_file():
+            setup.append("python -m pip install -r requirements-dev.txt")
+        elif (repo_root / "requirements.txt").is_file():
+            setup.append("python -m pip install -r requirements.txt")
+    if "{npm}" in commands:
+        if not (repo_root / "package-lock.json").is_file():
+            raise RuntimeError(
+                "npm validation checks require package-lock.json for "
+                "deterministic npm ci setup"
+            )
+        setup.append("npm ci")
+    if not setup:
+        return ""
+    lines = [
+        "      - name: Install validation dependencies",
+        "        run: |",
+        *(f"          {command}" for command in setup),
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def validation_surfaces(
+    repo_root: pathlib.Path,
+) -> tuple[str | None, str | None, list[str]]:
+    """Render only missing validation files and preserve existing files exactly."""
+
+    validator = repo_root / VALIDATOR_RELATIVE
+    workflow = repo_root / WORKFLOW_RELATIVE
+    for path, label in (
+        (validator, "repository validator"),
+        (workflow, "CI validation workflow"),
+    ):
+        if path.exists() or path.is_symlink():
+            if path.is_symlink() or not path.is_file():
+                raise RuntimeError(f"existing {label} must be a regular file: {path}")
+    if validator.is_file() and workflow.is_file():
+        return None, None, []
+
+    checks = catalog_checks(repo_root)
+    validator_text = None
+    if not validator.is_file():
+        template = VALIDATOR_TEMPLATE.read_text(encoding="utf-8")
+        marker = "__CHECK_DEFINITIONS__"
+        if template.count(marker) != 1:
+            raise RuntimeError("repository validator template marker is invalid")
+        validator_text = template.replace(marker, repr(checks))
+    workflow_text = None
+    if not workflow.is_file():
+        template = WORKFLOW_TEMPLATE.read_text(encoding="utf-8")
+        marker = "      # __SETUP_STEP__"
+        if template.count(marker) != 1:
+            raise RuntimeError("CI validation template marker is invalid")
+        workflow_text = template.replace(
+            marker,
+            _validation_setup_step(repo_root, checks),
+        )
+    return validator_text, workflow_text, [str(check["id"]) for check in checks]
+
+
 def load_yaml_mapping(path: pathlib.Path) -> dict[str, object]:
     """Load one YAML mapping without constructing custom objects."""
 
@@ -144,7 +330,7 @@ def validate_template(template: Mapping[str, object]) -> None:
         raise RuntimeError("skill-sections template is not repository-neutral")
 
 
-def deploy_contract(
+def build_deploy_contract_candidate(
     repo_root: pathlib.Path,
     *,
     has_skills: bool,
@@ -477,15 +663,19 @@ def plan_materialization(
             "skills": assignments,
         }
     )
+    validator_text, workflow_text, validation_checks = validation_surfaces(repo_root)
     return MaterializationPlan(
         manifest=manifest,
         skill_updates=skill_updates,
         canonical_sources=canonical_sources,
-        deploy_contract=deploy_contract(
+        deploy_contract=build_deploy_contract_candidate(
             repo_root,
             has_skills=bool(skill_names),
             materialize=materialize_deploy,
         ),
+        validator_text=validator_text,
+        workflow_text=workflow_text,
+        validation_checks=validation_checks,
         skills=sorted(assignments),
         updated_markers=sorted(updated_markers),
     )
@@ -529,10 +719,26 @@ def apply_materialization(
             encoding="utf-8",
             newline="\n",
         )
+    if plan.validator_text is not None:
+        validator_path = repo_root / VALIDATOR_RELATIVE
+        validator_path.parent.mkdir(parents=True, exist_ok=True)
+        validator_path.write_text(
+            plan.validator_text,
+            encoding="utf-8",
+            newline="\n",
+        )
+    if plan.workflow_text is not None:
+        workflow_path = repo_root / WORKFLOW_RELATIVE
+        workflow_path.parent.mkdir(parents=True, exist_ok=True)
+        workflow_path.write_text(
+            plan.workflow_text,
+            encoding="utf-8",
+            newline="\n",
+        )
 
 
-def main() -> int:
-    """Materialize compatibility inputs, synchronize installer, and validate."""
+def main(argv: list[str] | None = None) -> int:
+    """Run repository materialization as the package CLI subcommand."""
 
     parser = argparse.ArgumentParser(
         description="Make repository sources Ceratops-compatible."
@@ -544,7 +750,7 @@ def main() -> int:
         action="store_true",
         help="Leave deploy/deploy.yml absent or unchanged.",
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     repo_root = args.target_repo_root.resolve()
     phase = "preflight"
     rollback = "not_started"
@@ -580,6 +786,10 @@ def main() -> int:
             mutable_paths.append(repo_root / INSTALLER_RELATIVE)
         if plan.deploy_contract is not None:
             mutable_paths.append(repo_root / DEPLOY_RELATIVE)
+        if plan.validator_text is not None:
+            mutable_paths.append(repo_root / VALIDATOR_RELATIVE)
+        if plan.workflow_text is not None:
+            mutable_paths.append(repo_root / WORKFLOW_RELATIVE)
         snapshots = [snapshot_file(path) for path in dict.fromkeys(mutable_paths)]
         created_dirs = [
             path
@@ -588,17 +798,25 @@ def main() -> int:
                 repo_root / "skills" / "sections",
                 repo_root / "scripts",
                 repo_root / "deploy",
+                repo_root / ".github",
+                repo_root / ".github" / "workflows",
             )
             if not path.exists()
             and (
                 path.name != "sections" or bool(plan.canonical_sources)
             )
             and (
-                path.name not in {"scripts"} or bool(plan.skills)
+                path.name not in {"scripts"}
+                or bool(plan.skills)
+                or plan.validator_text is not None
             )
             and (
                 path.name not in {"deploy"}
                 or plan.deploy_contract is not None
+            )
+            and (
+                path.name not in {".github", "workflows"}
+                or plan.workflow_text is not None
             )
         ]
         phase = "materialization"
@@ -607,48 +825,27 @@ def main() -> int:
         bootstrap_status = "skipped"
         if plan.skills:
             phase = "bootstrap_synchronization"
-            synchronization = subprocess.run(
-                [
-                    sys.executable,
-                    str(SYNCHRONIZER),
-                    "--target-repo-root",
-                    str(repo_root),
-                ],
-                capture_output=True,
-                text=True,
-                check=False,
+            from .bootstrap_installer_synchronization import (
+                synchronize_bootstrap_installer,
             )
-            if synchronization.returncode != 0:
-                raise RuntimeError(
-                    (synchronization.stderr or synchronization.stdout).strip()
-                )
-            bootstrap = json.loads(synchronization.stdout)
+
+            bootstrap = synchronize_bootstrap_installer(repo_root)
             bootstrap_status_value = (
                 bootstrap.get("status") if isinstance(bootstrap, Mapping) else None
             )
             if not isinstance(bootstrap_status_value, str):
-                raise RuntimeError("bootstrap synchronizer returned invalid JSON")
+                raise RuntimeError("bootstrap synchronizer returned an invalid result")
             bootstrap_status = bootstrap_status_value
 
-            phase = "source_validation"
-            validation = subprocess.run(
-                [
-                    sys.executable,
-                    str(VALIDATOR),
-                    "--repo-root",
-                    str(repo_root),
-                    "--mode",
-                    "full",
-                ],
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            if validation.returncode != 0:
-                detail = (validation.stderr or validation.stdout).strip()
-                raise RuntimeError(
-                    f"full source-repository validation failed: {detail}"
-                )
+        phase = "compatibility_validation"
+        compatibility = check_repository(repo_root)
+        if (
+            not compatibility["applicable"]
+            or compatibility["valid"] is not True
+            or compatibility["errors"]
+        ):
+            detail = "; ".join(compatibility["errors"]) or "not applicable"
+            raise RuntimeError(f"repository compatibility failed: {detail}")
     except (OSError, RuntimeError, ValueError, json.JSONDecodeError) as exc:
         reason = str(exc)
         if mutation_started:
@@ -680,6 +877,19 @@ def main() -> int:
                     if plan.deploy_contract is not None
                     else "unchanged"
                 ),
+                "repository_validation": {
+                    "checks": plan.validation_checks,
+                    "validator": (
+                        "materialized"
+                        if plan.validator_text is not None
+                        else "preserved"
+                    ),
+                    "workflow": (
+                        "materialized"
+                        if plan.workflow_text is not None
+                        else "preserved"
+                    ),
+                },
                 "markers_removed": plan.updated_markers,
                 "rollback": "not_needed",
                 "runtime_source_id": source_id,

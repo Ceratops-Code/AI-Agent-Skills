@@ -16,13 +16,8 @@ from typing import Any, cast
 import jsonschema
 import yaml
 
-
-SCHEMA = (
-    pathlib.Path(__file__).resolve().parent.parent
-    / "references"
-    / "schemas"
-    / "deploy-contract.schema.json"
-)
+SKILL_ROOT = pathlib.Path(__file__).resolve().parents[2]
+SCHEMA = SKILL_ROOT / "references" / "schemas" / "deploy-contract.schema.json"
 
 
 class DeployContractError(RuntimeError):

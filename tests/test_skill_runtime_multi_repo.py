@@ -22,7 +22,7 @@ LIFECYCLE_SOURCE = ROOT / "skills" / "ceratops-skill-lifecycle"
 REPOSITORY_LIFECYCLE_SOURCE = ROOT / "skills" / "ceratops-repo-lifecycle"
 REPOSITORY_LIFECYCLE_SCRIPTS = REPOSITORY_LIFECYCLE_SOURCE / "scripts"
 sys.path.insert(0, str(REPOSITORY_LIFECYCLE_SCRIPTS))
-VALIDATOR = REPOSITORY_LIFECYCLE_SOURCE / "scripts" / "skills-consistency-source-validator.py"
+VALIDATOR = LIFECYCLE_SOURCE / "scripts" / "skills-consistency-source-validator.py"
 BUILDER = LIFECYCLE_SOURCE / "scripts" / "runtime" / "managed_runtime_builder.py"
 BOOTSTRAP = ROOT / "scripts" / "install-skills-bootstrap.py"
 LIVE_SECTION_MANIFEST = ROOT / "skills" / "skill-sections.json"
@@ -44,8 +44,7 @@ INSTALLER_TEMPLATE = (
     / "templates"
     / "install-skills-bootstrap-template.py"
 )
-INSTALLER_SYNCHRONIZER = REPOSITORY_LIFECYCLE_SOURCE / "scripts" / "synchronize-bootstrap-installer.py"
-COMPATIBILITY_MATERIALIZER = REPOSITORY_LIFECYCLE_SOURCE / "scripts" / "make-repo-compatible.py"
+COMPATIBILITY_ENGINE = "ceratops_repo_compatibility_engine"
 RUNTIME_INSTALLER = LIFECYCLE_SOURCE / "scripts" / "runtime" / "install-managed-skills.py"
 FAST_CHANGE = LIFECYCLE_SOURCE / "scripts" / "fast-change.py"
 UPDATE_EXECUTION = LIFECYCLE_SOURCE / "scripts" / "update-execution.py"
@@ -62,6 +61,22 @@ CLOSURE_SNAPSHOT = ROOT / "skills" / "ceratops-task-lifecycle" / "scripts" / "cl
 RUNTIME_MANIFEST = ".runtime-manifest.json"
 RUNTIME_MANIFEST_SCHEMA = "ceratops-runtime-skill.v3"
 INSTALLER_VERSION = 10
+
+
+def run_compatibility_engine(
+    scripts_root: pathlib.Path,
+    command: str,
+    *arguments: str,
+) -> subprocess.CompletedProcess[str]:
+    """Run one package command from its source or installed scripts folder."""
+
+    return subprocess.run(
+        [sys.executable, "-m", COMPATIBILITY_ENGINE, command, *arguments],
+        cwd=scripts_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
 
 
 def test_model_call_ledger_keeps_full_evidence_out_of_stdout(
@@ -1019,6 +1034,38 @@ def test_model_call_ledger_closure_mode_is_artifact_free(
     assert json.loads(usage_evidence.read_text(encoding="utf-8"))["schema"] == (
         "ceratops-model-call-usage-evidence.v1"
     )
+
+    thread_ledger = tmp_path / "thread-ledger.json"
+    thread_semantic_evidence = tmp_path / "thread-semantic.json"
+    thread_semantic = subprocess.run(
+        [
+            sys.executable,
+            str(MODEL_CALL_LEDGER),
+            "--thread-id",
+            thread_id,
+            "--evidence-output",
+            str(thread_ledger),
+            "--semantic-evidence-output",
+            str(thread_semantic_evidence),
+            "--include-run",
+            "turn-1",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=environment,
+    )
+    assert thread_semantic.returncode == 0, thread_semantic.stderr
+    thread_semantic_summary = json.loads(thread_semantic.stdout)
+    assert thread_semantic_summary["selected_runs"] == [
+        {"turn_id": "turn-1", "model_calls": 2}
+    ]
+    assert pathlib.Path(
+        json.loads(thread_ledger.read_text(encoding="utf-8"))["session"]
+    ) == session.resolve()
+    assert json.loads(
+        thread_semantic_evidence.read_text(encoding="utf-8")
+    )["selected_runs"][0]["turn_id"] == "turn-1"
 
     semantic = subprocess.run(
         [
@@ -3378,8 +3425,6 @@ def create_compatible_repo(repo: pathlib.Path, source_id: str, skill_names: list
         encoding="utf-8",
         newline="\n",
     )
-
-
 def write_manifest(repo: pathlib.Path, source_id: str) -> None:
     """Rewrite assignments after a test adds or removes source skills."""
 
@@ -3766,8 +3811,10 @@ def test_promote_and_deploy_rejects_operation_created_repository_work(
     assert (repo / "generated-by-deploy.txt").is_file()
 
 
+@pytest.mark.parametrize("scope_present", [False, True])
 def test_repository_ship_absent_default_contract_is_no_op_and_finalizes(
     tmp_path: pathlib.Path,
+    scope_present: bool,
 ) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -3786,11 +3833,22 @@ def test_repository_ship_absent_default_contract_is_no_op_and_finalizes(
         "merge_commit": "c" * 40,
         "synchronized_head": "b" * 40,
     }
+    prepared = {
+        "status": "ready",
+        "source_branches": [] if not scope_present else ["selected"],
+        "pending_work_scope": str(scope) if scope_present else "",
+    }
     responses: list[tuple[int, dict[str, Any]]] = [
+        (0, prepared),
         (0, shipped),
-        (0, {"status": "ready"}),
-        (0, {"status": "finalized"}),
     ]
+    if scope_present:
+        responses.extend(
+            [
+                (0, prepared),
+                (0, {"status": "finalized"}),
+            ]
+        )
     commands: list[list[str]] = []
 
     def run_json(
@@ -3802,6 +3860,11 @@ def test_repository_ship_absent_default_contract_is_no_op_and_finalizes(
         return responses[len(commands) - 1]
 
     loaded = runpy.run_path(str(SHIP_REPOSITORY))
+    parsed = loaded["build_parser"]().parse_args(
+        ["--head-branch", "release/local"]
+    )
+    assert not hasattr(parsed, "pending_work_scope")
+    assert not hasattr(parsed, "no_pending_work_check")
     ship_repository = loaded["ship_repository"]
     ship_repository.__globals__["_run_json"] = run_json
     result = ship_repository(
@@ -3815,8 +3878,6 @@ def test_repository_ship_absent_default_contract_is_no_op_and_finalizes(
             title=None,
             body=None,
             merge_method="merge",
-            pending_work_scope=scope,
-            no_pending_work_check=False,
             delete_branch=False,
             reusable_head=True,
             deploy_contract=pathlib.Path("deploy/deploy.yml"),
@@ -3833,10 +3894,19 @@ def test_repository_ship_absent_default_contract_is_no_op_and_finalizes(
         "steps": [],
         "reason": "deployment_contract_absent",
     }
-    assert result["finalization"] == {"status": "finalized"}
-    assert len(commands) == 3
-    assert "check" in commands[1]
-    assert "finalize" in commands[2]
+    assert result["finalization"] == (
+        {"status": "finalized"} if scope_present else None
+    )
+    assert "prepare" in commands[0]
+    if scope_present:
+        assert len(commands) == 4
+        assert "--pending-work-check" in commands[1]
+        assert str(scope.resolve()) in commands[1]
+        assert "check" in commands[2]
+        assert "finalize" in commands[3]
+    else:
+        assert len(commands) == 2
+        assert "--no-pending-work-check" in commands[1]
     deploy_runner = str(SHIP_REPOSITORY.parent / "run-deploy-operation.py")
     assert all(deploy_runner not in command for command in commands)
 
@@ -3870,8 +3940,6 @@ def test_repository_ship_missing_custom_contract_blocks_before_remote_mutation(
                 title=None,
                 body=None,
                 merge_method="merge",
-                pending_work_scope=None,
-                no_pending_work_check=True,
                 delete_branch=False,
                 reusable_head=False,
                 deploy_contract=pathlib.Path("deploy/custom.yml"),
@@ -3901,7 +3969,6 @@ def test_repository_ship_late_pending_work_reports_remote_mutation(
         newline="\n",
     )
     scope = repo / "scope.json" if relative_scope else tmp_path / "scope.json"
-    scope_argument = pathlib.Path("scope.json") if relative_scope else scope
     scope.write_text(
         json.dumps({"source_branches": ["selected"]}),
         encoding="utf-8",
@@ -3932,12 +3999,18 @@ def test_repository_ship_late_pending_work_reports_remote_mutation(
         "operation": "deploy",
         "steps": ["install"],
     }
+    prepared = {
+        "status": "ready",
+        "source_branches": ["selected"],
+        "pending_work_scope": str(scope.resolve()),
+    }
     responses: list[tuple[int, dict[str, Any]]] = (
-        [(0, shipped), (2, pending)]
+        [(0, prepared), (0, shipped), (2, pending)]
         if late_phase == "post_sync"
         else [
+            (0, prepared),
             (0, shipped),
-            (0, {"status": "ready"}),
+            (0, prepared),
             (0, deployed),
             (2, pending),
         ]
@@ -3966,8 +4039,6 @@ def test_repository_ship_late_pending_work_reports_remote_mutation(
         title=None,
         body=None,
         merge_method="merge",
-        pending_work_scope=scope_argument,
-        no_pending_work_check=False,
         delete_branch=False,
         reusable_head=True,
         deploy_contract=pathlib.Path("deploy/deploy.yml"),
@@ -3993,24 +4064,25 @@ def test_repository_ship_late_pending_work_reports_remote_mutation(
     result = ship_repository(args)
 
     assert result["status"] == "pending_work"
-    assert args.pending_work_scope == scope.resolve()
     assert result["remote_mutation"] is True
     assert result["repository"] == "example/repository"
     assert result["commit"] == "a" * 40
-    assert "check" in commands[1]
+    assert "prepare" in commands[0]
+    assert "check" in commands[2]
     if late_phase == "post_sync":
-        assert len(commands) == 2
+        assert len(commands) == 3
         assert "deployment" not in result
     else:
-        assert len(commands) == 4
-        assert "finalize" in commands[3]
+        assert len(commands) == 5
+        assert "finalize" in commands[4]
         assert result["deployment"] == deployed
         checkpoint = scope.with_suffix(".after-ship.json")
         assert checkpoint.is_file()
         responses.extend(
             [
+                (0, prepared),
                 (0, {**shipped, "status": "already_shipped"}),
-                (0, {"status": "ready"}),
+                (0, prepared),
                 (0, {"status": "finalized"}),
             ]
         )
@@ -4019,9 +4091,9 @@ def test_repository_ship_late_pending_work_reports_remote_mutation(
 
         assert resumed["status"] == "already_shipped"
         assert resumed["deployment"] == deployed
-        assert len(commands) == 7
+        assert len(commands) == 9
         deploy_runner = str(SHIP_REPOSITORY.parent / "run-deploy-operation.py")
-        assert all(deploy_runner not in command for command in commands[4:])
+        assert all(deploy_runner not in command for command in commands[5:])
         assert not checkpoint.exists()
 
 
@@ -4069,7 +4141,6 @@ def test_repository_ship_rejects_noncanonical_release_branch_before_remote_proce
             argparse.Namespace(
                 repo_root=repo,
                 head_branch="release/task",
-                pending_work_scope=None,
             )
         )
 
@@ -4140,7 +4211,11 @@ def test_repository_ship_blocks_selected_worktree_caller_before_remote_process(
 
     def run_json(command: list[str]) -> tuple[int, dict[str, Any]]:
         child_calls.append(command)
-        return 0, {}
+        return 0, {
+            "status": "ready",
+            "source_branches": ["selected"],
+            "pending_work_scope": str(scope),
+        }
 
     ship_repository = loaded["ship_repository"]
     ship_repository.__globals__["_branch_worktree"] = branch_worktree
@@ -4154,12 +4229,26 @@ def test_repository_ship_blocks_selected_worktree_caller_before_remote_process(
         ship_repository(
             argparse.Namespace(
                 repo_root=repo,
+                repo="example/repository",
                 head_branch="release/local",
-                pending_work_scope=scope,
+                base_branch="main",
+                remote_name="origin",
+                commit="a" * 40,
+                title=None,
+                body=None,
+                merge_method="merge",
+                delete_branch=False,
+                reusable_head=True,
+                deploy_contract=pathlib.Path("deploy/deploy.yml"),
+                deploy_operation="deploy",
+                ci_wait_seconds=1,
+                review_wait_seconds=1,
+                interval_seconds=1,
             )
         )
 
-    assert child_calls == []
+    assert len(child_calls) == 1
+    assert "prepare" in child_calls[0]
 
 
 def run_pending_work(
@@ -4241,6 +4330,18 @@ def test_pending_work_scope_is_selected_generic_and_finalized_late(
         "target_commit": target_commit,
         "version": 1,
     }
+    scope_path.write_text(
+        json.dumps(
+            {
+                "source_branches": ["missing", "selected"],
+                "target_branch": "release/local",
+                "target_commit": target_commit,
+                "version": 1,
+            }
+        ),
+        encoding="utf-8",
+        newline="\n",
+    )
 
     (selected_worktree / "README.md").write_text(
         "base\nselected\nlater commit\n",
@@ -4269,13 +4370,9 @@ def test_pending_work_scope_is_selected_generic_and_finalized_late(
 
     checked = run_pending_work(
         repo,
-        "check",
-        "--scope",
-        str(scope_path),
+        "prepare",
         "--target-branch",
         "release/local",
-        "--target-commit",
-        target_commit,
     )
 
     assert checked.returncode == 2, checked.stderr
@@ -4285,6 +4382,9 @@ def test_pending_work_scope_is_selected_generic_and_finalized_late(
     assert [(item["kind"], item["subject"]) for item in checked_payload["findings"]] == [
         ("dirty_worktree", "selected"),
         ("unmerged_branch_commits", "selected"),
+    ]
+    assert json.loads(scope_path.read_text(encoding="utf-8"))["source_branches"] == [
+        "selected"
     ]
     assert all(
         item["subject"] != "unrelated" for item in checked_payload["findings"]
@@ -4319,6 +4419,47 @@ def test_pending_work_scope_is_selected_generic_and_finalized_late(
     assert unrelated_worktree.is_dir()
     assert run_git(repo, "show-ref", "--verify", "refs/heads/unrelated").returncode == 0
     assert not scope_path.exists()
+
+    scope_path.write_text(
+        json.dumps(
+            {
+                "source_branches": ["already-gone"],
+                "target_branch": "release/local",
+                "target_commit": target_commit,
+                "version": 1,
+            }
+        ),
+        encoding="utf-8",
+        newline="\n",
+    )
+    prepared = run_pending_work(
+        repo,
+        "prepare",
+        "--target-branch",
+        "release/local",
+    )
+
+    assert prepared.returncode == 0, prepared.stderr
+    assert json.loads(prepared.stdout) == {
+        "status": "ready",
+        "source_branches": [],
+        "pending_work_scope": "",
+    }
+    assert not scope_path.exists()
+
+    absent = run_pending_work(
+        repo,
+        "prepare",
+        "--target-branch",
+        "release/local",
+    )
+
+    assert absent.returncode == 0, absent.stderr
+    assert json.loads(absent.stdout) == {
+        "status": "ready",
+        "source_branches": [],
+        "pending_work_scope": "",
+    }
 
 
 def test_pending_work_finalization_persists_partial_cleanup_progress(
@@ -4505,7 +4646,7 @@ def test_skill_sections_template_contains_no_live_repository_inventory() -> None
     assert live["skills"]
 
 
-def test_source_validator_rejects_reusable_template_as_live_manifest(
+def test_source_validator_rejects_section_drift_and_empty_source_identity(
     tmp_path: pathlib.Path,
 ) -> None:
     repo = tmp_path / "compatible"
@@ -4525,7 +4666,14 @@ def test_source_validator_rejects_reusable_template_as_live_manifest(
     assert drifted.returncode == 1
     assert "canonical materialized section differs" in drifted.stderr
 
-    shutil.copy2(SECTION_MANIFEST_TEMPLATE, repo / "skills" / "skill-sections.json")
+    manifest_path = repo / "skills" / "skill-sections.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["runtime_source_id"] = ""
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
 
     result = subprocess.run(
         [sys.executable, str(VALIDATOR), "--repo-root", str(repo), "--mode", "sections"],
@@ -4535,7 +4683,7 @@ def test_source_validator_rejects_reusable_template_as_live_manifest(
     )
 
     assert result.returncode == 1
-    assert "reusable skill-sections template cannot be a live manifest" in result.stderr
+    assert "runtime_source_id must be a nonempty string" in result.stderr
 
 
 def test_compatibility_materializer_supplies_target_identity_and_assignments(
@@ -4580,18 +4728,13 @@ def test_compatibility_materializer_supplies_target_identity_and_assignments(
         newline="\n",
     )
 
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(COMPATIBILITY_MATERIALIZER),
-            "--target-repo-root",
-            str(repo),
-            "--runtime-source-id",
-            "target/skills",
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
+    result = run_compatibility_engine(
+        REPOSITORY_LIFECYCLE_SCRIPTS,
+        "materialize",
+        "--target-repo-root",
+        str(repo),
+        "--runtime-source-id",
+        "target/skills",
     )
 
     assert result.returncode == 0, result.stdout
@@ -4630,6 +4773,13 @@ def test_compatibility_materializer_supplies_target_identity_and_assignments(
         ]
     }
     assert (repo / "scripts" / "install-skills-bootstrap.py").is_file()
+    assert (repo / "scripts" / "validate-repository.py").is_file()
+    assert (repo / ".github" / "workflows" / "validate.yml").is_file()
+    assert output["repository_validation"] == {
+        "checks": [],
+        "validator": "materialized",
+        "workflow": "materialized",
+    }
 
 
 def test_compatibility_materializer_supports_repositories_without_skills(
@@ -4637,21 +4787,17 @@ def test_compatibility_materializer_supports_repositories_without_skills(
 ) -> None:
     lifecycle_bundle = tmp_path / "lifecycle-bundle"
     shutil.copytree(REPOSITORY_LIFECYCLE_SOURCE, lifecycle_bundle)
-    (lifecycle_bundle / "scripts" / "skills-consistency-source-validator.py").write_text(
-        "raise SystemExit('source validator must not run')\n",
-        encoding="utf-8",
-        newline="\n",
-    )
     (
-        lifecycle_bundle / "scripts" / "synchronize-bootstrap-installer.py"
+        lifecycle_bundle
+        / "scripts"
+        / COMPATIBILITY_ENGINE
+        / "bootstrap_installer_synchronization.py"
     ).write_text(
         "raise SystemExit('bootstrap synchronizer must not run')\n",
         encoding="utf-8",
         newline="\n",
     )
-    zero_skill_materializer = (
-        lifecycle_bundle / "scripts" / "make-repo-compatible.py"
-    )
+    engine_scripts = lifecycle_bundle / "scripts"
     repo = tmp_path / "empty-compatible"
     repo.mkdir()
     (repo / ".git").write_text(
@@ -4665,19 +4811,50 @@ def test_compatibility_materializer_supports_repositories_without_skills(
         encoding="utf-8",
         newline="\n",
     )
+    (repo / "package.json").write_text(
+        json.dumps({"scripts": {"lint": "echo lint"}}) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
 
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(zero_skill_materializer),
-            "--target-repo-root",
-            str(repo),
-            "--runtime-source-id",
-            "example/empty-compatible",
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
+    blocked_result = run_compatibility_engine(
+        engine_scripts,
+        "materialize",
+        "--target-repo-root",
+        str(repo),
+        "--runtime-source-id",
+        "example/empty-compatible",
+    )
+
+    assert blocked_result.returncode == 1
+    assert json.loads(blocked_result.stdout) == {
+        "phase": "materialization_planning",
+        "reason": (
+            "npm validation checks require package-lock.json for "
+            "deterministic npm ci setup"
+        ),
+        "rollback": "not_started",
+        "status": "blocked",
+    }
+    assert not (repo / "skills").exists()
+    assert not (repo / "deploy").exists()
+    assert not (repo / "scripts").exists()
+    assert not (repo / ".github").exists()
+
+    (repo / "package-lock.json").write_text(
+        json.dumps({"lockfileVersion": 3, "requires": True, "packages": {}})
+        + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+
+    result = run_compatibility_engine(
+        engine_scripts,
+        "materialize",
+        "--target-repo-root",
+        str(repo),
+        "--runtime-source-id",
+        "example/empty-compatible",
     )
 
     assert result.returncode == 0, result.stdout
@@ -4697,24 +4874,94 @@ def test_compatibility_materializer_supports_repositories_without_skills(
     }
     assert not (repo / "skills" / "sections").exists()
     assert not (repo / "scripts" / "install-skills-bootstrap.py").exists()
-
-    omitted = tmp_path / "empty-without-deploy"
-    shutil.copytree(repo, omitted)
-    (omitted / "deploy" / "deploy.yml").unlink()
-    omitted_result = subprocess.run(
+    output = json.loads(result.stdout)
+    assert output["repository_validation"] == {
+        "checks": ["npm-lint"],
+        "validator": "materialized",
+        "workflow": "materialized",
+    }
+    assert (repo / "scripts" / "validate-repository.py").is_file()
+    assert (repo / ".github" / "workflows" / "validate.yml").is_file()
+    validation = subprocess.run(
         [
             sys.executable,
-            str(zero_skill_materializer),
-            "--target-repo-root",
-            str(omitted),
-            "--no-deploy-contract",
+            str(repo / "scripts" / "validate-repository.py"),
+            "--evidence-file",
+            str(tmp_path / "zero-skill-validation.log"),
         ],
+        cwd=repo,
         capture_output=True,
         text=True,
         check=False,
     )
+    assert validation.returncode == 0, validation.stdout
+    assert validation.stdout == "OK\n"
+
+    omitted = tmp_path / "empty-without-deploy"
+    shutil.copytree(repo, omitted)
+    (omitted / "deploy" / "deploy.yml").unlink()
+    omitted_result = run_compatibility_engine(
+        engine_scripts,
+        "materialize",
+        "--target-repo-root",
+        str(omitted),
+        "--no-deploy-contract",
+    )
     assert omitted_result.returncode == 0, omitted_result.stdout
     assert not (omitted / "deploy" / "deploy.yml").exists()
+    assert json.loads(omitted_result.stdout)["repository_validation"] == {
+        "checks": [],
+        "validator": "preserved",
+        "workflow": "preserved",
+    }
+
+
+def test_compatibility_materializer_preserves_existing_validator_and_ci(
+    tmp_path: pathlib.Path,
+) -> None:
+    repo = tmp_path / "compatible"
+    create_compatible_repo(repo, "preserved/source", ["alpha-tool"])
+    (repo / ".git").write_text("gitdir: test\n", encoding="utf-8", newline="\n")
+    validator = repo / "scripts" / "validate-repository.py"
+    validator.write_text(
+        "#!/usr/bin/env python3\nprint('target-owned')\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    validator.chmod(0o744)
+    workflow = repo / ".github" / "workflows" / "validate.yml"
+    workflow.parent.mkdir(parents=True)
+    workflow.write_text(
+        "jobs:\n"
+        "  validate:\n"
+        "    steps:\n"
+        "      - run: python scripts/validate-repository.py "
+        "--evidence-file evidence.log\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    before = {
+        path: (path.read_bytes(), path.stat().st_mode)
+        for path in (validator, workflow)
+    }
+
+    result = run_compatibility_engine(
+        REPOSITORY_LIFECYCLE_SCRIPTS,
+        "materialize",
+        "--target-repo-root",
+        str(repo),
+    )
+
+    assert result.returncode == 0, result.stdout
+    assert {
+        path: (path.read_bytes(), path.stat().st_mode)
+        for path in (validator, workflow)
+    } == before
+    assert json.loads(result.stdout)["repository_validation"] == {
+        "checks": [],
+        "validator": "preserved",
+        "workflow": "preserved",
+    }
 
 
 def test_compatibility_materializer_preserves_existing_identity_and_custom_sections(
@@ -4739,16 +4986,11 @@ def test_compatibility_materializer_preserves_existing_identity_and_custom_secti
         newline="\n",
     )
 
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(COMPATIBILITY_MATERIALIZER),
-            "--target-repo-root",
-            str(repo),
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
+    result = run_compatibility_engine(
+        REPOSITORY_LIFECYCLE_SCRIPTS,
+        "materialize",
+        "--target-repo-root",
+        str(repo),
     )
 
     assert result.returncode == 0, result.stdout
@@ -4763,18 +5005,13 @@ def test_compatibility_materializer_preserves_existing_identity_and_custom_secti
         "Preserve this target behavior.\n"
     )
 
-    overridden = subprocess.run(
-        [
-            sys.executable,
-            str(COMPATIBILITY_MATERIALIZER),
-            "--target-repo-root",
-            str(repo),
-            "--runtime-source-id",
-            "explicit/source",
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
+    overridden = run_compatibility_engine(
+        REPOSITORY_LIFECYCLE_SCRIPTS,
+        "materialize",
+        "--target-repo-root",
+        str(repo),
+        "--runtime-source-id",
+        "explicit/source",
     )
     assert overridden.returncode == 0, overridden.stdout
     assert json.loads(manifest_path.read_text(encoding="utf-8"))[
@@ -4785,6 +5022,24 @@ def test_compatibility_materializer_preserves_existing_identity_and_custom_secti
 def test_compatibility_materializer_rolls_back_every_target_write_on_blocker(
     tmp_path: pathlib.Path,
 ) -> None:
+    lifecycle_bundle = tmp_path / "lifecycle-bundle"
+    shutil.copytree(REPOSITORY_LIFECYCLE_SOURCE, lifecycle_bundle)
+    shutil.copytree(
+        ROOT / "skills" / "sections",
+        lifecycle_bundle / "skills" / "sections",
+    )
+    workflow_template = (
+        lifecycle_bundle / "references" / "templates" / "validate.yml.tmpl"
+    )
+    workflow_template.write_text(
+        workflow_template.read_text(encoding="utf-8").replace(
+            "python scripts/validate-repository.py",
+            "python scripts/not-the-repository-validator.py",
+        ),
+        encoding="utf-8",
+        newline="\n",
+    )
+    engine_scripts = lifecycle_bundle / "scripts"
     repo = tmp_path / "compatible"
     create_compatible_repo(repo, "preserved/source", ["alpha-tool"])
     (repo / ".git").write_text("gitdir: test\n", encoding="utf-8", newline="\n")
@@ -4798,7 +5053,6 @@ def test_compatibility_materializer_rolls_back_every_target_write_on_blocker(
         encoding="utf-8",
         newline="\n",
     )
-    (repo / "README.md").unlink()
     changed_paths = (
         skill_md,
         repo / "skills" / "sections" / "core.md",
@@ -4808,24 +5062,21 @@ def test_compatibility_materializer_rolls_back_every_target_write_on_blocker(
     )
     original = {path: path.read_bytes() for path in changed_paths}
 
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(COMPATIBILITY_MATERIALIZER),
-            "--target-repo-root",
-            str(repo),
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
+    result = run_compatibility_engine(
+        engine_scripts,
+        "materialize",
+        "--target-repo-root",
+        str(repo),
     )
 
     assert result.returncode == 1
     output = json.loads(result.stdout)
     assert output["status"] == "blocked"
-    assert output["phase"] == "source_validation"
+    assert output["phase"] == "compatibility_validation"
     assert output["rollback"] == "completed"
     assert {path: path.read_bytes() for path in changed_paths} == original
+    assert not (repo / "scripts" / "validate-repository.py").exists()
+    assert not (repo / ".github" / "workflows" / "validate.yml").exists()
 
 
 def test_compatibility_materializer_blocks_invalid_assignments_before_writes(
@@ -4854,16 +5105,11 @@ def test_compatibility_materializer_blocks_invalid_assignments_before_writes(
         for path in observed_paths
     }
 
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(COMPATIBILITY_MATERIALIZER),
-            "--target-repo-root",
-            str(repo),
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
+    result = run_compatibility_engine(
+        REPOSITORY_LIFECYCLE_SCRIPTS,
+        "materialize",
+        "--target-repo-root",
+        str(repo),
     )
 
     assert result.returncode == 1
@@ -5979,6 +6225,9 @@ def test_bootstrap_full_install_materializes_self_contained_lifecycle_bundle(
         / "schemas"
         / "deploy-contract.schema.json"
     ).is_file()
+    assert (
+        installed_lifecycle / "scripts" / COMPATIBILITY_ENGINE / "__main__.py"
+    ).is_file()
     target_repo = tmp_path / "installed-bundle-target"
     create_compatible_repo(target_repo, "stale/source", ["alpha-tool"])
     (target_repo / ".git").write_text(
@@ -5986,18 +6235,13 @@ def test_bootstrap_full_install_materializes_self_contained_lifecycle_bundle(
     )
     shutil.rmtree(target_repo / "skills" / "sections")
     (target_repo / "skills" / "skill-sections.json").unlink()
-    materialized = subprocess.run(
-        [
-            sys.executable,
-            str(installed_lifecycle / "scripts" / "make-repo-compatible.py"),
-            "--target-repo-root",
-            str(target_repo),
-            "--runtime-source-id",
-            "installed/target",
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
+    materialized = run_compatibility_engine(
+        installed_lifecycle / "scripts",
+        "materialize",
+        "--target-repo-root",
+        str(target_repo),
+        "--runtime-source-id",
+        "installed/target",
     )
     assert materialized.returncode == 0, materialized.stdout
     assert json.loads(materialized.stdout)["runtime_source_id"] == "installed/target"
@@ -6053,23 +6297,13 @@ def test_lifecycle_only_installed_bundle_materializes_compatible_repo(
     shutil.rmtree(target_repo / "skills" / "sections")
     (target_repo / "skills" / "skill-sections.json").unlink()
 
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(
-                install_root
-                / "ceratops-repo-lifecycle"
-                / "scripts"
-                / "make-repo-compatible.py"
-            ),
-            "--target-repo-root",
-            str(target_repo),
-            "--runtime-source-id",
-            "installed/only",
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
+    result = run_compatibility_engine(
+        install_root / "ceratops-repo-lifecycle" / "scripts",
+        "materialize",
+        "--target-repo-root",
+        str(target_repo),
+        "--runtime-source-id",
+        "installed/only",
     )
 
     assert result.returncode == 0, result.stdout
@@ -6152,7 +6386,7 @@ def test_full_install_does_not_run_source_validation(tmp_path: pathlib.Path) -> 
     install_bundle_manifest(installed_bundle)
     (repo / "README.md").write_text("# Invalid\n", encoding="utf-8", newline="\n")
     (
-        repository_bundle / "scripts" / "skills-consistency-source-validator.py"
+        installed_bundle / "scripts" / "skills-consistency-source-validator.py"
     ).write_text(
         "raise SystemExit('source validator must not run during installation')\n",
         encoding="utf-8",
@@ -6250,11 +6484,11 @@ def test_bootstrap_synchronization_compares_only_version(
     custom = target.read_text(encoding="utf-8") + "\n# same-version local difference\n"
     target.write_text(custom, encoding="utf-8", newline="\n")
 
-    retained = subprocess.run(
-        [sys.executable, str(INSTALLER_SYNCHRONIZER), "--target-repo-root", str(repo)],
-        capture_output=True,
-        text=True,
-        check=False,
+    retained = run_compatibility_engine(
+        REPOSITORY_LIFECYCLE_SCRIPTS,
+        "synchronize-bootstrap",
+        "--target-repo-root",
+        str(repo),
     )
 
     assert retained.returncode == 0, retained.stderr
@@ -6268,22 +6502,21 @@ def test_bootstrap_synchronization_compares_only_version(
         encoding="utf-8",
         newline="\n",
     )
-    updated = subprocess.run(
-        [sys.executable, str(INSTALLER_SYNCHRONIZER), "--target-repo-root", str(repo)],
-        capture_output=True,
-        text=True,
-        check=False,
+    updated = run_compatibility_engine(
+        REPOSITORY_LIFECYCLE_SCRIPTS,
+        "synchronize-bootstrap",
+        "--target-repo-root",
+        str(repo),
     )
 
     assert updated.returncode == 0, updated.stderr
     assert json.loads(updated.stdout)["status"] == "updated"
     assert target.read_bytes() == INSTALLER_TEMPLATE.read_bytes()
 
-    help_result = subprocess.run(
-        [sys.executable, str(INSTALLER_SYNCHRONIZER), "--help"],
-        capture_output=True,
-        text=True,
-        check=False,
+    help_result = run_compatibility_engine(
+        REPOSITORY_LIFECYCLE_SCRIPTS,
+        "synchronize-bootstrap",
+        "--help",
     )
     assert help_result.returncode == 0
     assert "--target-repo-root" in help_result.stdout

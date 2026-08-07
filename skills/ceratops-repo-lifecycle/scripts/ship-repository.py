@@ -113,16 +113,6 @@ def _deployment_checkpoint_path(scope: pathlib.Path) -> pathlib.Path:
     return scope.with_suffix(".after-ship.json")
 
 
-def _resolve_pending_scope(
-    repo_root: pathlib.Path, scope: pathlib.Path | None
-) -> pathlib.Path | None:
-    """Bind a caller-relative scope to the repository for every ship phase."""
-
-    if scope is None:
-        return None
-    return (scope if scope.is_absolute() else repo_root / scope).resolve()
-
-
 def _branch_worktree(repo_root: pathlib.Path, branch: str) -> pathlib.Path | None:
     """Return the registered worktree for one selected source branch."""
 
@@ -254,7 +244,11 @@ def _write_deployment_checkpoint(
     os.replace(temporary, path)
 
 
-def _ship_command(args: argparse.Namespace, repo_root: pathlib.Path) -> list[str]:
+def _ship_command(
+    args: argparse.Namespace,
+    repo_root: pathlib.Path,
+    pending_scope: pathlib.Path | None,
+) -> list[str]:
     command = [
         sys.executable,
         "-m",
@@ -289,17 +283,48 @@ def _ship_command(args: argparse.Namespace, repo_root: pathlib.Path) -> list[str
         command.append("--delete-branch")
     if args.reusable_head:
         command.append("--reusable-head")
-    if args.pending_work_scope is None:
+    if pending_scope is None:
         command.append("--no-pending-work-check")
     else:
         command.extend(
             (
                 "--pending-work-check",
                 "--pending-work-scope",
-                str(args.pending_work_scope),
+                str(pending_scope),
             )
         )
     return command
+
+
+def _prepare_pending_command(
+    *,
+    repo_root: pathlib.Path,
+    target_branch: str,
+) -> list[str]:
+    """Build canonical optional-scope preparation before remote mutation."""
+
+    return [
+        sys.executable,
+        str(PENDING_MANAGER),
+        "--repo-root",
+        str(repo_root),
+        "prepare",
+        "--target-branch",
+        target_branch,
+    ]
+
+
+def _prepared_scope(result: dict[str, Any]) -> pathlib.Path | None:
+    """Normalize the pending manager's compact optional-scope result."""
+
+    if result.get("status") != "ready":
+        raise RepositoryShipError(
+            "Pending-work preparation returned an invalid status."
+        )
+    value = result.get("pending_work_scope")
+    if not isinstance(value, str):
+        raise RepositoryShipError("Pending-work preparation lacks its scope result.")
+    return pathlib.Path(value).resolve() if value else None
 
 
 def _pending_command(
@@ -345,15 +370,27 @@ def ship_repository(args: argparse.Namespace) -> dict[str, object]:
     if args.head_branch != RELEASE_BRANCH:
         raise RepositoryShipError(f"Head branch must be {RELEASE_BRANCH}.")
     repo_root = args.repo_root.expanduser().resolve(strict=True)
-    pending_scope = _resolve_pending_scope(repo_root, args.pending_work_scope)
-    args.pending_work_scope = pending_scope
-    _require_cleanup_safe_caller(repo_root, pending_scope)
     deployment_preflight = _deployment_preflight(
         repo_root,
         args.deploy_contract,
         args.deploy_operation,
     )
-    ship_code, shipped = _run_json(_ship_command(args, repo_root))
+    prepare_code, prepared = _run_json(
+        _prepare_pending_command(
+            repo_root=repo_root,
+            target_branch=args.head_branch,
+        )
+    )
+    if prepare_code == 2:
+        return prepared
+    if prepare_code:
+        raise RepositoryShipError(
+            str(prepared.get("message", "Pending-work preparation failed."))
+        )
+    pending_scope = _prepared_scope(prepared)
+    checkpoint_scope = pending_scope
+    _require_cleanup_safe_caller(repo_root, pending_scope)
+    ship_code, shipped = _run_json(_ship_command(args, repo_root, pending_scope))
     if ship_code == 2:
         return shipped
     if ship_code:
@@ -389,12 +426,13 @@ def ship_repository(args: argparse.Namespace) -> dict[str, object]:
             raise RepositoryShipError(
                 str(checked.get("message", "Late pending-work check failed."))
             )
+        pending_scope = _prepared_scope(checked)
 
     checkpoint_path: pathlib.Path | None = None
     deployment_identity: dict[str, object] | None = None
     deployed: dict[str, Any] | None = deployment_preflight
-    if pending_scope is not None and deployed is None:
-        checkpoint_path = _deployment_checkpoint_path(pending_scope)
+    if checkpoint_scope is not None and deployed is None:
+        checkpoint_path = _deployment_checkpoint_path(checkpoint_scope)
         deployment_identity = _deployment_identity(
             repo_root,
             target_branch=args.head_branch,
@@ -460,8 +498,8 @@ def ship_repository(args: argparse.Namespace) -> dict[str, object]:
             raise RepositoryShipError(
                 str(finalized.get("message", "Selected-work cleanup failed."))
             )
-        if checkpoint_path is not None:
-            checkpoint_path.unlink(missing_ok=True)
+    if checkpoint_path is not None:
+        checkpoint_path.unlink(missing_ok=True)
 
     return {
         "status": shipped["status"],
@@ -499,9 +537,6 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("merge", "squash", "rebase"),
         default="merge",
     )
-    pending = parser.add_mutually_exclusive_group(required=True)
-    pending.add_argument("--pending-work-scope", type=pathlib.Path)
-    pending.add_argument("--no-pending-work-check", action="store_true")
     parser.add_argument("--delete-branch", action="store_true")
     parser.add_argument("--reusable-head", action="store_true")
     parser.add_argument(

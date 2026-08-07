@@ -16,8 +16,7 @@ import re
 import shutil
 import sys
 
-
-BUNDLE_ROOT = pathlib.Path(__file__).resolve().parents[1]
+BUNDLE_ROOT = pathlib.Path(__file__).resolve().parents[2]
 TEMPLATE = (
     BUNDLE_ROOT
     / "references"
@@ -56,41 +55,45 @@ def require_linked_worktree(repo_root: pathlib.Path) -> None:
         raise RuntimeError(f"target repository must be a linked task worktree: {repo_root}")
 
 
-def main() -> int:
-    """Update one task-worktree installer when its parsed version is outdated."""
+def synchronize_bootstrap_installer(repo_root: pathlib.Path) -> dict[str, object]:
+    """Synchronize one task-worktree installer and return its compact result."""
+
+    root = repo_root.resolve()
+    target = root / TARGET_RELATIVE
+    require_linked_worktree(root)
+    source_version = installer_version(TEMPLATE)
+    if source_version is None:
+        raise RuntimeError(
+            f"authoritative installer has no valid INSTALLER_VERSION: {TEMPLATE}"
+        )
+    target_version = installer_version(target)
+    updated = target_version is None or target_version < source_version
+    if updated:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(TEMPLATE, target)
+    return {
+        "bootstrap_version": source_version,
+        "previous_version": target_version,
+        "status": "updated" if updated else "retained",
+    }
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Run bootstrap synchronization as the package CLI subcommand."""
 
     parser = argparse.ArgumentParser(
         description="Synchronize a compatible-repo bootstrap by version."
     )
     parser.add_argument("--target-repo-root", required=True, type=pathlib.Path)
-    args = parser.parse_args()
-    repo_root = args.target_repo_root.resolve()
-    target = repo_root / TARGET_RELATIVE
+    args = parser.parse_args(argv)
 
     try:
-        require_linked_worktree(repo_root)
-        source_version = installer_version(TEMPLATE)
-        if source_version is None:
-            raise RuntimeError(f"authoritative installer has no valid INSTALLER_VERSION: {TEMPLATE}")
-        target_version = installer_version(target)
-        updated = target_version is None or target_version < source_version
-        if updated:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(TEMPLATE, target)
+        result = synchronize_bootstrap_installer(args.target_repo_root)
     except (OSError, RuntimeError) as exc:
         print(str(exc), file=sys.stderr)
         return 1
 
-    print(
-        json.dumps(
-            {
-                "bootstrap_version": source_version,
-                "previous_version": target_version,
-                "status": "updated" if updated else "retained",
-            },
-            sort_keys=True,
-        )
-    )
+    print(json.dumps(result, sort_keys=True))
     return 0
 
 

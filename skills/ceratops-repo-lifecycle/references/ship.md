@@ -14,14 +14,15 @@ merged source branches and worktrees.
 - (D) Complete repository ship:
   `python scripts/ship-repository.py --repo-root PATH --repo OWNER/REPO
   --head-branch release/local --base-branch main --remote-name origin
-  --pending-work-scope PATH --reusable-head`.
-- Use `--no-pending-work-check` only when the caller explicitly selected that
-  scope mode and no promotion scope applies.
+  --reusable-head`.
+- The helper derives the canonical pending-work scope from `--head-branch`.
+  An absent scope is a cleanup no-op. Entries for missing source branches are
+  atomically removed from an existing scope before shipping continues.
 
 ### Inputs To Capture
 
 - Repository checkout, staged `release/local`, base branch, remote, merge method,
-  PR title/body, and exact pending-work scope mode.
+  and PR title/body.
 - Whether the head is reusable after merge.
 
 Infer missing values from the checkout, scope file, and live PR before asking.
@@ -37,15 +38,15 @@ Infer missing values from the checkout, scope file, and live PR before asking.
 
 ### Workflow
 
-1. Run the complete ship helper once with the selected scope mode. The initial
-   ship request authorizes its full deterministic workflow; do not request
-   another confirmation after gates pass.
-   When it yields a running cell without new output, resume it with a
+1. Run the complete ship helper once. The initial ship request authorizes its
+   full deterministic workflow; do not request another confirmation after gates
+   pass. When it yields a running cell without new output, resume it with a
    55-second wait; use a shorter wait only when a known completion or failure
    deadline is sooner.
-2. When pending-work checking is enabled, the helper validates the exact scope
-   before the first remote push. A `pending_work` result performs no remote
-   mutation.
+2. Before the first remote push, the helper checks the canonical scope when it
+   exists. It atomically removes entries for missing source branches and deletes
+   the scope if none remain. An absent or emptied scope is a cleanup no-op;
+   remaining `pending_work` performs no remote mutation.
 3. The delegated GitHub workflow ensures the PR, waits for readiness, CI, and
    Codex review, immediately rereads every gate, and verifies the exact head.
 4. Only after those gates pass, integrated ship delegates the final exact-head
@@ -76,7 +77,8 @@ Infer missing values from the checkout, scope file, and live PR before asking.
 - PR publication, all gates, exact-head admin merge, main synchronization, and
   declared or explicit no-op repository deployment completed; any returned
   handoff completed, and managed skills without one were reported.
-- All enabled pending-work checks passed.
+- Every remaining selected source branch passed pending-work checks; an absent
+  or emptied scope completed as a cleanup no-op.
 - Only selected clean merged source work was removed.
 
 ### Output Contract
