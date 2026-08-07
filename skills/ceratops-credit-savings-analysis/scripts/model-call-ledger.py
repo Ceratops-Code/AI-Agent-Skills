@@ -42,6 +42,7 @@ CLASSIFIED_SUMMARY_SCHEMA = "ceratops-model-call-classified-summary.v1"
 USAGE_EVIDENCE_SCHEMA = "ceratops-model-call-usage-evidence.v1"
 USAGE_SUMMARY_SCHEMA = "ceratops-model-call-usage-summary.v1"
 PRICING_PROFILE_SCHEMA = "ceratops-model-call-pricing-profile.v1"
+ANALYSIS_EVIDENCE_SCHEMA = "ceratops-credit-analysis-collected-evidence.v1"
 DEFAULT_TOP = 5
 CLASSIFICATION_CATEGORIES = (
     "necessary",
@@ -194,18 +195,23 @@ def percentage(numerator: int, denominator: int) -> float | None:
     return round(numerator * 100 / denominator, 2)
 
 
-def load_rows(path: pathlib.Path) -> list[dict[str, Any]]:
-    """Load JSONL records while identifying malformed line numbers."""
+def load_rows_with_fingerprint(
+    path: pathlib.Path,
+) -> tuple[list[dict[str, Any]], str]:
+    """Read and hash one JSONL session in a single filesystem traversal."""
 
     rows: list[dict[str, Any]] = []
+    digest = hashlib.sha256()
     try:
-        with path.open(encoding="utf-8") as session:
-            for line_number, line in enumerate(session, start=1):
-                if not line.strip():
+        with path.open("rb") as session:
+            for line_number, raw_line in enumerate(session, start=1):
+                digest.update(raw_line)
+                if not raw_line.strip():
                     continue
                 try:
+                    line = raw_line.decode("utf-8")
                     row = json.loads(line)
-                except json.JSONDecodeError as exc:
+                except (UnicodeDecodeError, json.JSONDecodeError) as exc:
                     raise LedgerError(
                         f"invalid JSON on session line {line_number}"
                     ) from exc
@@ -216,6 +222,13 @@ def load_rows(path: pathlib.Path) -> list[dict[str, Any]]:
                 rows.append(row)
     except OSError as exc:
         raise LedgerError(f"could not read session: {exc}") from exc
+    return rows, digest.hexdigest()
+
+
+def load_rows(path: pathlib.Path) -> list[dict[str, Any]]:
+    """Load JSONL records while identifying malformed line numbers."""
+
+    rows, _ = load_rows_with_fingerprint(path)
     return rows
 
 
@@ -581,6 +594,7 @@ def build_ledger(
     *,
     session: pathlib.Path,
     last_runs: int | None,
+    completed_turn_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     """Group completed runs and enumerate every non-empty model response."""
 
@@ -645,13 +659,33 @@ def build_ledger(
         )
         pending_actions = []
 
-    selected = [
+    completed = [
         runs[turn_id]
         for turn_id in ordered_turns
         if runs[turn_id]["completed"]
     ]
-    if last_runs is not None:
-        selected = selected[-last_runs:]
+    if last_runs is not None and completed_turn_ids is not None:
+        raise LedgerError("completed turn IDs do not accept a last-runs window")
+    if completed_turn_ids is not None:
+        if not completed_turn_ids or len(completed_turn_ids) != len(
+            set(completed_turn_ids)
+        ):
+            raise LedgerError("completed turn IDs must be a nonempty unique list")
+        completed_ids = [run["turn_id"] for run in completed]
+        requested = set(completed_turn_ids)
+        unknown = [turn_id for turn_id in completed_turn_ids if turn_id not in completed_ids]
+        if unknown:
+            raise LedgerError(
+                f"requested run is not completed in the session: {unknown[0]}"
+            )
+        ordered_requested = [turn_id for turn_id in completed_ids if turn_id in requested]
+        if ordered_requested != completed_turn_ids:
+            raise LedgerError("completed turn IDs are not in session order")
+        selected = [runs[turn_id] for turn_id in completed_turn_ids]
+    elif last_runs is not None:
+        selected = completed[-last_runs:]
+    else:
+        selected = completed
 
     selected_fingerprints = Counter(
         (action["name"], action["fingerprint"])
@@ -684,9 +718,18 @@ def build_ledger(
         "schema": SCHEMA,
         "session": str(session),
         "window": {
-            "mode": "last_runs" if last_runs is not None else "full_thread",
+            "mode": (
+                "completed_turn_ids"
+                if completed_turn_ids is not None
+                else "last_runs" if last_runs is not None else "full_thread"
+            ),
             "requested_runs": last_runs,
             "completed_runs": len(selected),
+            **(
+                {"requested_turn_ids": completed_turn_ids}
+                if completed_turn_ids is not None
+                else {}
+            ),
         },
         "totals": {
             "runs": len(selected),
@@ -1300,6 +1343,157 @@ def build_usage_evidence(
             "nonzero_process_results_are_semantic_failures": False,
             "limitations": limitations,
         },
+    }
+
+
+def _canonical_hash(value: Any) -> str:
+    """Hash one JSON-compatible value using its canonical representation."""
+
+    payload = json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _focused_run_selection(runs: list[dict[str, Any]]) -> dict[str, Any]:
+    """Select highest-call runs until at least eighty percent is covered."""
+
+    total_calls = sum(run["model_calls"] for run in runs)
+    ranked = sorted(
+        enumerate(runs),
+        key=lambda item: (-item[1]["model_calls"], item[0]),
+    )
+    selected: list[str] = []
+    covered = 0
+    for _, run in ranked:
+        if total_calls == 0 or covered * 100 >= total_calls * 80:
+            break
+        selected.append(run["turn_id"])
+        covered += run["model_calls"]
+    return {
+        "threshold_percent": 80,
+        "run_ids": selected,
+        "covered_calls": covered,
+        "total_calls": total_calls,
+        "covered_percent": percentage(covered, total_calls),
+    }
+
+
+def collect_session_evidence(
+    session: pathlib.Path,
+    *,
+    last_runs: int | None = None,
+    completed_turn_ids: list[str] | None = None,
+    pricing_profile: pathlib.Path | None = None,
+) -> dict[str, Any]:
+    """Collect one controller-ready evidence bundle from one session read.
+
+    The public CLI modes remain separate views over the same parsing and
+    sanitization primitives. Controller callers use this function so usage,
+    semantic, relationship, and classification inventory data all derive from
+    one immutable in-memory row set rather than repeated session reads.
+    """
+
+    resolved_session = session.expanduser().resolve(strict=True)
+    rows, source_fingerprint = load_rows_with_fingerprint(resolved_session)
+    pricing = (
+        load_pricing_profile(pricing_profile.expanduser().resolve(strict=True))
+        if pricing_profile is not None
+        else None
+    )
+    ledger = build_ledger(
+        rows,
+        session=resolved_session,
+        last_runs=last_runs,
+        completed_turn_ids=completed_turn_ids,
+    )
+    run_ids = [run["turn_id"] for run in ledger["runs"]]
+    semantic_runs = build_semantic_runs(rows, ledger, run_ids)
+    usage = build_usage_evidence(rows, ledger, pricing)
+    semantic_by_run = {run["turn_id"]: run for run in semantic_runs}
+    usage_by_run = {run["turn_id"]: run for run in usage["runs"]}
+
+    calls: list[dict[str, Any]] = []
+    collected_runs: list[dict[str, Any]] = []
+    for ledger_run in ledger["runs"]:
+        turn_id = ledger_run["turn_id"]
+        semantic_run = semantic_by_run[turn_id]
+        usage_run = usage_by_run[turn_id]
+        semantic_by_index = {
+            call["index"]: call["actions"] for call in semantic_run["calls"]
+        }
+        tools_by_call: dict[int, list[dict[str, Any]]] = {
+            index: [] for index in range(1, ledger_run["model_calls"] + 1)
+        }
+        for action in usage_run["tool_action_results"]:
+            model_call_index = action.get("model_call_index")
+            if isinstance(model_call_index, int) and model_call_index in tools_by_call:
+                tools_by_call[model_call_index].append(action)
+
+        run_calls: list[dict[str, Any]] = []
+        for call in ledger_run["calls"]:
+            call_id = f"{turn_id}:{call['index']}"
+            call_record = {
+                "call_id": call_id,
+                "turn_id": turn_id,
+                "index": call["index"],
+                "timestamp": call["timestamp"],
+                "tokens": call["tokens"],
+                "estimated_credit_cost": estimated_credit_cost(
+                    call["tokens"], pricing
+                ),
+                "actions": call["actions"],
+                "semantic_actions": semantic_by_index[call["index"]],
+                "tool_results": tools_by_call[call["index"]],
+                "run_duration_ms": usage_run["totals"]["duration_ms"],
+            }
+            calls.append(call_record)
+            run_calls.append(call_record)
+        collected_runs.append(
+            {
+                "turn_id": turn_id,
+                "started_at": ledger_run["started_at"],
+                "model_calls": ledger_run["model_calls"],
+                "totals": usage_run["totals"],
+                "tool_counts": usage_run["tool_counts"],
+                "calls": run_calls,
+            }
+        )
+
+    window_fingerprint = _canonical_hash(
+        {
+            "source_fingerprint": source_fingerprint,
+            "window": ledger["window"],
+            "turns": [
+                {
+                    "turn_id": run["turn_id"],
+                    "model_calls": run["model_calls"],
+                }
+                for run in ledger["runs"]
+            ],
+        }
+    )
+    return {
+        "schema": ANALYSIS_EVIDENCE_SCHEMA,
+        "session": str(resolved_session),
+        "source_fingerprint": source_fingerprint,
+        "window_fingerprint": window_fingerprint,
+        "window": ledger["window"],
+        "collection": {
+            "session_reads": 1,
+            "completed_runs": len(collected_runs),
+            "model_calls": len(calls),
+        },
+        "focused_semantic_context": _focused_run_selection(collected_runs),
+        "pricing": usage["pricing"],
+        "totals": usage["totals"],
+        "telemetry": usage["telemetry"],
+        "repeated_tool_calls": usage["repeated_tool_calls"],
+        "call_inventory": [call["call_id"] for call in calls],
+        "runs": collected_runs,
     }
 
 

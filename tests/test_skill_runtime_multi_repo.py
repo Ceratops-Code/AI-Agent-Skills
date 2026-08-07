@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import errno
+import hashlib
 import importlib
 import json
 import os
@@ -12,7 +13,7 @@ import subprocess
 import sys
 import threading
 import time
-from typing import Any
+from typing import Any, Mapping
 
 import pytest
 import yaml
@@ -57,10 +58,952 @@ MANAGE_PENDING_WORK = REPOSITORY_LIFECYCLE_SOURCE / "scripts" / "manage-pending-
 SHIP_REPOSITORY = REPOSITORY_LIFECYCLE_SOURCE / "scripts" / "ship-repository.py"
 PR_WORKFLOW_SCRIPTS = REPOSITORY_LIFECYCLE_SOURCE / "scripts"
 MODEL_CALL_LEDGER = ROOT / "skills" / "ceratops-credit-savings-analysis" / "scripts" / "model-call-ledger.py"
+CREDIT_ANALYSIS_WORKFLOW = (
+    ROOT
+    / "skills"
+    / "ceratops-credit-savings-analysis"
+    / "scripts"
+    / "credit-analysis-workflow.py"
+)
+CREDIT_ANALYSIS_CONTRACT = (
+    ROOT
+    / "skills"
+    / "ceratops-credit-savings-analysis"
+    / "scripts"
+    / "credit-analysis-contract.json"
+)
 CLOSURE_SNAPSHOT = ROOT / "skills" / "ceratops-task-lifecycle" / "scripts" / "closure_snapshot.py"
 RUNTIME_MANIFEST = ".runtime-manifest.json"
 RUNTIME_MANIFEST_SCHEMA = "ceratops-runtime-skill.v3"
 INSTALLER_VERSION = 10
+
+
+def run_credit_analysis_workflow(
+    command: str,
+    *arguments: str,
+) -> subprocess.CompletedProcess[str]:
+    """Run the credit-analysis controller through its public CLI."""
+
+    return subprocess.run(
+        [sys.executable, str(CREDIT_ANALYSIS_WORKFLOW), command, *arguments],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def write_json_file(path: pathlib.Path, value: Any) -> None:
+    """Write one deterministic JSON test artifact."""
+
+    path.write_text(
+        json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+
+
+def credit_analysis_session(path: pathlib.Path) -> None:
+    """Create three completed synthetic runs with six model calls."""
+
+    rows: list[dict[str, Any]] = []
+
+    def add_call(
+        timestamp: str,
+        turn_id: str,
+        *,
+        name: str | None = None,
+        call_id: str | None = None,
+        arguments: dict[str, Any] | None = None,
+        output: dict[str, Any] | None = None,
+        final: bool = False,
+    ) -> None:
+        if name is not None:
+            rows.append(
+                {
+                    "timestamp": timestamp,
+                    "type": "response_item",
+                    "payload": {
+                        "type": "function_call",
+                        "name": name,
+                        "call_id": call_id,
+                        "arguments": json.dumps(arguments or {}),
+                    },
+                }
+            )
+            if output is not None:
+                rows.append(
+                    {
+                        "timestamp": timestamp + ".100",
+                        "type": "response_item",
+                        "payload": {
+                            "type": "function_call_output",
+                            "call_id": call_id,
+                            "output": json.dumps(output),
+                        },
+                    }
+                )
+        if final:
+            rows.append(
+                {
+                    "timestamp": timestamp,
+                    "type": "response_item",
+                    "payload": {
+                        "type": "message",
+                        "role": "assistant",
+                        "phase": "final_answer",
+                        "content": [{"type": "output_text", "text": f"done {turn_id}"}],
+                    },
+                }
+            )
+        rows.append(
+            {
+                "timestamp": timestamp + ".900",
+                "type": "event_msg",
+                "payload": {
+                    "type": "token_count",
+                    "info": {
+                        "last_token_usage": {
+                            "input_tokens": 10,
+                            "cached_input_tokens": 2,
+                            "output_tokens": 2,
+                            "reasoning_output_tokens": 1,
+                            "total_tokens": 12,
+                        }
+                    },
+                },
+            }
+        )
+
+    rows.append(
+        {
+            "timestamp": "2026-08-01T00:00:00Z",
+            "type": "turn_context",
+            "payload": {"turn_id": "turn-1"},
+        }
+    )
+    add_call(
+        "2026-08-01T00:00:01Z",
+        "turn-1",
+        name="read_file",
+        call_id="read-1",
+        arguments={"path": str(path.parent / "private" / "input.txt")},
+        output={"success": False, "error": "synthetic failure"},
+    )
+    add_call(
+        "2026-08-01T00:00:02Z",
+        "turn-1",
+        name="read_file",
+        call_id="read-2",
+        arguments={"path": str(path.parent / "private" / "input.txt")},
+        output={"success": True},
+    )
+    add_call("2026-08-01T00:00:03Z", "turn-1", final=True)
+
+    rows.append(
+        {
+            "timestamp": "2026-08-01T00:01:00Z",
+            "type": "turn_context",
+            "payload": {"turn_id": "turn-2"},
+        }
+    )
+    add_call(
+        "2026-08-01T00:01:01Z",
+        "turn-2",
+        name="wait_agent",
+        call_id="wait-1",
+        output={"timed_out": False},
+    )
+    add_call("2026-08-01T00:01:02Z", "turn-2", final=True)
+
+    rows.append(
+        {
+            "timestamp": "2026-08-01T00:02:00Z",
+            "type": "turn_context",
+            "payload": {"turn_id": "turn-3"},
+        }
+    )
+    add_call("2026-08-01T00:02:01Z", "turn-3", final=True)
+    path.write_text(
+        "".join(json.dumps(row) + "\n" for row in rows),
+        encoding="utf-8",
+        newline="\n",
+    )
+
+
+def credit_analysis_request(
+    tmp_path: pathlib.Path,
+    *,
+    action: str = "full-analysis",
+) -> tuple[pathlib.Path, pathlib.Path, pathlib.Path]:
+    """Create one request with caller-selected controller and evidence paths."""
+
+    session = tmp_path / "session.jsonl"
+    credit_analysis_session(session)
+    task_root = tmp_path / f"analysis-{action}"
+    task_root.mkdir()
+    evidence = tmp_path / f"evidence-{action}.json"
+    request = tmp_path / f"request-{action}.json"
+    write_json_file(
+        request,
+        {
+            "schema": "ceratops-credit-analysis-request.v1",
+            "action": action,
+            "mode": "full-analysis" if action == "full-analysis" else "standalone",
+            "source": {"thread_id": None, "session": str(session)},
+            "window": {"mode": "full_thread", "last_runs": None, "turn_ids": []},
+            "task_temp_root": str(task_root),
+            "evidence_output": str(evidence),
+            "pricing_profile": None,
+            "expected_surface_contract_version": 1,
+            "mutation_authority": False,
+        },
+    )
+    return request, session, task_root
+
+
+def finding_record(
+    finding_id: str,
+    calls: list[str],
+    *,
+    producer_type: str,
+    owner: str,
+    status: str = "unimplemented",
+    helper_categories: list[str] | None = None,
+) -> dict[str, Any]:
+    """Build one valid surface finding with deterministic ROI arithmetic."""
+
+    return {
+        "id": finding_id,
+        "title": finding_id.replace("-", " "),
+        "affected_call_ids": calls,
+        "evidence_refs": [f"evidence://calls/{call_id}" for call_id in calls],
+        "producer_type": producer_type,
+        "producer_owner": owner,
+        "proposed_durable_control": f"Prevent {finding_id} at {owner}",
+        "implementation_status": status,
+        "targeted_verification": [f"verify-{finding_id}"],
+        "observed_avoidable_call_count": len(calls),
+        "recurrence": {
+            "calls_saved_per_affected_run": float(len(calls)),
+            "additional_recurring_calls_per_affected_run": 0.0,
+            "affected_similar_run_frequency": 0.5,
+            "affected_similar_run_frequency_range": [0.25, 0.75],
+            "estimated_calls_saved_per_similar_run": float(len(calls)) * 0.5,
+            "assumptions": ["synthetic recurrence"],
+        },
+        "confidence": 0.8,
+        "complexity": "Low",
+        "one_time_implementation_cost": {
+            "estimated_model_calls": 1.0,
+            "description": "one focused implementation pass",
+        },
+        "helper_categories": helper_categories or [],
+    }
+
+
+def surface_result_record(
+    status: Mapping[str, Any],
+    context: Mapping[str, Any],
+    evidence_fingerprint: str,
+    *,
+    findings: list[dict[str, Any]] | None = None,
+    risks: list[dict[str, Any]] | None = None,
+    exclusions: list[dict[str, Any]] | None = None,
+    helper_reviews: list[dict[str, Any]] | None = None,
+    remediation_groups: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Build a fully covered surface result for the pending controller pass."""
+
+    findings = findings or []
+    risks = risks or []
+    exclusions = exclusions or []
+    candidates = list(context["candidate_call_ids"])
+    covered = {
+        call_id
+        for finding in findings
+        for call_id in finding["affected_call_ids"]
+    }
+    covered.update(
+        call_id for risk in risks for call_id in risk["affected_call_ids"]
+    )
+    covered.update(item["call_id"] for item in exclusions)
+    dismissals = [
+        {"call_id": call_id, "reason": "candidate did not support a finding"}
+        for call_id in candidates
+        if call_id not in covered
+    ]
+    referenced_calls = list(
+        dict.fromkeys(
+            [*candidates]
+            + [
+                call_id
+                for item in [*findings, *risks]
+                for call_id in item["affected_call_ids"]
+            ]
+        )
+    )
+    return {
+        "schema": "ceratops-credit-analysis-surface-result.v1",
+        "analysis_id": status["analysis_id"],
+        "pass_id": status["pass_id"],
+        "surface_id": status["pending_surface"],
+        "evidence_fingerprint": evidence_fingerprint,
+        "artifact_paths": {
+            "state": status["state_path"],
+            "evidence": status["evidence_path"],
+            "context": status["context_path"],
+            "result": status["required_result_path"],
+        },
+        "reviewed_candidate_call_ids": candidates,
+        "confirmed_findings": findings,
+        "plausible_risks": risks,
+        "dismissed_candidates": dismissals,
+        "necessary_call_exclusions": exclusions,
+        "evidence_references": [
+            f"evidence://calls/{call_id}" for call_id in referenced_calls
+        ],
+        "helper_category_reviews": helper_reviews or [],
+        "remediation_groups": remediation_groups or [],
+    }
+
+
+def test_credit_analysis_workflow_full_analysis_persists_every_finding(
+    tmp_path: pathlib.Path,
+) -> None:
+    request, session, task_root = credit_analysis_request(tmp_path)
+    prepared = run_credit_analysis_workflow("prepare", "--request", str(request))
+    assert prepared.returncode == 0, prepared.stderr
+    status = json.loads(prepared.stdout)
+    assert status["pending_surface"] == "helper-contracts"
+    state_path = pathlib.Path(status["state_path"])
+    evidence = json.loads(pathlib.Path(status["evidence_path"]).read_text(encoding="utf-8"))
+    assert evidence["collection"] == {
+        "session_reads": 1,
+        "completed_runs": 3,
+        "model_calls": 6,
+    }
+    assert evidence["focused_semantic_context"]["run_ids"] == ["turn-1", "turn-2"]
+    assert evidence["focused_semantic_context"]["covered_percent"] == 83.33
+    fingerprint = evidence["evidence_fingerprint"]
+    session.rename(tmp_path / "session-collected-once.jsonl")
+
+    contract = json.loads(CREDIT_ANALYSIS_CONTRACT.read_text(encoding="utf-8"))
+    helper_categories = contract["helper_categories"]
+    helper_finding = finding_record(
+        "helper-gap",
+        ["turn-1:1", "turn-1:2"],
+        producer_type="script",
+        owner="scripts/run-helper.py",
+        helper_categories=[
+            "missing-dependency-handling",
+            "insufficient-error-handling",
+        ],
+    )
+    context_finding = finding_record(
+        "context-gap",
+        ["turn-1:2"],
+        producer_type="skill",
+        owner="skills/example/SKILL.md",
+    )
+    rework_finding = finding_record(
+        "rework-gap",
+        ["turn-1:1", "turn-1:2"],
+        producer_type="script",
+        owner="scripts/run-helper.py",
+    )
+    instruction_finding = finding_record(
+        "instruction-gap",
+        ["turn-1:3"],
+        producer_type="prompt",
+        owner="request prompt",
+        status="implemented",
+    )
+    expected_order = [
+        "helper-contracts",
+        "context-evidence",
+        "rework-validation",
+        "tool-flow",
+        "instruction-reasoning",
+        "synthesis",
+    ]
+    observed_order: list[str] = []
+    first_result: dict[str, Any] | None = None
+    first_result_path: pathlib.Path | None = None
+
+    while status["pending_surface"] != "synthesis":
+        surface = status["pending_surface"]
+        observed_order.append(surface)
+        context = json.loads(pathlib.Path(status["context_path"]).read_text(encoding="utf-8"))
+        kwargs: dict[str, Any] = {}
+        if surface == "helper-contracts":
+            reviews = [
+                {
+                    "category": category,
+                    "status": (
+                        "applies"
+                        if category in helper_finding["helper_categories"]
+                        else "not-applicable"
+                    ),
+                    "finding_ids": (
+                        ["helper-gap"]
+                        if category in helper_finding["helper_categories"]
+                        else []
+                    ),
+                    "reason": "reviewed synthetic helper contract",
+                }
+                for category in helper_categories
+            ]
+            kwargs = {
+                "findings": [helper_finding],
+                "exclusions": [
+                    {
+                        "call_id": "turn-2:1",
+                        "reason_code": "protocol-overhead",
+                        "reason": "required wait protocol",
+                    }
+                ],
+                "helper_reviews": reviews,
+                "remediation_groups": [
+                    {
+                        "owner": "scripts/run-helper.py",
+                        "finding_ids": ["helper-gap"],
+                        "proposed_control": "compose dependency and error checks",
+                        "targeted_verification": ["verify-helper-gap"],
+                    }
+                ],
+            }
+        elif surface == "context-evidence":
+            kwargs = {"findings": [context_finding]}
+        elif surface == "rework-validation":
+            kwargs = {"findings": [rework_finding]}
+        elif surface == "tool-flow":
+            kwargs = {
+                "risks": [
+                    {
+                        "id": "tool-poll-risk",
+                        "description": "wait may have been avoidable",
+                        "affected_call_ids": ["turn-2:1"],
+                        "evidence_refs": ["evidence://calls/turn-2:1"],
+                        "verification_needed": ["verify external completion timing"],
+                    }
+                ],
+                "exclusions": [
+                    {
+                        "call_id": "turn-2:1",
+                        "reason_code": "protocol-overhead",
+                        "reason": "required conversational wait protocol",
+                    }
+                ],
+            }
+        else:
+            kwargs = {"findings": [instruction_finding]}
+        result = surface_result_record(status, context, fingerprint, **kwargs)
+        result_path = pathlib.Path(status["required_result_path"])
+        write_json_file(result_path, result)
+        advanced = run_credit_analysis_workflow(
+            "advance",
+            "--state",
+            str(state_path),
+            "--result",
+            str(result_path),
+        )
+        assert advanced.returncode == 0, advanced.stderr
+        next_status = json.loads(advanced.stdout)
+        resumed = run_credit_analysis_workflow("status", "--state", str(state_path))
+        assert resumed.returncode == 0, resumed.stderr
+        assert json.loads(resumed.stdout) == next_status
+        if surface == "helper-contracts":
+            first_result = result
+            first_result_path = result_path
+            idempotent = run_credit_analysis_workflow(
+                "advance",
+                "--state",
+                str(state_path),
+                "--result",
+                str(result_path),
+            )
+            assert idempotent.returncode == 0, idempotent.stderr
+            assert json.loads(idempotent.stdout) == next_status
+            conflicting = task_root / "conflicting-helper-result.json"
+            conflict_value = {**result, "confirmed_findings": [{**helper_finding, "title": "changed"}]}
+            write_json_file(conflicting, conflict_value)
+            rejected = run_credit_analysis_workflow(
+                "advance",
+                "--state",
+                str(state_path),
+                "--result",
+                str(conflicting),
+            )
+            assert rejected.returncode == 2
+            assert "conflicting resubmission" in rejected.stderr
+        status = next_status
+
+    observed_order.append(status["pending_surface"])
+    assert observed_order == expected_order
+    synthesis_context = json.loads(
+        pathlib.Path(status["context_path"]).read_text(encoding="utf-8")
+    )
+    assert [
+        item["surface_id"] for item in synthesis_context["accepted_surface_results"]
+    ] == expected_order[:-1]
+    synthesis = {
+        "schema": "ceratops-credit-analysis-synthesis-result.v1",
+        "analysis_id": status["analysis_id"],
+        "pass_id": status["pass_id"],
+        "surface_id": "synthesis",
+        "evidence_fingerprint": fingerprint,
+        "artifact_paths": {
+            "state": status["state_path"],
+            "evidence": status["evidence_path"],
+            "context": status["context_path"],
+            "result": status["required_result_path"],
+        },
+        "finding_order": [
+            "helper-gap",
+            "context-gap",
+            "rework-gap",
+            "instruction-gap",
+        ],
+        "risk_order": ["tool-poll-risk"],
+        "finding_dispositions": [
+            {
+                "finding_id": "helper-gap",
+                "primary_call_ids": ["turn-1:1"],
+                "secondary_call_ids": ["turn-1:2"],
+            },
+            {
+                "finding_id": "context-gap",
+                "primary_call_ids": ["turn-1:2"],
+                "secondary_call_ids": [],
+            },
+            {
+                "finding_id": "rework-gap",
+                "primary_call_ids": [],
+                "secondary_call_ids": ["turn-1:1", "turn-1:2"],
+            },
+            {
+                "finding_id": "instruction-gap",
+                "primary_call_ids": ["turn-1:3"],
+                "secondary_call_ids": [],
+            },
+        ],
+        "call_classifications": [
+            {
+                "call_id": "turn-1:1",
+                "classification": "avoidable_unimplemented",
+                "primary_finding_id": "helper-gap",
+                "reason_code": None,
+                "reason": "helper producer gap",
+            },
+            {
+                "call_id": "turn-1:2",
+                "classification": "avoidable_unimplemented",
+                "primary_finding_id": "context-gap",
+                "reason_code": None,
+                "reason": "duplicate evidence read",
+            },
+            {
+                "call_id": "turn-1:3",
+                "classification": "avoidable_implemented",
+                "primary_finding_id": "instruction-gap",
+                "reason_code": None,
+                "reason": "implemented prompt control",
+            },
+            {
+                "call_id": "turn-2:1",
+                "classification": "necessary",
+                "primary_finding_id": None,
+                "reason_code": "protocol-overhead",
+                "reason": "required wait protocol",
+            },
+            {
+                "call_id": "turn-2:2",
+                "classification": "necessary",
+                "primary_finding_id": None,
+                "reason_code": "required-workflow",
+                "reason": "required final answer",
+            },
+            {
+                "call_id": "turn-3:1",
+                "classification": "necessary",
+                "primary_finding_id": None,
+                "reason_code": "required-workflow",
+                "reason": "required final answer",
+            },
+        ],
+        "secondary_call_mappings": [
+            {"call_id": "turn-1:1", "finding_ids": ["rework-gap"]},
+            {
+                "call_id": "turn-1:2",
+                "finding_ids": ["helper-gap", "rework-gap"],
+            },
+        ],
+        "producer_groups": [
+            {
+                "id": "helper-owner-group",
+                "producer_type": "script",
+                "owner": "scripts/run-helper.py",
+                "finding_ids": ["helper-gap", "rework-gap"],
+                "recommended_control": "combine helper preflight and validation",
+                "targeted_verification": ["verify-helper-gap", "verify-rework-gap"],
+            },
+            {
+                "id": "context-owner-group",
+                "producer_type": "skill",
+                "owner": "skills/example/SKILL.md",
+                "finding_ids": ["context-gap"],
+                "recommended_control": "reuse the retained evidence boundary",
+                "targeted_verification": ["verify-context-gap"],
+            },
+            {
+                "id": "prompt-owner-group",
+                "producer_type": "prompt",
+                "owner": "request prompt",
+                "finding_ids": ["instruction-gap"],
+                "recommended_control": "retain the implemented prompt control",
+                "targeted_verification": ["verify-instruction-gap"],
+            },
+        ],
+    }
+    synthesis_path = pathlib.Path(status["required_result_path"])
+    write_json_file(synthesis_path, synthesis)
+    finalized = run_credit_analysis_workflow(
+        "finalize",
+        "--state",
+        str(state_path),
+        "--result",
+        str(synthesis_path),
+    )
+    assert finalized.returncode == 0, finalized.stderr
+    assert finalized.stdout.strip() == "OK"
+
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["finalized"] is True
+    assert [record["surface_id"] for record in state["completed"]] == expected_order
+    index_records = [
+        json.loads(line)
+        for line in pathlib.Path(state["paths"]["index"]).read_text(encoding="utf-8").splitlines()
+    ]
+    assert [record["surface_id"] for record in index_records] == expected_order
+    assert len(list(pathlib.Path(state["paths"]["findings_dir"]).glob("*.json"))) == 6
+    assert not pathlib.Path(state["paths"]["context_dir"]).exists()
+    assert not pathlib.Path(state["paths"]["pending_dir"]).exists()
+    final_result = json.loads(
+        pathlib.Path(state["final_result"]["path"]).read_text(encoding="utf-8")
+    )
+    assert [item["id"] for item in final_result["confirmed_findings"]] == synthesis[
+        "finding_order"
+    ]
+    assert final_result["totals"] == {
+        "total_model_calls": 6,
+        "necessary_calls": 3,
+        "protocol_overhead_calls": 1,
+        "avoidable_calls": 3,
+        "avoidable_implemented_calls": 1,
+        "avoidable_unimplemented_calls": 2,
+        "confirmed_findings": 4,
+        "plausible_risks": 1,
+    }
+    assert final_result["helper_category_totals"] == {
+        "insufficient-error-handling": 1,
+        "missing-dependency-handling": 1,
+    }
+    assert next(
+        item for item in final_result["confirmed_findings"] if item["id"] == "rework-gap"
+    )["deduplicated_avoidable_call_count"] == 0
+    assert final_result["secondary_call_mappings"] == synthesis[
+        "secondary_call_mappings"
+    ]
+    assert final_result["priced_cost"] is None
+    assert first_result is not None and first_result_path is not None
+
+
+def test_credit_analysis_workflow_rejects_invalid_and_conflicting_passes(
+    tmp_path: pathlib.Path,
+) -> None:
+    request, session, _ = credit_analysis_request(tmp_path)
+    prepared = run_credit_analysis_workflow("prepare", "--request", str(request))
+    assert prepared.returncode == 0, prepared.stderr
+    status = json.loads(prepared.stdout)
+    state_path = pathlib.Path(status["state_path"])
+    evidence = json.loads(pathlib.Path(status["evidence_path"]).read_text(encoding="utf-8"))
+    context = json.loads(pathlib.Path(status["context_path"]).read_text(encoding="utf-8"))
+    result_path = pathlib.Path(status["required_result_path"])
+    categories = json.loads(CREDIT_ANALYSIS_CONTRACT.read_text(encoding="utf-8"))[
+        "helper_categories"
+    ]
+    reviews = [
+        {
+            "category": category,
+            "status": "not-applicable",
+            "finding_ids": [],
+            "reason": "no helper defect confirmed",
+        }
+        for category in categories
+    ]
+    valid = surface_result_record(
+        status,
+        context,
+        evidence["evidence_fingerprint"],
+        helper_reviews=reviews,
+    )
+    invalid_values = [
+        {},
+        {**valid, "surface_id": "context-evidence"},
+        {**valid, "pass_id": "stale.pass"},
+        {**valid, "evidence_fingerprint": "0" * 64},
+        {**valid, "reviewed_candidate_call_ids": valid["reviewed_candidate_call_ids"][:-1]},
+        {
+            **valid,
+            "dismissed_candidates": valid["dismissed_candidates"][:-1],
+        },
+    ]
+    for invalid in invalid_values:
+        write_json_file(result_path, invalid)
+        rejected = run_credit_analysis_workflow(
+            "advance",
+            "--state",
+            str(state_path),
+            "--result",
+            str(result_path),
+        )
+        assert rejected.returncode == 2
+        current = json.loads(
+            run_credit_analysis_workflow("status", "--state", str(state_path)).stdout
+        )
+        assert current["pass_id"] == status["pass_id"]
+        assert not pathlib.Path(json.loads(state_path.read_text(encoding="utf-8"))["paths"]["index"]).exists()
+
+    write_json_file(result_path, valid)
+    accepted = run_credit_analysis_workflow(
+        "advance",
+        "--state",
+        str(state_path),
+        "--result",
+        str(result_path),
+    )
+    assert accepted.returncode == 0, accepted.stderr
+    next_status = json.loads(accepted.stdout)
+    assert next_status["pending_surface"] == "context-evidence"
+    repeated = run_credit_analysis_workflow(
+        "advance",
+        "--state",
+        str(state_path),
+        "--result",
+        str(result_path),
+    )
+    assert repeated.returncode == 0, repeated.stderr
+    assert json.loads(repeated.stdout) == next_status
+    conflict_path = tmp_path / "conflict.json"
+    write_json_file(conflict_path, {**valid, "evidence_references": []})
+    conflict = run_credit_analysis_workflow(
+        "advance",
+        "--state",
+        str(state_path),
+        "--result",
+        str(conflict_path),
+    )
+    assert conflict.returncode == 2
+    assert "conflicting resubmission" in conflict.stderr
+
+    next_context = json.loads(
+        pathlib.Path(next_status["context_path"]).read_text(encoding="utf-8")
+    )
+    valid_context_result = surface_result_record(
+        next_status,
+        next_context,
+        evidence["evidence_fingerprint"],
+    )
+    reordered = {**valid_context_result, "surface_id": "helper-contracts"}
+    write_json_file(pathlib.Path(next_status["required_result_path"]), reordered)
+    rejected_repeat = run_credit_analysis_workflow(
+        "advance",
+        "--state",
+        str(state_path),
+        "--result",
+        next_status["required_result_path"],
+    )
+    assert rejected_repeat.returncode == 2
+    assert "surface_id" in rejected_repeat.stderr
+
+    context_result_path = pathlib.Path(next_status["required_result_path"])
+    write_json_file(context_result_path, valid_context_result)
+    orphaned_immutable = (
+        pathlib.Path(json.loads(state_path.read_text(encoding="utf-8"))["paths"]["findings_dir"])
+        / "002-context-evidence.json"
+    )
+    write_json_file(orphaned_immutable, valid_context_result)
+    orphan_hash = hashlib.sha256(orphaned_immutable.read_bytes()).hexdigest()
+    index_path = pathlib.Path(
+        json.loads(state_path.read_text(encoding="utf-8"))["paths"]["index"]
+    )
+    with index_path.open("a", encoding="utf-8", newline="\n") as handle:
+        handle.write(
+            json.dumps(
+                {
+                    "schema": "ceratops-credit-analysis-index-record.v1",
+                    "ordinal": 2,
+                    "surface_id": "context-evidence",
+                    "pass_id": next_status["pass_id"],
+                    "path": str(orphaned_immutable.resolve()),
+                    "sha256": orphan_hash,
+                    "content_hash": orphan_hash,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n"
+        )
+    recovered = run_credit_analysis_workflow("status", "--state", str(state_path))
+    assert recovered.returncode == 0, recovered.stderr
+    assert json.loads(recovered.stdout)["pending_surface"] == "rework-validation"
+
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    accepted_path = pathlib.Path(state["completed"][0]["path"])
+    original = accepted_path.read_text(encoding="utf-8")
+    accepted_path.write_text(original.replace("helper-contracts", "tool-flow", 1), encoding="utf-8")
+    integrity = run_credit_analysis_workflow("status", "--state", str(state_path))
+    assert integrity.returncode == 2
+    assert "hash mismatch" in integrity.stderr
+    accepted_path.write_text(original, encoding="utf-8", newline="\n")
+    session.rename(tmp_path / "session-not-reread.jsonl")
+    resumed = run_credit_analysis_workflow("status", "--state", str(state_path))
+    assert resumed.returncode == 0, resumed.stderr
+
+
+def test_credit_analysis_workflow_standalone_zero_findings_is_isolated(
+    tmp_path: pathlib.Path,
+) -> None:
+    request, _, task_root = credit_analysis_request(
+        tmp_path,
+        action="context-evidence",
+    )
+    pricing = tmp_path / "pricing.json"
+    write_json_file(
+        pricing,
+        {
+            "schema": "ceratops-model-call-pricing-profile.v1",
+            "input_per_million_tokens": 1.0,
+            "cached_input_per_million_tokens": 0.5,
+            "output_per_million_tokens": 2.0,
+            "mode_multiplier": 1.0,
+        },
+    )
+    request_value = json.loads(request.read_text(encoding="utf-8"))
+    request_value["pricing_profile"] = str(pricing)
+    write_json_file(request, request_value)
+    prepared = run_credit_analysis_workflow("prepare", "--request", str(request))
+    assert prepared.returncode == 0, prepared.stderr
+    status = json.loads(prepared.stdout)
+    assert status["pending_surface"] == "context-evidence"
+    evidence = json.loads(pathlib.Path(status["evidence_path"]).read_text(encoding="utf-8"))
+    context = json.loads(pathlib.Path(status["context_path"]).read_text(encoding="utf-8"))
+    result = surface_result_record(
+        status,
+        context,
+        evidence["evidence_fingerprint"],
+    )
+    result_path = pathlib.Path(status["required_result_path"])
+    incomplete = {**result, "dismissed_candidates": []}
+    write_json_file(result_path, incomplete)
+    rejected = run_credit_analysis_workflow(
+        "advance",
+        "--state",
+        status["state_path"],
+        "--result",
+        str(result_path),
+    )
+    assert rejected.returncode == 2
+    assert "zero-finding" in rejected.stderr or "not accounted" in rejected.stderr
+
+    write_json_file(result_path, result)
+    write_json_file(task_root / "findings" / "001-context-evidence.json", result)
+    advanced = run_credit_analysis_workflow(
+        "advance",
+        "--state",
+        status["state_path"],
+        "--result",
+        str(result_path),
+    )
+    assert advanced.returncode == 0, advanced.stderr
+    ready = json.loads(advanced.stdout)
+    assert ready["pending_surface"] is None
+    assert ready["ready_to_finalize"] is True
+    state = json.loads(pathlib.Path(status["state_path"]).read_text(encoding="utf-8"))
+    assert state["queue"] == ["context-evidence"]
+    assert [record["surface_id"] for record in state["completed"]] == [
+        "context-evidence"
+    ]
+    finalized = run_credit_analysis_workflow(
+        "finalize",
+        "--state",
+        status["state_path"],
+        "--result",
+        ready["required_result_path"],
+    )
+    assert finalized.returncode == 0, finalized.stderr
+    final_state = json.loads(pathlib.Path(status["state_path"]).read_text(encoding="utf-8"))
+    final_result = json.loads(
+        pathlib.Path(final_state["final_result"]["path"]).read_text(encoding="utf-8")
+    )
+    assert final_result["mode"] == "standalone"
+    assert "not a whole-thread credit reconciliation" in final_result[
+        "scope_limitation"
+    ]
+    assert final_result["confirmed_findings"] == []
+    assert final_result["pricing"]["provided"] is True
+    assert final_result["priced_cost"] == {
+        "total": 7.8e-05,
+        "selected_surface_observed_avoidable": 0.0,
+    }
+    assert not (task_root / "context").exists()
+    assert not (task_root / "pending").exists()
+
+    contract = json.loads(CREDIT_ANALYSIS_CONTRACT.read_text(encoding="utf-8"))
+    assert "synthesis" not in [item["id"] for item in contract["public_actions"]]
+    rejected_root = tmp_path / "analysis-synthesis"
+    rejected_root.mkdir()
+    rejected_request = tmp_path / "request-synthesis.json"
+    write_json_file(
+        rejected_request,
+        {
+            **json.loads(request.read_text(encoding="utf-8")),
+            "action": "synthesis",
+            "mode": "standalone",
+            "task_temp_root": str(rejected_root),
+            "evidence_output": str(tmp_path / "synthesis-evidence.json"),
+        },
+    )
+    rejected_synthesis = run_credit_analysis_workflow(
+        "prepare", "--request", str(rejected_request)
+    )
+    assert rejected_synthesis.returncode == 2
+    assert "action is not public" in rejected_synthesis.stderr
+
+
+@pytest.mark.parametrize(
+    "action",
+    [
+        "helper-contracts",
+        "context-evidence",
+        "rework-validation",
+        "tool-flow",
+        "instruction-reasoning",
+    ],
+)
+def test_credit_analysis_workflow_each_surface_is_independently_callable(
+    tmp_path: pathlib.Path,
+    action: str,
+) -> None:
+    request, _, _ = credit_analysis_request(tmp_path, action=action)
+    prepared = run_credit_analysis_workflow("prepare", "--request", str(request))
+    assert prepared.returncode == 0, prepared.stderr
+    status = json.loads(prepared.stdout)
+    assert status["pending_surface"] == action
+    state = json.loads(pathlib.Path(status["state_path"]).read_text(encoding="utf-8"))
+    assert state["mode"] == "standalone"
+    assert state["queue"] == [action]
 
 
 def run_compatibility_engine(
@@ -5516,7 +6459,7 @@ def test_transaction_retry_policy_and_acl_order(
                     errno.EBUSY if self.transient else errno.EACCES,
                     "rename failure",
                 )
-                error.winerror = 32 if self.transient else 5
+                setattr(error, "winerror", 32 if self.transient else 5)
                 raise error
 
     monkeypatch.setattr(builder["time"], "sleep", lambda _seconds: None)

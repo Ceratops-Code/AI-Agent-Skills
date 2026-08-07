@@ -1,0 +1,138 @@
+{
+  "schema": "ceratops-credit-analysis-contract.v1",
+  "surface_contract_version": 1,
+  "request_schema": "ceratops-credit-analysis-request.v1",
+  "evidence_schema": "ceratops-credit-analysis-evidence.v1",
+  "surface_result_schema": "ceratops-credit-analysis-surface-result.v1",
+  "synthesis_result_schema": "ceratops-credit-analysis-synthesis-result.v1",
+  "final_result_schema": "ceratops-credit-analysis-final-result.v1",
+  "public_actions": [
+    {
+      "id": "full-analysis",
+      "reference": "references/full-analysis.md",
+      "mode": "full-analysis"
+    },
+    {
+      "id": "helper-contracts",
+      "reference": "references/helper-contracts.md",
+      "mode": "standalone"
+    },
+    {
+      "id": "context-evidence",
+      "reference": "references/context-evidence.md",
+      "mode": "standalone"
+    },
+    {
+      "id": "rework-validation",
+      "reference": "references/rework-validation.md",
+      "mode": "standalone"
+    },
+    {
+      "id": "tool-flow",
+      "reference": "references/tool-flow.md",
+      "mode": "standalone"
+    },
+    {
+      "id": "instruction-reasoning",
+      "reference": "references/instruction-reasoning.md",
+      "mode": "standalone"
+    }
+  ],
+  "surface_order": [
+    "helper-contracts",
+    "context-evidence",
+    "rework-validation",
+    "tool-flow",
+    "instruction-reasoning"
+  ],
+  "full_queue": [
+    "helper-contracts",
+    "context-evidence",
+    "rework-validation",
+    "tool-flow",
+    "instruction-reasoning",
+    "synthesis"
+  ],
+  "surfaces": [
+    {
+      "id": "helper-contracts",
+      "reference": "references/helper-contracts.md",
+      "candidate_selectors": ["tool-action"]
+    },
+    {
+      "id": "context-evidence",
+      "reference": "references/context-evidence.md",
+      "candidate_selectors": ["read-search-action", "repeated-action"]
+    },
+    {
+      "id": "rework-validation",
+      "reference": "references/rework-validation.md",
+      "candidate_selectors": ["failure-retry-repeat"]
+    },
+    {
+      "id": "tool-flow",
+      "reference": "references/tool-flow.md",
+      "candidate_selectors": ["tool-action"]
+    },
+    {
+      "id": "instruction-reasoning",
+      "reference": "references/instruction-reasoning.md",
+      "candidate_selectors": ["all-calls"]
+    }
+  ],
+  "internal_phases": [
+    {
+      "id": "synthesis",
+      "public": false
+    }
+  ],
+  "helper_categories": [
+    "helper-discovery",
+    "unsupported-input-or-missing-preconditions",
+    "missing-helper-composition",
+    "missing-dependency-handling",
+    "insufficient-error-handling",
+    "missing-output-validation-or-atomic-publication",
+    "missing-cleanup-or-rollback",
+    "noisy-or-incomplete-result-contract",
+    "no-owning-helper",
+    "genuinely-nondeterministic-judgment"
+  ],
+  "implementation_statuses": [
+    "implemented",
+    "unimplemented"
+  ],
+  "complexities": [
+    "Low",
+    "Medium",
+    "High"
+  ],
+  "producer_types": [
+    "helper",
+    "script",
+    "prompt",
+    "rule",
+    "skill",
+    "automation",
+    "workflow",
+    "tool-choice",
+    "validation",
+    "external-dependency",
+    "unknown"
+  ],
+  "call_classifications": [
+    "necessary",
+    "avoidable_implemented",
+    "avoidable_unimplemented"
+  ],
+  "necessary_reason_codes": [
+    "protocol-overhead",
+    "required-freshness",
+    "required-safety",
+    "required-verification",
+    "required-workflow",
+    "ordinary-model-error",
+    "controlled-iteration",
+    "other-necessary"
+  ]
+}
