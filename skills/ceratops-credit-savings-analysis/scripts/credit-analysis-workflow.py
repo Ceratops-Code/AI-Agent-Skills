@@ -833,6 +833,7 @@ def _compact_call(call: Mapping[str, Any], *, semantic: bool) -> dict[str, Any]:
         "turn_id": call["turn_id"],
         "index": call["index"],
         "user_message_ids": call.get("user_message_ids", []),
+        "model_review_record_ids": call.get("model_review_record_ids", []),
         "tokens": call["tokens"],
         "estimated_credit_cost": call.get("estimated_credit_cost"),
         "semantic_actions": compact_semantics,
@@ -883,6 +884,91 @@ def _user_messages_for_calls(
     if found != required_message_ids:
         raise CreditAnalysisError("evidence user-message reference is missing")
     return messages
+
+
+def _model_review_records_for_calls(
+    evidence: Mapping[str, Any],
+    call_ids: list[str],
+    focused_runs: set[str],
+) -> tuple[dict[str, Any], list[dict[str, Any]], dict[str, Any]]:
+    """Project retained prepared records without discarding full disk evidence."""
+
+    model_review = evidence.get("model_review")
+    if not isinstance(model_review, Mapping):
+        raise CreditAnalysisError("model-review evidence is invalid")
+    preparation = model_review.get("preparation")
+    exclusions = model_review.get("excluded_by_design")
+    records = model_review.get("records")
+    global_ids = model_review.get("global_record_ids")
+    if not isinstance(preparation, dict) or not isinstance(exclusions, dict):
+        raise CreditAnalysisError("model-review evidence contract is invalid")
+    if not isinstance(records, list) or not isinstance(global_ids, list):
+        raise CreditAnalysisError("model-review evidence records are invalid")
+
+    selected_calls = set(call_ids)
+    required_ids = set(global_ids)
+    for call in _all_calls(evidence):
+        if call.get("call_id") not in selected_calls:
+            continue
+        record_ids = call.get("model_review_record_ids")
+        if not isinstance(record_ids, list) or not all(
+            isinstance(record_id, str) for record_id in record_ids
+        ):
+            raise CreditAnalysisError("model-review call references are invalid")
+        required_ids.update(record_ids)
+
+    projected: list[dict[str, Any]] = []
+    found_ids: set[str] = set()
+    all_ids: set[str] = set()
+    for record in records:
+        if not isinstance(record, dict):
+            raise CreditAnalysisError("model-review record is invalid")
+        record_id = record.get("record_id")
+        if not isinstance(record_id, str) or record_id in all_ids:
+            raise CreditAnalysisError("model-review record ID is invalid")
+        all_ids.add(record_id)
+        if record_id not in required_ids:
+            continue
+        required_fields = {
+            "available_to_model_call_index",
+            "call_id",
+            "content",
+            "content_hash",
+            "kind",
+            "model_call_index",
+            "name",
+            "prepared_chars",
+            "preview",
+            "preview_truncated",
+            "record_id",
+            "source_chars",
+            "timestamp",
+            "turn_id",
+        }
+        if set(record) != required_fields:
+            raise CreditAnalysisError("model-review record fields are invalid")
+        turn_id = record["turn_id"]
+        prepared_chars = record["prepared_chars"]
+        if not isinstance(prepared_chars, int) or prepared_chars < 0:
+            raise CreditAnalysisError("model-review record size is invalid")
+        content_limit = 4000 if turn_id in focused_runs else 1200
+        include_full = prepared_chars <= content_limit
+        compact = {
+            key: value
+            for key, value in record.items()
+            if key not in {"content", "preview", "preview_truncated"}
+        }
+        compact["evidence_ref"] = f"evidence://review/{record_id}"
+        compact["context_content"] = (
+            record["content"] if include_full else record["preview"]
+        )
+        compact["context_content_mode"] = "full" if include_full else "preview"
+        compact["full_content_retained"] = True
+        projected.append(compact)
+        found_ids.add(record_id)
+    if found_ids != required_ids:
+        raise CreditAnalysisError("model-review record reference is missing")
+    return dict(preparation), projected, dict(exclusions)
 
 
 def _accepted_payloads(state: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -943,6 +1029,9 @@ def _open_pending(
         candidates = _candidate_ids(surface_id, evidence, contract)
         focused_runs = set(evidence["focused_semantic_context"]["run_ids"])
         candidate_set = set(candidates)
+        review_preparation, review_records, review_exclusions = (
+            _model_review_records_for_calls(evidence, candidates, focused_runs)
+        )
         context = {
             "schema": CONTEXT_SCHEMA,
             "analysis_id": state["analysis_id"],
@@ -959,6 +1048,9 @@ def _open_pending(
             "candidate_call_ids": candidates,
             "focused_run_ids": list(focused_runs),
             "user_messages": _user_messages_for_calls(evidence, candidates),
+            "model_review_preparation": review_preparation,
+            "model_review_records": review_records,
+            "model_review_exclusions": review_exclusions,
             "candidate_evidence": [
                 _compact_call(
                     call,

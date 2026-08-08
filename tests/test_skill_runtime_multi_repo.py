@@ -112,23 +112,68 @@ def credit_analysis_session(
 ) -> None:
     """Create three completed synthetic runs with six model calls."""
 
-    rows: list[dict[str, Any]] = []
-    if thread_id is not None:
-        rows.append(
-            {
-                "timestamp": "2026-08-01T00:00:00Z",
-                "type": "session_meta",
-                "payload": {
-                    "id": thread_id,
-                    "cwd": str(cwd or path.parent),
-                    "git": (
-                        {"repository_url": repository_url}
-                        if repository_url is not None
-                        else None
-                    ),
+    rows: list[dict[str, Any]] = [
+        {
+            "timestamp": "2026-08-01T00:00:00Z",
+            "type": "session_meta",
+            "payload": {
+                "id": thread_id or "synthetic-credit-analysis-thread",
+                "cwd": str(cwd or path.parent),
+                "git": (
+                    {"repository_url": repository_url}
+                    if repository_url is not None
+                    else None
+                ),
+                "base_instructions": "BASE_CONTROL_SENTINEL analyze exact evidence",
+                "dynamic_tools": [
+                    {
+                        "name": "read_file",
+                        "description": "Read one exact file",
+                        "input_schema": {"path": "string"},
+                    }
+                ],
+                "model_provider": "synthetic",
+                "context_window": 100000,
+            },
+        },
+        {
+            "timestamp": "2026-08-01T00:00:00.100Z",
+            "type": "world_state",
+            "payload": {
+                "full": True,
+                "state": {
+                    "agents_md": "WORLD_STATE_CONTROL_SENTINEL",
+                    "permissions": {"mode": "synthetic"},
                 },
-            }
-        )
+            },
+        },
+        {
+            "timestamp": "2026-08-01T00:00:00.200Z",
+            "type": "compacted",
+            "payload": {
+                "first_window_id": "window-1",
+                "previous_window_id": "window-0",
+                "window_id": "window-2",
+                "window_number": 2,
+                "message": "COMPACTION_CONTEXT_SENTINEL",
+                "replacement_history": ["inactive history must not be copied"],
+            },
+        },
+        {
+            "timestamp": "2026-08-01T00:00:00.300Z",
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "developer",
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": "DEVELOPER_CONTROL_SENTINEL preserve causality",
+                    }
+                ],
+            },
+        },
+    ]
 
     def add_call(
         timestamp: str,
@@ -174,7 +219,15 @@ def credit_analysis_session(
                         "type": "message",
                         "role": "assistant",
                         "phase": "final_answer",
-                        "content": [{"type": "output_text", "text": f"done {turn_id}"}],
+                        "content": [
+                            {
+                                "type": "output_text",
+                                "text": (
+                                    f"done {turn_id} ASSISTANT_ANSWER_SENTINEL "
+                                    + ("answer detail " * 220)
+                                ),
+                            }
+                        ],
                     },
                 }
             )
@@ -214,7 +267,37 @@ def credit_analysis_session(
         {
             "timestamp": "2026-08-01T00:00:00Z",
             "type": "turn_context",
-            "payload": {"turn_id": "turn-1"},
+            "payload": {
+                "turn_id": "turn-1",
+                "cwd": str(cwd or path.parent),
+                "model": "synthetic-model",
+                "effort": "high",
+                "approval_policy": "never",
+                "workspace_roots": [str(cwd or path.parent)],
+            },
+        }
+    )
+    rows.append(
+        {
+            "timestamp": "2026-08-01T00:00:00.600Z",
+            "type": "event_msg",
+            "payload": {
+                "type": "task_started",
+                "turn_id": "turn-1",
+                "started_at": "2026-08-01T00:00:00.600Z",
+                "model_context_window": 100000,
+            },
+        }
+    )
+    rows.append(
+        {
+            "timestamp": "2026-08-01T00:00:00.700Z",
+            "type": "response_item",
+            "payload": {
+                "type": "reasoning",
+                "summary": ["PRIVATE_REASONING_SENTINEL"],
+                "encrypted_content": "PRIVATE_REASONING_SENTINEL",
+            },
         }
     )
     add_user_message(
@@ -231,7 +314,11 @@ def credit_analysis_session(
         name="read_file",
         call_id="read-1",
         arguments={"path": str(path.parent / "private" / "input.txt")},
-        output={"success": False, "error": "synthetic failure"},
+        output={
+            "success": False,
+            "error": "synthetic failure",
+            "stdout": ("tool result detail " * 700) + "TOOL_RESULT_TAIL_SENTINEL",
+        },
     )
     add_call(
         "2026-08-01T00:00:02Z",
@@ -642,7 +729,16 @@ def test_credit_analysis_workflow_full_analysis_persists_every_finding(
     assert status["pending_surface"] == "helper-contracts"
     state_path = pathlib.Path(status["state_path"])
     evidence = json.loads(pathlib.Path(status["evidence_path"]).read_text(encoding="utf-8"))
-    assert evidence["collection"] == {
+    collection = evidence["collection"]
+    assert {
+        key: collection[key]
+        for key in (
+            "session_reads",
+            "completed_runs",
+            "model_calls",
+            "user_messages",
+        )
+    } == {
         "session_reads": 1,
         "completed_runs": 3,
         "model_calls": 6,
@@ -658,6 +754,67 @@ def test_credit_analysis_workflow_full_analysis_persists_every_finding(
         "complete_secret_detection_guaranteed": False,
         "semantic_classification": "none",
     }
+    model_review = evidence["model_review"]
+    assert collection["model_review_records"] == len(model_review["records"])
+    assert model_review["preparation"] == {
+        "name": "prepared-model-review-evidence",
+        "transformations": [
+            "credential-pattern-replacement",
+            "workspace-path-normalization",
+            "external-path-withholding",
+            "binary-body-hashing",
+            "structured-normalization",
+        ],
+        "full_prepared_content_retained": True,
+        "private_reasoning_collected": False,
+        "duplicate_ui_messages_collected": False,
+        "complete_secret_detection_guaranteed": False,
+        "semantic_classification": "none",
+    }
+    record_ids = [record["record_id"] for record in model_review["records"]]
+    assert len(record_ids) == len(set(record_ids))
+    review_text = json.dumps(model_review, sort_keys=True)
+    for sentinel in (
+        "BASE_CONTROL_SENTINEL",
+        "WORLD_STATE_CONTROL_SENTINEL",
+        "COMPACTION_CONTEXT_SENTINEL",
+        "DEVELOPER_CONTROL_SENTINEL",
+        "ASSISTANT_ANSWER_SENTINEL",
+        "TOOL_RESULT_TAIL_SENTINEL",
+    ):
+        assert sentinel in review_text
+    assert "PRIVATE_REASONING_SENTINEL" not in review_text
+    assert "inactive history must not be copied" not in review_text
+    assert model_review["excluded_by_design"] == {
+        "binary_bodies_hashed": 0,
+        "private_reasoning_records_excluded": 1,
+        "duplicate_ui_message_events_excluded": 0,
+        "compaction_history_items_not_copied": 1,
+    }
+    tool_call_record = next(
+        record
+        for record in model_review["records"]
+        if record["kind"] == "tool-call" and record["call_id"] == "read-1"
+    )
+    assert "<workspace>" in json.dumps(tool_call_record["content"])
+    assert "private" in json.dumps(tool_call_record["content"])
+    tool_result_record = next(
+        record
+        for record in model_review["records"]
+        if record["kind"] == "tool-result" and record["call_id"] == "read-1"
+    )
+    assert tool_result_record["available_to_model_call_index"] == 2
+    assert "TOOL_RESULT_TAIL_SENTINEL" in json.dumps(
+        tool_result_record["content"]
+    )
+    assert tool_result_record["preview_truncated"] is True
+    assert "TOOL_RESULT_TAIL_SENTINEL" in tool_result_record["preview"]
+    assert tool_result_record["record_id"] in model_review["call_record_ids"][
+        "turn-1"
+    ]["1"]
+    assert tool_result_record["record_id"] in model_review["call_record_ids"][
+        "turn-1"
+    ]["2"]
     first_message = evidence["runs"][0]["user_messages"][0]
     assert "correct the earlier plan" in first_message["text"]
     assert "apply my approval" in first_message["text"]
@@ -728,6 +885,25 @@ def test_credit_analysis_workflow_full_analysis_persists_every_finding(
         surface = status["pending_surface"]
         observed_order.append(surface)
         context = json.loads(pathlib.Path(status["context_path"]).read_text(encoding="utf-8"))
+        assert context["model_review_preparation"] == model_review["preparation"]
+        assert context["model_review_records"]
+        assert all(
+            "content" not in record
+            and record["evidence_ref"].startswith("evidence://review/")
+            and record["full_content_retained"] is True
+            for record in context["model_review_records"]
+        )
+        if surface == "helper-contracts":
+            projected_tool_result = next(
+                record
+                for record in context["model_review_records"]
+                if record["kind"] == "tool-result"
+                and record["call_id"] == "read-1"
+            )
+            assert projected_tool_result["context_content_mode"] == "preview"
+            assert "TOOL_RESULT_TAIL_SENTINEL" in projected_tool_result[
+                "context_content"
+            ]
         if surface == "instruction-reasoning":
             assert [
                 message["message_id"] for message in context["user_messages"]

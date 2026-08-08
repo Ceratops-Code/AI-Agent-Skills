@@ -79,6 +79,18 @@ REDACTED = "<redacted>"
 USER_HOME = "<user-home>"
 LOCAL_PATH = "<local-path>"
 SEMANTIC_SUMMARY_LIMIT = 240
+MODEL_REVIEW_PREVIEW_LIMIT = 1200
+MODEL_REVIEW_EVENT_TYPES = frozenset(
+    {
+        "context_compacted",
+        "patch_apply_end",
+        "task_complete",
+        "task_started",
+        "thread_rolled_back",
+        "thread_settings_applied",
+        "turn_aborted",
+    }
+)
 SENSITIVE_KEY_RE = re.compile(
     r"(?:^|_)(?:api_?key|authorization|client_?secret|cookie|credentials?|"
     r"password|private_?key|secrets?|tokens?)(?:$|_)",
@@ -120,6 +132,11 @@ PATH_KEY_RE = re.compile(
     r"(?:^|_)(?:cwd|dirs?|directories|files?|paths?)(?:$|_)",
     re.IGNORECASE,
 )
+BINARY_DATA_URL_RE = re.compile(
+    r"^data:[^;,]+(?:;[^,]+)*;base64,",
+    re.IGNORECASE,
+)
+BASE64_BODY_RE = re.compile(r"^[A-Za-z0-9+/=_-]+$")
 
 
 class LedgerError(RuntimeError):
@@ -594,6 +611,215 @@ def redaction_contract() -> dict[str, Any]:
         "complete_secret_detection_guaranteed": False,
         "semantic_classification": "none",
     }
+
+
+def model_review_preparation_contract() -> dict[str, Any]:
+    """Describe the non-semantic preparation applied to retained review data."""
+
+    return {
+        "name": "prepared-model-review-evidence",
+        "transformations": [
+            "credential-pattern-replacement",
+            "workspace-path-normalization",
+            "external-path-withholding",
+            "binary-body-hashing",
+            "structured-normalization",
+        ],
+        "full_prepared_content_retained": True,
+        "private_reasoning_collected": False,
+        "duplicate_ui_messages_collected": False,
+        "complete_secret_detection_guaranteed": False,
+        "semantic_classification": "none",
+    }
+
+
+def review_path_roots(rows: list[dict[str, Any]]) -> list[tuple[str, str]]:
+    """Resolve workspace and Codex roots for meaning-preserving path labels."""
+
+    roots: dict[str, str] = {}
+    codex_root = os.environ.get("CODEX_HOME")
+    if codex_root:
+        roots[str(pathlib.Path(codex_root).expanduser())] = "<codex-home>"
+    for row in rows:
+        payload = row.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        values: list[Any] = []
+        if row.get("type") == "session_meta":
+            values.append(payload.get("cwd"))
+        elif row.get("type") == "turn_context":
+            values.append(payload.get("cwd"))
+            workspace_roots = payload.get("workspace_roots")
+            if isinstance(workspace_roots, list):
+                values.extend(workspace_roots)
+        for value in values:
+            if isinstance(value, dict):
+                value = value.get("root") or value.get("path")
+            if isinstance(value, str) and value:
+                roots.setdefault(value, "<workspace>")
+    return sorted(roots.items(), key=lambda item: (-len(item[0]), item[0]))
+
+
+def prepare_review_text(value: str, path_roots: list[tuple[str, str]]) -> str:
+    """Protect secrets and local roots while preserving repo-relative identity."""
+
+    result = PRIVATE_KEY_RE.sub(REDACTED, value)
+    protected_paths: list[tuple[str, str]] = []
+    seen_variants: set[str] = set()
+    for root, label in path_roots:
+        variants = {
+            root,
+            root.replace("\\", "/"),
+            root.replace("/", "\\"),
+            root.replace("\\", "\\\\"),
+        }
+        for variant in sorted(variants, key=len, reverse=True):
+            folded = variant.casefold()
+            if not variant or folded in seen_variants:
+                continue
+            seen_variants.add(folded)
+            token = f"CERATOPSREVIEWPATH{len(protected_paths):04d}X"
+            updated, count = re.subn(
+                re.escape(variant), token, result, flags=re.IGNORECASE
+            )
+            if count:
+                protected_paths.append((token, label))
+                result = updated
+    result = URL_CREDENTIAL_RE.sub(rf"\1{REDACTED}@", result)
+    result = AUTH_VALUE_RE.sub(
+        lambda match: f"{match.group(1)} {REDACTED}", result
+    )
+    result = KNOWN_TOKEN_RE.sub(REDACTED, result)
+    result = CREDENTIAL_ASSIGNMENT_RE.sub(
+        lambda match: f"{match.group('prefix')}{REDACTED}", result
+    )
+    result = USER_HOME_RE.sub(USER_HOME, result)
+    result = WINDOWS_PATH_RE.sub("<external-path>", result)
+    result = POSIX_PATH_RE.sub("<external-path>", result)
+    for token, label in protected_paths:
+        result = result.replace(token, label)
+    return result
+
+
+def binary_body_marker(value: str, key: object | None) -> str | None:
+    """Replace non-semantic encoded media bodies with stable size/hash metadata."""
+
+    normalized_key = re.sub(r"[^a-z0-9]+", "_", str(key or "").lower()).strip("_")
+    encoded_body = BINARY_DATA_URL_RE.match(value) is not None
+    encoded_body |= (
+        normalized_key in {"audio", "blob", "data", "image"}
+        and len(value) >= 1024
+        and BASE64_BODY_RE.fullmatch(value) is not None
+    )
+    if not encoded_body:
+        return None
+    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()
+    return f"<binary-body chars={len(value)} sha256={digest}>"
+
+
+def prepare_review_value(
+    value: Any,
+    *,
+    path_roots: list[tuple[str, str]],
+    stats: dict[str, int],
+    key: object | None = None,
+) -> Any:
+    """Prepare complete model-review content without semantic interpretation."""
+
+    if isinstance(value, str):
+        marker = binary_body_marker(value, key)
+        if marker is not None:
+            stats["binary_bodies_hashed"] += 1
+            return marker
+        return prepare_review_text(value, path_roots)
+    if isinstance(value, list):
+        return [
+            prepare_review_value(
+                item,
+                path_roots=path_roots,
+                stats=stats,
+                key=key,
+            )
+            for item in value
+        ]
+    if not isinstance(value, dict):
+        return value
+    return {
+        str(child_key): (
+            REDACTED
+            if sensitive_key(child_key)
+            else prepare_review_value(
+                item,
+                path_roots=path_roots,
+                stats=stats,
+                key=child_key,
+            )
+        )
+        for child_key, item in value.items()
+    }
+
+
+def model_review_preview(value: Any) -> tuple[str, bool]:
+    """Create one bounded head-and-tail context projection of retained content."""
+
+    text = value if isinstance(value, str) else json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        default=str,
+    )
+    if len(text) <= MODEL_REVIEW_PREVIEW_LIMIT:
+        return text, False
+    half = MODEL_REVIEW_PREVIEW_LIMIT // 2
+    omitted = len(text) - (half * 2)
+    return (
+        f"{text[:half]}<...{omitted} chars retained only in evidence...>{text[-half:]}",
+        True,
+    )
+
+
+def make_model_review_record(
+    records: list[dict[str, Any]],
+    *,
+    kind: str,
+    name: str,
+    content: Any,
+    path_roots: list[tuple[str, str]],
+    stats: dict[str, int],
+    timestamp: object,
+    turn_id: str | None,
+    model_call_index: int | None,
+    available_to_model_call_index: int | None = None,
+    call_id: str | None = None,
+) -> dict[str, Any]:
+    """Create one immutable prepared record and its bounded context preview."""
+
+    prepared = prepare_review_value(
+        content,
+        path_roots=path_roots,
+        stats=stats,
+    )
+    preview, preview_truncated = model_review_preview(prepared)
+    serialized = stable_payload(prepared)
+    record = {
+        "record_id": f"review:{len(records) + 1:06d}",
+        "kind": kind,
+        "name": name,
+        "turn_id": turn_id,
+        "model_call_index": model_call_index,
+        "available_to_model_call_index": available_to_model_call_index,
+        "call_id": call_id,
+        "timestamp": timestamp,
+        "source_chars": serialized_character_count(content),
+        "prepared_chars": len(serialized),
+        "content_hash": hashlib.sha256(serialized.encode("utf-8")).hexdigest(),
+        "preview": preview,
+        "preview_truncated": preview_truncated,
+        "content": prepared,
+    }
+    records.append(record)
+    return record
 
 
 def message_text(payload: dict[str, Any]) -> str:
@@ -1153,6 +1379,436 @@ def build_semantic_runs(
             }
         )
     return result
+
+
+def build_model_review_evidence(
+    rows: list[dict[str, Any]],
+    ledger: dict[str, Any],
+) -> dict[str, Any]:
+    """Retain complete prepared semantic evidence without private reasoning."""
+
+    selected_turns = {run["turn_id"] for run in ledger["runs"]}
+    call_limits = {
+        run["turn_id"]: run["model_calls"] for run in ledger["runs"]
+    }
+    completed_calls = {turn_id: 0 for turn_id in selected_turns}
+    record_ids_by_call = {
+        turn_id: {index: [] for index in range(1, limit + 1)}
+        for turn_id, limit in call_limits.items()
+    }
+    records: list[dict[str, Any]] = []
+    global_record_ids: list[str] = []
+    global_hashes: set[tuple[str, str, str]] = set()
+    call_owners: dict[str, tuple[str, int, str]] = {}
+    path_roots = review_path_roots(rows)
+    stats = {
+        "binary_bodies_hashed": 0,
+        "private_reasoning_records_excluded": 0,
+        "duplicate_ui_message_events_excluded": 0,
+        "compaction_history_items_not_copied": 0,
+    }
+    active_turn: str | None = None
+
+    def call_index(turn_id: str, *, completed: bool = False) -> int:
+        limit = call_limits[turn_id]
+        observed = completed_calls[turn_id]
+        if completed:
+            return max(1, min(observed, limit))
+        return max(1, min(observed + 1, limit))
+
+    def add_record(
+        *,
+        kind: str,
+        name: str,
+        content: Any,
+        timestamp: object,
+        turn_id: str | None,
+        model_call_index: int | None,
+        available_to_model_call_index: int | None = None,
+        call_id: str | None = None,
+        global_record: bool = False,
+        deduplicate_global: bool = False,
+    ) -> dict[str, Any]:
+        if deduplicate_global:
+            source_hash = hashlib.sha256(
+                stable_payload(content).encode("utf-8")
+            ).hexdigest()
+            signature = (kind, name, source_hash)
+            if signature in global_hashes:
+                return {}
+            global_hashes.add(signature)
+        record = make_model_review_record(
+            records,
+            kind=kind,
+            name=name,
+            content=content,
+            path_roots=path_roots,
+            stats=stats,
+            timestamp=timestamp,
+            turn_id=turn_id,
+            model_call_index=model_call_index,
+            available_to_model_call_index=available_to_model_call_index,
+            call_id=call_id,
+        )
+        if global_record:
+            global_record_ids.append(record["record_id"])
+        elif turn_id is not None and model_call_index is not None:
+            record_ids_by_call[turn_id][model_call_index].append(
+                record["record_id"]
+            )
+        return record
+
+    for row in rows:
+        row_type = row.get("type")
+        payload = row.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        timestamp = row.get("timestamp")
+
+        if row_type == "session_meta":
+            metadata = {
+                key: value
+                for key, value in payload.items()
+                if key not in {"base_instructions", "dynamic_tools"}
+            }
+            add_record(
+                kind="control",
+                name="session-metadata",
+                content=metadata,
+                timestamp=timestamp,
+                turn_id=None,
+                model_call_index=None,
+                global_record=True,
+                deduplicate_global=True,
+            )
+            for field, name in (
+                ("base_instructions", "base-instructions"),
+                ("dynamic_tools", "dynamic-tools"),
+            ):
+                if payload.get(field) is not None:
+                    add_record(
+                        kind="control",
+                        name=name,
+                        content=payload[field],
+                        timestamp=timestamp,
+                        turn_id=None,
+                        model_call_index=None,
+                        global_record=True,
+                        deduplicate_global=True,
+                    )
+            continue
+
+        if row_type == "world_state":
+            add_record(
+                kind="control",
+                name="world-state",
+                content=payload,
+                timestamp=timestamp,
+                turn_id=None,
+                model_call_index=None,
+                global_record=True,
+                deduplicate_global=True,
+            )
+            continue
+
+        if row_type == "compacted":
+            replacement_history = payload.get("replacement_history")
+            if isinstance(replacement_history, list):
+                stats["compaction_history_items_not_copied"] += len(
+                    replacement_history
+                )
+            compacted = {
+                key: payload[key]
+                for key in (
+                    "first_window_id",
+                    "message",
+                    "previous_window_id",
+                    "window_id",
+                    "window_number",
+                )
+                if key in payload
+            }
+            if replacement_history is not None:
+                compacted["replacement_history"] = {
+                    "items": (
+                        len(replacement_history)
+                        if isinstance(replacement_history, list)
+                        else None
+                    ),
+                    "sha256": hashlib.sha256(
+                        stable_payload(replacement_history).encode("utf-8")
+                    ).hexdigest(),
+                    "copied": False,
+                    "reason": "replaced history was not active model context",
+                }
+            add_record(
+                kind="control",
+                name="compaction",
+                content=compacted,
+                timestamp=timestamp,
+                turn_id=None,
+                model_call_index=None,
+                global_record=True,
+            )
+            continue
+
+        if row_type == "turn_context":
+            raw_turn = payload.get("turn_id")
+            active_turn = raw_turn if raw_turn in selected_turns else None
+            if active_turn is not None:
+                add_record(
+                    kind="control",
+                    name="turn-context",
+                    content={
+                        key: value
+                        for key, value in payload.items()
+                        if key != "turn_id"
+                    },
+                    timestamp=timestamp,
+                    turn_id=active_turn,
+                    model_call_index=call_index(active_turn),
+                )
+            continue
+
+        if row_type == "response_item":
+            item_type = payload.get("type")
+            if item_type == "reasoning":
+                stats["private_reasoning_records_excluded"] += 1
+                continue
+            if item_type == "message":
+                role = payload.get("role")
+                if role == "developer":
+                    message_content = {
+                        key: value
+                        for key, value in payload.items()
+                        if key != "type"
+                    }
+                    if active_turn is None:
+                        add_record(
+                            kind="message",
+                            name="developer",
+                            content=message_content,
+                            timestamp=timestamp,
+                            turn_id=None,
+                            model_call_index=None,
+                            global_record=True,
+                            deduplicate_global=True,
+                        )
+                    else:
+                        add_record(
+                            kind="message",
+                            name="developer",
+                            content=message_content,
+                            timestamp=timestamp,
+                            turn_id=active_turn,
+                            model_call_index=call_index(active_turn),
+                        )
+                elif role == "assistant" and active_turn is not None:
+                    phase = payload.get("phase")
+                    add_record(
+                        kind="message",
+                        name=phase if isinstance(phase, str) else "assistant",
+                        content={
+                            key: value
+                            for key, value in payload.items()
+                            if key != "type"
+                        },
+                        timestamp=timestamp,
+                        turn_id=active_turn,
+                        model_call_index=call_index(active_turn),
+                    )
+                elif role == "user" and active_turn is not None:
+                    content = payload.get("content")
+                    attachments = (
+                        [
+                            item
+                            for item in content
+                            if isinstance(item, dict)
+                            and not isinstance(item.get("text"), str)
+                            and not isinstance(item.get("output_text"), str)
+                        ]
+                        if isinstance(content, list)
+                        else []
+                    )
+                    message_metadata = {
+                        key: value
+                        for key, value in payload.items()
+                        if key not in {"content", "role", "type"}
+                    }
+                    if attachments or message_metadata:
+                        add_record(
+                            kind="message-metadata",
+                            name="user-message-metadata",
+                            content={
+                                "attachments": attachments,
+                                "message": message_metadata,
+                            },
+                            timestamp=timestamp,
+                            turn_id=active_turn,
+                            model_call_index=call_index(active_turn),
+                        )
+                continue
+
+            if item_type in {
+                "custom_tool_call",
+                "function_call",
+                "tool_search_call",
+            }:
+                if active_turn is None:
+                    continue
+                name = payload.get("name")
+                if item_type == "tool_search_call":
+                    name = "tool_search"
+                tool_name = name if isinstance(name, str) else "unknown"
+                content = {
+                    key: value
+                    for key, value in payload.items()
+                    if key not in {"call_id", "name", "type"}
+                }
+                model_call_index = call_index(active_turn)
+                call_id = call_id_from_payload(payload)
+                add_record(
+                    kind="tool-call",
+                    name=tool_name,
+                    content=content,
+                    timestamp=timestamp,
+                    turn_id=active_turn,
+                    model_call_index=model_call_index,
+                    call_id=call_id,
+                )
+                if call_id is not None:
+                    call_owners[call_id] = (
+                        active_turn,
+                        model_call_index,
+                        tool_name,
+                    )
+                continue
+
+            if isinstance(item_type, str) and item_type.endswith("_output"):
+                call_id = call_id_from_payload(payload)
+                owner = call_owners.get(call_id) if call_id is not None else None
+                if owner is None:
+                    if active_turn is None:
+                        continue
+                    owner = (
+                        active_turn,
+                        call_index(active_turn),
+                        item_type.removesuffix("_output"),
+                    )
+                owner_turn, owner_index, tool_name = owner
+                available_index = (
+                    owner_index + 1
+                    if owner_index < call_limits[owner_turn]
+                    else None
+                )
+                record = add_record(
+                    kind="tool-result",
+                    name=tool_name,
+                    content={
+                        key: value
+                        for key, value in payload.items()
+                        if key not in {"call_id", "type"}
+                    },
+                    timestamp=timestamp,
+                    turn_id=owner_turn,
+                    model_call_index=owner_index,
+                    available_to_model_call_index=available_index,
+                    call_id=call_id,
+                )
+                if available_index is not None:
+                    record_ids_by_call[owner_turn][available_index].append(
+                        record["record_id"]
+                    )
+                continue
+
+        if row_type != "event_msg":
+            continue
+        event_type = payload.get("type")
+        if event_type == "agent_reasoning":
+            stats["private_reasoning_records_excluded"] += 1
+            continue
+        if event_type in {"agent_message", "user_message"}:
+            stats["duplicate_ui_message_events_excluded"] += 1
+            if event_type == "user_message" and active_turn is not None:
+                attachments = {
+                    key: payload[key]
+                    for key in ("audio", "images", "local_audio", "local_images")
+                    if payload.get(key)
+                }
+                if attachments:
+                    add_record(
+                        kind="message-metadata",
+                        name="user-attachments",
+                        content=attachments,
+                        timestamp=timestamp,
+                        turn_id=active_turn,
+                        model_call_index=call_index(active_turn),
+                    )
+            continue
+        if event_type == "token_count":
+            if active_turn is None:
+                continue
+            rate_limits = payload.get("rate_limits")
+            if rate_limits:
+                add_record(
+                    kind="event",
+                    name="rate-limits",
+                    content=rate_limits,
+                    timestamp=timestamp,
+                    turn_id=active_turn,
+                    model_call_index=call_index(active_turn),
+                )
+            usage = token_usage(payload)
+            if any(
+                usage.get(field, 0) > 0
+                for field in (
+                    "input_tokens",
+                    "output_tokens",
+                    "reasoning_output_tokens",
+                )
+            ):
+                completed_calls[active_turn] += 1
+            continue
+        if event_type not in MODEL_REVIEW_EVENT_TYPES:
+            continue
+        raw_turn = payload.get("turn_id")
+        event_turn = raw_turn if raw_turn in selected_turns else active_turn
+        if event_turn is None:
+            continue
+        completed_event = event_type in {"task_complete", "turn_aborted"}
+        event_index = call_index(event_turn, completed=completed_event)
+        event_content = {
+            key: value
+            for key, value in payload.items()
+            if key != "type"
+        }
+        call_id = call_id_from_payload(payload)
+        owner = call_owners.get(call_id) if call_id is not None else None
+        if owner is not None:
+            event_turn, event_index, _ = owner
+        add_record(
+            kind="event",
+            name=str(event_type),
+            content=event_content,
+            timestamp=timestamp,
+            turn_id=event_turn,
+            model_call_index=event_index,
+            call_id=call_id,
+        )
+
+    return {
+        "preparation": model_review_preparation_contract(),
+        "records": records,
+        "global_record_ids": global_record_ids,
+        "call_record_ids": {
+            turn_id: {
+                str(index): record_ids
+                for index, record_ids in calls.items()
+            }
+            for turn_id, calls in record_ids_by_call.items()
+        },
+        "excluded_by_design": stats,
+    }
 
 
 def selected_runs_with_semantics(
@@ -1782,6 +2438,7 @@ def collect_session_evidence_from_rows(
     )
     run_ids = [run["turn_id"] for run in ledger["runs"]]
     semantic_runs = build_semantic_runs(rows, ledger, run_ids)
+    model_review = build_model_review_evidence(rows, ledger)
     usage = build_usage_evidence(rows, ledger, pricing)
     semantic_by_run = {run["turn_id"]: run for run in semantic_runs}
     usage_by_run = {run["turn_id"]: run for run in usage["runs"]}
@@ -1820,6 +2477,9 @@ def collect_session_evidence_from_rows(
                 "user_message_ids": semantic_by_index[call["index"]][
                     "user_message_ids"
                 ],
+                "model_review_record_ids": model_review["call_record_ids"][
+                    turn_id
+                ][str(call["index"])],
                 "tool_results": tools_by_call[call["index"]],
                 "run_duration_ms": usage_run["totals"]["duration_ms"],
             }
@@ -1864,6 +2524,7 @@ def collect_session_evidence_from_rows(
             "user_messages": sum(
                 len(run["user_messages"]) for run in collected_runs
             ),
+            "model_review_records": len(model_review["records"]),
         },
         "focused_semantic_context": _focused_run_selection(collected_runs),
         "pricing": usage["pricing"],
@@ -1871,6 +2532,7 @@ def collect_session_evidence_from_rows(
         "telemetry": usage["telemetry"],
         "repeated_tool_calls": usage["repeated_tool_calls"],
         "call_inventory": [call["call_id"] for call in calls],
+        "model_review": model_review,
         "runs": collected_runs,
     }
 
