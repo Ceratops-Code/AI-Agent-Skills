@@ -10,7 +10,6 @@ import threading
 import unittest
 from unittest import mock
 
-
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 GH_SCRIPTS = ROOT / "skills" / "ceratops-repo-lifecycle" / "scripts"
 sys.path.insert(0, str(GH_SCRIPTS))
@@ -431,6 +430,82 @@ class ShipTests(unittest.TestCase):
             target_commit,
         )
 
+    def checkpoint_repository(
+        self,
+        temporary_directory: str,
+        *,
+        phase: str = "prepared",
+        release_moved: bool = True,
+        remote_contains: bool = True,
+    ) -> tuple[pathlib.Path, pathlib.Path, str, str]:
+        """Create one local/remote graph and its exact ship checkpoint."""
+
+        root = pathlib.Path(temporary_directory)
+        remote = root / "remote.git"
+        repo_root = root / "project"
+        remote.mkdir()
+        repo_root.mkdir()
+        self.git(remote, "init", "--bare")
+        self.git(repo_root, "init")
+        self.git(repo_root, "config", "user.email", "test@example.invalid")
+        self.git(repo_root, "config", "user.name", "Test Agent")
+        (repo_root / "tracked.txt").write_text(
+            "base\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        self.git(repo_root, "add", "tracked.txt")
+        self.git(repo_root, "commit", "-m", "base")
+        self.git(repo_root, "branch", "-M", "main")
+        base = self.git(repo_root, "rev-parse", "HEAD")
+        if remote_contains:
+            checkpoint_commit = base
+        else:
+            self.git(repo_root, "switch", "-c", "checkpoint-work")
+            (repo_root / "tracked.txt").write_text(
+                "base\ncheckpoint\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+            self.git(repo_root, "add", "tracked.txt")
+            self.git(repo_root, "commit", "-m", "checkpoint")
+            checkpoint_commit = self.git(repo_root, "rev-parse", "HEAD")
+            self.git(repo_root, "switch", "main")
+        (repo_root / "tracked.txt").write_text(
+            "base\nremote main\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        self.git(repo_root, "add", "tracked.txt")
+        self.git(repo_root, "commit", "-m", "remote main")
+        current_commit = self.git(repo_root, "rev-parse", "HEAD")
+        release_commit = current_commit if release_moved else checkpoint_commit
+        self.git(repo_root, "branch", "release/local", release_commit)
+        self.git(repo_root, "remote", "add", "origin", str(remote))
+        self.git(repo_root, "push", "origin", "main")
+        checkpoint = ship._checkpoint_path(
+            repo_root,
+            "owner/repo",
+            checkpoint_commit,
+        )
+        checkpoint.parent.mkdir(parents=True)
+        checkpoint.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "repository": "owner/repo",
+                    "commit": checkpoint_commit,
+                    "head_branch": "release/local",
+                    "base_branch": "main",
+                    "pending_work": {"enabled": False},
+                    "phase": phase,
+                }
+            ),
+            encoding="utf-8",
+            newline="\n",
+        )
+        return repo_root, checkpoint, checkpoint_commit, current_commit
+
     def pending_scope(self, target_commit: str) -> dict[str, object]:
         return {
             "version": 1,
@@ -676,6 +751,192 @@ class ShipTests(unittest.TestCase):
                 )
 
             checkpoint.unlink()
+
+    def test_obsolete_prepared_checkpoint_is_removed_before_resume(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            repo_root, checkpoint, commit, _ = self.checkpoint_repository(
+                temporary_directory
+            )
+            api_result = mock.Mock(ok=True, data=[])
+            with mock.patch.object(
+                ship,
+                "run_gh_api",
+                return_value=api_result,
+            ) as lookup:
+                selected = ship._find_incomplete_commit(
+                    repo_root,
+                    "owner/repo",
+                    "release/local",
+                    "main",
+                    "origin",
+                )
+
+            self.assertIsNone(selected)
+            self.assertFalse(checkpoint.exists())
+            lookup.assert_called_once_with(
+                "GET",
+                "/repos/owner/repo/pulls?state=all&per_page=100",
+                paginate=True,
+                cwd=repo_root,
+            )
+
+    def test_checkpoint_cleanup_requires_prepared_phase(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            repo_root, checkpoint, commit, _ = self.checkpoint_repository(
+                temporary_directory,
+                phase="pr_ready",
+            )
+            with mock.patch.object(ship, "run_gh_api") as lookup:
+                selected = ship._find_incomplete_commit(
+                    repo_root,
+                    "owner/repo",
+                    "release/local",
+                    "main",
+                    "origin",
+                )
+
+            self.assertEqual(selected, commit)
+            self.assertTrue(checkpoint.is_file())
+            lookup.assert_not_called()
+
+    def test_checkpoint_cleanup_requires_moved_local_head(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            repo_root, checkpoint, commit, _ = self.checkpoint_repository(
+                temporary_directory,
+                release_moved=False,
+            )
+            with mock.patch.object(ship, "run_gh_api") as lookup:
+                selected = ship._find_incomplete_commit(
+                    repo_root,
+                    "owner/repo",
+                    "release/local",
+                    "main",
+                    "origin",
+                )
+
+            self.assertEqual(selected, commit)
+            self.assertTrue(checkpoint.is_file())
+            lookup.assert_not_called()
+
+    def test_checkpoint_cleanup_requires_remote_base_containment(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            repo_root, checkpoint, commit, _ = self.checkpoint_repository(
+                temporary_directory,
+                remote_contains=False,
+            )
+            with mock.patch.object(ship, "run_gh_api") as lookup:
+                selected = ship._find_incomplete_commit(
+                    repo_root,
+                    "owner/repo",
+                    "release/local",
+                    "main",
+                    "origin",
+                )
+
+            self.assertEqual(selected, commit)
+            self.assertTrue(checkpoint.is_file())
+            lookup.assert_not_called()
+
+    def test_checkpoint_cleanup_requires_no_exact_head_pr(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            repo_root, checkpoint, commit, _ = self.checkpoint_repository(
+                temporary_directory
+            )
+            api_result = mock.Mock(
+                ok=True,
+                data=[{"number": 17, "head": {"sha": commit}}],
+            )
+            with mock.patch.object(
+                ship,
+                "run_gh_api",
+                return_value=api_result,
+            ):
+                selected = ship._find_incomplete_commit(
+                    repo_root,
+                    "owner/repo",
+                    "release/local",
+                    "main",
+                    "origin",
+                )
+
+            self.assertEqual(selected, commit)
+            self.assertTrue(checkpoint.is_file())
+
+    def test_checkpoint_cleanup_preserves_state_when_github_is_unavailable(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            repo_root, checkpoint, _, _ = self.checkpoint_repository(
+                temporary_directory
+            )
+            api_result = mock.Mock(
+                ok=False,
+                data=None,
+                message="offline",
+                status=503,
+            )
+            with (
+                mock.patch.object(
+                    ship,
+                    "run_gh_api",
+                    return_value=api_result,
+                ),
+                self.assertRaisesRegex(ship.ShipError, "repository PR lookup failed"),
+            ):
+                ship._find_incomplete_commit(
+                    repo_root,
+                    "owner/repo",
+                    "release/local",
+                    "main",
+                    "origin",
+                )
+
+            self.assertTrue(checkpoint.is_file())
+
+    def test_checkpoint_cleanup_keeps_multiple_survivors_blocking(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            repo_root, first, _, current_commit = self.checkpoint_repository(
+                temporary_directory,
+                phase="pr_ready",
+            )
+            second = ship._checkpoint_path(
+                repo_root,
+                "owner/repo",
+                current_commit,
+            )
+            second.write_text(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "repository": "owner/repo",
+                        "commit": current_commit,
+                        "head_branch": "release/local",
+                        "base_branch": "main",
+                        "pending_work": {"enabled": False},
+                        "phase": "pr_ready",
+                    }
+                ),
+                encoding="utf-8",
+                newline="\n",
+            )
+            with (
+                mock.patch.object(ship, "run_gh_api") as lookup,
+                self.assertRaisesRegex(
+                    ship.ShipError,
+                    "Multiple incomplete checkpoints",
+                ),
+            ):
+                ship._find_incomplete_commit(
+                    repo_root,
+                    "owner/repo",
+                    "release/local",
+                    "main",
+                    "origin",
+                )
+
+            self.assertTrue(first.is_file())
+            self.assertTrue(second.is_file())
+            lookup.assert_not_called()
 
     def test_pending_work_cli_result_is_nonzero(self) -> None:
         pending = {
