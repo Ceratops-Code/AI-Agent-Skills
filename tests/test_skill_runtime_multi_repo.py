@@ -47,7 +47,7 @@ INSTALLER_TEMPLATE = (
 COMPATIBILITY_ENGINE = "ceratops_repo_compatibility_engine"
 RUNTIME_INSTALLER = LIFECYCLE_SOURCE / "scripts" / "runtime" / "install-managed-skills.py"
 FAST_CHANGE = LIFECYCLE_SOURCE / "scripts" / "fast-change.py"
-UPDATE_EXECUTION = LIFECYCLE_SOURCE / "scripts" / "update-execution.py"
+SKILL_UPDATE_WORKFLOW = LIFECYCLE_SOURCE / "scripts" / "skill-update-workflow.py"
 GOVERNANCE_SOURCE = ROOT / "skills" / "ceratops-governance-lifecycle"
 PROPOSAL_WORKFLOW = GOVERNANCE_SOURCE / "scripts" / "proposal-workflow.py"
 ITERATION_CONTROLLER = GOVERNANCE_SOURCE / "scripts" / "iteration_controller.py"
@@ -1366,12 +1366,12 @@ def fast_change_request(
     }
 
 
-def prepare_update_execution_worktree(
+def prepare_skill_update_workflow_worktree(
     tmp_path: pathlib.Path,
-) -> tuple[pathlib.Path, pathlib.Path]:
+) -> tuple[pathlib.Path, pathlib.Path, pathlib.Path]:
     """Create one linked task worktree with an existing helper behavior test."""
 
-    scope = tmp_path / "update-execution"
+    scope = tmp_path / "skill-update-workflow"
     scope.mkdir()
     source = prepare_fast_change_repo(scope)
     tests = source / "tests"
@@ -1395,29 +1395,31 @@ def prepare_update_execution_worktree(
         "worktree",
         "add",
         "-b",
-        "codex/update-execution-test",
+        "codex/skill-update-workflow-test",
         str(worktree),
         "HEAD",
     )
     assert added.returncode == 0, added.stderr
-    return worktree, scope
+    task_temp_root = scope / "tmp" / source.name / "skill-update-workflow"
+    task_temp_root.mkdir(parents=True)
+    return worktree, scope, task_temp_root
 
 
-def run_update_execution(*arguments: str) -> subprocess.CompletedProcess[str]:
-    """Run one update-execution command with captured compact output."""
+def run_skill_update_workflow(*arguments: str) -> subprocess.CompletedProcess[str]:
+    """Run one skill-update workflow command with compact captured output."""
 
     return subprocess.run(
-        [sys.executable, str(UPDATE_EXECUTION), *arguments],
+        [sys.executable, str(SKILL_UPDATE_WORKFLOW), *arguments],
         capture_output=True,
         text=True,
         check=False,
     )
 
 
-def test_update_execution_preserves_baseline_and_runs_declared_checks_once(
+def test_skill_update_workflow_preserves_baseline_runs_checks_once_and_finalizes(
     tmp_path: pathlib.Path,
 ) -> None:
-    worktree, scope = prepare_update_execution_worktree(tmp_path)
+    worktree, scope, task_temp_root = prepare_skill_update_workflow_worktree(tmp_path)
     baseline = worktree / "preexisting.txt"
     baseline.write_text("keep me\n", encoding="utf-8", newline="\n")
     check_log = scope / "check.log"
@@ -1430,12 +1432,15 @@ def test_update_execution_preserves_baseline_and_runs_declared_checks_once(
         encoding="utf-8",
         newline="\n",
     )
-    request_path = scope / "request.json"
-    state_path = scope / "state.json"
-    evidence_path = scope / "evidence.json"
+    request_path = task_temp_root / "request.json"
+    state_path = task_temp_root / "state.json"
+    evidence_path = task_temp_root / "evidence.json"
     request = {
-        "schema": "ceratops-skill-update-request.v1",
+        "schema": "ceratops-skill-update-request.v2",
         "repo_root": str(worktree),
+        "task_temp_root": str(task_temp_root),
+        "evidence_output": str(evidence_path),
+        "disposable_artifacts": ["request", "state", "evidence"],
         "selected_skills": ["alpha-tool"],
         "allowed_paths": [
             "skills/alpha-tool/scripts/tool.py",
@@ -1465,9 +1470,11 @@ def test_update_execution_preserves_baseline_and_runs_declared_checks_once(
         encoding="utf-8",
         newline="\n",
     )
-    invalid_request_path = scope / "invalid-request.json"
-    invalid_state_path = scope / "invalid-state.json"
+    invalid_request_path = task_temp_root / "invalid-request.json"
+    invalid_state_path = task_temp_root / "invalid-state.json"
+    invalid_evidence_path = task_temp_root / "invalid-evidence.json"
     invalid_request = json.loads(json.dumps(request))
+    invalid_request["evidence_output"] = str(invalid_evidence_path)
     invalid_request["checks"][-1]["nodes"] = [
         "tests/test_helper.py::test_missing_helper_value"
     ]
@@ -1476,7 +1483,7 @@ def test_update_execution_preserves_baseline_and_runs_declared_checks_once(
         encoding="utf-8",
         newline="\n",
     )
-    invalid_prepare = run_update_execution(
+    invalid_prepare = run_skill_update_workflow(
         "prepare",
         "--request",
         str(invalid_request_path),
@@ -1488,8 +1495,10 @@ def test_update_execution_preserves_baseline_and_runs_declared_checks_once(
     assert "pytest node collection failed" in invalid_prepare.stderr
     assert "test_missing_helper_value" in invalid_prepare.stderr
     assert not invalid_state_path.exists()
+    assert not invalid_evidence_path.exists()
+    assert invalid_request_path.is_file()
 
-    prepared = run_update_execution(
+    prepared = run_skill_update_workflow(
         "prepare",
         "--request",
         str(request_path),
@@ -1499,12 +1508,51 @@ def test_update_execution_preserves_baseline_and_runs_declared_checks_once(
     assert prepared.returncode == 0, prepared.stderr
     assert prepared.stdout.strip() == "OK"
     state = json.loads(state_path.read_text(encoding="utf-8"))
-    assert state["schema"] == "ceratops-skill-update-state.v1"
+    assert state["schema"] == "ceratops-skill-update-state.v2"
     assert "preexisting.txt" in state["baseline_dirty"]
+    incomplete = run_skill_update_workflow(
+        "finalize",
+        "--state",
+        str(state_path),
+    )
+    assert incomplete.returncode == 2
+    assert "before successful verification" in incomplete.stderr
+    assert request_path.is_file() and state_path.is_file()
+    assert not evidence_path.exists()
 
     helper = worktree / "skills" / "alpha-tool" / "scripts" / "tool.py"
     helper.write_text("VALUE = 2\n", encoding="utf-8", newline="\n")
-    verified = run_update_execution(
+    baseline.write_text("changed\n", encoding="utf-8", newline="\n")
+    baseline_failure = run_skill_update_workflow(
+        "verify",
+        "--state",
+        str(state_path),
+        "--evidence-output",
+        str(evidence_path),
+    )
+    assert baseline_failure.returncode == 2
+    assert "pre-existing dirty path changed" in baseline_failure.stderr
+    assert json.loads(evidence_path.read_text(encoding="utf-8"))["status"] == "failed"
+    assert request_path.is_file() and state_path.is_file() and evidence_path.is_file()
+    assert not check_log.exists()
+
+    baseline.write_text("keep me\n", encoding="utf-8", newline="\n")
+    rogue_path = worktree / "rogue.txt"
+    rogue_path.write_text("rogue\n", encoding="utf-8", newline="\n")
+    rogue_failure = run_skill_update_workflow(
+        "verify",
+        "--state",
+        str(state_path),
+        "--evidence-output",
+        str(evidence_path),
+    )
+    assert rogue_failure.returncode == 2
+    assert "undeclared working-tree change" in rogue_failure.stderr
+    assert request_path.is_file() and state_path.is_file() and evidence_path.is_file()
+    assert not check_log.exists()
+    rogue_path.unlink()
+
+    verified = run_skill_update_workflow(
         "verify",
         "--state",
         str(state_path),
@@ -1514,7 +1562,7 @@ def test_update_execution_preserves_baseline_and_runs_declared_checks_once(
     assert verified.returncode == 0, verified.stderr
     assert verified.stdout.strip() == "OK"
     evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
-    assert evidence["schema"] == "ceratops-skill-update-evidence.v1"
+    assert evidence["schema"] == "ceratops-skill-update-evidence.v2"
     assert evidence["status"] == "passed"
     assert evidence["changed_paths"] == ["skills/alpha-tool/scripts/tool.py"]
     assert [check["kind"] for check in evidence["checks"]] == [
@@ -1526,49 +1574,64 @@ def test_update_execution_preserves_baseline_and_runs_declared_checks_once(
     assert check_log.read_text(encoding="utf-8").splitlines() == ["run"]
     assert baseline.read_text(encoding="utf-8") == "keep me\n"
 
-    baseline.write_text("changed\n", encoding="utf-8", newline="\n")
-    baseline_failure_path = scope / "baseline-failure.json"
-    baseline_failure = run_update_execution(
-        "verify",
+    undeclared_input = task_temp_root / "user-input.txt"
+    undeclared_input.write_text("preserve\n", encoding="utf-8", newline="\n")
+    outside_evidence = scope / "outside-evidence.json"
+    outside_evidence.write_text("preserve\n", encoding="utf-8", newline="\n")
+    verified_state_text = state_path.read_text(encoding="utf-8")
+    escaped_state = json.loads(verified_state_text)
+    next(
+        artifact
+        for artifact in escaped_state["cleanup"]["owned_artifacts"]
+        if artifact["role"] == "evidence"
+    )["path"] = str(outside_evidence)
+    state_path.write_text(
+        json.dumps(escaped_state) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    escaped = run_skill_update_workflow(
+        "finalize",
         "--state",
         str(state_path),
-        "--evidence-output",
-        str(baseline_failure_path),
     )
-    assert baseline_failure.returncode == 2
-    assert "pre-existing dirty path changed" in baseline_failure.stderr
-    assert json.loads(baseline_failure_path.read_text(encoding="utf-8"))[
-        "status"
-    ] == "failed"
+    assert escaped.returncode == 2
+    assert "escapes task_temp_root" in escaped.stderr
+    assert request_path.is_file() and state_path.is_file() and evidence_path.is_file()
+    assert outside_evidence.is_file() and undeclared_input.is_file()
+    state_path.write_text(verified_state_text, encoding="utf-8", newline="\n")
 
-    baseline.write_text("keep me\n", encoding="utf-8", newline="\n")
-    (worktree / "rogue.txt").write_text("rogue\n", encoding="utf-8", newline="\n")
-    rogue_failure_path = scope / "rogue-failure.json"
-    rogue_failure = run_update_execution(
-        "verify",
+    finalized = run_skill_update_workflow(
+        "finalize",
         "--state",
         str(state_path),
-        "--evidence-output",
-        str(rogue_failure_path),
     )
-    assert rogue_failure.returncode == 2
-    assert "undeclared working-tree change" in rogue_failure.stderr
-    assert check_log.read_text(encoding="utf-8").splitlines() == ["run"]
+    assert finalized.returncode == 0, finalized.stderr
+    assert finalized.stdout.strip() == "OK"
+    assert not request_path.exists()
+    assert not state_path.exists()
+    assert not evidence_path.exists()
+    assert undeclared_input.is_file() and outside_evidence.is_file()
 
 
 def test_proposal_workflow_validates_context_and_owns_iteration_transition(
     tmp_path: pathlib.Path,
 ) -> None:
-    original = tmp_path / "original.md"
-    regressions = tmp_path / "regressions.md"
+    task_temp_root = tmp_path / "task-temp"
+    task_temp_root.mkdir()
+    original = task_temp_root / "original.md"
+    regressions = task_temp_root / "regressions.md"
     target_dir = tmp_path / "governed"
     target_dir.mkdir()
     target = target_dir / "contract.md"
-    request_path = tmp_path / "proposal-request.json"
-    state = tmp_path / "proposal-state.json"
-    evidence = tmp_path / "proposal-context.json"
+    request_path = task_temp_root / "proposal-request.json"
+    state = task_temp_root / "proposal-state.json"
+    evidence = task_temp_root / "proposal-context.json"
+    iterations = task_temp_root / "iterations"
+    undeclared_input = task_temp_root / "user-owned.md"
     original.write_text("Observed failure\n", encoding="utf-8", newline="\n")
     regressions.write_text("Preserve current scope\n", encoding="utf-8", newline="\n")
+    undeclared_input.write_text("Preserve me\n", encoding="utf-8", newline="\n")
     target.write_text(
         "# Contract\n\nCurrent exact target.\n",
         encoding="utf-8",
@@ -1595,7 +1658,17 @@ def test_proposal_workflow_validates_context_and_owns_iteration_transition(
         "expected_text": ["Current exact target."],
     }
     request: dict[str, object] = {
-        "schema": "ceratops-governance-proposal-request.v1",
+        "schema": "ceratops-governance-proposal-request.v2",
+        "task_temp_root": str(task_temp_root),
+        "iteration_artifacts": str(iterations),
+        "disposable_artifacts": [
+            "request",
+            "original",
+            "regressions",
+            "evidence",
+            "state",
+            "iterations",
+        ],
         "state": str(state),
         "original": str(original),
         "regressions": str(regressions),
@@ -1629,9 +1702,28 @@ def test_proposal_workflow_validates_context_and_owns_iteration_transition(
     pending = json.loads(prepared.stdout)
     assert pending["iteration"] == 1
     context = json.loads(evidence.read_text(encoding="utf-8"))
-    assert context["schema"] == "ceratops-governance-proposal-context.v1"
+    assert context["schema"] == "ceratops-governance-proposal-context.v2"
     assert context["history_lookup"]["unknown"] == []
     assert context["sources"][1]["history"] is None
+    incomplete = subprocess.run(
+        [
+            sys.executable,
+            str(PROPOSAL_WORKFLOW),
+            "finalize",
+            "--state",
+            str(state),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert incomplete.returncode == 2
+    assert "incomplete proposal" in incomplete.stderr
+    assert all(
+        path.is_file()
+        for path in (request_path, original, regressions, evidence, state)
+    )
+    assert iterations.is_dir() and undeclared_input.is_file()
     pathlib.Path(pending["candidate"]).write_text(
         "Exact candidate\n",
         encoding="utf-8",
@@ -1662,6 +1754,41 @@ def test_proposal_workflow_validates_context_and_owns_iteration_transition(
     status = json.loads(advanced.stdout)
     assert status["complete"] is True
     assert status["pending"] is None
+    completed_state_text = state.read_text(encoding="utf-8")
+    escaped_state = json.loads(completed_state_text)
+    outside_evidence = tmp_path / "outside-evidence.json"
+    outside_evidence.write_text("Preserve\n", encoding="utf-8", newline="\n")
+    next(
+        artifact
+        for artifact in escaped_state["proposal_cleanup"]["owned_artifacts"]
+        if artifact["role"] == "evidence"
+    )["path"] = str(outside_evidence)
+    state.write_text(
+        json.dumps(escaped_state) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    escaped = subprocess.run(
+        [
+            sys.executable,
+            str(PROPOSAL_WORKFLOW),
+            "finalize",
+            "--state",
+            str(state),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert escaped.returncode == 2
+    assert "escapes task_temp_root" in escaped.stderr
+    assert all(
+        path.is_file()
+        for path in (request_path, original, regressions, evidence, state)
+    )
+    assert iterations.is_dir() and undeclared_input.is_file()
+    assert outside_evidence.is_file()
+    state.write_text(completed_state_text, encoding="utf-8", newline="\n")
     finalized = subprocess.run(
         [
             sys.executable,
@@ -1677,21 +1804,33 @@ def test_proposal_workflow_validates_context_and_owns_iteration_transition(
     assert finalized.returncode == 0, finalized.stderr
     assert finalized.stdout.strip() == "OK"
     assert not state.exists()
-    assert not (tmp_path / "iterations").exists()
-    assert original.is_file() and regressions.is_file() and evidence.is_file()
+    assert not iterations.exists()
+    assert not request_path.exists()
+    assert not original.exists() and not regressions.exists() and not evidence.exists()
+    assert undeclared_input.is_file() and outside_evidence.is_file()
 
     invalid_request = dict(request)
-    invalid_state = tmp_path / "invalid-state.json"
-    invalid_evidence = tmp_path / "invalid-context.json"
+    invalid_run = task_temp_root / "invalid-run"
+    invalid_run.mkdir()
+    invalid_original = invalid_run / "original.md"
+    invalid_regressions = invalid_run / "regressions.md"
+    invalid_original.write_text("Failure\n", encoding="utf-8", newline="\n")
+    invalid_regressions.write_text("Boundary\n", encoding="utf-8", newline="\n")
+    invalid_state = invalid_run / "state.json"
+    invalid_evidence = invalid_run / "context.json"
+    invalid_iterations = invalid_run / "iterations"
     invalid_request["state"] = str(invalid_state)
+    invalid_request["original"] = str(invalid_original)
+    invalid_request["regressions"] = str(invalid_regressions)
     invalid_request["evidence_output"] = str(invalid_evidence)
+    invalid_request["iteration_artifacts"] = str(invalid_iterations)
     invalid_request["sources"] = [
         {
             **history_source,
             "expected_text": ["missing exact current text"],
         }
     ]
-    invalid_path = tmp_path / "invalid-request.json"
+    invalid_path = invalid_run / "request.json"
     invalid_path.write_text(
         json.dumps(invalid_request) + "\n",
         encoding="utf-8",
@@ -1713,6 +1852,9 @@ def test_proposal_workflow_validates_context_and_owns_iteration_transition(
     assert "expected_text must occur exactly once" in rejected.stderr
     assert not invalid_state.exists()
     assert not invalid_evidence.exists()
+    assert not invalid_iterations.exists()
+    assert invalid_path.is_file()
+    assert invalid_original.is_file() and invalid_regressions.is_file()
 
 
 def test_iteration_controller_preserves_legacy_commands(
@@ -5547,7 +5689,7 @@ def test_transaction_retry_policy_and_acl_order(
                     errno.EBUSY if self.transient else errno.EACCES,
                     "rename failure",
                 )
-                setattr(error, "winerror", 32 if self.transient else 5)
+                error.winerror = 32 if self.transient else 5
                 raise error
 
     monkeypatch.setattr(builder["time"], "sleep", lambda _seconds: None)

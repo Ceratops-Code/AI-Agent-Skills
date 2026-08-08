@@ -82,15 +82,16 @@ Infer missing inputs from current repo state before asking.
 
 - (D) Before the first edit of helper-runtime code or a multi-file contract
   update, create one request declaring selected skills, allowed paths, cohesive
-  change groups, and structured checks; run `python
-  scripts/update-execution.py prepare --request REQUEST --state STATE`. After
-  the last edit, run `python scripts/update-execution.py verify --state STATE
-  --evidence-output EVIDENCE`. The helper must preserve the recorded
-  pre-existing worktree baseline, reject undeclared new changes or source drift,
-  collect every declared pytest node before edits without executing tests, run
-  the declared checks once, treat declared zero-match searches as success, write
-  detailed evidence, and emit only `OK` or one compact actionable error. Do not
-  use it for skill-local text-only updates.
+  change groups, structured checks, the verified task-temp root, the exact
+  evidence output, and the disposable request, state, and evidence roles; run
+  `python scripts/skill-update-workflow.py prepare --request REQUEST --state
+  STATE`. After the last edit, run `python scripts/skill-update-workflow.py
+  verify --state STATE --evidence-output EVIDENCE`. The helper must preserve the
+  recorded pre-existing worktree baseline, reject undeclared new changes or
+  source drift, collect every declared pytest node before edits without
+  executing tests, run the declared checks once, treat declared zero-match
+  searches as success, write detailed evidence, and emit only `OK` or one
+  compact actionable error. Do not use it for skill-local text-only updates.
 - Update skills, shared sections, manifest, runtime payloads, runtime generation
   or validation scripts, helper-runtime files or claims, contracts, and repo
   docs only where ownership requires it.
@@ -126,6 +127,14 @@ Infer missing inputs from current repo state before asking.
   command and exact existing behavior tests.
 - If runtime generation, installer, or transaction code changed, run the
   affected transaction tests and one all-managed temporary installation.
+- (D) After successful verification and the final requested commit,
+  deployment, or other caller use completes, run `python
+  scripts/skill-update-workflow.py finalize --state STATE`. This invocation is
+  the explicit completion trigger. The helper must reject incomplete or changed
+  ownership state, links, path escapes, repository files, and failed
+  verification; preserve undeclared inputs; and remove only the exact owned
+  request, state, and evidence files. A successful update run is not complete
+  until finalization returns `OK`; do not finalize failed or incomplete runs.
 - After committing, use `$ceratops-repo-lifecycle` `promote` when only local
   release staging is requested, `promote-and-deploy` when the repository's
   declared deployment should run, or `ship` when the staged release should be
