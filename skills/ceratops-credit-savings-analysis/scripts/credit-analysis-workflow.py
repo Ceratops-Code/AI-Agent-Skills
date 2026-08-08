@@ -249,14 +249,14 @@ SYNTHESIS_FIELDS = {
     "finding_order",
     "risk_order",
     "finding_dispositions",
-    "call_classifications",
+    "classification_groups",
     "secondary_call_mappings",
     "producer_groups",
 }
 DISPOSITION_FIELDS = {"finding_id", "primary_call_ids", "secondary_call_ids"}
-CLASSIFICATION_FIELDS = {
-    "call_id",
+CLASSIFICATION_GROUP_FIELDS = {
     "classification",
+    "inventory_positions",
     "primary_finding_id",
     "reason_code",
     "reason",
@@ -371,6 +371,21 @@ def _strings(
     if len(result) != len(set(result)):
         raise CreditAnalysisError(f"{label} values must be unique")
     return result
+
+
+def _positive_integers(value: Any, label: str) -> list[int]:
+    if (
+        not isinstance(value, list)
+        or not value
+        or not all(
+            isinstance(item, int) and not isinstance(item, bool) and item > 0
+            for item in value
+        )
+    ):
+        raise CreditAnalysisError(f"{label} must be a nonempty positive-integer list")
+    if len(value) != len(set(value)):
+        raise CreditAnalysisError(f"{label} values must be unique")
+    return list(value)
 
 
 def _objects(value: Any, label: str) -> list[dict[str, Any]]:
@@ -1012,8 +1027,22 @@ def _open_pending(
             "action_reference": None,
             "candidate_call_ids": list(evidence["call_inventory"]),
             "call_inventory": [
-                _compact_call(call, semantic=False) for call in _all_calls(evidence)
+                {
+                    "inventory_position": position,
+                    **_compact_call(call, semantic=False),
+                }
+                for position, call in enumerate(_all_calls(evidence), start=1)
             ],
+            "classification_group_contract": {
+                "fields": sorted(CLASSIFICATION_GROUP_FIELDS),
+                "position_base": 1,
+                "coverage": "every-inventory-position-once",
+                "semantic_scope": "group-level-approximate",
+                "classifications": list(contract["call_classifications"]),
+                "necessary_reason_codes": list(
+                    contract["necessary_reason_codes"]
+                ),
+            },
             "accepted_surface_results": accepted,
             "deterministic_totals": evidence["totals"],
             "pricing": evidence["pricing"],
@@ -2144,6 +2173,127 @@ def _finding_inventory(
     return findings, finding_surfaces, risks
 
 
+def _validated_classification_groups(
+    value: Any,
+    *,
+    evidence: Mapping[str, Any],
+    findings: Mapping[str, Mapping[str, Any]],
+    dispositions: Mapping[str, Mapping[str, Any]],
+    contract: Mapping[str, Any],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Expand compact model judgments into controller-owned per-call records."""
+
+    inventory = list(evidence["call_inventory"])
+    groups: list[dict[str, Any]] = []
+    group_by_position: dict[int, dict[str, Any]] = {}
+    for index, raw in enumerate(
+        _objects(value, "classification groups"), start=1
+    ):
+        _closed(raw, CLASSIFICATION_GROUP_FIELDS, "classification group")
+        positions = _positive_integers(
+            raw.get("inventory_positions"),
+            f"classification group {index} inventory positions",
+        )
+        category = raw.get("classification")
+        finding_id = raw.get("primary_finding_id")
+        reason_code = raw.get("reason_code")
+        reason = raw.get("reason")
+        if category not in contract["call_classifications"]:
+            raise CreditAnalysisError(
+                f"classification group {index} category is invalid"
+            )
+        if not isinstance(reason, str) or not reason.strip():
+            raise CreditAnalysisError(
+                f"classification group {index} reason is required"
+            )
+        if category == "necessary":
+            if (
+                finding_id is not None
+                or reason_code not in contract["necessary_reason_codes"]
+            ):
+                raise CreditAnalysisError(
+                    f"classification group {index} necessary reason is invalid"
+                )
+        else:
+            if (
+                not isinstance(finding_id, str)
+                or finding_id not in findings
+                or reason_code is not None
+            ):
+                raise CreditAnalysisError(
+                    f"classification group {index} avoidable mapping is invalid"
+                )
+            expected_category = (
+                "avoidable_implemented"
+                if findings[finding_id]["implementation_status"] == "implemented"
+                else "avoidable_unimplemented"
+            )
+            if category != expected_category:
+                raise CreditAnalysisError(
+                    f"classification group {index} implementation status disagrees"
+                )
+        normalized = {
+            "classification": category,
+            "inventory_positions": positions,
+            "primary_finding_id": finding_id,
+            "reason_code": reason_code,
+            "reason": reason.strip(),
+        }
+        for position in positions:
+            if position > len(inventory):
+                raise CreditAnalysisError(
+                    f"classification group {index} position is outside the inventory"
+                )
+            if position in group_by_position:
+                raise CreditAnalysisError(
+                    f"classification position is assigned more than once: {position}"
+                )
+            call_id = inventory[position - 1]
+            if category != "necessary" and call_id not in dispositions[
+                str(finding_id)
+            ]["primary_call_ids"]:
+                raise CreditAnalysisError(
+                    f"primary finding mapping disagrees at inventory position {position}"
+                )
+            group_by_position[position] = normalized
+        groups.append(normalized)
+    expected_positions = set(range(1, len(inventory) + 1))
+    if set(group_by_position) != expected_positions:
+        raise CreditAnalysisError(
+            "classification groups must cover every inventory position exactly once"
+        )
+
+    classifications: list[dict[str, Any]] = []
+    classification_by_call: dict[str, dict[str, Any]] = {}
+    primary_by_finding: dict[str, set[str]] = defaultdict(set)
+    for position, call_id in enumerate(inventory, start=1):
+        group = group_by_position[position]
+        classification = {
+            "call_id": call_id,
+            "classification": group["classification"],
+            "primary_finding_id": group["primary_finding_id"],
+            "reason_code": group["reason_code"],
+            "reason": group["reason"],
+        }
+        classifications.append(classification)
+        classification_by_call[call_id] = classification
+        finding_id = classification["primary_finding_id"]
+        if isinstance(finding_id, str):
+            primary_by_finding[finding_id].add(call_id)
+    for finding_id, disposition in dispositions.items():
+        if primary_by_finding[finding_id] != set(disposition["primary_call_ids"]):
+            raise CreditAnalysisError(
+                "finding primary calls are multiply or inconsistently assigned: "
+                f"{finding_id}"
+            )
+        for call_id in disposition["secondary_call_ids"]:
+            if classification_by_call[call_id]["classification"] == "necessary":
+                raise CreditAnalysisError(
+                    f"secondary avoidable evidence is classified necessary: {call_id}"
+                )
+    return groups, classifications
+
+
 def _validate_synthesis(
     result: dict[str, Any],
     *,
@@ -2226,67 +2376,16 @@ def _validate_synthesis(
     if set(disposition_by_id) != set(findings):
         raise CreditAnalysisError("synthesis lacks a disposition for an accepted finding")
 
-    classifications: list[dict[str, Any]] = []
-    classification_by_call: dict[str, dict[str, Any]] = {}
-    for raw in _objects(result.get("call_classifications"), "call classifications"):
-        _closed(raw, CLASSIFICATION_FIELDS, "call classification")
-        call_id = raw.get("call_id")
-        category = raw.get("classification")
-        finding_id = raw.get("primary_finding_id")
-        reason_code = raw.get("reason_code")
-        reason = raw.get("reason")
-        if (
-            not isinstance(call_id, str)
-            or call_id not in known_calls
-            or call_id in classification_by_call
-        ):
-            raise CreditAnalysisError(f"call classification is duplicate or unknown: {call_id}")
-        if category not in contract["call_classifications"]:
-            raise CreditAnalysisError(f"call classification category is invalid: {call_id}")
-        if not isinstance(reason, str) or not reason.strip():
-            raise CreditAnalysisError(f"call classification reason is required: {call_id}")
-        if category == "necessary":
-            if finding_id is not None or reason_code not in contract["necessary_reason_codes"]:
-                raise CreditAnalysisError(f"necessary classification is invalid: {call_id}")
-        else:
-            if (
-                not isinstance(finding_id, str)
-                or finding_id not in findings
-                or reason_code is not None
-            ):
-                raise CreditAnalysisError(f"avoidable classification is invalid: {call_id}")
-            if call_id not in disposition_by_id[finding_id]["primary_call_ids"]:
-                raise CreditAnalysisError(f"primary finding mapping disagrees: {call_id}")
-            expected_category = (
-                "avoidable_implemented"
-                if findings[finding_id]["implementation_status"] == "implemented"
-                else "avoidable_unimplemented"
-            )
-            if category != expected_category:
-                raise CreditAnalysisError(f"implementation classification disagrees: {call_id}")
-        normalized = {
-            "call_id": call_id,
-            "classification": category,
-            "primary_finding_id": finding_id,
-            "reason_code": reason_code,
-            "reason": reason.strip(),
-        }
-        classifications.append(normalized)
-        classification_by_call[call_id] = normalized
-    if [item["call_id"] for item in classifications] != list(evidence["call_inventory"]):
-        raise CreditAnalysisError("every model call must be classified exactly once in inventory order")
-
-    primary_by_finding: dict[str, set[str]] = defaultdict(set)
-    for item in classifications:
-        finding_id = item["primary_finding_id"]
-        if isinstance(finding_id, str):
-            primary_by_finding[finding_id].add(item["call_id"])
-    for finding_id, disposition in disposition_by_id.items():
-        if primary_by_finding[finding_id] != set(disposition["primary_call_ids"]):
-            raise CreditAnalysisError(f"finding primary calls are multiply or inconsistently assigned: {finding_id}")
-        for call_id in disposition["secondary_call_ids"]:
-            if classification_by_call[call_id]["classification"] == "necessary":
-                raise CreditAnalysisError(f"secondary avoidable evidence is classified necessary: {call_id}")
+    classification_groups, classifications = _validated_classification_groups(
+        result.get("classification_groups"),
+        evidence=evidence,
+        findings=findings,
+        dispositions=disposition_by_id,
+        contract=contract,
+    )
+    classification_by_call = {
+        item["call_id"]: item for item in classifications
+    }
 
     secondary_mappings: list[dict[str, Any]] = []
     secondary_by_call: dict[str, set[str]] = defaultdict(set)
@@ -2366,7 +2465,7 @@ def _validate_synthesis(
         "finding_order": finding_order,
         "risk_order": risk_order,
         "finding_dispositions": dispositions,
-        "call_classifications": classifications,
+        "classification_groups": classification_groups,
         "secondary_call_mappings": secondary_mappings,
         "producer_groups": producer_groups,
     }
@@ -2542,7 +2641,13 @@ def _build_full_final(
                 "roi": roi,
             }
         )
-    classifications = synthesis["call_classifications"]
+    _, classifications = _validated_classification_groups(
+        synthesis["classification_groups"],
+        evidence=evidence,
+        findings=findings,
+        dispositions=dispositions,
+        contract=contract,
+    )
     classification_totals = Counter(
         item["classification"] for item in classifications
     )

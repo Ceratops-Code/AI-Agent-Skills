@@ -647,28 +647,12 @@ def complete_credit_analysis_with_instruction_finding(
         pathlib.Path(status["context_path"]).read_text(encoding="utf-8")
     )
     primary_call = finding["affected_call_ids"][0]
-    classifications = []
-    for call_id in evidence["call_inventory"]:
-        if call_id == primary_call:
-            classifications.append(
-                {
-                    "call_id": call_id,
-                    "classification": "avoidable_unimplemented",
-                    "primary_finding_id": finding["id"],
-                    "reason_code": None,
-                    "reason": "synthetic avoidable instruction call",
-                }
-            )
-        else:
-            classifications.append(
-                {
-                    "call_id": call_id,
-                    "classification": "necessary",
-                    "primary_finding_id": None,
-                    "reason_code": "required-workflow",
-                    "reason": "synthetic required workflow call",
-                }
-            )
+    primary_position = evidence["call_inventory"].index(primary_call) + 1
+    necessary_positions = [
+        position
+        for position in range(1, len(evidence["call_inventory"]) + 1)
+        if position != primary_position
+    ]
     synthesis = {
         "schema": "ceratops-credit-analysis-synthesis-result.v1",
         "analysis_id": status["analysis_id"],
@@ -690,7 +674,22 @@ def complete_credit_analysis_with_instruction_finding(
                 "secondary_call_ids": [],
             }
         ],
-        "call_classifications": classifications,
+        "classification_groups": [
+            {
+                "classification": "avoidable_unimplemented",
+                "inventory_positions": [primary_position],
+                "primary_finding_id": finding["id"],
+                "reason_code": None,
+                "reason": "synthetic avoidable instruction call",
+            },
+            {
+                "classification": "necessary",
+                "inventory_positions": necessary_positions,
+                "primary_finding_id": None,
+                "reason_code": "required-workflow",
+                "reason": "synthetic required workflow calls",
+            },
+        ],
         "secondary_call_mappings": [],
         "producer_groups": [
             {
@@ -1044,6 +1043,27 @@ def test_credit_analysis_workflow_full_analysis_persists_every_finding(
         pathlib.Path(status["context_path"]).read_text(encoding="utf-8")
     )
     assert [
+        item["inventory_position"] for item in synthesis_context["call_inventory"]
+    ] == [1, 2, 3, 4, 5, 6]
+    assert synthesis_context["classification_group_contract"] == {
+        "fields": [
+            "classification",
+            "inventory_positions",
+            "primary_finding_id",
+            "reason",
+            "reason_code",
+        ],
+        "position_base": 1,
+        "coverage": "every-inventory-position-once",
+        "semantic_scope": "group-level-approximate",
+        "classifications": [
+            "necessary",
+            "avoidable_implemented",
+            "avoidable_unimplemented",
+        ],
+        "necessary_reason_codes": contract["necessary_reason_codes"],
+    }
+    assert [
         item["surface_id"] for item in synthesis_context["accepted_surface_results"]
     ] == expected_order[:-1]
     synthesis = {
@@ -1093,48 +1113,41 @@ def test_credit_analysis_workflow_full_analysis_persists_every_finding(
                 "secondary_call_ids": [],
             },
         ],
-        "call_classifications": [
+        "classification_groups": [
             {
-                "call_id": "turn-1:1",
                 "classification": "avoidable_unimplemented",
+                "inventory_positions": [1],
                 "primary_finding_id": "helper-gap",
                 "reason_code": None,
                 "reason": "helper producer gap",
             },
             {
-                "call_id": "turn-1:2",
                 "classification": "avoidable_unimplemented",
+                "inventory_positions": [2],
                 "primary_finding_id": "context-gap",
                 "reason_code": None,
                 "reason": "duplicate evidence read",
             },
             {
-                "call_id": "turn-1:3",
                 "classification": "avoidable_implemented",
+                "inventory_positions": [3],
                 "primary_finding_id": "instruction-gap",
                 "reason_code": None,
                 "reason": "implemented prompt control",
             },
             {
-                "call_id": "turn-2:1",
                 "classification": "necessary",
+                "inventory_positions": [4],
                 "primary_finding_id": None,
                 "reason_code": "protocol-overhead",
                 "reason": "required wait protocol",
             },
             {
-                "call_id": "turn-2:2",
                 "classification": "necessary",
+                "inventory_positions": [5, 6],
                 "primary_finding_id": None,
                 "reason_code": "required-workflow",
-                "reason": "required final answer",
-            },
-            {
-                "call_id": "turn-3:1",
-                "classification": "necessary",
-                "primary_finding_id": None,
-                "reason_code": "required-workflow",
-                "reason": "required final answer",
+                "reason": "required final answers",
             },
         ],
         "secondary_call_mappings": [
@@ -1180,6 +1193,55 @@ def test_credit_analysis_workflow_full_analysis_persists_every_finding(
         ],
     }
     synthesis_path = pathlib.Path(status["required_result_path"])
+    invalid_syntheses = [
+        (
+            {
+                **synthesis,
+                "classification_groups": synthesis["classification_groups"][:-1],
+            },
+            "cover every inventory position",
+        ),
+        (
+            {
+                **synthesis,
+                "classification_groups": [
+                    *synthesis["classification_groups"],
+                    {
+                        "classification": "necessary",
+                        "inventory_positions": [1],
+                        "primary_finding_id": None,
+                        "reason_code": "required-workflow",
+                        "reason": "duplicate accounting group",
+                    },
+                ],
+            },
+            "assigned more than once",
+        ),
+        (
+            {
+                **synthesis,
+                "classification_groups": [
+                    *synthesis["classification_groups"][:-1],
+                    {
+                        **synthesis["classification_groups"][-1],
+                        "inventory_positions": [5, 6, 7],
+                    },
+                ],
+            },
+            "outside the inventory",
+        ),
+    ]
+    for invalid_synthesis, expected_error in invalid_syntheses:
+        write_json_file(synthesis_path, invalid_synthesis)
+        rejected = run_credit_analysis_workflow(
+            "finalize",
+            "--state",
+            str(state_path),
+            "--result",
+            str(synthesis_path),
+        )
+        assert rejected.returncode == 2
+        assert expected_error in rejected.stderr
     write_json_file(synthesis_path, synthesis)
     finalized = run_credit_analysis_workflow(
         "finalize",
@@ -1202,9 +1264,17 @@ def test_credit_analysis_workflow_full_analysis_persists_every_finding(
     assert len(list(pathlib.Path(state["paths"]["findings_dir"]).glob("*.json"))) == 6
     assert not pathlib.Path(state["paths"]["context_dir"]).exists()
     assert not pathlib.Path(state["paths"]["pending_dir"]).exists()
+    accepted_synthesis = json.loads(
+        pathlib.Path(state["completed"][-1]["path"]).read_text(encoding="utf-8")
+    )
+    assert "call_classifications" not in accepted_synthesis
+    assert len(accepted_synthesis["classification_groups"]) == 5
     final_result = json.loads(
         pathlib.Path(state["final_result"]["path"]).read_text(encoding="utf-8")
     )
+    assert [
+        item["call_id"] for item in final_result["primary_call_mappings"]
+    ] == evidence["call_inventory"]
     assert [item["id"] for item in final_result["confirmed_findings"]] == synthesis[
         "finding_order"
     ]

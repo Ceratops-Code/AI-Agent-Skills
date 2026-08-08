@@ -39,10 +39,13 @@ confirmed finding and present every outstanding finding.
    deterministic totals from its context. Do not reload raw session material.
 4. Preserve every confirmed finding; group cohesive remediation by owning
    producer; assign each avoidable call to exactly one primary finding; retain
-   applicable secondary mappings; classify every call exactly once; order every
-   finding by expected value without suppressing any; leave `context-volume`
-   findings outside primary and secondary call-savings mappings; and write the
-   synthesis result to the exact pending path.
+   applicable secondary mappings; and order every finding without suppression.
+   For accounting, follow the controller's `classification_group_contract` and
+   group calls with the same classification, primary finding, and reason in
+   `classification_groups` using 1-based inventory positions; do not perform
+   separate semantic review for each call. Keep `context-volume` findings
+   outside call-savings mappings and write the synthesis result to the exact
+   pending path.
 5. Run controller `finalize`. On interruption, retain state and accepted results
    and resume with `status`.
 
