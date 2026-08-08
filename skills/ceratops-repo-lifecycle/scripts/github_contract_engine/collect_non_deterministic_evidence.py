@@ -14,11 +14,16 @@ from . import (
     collect_observed_states,
     compose_desired_state,
 )
+from .compose_desired_state import check_ids
 from .format_report import write_json
 from .github_api import default_contract_path, load_json
 
 
 SCRIPTS_DIR = pathlib.Path(__file__).resolve().parent.parent
+
+# Aggregate repository validation owns a caller-selected evidence file. AI-review
+# evidence collection must not invoke it without that deterministic contract.
+NON_DETERMINISTIC_COLLECTION_EXCLUSIONS = {"content.repository_validation"}
 
 
 def parse_param(item: str) -> tuple[str, Any]:
@@ -133,7 +138,12 @@ def repo_or_artifact_evidence(args: argparse.Namespace, surface: str) -> dict[st
     )
     parameters = _repo_parameters(args, contracts)
     selected: dict[str, set[str] | None] = {
-        name: (None if name == surface else set()) for name in paths
+        name: (
+            check_ids(contracts[name]) - NON_DETERMINISTIC_COLLECTION_EXCLUSIONS
+            if name == surface
+            else set()
+        )
+        for name in paths
     }
     desired_state = compose_desired_state(paths, parameters, selected)
     observed_states = collect_observed_states(desired_state)

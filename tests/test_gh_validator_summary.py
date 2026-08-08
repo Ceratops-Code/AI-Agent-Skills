@@ -20,6 +20,7 @@ sys.path.insert(0, str(SCRIPTS))
 from github_contract_engine import levels  # noqa: E402
 from github_contract_engine import schema_validation  # noqa: E402
 from github_contract_engine import github_api  # noqa: E402
+from github_contract_engine import collect_non_deterministic_evidence  # noqa: E402
 from github_contract_engine import codeql_disposition  # noqa: E402
 from github_contract_engine import audit_snapshot  # noqa: E402
 from github_contract_engine import organization_validator  # noqa: E402
@@ -401,6 +402,36 @@ class GHContractStateEngineTests(unittest.TestCase):
         self.assertIsNone(health["code"])
         self.assertNotIn("content.repository_validation", content["code"] or set())
         self.assertNotIn("content.repository_validation", create["code"] or set())
+
+        args = argparse.Namespace(
+            repo="example/repository",
+            local_repo_path=str(ROOT),
+            param=[],
+            github_contract=self.paths["repo"],
+            code_contract=self.paths["code"],
+            artifact_contract=self.paths["artifact"],
+        )
+        with mock.patch.object(
+            collect_non_deterministic_evidence,
+            "compose_desired_state",
+            return_value={"rules": []},
+        ) as compose, mock.patch.object(
+            collect_non_deterministic_evidence,
+            "collect_observed_states",
+            return_value=[],
+        ):
+            collect_non_deterministic_evidence.repo_or_artifact_evidence(
+                args, "code"
+            )
+
+        selected = compose.call_args.args[2]
+        self.assertEqual(selected["repo"], set())
+        self.assertEqual(selected["artifact"], set())
+        self.assertEqual(
+            selected["code"],
+            {check["id"] for check in self.contracts["code"]["checks"]}
+            - {"content.repository_validation"},
+        )
 
     def test_organization_parameter_precedence_is_cli_only(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
