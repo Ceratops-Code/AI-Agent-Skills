@@ -46,9 +46,8 @@ applies them.
 - Keep session evidence, accepted surface results, the append-only index, and
   the final machine result at their controller-retained paths. Do not echo raw
   session material or caller-local paths unnecessarily.
-- In a batch, keep every thread as an independent analysis and aggregate only
-  validated final machine results. Never claim cross-thread semantic synthesis
-  or savings deduplication.
+- For batches, group similar findings for presentation while preserving each
+  thread's findings and totals.
 
 ## Common Classification And ROI Rules
 

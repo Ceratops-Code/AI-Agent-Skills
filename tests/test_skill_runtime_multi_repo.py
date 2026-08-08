@@ -1184,7 +1184,13 @@ def test_credit_analysis_workflow_standalone_zero_findings_is_isolated(
     assert not (task_root / "pending").exists()
 
     contract = json.loads(CREDIT_ANALYSIS_CONTRACT.read_text(encoding="utf-8"))
-    assert "synthesis" not in [item["id"] for item in contract["public_actions"]]
+    public_actions = [item["id"] for item in contract["public_actions"]]
+    assert "synthesis" not in public_actions
+    assert "batch-summary" not in public_actions
+    assert contract["internal_phases"] == [
+        {"id": "synthesis", "public": False},
+        {"id": "batch-summary", "public": False},
+    ]
     rejected_root = tmp_path / "analysis-synthesis"
     rejected_root.mkdir()
     rejected_request = tmp_path / "request-synthesis.json"
@@ -1458,8 +1464,8 @@ def test_credit_analysis_batch_selects_recent_threads_and_projects_once(
             pathlib.Path(status["manifest_path"]).read_text(encoding="utf-8")
         )
         assert [item["thread_id"] for item in manifest["items"]] == expected_ids
-        assert manifest["estimated_semantic_passes"] == 6 * len(expected_ids)
-        assert status["estimated_semantic_passes"] == 6 * len(expected_ids)
+        assert manifest["estimated_semantic_passes"] == 6 * len(expected_ids) + 1
+        assert status["estimated_semantic_passes"] == 6 * len(expected_ids) + 1
         for item in manifest["items"]:
             evidence = json.loads(
                 pathlib.Path(item["evidence_path"]).read_text(encoding="utf-8")
@@ -1628,7 +1634,134 @@ def test_credit_analysis_batch_resumes_and_preserves_every_thread_finding(
         str(second_final),
     )
     assert ready.returncode == 0, ready.stderr
-    assert json.loads(ready.stdout)["ready_to_finalize"] is True
+    summary_status = json.loads(ready.stdout)
+    assert summary_status["pending_phase"] == "batch-summary"
+    assert summary_status["estimated_semantic_passes"] == 13
+    summary_path = pathlib.Path(summary_status["required_result_path"])
+    summary_context_path = pathlib.Path(summary_status["context_path"])
+    assert summary_path.name == "batch-summary.json"
+    context = json.loads(summary_context_path.read_text(encoding="utf-8"))
+    batch_finding_ids = [item["batch_finding_id"] for item in context["findings"]]
+    assert batch_finding_ids == [
+        f"{ids[0]}:instruction-gap",
+        f"{ids[1]}:instruction-gap",
+    ]
+    assert [item["thread_id"] for item in context["thread_totals"]] == ids
+    assert "call_inventory" not in context
+    assert context["result_contract"]["fields"] == [
+        "batch_id",
+        "pass_id",
+        "finding_fingerprint",
+        "artifact_paths",
+        "groups",
+    ]
+    resumed_summary = run_credit_analysis_workflow(
+        "status-batch", "--state", str(state_path)
+    )
+    assert resumed_summary.returncode == 0, resumed_summary.stderr
+    assert json.loads(resumed_summary.stdout) == summary_status
+    premature = run_credit_analysis_workflow(
+        "finalize-batch", "--state", str(state_path)
+    )
+    assert premature.returncode == 2
+    assert "batch summary is not accepted" in premature.stderr
+
+    summary = {
+        "batch_id": summary_status["batch_id"],
+        "pass_id": summary_status["pass_id"],
+        "finding_fingerprint": context["finding_fingerprint"],
+        "artifact_paths": context["artifact_paths"],
+        "groups": [
+            {
+                "id": "shared-instruction-gap",
+                "title": "Shared instruction gap",
+                "producer_type": "prompt",
+                "owner": "synthetic request",
+                "finding_ids": batch_finding_ids,
+                "recommended_control": context["findings"][0][
+                    "proposed_durable_control"
+                ],
+                "material_variants": [],
+                "confidence": 0.9,
+            }
+        ],
+    }
+    assert "schema" not in summary
+    assert "version" not in summary
+    write_json_file(
+        summary_path,
+        {**summary, "finding_fingerprint": "stale-fingerprint"},
+    )
+    stale = run_credit_analysis_workflow(
+        "advance-batch",
+        "--state",
+        str(state_path),
+        "--result",
+        str(summary_path),
+    )
+    assert stale.returncode == 2
+    assert "finding_fingerprint does not match" in stale.stderr
+    write_json_file(
+        summary_path,
+        {
+            **summary,
+            "groups": [
+                {
+                    **summary["groups"][0],
+                    "finding_ids": batch_finding_ids[:1],
+                }
+            ],
+        },
+    )
+    incomplete = run_credit_analysis_workflow(
+        "advance-batch",
+        "--state",
+        str(state_path),
+        "--result",
+        str(summary_path),
+    )
+    assert incomplete.returncode == 2
+    assert "partition every finding exactly once" in incomplete.stderr
+    write_json_file(summary_path, summary)
+    accepted = run_credit_analysis_workflow(
+        "advance-batch",
+        "--state",
+        str(state_path),
+        "--result",
+        str(summary_path),
+    )
+    assert accepted.returncode == 0, accepted.stderr
+    ready_to_finalize = json.loads(accepted.stdout)
+    assert ready_to_finalize["ready_to_finalize"] is True
+    assert ready_to_finalize["batch_summary_result_path"] == str(summary_path)
+    idempotent_summary = run_credit_analysis_workflow(
+        "advance-batch",
+        "--state",
+        str(state_path),
+        "--result",
+        str(summary_path),
+    )
+    assert idempotent_summary.returncode == 0, idempotent_summary.stderr
+    assert json.loads(idempotent_summary.stdout) == ready_to_finalize
+    write_json_file(
+        summary_path,
+        {
+            **summary,
+            "groups": [
+                {**summary["groups"][0], "title": "Conflicting summary"}
+            ],
+        },
+    )
+    conflict = run_credit_analysis_workflow(
+        "advance-batch",
+        "--state",
+        str(state_path),
+        "--result",
+        str(summary_path),
+    )
+    assert conflict.returncode == 2
+    assert "accepted batch summary changed" in conflict.stderr
+    write_json_file(summary_path, summary)
     finalized = run_credit_analysis_workflow(
         "finalize-batch", "--state", str(state_path)
     )
@@ -1643,14 +1776,28 @@ def test_credit_analysis_batch_resumes_and_preserves_every_thread_finding(
         "instruction-gap",
         "instruction-gap",
     ]
+    assert [item["thread_id"] for item in final["per_thread_totals"]] == ids
+    assert len(final["summary_groups"]) == 1
+    group = final["summary_groups"][0]
+    assert group["id"] == "shared-instruction-gap"
+    assert [item["batch_finding_id"] for item in group["findings"]] == (
+        batch_finding_ids
+    )
+    assert group["threads"] == ids
+    assert group["contributing_surfaces"] == ["instruction-reasoning"]
+    assert group["deduplicated_avoidable_call_count"] == 2
+    assert len(group["affected_calls"]) == 2
     assert final["totals"]["analyzed_threads"] == 2
     assert final["totals"]["session_collections"] == 2
     assert final["totals"]["avoidable_calls"] == 2
-    assert "without cross-thread semantic synthesis" in final["scope_limitation"]
+    assert "grouped only for presentation" in final["scope_limitation"]
     assert len(
         pathlib.Path(state["paths"]["index"]).read_text(encoding="utf-8").splitlines()
     ) == 2
-    assert state["cleanup"]["transient_paths"] == []
+    assert state["cleanup"]["transient_paths"] == [str(summary_context_path)]
+    assert not summary_context_path.exists()
+    assert summary_path.is_file()
+    assert final["retained_paths"]["batch_summary_result"] == str(summary_path)
     for item in state["items"]:
         child_root = pathlib.Path(item["state_path"]).parent
         assert not (child_root / "context").exists()

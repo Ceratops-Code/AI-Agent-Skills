@@ -10,7 +10,6 @@
   "surface_result_schema": "ceratops-credit-analysis-surface-result.v1",
   "synthesis_result_schema": "ceratops-credit-analysis-synthesis-result.v1",
   "final_result_schema": "ceratops-credit-analysis-final-result.v1",
-  "full_analysis_semantic_passes_per_thread": 6,
   "single_controller_commands": ["prepare", "advance", "status", "finalize"],
   "batch_controller_commands": [
     "prepare-batch",
@@ -121,6 +120,10 @@
   "internal_phases": [
     {
       "id": "synthesis",
+      "public": false
+    },
+    {
+      "id": "batch-summary",
       "public": false
     }
   ],

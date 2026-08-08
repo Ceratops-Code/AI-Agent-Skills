@@ -45,13 +45,11 @@ present every confirmed finding.
 5. Run controller `finalize`. On interruption, retain state and accepted results
    and resume with `status`.
 
-For a batch, run `prepare-batch` once. It freezes the index fingerprint,
-deterministic update-time and thread-ID ordering, project identity, selection
-manifest, exact child requests, and one prepared controller per selected
-thread. Complete and finalize the pending child, submit its final machine result
-through `advance-batch`, and resume through `status-batch`. After every child is
-accepted, run `finalize-batch`; do not create a temporary discovery script or
-recollect a prepared session.
+For a batch, run `prepare-batch` once to freeze the selection and prepare one
+controller per thread. Complete each child through `advance-batch` and resume
+with `status-batch`. After all children finish, run one internal `batch-summary`
+pass that assigns every finding to one summary group, then advance and finalize.
+Never recollect a prepared session or create a temporary discovery script.
 
 ## Completion Gate
 
@@ -75,7 +73,6 @@ protocol-overhead totals; avoidable versus total calls; priced cost only when
 available; and the retained final machine-evidence path. Never limit the output
 to a champion or top recommendation.
 
-For a batch, present every finding with its thread identity, report aggregate
-per-thread totals and the retained batch result, and state that no cross-thread
-semantic reconciliation or savings deduplication was performed. A full batch
-plans six semantic passes per selected thread before any correction retries.
+For a batch, group similar findings across threads. List each finding with its
+thread under exactly one summary group, report per-thread totals and the retained
+batch result, and plan six passes per thread plus one `batch-summary` pass.

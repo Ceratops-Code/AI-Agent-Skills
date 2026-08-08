@@ -9,8 +9,8 @@ judgment belongs to the pending action reference; synthesis is an internal
 model-gated phase. All state writes are atomic, stdout is decision-sized, and
 successful finalization deletes only recorded controller-owned context and
 pending-result files. Batch commands freeze indexed source selection, prepare
-one ordinary controller per selected thread, and aggregate only validated child
-results without cross-thread semantic reconciliation.
+one ordinary controller per selected thread, and open one validated internal
+batch-summary pass before grouped final publication.
 """
 
 from __future__ import annotations
@@ -123,6 +123,7 @@ BATCH_STATE_FIELDS = {
     "exclusions",
     "current_index",
     "completed",
+    "batch_summary",
     "paths",
     "immutable_artifacts",
     "cleanup",
@@ -149,6 +150,35 @@ BATCH_COMPLETED_FIELDS = {
     "sha256",
     "content_hash",
 }
+BATCH_SUMMARY_STATE_FIELDS = {
+    "pass_id",
+    "finding_fingerprint",
+    "finding_ids",
+    "context_path",
+    "result_path",
+    "context_sha256",
+    "accepted",
+}
+BATCH_SUMMARY_ACCEPTED_FIELDS = {"path", "sha256", "content_hash"}
+BATCH_SUMMARY_RESULT_FIELD_ORDER = (
+    "batch_id",
+    "pass_id",
+    "finding_fingerprint",
+    "artifact_paths",
+    "groups",
+)
+BATCH_SUMMARY_RESULT_FIELDS = set(BATCH_SUMMARY_RESULT_FIELD_ORDER)
+BATCH_SUMMARY_GROUP_FIELD_ORDER = (
+    "id",
+    "title",
+    "producer_type",
+    "owner",
+    "finding_ids",
+    "recommended_control",
+    "material_variants",
+    "confidence",
+)
+BATCH_SUMMARY_GROUP_FIELDS = set(BATCH_SUMMARY_GROUP_FIELD_ORDER)
 SURFACE_RESULT_FIELDS = {
     "schema",
     "analysis_id",
@@ -486,9 +516,6 @@ def _load_contract() -> dict[str, Any]:
             "batch",
         }:
             raise CreditAnalysisError("source selector metadata is invalid")
-    passes = contract.get("full_analysis_semantic_passes_per_thread")
-    if passes != len(contract.get("full_queue", [])):
-        raise CreditAnalysisError("per-thread semantic pass count disagrees with full queue")
     if contract.get("single_controller_commands") != [
         "prepare",
         "advance",
@@ -534,8 +561,11 @@ def _load_contract() -> dict[str, Any]:
             raise CreditAnalysisError(f"surface reference is not public: {item['id']}")
         _strings(item["candidate_selectors"], f"{item['id']} selectors")
     internal = _objects(contract.get("internal_phases"), "internal phases")
-    if internal != [{"id": "synthesis", "public": False}]:
-        raise CreditAnalysisError("synthesis must be the only internal phase")
+    if internal != [
+        {"id": "synthesis", "public": False},
+        {"id": "batch-summary", "public": False},
+    ]:
+        raise CreditAnalysisError("internal phases do not match the fixed contract")
     helper_categories = _strings(
         contract.get("helper_categories"), "helper categories"
     )
@@ -2603,12 +2633,20 @@ def _batch_request_paths(
         "analyses_dir": task_root / "analyses",
         "evidence_dir": task_root / "evidence",
         "index": task_root / "batch-results.jsonl",
+        "batch_summary_context": task_root / "batch-summary-context.json",
+        "batch_summary_result": task_root / "batch-summary.json",
         "final_result": task_root / "batch-final-machine-result.json",
     }
     collisions = [path.resolve() for path in paths.values()]
     if len(collisions) != len(set(collisions)):
         raise CreditAnalysisError("batch controller paths must be distinct")
-    for key in ("requests_dir", "analyses_dir", "evidence_dir"):
+    for key in (
+        "requests_dir",
+        "analyses_dir",
+        "evidence_dir",
+        "batch_summary_context",
+        "batch_summary_result",
+    ):
         try:
             paths[key].resolve().relative_to(task_root)
         except ValueError as exc:
@@ -2815,6 +2853,15 @@ def _save_batch_state(state: Mapping[str, Any]) -> None:
     _atomic_json(pathlib.Path(state["paths"]["state"]), state, "batch state")
 
 
+def _estimated_batch_semantic_passes(
+    state: Mapping[str, Any],
+    contract: Mapping[str, Any],
+) -> int:
+    """Derive per-thread passes from the fixed queue and add batch summary."""
+
+    return len(state["items"]) * len(contract["full_queue"]) + 1
+
+
 def _batch_manifest(
     state: Mapping[str, Any],
     contract: Mapping[str, Any],
@@ -2840,8 +2887,9 @@ def _batch_manifest(
             "unexamined_candidate_count": len(state["candidates"])
             - state["candidate_index"],
         },
-        "estimated_semantic_passes": len(state["items"])
-        * contract["full_analysis_semantic_passes_per_thread"],
+        "estimated_semantic_passes": _estimated_batch_semantic_passes(
+            state, contract
+        ),
         "items": state["items"],
         "exclusions": state["exclusions"],
     }
@@ -3104,6 +3152,233 @@ def _verify_batch_completed(state: Mapping[str, Any]) -> None:
             raise CreditAnalysisError("batch result index record mismatch")
 
 
+def _batch_finding_id(thread_id: str, finding_id: str) -> str:
+    return f"{thread_id}:{finding_id}"
+
+
+def _batch_finding_records(
+    state: Mapping[str, Any],
+    contract: Mapping[str, Any],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Build compact synthesis input from validated child final results only."""
+
+    findings: list[dict[str, Any]] = []
+    thread_totals: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item, record in zip(state["items"], state["completed"], strict=True):
+        result = _read_json(pathlib.Path(record["path"]), "batch child final result")
+        if result.get("schema") != contract["final_result_schema"]:
+            raise CreditAnalysisError("batch child final result schema changed")
+        thread_totals.append(
+            {
+                "thread_id": item["thread_id"],
+                "thread_name": item["thread_name"],
+                "analysis_id": result["analysis_id"],
+                "totals": result["totals"],
+            }
+        )
+        for finding in result["confirmed_findings"]:
+            batch_finding_id = _batch_finding_id(item["thread_id"], finding["id"])
+            if batch_finding_id in seen:
+                raise CreditAnalysisError(
+                    f"duplicate batch finding identity: {batch_finding_id}"
+                )
+            seen.add(batch_finding_id)
+            findings.append(
+                {
+                    "batch_finding_id": batch_finding_id,
+                    "thread_id": item["thread_id"],
+                    "thread_name": item["thread_name"],
+                    "analysis_id": result["analysis_id"],
+                    "finding_id": finding["id"],
+                    "title": finding["title"],
+                    "source_surface": finding["source_surface"],
+                    "producer_type": finding["producer_type"],
+                    "producer_owner": finding["producer_owner"],
+                    "proposed_durable_control": finding[
+                        "proposed_durable_control"
+                    ],
+                    "implementation_status": finding["implementation_status"],
+                    "deduplicated_avoidable_call_count": finding[
+                        "deduplicated_avoidable_call_count"
+                    ],
+                    "targeted_verification": finding["targeted_verification"],
+                    "helper_categories": finding["helper_categories"],
+                    "complexity": finding["complexity"],
+                    "confidence": finding["confidence"],
+                }
+            )
+    return findings, thread_totals
+
+
+def _open_batch_summary(
+    state: dict[str, Any],
+    contract: Mapping[str, Any],
+) -> None:
+    """Open the one deterministic cross-thread summary pass."""
+
+    if state["phase"] != "ready" or state["current_index"] != len(state["items"]):
+        raise CreditAnalysisError("batch summary cannot open before every child")
+    if state.get("batch_summary") is not None:
+        raise CreditAnalysisError("batch summary is already open")
+    findings, thread_totals = _batch_finding_records(state, contract)
+    pass_id = f"{state['batch_id']}.batch-summary"
+    fingerprint = _content_hash(
+        {"batch_id": state["batch_id"], "findings": findings}
+    )
+    context_path = pathlib.Path(state["paths"]["batch_summary_context"])
+    result_path = pathlib.Path(state["paths"]["batch_summary_result"])
+    context = {
+        "batch_id": state["batch_id"],
+        "pass_id": pass_id,
+        "finding_fingerprint": fingerprint,
+        "findings": findings,
+        "thread_totals": thread_totals,
+        "result_contract": {
+            "fields": list(BATCH_SUMMARY_RESULT_FIELD_ORDER),
+            "group_fields": list(BATCH_SUMMARY_GROUP_FIELD_ORDER),
+        },
+        "artifact_paths": {
+            "state": state["paths"]["state"],
+            "context": str(context_path),
+            "result": str(result_path),
+        },
+    }
+    _write_or_verify_json(context_path, context, "batch summary context")
+    state["batch_summary"] = {
+        "pass_id": pass_id,
+        "finding_fingerprint": fingerprint,
+        "finding_ids": [finding["batch_finding_id"] for finding in findings],
+        "context_path": str(context_path),
+        "result_path": str(result_path),
+        "context_sha256": _file_hash(context_path),
+        "accepted": None,
+    }
+    state["phase"] = "batch-summary"
+
+
+def _validate_batch_summary(
+    result: dict[str, Any],
+    *,
+    state: Mapping[str, Any],
+    contract: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Validate exact finding coverage without trusting model arithmetic."""
+
+    _closed(result, BATCH_SUMMARY_RESULT_FIELDS, "batch summary result")
+    pending = state.get("batch_summary")
+    if state.get("phase") not in {
+        "batch-summary",
+        "ready-to-finalize",
+        "finalized",
+    } or not isinstance(pending, Mapping):
+        raise CreditAnalysisError("batch summary is not pending")
+    expected = {
+        "batch_id": state["batch_id"],
+        "pass_id": pending["pass_id"],
+        "finding_fingerprint": pending["finding_fingerprint"],
+        "artifact_paths": {
+            "state": state["paths"]["state"],
+            "context": pending["context_path"],
+            "result": pending["result_path"],
+        },
+    }
+    for field, value in expected.items():
+        if result.get(field) != value:
+            raise CreditAnalysisError(
+                f"batch summary {field} does not match pending state"
+            )
+    findings, _ = _batch_finding_records(state, contract)
+    finding_by_id = {
+        finding["batch_finding_id"]: finding for finding in findings
+    }
+    if list(finding_by_id) != list(pending["finding_ids"]):
+        raise CreditAnalysisError("batch summary finding inventory changed")
+    normalized_groups: list[dict[str, Any]] = []
+    grouped_findings: list[str] = []
+    group_ids: set[str] = set()
+    for raw in _objects(result.get("groups"), "batch summary groups"):
+        _closed(raw, BATCH_SUMMARY_GROUP_FIELDS, "batch summary group")
+        group_id = _identifier(raw.get("id"), "batch summary group id")
+        title = raw.get("title")
+        producer_type = raw.get("producer_type")
+        owner = raw.get("owner")
+        finding_ids = _strings(
+            raw.get("finding_ids"), f"batch summary group {group_id} findings"
+        )
+        control = raw.get("recommended_control")
+        variants = _strings(
+            raw.get("material_variants"),
+            f"batch summary group {group_id} variants",
+            allow_empty=True,
+        )
+        confidence = _number(
+            raw.get("confidence"), f"batch summary group {group_id} confidence"
+        )
+        if (
+            group_id in group_ids
+            or not isinstance(title, str)
+            or not title.strip()
+            or producer_type not in contract["producer_types"]
+            or owner is not None and (not isinstance(owner, str) or not owner.strip())
+            or not set(finding_ids).issubset(finding_by_id)
+            or not isinstance(control, str)
+            or not control.strip()
+            or confidence > 1
+        ):
+            raise CreditAnalysisError(
+                f"batch summary group is invalid: {group_id}"
+            )
+        normalized_owner = owner.strip() if isinstance(owner, str) else None
+        if any(
+            finding_by_id[finding_id]["producer_type"] != producer_type
+            or finding_by_id[finding_id]["producer_owner"] != normalized_owner
+            for finding_id in finding_ids
+        ):
+            raise CreditAnalysisError(
+                f"batch summary group mixes producer owners: {group_id}"
+            )
+        group_ids.add(group_id)
+        grouped_findings.extend(finding_ids)
+        normalized_groups.append(
+            {
+                "id": group_id,
+                "title": title.strip(),
+                "producer_type": producer_type,
+                "owner": normalized_owner,
+                "finding_ids": finding_ids,
+                "recommended_control": control.strip(),
+                "material_variants": variants,
+                "confidence": confidence,
+            }
+        )
+    if (
+        set(grouped_findings) != set(finding_by_id)
+        or len(grouped_findings) != len(finding_by_id)
+    ):
+        raise CreditAnalysisError(
+            "batch summary groups must partition every finding exactly once"
+        )
+    return {**result, "groups": normalized_groups}
+
+
+def _cleanup_batch_transients(state: Mapping[str, Any]) -> None:
+    cleanup = state.get("cleanup")
+    expected_path = pathlib.Path(state["paths"]["batch_summary_context"]).resolve()
+    if cleanup != {
+        "owner": "credit-analysis-workflow",
+        "trigger": "successful-finalization",
+        "transient_paths": [str(expected_path)],
+    }:
+        raise CreditAnalysisError("batch cleanup ownership is invalid")
+    if expected_path.is_symlink():
+        raise CreditAnalysisError("refusing to delete symlinked batch context")
+    if expected_path.exists():
+        if not expected_path.is_file():
+            raise CreditAnalysisError("batch summary context is not a file")
+        expected_path.unlink()
+
+
 def _load_batch_state(
     state_path: pathlib.Path,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -3127,6 +3402,8 @@ def _load_batch_state(
         "analyses_dir",
         "evidence_dir",
         "index",
+        "batch_summary_context",
+        "batch_summary_result",
         "final_result",
     }:
         raise CreditAnalysisError("batch state paths are invalid")
@@ -3137,6 +3414,8 @@ def _load_batch_state(
         "analyses_dir": root / "analyses",
         "evidence_dir": root / "evidence",
         "index": root / "batch-results.jsonl",
+        "batch_summary_context": root / "batch-summary-context.json",
+        "batch_summary_result": root / "batch-summary.json",
         "final_result": root / "batch-final-machine-result.json",
     }
     for key, path in expected.items():
@@ -3167,7 +3446,13 @@ def _load_batch_state(
         if _file_hash(path) != pricing.get("sha256"):
             raise CreditAnalysisError("batch pricing artifact changed")
     phase = state.get("phase")
-    if phase not in {"preparing", "ready", "finalized"}:
+    if phase not in {
+        "preparing",
+        "ready",
+        "batch-summary",
+        "ready-to-finalize",
+        "finalized",
+    }:
         raise CreditAnalysisError("batch phase is invalid")
     manifest = artifacts.get("manifest")
     if phase == "preparing":
@@ -3207,19 +3492,124 @@ def _load_batch_state(
     if current_index != len(state["completed"]):
         raise CreditAnalysisError("batch current index does not match completed results")
     cleanup = state.get("cleanup")
+    summary_context = pathlib.Path(paths["batch_summary_context"]).resolve()
     if cleanup != {
         "owner": "credit-analysis-workflow",
-        "trigger": "successful-child-finalization",
-        "transient_paths": [],
+        "trigger": "successful-finalization",
+        "transient_paths": [str(summary_context)],
     }:
         raise CreditAnalysisError("batch cleanup contract is invalid")
-    if state.get("finalized") is True:
+    if phase == "ready" and current_index == len(items):
+        _open_batch_summary(state, contract)
+        _save_batch_state(state)
+        phase = state["phase"]
+    if phase == "ready" and current_index >= len(items):
+        raise CreditAnalysisError("ready batch must have one pending thread")
+    if phase in {"batch-summary", "ready-to-finalize", "finalized"} and (
+        current_index != len(items)
+    ):
+        raise CreditAnalysisError("batch summary opened before every thread finished")
+
+    summary = state.get("batch_summary")
+    if phase in {"preparing", "ready"}:
+        if summary is not None:
+            raise CreditAnalysisError("batch summary opened before its phase")
+    else:
+        if not isinstance(summary, dict):
+            raise CreditAnalysisError("batch summary state is missing")
+        _closed(summary, BATCH_SUMMARY_STATE_FIELDS, "batch summary state")
+        expected_pass_id = f"{state['batch_id']}.batch-summary"
+        finding_ids = _strings(
+            summary.get("finding_ids"),
+            "batch summary finding ids",
+            allow_empty=True,
+        )
+        findings, thread_totals = _batch_finding_records(state, contract)
+        expected_finding_ids = [item["batch_finding_id"] for item in findings]
+        expected_fingerprint = _content_hash(
+            {"batch_id": state["batch_id"], "findings": findings}
+        )
+        expected_context = {
+            "batch_id": state["batch_id"],
+            "pass_id": expected_pass_id,
+            "finding_fingerprint": expected_fingerprint,
+            "findings": findings,
+            "thread_totals": thread_totals,
+            "result_contract": {
+                "fields": list(BATCH_SUMMARY_RESULT_FIELD_ORDER),
+                "group_fields": list(BATCH_SUMMARY_GROUP_FIELD_ORDER),
+            },
+            "artifact_paths": {
+                "state": paths["state"],
+                "context": paths["batch_summary_context"],
+                "result": paths["batch_summary_result"],
+            },
+        }
+        if (
+            summary.get("pass_id") != expected_pass_id
+            or finding_ids != expected_finding_ids
+            or summary.get("finding_fingerprint") != expected_fingerprint
+            or pathlib.Path(str(summary.get("context_path"))).resolve()
+            != summary_context
+            or pathlib.Path(str(summary.get("result_path"))).resolve()
+            != pathlib.Path(paths["batch_summary_result"]).resolve()
+        ):
+            raise CreditAnalysisError("batch summary state identity is invalid")
+        if phase != "finalized" or summary_context.exists():
+            context = _existing_file(
+                summary.get("context_path"), "batch summary context"
+            )
+            if (
+                _file_hash(context) != summary.get("context_sha256")
+                or _content_hash(_read_json(context, "batch summary context"))
+                != _content_hash(expected_context)
+            ):
+                raise CreditAnalysisError("batch summary context changed")
+        accepted = summary.get("accepted")
+        if phase == "batch-summary":
+            if accepted is not None:
+                raise CreditAnalysisError("pending batch summary is already accepted")
+        else:
+            if not isinstance(accepted, dict):
+                raise CreditAnalysisError("accepted batch summary is missing")
+            _closed(
+                accepted,
+                BATCH_SUMMARY_ACCEPTED_FIELDS,
+                "accepted batch summary",
+            )
+            result = _existing_file(accepted.get("path"), "batch summary result")
+            payload = _validate_batch_summary(
+                _read_json(result, "batch summary result"),
+                state=state,
+                contract=contract,
+            )
+            if (
+                result.resolve()
+                != pathlib.Path(paths["batch_summary_result"]).resolve()
+                or _file_hash(result) != accepted.get("sha256")
+                or _content_hash(payload) != accepted.get("content_hash")
+            ):
+                raise CreditAnalysisError("accepted batch summary changed")
+
+    finalized = state.get("finalized")
+    if not isinstance(finalized, bool) or finalized != (phase == "finalized"):
+        raise CreditAnalysisError("batch finalized status disagrees with its phase")
+    if finalized:
         final = state.get("final_result")
-        if phase != "finalized" or not isinstance(final, dict):
+        if not isinstance(final, dict):
             raise CreditAnalysisError("finalized batch state is incomplete")
+        _closed(final, {"path", "sha256", "content_hash"}, "batch final result")
         final_path = _existing_file(final.get("path"), "batch final result")
-        if _file_hash(final_path) != final.get("sha256"):
+        final_payload = _read_json(final_path, "batch final result")
+        if (
+            final_path.resolve() != pathlib.Path(paths["final_result"]).resolve()
+            or _file_hash(final_path) != final.get("sha256")
+            or _content_hash(final_payload) != final.get("content_hash")
+        ):
             raise CreditAnalysisError("batch final result hash mismatch")
+        _cleanup_batch_transients(state)
+    elif state.get("final_result") is not None:
+        raise CreditAnalysisError("unfinished batch records a final result")
     return state, contract
 
 
@@ -3234,20 +3624,35 @@ def _batch_public_status(
             "selected_threads": len(state["items"]),
             "batch_state_path": state["paths"]["state"],
             "manifest_path": state["paths"]["manifest"],
+            "batch_summary_result_path": state["batch_summary"]["result_path"],
             "final_result_path": state["final_result"]["path"],
         }
     common = {
         "batch_id": state["batch_id"],
         "selected_threads": len(state["items"]),
-        "estimated_semantic_passes": len(state["items"])
-        * contract["full_analysis_semantic_passes_per_thread"],
+        "estimated_semantic_passes": _estimated_batch_semantic_passes(
+            state, contract
+        ),
         "batch_state_path": state["paths"]["state"],
         "manifest_path": state["paths"]["manifest"],
     }
     if state["phase"] == "preparing":
         return {**common, "preparing": True, "resume_with": "prepare-batch"}
-    if state["current_index"] >= len(state["items"]):
-        return {**common, "ready_to_finalize": True}
+    if state["phase"] == "batch-summary":
+        summary = state["batch_summary"]
+        return {
+            **common,
+            "pending_phase": "batch-summary",
+            "pass_id": summary["pass_id"],
+            "context_path": summary["context_path"],
+            "required_result_path": summary["result_path"],
+        }
+    if state["phase"] == "ready-to-finalize":
+        return {
+            **common,
+            "ready_to_finalize": True,
+            "batch_summary_result_path": state["batch_summary"]["result_path"],
+        }
     item = state["items"][state["current_index"]]
     child_status = command_status(pathlib.Path(item["state_path"]))
     return {
@@ -3308,6 +3713,7 @@ def command_prepare_batch(request_path: pathlib.Path) -> dict[str, Any]:
         "exclusions": exclusions,
         "current_index": 0,
         "completed": [],
+        "batch_summary": None,
         "paths": {key: str(value) for key, value in request["paths"].items()},
         "immutable_artifacts": {
             "request": {
@@ -3330,8 +3736,10 @@ def command_prepare_batch(request_path: pathlib.Path) -> dict[str, Any]:
         },
         "cleanup": {
             "owner": "credit-analysis-workflow",
-            "trigger": "successful-child-finalization",
-            "transient_paths": [],
+            "trigger": "successful-finalization",
+            "transient_paths": [
+                str(request["paths"]["batch_summary_context"].resolve())
+            ],
         },
         "finalized": False,
         "final_result": None,
@@ -3350,7 +3758,7 @@ def command_advance_batch(
     state_path: pathlib.Path,
     result_path: pathlib.Path,
 ) -> dict[str, Any]:
-    """Accept the exact finalized child and advance the immutable batch order."""
+    """Accept the exact pending child or batch-summary result."""
 
     state, contract = _load_batch_state(state_path)
     result = _existing_file(str(result_path), "batch child final result")
@@ -3360,8 +3768,35 @@ def command_advance_batch(
             if _file_hash(result) != previous["sha256"]:
                 raise CreditAnalysisError("conflicting batch result resubmission")
             return _batch_public_status(state, contract)
-    if state["finalized"] or state["current_index"] >= len(state["items"]):
-        raise CreditAnalysisError("batch has no pending thread result")
+    summary = state.get("batch_summary")
+    if isinstance(summary, dict) and summary.get("accepted") is not None:
+        accepted = summary["accepted"]
+        if result.resolve() == pathlib.Path(accepted["path"]).resolve():
+            if _file_hash(result) != accepted["sha256"]:
+                raise CreditAnalysisError(
+                    "conflicting batch summary resubmission"
+                )
+            return _batch_public_status(state, contract)
+    if state["phase"] == "batch-summary":
+        if not isinstance(summary, dict):
+            raise CreditAnalysisError("batch summary state is missing")
+        if result.resolve() != pathlib.Path(summary["result_path"]).resolve():
+            raise CreditAnalysisError("result is not the pending batch summary")
+        payload = _validate_batch_summary(
+            _read_json(result, "batch summary result"),
+            state=state,
+            contract=contract,
+        )
+        summary["accepted"] = {
+            "path": str(result),
+            "sha256": _file_hash(result),
+            "content_hash": _content_hash(payload),
+        }
+        state["phase"] = "ready-to-finalize"
+        _save_batch_state(state)
+        return _batch_public_status(state, contract)
+    if state["phase"] != "ready" or state["current_index"] >= len(state["items"]):
+        raise CreditAnalysisError("batch has no pending result")
     item = state["items"][state["current_index"]]
     if result.resolve() != pathlib.Path(item["final_result_path"]).resolve():
         raise CreditAnalysisError("batch result is not for the exact pending thread")
@@ -3388,6 +3823,8 @@ def command_advance_batch(
     )
     state["completed"].append(record)
     state["current_index"] += 1
+    if state["current_index"] == len(state["items"]):
+        _open_batch_summary(state, contract)
     _save_batch_state(state)
     return _batch_public_status(state, contract)
 
@@ -3396,10 +3833,12 @@ def _build_batch_final(
     state: Mapping[str, Any],
     contract: Mapping[str, Any],
 ) -> dict[str, Any]:
-    """Aggregate every child result without cross-thread semantic deduplication."""
+    """Group findings for presentation without changing per-thread accounting."""
 
     thread_results: list[dict[str, Any]] = []
+    thread_totals: list[dict[str, Any]] = []
     findings: list[dict[str, Any]] = []
+    finding_by_batch_id: dict[str, dict[str, Any]] = {}
     risks: list[dict[str, Any]] = []
     dismissals: list[dict[str, Any]] = []
     exclusions: list[dict[str, Any]] = []
@@ -3419,7 +3858,20 @@ def _build_batch_final(
             "analysis_id": result["analysis_id"],
         }
         thread_results.append({**identity, "path": record["path"], "result": result})
-        findings.extend({**identity, "finding": value} for value in result["confirmed_findings"])
+        thread_totals.append({**identity, "totals": result["totals"]})
+        for value in result["confirmed_findings"]:
+            batch_finding_id = _batch_finding_id(item["thread_id"], value["id"])
+            if batch_finding_id in finding_by_batch_id:
+                raise CreditAnalysisError(
+                    f"duplicate batch finding identity: {batch_finding_id}"
+                )
+            entry = {
+                **identity,
+                "batch_finding_id": batch_finding_id,
+                "finding": value,
+            }
+            finding_by_batch_id[batch_finding_id] = entry
+            findings.append(entry)
         risks.extend({**identity, "risk": value} for value in result["plausible_risks"])
         dismissals.extend({**identity, "dismissal": value} for value in result["dismissals"])
         exclusions.extend(
@@ -3448,19 +3900,115 @@ def _build_batch_final(
             for key, value in priced.items():
                 if isinstance(value, (int, float)) and not isinstance(value, bool):
                     priced_totals[key] += float(value)
+
+    summary_state = state.get("batch_summary")
+    if not isinstance(summary_state, Mapping) or not isinstance(
+        summary_state.get("accepted"), Mapping
+    ):
+        raise CreditAnalysisError("batch summary is not accepted")
+    summary_path = _existing_file(
+        summary_state["accepted"].get("path"), "accepted batch summary"
+    )
+    summary = _validate_batch_summary(
+        _read_json(summary_path, "accepted batch summary"),
+        state=state,
+        contract=contract,
+    )
+    surface_rank = {
+        surface_id: rank
+        for rank, surface_id in enumerate(contract["surface_order"])
+    }
+    helper_rank = {
+        category: rank
+        for rank, category in enumerate(contract["helper_categories"])
+    }
+    status_rank = {
+        status: rank
+        for rank, status in enumerate(contract["implementation_statuses"])
+    }
+    summary_groups: list[dict[str, Any]] = []
+    for rank, group in enumerate(summary["groups"], start=1):
+        members = [finding_by_batch_id[value] for value in group["finding_ids"]]
+        affected_calls: list[dict[str, str]] = []
+        seen_calls: set[tuple[str, str]] = set()
+        for member in members:
+            for call_id in member["finding"]["primary_call_ids"]:
+                key = (member["thread_id"], call_id)
+                if key not in seen_calls:
+                    seen_calls.add(key)
+                    affected_calls.append(
+                        {"thread_id": member["thread_id"], "call_id": call_id}
+                    )
+        summary_groups.append(
+            {
+                "id": group["id"],
+                "title": group["title"],
+                "expected_value_rank": rank,
+                "producer_type": group["producer_type"],
+                "owner": group["owner"],
+                "recommended_control": group["recommended_control"],
+                "material_variants": group["material_variants"],
+                "confidence": group["confidence"],
+                "findings": [
+                    {
+                        "batch_finding_id": member["batch_finding_id"],
+                        "thread_id": member["thread_id"],
+                        "thread_name": member["thread_name"],
+                        "analysis_id": member["analysis_id"],
+                        "finding_id": member["finding"]["id"],
+                        "title": member["finding"]["title"],
+                        "source_surface": member["finding"]["source_surface"],
+                    }
+                    for member in members
+                ],
+                "threads": list(
+                    dict.fromkeys(member["thread_id"] for member in members)
+                ),
+                "contributing_surfaces": sorted(
+                    {member["finding"]["source_surface"] for member in members},
+                    key=lambda value: surface_rank[value],
+                ),
+                "helper_categories": sorted(
+                    {
+                        category
+                        for member in members
+                        for category in member["finding"]["helper_categories"]
+                    },
+                    key=lambda value: helper_rank[value],
+                ),
+                "implementation_statuses": sorted(
+                    {
+                        member["finding"]["implementation_status"]
+                        for member in members
+                    },
+                    key=lambda value: status_rank[value],
+                ),
+                "targeted_verification": [
+                    {
+                        "batch_finding_id": member["batch_finding_id"],
+                        "checks": member["finding"]["targeted_verification"],
+                    }
+                    for member in members
+                ],
+                "affected_calls": affected_calls,
+                "deduplicated_avoidable_call_count": len(affected_calls),
+            }
+        )
     return {
         "schema": contract["batch_final_result_schema"],
         "batch_id": state["batch_id"],
         "mode": "per-thread-batch",
         "scope_limitation": (
-            "Results are complete per-thread full analyses aggregated without "
-            "cross-thread semantic synthesis or cross-thread savings deduplication."
+            "Similar findings are grouped only for presentation; each thread's "
+            "findings, classifications, and savings totals remain independent."
         ),
         "selector": state["selector"],
         "as_of": state["as_of"],
         "source_index": state["source_index"],
         "selection_exclusions": state["exclusions"],
         "thread_results": thread_results,
+        "per_thread_totals": thread_totals,
+        "summary_groups": summary_groups,
         "confirmed_findings": findings,
         "plausible_risks": risks,
         "dismissals": dismissals,
@@ -3482,6 +4030,7 @@ def _build_batch_final(
             "manifest": state["paths"]["manifest"],
             "batch_state": state["paths"]["state"],
             "batch_index": state["paths"]["index"],
+            "batch_summary_result": str(summary_path),
             "child_final_results": [record["path"] for record in state["completed"]],
             "batch_final_machine_result": state["paths"]["final_result"],
         },
@@ -3489,13 +4038,13 @@ def _build_batch_final(
 
 
 def command_finalize_batch(state_path: pathlib.Path) -> None:
-    """Verify every child and retain one complete deterministic batch result."""
+    """Verify synthesis and retain one complete grouped batch result."""
 
     state, contract = _load_batch_state(state_path)
     if state["finalized"]:
         return
-    if state["phase"] != "ready" or state["current_index"] != len(state["items"]):
-        raise CreditAnalysisError("batch still has unfinished thread analyses")
+    if state["phase"] != "ready-to-finalize":
+        raise CreditAnalysisError("batch summary is not accepted")
     _verify_batch_completed(state)
     final = _build_batch_final(state, contract)
     path = pathlib.Path(state["paths"]["final_result"])
@@ -3508,6 +4057,7 @@ def command_finalize_batch(state_path: pathlib.Path) -> None:
         "content_hash": _content_hash(final),
     }
     _save_batch_state(state)
+    _cleanup_batch_transients(state)
 
 
 def build_parser() -> argparse.ArgumentParser:
