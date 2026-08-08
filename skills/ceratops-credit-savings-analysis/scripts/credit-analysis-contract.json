@@ -5,7 +5,6 @@
   "request_schema": "ceratops-credit-analysis-request.v1",
   "batch_request_schema": "ceratops-credit-analysis-batch-request.v1",
   "batch_manifest_schema": "ceratops-credit-analysis-batch-manifest.v1",
-  "batch_final_result_schema": "ceratops-credit-analysis-batch-final-result.v1",
   "evidence_schema": "ceratops-credit-analysis-evidence.v1",
   "surface_result_schema": "ceratops-credit-analysis-surface-result.v1",
   "synthesis_result_schema": "ceratops-credit-analysis-synthesis-result.v1",

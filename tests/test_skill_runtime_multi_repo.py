@@ -1464,8 +1464,6 @@ def test_credit_analysis_batch_selects_recent_threads_and_projects_once(
             pathlib.Path(status["manifest_path"]).read_text(encoding="utf-8")
         )
         assert [item["thread_id"] for item in manifest["items"]] == expected_ids
-        assert manifest["estimated_semantic_passes"] == 6 * len(expected_ids) + 1
-        assert status["estimated_semantic_passes"] == 6 * len(expected_ids) + 1
         for item in manifest["items"]:
             evidence = json.loads(
                 pathlib.Path(item["evidence_path"]).read_text(encoding="utf-8")
@@ -1636,7 +1634,6 @@ def test_credit_analysis_batch_resumes_and_preserves_every_thread_finding(
     assert ready.returncode == 0, ready.stderr
     summary_status = json.loads(ready.stdout)
     assert summary_status["pending_phase"] == "batch-summary"
-    assert summary_status["estimated_semantic_passes"] == 13
     summary_path = pathlib.Path(summary_status["required_result_path"])
     summary_context_path = pathlib.Path(summary_status["context_path"])
     assert summary_path.name == "batch-summary.json"
@@ -1771,6 +1768,8 @@ def test_credit_analysis_batch_resumes_and_preserves_every_thread_finding(
     final = json.loads(
         pathlib.Path(state["final_result"]["path"]).read_text(encoding="utf-8")
     )
+    assert "schema" not in final
+    assert "version" not in final
     assert [item["thread_id"] for item in final["confirmed_findings"]] == ids
     assert [item["finding"]["id"] for item in final["confirmed_findings"]] == [
         "instruction-gap",
@@ -7251,6 +7250,9 @@ def test_transaction_retry_policy_and_acl_order(
 ) -> None:
     builder = load_runtime_builder()
 
+    class RenameError(OSError):
+        winerror: int
+
     class RenameProbe:
         def __init__(self, failures: int, *, transient: bool) -> None:
             self.failures = failures
@@ -7260,11 +7262,11 @@ def test_transaction_retry_policy_and_acl_order(
         def replace(self, _target: object) -> None:
             self.calls += 1
             if self.calls <= self.failures:
-                error = OSError(
+                error = RenameError(
                     errno.EBUSY if self.transient else errno.EACCES,
                     "rename failure",
                 )
-                setattr(error, "winerror", 32 if self.transient else 5)
+                error.winerror = 32 if self.transient else 5
                 raise error
 
     monkeypatch.setattr(builder["time"], "sleep", lambda _seconds: None)

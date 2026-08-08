@@ -2853,15 +2853,6 @@ def _save_batch_state(state: Mapping[str, Any]) -> None:
     _atomic_json(pathlib.Path(state["paths"]["state"]), state, "batch state")
 
 
-def _estimated_batch_semantic_passes(
-    state: Mapping[str, Any],
-    contract: Mapping[str, Any],
-) -> int:
-    """Derive per-thread passes from the fixed queue and add batch summary."""
-
-    return len(state["items"]) * len(contract["full_queue"]) + 1
-
-
 def _batch_manifest(
     state: Mapping[str, Any],
     contract: Mapping[str, Any],
@@ -2887,9 +2878,6 @@ def _batch_manifest(
             "unexamined_candidate_count": len(state["candidates"])
             - state["candidate_index"],
         },
-        "estimated_semantic_passes": _estimated_batch_semantic_passes(
-            state, contract
-        ),
         "items": state["items"],
         "exclusions": state["exclusions"],
     }
@@ -3630,9 +3618,6 @@ def _batch_public_status(
     common = {
         "batch_id": state["batch_id"],
         "selected_threads": len(state["items"]),
-        "estimated_semantic_passes": _estimated_batch_semantic_passes(
-            state, contract
-        ),
         "batch_state_path": state["paths"]["state"],
         "manifest_path": state["paths"]["manifest"],
     }
@@ -3995,7 +3980,6 @@ def _build_batch_final(
             }
         )
     return {
-        "schema": contract["batch_final_result_schema"],
         "batch_id": state["batch_id"],
         "mode": "per-thread-batch",
         "scope_limitation": (

@@ -75,4 +75,4 @@ to a champion or top recommendation.
 
 For a batch, group similar findings across threads. List each finding with its
 thread under exactly one summary group, report per-thread totals and the retained
-batch result, and plan six passes per thread plus one `batch-summary` pass.
+batch result.
