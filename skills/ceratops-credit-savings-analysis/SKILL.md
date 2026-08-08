@@ -97,18 +97,28 @@ applies them.
 
 ### Output Contract
 
-- Retain every confirmed finding in machine evidence, but present only
-  findings whose implementation status is `unimplemented`. Give each a
-  plain-language title and about two short lines: `Problem` names what happened,
-  where, and the concrete waste; `Fix` names the smallest durable correction
-  and targeted verification. Do not show internal IDs, producer-group headings,
-  status labels, confidence, helper taxonomy, or call IDs unless requested or
-  needed to distinguish episodes.
-- Explain each plausible risk in plain language as the observed signal, missing
-  evidence, and evidence needed for confirmation. Combine overlapping risks for
-  presentation while retaining every machine record. For standalone actions,
-  state that the conclusion is limited to the selected surface and is not a
-  whole-thread reconciliation.
+- Retain every confirmed finding in machine evidence. Before the detailed list,
+  report `Confirmed: N; outstanding: M; already addressed: K`. Show details only
+  for outstanding findings unless the user requests all findings.
+- Give each outstanding finding a plain-language title followed by:
+  - `Problem:` two to four sentences naming the owner, concrete episode, what
+    failed, and why the resulting work was avoidable.
+  - `Evidence:` the affected-call count and relevant command, tool, artifact,
+    answer, and user-correction sequence; show IDs only on request.
+  - `Fix:` the exact durable control, its owner, and how it completes the flow
+    end to end.
+  - `Verification:` the exact behavior test proving every included gap.
+  - `Savings:` observed calls, expected similar-run savings, implementation
+    cost, ongoing complexity, and material assumptions.
+- Do not show status labels, confidence, internal IDs, or helper taxonomy unless
+  requested.
+- Present each plausible risk separately with `Observed:` for the concrete
+  sequence, `Unknown:` for competing explanations, `Why not confirmed:` for the
+  exact missing fact and why choosing an explanation would be speculation, and
+  `How to confirm:` for the exact metadata or test. Do not merge risks when that
+  hides a distinct unknown or evidence source, and do not include a risk in
+  confirmed savings. For standalone actions, state that the conclusion is
+  limited to the selected surface and is not a whole-thread reconciliation.
 
 ## Analysis-Only Boundaries
 

@@ -10,6 +10,13 @@ controlled iteration.
 - Review failed artifact loops, repeated corrections, reversions, user-driven
   rework, misplaced QA, oversized or duplicate validation, repeated renders or
   tests, and failures a producer should have prevented.
+- Compare the ordered user messages with the preceding answer, tool result, and
+  artifact sequence. One message may combine a new request, correction,
+  clarification, and approval; infer each applicable role in the model pass
+  instead of expecting a deterministic message label.
+- When an exact process result or preceding answer is absent, name that missing
+  fact and keep the candidate plausible unless the remaining evidence proves or
+  dismisses it.
 - Treat a required proposal iteration, bounded visual refinement, or explicit
   regression gate as necessary when its scope and stopping rule were followed.
 - Locate the earliest producer prevention point for savings accounting, but

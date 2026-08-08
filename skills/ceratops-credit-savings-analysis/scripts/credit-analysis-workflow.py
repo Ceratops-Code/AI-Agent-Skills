@@ -832,6 +832,7 @@ def _compact_call(call: Mapping[str, Any], *, semantic: bool) -> dict[str, Any]:
         "call_id": call["call_id"],
         "turn_id": call["turn_id"],
         "index": call["index"],
+        "user_message_ids": call.get("user_message_ids", []),
         "tokens": call["tokens"],
         "estimated_credit_cost": call.get("estimated_credit_cost"),
         "semantic_actions": compact_semantics,
@@ -842,6 +843,46 @@ def _compact_call(call: Mapping[str, Any], *, semantic: bool) -> dict[str, Any]:
         result["actions"] = call.get("actions", [])
         result["run_duration_ms"] = call.get("run_duration_ms")
     return result
+
+
+def _user_messages_for_calls(
+    evidence: Mapping[str, Any],
+    call_ids: list[str],
+) -> list[dict[str, Any]]:
+    """Return each redacted user message referenced by selected calls once."""
+
+    selected = set(call_ids)
+    required_message_ids: set[str] = set()
+    for call in _all_calls(evidence):
+        if call.get("call_id") not in selected:
+            continue
+        message_ids = call.get("user_message_ids", [])
+        if not isinstance(message_ids, list) or not all(
+            isinstance(message_id, str) for message_id in message_ids
+        ):
+            raise CreditAnalysisError("evidence user-message references are invalid")
+        required_message_ids.update(message_ids)
+
+    messages: list[dict[str, Any]] = []
+    found: set[str] = set()
+    runs = evidence.get("runs")
+    if not isinstance(runs, list):
+        raise CreditAnalysisError("evidence runs are invalid")
+    for run in runs:
+        if not isinstance(run, dict) or not isinstance(
+            run.get("user_messages"), list
+        ):
+            raise CreditAnalysisError("evidence user messages are invalid")
+        for message in run["user_messages"]:
+            if not isinstance(message, dict):
+                raise CreditAnalysisError("evidence user message is invalid")
+            message_id = message.get("message_id")
+            if message_id in required_message_ids:
+                messages.append(message)
+                found.add(str(message_id))
+    if found != required_message_ids:
+        raise CreditAnalysisError("evidence user-message reference is missing")
+    return messages
 
 
 def _accepted_payloads(state: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -917,6 +958,7 @@ def _open_pending(
             ),
             "candidate_call_ids": candidates,
             "focused_run_ids": list(focused_runs),
+            "user_messages": _user_messages_for_calls(evidence, candidates),
             "candidate_evidence": [
                 _compact_call(
                     call,

@@ -197,12 +197,33 @@ def credit_analysis_session(
             }
         )
 
+    def add_user_message(timestamp: str, text: str) -> None:
+        rows.append(
+            {
+                "timestamp": timestamp,
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": text}],
+                },
+            }
+        )
+
     rows.append(
         {
             "timestamp": "2026-08-01T00:00:00Z",
             "type": "turn_context",
             "payload": {"turn_id": "turn-1"},
         }
+    )
+    add_user_message(
+        "2026-08-01T00:00:00.500Z",
+        (
+            "Fix the failed read, correct the earlier plan, apply my approval, "
+            "and use token=synthetic-user-secret. Explain the cause at "
+            f"{path.parent / 'private' / 'input.txt'}"
+        ),
     )
     add_call(
         "2026-08-01T00:00:01Z",
@@ -229,6 +250,10 @@ def credit_analysis_session(
             "payload": {"turn_id": "turn-2"},
         }
     )
+    add_user_message(
+        "2026-08-01T00:01:00.500Z",
+        "Wait for the agent and clarify whether the result needs another check.",
+    )
     add_call(
         "2026-08-01T00:01:01Z",
         "turn-2",
@@ -244,6 +269,10 @@ def credit_analysis_session(
             "type": "turn_context",
             "payload": {"turn_id": "turn-3"},
         }
+    )
+    add_user_message(
+        "2026-08-01T00:02:00.500Z",
+        "Give the final result for this completed run.",
     )
     add_call("2026-08-01T00:02:01Z", "turn-3", final=True)
     path.write_text(
@@ -617,7 +646,27 @@ def test_credit_analysis_workflow_full_analysis_persists_every_finding(
         "session_reads": 1,
         "completed_runs": 3,
         "model_calls": 6,
+        "user_messages": 3,
     }
+    assert evidence["redaction"] == {
+        "method": "pattern-based-replacement",
+        "targets": [
+            "credential-like-values",
+            "user-profile-roots",
+            "local-paths",
+        ],
+        "complete_secret_detection_guaranteed": False,
+        "semantic_classification": "none",
+    }
+    first_message = evidence["runs"][0]["user_messages"][0]
+    assert "correct the earlier plan" in first_message["text"]
+    assert "apply my approval" in first_message["text"]
+    assert "<local-path>" in first_message["text"]
+    assert "<redacted>" in first_message["text"]
+    assert "kind" not in first_message
+    assert evidence["runs"][0]["calls"][1]["user_message_ids"] == [
+        first_message["message_id"]
+    ]
     assert evidence["focused_semantic_context"]["run_ids"] == ["turn-1", "turn-2"]
     assert evidence["focused_semantic_context"]["covered_percent"] == 83.33
     fingerprint = evidence["evidence_fingerprint"]
@@ -679,6 +728,19 @@ def test_credit_analysis_workflow_full_analysis_persists_every_finding(
         surface = status["pending_surface"]
         observed_order.append(surface)
         context = json.loads(pathlib.Path(status["context_path"]).read_text(encoding="utf-8"))
+        if surface == "instruction-reasoning":
+            assert [
+                message["message_id"] for message in context["user_messages"]
+            ] == [
+                "turn-1:user:1",
+                "turn-2:user:1",
+                "turn-3:user:1",
+            ]
+            assert all("kind" not in message for message in context["user_messages"])
+            assert all(
+                call["user_message_ids"]
+                for call in context["candidate_evidence"]
+            )
         kwargs: dict[str, Any] = {}
         if surface == "helper-contracts":
             reviews = [
@@ -1962,9 +2024,22 @@ def test_model_call_ledger_keeps_full_evidence_out_of_stdout(
     evidence = tmp_path / "ledger.json"
     semantic_evidence = tmp_path / "semantic.json"
     local_path = str(tmp_path / "private" / "command.txt")
+    user_message_text = (
+        "Please handle token=sentinel-secret, correct the previous answer, "
+        f"accept my approval, and clarify the request at {local_path}"
+    )
     rows = [
         {
             "timestamp": "2026-07-25T00:00:00Z",
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": user_message_text}],
+            },
+        },
+        {
+            "timestamp": "2026-07-25T00:00:00.500Z",
             "type": "turn_context",
             "payload": {"turn_id": "turn-1"},
         },
@@ -2120,6 +2195,18 @@ def test_model_call_ledger_keeps_full_evidence_out_of_stdout(
     serialized_semantics = json.dumps(semantic_detail)
     assert "sentinel-secret" not in serialized_semantics
     assert local_path not in serialized_semantics
+    user_message = semantic_detail["selected_runs"][0]["user_messages"][0]
+    assert user_message["first_model_call_index"] == 1
+    assert "correct the previous answer" in user_message["text"]
+    assert "accept my approval" in user_message["text"]
+    assert "clarify the request" in user_message["text"]
+    assert "<redacted>" in user_message["text"]
+    assert "<local-path>" in user_message["text"]
+    assert "kind" not in user_message
+    assert semantic_detail["redaction"]["semantic_classification"] == "none"
+    assert semantic_detail["selected_runs"][0]["calls"][1][
+        "user_message_ids"
+    ] == [user_message["message_id"]]
     assert semantic_detail["selected_runs"][0]["calls"][0][
         "semantic_actions"
     ][0]["summary"] == (
@@ -2562,10 +2649,10 @@ def test_model_call_ledger_usage_summary_is_ranked_and_evidence_based(
         "distinct_calls": 5,
         "repeated_calls": 1,
         "retries": 1,
-        "explicit_failures": 4,
+        "explicit_failures": 5,
         "structured_tool_errors": 2,
-        "nonzero_process_results": 2,
-        "timeouts": 2,
+        "nonzero_process_results": 3,
+        "timeouts": 3,
         "terminations": 1,
         "estimated_credit_cost": 0.00321,
     }
@@ -2587,9 +2674,10 @@ def test_model_call_ledger_usage_summary_is_ranked_and_evidence_based(
     assert all(len(ranked) == 1 for ranked in summary["rankings"].values())
     assert summary["telemetry"]["functions_exec"] == {
         "outer_actions": 1,
-        "child_calls": "unavailable",
+        "child_calls": "not_enumerated",
+        "outer_actions_with_emitted_process_results": 1,
     }
-    assert "functions_exec_child_calls_unavailable" in summary["telemetry"][
+    assert "functions_exec_child_calls_not_enumerated" in summary["telemetry"][
         "limitations"
     ]
 
@@ -2610,9 +2698,12 @@ def test_model_call_ledger_usage_summary_is_ranked_and_evidence_based(
     assert first["tool_action_results"][1]["outcomes"][
         "nonzero_process_result"
     ] is True
+    assert first["tool_action_results"][0]["process_exit_codes"] == [7]
+    assert first["tool_action_results"][1]["process_exit_codes"] == [3]
     assert first["tool_action_results"][-1]["name"] == "exec"
-    assert first["tool_action_results"][-1]["result_telemetry"] == "unstructured"
-    assert detailed["telemetry"]["structured_process_result_actions"] == 3
+    assert first["tool_action_results"][-1]["result_telemetry"] == "structured"
+    assert first["tool_action_results"][-1]["process_exit_codes"] == [9]
+    assert detailed["telemetry"]["structured_process_result_actions"] == 4
     assert detailed["telemetry"][
         "nonzero_process_results_are_semantic_failures"
     ] is False

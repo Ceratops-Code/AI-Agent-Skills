@@ -9,9 +9,12 @@ required freshness or safety work as waste.
 
 - Review exposed calls for repeated reads, broad searches, redundant
   confirmation, stale checks, ignored fresh context, repeated session
-  collection, and evidence loaded beyond the current decision. Use sanitized
+  collection, and evidence loaded beyond the current decision. Use recorded
   result-size and token evidence to identify files, command results, or evidence
   bundles materially larger than the decision required.
+- Treat chronology, call relationships, fingerprints, and recorded sizes as
+  deterministic evidence. Decide semantically whether context was fresh,
+  sufficient, required, or excessive; the collector does not make that judgment.
 - For a confirmed context-volume gap, record what was loaded, the bounded subset
   that was needed, and the exact selector or reuse boundary that would prevent
   it. Mark the finding `context-volume`, keep call-savings arithmetic at zero,

@@ -11,6 +11,10 @@ cost.
   from stable context, unnecessary rule rereads, contradictory or stale
   controls, excessive planning, repeated reasoning, missed same-pass
   draft-assess-revise work, and unnecessary skill or action handoffs.
+- Read the ordered user messages supplied by the controller together with the
+  following calls and actions. A message may carry several intents; identify
+  requests, corrections, approvals, and clarifications semantically and do not
+  rely on a deterministic single-kind label.
 - Exclude ordinary model mistakes unless one concise durable producer control
   would materially reduce recurrence. Do not treat required rule lookup,
   proposal iteration, or action routing as waste merely because it costs a

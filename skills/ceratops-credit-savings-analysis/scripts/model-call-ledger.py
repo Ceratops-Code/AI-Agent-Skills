@@ -4,10 +4,10 @@
 The ledger groups automatic continuations by turn ID, includes only completed
 runs, and fingerprints tool arguments instead of reproducing potentially
 sensitive command text. Ordinary mode writes detailed evidence to a
-caller-selected file. Closure mode emits the minimum sanitized selected-window
+caller-selected file. Closure mode emits the minimum redacted selected-window
 call inventory in one invocation and creates no cleanup artifact. Repeated
 ``--include-run`` requires ``--semantic-evidence-output``. The helper writes
-selected sanitized actions to a separate versioned sidecar and emits only
+selected redacted actions to a separate versioned sidecar and emits only
 selected-run IDs and counts. The
 ordinary ledger remains fingerprint-only. Summary mode writes versioned
 per-turn usage and structured result evidence while emitting only compact
@@ -516,7 +516,7 @@ def sensitive_key(value: object) -> bool:
     return bool(SENSITIVE_KEY_RE.search(normalized))
 
 
-def sanitize_text(value: str) -> str:
+def redact_text(value: str) -> str:
     """Redact common credential forms and local profile roots before truncation."""
 
     result = PRIVATE_KEY_RE.sub(REDACTED, value)
@@ -534,22 +534,22 @@ def sanitize_text(value: str) -> str:
     )
 
 
-def sanitize_semantic_value(value: Any, *, key: object | None = None) -> Any:
+def redact_semantic_value(value: Any, *, key: object | None = None) -> Any:
     """Recursively redact structured tool arguments for opt-in semantic output."""
 
     if isinstance(value, str):
         if key is not None and PATH_KEY_RE.search(str(key)):
             return LOCAL_PATH
-        return sanitize_text(value)
+        return redact_text(value)
     if isinstance(value, list):
-        return [sanitize_semantic_value(item, key=key) for item in value]
+        return [redact_semantic_value(item, key=key) for item in value]
     if not isinstance(value, dict):
         return value
     return {
         str(key): (
             REDACTED
             if sensitive_key(key)
-            else sanitize_semantic_value(item, key=key)
+            else redact_semantic_value(item, key=key)
         )
         for key, item in value.items()
     }
@@ -564,12 +564,12 @@ def semantic_summary(value: Any, *, decode_json: bool = True) -> str:
             decoded = json.loads(value)
         except json.JSONDecodeError:
             pass
-    sanitized = sanitize_semantic_value(decoded)
-    if isinstance(sanitized, str):
-        text = sanitized
+    redacted = redact_semantic_value(decoded)
+    if isinstance(redacted, str):
+        text = redacted
     else:
         text = json.dumps(
-            sanitized,
+            redacted,
             sort_keys=True,
             separators=(",", ":"),
             ensure_ascii=True,
@@ -581,8 +581,23 @@ def semantic_summary(value: Any, *, decode_json: bool = True) -> str:
     return compact[: SEMANTIC_SUMMARY_LIMIT - 3] + "..."
 
 
-def assistant_message_text(payload: dict[str, Any]) -> str:
-    """Collect only assistant-authored text from one message response item."""
+def redaction_contract() -> dict[str, Any]:
+    """Describe the pattern-based evidence transformation without overclaiming."""
+
+    return {
+        "method": "pattern-based-replacement",
+        "targets": [
+            "credential-like-values",
+            "user-profile-roots",
+            "local-paths",
+        ],
+        "complete_secret_detection_guaranteed": False,
+        "semantic_classification": "none",
+    }
+
+
+def message_text(payload: dict[str, Any]) -> str:
+    """Collect ordered text parts from one user or assistant message item."""
 
     content = payload.get("content")
     if not isinstance(content, list):
@@ -594,11 +609,29 @@ def assistant_message_text(payload: dict[str, Any]) -> str:
         text = item.get("text") or item.get("output_text")
         if isinstance(text, str):
             parts.append(text)
-    return " ".join(parts)
+    return "\n".join(parts)
+
+
+def user_message_record(
+    payload: dict[str, Any],
+    *,
+    turn_id: str,
+    ordinal: int,
+    timestamp: object,
+) -> dict[str, Any]:
+    """Create one ordered redacted user-message record without intent labels."""
+
+    return {
+        "message_id": f"{turn_id}:user:{ordinal}",
+        "turn_id": turn_id,
+        "timestamp": timestamp,
+        "first_model_call_index": None,
+        "text": redact_text(message_text(payload)),
+    }
 
 
 def semantic_action_from_item(payload: dict[str, Any]) -> dict[str, str] | None:
-    """Reduce one response item to an opt-in sanitized semantic action."""
+    """Reduce one response item to an opt-in redacted semantic action."""
 
     item_type = payload.get("type")
     if item_type == "message" and payload.get("role") != "user":
@@ -608,7 +641,7 @@ def semantic_action_from_item(payload: dict[str, Any]) -> dict[str, str] | None:
             "name": phase if isinstance(phase, str) else "assistant",
         }
         summary = semantic_summary(
-            assistant_message_text(payload),
+            message_text(payload),
             decode_json=False,
         )
     elif item_type == "function_call":
@@ -691,7 +724,7 @@ def response_result_character_count(payload: dict[str, Any]) -> int:
     return 0
 
 
-def empty_outcomes() -> dict[str, bool]:
+def empty_outcomes() -> dict[str, Any]:
     """Return the closed structured-result signal set for one tool action."""
 
     return {
@@ -701,17 +734,26 @@ def empty_outcomes() -> dict[str, bool]:
         "termination": False,
         "structured_outcome": False,
         "process_result_observed": False,
+        "process_exit_codes": [],
     }
 
 
 def scan_structured_signals(
     value: Any,
-    signals: dict[str, bool],
+    signals: dict[str, Any],
     *,
     envelope: bool,
 ) -> None:
     """Read explicit result fields without interpreting prose result content."""
 
+    if isinstance(value, str):
+        try:
+            decoded = json.loads(value)
+        except json.JSONDecodeError:
+            return
+        if isinstance(decoded, (dict, list)):
+            scan_structured_signals(decoded, signals, envelope=False)
+        return
     if isinstance(value, list):
         for item in value:
             scan_structured_signals(item, signals, envelope=False)
@@ -746,13 +788,14 @@ def scan_structured_signals(
             signals["structured_outcome"] = True
             signals["process_result_observed"] = True
             signals["nonzero_process_result"] |= item != 0
+            signals["process_exit_codes"].append(item)
         elif normalized_key in TIMEOUT_FIELDS and isinstance(item, bool):
             signals["structured_outcome"] = True
             signals["timeout"] |= item
         elif normalized_key in TERMINATION_FIELDS and isinstance(item, bool):
             signals["structured_outcome"] = True
             signals["termination"] |= item
-        if isinstance(item, (dict, list)):
+        if isinstance(item, (dict, list, str)):
             scan_structured_signals(item, signals, envelope=False)
 
 
@@ -773,18 +816,15 @@ def structured_function_output(payload: dict[str, Any]) -> Any | None:
     return decoded if isinstance(decoded, (dict, list)) else None
 
 
-def response_outcomes(payload: dict[str, Any]) -> dict[str, bool]:
+def response_outcomes(payload: dict[str, Any]) -> dict[str, Any]:
     """Collect structured signals exposed directly by one tool-result item."""
 
     signals = empty_outcomes()
     scan_structured_signals(payload, signals, envelope=True)
-    decoded = structured_function_output(payload)
-    if decoded is not None:
-        scan_structured_signals(decoded, signals, envelope=True)
     return signals
 
 
-def mcp_outcomes(payload: dict[str, Any]) -> dict[str, bool]:
+def mcp_outcomes(payload: dict[str, Any]) -> dict[str, Any]:
     """Collect the MCP result envelope and structured process signals."""
 
     signals = empty_outcomes()
@@ -807,7 +847,7 @@ def mcp_outcomes(payload: dict[str, Any]) -> dict[str, bool]:
     return signals
 
 
-def patch_outcomes(payload: dict[str, Any]) -> dict[str, bool]:
+def patch_outcomes(payload: dict[str, Any]) -> dict[str, Any]:
     """Collect the explicit apply-patch completion signal."""
 
     signals = empty_outcomes()
@@ -818,11 +858,14 @@ def patch_outcomes(payload: dict[str, Any]) -> dict[str, bool]:
     return signals
 
 
-def merge_outcomes(target: dict[str, Any], source: dict[str, bool]) -> None:
+def merge_outcomes(target: dict[str, Any], source: dict[str, Any]) -> None:
     """Merge multiple recorded result events for one top-level tool action."""
 
     for field, value in source.items():
-        target[field] = bool(target.get(field)) or value
+        if field == "process_exit_codes":
+            target[field].extend(value)
+        else:
+            target[field] = bool(target.get(field)) or value
 
 
 def token_usage(payload: dict[str, Any]) -> dict[str, int]:
@@ -997,7 +1040,7 @@ def build_semantic_runs(
     ledger: dict[str, Any],
     include_runs: list[str],
 ) -> list[dict[str, Any]]:
-    """Build opt-in semantic actions only for requested completed-window runs."""
+    """Build redacted actions and ordered user messages for requested runs."""
 
     if not include_runs:
         return []
@@ -1011,21 +1054,61 @@ def build_semantic_runs(
     calls_by_id: dict[str, list[dict[str, Any]]] = {
         turn_id: [] for turn_id in requested
     }
+    messages_by_id: dict[str, list[dict[str, Any]]] = {
+        turn_id: [] for turn_id in requested
+    }
     active_turn: str | None = None
     pending_actions: list[dict[str, str]] = []
+    pending_user_messages: list[dict[str, Any]] = []
+    active_user_message_ids: list[str] = []
+    pre_turn_user_rows: list[tuple[object, dict[str, Any]]] = []
+    saw_turn_context = False
     for row in rows:
         row_type = row.get("type")
         payload = row.get("payload")
         if not isinstance(payload, dict):
             continue
         if row_type == "turn_context":
+            saw_turn_context = True
             turn_id = payload.get("turn_id")
             active_turn = turn_id if turn_id in requested_set else None
             pending_actions = []
+            pending_user_messages = []
+            active_user_message_ids = []
+            if active_turn is not None:
+                messages = messages_by_id[active_turn]
+                for timestamp, user_payload in pre_turn_user_rows:
+                    message = user_message_record(
+                        user_payload,
+                        turn_id=active_turn,
+                        ordinal=len(messages) + 1,
+                        timestamp=timestamp,
+                    )
+                    messages.append(message)
+                    pending_user_messages.append(message)
+            pre_turn_user_rows = []
             continue
         if active_turn is None:
+            if (
+                not saw_turn_context
+                and row_type == "response_item"
+                and payload.get("type") == "message"
+                and payload.get("role") == "user"
+            ):
+                pre_turn_user_rows.append((row.get("timestamp"), payload))
             continue
         if row_type == "response_item":
+            if payload.get("type") == "message" and payload.get("role") == "user":
+                messages = messages_by_id[active_turn]
+                message = user_message_record(
+                    payload,
+                    turn_id=active_turn,
+                    ordinal=len(messages) + 1,
+                    timestamp=row.get("timestamp"),
+                )
+                messages.append(message)
+                pending_user_messages.append(message)
+                continue
             action = semantic_action_from_item(payload)
             if action is not None:
                 pending_actions.append(action)
@@ -1040,8 +1123,19 @@ def build_semantic_runs(
             pending_actions = []
             continue
         calls = calls_by_id[active_turn]
-        calls.append({"index": len(calls) + 1, "actions": pending_actions})
+        call_index = len(calls) + 1
+        for message in pending_user_messages:
+            message["first_model_call_index"] = call_index
+            active_user_message_ids.append(message["message_id"])
+        calls.append(
+            {
+                "index": call_index,
+                "actions": pending_actions,
+                "user_message_ids": list(active_user_message_ids),
+            }
+        )
         pending_actions = []
+        pending_user_messages = []
 
     result: list[dict[str, Any]] = []
     for turn_id in requested:
@@ -1054,6 +1148,7 @@ def build_semantic_runs(
                 "turn_id": turn_id,
                 "started_at": run["started_at"],
                 "model_calls": run["model_calls"],
+                "user_messages": messages_by_id[turn_id],
                 "calls": calls,
             }
         )
@@ -1065,7 +1160,7 @@ def selected_runs_with_semantics(
     include_runs: list[str],
     semantic_runs: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Preserve ordinary selected-run details and add sanitized action summaries."""
+    """Preserve selected-run details and add redacted model-review evidence."""
 
     runs_by_id = {run["turn_id"]: run for run in ledger["runs"]}
     semantic_by_id = {run["turn_id"]: run for run in semantic_runs}
@@ -1073,16 +1168,22 @@ def selected_runs_with_semantics(
     for turn_id in include_runs:
         run = runs_by_id[turn_id]
         semantic_calls = {
-            call["index"]: call["actions"]
+            call["index"]: call
             for call in semantic_by_id[turn_id]["calls"]
         }
         selected.append(
             {
                 **run,
+                "user_messages": semantic_by_id[turn_id]["user_messages"],
                 "calls": [
                     {
                         **call,
-                        "semantic_actions": semantic_calls[call["index"]],
+                        "semantic_actions": semantic_calls[call["index"]][
+                            "actions"
+                        ],
+                        "user_message_ids": semantic_calls[call["index"]][
+                            "user_message_ids"
+                        ],
                     }
                     for call in run["calls"]
                 ],
@@ -1130,6 +1231,7 @@ def build_semantic_evidence(
     return {
         "schema": SEMANTIC_EVIDENCE_SCHEMA,
         "ledger_schema": ledger["schema"],
+        "redaction": redaction_contract(),
         "window": ledger["window"],
         "selected_runs": selected_runs_with_semantics(
             ledger,
@@ -1301,7 +1403,7 @@ def usage_metrics(
 
 
 def public_tool_action(action: dict[str, Any]) -> dict[str, Any]:
-    """Remove correlation-only state from one sanitized top-level action."""
+    """Remove correlation-only state from one redacted top-level action."""
 
     if action["structured_outcome"]:
         telemetry = "structured"
@@ -1321,6 +1423,7 @@ def public_tool_action(action: dict[str, Any]) -> dict[str, Any]:
         "explicit_failure": action["explicit_failure"],
         "result_telemetry": telemetry,
         "process_result_observed": action["process_result_observed"],
+        "process_exit_codes": action["process_exit_codes"],
         "outcomes": {
             field: action[field]
             for field in (
@@ -1338,7 +1441,7 @@ def build_usage_evidence(
     ledger: dict[str, Any],
     pricing: dict[str, float | str] | None,
 ) -> dict[str, Any]:
-    """Build sanitized per-turn metrics and structured top-level outcomes."""
+    """Build redacted per-turn metrics and structured top-level outcomes."""
 
     run_states: dict[str, dict[str, Any]] = {}
     for order, run in enumerate(ledger["runs"]):
@@ -1560,9 +1663,15 @@ def build_usage_evidence(
     exec_actions = sum(
         1 for action in all_actions if action["name"] in {"exec", "functions.exec"}
     )
+    exec_actions_with_process_results = sum(
+        1
+        for action in all_actions
+        if action["name"] in {"exec", "functions.exec"}
+        and action["process_result_observed"]
+    )
     limitations: list[str] = []
     if exec_actions:
-        limitations.append("functions_exec_child_calls_unavailable")
+        limitations.append("functions_exec_child_calls_not_enumerated")
     if result_recorded > structured_results:
         limitations.append("unstructured_tool_result_outcomes")
     if duration_covered_turns < len(evidence_runs):
@@ -1576,6 +1685,7 @@ def build_usage_evidence(
 
     return {
         "schema": USAGE_EVIDENCE_SCHEMA,
+        "redaction": redaction_contract(),
         "window": ledger["window"],
         "pricing": pricing_contract,
         "totals": thread_metrics,
@@ -1596,7 +1706,12 @@ def build_usage_evidence(
             "duration_total_turns": len(evidence_runs),
             "functions_exec": {
                 "outer_actions": exec_actions,
-                "child_calls": "unavailable" if exec_actions else "not_observed",
+                "child_calls": (
+                    "not_enumerated" if exec_actions else "not_observed"
+                ),
+                "outer_actions_with_emitted_process_results": (
+                    exec_actions_with_process_results
+                ),
             },
             "nonzero_process_results_are_semantic_failures": False,
             "limitations": limitations,
@@ -1678,7 +1793,7 @@ def collect_session_evidence_from_rows(
         semantic_run = semantic_by_run[turn_id]
         usage_run = usage_by_run[turn_id]
         semantic_by_index = {
-            call["index"]: call["actions"] for call in semantic_run["calls"]
+            call["index"]: call for call in semantic_run["calls"]
         }
         tools_by_call: dict[int, list[dict[str, Any]]] = {
             index: [] for index in range(1, ledger_run["model_calls"] + 1)
@@ -1701,7 +1816,10 @@ def collect_session_evidence_from_rows(
                     call["tokens"], pricing
                 ),
                 "actions": call["actions"],
-                "semantic_actions": semantic_by_index[call["index"]],
+                "semantic_actions": semantic_by_index[call["index"]]["actions"],
+                "user_message_ids": semantic_by_index[call["index"]][
+                    "user_message_ids"
+                ],
                 "tool_results": tools_by_call[call["index"]],
                 "run_duration_ms": usage_run["totals"]["duration_ms"],
             }
@@ -1714,6 +1832,7 @@ def collect_session_evidence_from_rows(
                 "model_calls": ledger_run["model_calls"],
                 "totals": usage_run["totals"],
                 "tool_counts": usage_run["tool_counts"],
+                "user_messages": semantic_run["user_messages"],
                 "calls": run_calls,
             }
         )
@@ -1736,11 +1855,15 @@ def collect_session_evidence_from_rows(
         "session": str(resolved_session),
         "source_fingerprint": source_fingerprint,
         "window_fingerprint": window_fingerprint,
+        "redaction": redaction_contract(),
         "window": ledger["window"],
         "collection": {
             "session_reads": 1,
             "completed_runs": len(collected_runs),
             "model_calls": len(calls),
+            "user_messages": sum(
+                len(run["user_messages"]) for run in collected_runs
+            ),
         },
         "focused_semantic_context": _focused_run_selection(collected_runs),
         "pricing": usage["pricing"],
@@ -1762,7 +1885,7 @@ def collect_session_evidence(
     """Collect one controller-ready evidence bundle from one session read.
 
     The public CLI modes remain separate views over the same parsing and
-    sanitization primitives. Controller callers use this function so usage,
+    redaction primitives. Controller callers use this function so usage,
     semantic, relationship, and classification inventory data all derive from
     one immutable in-memory row set rather than repeated session reads.
     """
@@ -2061,7 +2184,7 @@ def build_classified_summary(
 
 
 def write_evidence(path: pathlib.Path, ledger: dict[str, Any]) -> None:
-    """Write sanitized call evidence only to the caller-authorized path."""
+    """Write redacted call evidence only to the caller-authorized path."""
 
     if not path.parent.is_dir():
         raise LedgerError(f"evidence output directory does not exist: {path.parent}")
@@ -2092,7 +2215,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--semantic-evidence-output",
         type=pathlib.Path,
         help=(
-            "write versioned sanitized evidence for explicitly selected runs "
+            "write versioned redacted evidence for explicitly selected runs "
             "and keep semantic action bodies out of stdout"
         ),
     )
@@ -2110,7 +2233,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         default=[],
         help=(
-            "add bounded sanitized action summaries for one completed run; "
+            "add bounded redacted action summaries for one completed run; "
             "repeat for additional runs"
         ),
     )
@@ -2126,7 +2249,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--summary",
         action="store_true",
         help=(
-            "write versioned sanitized usage evidence and emit compact totals "
+            "write versioned redacted usage evidence and emit compact totals "
             "and top-turn rankings"
         ),
     )
