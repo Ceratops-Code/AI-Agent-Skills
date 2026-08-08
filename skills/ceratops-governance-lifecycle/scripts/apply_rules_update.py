@@ -2,7 +2,8 @@
 """Apply one approved, mechanically validated rules/history transaction.
 
 The UTF-8 JSON request has the closed top-level fields ``version``,
-``rule_stack``, ``rule_replacements``, and ``history_operations``.
+``task_temp_root``, ``request_disposable``, ``rule_stack``,
+``rule_replacements``, and ``history_operations``.
 ``rule_stack`` lists the global source first and every source in one complete
 project scope after it. Paths are resolved from the caller's working directory.
 Each replacement names its rules source, companion history source, exact
@@ -10,17 +11,23 @@ expected-old text, and exact replacement text. History operations support only
 an approved ``append`` entry.
 
 This helper owns stale-text detection, structural validation, change coverage,
-and rollback-protected writes. It does not establish semantic equivalence; the
-calling governance workflow must account for every operative old-text clause.
+rollback-protected writes, and successful-request cleanup. It deletes the exact
+unchanged request only when the request declares workflow ownership beneath a
+verified task-temp root and the transaction, reopen, and validation all pass.
+Every failure preserves the request for diagnosis. It does not establish
+semantic equivalence; the calling governance workflow must account for every
+operative old-text clause.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass
@@ -39,11 +46,12 @@ from rule_graph import (
     validate_rule_stack,
 )
 
-
-REQUEST_VERSION = 1
+REQUEST_VERSION = 2
 UTF8_BOM = b"\xef\xbb\xbf"
 ROOT_FIELDS = {
     "version",
+    "task_temp_root",
+    "request_disposable",
     "rule_stack",
     "rule_replacements",
     "history_operations",
@@ -93,6 +101,8 @@ class PreparedUpdate:
     candidates: dict[Path, bytes]
     baseline_reviews: set[str]
     expected_history_entries: dict[Path, list[dict[str, object]]]
+    task_temp_root: Path
+    request_disposable: bool
 
 
 def require_fields(value: object, fields: set[str], label: str) -> dict[str, Any]:
@@ -116,6 +126,99 @@ def require_path(value: object, label: str) -> Path:
     if not path.is_absolute():
         path = Path.cwd() / path
     return path.resolve()
+
+
+def absolute_path(path: Path) -> Path:
+    """Return a lexical absolute path without resolving links."""
+
+    return Path(os.path.abspath(path.expanduser()))
+
+
+def is_link(path: Path) -> bool:
+    """Treat symbolic links and Windows junctions as cleanup escapes."""
+
+    junction = getattr(path, "is_junction", None)
+    return path.is_symlink() or bool(junction and junction())
+
+
+def reject_link_chain(path: Path, label: str) -> None:
+    """Reject link-based escapes before reading or deleting a request."""
+
+    for candidate in (path, *path.parents):
+        if is_link(candidate):
+            raise ApplicationError(
+                f"{label} uses a symlink or junction: {candidate}"
+            )
+
+
+def inside_git_worktree(directory: Path, label: str) -> bool:
+    """Return whether Git classifies a cleanup location as repository state."""
+
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(directory), "rev-parse", "--show-toplevel"],
+            cwd=directory,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError as error:
+        raise ApplicationError(f"could not verify {label}: {error}") from error
+    return result.returncode == 0
+
+
+def verified_task_temp_root(value: object) -> Path:
+    """Validate the caller-declared non-repository cleanup boundary."""
+
+    if not isinstance(value, str) or not value:
+        raise ApplicationError("task_temp_root must be a non-empty path")
+    raw = Path(value).expanduser()
+    if not raw.is_absolute():
+        raise ApplicationError("task_temp_root must be absolute")
+    lexical = absolute_path(raw)
+    reject_link_chain(lexical, "task_temp_root")
+    if not lexical.is_dir():
+        raise ApplicationError("task_temp_root must be an existing directory")
+    resolved = lexical.resolve(strict=True)
+    if inside_git_worktree(resolved, "task_temp_root"):
+        raise ApplicationError("task_temp_root must not be inside a Git worktree")
+    return resolved
+
+
+def workflow_request(path: Path, task_temp_root: Path) -> Path:
+    """Validate the exact disposable request without deriving its name."""
+
+    lexical = absolute_path(path)
+    try:
+        relative = lexical.relative_to(task_temp_root)
+    except ValueError as error:
+        raise ApplicationError("disposable request escapes task_temp_root") from error
+    if not relative.parts:
+        raise ApplicationError("disposable request must be beneath task_temp_root")
+    current = task_temp_root
+    for part in relative.parts:
+        current = current / part
+        if is_link(current):
+            raise ApplicationError(
+                f"disposable request uses a symlink or junction: {current}"
+            )
+    if not lexical.is_file():
+        raise ApplicationError(f"disposable request is not a regular file: {lexical}")
+    if inside_git_worktree(lexical.parent, "disposable request"):
+        raise ApplicationError("disposable request must not be a repository file")
+    if lexical.resolve(strict=True).parent != lexical.parent.resolve(strict=True):
+        raise ApplicationError("disposable request resolves outside its directory")
+    return lexical
+
+
+def file_hash(path: Path) -> str:
+    """Hash the request so successful cleanup cannot delete changed content."""
+
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(65536), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def newline_styles(text: str) -> set[str]:
@@ -269,7 +372,7 @@ def apply_replacements(
         start = matches[0]
         spans.append((start, start + len(expected), new_text))
     spans.sort(key=lambda item: item[0])
-    for previous, current in zip(spans, spans[1:]):
+    for previous, current in zip(spans, spans[1:], strict=False):
         if current[0] < previous[1]:
             raise ApplicationError(
                 f"rule replacements overlap in {source.path}"
@@ -324,6 +427,10 @@ def prepare(request: dict[str, Any]) -> PreparedUpdate:
     """Build and validate every candidate before any durable target write."""
     if request["version"] != REQUEST_VERSION:
         raise ApplicationError(f"request version must be {REQUEST_VERSION}")
+    task_temp_root = verified_task_temp_root(request["task_temp_root"])
+    request_disposable = request["request_disposable"]
+    if not isinstance(request_disposable, bool):
+        raise ApplicationError("request_disposable must be boolean")
     stack_values = request["rule_stack"]
     if not isinstance(stack_values, list) or not stack_values:
         raise ApplicationError("rule_stack must be a non-empty list")
@@ -473,12 +580,21 @@ def prepare(request: dict[str, Any]) -> PreparedUpdate:
         candidates[history] = source.encode(candidate_text)
         expected_history_entries[history] = validated_entries
 
+    for governed_path in {*stack_paths, *originals}:
+        try:
+            governed_path.relative_to(task_temp_root)
+        except ValueError:
+            continue
+        raise ApplicationError("task_temp_root must not contain a governed target")
+
     return PreparedUpdate(
         stack_paths=stack_paths,
         originals=originals,
         candidates=candidates,
         baseline_reviews=baseline_reviews,
         expected_history_entries=expected_history_entries,
+        task_temp_root=task_temp_root,
+        request_disposable=request_disposable,
     )
 
 
@@ -585,11 +701,20 @@ def main() -> int:
     """Apply one request with decision-sized output."""
     try:
         args = build_parser().parse_args()
-        request_path = args.request
-        if not request_path.is_absolute():
-            request_path = Path.cwd() / request_path
-        update = prepare(load_request(request_path.resolve()))
+        request_path = absolute_path(args.request)
+        reject_link_chain(request_path, "request")
+        if not request_path.is_file():
+            raise ApplicationError(f"request does not exist: {request_path}")
+        request_sha256 = file_hash(request_path)
+        update = prepare(load_request(request_path))
+        if update.request_disposable:
+            request_path = workflow_request(request_path, update.task_temp_root)
         commit(update)
+        if update.request_disposable:
+            request_path = workflow_request(request_path, update.task_temp_root)
+            if file_hash(request_path) != request_sha256:
+                raise ApplicationError("disposable request changed during transaction")
+            request_path.unlink()
         print("OK")
         return 0
     except (

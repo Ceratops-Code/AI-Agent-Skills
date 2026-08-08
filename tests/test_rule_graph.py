@@ -1,10 +1,10 @@
 import json
 import pathlib
 import runpy
+import subprocess
 import sys
 import tempfile
 import unittest
-
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SCRIPTS = (
@@ -36,8 +36,10 @@ class RuleGraphTests(unittest.TestCase):
         global_rules = root / "global" / "AGENTS.md"
         local_rules = root / "local" / "AGENTS.md"
         history = local_rules.with_name("AGENTS.history.json")
+        task_temp_root = root / "task-temp"
         global_rules.parent.mkdir()
         local_rules.parent.mkdir()
+        task_temp_root.mkdir()
         global_rules.write_text(
             "- [AUTH-10] An explicit current user instruction overrides "
             "default behavior.\n",
@@ -65,7 +67,9 @@ class RuleGraphTests(unittest.TestCase):
             newline="",
         )
         request = {
-            "version": 1,
+            "version": 2,
+            "task_temp_root": str(task_temp_root),
+            "request_disposable": True,
             "rule_stack": [str(global_rules), str(local_rules)],
             "rule_replacements": [
                 {
@@ -337,16 +341,119 @@ class RuleGraphTests(unittest.TestCase):
         )
         replacement = "- [LOCAL-01] Use the selected mechanism.\n"
         with tempfile.TemporaryDirectory() as directory:
-            request, local_rules = self.rules_update_request(
-                pathlib.Path(directory), current, replacement
-            )
+            root = pathlib.Path(directory)
+            request, local_rules = self.rules_update_request(root, current, replacement)
 
             update = prepare(request)
 
-        self.assertEqual(
-            update.candidates[local_rules.resolve()],
-            replacement.encode(),
-        )
+            request_path = root / "task-temp" / "request.json"
+            request_path.write_text(
+                json.dumps(request) + "\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+            applied = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPTS / "apply_rules_update.py"),
+                    "--request",
+                    str(request_path),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            failed_root = root / "failed"
+            failed_root.mkdir()
+            failed_request, failed_rules = self.rules_update_request(
+                failed_root, current, replacement
+            )
+            failed_request["rule_replacements"][0]["expected_old"] = "missing"
+            failed_path = failed_root / "task-temp" / "request.json"
+            failed_path.write_text(
+                json.dumps(failed_request) + "\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+            failed = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPTS / "apply_rules_update.py"),
+                    "--request",
+                    str(failed_path),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            escaped_root = root / "escaped"
+            escaped_root.mkdir()
+            escaped_request, escaped_rules = self.rules_update_request(
+                escaped_root, current, replacement
+            )
+            escaped_path = escaped_root / "outside-request.json"
+            escaped_path.write_text(
+                json.dumps(escaped_request) + "\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+            escaped = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPTS / "apply_rules_update.py"),
+                    "--request",
+                    str(escaped_path),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            user_root = root / "user-owned"
+            user_root.mkdir()
+            user_request, user_rules = self.rules_update_request(
+                user_root, current, replacement
+            )
+            user_request["request_disposable"] = False
+            user_path = user_root / "user-request.json"
+            user_path.write_text(
+                json.dumps(user_request) + "\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+            user_applied = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPTS / "apply_rules_update.py"),
+                    "--request",
+                    str(user_path),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            self.assertEqual(
+                update.candidates[local_rules.resolve()],
+                replacement.encode(),
+            )
+            self.assertEqual(applied.returncode, 0, applied.stderr)
+            self.assertEqual(applied.stdout.strip(), "OK")
+            self.assertFalse(request_path.exists())
+            self.assertEqual(local_rules.read_text(encoding="utf-8"), replacement)
+            self.assertNotEqual(failed.returncode, 0)
+            self.assertIn("occurrence count", failed.stderr)
+            self.assertTrue(failed_path.is_file())
+            self.assertEqual(failed_rules.read_text(encoding="utf-8"), current)
+            self.assertNotEqual(escaped.returncode, 0)
+            self.assertIn("escapes task_temp_root", escaped.stderr)
+            self.assertTrue(escaped_path.is_file())
+            self.assertEqual(escaped_rules.read_text(encoding="utf-8"), current)
+            self.assertEqual(user_applied.returncode, 0, user_applied.stderr)
+            self.assertTrue(user_path.is_file())
+            self.assertEqual(user_rules.read_text(encoding="utf-8"), replacement)
 
     def test_rules_update_accepts_list_heavy_approved_metadata(self):
         current = "- [LOCAL-01] Preserve the exact enumeration.\n"

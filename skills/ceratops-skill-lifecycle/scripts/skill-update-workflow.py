@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
-"""Prepare and verify one declared skill update in a task worktree.
+"""Prepare, verify, and finalize one declared skill update workflow.
 
 The helper records the caller's pre-existing Git baseline before source edits,
 then verifies that only declared paths changed and that undeclared dirty state
 was preserved. Prepare collects declared pytest nodes without running tests.
 Checks use closed structured forms and run without a shell.
 Source files are never patched, staged, committed, installed, promoted, or
-rolled back. State and detailed evidence must be written outside the repository;
-stdout is only ``OK`` and failures are one compact stderr line.
+rolled back. Prepare records exact cleanup ownership beneath the verified task
+temp root, verify retains detailed evidence, and finalize is the caller's
+explicit signal that successful verification and requested deployment/use are
+complete. Finalize removes only recorded workflow-owned request, state, and
+evidence files. Stdout is only ``OK`` and failures are one compact stderr line.
 """
 
 from __future__ import annotations
@@ -20,16 +23,19 @@ import pathlib
 import re
 import subprocess
 import sys
+import tempfile
 from collections.abc import Mapping, Sequence
-from typing import Any
 
-
-REQUEST_SCHEMA = "ceratops-skill-update-request.v1"
-STATE_SCHEMA = "ceratops-skill-update-state.v1"
-EVIDENCE_SCHEMA = "ceratops-skill-update-evidence.v1"
+REQUEST_SCHEMA = "ceratops-skill-update-request.v2"
+STATE_SCHEMA = "ceratops-skill-update-state.v2"
+EVIDENCE_SCHEMA = "ceratops-skill-update-evidence.v2"
+CLEANUP_SCHEMA = "ceratops-skill-update-cleanup.v1"
 REQUEST_FIELDS = {
     "schema",
     "repo_root",
+    "task_temp_root",
+    "evidence_output",
+    "disposable_artifacts",
     "selected_skills",
     "allowed_paths",
     "change_groups",
@@ -52,7 +58,18 @@ STATE_FIELDS = {
     "checks",
     "baseline_dirty",
     "baseline_targets",
+    "cleanup",
+    "verification",
 }
+CLEANUP_FIELDS = {
+    "schema",
+    "task_temp_root",
+    "owned_artifacts",
+    "protected_artifacts",
+}
+OWNED_ARTIFACT_FIELDS = {"role", "path", "sha256"}
+VERIFICATION_FIELDS = {"status", "evidence_sha256"}
+DISPOSABLE_ROLES = {"request", "state", "evidence"}
 SKILL_NAME_RE = re.compile(
     r"^(?![a-z0-9-]*--)[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$"
 )
@@ -171,17 +188,106 @@ def _outside_repo(path: pathlib.Path, repo_root: pathlib.Path, label: str) -> No
     raise UpdateExecutionError(f"{label} must be outside the repository")
 
 
-def _write_json(path: pathlib.Path, value: Mapping[str, object], label: str) -> None:
+def _absolute(path: pathlib.Path) -> pathlib.Path:
+    """Return a lexical absolute path without resolving links."""
+
+    return pathlib.Path(os.path.abspath(path.expanduser()))
+
+
+def _is_link(path: pathlib.Path) -> bool:
+    """Treat symbolic links and Windows junctions as cleanup escapes."""
+
+    junction = getattr(path, "is_junction", None)
+    return path.is_symlink() or bool(junction and junction())
+
+
+def _reject_link_chain(path: pathlib.Path, label: str) -> None:
+    """Reject any existing link component from a path through its anchor."""
+
+    for candidate in (path, *path.parents):
+        if _is_link(candidate):
+            raise UpdateExecutionError(f"{label} uses a symlink or junction: {candidate}")
+
+
+def _task_artifact(
+    path: pathlib.Path,
+    task_temp_root: pathlib.Path,
+    label: str,
+    *,
+    must_exist: bool,
+) -> pathlib.Path:
+    """Validate one exact file path inside the declared task temp root."""
+
+    lexical = _absolute(path)
+    try:
+        relative = lexical.relative_to(task_temp_root)
+    except ValueError as exc:
+        raise UpdateExecutionError(f"{label} escapes task_temp_root") from exc
+    if not relative.parts:
+        raise UpdateExecutionError(f"{label} must be a file beneath task_temp_root")
+    current = task_temp_root
+    for part in relative.parts:
+        current = current / part
+        if _is_link(current):
+            raise UpdateExecutionError(f"{label} uses a symlink or junction: {current}")
+    if not lexical.parent.is_dir():
+        raise UpdateExecutionError(f"{label} directory does not exist: {lexical.parent}")
+    repository_probe = _run(
+        ["git", "-C", str(lexical.parent), "rev-parse", "--show-toplevel"],
+        cwd=lexical.parent,
+    )
+    if repository_probe.returncode == 0:
+        raise UpdateExecutionError(f"{label} must not be a repository file")
+    if must_exist:
+        if not lexical.is_file():
+            raise UpdateExecutionError(f"{label} must be a regular file: {lexical}")
+    elif lexical.exists() and not lexical.is_file():
+        raise UpdateExecutionError(f"{label} must be a regular file target: {lexical}")
+    resolved = lexical.resolve(strict=must_exist)
+    try:
+        resolved.relative_to(task_temp_root)
+    except ValueError as exc:
+        raise UpdateExecutionError(f"{label} resolves outside task_temp_root") from exc
+    return lexical
+
+
+def _file_sha256(path: pathlib.Path) -> str:
+    """Hash one recorded cleanup artifact without loading it all at once."""
+
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(65536), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _write_json_atomic(
+    path: pathlib.Path,
+    value: Mapping[str, object],
+    label: str,
+) -> None:
+    """Atomically write workflow state or evidence and clean its staging file."""
+
     if not path.parent.is_dir():
         raise UpdateExecutionError(f"{label} directory does not exist: {path.parent}")
+    if _is_link(path) or (path.exists() and not path.is_file()):
+        raise UpdateExecutionError(f"{label} must be a regular file target: {path}")
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{path.name}.skill-update.",
+        dir=path.parent,
+    )
     try:
-        path.write_text(
-            json.dumps(value, separators=(",", ":")) + "\n",
-            encoding="utf-8",
-            newline="\n",
-        )
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
+            json.dump(value, handle, separators=(",", ":"))
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_name, path)
     except OSError as exc:
         raise UpdateExecutionError(f"could not write {label}: {exc}") from exc
+    finally:
+        if os.path.exists(temporary_name):
+            os.unlink(temporary_name)
 
 
 def _git_path(repo_root: pathlib.Path, value: str) -> pathlib.Path:
@@ -189,6 +295,42 @@ def _git_path(repo_root: pathlib.Path, value: str) -> pathlib.Path:
     if not path.is_absolute():
         path = repo_root / path
     return path.resolve()
+
+
+def _verified_task_temp_root(
+    value: object,
+    repo_root: pathlib.Path,
+) -> pathlib.Path:
+    """Verify the repository-declared task-temp location and its boundaries."""
+
+    if not isinstance(value, str) or not value:
+        raise UpdateExecutionError("task_temp_root must be nonempty text")
+    raw = pathlib.Path(value).expanduser()
+    if not raw.is_absolute():
+        raise UpdateExecutionError("task_temp_root must be absolute")
+    lexical = _absolute(raw)
+    _reject_link_chain(lexical, "task_temp_root")
+    if not lexical.is_dir():
+        raise UpdateExecutionError("task_temp_root must be an existing directory")
+    resolved = lexical.resolve(strict=True)
+    _outside_repo(resolved, repo_root, "task_temp_root")
+    inside_git = _run(
+        ["git", "-C", str(resolved), "rev-parse", "--show-toplevel"],
+        cwd=resolved,
+    )
+    if inside_git.returncode == 0:
+        raise UpdateExecutionError("task_temp_root must not be inside a Git worktree")
+    common_dir = _git_path(
+        repo_root,
+        _git(repo_root, "rev-parse", "--git-common-dir"),
+    )
+    primary_root = common_dir.parent
+    expected_parent = primary_root.parent / "tmp" / primary_root.name
+    if resolved.parent != expected_parent.resolve(strict=True):
+        raise UpdateExecutionError(
+            f"task_temp_root must be one task directory under {expected_parent}"
+        )
+    return resolved
 
 
 def _verify_task_worktree(repo_root: pathlib.Path) -> tuple[str, str]:
@@ -362,8 +504,20 @@ def _collect_declared_pytest_nodes(
         raise UpdateExecutionError(f"{message}: {detail}" if detail else message)
 
 
-def _validated_request(path: pathlib.Path) -> dict[str, object]:
-    request = _read_json(path, "request")
+def _validated_request(
+    path: pathlib.Path,
+) -> tuple[
+    dict[str, object],
+    pathlib.Path,
+    pathlib.Path,
+    pathlib.Path,
+    set[str],
+]:
+    request_path = _absolute(path)
+    _reject_link_chain(request_path, "request")
+    if not request_path.is_file():
+        raise UpdateExecutionError(f"request must be a regular file: {request_path}")
+    request = _read_json(request_path, "request")
     _closed_fields(request, REQUEST_FIELDS, "request")
     if request.get("schema") != REQUEST_SCHEMA:
         raise UpdateExecutionError(f"request schema must be {REQUEST_SCHEMA}")
@@ -374,6 +528,36 @@ def _validated_request(path: pathlib.Path) -> dict[str, object]:
     if not repo_root.is_dir():
         raise UpdateExecutionError("repo_root must be a directory")
     branch, head = _verify_task_worktree(repo_root)
+    task_temp_root = _verified_task_temp_root(request["task_temp_root"], repo_root)
+    evidence_value = request["evidence_output"]
+    if not isinstance(evidence_value, str) or not evidence_value:
+        raise UpdateExecutionError("evidence_output must be nonempty text")
+    evidence_path = _task_artifact(
+        pathlib.Path(evidence_value),
+        task_temp_root,
+        "evidence output",
+        must_exist=False,
+    )
+    disposable = set(
+        _string_list(request["disposable_artifacts"], "disposable_artifacts")
+    )
+    unknown_disposable = sorted(disposable - DISPOSABLE_ROLES)
+    if unknown_disposable:
+        raise UpdateExecutionError(
+            f"unknown disposable artifact role: {unknown_disposable[0]}"
+        )
+    missing_outputs = sorted({"state", "evidence"} - disposable)
+    if missing_outputs:
+        raise UpdateExecutionError(
+            f"workflow output is not declared disposable: {missing_outputs[0]}"
+        )
+    if "request" in disposable:
+        _task_artifact(
+            request_path,
+            task_temp_root,
+            "request",
+            must_exist=True,
+        )
 
     selected = _string_list(request["selected_skills"], "selected_skills")
     for skill in selected:
@@ -446,7 +630,7 @@ def _validated_request(path: pathlib.Path) -> dict[str, object]:
     dirty = sorted(_dirty_paths(repo_root))
     baseline_dirty = {path: _snapshot(repo_root, path) for path in dirty}
     baseline_targets = {path: _snapshot(repo_root, path) for path in allowed}
-    return {
+    state: dict[str, object] = {
         "schema": STATE_SCHEMA,
         "repo_root": str(repo_root),
         "branch": branch,
@@ -458,22 +642,182 @@ def _validated_request(path: pathlib.Path) -> dict[str, object]:
         "baseline_dirty": baseline_dirty,
         "baseline_targets": baseline_targets,
     }
+    return state, repo_root, task_temp_root, evidence_path, disposable
 
 
 def command_prepare(request_path: pathlib.Path, state_path: pathlib.Path) -> None:
-    state = _validated_request(request_path)
-    repo_root = pathlib.Path(str(state["repo_root"]))
-    resolved_state = state_path.expanduser().resolve()
-    _outside_repo(resolved_state, repo_root, "state output")
-    if resolved_state == request_path.expanduser().resolve():
-        raise UpdateExecutionError("state output must differ from request")
-    if resolved_state.is_symlink() or resolved_state.exists():
+    state, repo_root, task_temp_root, evidence_path, disposable = _validated_request(
+        request_path
+    )
+    resolved_request = _absolute(request_path)
+    resolved_state = _task_artifact(
+        state_path,
+        task_temp_root,
+        "state output",
+        must_exist=False,
+    )
+    if len({resolved_request, resolved_state, evidence_path}) != 3:
+        raise UpdateExecutionError("request, state, and evidence paths must differ")
+    if resolved_state.exists():
         raise UpdateExecutionError(f"refusing to overwrite state output: {resolved_state}")
-    _write_json(resolved_state, state, "state output")
+    if evidence_path.exists():
+        raise UpdateExecutionError(
+            f"refusing to overwrite evidence output: {evidence_path}"
+        )
+    owned_artifacts: list[dict[str, object]] = [
+        {"role": "state", "path": str(resolved_state), "sha256": None},
+        {"role": "evidence", "path": str(evidence_path), "sha256": None},
+    ]
+    protected_artifacts: list[str] = []
+    if "request" in disposable:
+        owned_artifacts.insert(
+            0,
+            {
+                "role": "request",
+                "path": str(resolved_request),
+                "sha256": _file_sha256(resolved_request),
+            },
+        )
+    else:
+        protected_artifacts.append(str(resolved_request))
+    state["cleanup"] = {
+        "schema": CLEANUP_SCHEMA,
+        "task_temp_root": str(task_temp_root),
+        "owned_artifacts": owned_artifacts,
+        "protected_artifacts": protected_artifacts,
+    }
+    state["verification"] = None
+    _write_json_atomic(resolved_state, state, "state output")
+
+
+def _valid_sha256(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+def _validated_cleanup(
+    raw: object,
+    *,
+    state_path: pathlib.Path,
+    repo_root: pathlib.Path,
+) -> dict[str, object]:
+    """Validate the exact cleanup ownership recorded during prepare."""
+
+    if not isinstance(raw, Mapping):
+        raise UpdateExecutionError("state cleanup must be an object")
+    _closed_fields(raw, CLEANUP_FIELDS, "state cleanup")
+    if raw.get("schema") != CLEANUP_SCHEMA:
+        raise UpdateExecutionError(f"state cleanup schema must be {CLEANUP_SCHEMA}")
+    task_temp_root = _verified_task_temp_root(raw["task_temp_root"], repo_root)
+    artifacts = raw["owned_artifacts"]
+    if (
+        not isinstance(artifacts, Sequence)
+        or isinstance(artifacts, (str, bytes))
+        or not artifacts
+    ):
+        raise UpdateExecutionError("state owned_artifacts must be a nonempty list")
+    owned: list[dict[str, object]] = []
+    roles: set[str] = set()
+    paths: set[pathlib.Path] = set()
+    for index, artifact in enumerate(artifacts, start=1):
+        if not isinstance(artifact, Mapping):
+            raise UpdateExecutionError(f"owned artifact {index} must be an object")
+        _closed_fields(artifact, OWNED_ARTIFACT_FIELDS, f"owned artifact {index}")
+        role = artifact["role"]
+        if not isinstance(role, str) or role not in DISPOSABLE_ROLES:
+            raise UpdateExecutionError(f"owned artifact {index} role is invalid")
+        if role in roles:
+            raise UpdateExecutionError(f"duplicate owned artifact role: {role}")
+        raw_path = artifact["path"]
+        if not isinstance(raw_path, str) or not raw_path:
+            raise UpdateExecutionError(f"owned artifact {index} path is invalid")
+        path = _task_artifact(
+            pathlib.Path(raw_path),
+            task_temp_root,
+            f"owned {role}",
+            must_exist=role == "state",
+        )
+        if path in paths:
+            raise UpdateExecutionError("owned artifact paths must be unique")
+        expected_hash = artifact["sha256"]
+        if role == "request":
+            if not _valid_sha256(expected_hash):
+                raise UpdateExecutionError("owned request hash is invalid")
+        elif expected_hash is not None:
+            raise UpdateExecutionError(f"owned {role} hash must be null")
+        roles.add(role)
+        paths.add(path)
+        owned.append({"role": role, "path": path, "sha256": expected_hash})
+    if not {"state", "evidence"}.issubset(roles):
+        raise UpdateExecutionError("state cleanup lacks owned workflow outputs")
+    state_record = next(item for item in owned if item["role"] == "state")
+    if state_record["path"] != state_path:
+        raise UpdateExecutionError("state cleanup path does not match loaded state")
+    protected = raw["protected_artifacts"]
+    if (
+        not isinstance(protected, Sequence)
+        or isinstance(protected, (str, bytes))
+        or not all(isinstance(item, str) and item for item in protected)
+    ):
+        raise UpdateExecutionError("state protected_artifacts must be a string list")
+    protected_paths = [_absolute(pathlib.Path(item)) for item in protected]
+    if len(protected_paths) != len(set(protected_paths)):
+        raise UpdateExecutionError("state protected_artifacts must be unique")
+    overlap = paths.intersection(protected_paths)
+    if overlap:
+        raise UpdateExecutionError("owned and protected artifact paths overlap")
+    return {
+        "schema": CLEANUP_SCHEMA,
+        "task_temp_root": task_temp_root,
+        "owned_artifacts": owned,
+        "protected_artifacts": protected_paths,
+    }
+
+
+def _validated_verification(value: object) -> dict[str, object] | None:
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise UpdateExecutionError("state verification must be null or an object")
+    _closed_fields(value, VERIFICATION_FIELDS, "state verification")
+    if value.get("status") != "passed":
+        raise UpdateExecutionError("state verification status must be passed")
+    if not _valid_sha256(value.get("evidence_sha256")):
+        raise UpdateExecutionError("state verification evidence hash is invalid")
+    return dict(value)
+
+
+def _cleanup_payload(cleanup: Mapping[str, object]) -> dict[str, object]:
+    """Convert validated cleanup paths back to the closed JSON contract."""
+
+    owned = cleanup["owned_artifacts"]
+    protected = cleanup["protected_artifacts"]
+    assert isinstance(owned, list)
+    assert isinstance(protected, list)
+    return {
+        "schema": CLEANUP_SCHEMA,
+        "task_temp_root": str(cleanup["task_temp_root"]),
+        "owned_artifacts": [
+            {
+                "role": artifact["role"],
+                "path": str(artifact["path"]),
+                "sha256": artifact["sha256"],
+            }
+            for artifact in owned
+        ],
+        "protected_artifacts": [str(path) for path in protected],
+    }
 
 
 def _validated_state(path: pathlib.Path) -> dict[str, object]:
-    raw = _read_json(path, "state")
+    state_path = _absolute(path)
+    _reject_link_chain(state_path, "state")
+    if not state_path.is_file():
+        raise UpdateExecutionError(f"state must be a regular file: {state_path}")
+    raw = _read_json(state_path, "state")
     _closed_fields(raw, STATE_FIELDS, "state")
     if raw.get("schema") != STATE_SCHEMA:
         raise UpdateExecutionError(f"state schema must be {STATE_SCHEMA}")
@@ -510,6 +854,22 @@ def _validated_state(path: pathlib.Path) -> dict[str, object]:
             )
     if owners != set(selected):
         raise UpdateExecutionError("state selected skills lack allowed source paths")
+    cleanup = _validated_cleanup(
+        raw["cleanup"],
+        state_path=state_path,
+        repo_root=repo_root,
+    )
+    verification = _validated_verification(raw["verification"])
+    owned_cleanup = cleanup["owned_artifacts"]
+    assert isinstance(owned_cleanup, list)
+    for artifact in owned_cleanup:
+        if artifact["role"] != "request":
+            continue
+        request_path = artifact["path"]
+        expected_hash = artifact["sha256"]
+        assert isinstance(request_path, pathlib.Path)
+        if not request_path.is_file() or _file_sha256(request_path) != expected_hash:
+            raise UpdateExecutionError("owned request changed after prepare")
     baseline_dirty = raw["baseline_dirty"]
     baseline_targets = raw["baseline_targets"]
     if not isinstance(baseline_dirty, Mapping) or not isinstance(baseline_targets, Mapping):
@@ -562,6 +922,8 @@ def _validated_state(path: pathlib.Path) -> dict[str, object]:
         "baseline_targets": dict(baseline_targets),
         "change_groups": groups,
         "checks": checks,
+        "cleanup": cleanup,
+        "verification": verification,
     }
 
 
@@ -700,10 +1062,18 @@ class CheckFailure(UpdateExecutionError):
 def command_verify(state_path: pathlib.Path, evidence_path: pathlib.Path) -> None:
     state = _validated_state(state_path)
     repo_root = pathlib.Path(str(state["repo_root"]))
-    resolved_evidence = evidence_path.expanduser().resolve()
-    _outside_repo(resolved_evidence, repo_root, "evidence output")
-    if resolved_evidence == state_path.expanduser().resolve():
-        raise UpdateExecutionError("evidence output must differ from state")
+    if state["verification"] is not None:
+        raise UpdateExecutionError("state already records successful verification")
+    cleanup = state["cleanup"]
+    assert isinstance(cleanup, Mapping)
+    owned_artifacts = cleanup["owned_artifacts"]
+    assert isinstance(owned_artifacts, list)
+    evidence_record = next(
+        artifact for artifact in owned_artifacts if artifact["role"] == "evidence"
+    )
+    resolved_evidence = _absolute(evidence_path)
+    if resolved_evidence != evidence_record["path"]:
+        raise UpdateExecutionError("evidence output differs from prepared ownership")
     changed: list[str] = []
     groups: list[dict[str, object]] = []
     results: list[dict[str, object]] = []
@@ -749,9 +1119,63 @@ def command_verify(state_path: pathlib.Path, evidence_path: pathlib.Path) -> Non
         "checks": results,
         "failures": failures,
     }
-    _write_json(resolved_evidence, evidence, "evidence output")
+    _write_json_atomic(resolved_evidence, evidence, "evidence output")
     if failures:
         raise UpdateExecutionError(failures[0])
+    state["verification"] = {
+        "status": "passed",
+        "evidence_sha256": _file_sha256(resolved_evidence),
+    }
+    state["cleanup"] = _cleanup_payload(cleanup)
+    _write_json_atomic(_absolute(state_path), state, "state output")
+
+
+def command_finalize(state_path: pathlib.Path) -> None:
+    """Remove exact owned artifacts after the caller signals completed use."""
+
+    resolved_state = _absolute(state_path)
+    _reject_link_chain(resolved_state, "state")
+    if not resolved_state.is_file():
+        raise UpdateExecutionError(f"state must be a regular file: {resolved_state}")
+    raw = _read_json(resolved_state, "state")
+    _closed_fields(raw, STATE_FIELDS, "state")
+    if raw.get("schema") != STATE_SCHEMA:
+        raise UpdateExecutionError(f"state schema must be {STATE_SCHEMA}")
+    repo_value = raw["repo_root"]
+    if not isinstance(repo_value, str) or not repo_value:
+        raise UpdateExecutionError("state repo_root is invalid")
+    repo_root = pathlib.Path(repo_value).resolve(strict=True)
+    cleanup = _validated_cleanup(
+        raw["cleanup"],
+        state_path=resolved_state,
+        repo_root=repo_root,
+    )
+    verification = _validated_verification(raw["verification"])
+    if verification is None:
+        raise UpdateExecutionError("refusing to finalize before successful verification")
+    artifacts = cleanup["owned_artifacts"]
+    assert isinstance(artifacts, list)
+    for artifact in artifacts:
+        role = artifact["role"]
+        path = artifact["path"]
+        assert isinstance(role, str)
+        assert isinstance(path, pathlib.Path)
+        if not path.exists():
+            continue
+        if _is_link(path) or not path.is_file():
+            raise UpdateExecutionError(f"owned {role} is not a regular file: {path}")
+        expected_hash = artifact["sha256"]
+        if role == "evidence":
+            expected_hash = verification["evidence_sha256"]
+        if expected_hash is not None and _file_sha256(path) != expected_hash:
+            raise UpdateExecutionError(f"owned {role} changed after recording")
+    for artifact in artifacts:
+        if artifact["role"] == "state":
+            continue
+        path = artifact["path"]
+        assert isinstance(path, pathlib.Path)
+        path.unlink(missing_ok=True)
+    resolved_state.unlink()
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -763,6 +1187,8 @@ def build_parser() -> argparse.ArgumentParser:
     verify = commands.add_parser("verify")
     verify.add_argument("--state", required=True, type=pathlib.Path)
     verify.add_argument("--evidence-output", required=True, type=pathlib.Path)
+    finalize = commands.add_parser("finalize")
+    finalize.add_argument("--state", required=True, type=pathlib.Path)
     return parser
 
 
@@ -771,8 +1197,10 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "prepare":
             command_prepare(args.request, args.state)
-        else:
+        elif args.command == "verify":
             command_verify(args.state, args.evidence_output)
+        else:
+            command_finalize(args.state)
     except (UpdateExecutionError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2

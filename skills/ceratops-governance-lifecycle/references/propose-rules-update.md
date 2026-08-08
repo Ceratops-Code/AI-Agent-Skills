@@ -66,14 +66,17 @@ to preserved behavior or an explicitly approved change.
 - (D) For every approved rule mutation, create one request that names the
   affected global scope and every rule source in the complete project scope,
   each target rules and companion history source, each exact expected-old and
-  replacement text, and every approved history append; then run `python
-  scripts/apply_rules_update.py --request <path>`.
+  replacement text, every approved history append, the verified task-temp root,
+  and whether the request itself is workflow-owned and disposable; then run
+  `python scripts/apply_rules_update.py --request <path>`.
 - (D) The helper must require each expected-old text to occur exactly once,
   construct and validate every candidate before replacing a target, reuse the
   rule-graph and history validators, preserve encoding and line endings, cover
   every changed rule ID in the approved append-only history operations, protect
-  coupled writes with rollback, reopen and revalidate the result, and emit only
-  `OK` or one compact actionable error.
+  coupled writes with rollback, reopen and revalidate the result, delete only an
+  unchanged explicitly disposable request beneath the verified task-temp root
+  after success, preserve it on failure, and emit only `OK` or one compact
+  actionable error.
 
 Append one decision per approved rule change under the history contract in
 [rule-design.md](rule-design.md).
@@ -83,9 +86,10 @@ Append one decision per approved rule change under the history contract in
 - (D) For every proposal, create one request naming applicable rule sources and
   histories, applicable rule IDs, exact current target text, original and
   regression inputs, controller state and evidence paths, mutation authority,
-  and expected side effects; use a null history only for a target source with
-  no companion history and include at least one applicable history-backed
-  source. Run
+  expected side effects, the verified task-temp root, the exact iteration
+  artifact directory, and every disposable artifact role; use a null history
+  only for a target source with no companion history and include at least one
+  applicable history-backed source. Run
   `python scripts/proposal-workflow.py prepare --request REQUEST`. The helper
   must validate complete current inputs, write compact context evidence,
   initialize the existing iteration controller, and open iteration 1 without
@@ -97,10 +101,12 @@ Append one decision per approved rule change under the history contract in
   operation to submit the exact pending iteration and open the next one only
   when stopping has not occurred.
 - (D) Before final output, run `python scripts/proposal-workflow.py finalize
-  --state STATE`. The helper must delegate the existing controller's safe
-  finalization, which preserves original and regression inputs, rejects
-  unexpected artifact paths or contents, and deletes only completed-run state
-  and owned iteration artifacts; emit only `OK` or one compact actionable error.
+  --state STATE`. The helper must reject incomplete runs, path escapes, links,
+  repository or governed targets, undeclared artifacts, and changed owned
+  inputs; preserve user-owned or undeclared inputs; delegate the controller's
+  iteration cleanup; and remove every exact request, original/regression input,
+  context-evidence, state, and iteration artifact recorded as workflow-owned
+  during prepare. Emit only `OK` or one compact actionable error.
 - For each issued iteration, complete steps 5-7. After submission, post one
   compact commentary status; do not repeat iteration logs in the final answer.
 

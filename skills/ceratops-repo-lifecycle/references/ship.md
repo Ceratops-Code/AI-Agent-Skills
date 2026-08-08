@@ -43,29 +43,36 @@ Infer missing values from the checkout, scope file, and live PR before asking.
    pass. When it yields a running cell without new output, resume it with a
    55-second wait; use a shorter wait only when a known completion or failure
    deadline is sooner.
-2. Before the first remote push, the helper checks the canonical scope when it
+2. Before automatically selecting an incomplete checkpoint to resume, the
+   GitHub workflow removes a matching checkpoint only when its phase is exactly
+   `prepared`, the local head branch has moved, a fresh fetch proves the commit
+   is contained in the remote base branch, and a paginated repository-wide PR
+   lookup proves no PR has that exact head. Missing or uncertain evidence
+   retains the checkpoint and resumes or blocks; explicit `--commit` behavior
+   is unchanged.
+3. Before the first remote push, the helper checks the canonical scope when it
    exists. It atomically removes entries for missing source branches and deletes
    the scope if none remain. An absent or emptied scope is a cleanup no-op;
    remaining `pending_work` performs no remote mutation.
-3. The delegated GitHub workflow ensures the PR, waits for readiness, CI, and
+4. The delegated GitHub workflow ensures the PR, waits for readiness, CI, and
    Codex review, immediately rereads every gate, and verifies the exact head.
-4. Only after those gates pass, integrated ship delegates the final exact-head
+5. Only after those gates pass, integrated ship delegates the final exact-head
    merge to `merge.merge_verified_pr(admin=True)`. It inherits the shared
    merge action's checkpointed dedicated-endpoint bypass, restoration, read-back,
    and critical recovery semantics; ship contains no independent toggle logic.
-5. After merge, the helper synchronizes local main and restores a reusable
+6. After merge, the helper synchronizes local main and restores a reusable
    integration branch when selected.
-6. Before remote mutation, the wrapper classifies deployment. An absent default
+7. Before remote mutation, the wrapper classifies deployment. An absent default
    `deploy/deploy.yml` makes `deploy` an explicit no-op; a missing custom
    contract blocks. After synchronization it rechecks the selected scope, runs
    a declared operation or records the no-op, rechecks, and removes only clean
    selected worktrees and merged selected branches.
-7. After a declared `deploy` succeeds, the helper checkpoints its result
+8. After a declared `deploy` succeeds, the helper checkpoints its result
    against the exact target, operation, and resolved contract before
    finalization. A retry reuses that result while cleanup remains pending and
    removes the checkpoint after cleanup succeeds. Deployment operations must
    remain retry-safe across interruption.
-8. After the helper completes, when synchronized main declares managed skills,
+9. After the helper completes, when synchronized main declares managed skills,
    execute the handoff returned in its deployment result against that exact
    checkout. If none was declared, report the managed skills as not deployed
    without changing the completed repository result.

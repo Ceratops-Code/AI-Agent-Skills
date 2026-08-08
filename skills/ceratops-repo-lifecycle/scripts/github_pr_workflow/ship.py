@@ -19,12 +19,11 @@ import sys
 import time
 from typing import Any
 
-from github_contract_engine.github_api import run_json_command
+from github_contract_engine.github_api import run_gh_api, run_json_command
 from github_contract_engine.levels import ERROR, WARN
 
 from . import codex_review, ensure_pr, merge, readiness, sync
 from .command import CommandError, require_output, require_success, run_command
-
 
 PHASES = ("prepared", "pr_ready", "gates_passed", "merged", "synchronized")
 FULL_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -147,14 +146,151 @@ def _remove_completed_pr_checkpoints(
     return removed
 
 
+def _local_branch_head(repo_root: pathlib.Path, branch: str) -> str | None:
+    """Return one local branch head, or ``None`` when the ref is absent."""
+
+    result = run_command(
+        _git(
+            repo_root,
+            "rev-parse",
+            "--verify",
+            f"refs/heads/{branch}^{{commit}}",
+        ),
+        cwd=repo_root,
+    )
+    if result.returncode:
+        return None
+    lines = result.stdout.strip().splitlines()
+    if len(lines) != 1 or not FULL_SHA_RE.fullmatch(lines[0]):
+        raise ShipError(f"Local branch {branch!r} resolved to an invalid commit.")
+    return lines[0]
+
+
+def _fresh_remote_base_head(
+    repo_root: pathlib.Path,
+    remote_name: str,
+    base_branch: str,
+) -> str:
+    """Fetch and return the exact remote base head used for containment."""
+
+    require_success(
+        _git(
+            repo_root,
+            "fetch",
+            "--no-tags",
+            remote_name,
+            f"refs/heads/{base_branch}",
+        ),
+        cwd=repo_root,
+    )
+    lines = require_output(
+        _git(repo_root, "rev-parse", "--verify", "FETCH_HEAD^{commit}"),
+        cwd=repo_root,
+    ).splitlines()
+    if len(lines) != 1 or not FULL_SHA_RE.fullmatch(lines[0]):
+        raise ShipError(
+            f"Fresh remote branch {remote_name}/{base_branch} has an invalid head."
+        )
+    return lines[0]
+
+
+def _repository_has_exact_head_pr(
+    repo_root: pathlib.Path,
+    repository: str,
+    commit: str,
+) -> bool:
+    """Return whether any repository PR still has this exact head."""
+
+    result = run_gh_api(
+        "GET",
+        f"/repos/{repository}/pulls?state=all&per_page=100",
+        paginate=True,
+        cwd=repo_root,
+    )
+    data = _require_api_data(result, "repository PR lookup")
+    if not isinstance(data, list):
+        raise ShipError("GitHub returned an invalid repository PR list.")
+    for item in data:
+        head = item.get("head") if isinstance(item, dict) else None
+        head_sha = head.get("sha") if isinstance(head, dict) else None
+        if not isinstance(head_sha, str) or not FULL_SHA_RE.fullmatch(head_sha):
+            raise ShipError("GitHub returned an invalid repository PR head.")
+        if head_sha == commit:
+            return True
+    return False
+
+
+def _remove_obsolete_prepared_checkpoints(
+    repo_root: pathlib.Path,
+    repository: str,
+    head_branch: str,
+    base_branch: str,
+    remote_name: str,
+    checkpoints: list[tuple[pathlib.Path, dict[str, Any]]],
+) -> set[pathlib.Path]:
+    """Delete only prepared checkpoints proven obsolete by Git and GitHub."""
+
+    local_head = _local_branch_head(repo_root, head_branch)
+    if local_head is None:
+        return set()
+    eligible: list[tuple[pathlib.Path, dict[str, Any]]] = []
+    for path, state in checkpoints:
+        commit = state.get("commit")
+        if (
+            state.get("phase") == "prepared"
+            and state.get("base_branch") == base_branch
+            and isinstance(commit, str)
+            and FULL_SHA_RE.fullmatch(commit)
+            and path.name == f"{commit}.json"
+            and local_head != commit
+        ):
+            eligible.append((path, state))
+    if not eligible:
+        return set()
+
+    remote_base = _fresh_remote_base_head(repo_root, remote_name, base_branch)
+    removable: list[tuple[pathlib.Path, dict[str, Any]]] = []
+    for path, state in eligible:
+        commit = str(state["commit"])
+        ancestor = run_command(
+            _git(repo_root, "merge-base", "--is-ancestor", commit, remote_base),
+            cwd=repo_root,
+        )
+        if ancestor.returncode == 1:
+            continue
+        if ancestor.returncode:
+            raise ShipError(
+                f"Could not compare prepared checkpoint {commit} with fresh "
+                f"{remote_name}/{base_branch}."
+            )
+        if not _repository_has_exact_head_pr(repo_root, repository, commit):
+            removable.append((path, state))
+
+    for path, state in removable:
+        if path.is_symlink() or not path.is_file() or _read_checkpoint(path) != state:
+            raise ShipError(f"Prepared ship checkpoint changed before cleanup: {path}")
+    for path, _ in removable:
+        try:
+            path.unlink()
+        except OSError as exc:
+            raise ShipError(
+                f"Could not remove obsolete prepared checkpoint {path}: {exc}"
+            ) from exc
+    return {path for path, _ in removable}
+
+
 def _find_incomplete_commit(
-    repo_root: pathlib.Path, repository: str, head_branch: str
+    repo_root: pathlib.Path,
+    repository: str,
+    head_branch: str,
+    base_branch: str,
+    remote_name: str,
 ) -> str | None:
     directory = _checkpoint_directory(repo_root, repository)
     if not directory.is_dir():
         return None
-    candidates: list[str] = []
-    for path in directory.glob("*.json"):
+    checkpoints: list[tuple[pathlib.Path, dict[str, Any]]] = []
+    for path in sorted(directory.glob("*.json")):
         state = _read_checkpoint(path)
         if (
             state.get("repository") == repository
@@ -162,7 +298,20 @@ def _find_incomplete_commit(
             and state.get("phase") != "synchronized"
             and isinstance(state.get("commit"), str)
         ):
-            candidates.append(str(state["commit"]))
+            checkpoints.append((path, state))
+    removed = _remove_obsolete_prepared_checkpoints(
+        repo_root,
+        repository,
+        head_branch,
+        base_branch,
+        remote_name,
+        checkpoints,
+    )
+    candidates = [
+        str(state["commit"])
+        for path, state in checkpoints
+        if path not in removed
+    ]
     if len(candidates) > 1:
         raise ShipError(
             "Multiple incomplete checkpoints exist for this branch; pass --commit."
@@ -185,7 +334,11 @@ def _resolve_commit(
             ).splitlines()[0]
         else:
             commit = _find_incomplete_commit(
-                repo_root, repository, args.head_branch
+                repo_root,
+                repository,
+                args.head_branch,
+                args.base_branch,
+                args.remote_name,
             ) or ""
             if not commit:
                 raise ShipError(

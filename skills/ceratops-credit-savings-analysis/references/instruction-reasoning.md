@@ -1,0 +1,32 @@
+# Instruction Reasoning Action
+
+## Goal
+
+Detect avoidable prompt, instruction, planning, reasoning, and skill-routing
+cost.
+
+## Focused Review
+
+- Review ambiguous or incomplete prompts, repeated clarification answerable
+  from stable context, unnecessary rule rereads, contradictory or stale
+  controls, excessive planning, repeated reasoning, missed same-pass
+  draft-assess-revise work, and unnecessary skill or action handoffs.
+- Exclude ordinary model mistakes unless one concise durable producer control
+  would materially reduce recurrence. Do not treat required rule lookup,
+  proposal iteration, or action routing as waste merely because it costs a
+  model call.
+- Prefer the smallest prompt, rule, skill, routing, or same-pass reasoning
+  control that directly prevents the observed recurrence without weakening an
+  active gate.
+
+## Completion Gate
+
+Account for every exposed model-call candidate and persist all confirmed
+findings, risks, dismissals, and necessary exclusions through `advance`.
+
+## Output Contract
+
+Present every outstanding instruction-reasoning finding and plausible risk
+under the parent output contract. For a standalone run, state that conclusions
+cover only instructions and reasoning and are not a whole-thread credit
+reconciliation.
