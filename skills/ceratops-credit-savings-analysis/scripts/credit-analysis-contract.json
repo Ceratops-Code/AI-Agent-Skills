@@ -142,7 +142,12 @@
     "implemented",
     "unimplemented"
   ],
+  "waste_kinds": [
+    "model-calls",
+    "context-volume"
+  ],
   "complexities": [
+    "Minimal",
     "Low",
     "Medium",
     "High"

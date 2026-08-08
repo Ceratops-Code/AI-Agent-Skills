@@ -60,9 +60,17 @@ applies them.
   iteration, or workflow gates. Record conversational tool-protocol overhead as
   necessary rather than as a helper defect.
 - Tie every confirmed finding to evidence call IDs, its producer and concrete
-  owner when known, one durable control, implementation status, targeted
-  verification, observed avoidable calls, recurrence range, confidence,
-  one-time implementation cost, and Low, Medium, or High ongoing complexity.
+  owner when known, a plain-language problem summary, one durable control,
+  implementation status, targeted verification, observed avoidable calls,
+  recurrence range, confidence, one-time implementation cost, and Minimal,
+  Low, Medium, or High ongoing complexity. Use Minimal only for a local one- or
+  two-line correction with local verification; broader ownership, failure, or
+  verification work is at least Low.
+- Treat an overbroad command or tool result contract as tool-flow waste and
+  unnecessarily selected or loaded model context as context-evidence waste.
+  Preserve a supported overlap as secondary evidence without double-counting
+  model calls. Mark a volume-only finding as `context-volume`, keep all of its
+  call-savings fields at zero, and classify its evidence calls independently.
 - Compute net calls saved per affected run as prevented calls minus recurring
   calls introduced by the fix, and calls saved per similar run as that net
   multiplied by estimated affected-run frequency. State assumptions, test ROI
@@ -89,9 +97,18 @@ applies them.
 
 ### Output Contract
 
-- Present every confirmed finding retained for the selected action and every
-  plausible unverified risk. For standalone actions, state that the conclusion
-  is limited to the selected surface and is not a whole-thread reconciliation.
+- Retain every confirmed finding in machine evidence, but present only
+  findings whose implementation status is `unimplemented`. Give each a
+  plain-language title and about two short lines: `Problem` names what happened,
+  where, and the concrete waste; `Fix` names the smallest durable correction
+  and targeted verification. Do not show internal IDs, producer-group headings,
+  status labels, confidence, helper taxonomy, or call IDs unless requested or
+  needed to distinguish episodes.
+- Explain each plausible risk in plain language as the observed signal, missing
+  evidence, and evidence needed for confirmation. Combine overlapping risks for
+  presentation while retaining every machine record. For standalone actions,
+  state that the conclusion is limited to the selected surface and is not a
+  whole-thread reconciliation.
 
 ## Analysis-Only Boundaries
 

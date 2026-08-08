@@ -26,6 +26,6 @@ iteration was necessary when excluded, then persist the result through
 
 ## Output Contract
 
-Present every confirmed rework-validation finding and plausible risk. For a
-standalone run, state that conclusions cover only rework and validation and are
-not a whole-thread credit reconciliation.
+Present every outstanding rework-validation finding and plausible risk under
+the parent output contract. For a standalone run, state that conclusions cover
+only rework and validation and are not a whole-thread credit reconciliation.

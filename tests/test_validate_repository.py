@@ -91,6 +91,9 @@ def test_success_prints_exactly_ok_and_suppresses_child_output(
         return completed(command, stdout="noisy stdout", stderr="noisy stderr")
 
     evidence_file = tmp_path / "evidence file.log"
+    evidence_file.write_text("stale failure evidence\n", encoding="utf-8")
+    temporary = evidence_file.with_name(f".{evidence_file.name}.tmp")
+    temporary.write_text("stale partial evidence\n", encoding="utf-8")
     result = VALIDATOR.main(
         ["--evidence-file", str(evidence_file)],
         process_runner=fake_runner,
@@ -102,6 +105,7 @@ def test_success_prints_exactly_ok_and_suppresses_child_output(
     assert captured.err == ""
     assert len(calls) == 6
     assert not evidence_file.exists()
+    assert not temporary.exists()
 
 
 def test_failure_is_fail_fast_compact_and_writes_complete_evidence(
@@ -169,3 +173,16 @@ def test_omitted_evidence_flag_keeps_repository_default(
     assert result == 3
     assert payload["evidence_file"] == str(expected)
     assert expected.is_file()
+
+    def passing_runner(
+        command: tuple[str, ...], cwd: pathlib.Path
+    ) -> subprocess.CompletedProcess[str]:
+        del cwd
+        return completed(command)
+
+    success = VALIDATOR.main([], process_runner=passing_runner)
+
+    assert success == 0
+    assert capsys.readouterr().out == "OK\n"
+    assert not expected.exists()
+    assert not expected.parent.exists()

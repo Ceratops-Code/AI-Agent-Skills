@@ -121,7 +121,9 @@ targeted local state before asking.
 
 #### 7. Answer From Checked Evidence
 
-- Keep the answer concise and omit routine command logs or process narration.
+- Keep the answer concise and omit routine command logs, process narration, and
+  ignored or generated validation artifacts unless they failed, are stale in
+  scope, affect correctness, or the user explicitly requested their cleanup.
 
 ## Done When
 
@@ -161,7 +163,9 @@ Return only relevant concise bullets:
 
 If no listed item applies, return only `- No unresolved items.`
 
-Omit routine command logs and process narration.
+Omit routine command logs, process narration, and ignored or generated
+validation artifacts unless they failed, are stale in scope, affect
+correctness, or the user explicitly requested their cleanup.
 
 ### Example Invocation
 

@@ -2,8 +2,10 @@
 """Run the complete repository-owned local and CI validation sequence.
 
 ``--evidence-file`` selects first-failure evidence. Child output is suppressed
-on success and written in full only for the first failed check. Commands use
-argv lists, and managed runtime installation remains outside this aggregate.
+on success and written in full only for the first failed check. A successful
+run removes stale evidence at that exact path and prunes only the dedicated
+default evidence directory when empty. Commands use argv lists, and managed
+runtime installation remains outside this aggregate.
 """
 
 from __future__ import annotations
@@ -189,6 +191,28 @@ def failure_payload(failure: Failure) -> dict[str, object]:
     return payload
 
 
+def cleanup_evidence(
+    evidence_file: pathlib.Path,
+    *,
+    prune_default_parent: bool,
+) -> None:
+    """Remove stale failure evidence after success and only its owned directory."""
+
+    evidence_file.unlink(missing_ok=True)
+    evidence_file.with_name(f".{evidence_file.name}.tmp").unlink(missing_ok=True)
+    if prune_default_parent:
+        try:
+            evidence_file.parent.rmdir()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            if not evidence_file.parent.is_dir() or any(
+                evidence_file.parent.iterdir()
+            ):
+                return
+            raise
+
+
 def main(
     argv: Sequence[str] | None = None,
     *,
@@ -225,6 +249,25 @@ def main(
         process_runner=process_runner,
     )
     if failure is None:
+        try:
+            cleanup_evidence(
+                evidence_file,
+                prune_default_parent=parsed.evidence_file is None,
+            )
+        except OSError as exc:
+            print(
+                json.dumps(
+                    {
+                        "check": "evidence-cleanup",
+                        "exit_code": 1,
+                        "evidence_file": str(evidence_file),
+                        "cleanup_error": f"{type(exc).__name__}: {exc}",
+                    },
+                    separators=(",", ":"),
+                    ensure_ascii=True,
+                )
+            )
+            return 1
         print("OK")
         return 0
 

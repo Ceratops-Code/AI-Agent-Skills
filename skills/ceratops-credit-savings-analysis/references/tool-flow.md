@@ -8,8 +8,13 @@ Detect avoidable tool, command, wait, and model-mediated transitions.
 
 - Review unnecessary tool or model handoffs, unbatched commands, poor tool
   selection, retries without diagnosis, unnecessary polling or waits, noisy
-  output, missing deterministic orchestration, and avoidable model-mediated
-  transitions.
+  or oversized command and tool output, missing deterministic orchestration,
+  and avoidable model-mediated transitions.
+- For an output-volume candidate, compare sanitized argument and result sizes
+  with the next decision's required payload. Record the excessive result, the
+  bounded output that was needed, and the exact filter, quiet mode, projection,
+  or compact result contract that would prevent it. Mark a volume-only finding
+  `context-volume` and keep its call-savings arithmetic at zero.
 - Separate conversational tool-protocol overhead from executable helper
   defects. Classify protocol-only overhead as necessary and do not propose a
   helper solely to remove required protocol turns.
@@ -24,6 +29,6 @@ exclusions, then persist the complete result through `advance`.
 
 ## Output Contract
 
-Present every confirmed tool-flow finding and plausible risk. For a standalone
-run, state that conclusions cover only tool and handoff flow and are not a
-whole-thread credit reconciliation.
+Present every outstanding tool-flow finding and plausible risk under the parent
+output contract. For a standalone run, state that conclusions cover only tool
+and handoff flow and are not a whole-thread credit reconciliation.

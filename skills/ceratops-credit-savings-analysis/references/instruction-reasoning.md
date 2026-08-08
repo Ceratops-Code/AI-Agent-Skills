@@ -26,6 +26,7 @@ findings, risks, dismissals, and necessary exclusions through `advance`.
 
 ## Output Contract
 
-Present every confirmed instruction-reasoning finding and plausible risk. For a
-standalone run, state that conclusions cover only instructions and reasoning
-and are not a whole-thread credit reconciliation.
+Present every outstanding instruction-reasoning finding and plausible risk
+under the parent output contract. For a standalone run, state that conclusions
+cover only instructions and reasoning and are not a whole-thread credit
+reconciliation.

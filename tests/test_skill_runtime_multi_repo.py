@@ -360,6 +360,8 @@ def finding_record(
     producer_type: str,
     owner: str,
     status: str = "unimplemented",
+    waste_kind: str = "model-calls",
+    complexity: str = "Low",
     helper_categories: list[str] | None = None,
 ) -> dict[str, Any]:
     """Build one valid surface finding with deterministic ROI arithmetic."""
@@ -367,6 +369,10 @@ def finding_record(
     return {
         "id": finding_id,
         "title": finding_id.replace("-", " "),
+        "problem_summary": (
+            f"Synthetic episode for {finding_id} caused avoidable work at {owner}."
+        ),
+        "waste_kind": waste_kind,
         "affected_call_ids": calls,
         "evidence_refs": [f"evidence://calls/{call_id}" for call_id in calls],
         "producer_type": producer_type,
@@ -374,17 +380,23 @@ def finding_record(
         "proposed_durable_control": f"Prevent {finding_id} at {owner}",
         "implementation_status": status,
         "targeted_verification": [f"verify-{finding_id}"],
-        "observed_avoidable_call_count": len(calls),
+        "observed_avoidable_call_count": (
+            0 if waste_kind == "context-volume" else len(calls)
+        ),
         "recurrence": {
-            "calls_saved_per_affected_run": float(len(calls)),
+            "calls_saved_per_affected_run": (
+                0.0 if waste_kind == "context-volume" else float(len(calls))
+            ),
             "additional_recurring_calls_per_affected_run": 0.0,
             "affected_similar_run_frequency": 0.5,
             "affected_similar_run_frequency_range": [0.25, 0.75],
-            "estimated_calls_saved_per_similar_run": float(len(calls)) * 0.5,
+            "estimated_calls_saved_per_similar_run": (
+                0.0 if waste_kind == "context-volume" else float(len(calls)) * 0.5
+            ),
             "assumptions": ["synthetic recurrence"],
         },
         "confidence": 0.8,
-        "complexity": "Low",
+        "complexity": complexity,
         "one_time_implementation_cost": {
             "estimated_model_calls": 1.0,
             "description": "one focused implementation pass",
@@ -628,6 +640,7 @@ def test_credit_analysis_workflow_full_analysis_persists_every_finding(
         ["turn-1:2"],
         producer_type="skill",
         owner="skills/example/SKILL.md",
+        complexity="Minimal",
     )
     rework_finding = finding_record(
         "rework-gap",
@@ -641,6 +654,14 @@ def test_credit_analysis_workflow_full_analysis_persists_every_finding(
         producer_type="prompt",
         owner="request prompt",
         status="implemented",
+    )
+    volume_finding = finding_record(
+        "oversized-tool-output",
+        ["turn-1:1"],
+        producer_type="tool-choice",
+        owner="synthetic command",
+        waste_kind="context-volume",
+        complexity="Minimal",
     )
     expected_order = [
         "helper-contracts",
@@ -702,6 +723,7 @@ def test_credit_analysis_workflow_full_analysis_persists_every_finding(
             kwargs = {"findings": [rework_finding]}
         elif surface == "tool-flow":
             kwargs = {
+                "findings": [volume_finding],
                 "risks": [
                     {
                         "id": "tool-poll-risk",
@@ -723,6 +745,22 @@ def test_credit_analysis_workflow_full_analysis_persists_every_finding(
             kwargs = {"findings": [instruction_finding]}
         result = surface_result_record(status, context, fingerprint, **kwargs)
         result_path = pathlib.Path(status["required_result_path"])
+        if surface == "helper-contracts":
+            malformed_finding = dict(helper_finding)
+            malformed_finding.pop("problem_summary")
+            write_json_file(
+                result_path,
+                {**result, "confirmed_findings": [malformed_finding]},
+            )
+            malformed = run_credit_analysis_workflow(
+                "advance",
+                "--state",
+                str(state_path),
+                "--result",
+                str(result_path),
+            )
+            assert malformed.returncode == 2
+            assert "missing problem_summary" in malformed.stderr
         write_json_file(result_path, result)
         advanced = run_credit_analysis_workflow(
             "advance",
@@ -787,6 +825,7 @@ def test_credit_analysis_workflow_full_analysis_persists_every_finding(
             "context-gap",
             "rework-gap",
             "instruction-gap",
+            "oversized-tool-output",
         ],
         "risk_order": ["tool-poll-risk"],
         "finding_dispositions": [
@@ -808,6 +847,11 @@ def test_credit_analysis_workflow_full_analysis_persists_every_finding(
             {
                 "finding_id": "instruction-gap",
                 "primary_call_ids": ["turn-1:3"],
+                "secondary_call_ids": [],
+            },
+            {
+                "finding_id": "oversized-tool-output",
+                "primary_call_ids": [],
                 "secondary_call_ids": [],
             },
         ],
@@ -887,6 +931,14 @@ def test_credit_analysis_workflow_full_analysis_persists_every_finding(
                 "recommended_control": "retain the implemented prompt control",
                 "targeted_verification": ["verify-instruction-gap"],
             },
+            {
+                "id": "output-volume-group",
+                "producer_type": "tool-choice",
+                "owner": "synthetic command",
+                "finding_ids": ["oversized-tool-output"],
+                "recommended_control": "bound the synthetic command output",
+                "targeted_verification": ["verify-oversized-tool-output"],
+            },
         ],
     }
     synthesis_path = pathlib.Path(status["required_result_path"])
@@ -925,7 +977,7 @@ def test_credit_analysis_workflow_full_analysis_persists_every_finding(
         "avoidable_calls": 3,
         "avoidable_implemented_calls": 1,
         "avoidable_unimplemented_calls": 2,
-        "confirmed_findings": 4,
+        "confirmed_findings": 5,
         "plausible_risks": 1,
     }
     assert final_result["helper_category_totals"] == {
@@ -935,6 +987,18 @@ def test_credit_analysis_workflow_full_analysis_persists_every_finding(
     assert next(
         item for item in final_result["confirmed_findings"] if item["id"] == "rework-gap"
     )["deduplicated_avoidable_call_count"] == 0
+    context_result = next(
+        item for item in final_result["confirmed_findings"] if item["id"] == "context-gap"
+    )
+    assert context_result["complexity"] == "Minimal"
+    assert context_result["problem_summary"] == context_finding["problem_summary"]
+    volume_result = next(
+        item
+        for item in final_result["confirmed_findings"]
+        if item["id"] == "oversized-tool-output"
+    )
+    assert volume_result["waste_kind"] == "context-volume"
+    assert volume_result["deduplicated_avoidable_call_count"] == 0
     assert final_result["secondary_call_mappings"] == synthesis[
         "secondary_call_mappings"
     ]
@@ -1209,6 +1273,70 @@ def test_credit_analysis_workflow_standalone_zero_findings_is_isolated(
     )
     assert rejected_synthesis.returncode == 2
     assert "action is not public" in rejected_synthesis.stderr
+
+    volume_base = tmp_path / "volume"
+    volume_base.mkdir()
+    volume_request, _, _ = credit_analysis_request(
+        volume_base,
+        action="tool-flow",
+    )
+    volume_prepared = run_credit_analysis_workflow(
+        "prepare", "--request", str(volume_request)
+    )
+    assert volume_prepared.returncode == 0, volume_prepared.stderr
+    volume_status = json.loads(volume_prepared.stdout)
+    volume_evidence = json.loads(
+        pathlib.Path(volume_status["evidence_path"]).read_text(encoding="utf-8")
+    )
+    volume_context = json.loads(
+        pathlib.Path(volume_status["context_path"]).read_text(encoding="utf-8")
+    )
+    volume_finding = finding_record(
+        "oversized-output",
+        [volume_evidence["call_inventory"][0]],
+        producer_type="tool-choice",
+        owner="synthetic command",
+        waste_kind="context-volume",
+        complexity="Minimal",
+    )
+    volume_result = surface_result_record(
+        volume_status,
+        volume_context,
+        volume_evidence["evidence_fingerprint"],
+        findings=[volume_finding],
+    )
+    write_json_file(
+        pathlib.Path(volume_status["required_result_path"]), volume_result
+    )
+    volume_advanced = run_credit_analysis_workflow(
+        "advance",
+        "--state",
+        volume_status["state_path"],
+        "--result",
+        volume_status["required_result_path"],
+    )
+    assert volume_advanced.returncode == 0, volume_advanced.stderr
+    volume_ready = json.loads(volume_advanced.stdout)
+    volume_finalized = run_credit_analysis_workflow(
+        "finalize",
+        "--state",
+        volume_status["state_path"],
+        "--result",
+        volume_ready["required_result_path"],
+    )
+    assert volume_finalized.returncode == 0, volume_finalized.stderr
+    volume_state = json.loads(
+        pathlib.Path(volume_status["state_path"]).read_text(encoding="utf-8")
+    )
+    volume_machine_result = json.loads(
+        pathlib.Path(volume_state["final_result"]["path"]).read_text(
+            encoding="utf-8"
+        )
+    )
+    assert volume_machine_result["totals"]["surface_observed_avoidable_calls"] == 0
+    assert volume_machine_result["confirmed_findings"][0][
+        "deduplicated_avoidable_call_count"
+    ] == 0
 
 
 @pytest.mark.parametrize(
@@ -1643,6 +1771,7 @@ def test_credit_analysis_batch_resumes_and_preserves_every_thread_finding(
         f"{ids[0]}:instruction-gap",
         f"{ids[1]}:instruction-gap",
     ]
+    assert all(item["problem_summary"] for item in context["findings"])
     assert [item["thread_id"] for item in context["thread_totals"]] == ids
     assert "call_inventory" not in context
     assert context["result_contract"]["fields"] == [
@@ -2471,6 +2600,13 @@ def test_model_call_ledger_usage_summary_is_ranked_and_evidence_based(
     assert first["totals"]["estimated_credit_cost"] == 0.001035
     assert first["tool_action_results"][1]["retry"] is True
     assert first["tool_action_results"][1]["explicit_failure"] is False
+    assert first["tool_action_results"][0]["argument_chars"] == len(
+        repeated_arguments
+    )
+    assert first["tool_action_results"][0]["result_chars"] > 0
+    assert first["tool_action_results"][0]["result_chars"] > first[
+        "tool_action_results"
+    ][1]["result_chars"]
     assert first["tool_action_results"][1]["outcomes"][
         "nonzero_process_result"
     ] is True
@@ -6598,12 +6734,18 @@ def test_compatibility_materializer_supports_repositories_without_skills(
     }
     assert (repo / "scripts" / "validate-repository.py").is_file()
     assert (repo / ".github" / "workflows" / "validate.yml").is_file()
+    validation_evidence = tmp_path / "zero-skill-validation.log"
+    validation_evidence.write_text("stale failure evidence\n", encoding="utf-8")
+    validation_temporary = validation_evidence.with_name(
+        f".{validation_evidence.name}.tmp"
+    )
+    validation_temporary.write_text("stale partial evidence\n", encoding="utf-8")
     validation = subprocess.run(
         [
             sys.executable,
             str(repo / "scripts" / "validate-repository.py"),
             "--evidence-file",
-            str(tmp_path / "zero-skill-validation.log"),
+            str(validation_evidence),
         ],
         cwd=repo,
         capture_output=True,
@@ -6612,6 +6754,8 @@ def test_compatibility_materializer_supports_repositories_without_skills(
     )
     assert validation.returncode == 0, validation.stdout
     assert validation.stdout == "OK\n"
+    assert not validation_evidence.exists()
+    assert not validation_temporary.exists()
 
     omitted = tmp_path / "empty-without-deploy"
     shutil.copytree(repo, omitted)

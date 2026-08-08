@@ -198,6 +198,8 @@ SURFACE_RESULT_FIELDS = {
 FINDING_FIELDS = {
     "id",
     "title",
+    "problem_summary",
+    "waste_kind",
     "affected_call_ids",
     "evidence_refs",
     "producer_type",
@@ -1449,6 +1451,12 @@ def _validate_finding(
     title = raw.get("title")
     if not isinstance(title, str) or not title.strip():
         raise CreditAnalysisError(f"finding {finding_id} title is required")
+    problem_summary = raw.get("problem_summary")
+    if not isinstance(problem_summary, str) or not problem_summary.strip():
+        raise CreditAnalysisError(f"finding {finding_id} problem summary is required")
+    waste_kind = raw.get("waste_kind")
+    if waste_kind not in contract["waste_kinds"]:
+        raise CreditAnalysisError(f"finding {finding_id} waste kind is invalid")
     affected = _strings(raw.get("affected_call_ids"), f"finding {finding_id} calls")
     unknown = sorted(set(affected) - known_calls)
     if unknown:
@@ -1477,13 +1485,24 @@ def _validate_finding(
         raw.get("targeted_verification"), f"finding {finding_id} verification"
     )
     observed = raw.get("observed_avoidable_call_count")
-    if (
-        not isinstance(observed, int)
-        or isinstance(observed, bool)
-        or observed != len(affected)
-    ):
+    if not isinstance(observed, int) or isinstance(observed, bool) or observed < 0:
+        raise CreditAnalysisError(f"finding {finding_id} avoidable count is invalid")
+    if waste_kind == "model-calls" and observed != len(affected):
         raise CreditAnalysisError(f"finding {finding_id} avoidable count must match its calls")
+    if waste_kind == "context-volume" and observed != 0:
+        raise CreditAnalysisError(f"finding {finding_id} context volume must save zero calls")
     recurrence = _validate_recurrence(raw.get("recurrence"), f"finding {finding_id} recurrence")
+    if waste_kind == "context-volume" and any(
+        recurrence[field] != 0
+        for field in (
+            "calls_saved_per_affected_run",
+            "additional_recurring_calls_per_affected_run",
+            "estimated_calls_saved_per_similar_run",
+        )
+    ):
+        raise CreditAnalysisError(
+            f"finding {finding_id} context volume must stay outside call savings"
+        )
     confidence = _number(raw.get("confidence"), f"finding {finding_id} confidence")
     if confidence > 1:
         raise CreditAnalysisError(f"finding {finding_id} confidence must be <= 1")
@@ -1516,6 +1535,8 @@ def _validate_finding(
         **raw,
         "id": finding_id,
         "title": title.strip(),
+        "problem_summary": problem_summary.strip(),
+        "waste_kind": waste_kind,
         "affected_call_ids": affected,
         "evidence_refs": refs,
         "producer_owner": owner.strip() if isinstance(owner, str) else None,
@@ -2050,8 +2071,17 @@ def _validate_synthesis(
             raise CreditAnalysisError(f"finding {finding_id} repeats primary as secondary")
         if not set(primary + secondary).issubset(known_calls):
             raise CreditAnalysisError(f"finding {finding_id} maps an unknown call")
-        if set(primary + secondary) != set(findings[finding_id]["affected_call_ids"]):
-            raise CreditAnalysisError(f"finding {finding_id} call mapping drops surface evidence")
+        if findings[finding_id]["waste_kind"] == "context-volume":
+            if primary or secondary:
+                raise CreditAnalysisError(
+                    f"context-volume finding {finding_id} must not claim call savings"
+                )
+        elif set(primary + secondary) != set(
+            findings[finding_id]["affected_call_ids"]
+        ):
+            raise CreditAnalysisError(
+                f"finding {finding_id} call mapping drops surface evidence"
+            )
         normalized = {
             "finding_id": finding_id,
             "primary_call_ids": primary,
@@ -2252,14 +2282,17 @@ def _build_standalone_final(
     affected_calls = {
         call_id
         for finding in surface["confirmed_findings"]
+        if finding["waste_kind"] == "model-calls"
         for call_id in finding["affected_call_ids"]
     }
     findings = [
         {
             **finding,
             "source_surface": surface["surface_id"],
-            "deduplicated_avoidable_call_count": len(
-                set(finding["affected_call_ids"])
+            "deduplicated_avoidable_call_count": (
+                len(set(finding["affected_call_ids"]))
+                if finding["waste_kind"] == "model-calls"
+                else 0
             ),
         }
         for finding in surface["confirmed_findings"]
@@ -3180,6 +3213,8 @@ def _batch_finding_records(
                     "analysis_id": result["analysis_id"],
                     "finding_id": finding["id"],
                     "title": finding["title"],
+                    "problem_summary": finding["problem_summary"],
+                    "waste_kind": finding["waste_kind"],
                     "source_surface": finding["source_surface"],
                     "producer_type": finding["producer_type"],
                     "producer_owner": finding["producer_owner"],

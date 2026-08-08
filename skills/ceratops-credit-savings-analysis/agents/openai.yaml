@@ -3,4 +3,4 @@ interface:
   short_description: "Analyze credit waste in one or recent threads"
   icon_small: "./assets/ceratops-logo-500.png"
   icon_large: "./assets/ceratops-logo-500.png"
-  default_prompt: "Use $ceratops-credit-savings-analysis full-analysis to analyze this thread, one named thread, or the requested recent threads overall or in one project, and present every confirmed finding. If I name one surface, run only that action for one thread."
+  default_prompt: "Use $ceratops-credit-savings-analysis full-analysis to analyze this thread, one named thread, or the requested recent threads overall or in one project, and present every outstanding finding. If I name one surface, run only that action for one thread."

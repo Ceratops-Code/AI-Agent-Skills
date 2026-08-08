@@ -73,7 +73,9 @@ necessary exclusions through `advance`.
 
 ## Output Contract
 
-Present every confirmed helper-contract finding and plausible risk, grouped by
-owning helper or script with every applicable category and targeted test. For a
-standalone run, state that conclusions cover only helper contracts and are not
-a whole-thread credit reconciliation.
+Present every outstanding helper-contract finding and plausible risk under the
+parent output contract. Name the owning helper, applicable categories, and
+targeted tests inside the plain-language problem and fix instead of using
+internal owner or category headings. For a standalone run, state that
+conclusions cover only helper contracts and are not a whole-thread credit
+reconciliation.

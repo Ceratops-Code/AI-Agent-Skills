@@ -635,7 +635,7 @@ def semantic_action_from_item(payload: dict[str, Any]) -> dict[str, str] | None:
     return action
 
 
-def action_from_item(payload: dict[str, Any]) -> dict[str, str] | None:
+def action_from_item(payload: dict[str, Any]) -> dict[str, Any] | None:
     """Reduce one response item to a compact message or tool action."""
 
     item_type = payload.get("type")
@@ -660,7 +660,35 @@ def action_from_item(payload: dict[str, Any]) -> dict[str, str] | None:
         "kind": "tool",
         "name": name if isinstance(name, str) else "unknown",
         "fingerprint": payload_fingerprint(arguments),
+        "argument_chars": serialized_character_count(arguments),
     }
+
+
+def serialized_character_count(value: Any) -> int:
+    """Measure one tool argument or result without retaining its content."""
+
+    if value is None:
+        return 0
+    if isinstance(value, str):
+        return len(value)
+    return len(
+        json.dumps(
+            value,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            default=str,
+        )
+    )
+
+
+def response_result_character_count(payload: dict[str, Any]) -> int:
+    """Measure only result content delivered back through a response item."""
+
+    for field in ("output", "result", "content"):
+        if field in payload:
+            return serialized_character_count(payload[field])
+    return 0
 
 
 def empty_outcomes() -> dict[str, bool]:
@@ -1286,6 +1314,8 @@ def public_tool_action(action: dict[str, Any]) -> dict[str, Any]:
         "model_call_index": action["model_call_index"],
         "name": action["name"],
         "fingerprint": action["fingerprint"],
+        "argument_chars": action["argument_chars"],
+        "result_chars": action["result_chars"],
         "repeated": action["repeated"],
         "retry": action["retry"],
         "explicit_failure": action["explicit_failure"],
@@ -1393,6 +1423,9 @@ def build_usage_evidence(
             result_action = call_actions.get(call_id) if call_id else None
             if result_action is not None:
                 result_action["result_recorded"] = True
+                result_action["result_chars"] += response_result_character_count(
+                    payload
+                )
                 merge_outcomes(result_action, response_outcomes(payload))
             continue
 
@@ -1412,6 +1445,8 @@ def build_usage_evidence(
                 "model_call_index": None,
                 "name": compact_action["name"],
                 "fingerprint": compact_action["fingerprint"],
+                "argument_chars": compact_action["argument_chars"],
+                "result_chars": 0,
                 "result_recorded": False,
                 "repeated": False,
                 "retry": False,

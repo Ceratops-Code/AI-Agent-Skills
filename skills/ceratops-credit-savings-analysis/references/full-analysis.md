@@ -3,8 +3,8 @@
 ## Goal
 
 Run the fixed controller queue with one shared evidence bundle, one focused
-model pass per public surface, and one internal synthesis pass. Preserve and
-present every confirmed finding.
+model pass per public surface, and one internal synthesis pass. Preserve every
+confirmed finding and present every outstanding finding.
 
 ## Inputs And Constraints
 
@@ -40,8 +40,9 @@ present every confirmed finding.
 4. Preserve every confirmed finding; group cohesive remediation by owning
    producer; assign each avoidable call to exactly one primary finding; retain
    applicable secondary mappings; classify every call exactly once; order every
-   finding by expected value without suppressing any; and write the synthesis
-   result to the exact pending path.
+   finding by expected value without suppressing any; leave `context-volume`
+   findings outside primary and secondary call-savings mappings; and write the
+   synthesis result to the exact pending path.
 5. Run controller `finalize`. On interruption, retain state and accepted results
    and resume with `status`.
 
@@ -61,18 +62,22 @@ once before batch finalization succeeds.
 
 ## Output Contract
 
-Group every confirmed finding by owning producer or control, ordered by
-expected value. For each finding report its ID, contributing surfaces and
-helper categories, concrete episode, affected calls, deduplicated avoidable
-count, all confirmed gaps, implementation status, cohesive control, targeted
-verification, expected calls saved per affected and similar run, implementation
-cost, ongoing complexity, confidence, and assumptions.
+Report only outstanding confirmed findings; retain every finding in machine
+evidence. Follow the parent plain-language `Problem` and `Fix` format. Include
+expected calls saved per affected and similar run, implementation cost, and
+ongoing complexity. Report confirmed input/output-volume waste even when it
+saves zero model calls, but exclude it from call-savings arithmetic.
 
-Also report plausible unverified risks separately; necessary and
-protocol-overhead totals; avoidable versus total calls; priced cost only when
-available; and the retained final machine-evidence path. Never limit the output
-to a champion or top recommendation.
+Put Minimal findings first. Within Minimal and then all remaining findings,
+sort by expected calls saved per similar run descending, using finding ID only
+as the deterministic tie-breaker. Do not use producer, helper category, or
+internal controller identity as a presentation group.
 
-For a batch, group similar findings across threads. List each finding with its
-thread under exactly one summary group, report per-thread totals and the retained
-batch result.
+Explain plausible risks under the parent contract. Also report necessary and
+protocol-overhead totals; outstanding avoidable calls versus total calls;
+priced cost only when available; and the retained final machine-evidence path.
+Never suppress an outstanding finding.
+
+For a batch, group similar findings across threads under plain-language problem
+titles, apply the same ordering, identify affected threads, report per-thread
+totals, and provide the retained batch result.

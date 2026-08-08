@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the repository-owned local and CI validation sequence."""
+"""Run checks, retain first-failure evidence, and remove it after success."""
 
 from __future__ import annotations
 
@@ -20,6 +20,28 @@ def command(definition: dict[str, object]) -> list[str]:
     npm = "npm.cmd" if sys.platform == "win32" else "npm"
     values = {"{python}": sys.executable, "{npm}": npm}
     return [values.get(str(value), str(value)) for value in definition["command"]]
+
+
+def cleanup_evidence(
+    evidence_file: pathlib.Path,
+    *,
+    prune_default_parent: bool,
+) -> None:
+    """Remove stale failure evidence after success and only its owned directory."""
+
+    evidence_file.unlink(missing_ok=True)
+    evidence_file.with_name(f".{evidence_file.name}.tmp").unlink(missing_ok=True)
+    if prune_default_parent:
+        try:
+            evidence_file.parent.rmdir()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            if not evidence_file.parent.is_dir() or any(
+                evidence_file.parent.iterdir()
+            ):
+                return
+            raise
 
 
 def main() -> int:
@@ -87,6 +109,24 @@ def main() -> int:
             )
         )
         return result.returncode if result.returncode > 0 else 1
+    try:
+        cleanup_evidence(
+            evidence_file,
+            prune_default_parent=args.evidence_file is None,
+        )
+    except OSError as exc:
+        print(
+            json.dumps(
+                {
+                    "check": "evidence-cleanup",
+                    "exit_code": 1,
+                    "evidence_file": str(evidence_file),
+                    "cleanup_error": f"{type(exc).__name__}: {exc}",
+                },
+                separators=(",", ":"),
+            )
+        )
+        return 1
     print("OK")
     return 0
 
