@@ -40,7 +40,8 @@
       "core"
     ],
     "ceratops-credit-savings-analysis": [
-      "core"
+      "core",
+      "multi-action-skill"
     ],
     "ceratops-governance-lifecycle": [
       "core",

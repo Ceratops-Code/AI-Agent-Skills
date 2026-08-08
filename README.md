@@ -8,7 +8,7 @@ Reusable Ceratops skills for Codex and other agents compatible with `SKILL.md`.
 | --- | --- |
 | `ceratops-repo-lifecycle` | Route repository lifecycle work across compatibility, local promotion, structured deployment, guarded shipping, GitHub creation, contracts, health, dependencies, and PR merge actions. |
 | `ceratops-governance-lifecycle` | Route prompt optimization, advisory skill optimization, regression-safe instruction updates, and cross-scope governance consistency audits across action references. |
-| `ceratops-credit-savings-analysis` | Analyze recent Codex runs for avoidable credit spend and recommend low-maintenance controls. |
+| `ceratops-credit-savings-analysis` | Analyze one credit-waste surface or run fixed per-thread analyses for the current, named, or recent project-filtered threads while preserving every confirmed finding. |
 | `ceratops-skill-lifecycle` | Route skill-domain work across create, deploy, preferred eligible fast-change, update, skills-contract-review, and skills-consistency-review actions. |
 | `ceratops-automation-run` | Run recurring automations with shared Ceratops alert, memory, and completion policy. |
 | `ceratops-task-lifecycle` | Route failed-fix-loop breaks, same-thread task resume, whole-task handoff, and closure checks across action references. |
@@ -87,7 +87,7 @@ without repository deduplication.
 | Script | Caller And Timing |
 | --- | --- |
 | `scripts/install-skills-bootstrap.py` | Self-contained first-install bootstrap; stages and validates one complete selected batch under the install root and never calls lifecycle runtime code. |
-| `scripts/validate-repository.py` | Sole full local-and-CI validation owner; captures child output and writes first-failure evidence to a caller-selected file. |
+| `scripts/validate-repository.py` | Sole full local-and-CI validation owner; captures child output, writes first-failure evidence to a caller-selected file, and removes stale evidence after the next successful run. |
 | `skills/ceratops-repo-lifecycle/references/templates/install-skills-bootstrap-template.py` | Authoritative standard-library-only bootstrap copied into compatible skill repositories as `scripts/install-skills-bootstrap.py`. |
 | `skills/ceratops-repo-lifecycle/references/repository-validation-catalog.json` | Closed catalog of repository checks that compatibility materialization may select without additional approval. |
 | `skills/ceratops-repo-lifecycle/references/templates/validate-repository.py.tmpl` and `validate.yml.tmpl` | Repository-neutral validator and CI templates materialized only when their target files are absent. |
@@ -96,7 +96,8 @@ without repository deduplication.
 | `skills/ceratops-skill-lifecycle/scripts/runtime/install-managed-skills.py` | Classifies explicit, promotion-relative, or all-managed affected sets; owns direct-manifest inventory; and invokes one runtime transaction without source validation. |
 | `skills/ceratops-skill-lifecycle/scripts/runtime/managed_runtime_builder.py` | Stages, activates, rolls back, recovers, and cleans one locked selected-skill runtime transaction. |
 | `skills/ceratops-skill-lifecycle/scripts/skill-update-workflow.py` | Prepares and verifies declared cohesive skill updates, preserves unrelated dirty state, records exact task-temp ownership, and finalizes owned request, state, and evidence files after completed caller use. |
-| `skills/ceratops-credit-savings-analysis/scripts/model-call-ledger.py` | Writes fingerprint, usage, and opt-in selected-semantic evidence; emits compact rankings or receipts; and preserves artifact-free closure and classification modes. |
+| `skills/ceratops-credit-savings-analysis/scripts/model-call-ledger.py` | Resolves current, named, indexed, and project-identified sessions and collects one sanitized traversal per analysis, including content-free tool argument/result sizes, while preserving fingerprint, usage, selected-semantic, closure, and classification CLI modes. |
+| `skills/ceratops-credit-savings-analysis/scripts/credit-analysis-workflow.py` | Owns fixed credit-analysis queues, per-thread batch manifests, evidence fingerprints, plain-language finding summaries, immutable pass persistence, append-only indexing, resume state, per-thread and batch-summary validation, grouped aggregation, ROI arithmetic, and scoped cleanup. |
 | `skills/ceratops-task-lifecycle/scripts/closure_snapshot.py` | Emits one compact snapshot for explicitly named closure targets and optionally removes exact task-created files validated inside the task temp root. |
 | `skills/ceratops-governance-lifecycle/scripts/apply_rules_update.py` | Applies one approved coupled rules/history request with stale-text checks, shared validation, rollback, and successful cleanup of an explicitly disposable request. |
 | `skills/ceratops-governance-lifecycle/scripts/proposal-workflow.py` | Validates exact proposal inputs and structured history, records task-temp ownership, delegates controller prepare and advance, and finalizes every declared disposable proposal artifact. |
@@ -401,6 +402,9 @@ python scripts/validate-repository.py --evidence-file $validationEvidence
 
 Without the flag, evidence defaults to
 `build/deploy-validation/repository-validation.log`.
+Failure evidence remains available for diagnosis until the next successful run,
+which removes the selected evidence file and prunes the dedicated default
+directory when it is empty.
 The validator runs Markdown and YAML lint, Ruff, mypy for Linux and Win32, and
 pytest. It does not invoke skill-local validators. Generic compatibility and
 health validate deployment definitions through the repository-lifecycle

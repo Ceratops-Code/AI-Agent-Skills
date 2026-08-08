@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Emit a compact, judgment-free model-call ledger from one Codex session.
+"""Resolve Codex thread sources and emit a compact judgment-free call ledger.
 
 The ledger groups automatic continuations by turn ID, includes only completed
 runs, and fingerprints tool arguments instead of reproducing potentially
@@ -14,12 +14,15 @@ per-turn usage and structured result evidence while emitting only compact
 totals and top-turn rankings. The
 same helper validates a caller-owned classification file before reporting,
 while the model remains responsible for deciding whether a call was necessary
-or avoidable.
+or avoidable. Reusable source primitives resolve the explicit current thread,
+one exact indexed name, recent thread-index records, and session project
+identity without moving semantic analysis into the collector.
 """
 
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import hashlib
 import json
 import math
@@ -31,7 +34,6 @@ import uuid
 from collections import Counter
 from typing import Any
 
-
 SCHEMA = "ceratops-model-call-ledger.v1"
 SUMMARY_SCHEMA = "ceratops-model-call-ledger-summary.v1"
 SEMANTIC_EVIDENCE_SCHEMA = "ceratops-model-call-semantic-evidence.v1"
@@ -42,6 +44,7 @@ CLASSIFIED_SUMMARY_SCHEMA = "ceratops-model-call-classified-summary.v1"
 USAGE_EVIDENCE_SCHEMA = "ceratops-model-call-usage-evidence.v1"
 USAGE_SUMMARY_SCHEMA = "ceratops-model-call-usage-summary.v1"
 PRICING_PROFILE_SCHEMA = "ceratops-model-call-pricing-profile.v1"
+ANALYSIS_EVIDENCE_SCHEMA = "ceratops-credit-analysis-collected-evidence.v1"
 DEFAULT_TOP = 5
 CLASSIFICATION_CATEGORIES = (
     "necessary",
@@ -194,18 +197,23 @@ def percentage(numerator: int, denominator: int) -> float | None:
     return round(numerator * 100 / denominator, 2)
 
 
-def load_rows(path: pathlib.Path) -> list[dict[str, Any]]:
-    """Load JSONL records while identifying malformed line numbers."""
+def load_rows_with_fingerprint(
+    path: pathlib.Path,
+) -> tuple[list[dict[str, Any]], str]:
+    """Read and hash one JSONL session in a single filesystem traversal."""
 
     rows: list[dict[str, Any]] = []
+    digest = hashlib.sha256()
     try:
-        with path.open(encoding="utf-8") as session:
-            for line_number, line in enumerate(session, start=1):
-                if not line.strip():
+        with path.open("rb") as session:
+            for line_number, raw_line in enumerate(session, start=1):
+                digest.update(raw_line)
+                if not raw_line.strip():
                     continue
                 try:
+                    line = raw_line.decode("utf-8")
                     row = json.loads(line)
-                except json.JSONDecodeError as exc:
+                except (UnicodeDecodeError, json.JSONDecodeError) as exc:
                     raise LedgerError(
                         f"invalid JSON on session line {line_number}"
                     ) from exc
@@ -216,6 +224,13 @@ def load_rows(path: pathlib.Path) -> list[dict[str, Any]]:
                 rows.append(row)
     except OSError as exc:
         raise LedgerError(f"could not read session: {exc}") from exc
+    return rows, digest.hexdigest()
+
+
+def load_rows(path: pathlib.Path) -> list[dict[str, Any]]:
+    """Load JSONL records while identifying malformed line numbers."""
+
+    rows, _ = load_rows_with_fingerprint(path)
     return rows
 
 
@@ -228,19 +243,25 @@ def canonical_thread_id(value: str) -> str:
         raise LedgerError("thread ID must be a UUID") from exc
 
 
-def resolve_thread_session(thread_id: str) -> pathlib.Path:
-    """Resolve one exact active or archived session below the Codex home."""
+def codex_home() -> pathlib.Path:
+    """Return the configured Codex data root used by session resolvers."""
 
     configured_home = os.environ.get("CODEX_HOME")
-    codex_home = (
+    return (
         pathlib.Path(configured_home).expanduser()
         if configured_home
         else pathlib.Path.home() / ".codex"
     )
+
+
+def resolve_thread_session(thread_id: str) -> pathlib.Path:
+    """Resolve one exact active or archived session below the Codex home."""
+
+    home = codex_home()
     canonical_id = canonical_thread_id(thread_id)
     matches: set[pathlib.Path] = set()
     for root_name in ("sessions", "archived_sessions"):
-        root = codex_home / root_name
+        root = home / root_name
         if not root.is_dir():
             continue
         matches.update(
@@ -253,6 +274,221 @@ def resolve_thread_session(thread_id: str) -> pathlib.Path:
     if len(matches) > 1:
         raise LedgerError(f"multiple sessions found for thread ID: {canonical_id}")
     return matches.pop()
+
+
+def parse_utc_timestamp(value: object, label: str) -> dt.datetime:
+    """Parse one timezone-aware timestamp and normalize it to UTC."""
+
+    if not isinstance(value, str) or not value.strip():
+        raise LedgerError(f"{label} must be a nonempty timestamp")
+    text = value.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = dt.datetime.fromisoformat(text)
+    except ValueError as exc:
+        raise LedgerError(f"{label} is not a valid ISO-8601 timestamp") from exc
+    if parsed.tzinfo is None:
+        raise LedgerError(f"{label} must include a timezone")
+    return parsed.astimezone(dt.timezone.utc)
+
+
+def load_thread_index() -> dict[str, Any]:
+    """Load the latest valid record per thread from the Codex thread index once."""
+
+    path = codex_home() / "session_index.jsonl"
+    if not path.is_file() or path.is_symlink():
+        raise LedgerError(f"Codex thread index is unavailable: {path}")
+    digest = hashlib.sha256()
+    latest: dict[str, tuple[dt.datetime, int, dict[str, str]]] = {}
+    try:
+        with path.open("rb") as handle:
+            for line_number, raw_line in enumerate(handle, start=1):
+                digest.update(raw_line)
+                if not raw_line.strip():
+                    raise LedgerError(
+                        f"Codex thread index has a blank record at line {line_number}"
+                    )
+                try:
+                    raw = json.loads(raw_line)
+                except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                    raise LedgerError(
+                        f"Codex thread index has invalid JSON at line {line_number}"
+                    ) from exc
+                if not isinstance(raw, dict):
+                    raise LedgerError(
+                        f"Codex thread index record {line_number} is not an object"
+                    )
+                try:
+                    thread_id = canonical_thread_id(str(raw.get("id") or ""))
+                except LedgerError as exc:
+                    raise LedgerError(
+                        f"Codex thread index record {line_number} has an invalid ID"
+                    ) from exc
+                thread_name = raw.get("thread_name")
+                if not isinstance(thread_name, str) or not thread_name.strip():
+                    raise LedgerError(
+                        f"Codex thread index record {line_number} has no thread name"
+                    )
+                updated_at = parse_utc_timestamp(
+                    raw.get("updated_at"),
+                    f"Codex thread index record {line_number} updated_at",
+                )
+                record = {
+                    "thread_id": thread_id,
+                    "thread_name": thread_name.strip(),
+                    "updated_at": updated_at.isoformat().replace("+00:00", "Z"),
+                }
+                previous = latest.get(thread_id)
+                if previous is None or (updated_at, line_number) > (
+                    previous[0],
+                    previous[1],
+                ):
+                    latest[thread_id] = (updated_at, line_number, record)
+    except OSError as exc:
+        raise LedgerError(f"could not read Codex thread index: {exc}") from exc
+    entries = [record for _, _, record in latest.values()]
+    entries.sort(
+        key=lambda item: (
+            -parse_utc_timestamp(item["updated_at"], "thread updated_at").timestamp(),
+            item["thread_id"],
+        )
+    )
+    return {
+        "path": str(path.resolve()),
+        "fingerprint": digest.hexdigest(),
+        "entries": entries,
+    }
+
+
+def resolve_current_thread_source() -> tuple[str, pathlib.Path]:
+    """Resolve this Codex thread only from its explicit runtime identity."""
+
+    thread_id = os.environ.get("CODEX_THREAD_ID")
+    if not thread_id:
+        raise LedgerError(
+            "current thread is unavailable because CODEX_THREAD_ID is not set"
+        )
+    canonical_id = canonical_thread_id(thread_id)
+    return canonical_id, resolve_thread_session(canonical_id)
+
+
+def resolve_named_thread_source(
+    thread_name: str,
+) -> tuple[str, pathlib.Path, str]:
+    """Resolve one case-insensitive exact name from the latest thread index."""
+
+    normalized = thread_name.strip().casefold()
+    if not normalized:
+        raise LedgerError("thread name must be nonempty")
+    index = load_thread_index()
+    matches = [
+        entry
+        for entry in index["entries"]
+        if entry["thread_name"].casefold() == normalized
+    ]
+    if not matches:
+        raise LedgerError(f"thread name was not found: {thread_name.strip()}")
+    if len(matches) > 1:
+        ids = ", ".join(entry["thread_id"] for entry in matches[:3])
+        raise LedgerError(f"thread name is ambiguous; matching IDs: {ids}")
+    thread_id = matches[0]["thread_id"]
+    return thread_id, resolve_thread_session(thread_id), str(index["fingerprint"])
+
+
+def session_source_metadata(
+    rows: list[dict[str, Any]],
+    *,
+    expected_thread_id: str,
+) -> dict[str, Any]:
+    """Return deterministic thread and project identity from session metadata."""
+
+    metadata = next((row for row in rows if row.get("type") == "session_meta"), None)
+    if not isinstance(metadata, dict) or not isinstance(metadata.get("payload"), dict):
+        raise LedgerError("session lacks a valid session_meta record")
+    payload = metadata["payload"]
+    raw_id = payload.get("id") or payload.get("session_id")
+    thread_id = canonical_thread_id(str(raw_id or ""))
+    if thread_id != canonical_thread_id(expected_thread_id):
+        raise LedgerError("session metadata thread ID does not match the index")
+    cwd = payload.get("cwd")
+    if cwd is not None and (not isinstance(cwd, str) or not cwd.strip()):
+        raise LedgerError("session metadata cwd is invalid")
+    git = payload.get("git")
+    if git is not None and not isinstance(git, dict):
+        raise LedgerError("session metadata git value is invalid")
+    repository_url = git.get("repository_url") if isinstance(git, dict) else None
+    if repository_url is not None and (
+        not isinstance(repository_url, str) or not repository_url.strip()
+    ):
+        raise LedgerError("session metadata repository URL is invalid")
+    normalized_repository = (
+        repository_url.strip().rstrip("/").removesuffix(".git").casefold()
+        if isinstance(repository_url, str)
+        else None
+    )
+    normalized_cwd = (
+        os.path.normcase(os.path.normpath(os.path.abspath(os.path.expanduser(cwd))))
+        if isinstance(cwd, str)
+        else None
+    )
+    project_key = (
+        f"repository:{normalized_repository}"
+        if normalized_repository is not None
+        else f"path:{normalized_cwd}" if normalized_cwd is not None else None
+    )
+    aliases: list[str] = []
+    if normalized_repository is not None:
+        repository_name = normalized_repository.rsplit("/", 1)[-1]
+        if ":" in repository_name:
+            repository_name = repository_name.rsplit(":", 1)[-1]
+        aliases.append(repository_name.casefold())
+    if isinstance(cwd, str):
+        aliases.append(pathlib.PurePath(cwd).name.casefold())
+    return {
+        "thread_id": thread_id,
+        "cwd": cwd.strip() if isinstance(cwd, str) else None,
+        "repository_url": (
+            repository_url.strip() if isinstance(repository_url, str) else None
+        ),
+        "normalized_cwd": normalized_cwd,
+        "normalized_repository_url": normalized_repository,
+        "project_key": project_key,
+        "project_aliases": list(dict.fromkeys(aliases)),
+    }
+
+
+def read_session_source_metadata(
+    session: pathlib.Path,
+    *,
+    expected_thread_id: str,
+) -> dict[str, Any]:
+    """Read only the session metadata prefix needed for source selection."""
+
+    resolved = session.expanduser().resolve(strict=True)
+    try:
+        with resolved.open(encoding="utf-8") as handle:
+            for line_number, line in enumerate(handle, start=1):
+                if not line.strip():
+                    continue
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError as exc:
+                    raise LedgerError(
+                        f"invalid JSON on session line {line_number}"
+                    ) from exc
+                if not isinstance(row, dict):
+                    raise LedgerError(
+                        f"session line {line_number} is not a JSON object"
+                    )
+                if row.get("type") == "session_meta":
+                    return session_source_metadata(
+                        [row], expected_thread_id=expected_thread_id
+                    )
+                raise LedgerError("session metadata must be the first JSON record")
+    except OSError as exc:
+        raise LedgerError(f"could not read session metadata: {exc}") from exc
+    raise LedgerError("session lacks a session_meta record")
 
 
 def stable_payload(value: Any) -> str:
@@ -399,7 +635,7 @@ def semantic_action_from_item(payload: dict[str, Any]) -> dict[str, str] | None:
     return action
 
 
-def action_from_item(payload: dict[str, Any]) -> dict[str, str] | None:
+def action_from_item(payload: dict[str, Any]) -> dict[str, Any] | None:
     """Reduce one response item to a compact message or tool action."""
 
     item_type = payload.get("type")
@@ -424,7 +660,35 @@ def action_from_item(payload: dict[str, Any]) -> dict[str, str] | None:
         "kind": "tool",
         "name": name if isinstance(name, str) else "unknown",
         "fingerprint": payload_fingerprint(arguments),
+        "argument_chars": serialized_character_count(arguments),
     }
+
+
+def serialized_character_count(value: Any) -> int:
+    """Measure one tool argument or result without retaining its content."""
+
+    if value is None:
+        return 0
+    if isinstance(value, str):
+        return len(value)
+    return len(
+        json.dumps(
+            value,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+            default=str,
+        )
+    )
+
+
+def response_result_character_count(payload: dict[str, Any]) -> int:
+    """Measure only result content delivered back through a response item."""
+
+    for field in ("output", "result", "content"):
+        if field in payload:
+            return serialized_character_count(payload[field])
+    return 0
 
 
 def empty_outcomes() -> dict[str, bool]:
@@ -581,6 +845,7 @@ def build_ledger(
     *,
     session: pathlib.Path,
     last_runs: int | None,
+    completed_turn_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     """Group completed runs and enumerate every non-empty model response."""
 
@@ -645,13 +910,33 @@ def build_ledger(
         )
         pending_actions = []
 
-    selected = [
+    completed = [
         runs[turn_id]
         for turn_id in ordered_turns
         if runs[turn_id]["completed"]
     ]
-    if last_runs is not None:
-        selected = selected[-last_runs:]
+    if last_runs is not None and completed_turn_ids is not None:
+        raise LedgerError("completed turn IDs do not accept a last-runs window")
+    if completed_turn_ids is not None:
+        if not completed_turn_ids or len(completed_turn_ids) != len(
+            set(completed_turn_ids)
+        ):
+            raise LedgerError("completed turn IDs must be a nonempty unique list")
+        completed_ids = [run["turn_id"] for run in completed]
+        requested = set(completed_turn_ids)
+        unknown = [turn_id for turn_id in completed_turn_ids if turn_id not in completed_ids]
+        if unknown:
+            raise LedgerError(
+                f"requested run is not completed in the session: {unknown[0]}"
+            )
+        ordered_requested = [turn_id for turn_id in completed_ids if turn_id in requested]
+        if ordered_requested != completed_turn_ids:
+            raise LedgerError("completed turn IDs are not in session order")
+        selected = [runs[turn_id] for turn_id in completed_turn_ids]
+    elif last_runs is not None:
+        selected = completed[-last_runs:]
+    else:
+        selected = completed
 
     selected_fingerprints = Counter(
         (action["name"], action["fingerprint"])
@@ -684,9 +969,18 @@ def build_ledger(
         "schema": SCHEMA,
         "session": str(session),
         "window": {
-            "mode": "last_runs" if last_runs is not None else "full_thread",
+            "mode": (
+                "completed_turn_ids"
+                if completed_turn_ids is not None
+                else "last_runs" if last_runs is not None else "full_thread"
+            ),
             "requested_runs": last_runs,
             "completed_runs": len(selected),
+            **(
+                {"requested_turn_ids": completed_turn_ids}
+                if completed_turn_ids is not None
+                else {}
+            ),
         },
         "totals": {
             "runs": len(selected),
@@ -1020,6 +1314,8 @@ def public_tool_action(action: dict[str, Any]) -> dict[str, Any]:
         "model_call_index": action["model_call_index"],
         "name": action["name"],
         "fingerprint": action["fingerprint"],
+        "argument_chars": action["argument_chars"],
+        "result_chars": action["result_chars"],
         "repeated": action["repeated"],
         "retry": action["retry"],
         "explicit_failure": action["explicit_failure"],
@@ -1127,6 +1423,9 @@ def build_usage_evidence(
             result_action = call_actions.get(call_id) if call_id else None
             if result_action is not None:
                 result_action["result_recorded"] = True
+                result_action["result_chars"] += response_result_character_count(
+                    payload
+                )
                 merge_outcomes(result_action, response_outcomes(payload))
             continue
 
@@ -1146,6 +1445,8 @@ def build_usage_evidence(
                 "model_call_index": None,
                 "name": compact_action["name"],
                 "fingerprint": compact_action["fingerprint"],
+                "argument_chars": compact_action["argument_chars"],
+                "result_chars": 0,
                 "result_recorded": False,
                 "repeated": False,
                 "retry": False,
@@ -1301,6 +1602,181 @@ def build_usage_evidence(
             "limitations": limitations,
         },
     }
+
+
+def _canonical_hash(value: Any) -> str:
+    """Hash one JSON-compatible value using its canonical representation."""
+
+    payload = json.dumps(
+        value,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _focused_run_selection(runs: list[dict[str, Any]]) -> dict[str, Any]:
+    """Select highest-call runs until at least eighty percent is covered."""
+
+    total_calls = sum(run["model_calls"] for run in runs)
+    ranked = sorted(
+        enumerate(runs),
+        key=lambda item: (-item[1]["model_calls"], item[0]),
+    )
+    selected: list[str] = []
+    covered = 0
+    for _, run in ranked:
+        if total_calls == 0 or covered * 100 >= total_calls * 80:
+            break
+        selected.append(run["turn_id"])
+        covered += run["model_calls"]
+    return {
+        "threshold_percent": 80,
+        "run_ids": selected,
+        "covered_calls": covered,
+        "total_calls": total_calls,
+        "covered_percent": percentage(covered, total_calls),
+    }
+
+
+def collect_session_evidence_from_rows(
+    rows: list[dict[str, Any]],
+    *,
+    session: pathlib.Path,
+    source_fingerprint: str,
+    last_runs: int | None = None,
+    completed_turn_ids: list[str] | None = None,
+    pricing_profile: pathlib.Path | None = None,
+) -> dict[str, Any]:
+    """Build controller evidence from one already loaded immutable row set."""
+
+    resolved_session = session.expanduser().resolve(strict=True)
+    if not re.fullmatch(r"[0-9a-f]{64}", source_fingerprint):
+        raise LedgerError("source fingerprint must be a SHA-256 digest")
+    pricing = (
+        load_pricing_profile(pricing_profile.expanduser().resolve(strict=True))
+        if pricing_profile is not None
+        else None
+    )
+    ledger = build_ledger(
+        rows,
+        session=resolved_session,
+        last_runs=last_runs,
+        completed_turn_ids=completed_turn_ids,
+    )
+    run_ids = [run["turn_id"] for run in ledger["runs"]]
+    semantic_runs = build_semantic_runs(rows, ledger, run_ids)
+    usage = build_usage_evidence(rows, ledger, pricing)
+    semantic_by_run = {run["turn_id"]: run for run in semantic_runs}
+    usage_by_run = {run["turn_id"]: run for run in usage["runs"]}
+
+    calls: list[dict[str, Any]] = []
+    collected_runs: list[dict[str, Any]] = []
+    for ledger_run in ledger["runs"]:
+        turn_id = ledger_run["turn_id"]
+        semantic_run = semantic_by_run[turn_id]
+        usage_run = usage_by_run[turn_id]
+        semantic_by_index = {
+            call["index"]: call["actions"] for call in semantic_run["calls"]
+        }
+        tools_by_call: dict[int, list[dict[str, Any]]] = {
+            index: [] for index in range(1, ledger_run["model_calls"] + 1)
+        }
+        for action in usage_run["tool_action_results"]:
+            model_call_index = action.get("model_call_index")
+            if isinstance(model_call_index, int) and model_call_index in tools_by_call:
+                tools_by_call[model_call_index].append(action)
+
+        run_calls: list[dict[str, Any]] = []
+        for call in ledger_run["calls"]:
+            call_id = f"{turn_id}:{call['index']}"
+            call_record = {
+                "call_id": call_id,
+                "turn_id": turn_id,
+                "index": call["index"],
+                "timestamp": call["timestamp"],
+                "tokens": call["tokens"],
+                "estimated_credit_cost": estimated_credit_cost(
+                    call["tokens"], pricing
+                ),
+                "actions": call["actions"],
+                "semantic_actions": semantic_by_index[call["index"]],
+                "tool_results": tools_by_call[call["index"]],
+                "run_duration_ms": usage_run["totals"]["duration_ms"],
+            }
+            calls.append(call_record)
+            run_calls.append(call_record)
+        collected_runs.append(
+            {
+                "turn_id": turn_id,
+                "started_at": ledger_run["started_at"],
+                "model_calls": ledger_run["model_calls"],
+                "totals": usage_run["totals"],
+                "tool_counts": usage_run["tool_counts"],
+                "calls": run_calls,
+            }
+        )
+
+    window_fingerprint = _canonical_hash(
+        {
+            "source_fingerprint": source_fingerprint,
+            "window": ledger["window"],
+            "turns": [
+                {
+                    "turn_id": run["turn_id"],
+                    "model_calls": run["model_calls"],
+                }
+                for run in ledger["runs"]
+            ],
+        }
+    )
+    return {
+        "schema": ANALYSIS_EVIDENCE_SCHEMA,
+        "session": str(resolved_session),
+        "source_fingerprint": source_fingerprint,
+        "window_fingerprint": window_fingerprint,
+        "window": ledger["window"],
+        "collection": {
+            "session_reads": 1,
+            "completed_runs": len(collected_runs),
+            "model_calls": len(calls),
+        },
+        "focused_semantic_context": _focused_run_selection(collected_runs),
+        "pricing": usage["pricing"],
+        "totals": usage["totals"],
+        "telemetry": usage["telemetry"],
+        "repeated_tool_calls": usage["repeated_tool_calls"],
+        "call_inventory": [call["call_id"] for call in calls],
+        "runs": collected_runs,
+    }
+
+
+def collect_session_evidence(
+    session: pathlib.Path,
+    *,
+    last_runs: int | None = None,
+    completed_turn_ids: list[str] | None = None,
+    pricing_profile: pathlib.Path | None = None,
+) -> dict[str, Any]:
+    """Collect one controller-ready evidence bundle from one session read.
+
+    The public CLI modes remain separate views over the same parsing and
+    sanitization primitives. Controller callers use this function so usage,
+    semantic, relationship, and classification inventory data all derive from
+    one immutable in-memory row set rather than repeated session reads.
+    """
+
+    resolved_session = session.expanduser().resolve(strict=True)
+    rows, source_fingerprint = load_rows_with_fingerprint(resolved_session)
+    return collect_session_evidence_from_rows(
+        rows,
+        session=resolved_session,
+        source_fingerprint=source_fingerprint,
+        last_runs=last_runs,
+        completed_turn_ids=completed_turn_ids,
+        pricing_profile=pricing_profile,
+    )
 
 
 def build_usage_rankings(
