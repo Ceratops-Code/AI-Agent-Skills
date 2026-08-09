@@ -52,8 +52,10 @@ Route approved skill-source mutations through `$ceratops-skill-lifecycle`
    every recorded candidate and assessment. While any supported conclusion
    identifies a concrete improvement, revise and repeat steps 5-6; then submit
    the best candidate and its assessment to the iteration controller.
-8. Report the selected correction, material alternative, regression result,
-   and uncertainty.
+8. In the final proposal, explain exactly why the selected correction is better
+   than the current text and each material alternative, naming the deciding
+   evidence and tradeoffs; include the regression result and remaining
+   uncertainty.
 
 ## Applying an approved change
 
@@ -121,6 +123,7 @@ Otherwise change the intervention or report the unresolved decision point.
 
 ### Output Contract
 
-Report only the selected exact change, its decision and regression evidence,
-the disposition of every touched overlap or conflict, and unresolved impact;
-do not present a candidate with an unresolved relationship as accepted.
+Report only the selected exact change, why it is better than the current text
+and each material alternative, its regression evidence, the disposition of
+every touched overlap or conflict, and unresolved impact; do not present a
+candidate with an unresolved relationship as accepted.
