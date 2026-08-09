@@ -48,11 +48,11 @@ BATCH_INDEX_SCHEMA = "ceratops-credit-analysis-batch-index-record.v1"
 EVIDENCE_NARRATIVE_LIMIT = 1200
 PASS_PACKET_CHAR_LIMIT = 29_500
 SURFACE_PACKET_BUDGETS = {
-    "helper-contracts": {"calls": 2_000, "reviews": 1_000, "users": 800, "outcomes": 500},
-    "context-evidence": {"calls": 3_000, "reviews": 1_500, "users": 2_500, "outcomes": 750},
-    "rework-validation": {"calls": 3_500, "reviews": 1_500, "users": 3_500, "outcomes": 750},
-    "tool-flow": {"calls": 2_500, "reviews": 1_000, "users": 800, "outcomes": 500},
-    "instruction-reasoning": {"calls": 2_000, "reviews": 1_000, "users": 3_000, "outcomes": 500},
+    "helper-contracts": {"calls": 1_500, "reviews": 0, "users": 800, "outcomes": 500},
+    "context-evidence": {"calls": 2_500, "reviews": 0, "users": 2_500, "outcomes": 500},
+    "rework-validation": {"calls": 3_000, "reviews": 2_000, "users": 3_500, "outcomes": 750},
+    "tool-flow": {"calls": 2_000, "reviews": 0, "users": 800, "outcomes": 500},
+    "instruction-reasoning": {"calls": 2_000, "reviews": 2_500, "users": 3_000, "outcomes": 500},
 }
 STATE_VERSION = 1
 BATCH_STATE_VERSION = 1
@@ -1050,6 +1050,14 @@ def _model_review_records_for_calls(
             if key not in {"content", "preview", "preview_truncated"}
         }
         compact["evidence_ref"] = f"evidence://review/{record_id}"
+        model_call_index = record["model_call_index"]
+        compact["model_call_id"] = (
+            f"{turn_id}:{model_call_index}"
+            if isinstance(turn_id, str)
+            and isinstance(model_call_index, int)
+            and not isinstance(model_call_index, bool)
+            else None
+        )
         compact["context_content"] = (
             record["content"] if include_full else record["preview"]
         )
@@ -1304,7 +1312,7 @@ def _budgeted_values(
     for value in values:
         bounded = _bounded_value(value, text_limit=text_limit)
         size = _json_chars(bounded) + int(bool(included))
-        if included and used + size > character_budget:
+        if used + size > character_budget:
             continue
         included.append(bounded)
         used += size
@@ -1651,7 +1659,10 @@ def _candidate_cluster_partition(
                 )
                 if tool_totals[name]
             },
-            "representative_call_id": representative["call_id"],
+            "representative_summary": _truncate_text(
+                _cluster_representative(representative, focused_runs)["summary"],
+                140,
+            ),
         }
         partitions.append(
             {"cluster_id": cluster_id, "call_ids": call_ids, "summary": summary}
@@ -1665,15 +1676,21 @@ def _candidate_clusters(
     candidates: Sequence[str],
     evidence: Mapping[str, Any],
     focused_runs: set[str],
+    *,
+    include_representative: bool = False,
 ) -> list[dict[str, Any]]:
     """Return only model-facing cluster summaries, never the complete call map."""
 
-    return [
+    summaries = [
         dict(partition["summary"])
         for partition in _candidate_cluster_partition(
             candidates, evidence, focused_runs
         )
     ]
+    if not include_representative:
+        for summary in summaries:
+            summary.pop("representative_summary", None)
+    return summaries
 
 
 def _volume_hotspot_ids(
@@ -1874,7 +1891,10 @@ def _surface_pass_packet(
         remaining_calls = _synthesis_remaining_calls(state, evidence, findings)
         focused_runs = set(evidence["focused_semantic_context"]["run_ids"])
         remaining_clusters = _candidate_clusters(
-            remaining_calls, evidence, focused_runs
+            remaining_calls,
+            evidence,
+            focused_runs,
+            include_representative=True,
         )
         finding_items = []
         for finding_id, finding in findings.items():
@@ -1950,7 +1970,13 @@ def _surface_pass_packet(
     call_by_id = {call["call_id"]: call for call in _all_calls(evidence)}
     focused_runs = set(evidence["focused_semantic_context"]["run_ids"])
     budgets = SURFACE_PACKET_BUDGETS[surface_id]
-    clusters = _candidate_clusters(candidates, evidence, focused_runs)
+    clusters = _candidate_clusters(
+        candidates,
+        evidence,
+        focused_runs,
+        include_representative=surface_id
+        in {"helper-contracts", "context-evidence", "tool-flow"},
+    )
     detailed_calls = _detail_packet_calls(
         candidates,
         call_by_id,
@@ -1958,20 +1984,59 @@ def _surface_pass_packet(
         character_budget=budgets["calls"],
     )
     detailed_ids = [str(call["call_id"]) for call in detailed_calls]
-    preparation, review_records, exclusions = _model_review_records_for_calls(
+    _, review_records, _ = _model_review_records_for_calls(
         evidence, candidates, focused_runs
     )
     user_messages = _user_messages_for_calls(evidence, candidates)
     run_outcomes = _run_outcome_calls(evidence, focused_runs)
-    bounded_messages = _budgeted_values(
+    detailed_message_ids = {
+        str(message_id)
+        for call in detailed_calls
+        for message_id in call.get("user_message_ids", [])
+    }
+    message_positions = {
+        str(message["message_id"]): index
+        for index, message in enumerate(user_messages)
+    }
+    prioritized_messages = sorted(
         user_messages,
+        key=lambda message: (
+            str(message["message_id"]) not in detailed_message_ids,
+            -message_positions[str(message["message_id"])],
+        ),
+    )
+    bounded_messages = _budgeted_values(
+        prioritized_messages,
         text_limit=400,
         character_budget=budgets["users"],
     )
     detailed_id_set = set(detailed_ids)
+    candidate_id_set = set(candidates)
+
+    def review_priority(record: Mapping[str, Any]) -> tuple[int, int]:
+        model_call_id = record.get("model_call_id")
+        if model_call_id in detailed_id_set:
+            rank = 0
+        elif model_call_id in candidate_id_set:
+            rank = 1
+        elif surface_id == "instruction-reasoning" and record.get("kind") == "developer":
+            rank = 2
+        elif surface_id == "rework-validation" and record.get("kind") in {
+            "message",
+            "tool-result",
+        }:
+            rank = 2
+        elif surface_id == "instruction-reasoning" and record.get("kind") == "base":
+            rank = 3
+        else:
+            rank = 4
+        raw_index = record.get("model_call_index")
+        index = raw_index if isinstance(raw_index, int) else -1
+        return rank, -index
+
     prioritized_records = sorted(
         review_records,
-        key=lambda record: int(record.get("call_id") not in detailed_id_set),
+        key=review_priority,
     )
     bounded_records = _budgeted_values(
         prioritized_records,
@@ -1979,7 +2044,7 @@ def _surface_pass_packet(
         character_budget=budgets["reviews"],
     )
     bounded_outcomes = _budgeted_values(
-        run_outcomes,
+        list(reversed(run_outcomes)),
         text_limit=240,
         character_budget=budgets["outcomes"],
     )
@@ -1995,8 +2060,6 @@ def _surface_pass_packet(
         "candidate_user_message_count": len(user_messages),
         "included_user_message_count": len(bounded_messages),
         "candidate_user_messages": bounded_messages,
-        "model_review_preparation": _bounded_value(preparation, text_limit=450),
-        "model_review_exclusions": _bounded_value(exclusions, text_limit=450),
         "relevant_model_review_record_count": len(review_records),
         "included_model_review_record_count": len(bounded_records),
         "included_model_review_records": bounded_records,

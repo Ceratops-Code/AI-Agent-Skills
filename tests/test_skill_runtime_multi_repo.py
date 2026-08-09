@@ -1546,6 +1546,9 @@ def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
     assert semantic_clusters[0]["call_count"] == 4
     assert semantic_clusters[0]["volume"]["input_tokens"] == 0
     assert semantic_clusters[0]["volume"]["tool_result_chars"] == 160
+    assert loaded["_budgeted_values"](
+        [{"text": "x" * 100}], text_limit=200, character_budget=10
+    ) == []
 
     request, session, _ = credit_analysis_request(
         tmp_path,
@@ -1607,7 +1610,7 @@ def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
         assert "selectors" not in cluster
         mapped_calls = cluster_calls[cluster["cluster_id"]]
         assert cluster["call_count"] == len(mapped_calls)
-        assert cluster["representative_call_id"] in mapped_calls
+        assert cluster["representative_summary"]
         clustered_calls.extend(mapped_calls)
     assert len(clustered_calls) == len(set(clustered_calls))
     assert set(clustered_calls) == set(pending_candidates)
@@ -1627,6 +1630,11 @@ def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
     assert {
         call["call_id"] for call in packet["evidence"]["detailed_calls"]
     }.issubset(pending_candidates)
+    detailed_message_ids = {
+        message_id
+        for call in packet["evidence"]["detailed_calls"]
+        for message_id in call.get("user_message_ids", [])
+    }
     assert packet["evidence"]["candidate_user_message_count"] > 16
     assert len(packet["evidence"]["candidate_user_messages"]) == packet[
         "evidence"
@@ -1634,6 +1642,11 @@ def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
     assert packet["evidence"]["included_user_message_count"] < packet[
         "evidence"
     ]["candidate_user_message_count"]
+    if detailed_message_ids and packet["evidence"]["candidate_user_messages"]:
+        assert (
+            packet["evidence"]["candidate_user_messages"][0]["message_id"]
+            in detailed_message_ids
+        )
     assert packet["evidence"]["included_model_review_record_count"] < packet[
         "evidence"
     ]["relevant_model_review_record_count"]
@@ -1670,6 +1683,20 @@ def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
         assert packet["action_reference"]["content"]
         assert packet["evidence"]["candidate_clusters"]
         assert packet["evidence"]["detailed_calls"]
+        if surface_id in {"helper-contracts", "context-evidence", "tool-flow"}:
+            assert all(
+                cluster["representative_summary"]
+                for cluster in packet["evidence"]["candidate_clusters"]
+            )
+        else:
+            assert all(
+                "representative_summary" not in cluster
+                for cluster in packet["evidence"]["candidate_clusters"]
+            )
+        assert all(
+            "model_call_id" in record
+            for record in packet["evidence"]["included_model_review_records"]
+        )
         if surface_id == "context-evidence":
             assert packet["evidence"]["input_volume_hotspots"]
             assert all(
@@ -1751,6 +1778,7 @@ def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
     remaining_clusters = packet["remaining_calls"]["clusters"]
     assert packet["remaining_calls"]["call_count"] > 0
     assert remaining_clusters
+    assert all(cluster["representative_summary"] for cluster in remaining_clusters)
     assert packet["remaining_calls"]["input_volume_hotspots"]
     assert packet["remaining_calls"]["output_volume_hotspots"]
     decision_path = pathlib.Path(packet["decision_path"])
