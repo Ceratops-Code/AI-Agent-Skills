@@ -1535,9 +1535,62 @@ class GHContractStateEngineTests(unittest.TestCase):
                         "url": "https://example.invalid/comment/91",
                         "author": {"login": "chatgpt-codex-connector[bot]"},
                     }
-                ]
+                ],
+                "pageInfo": {"hasNextPage": True, "endCursor": "comments-1"},
             },
         }
+        initial_page = {
+            "data": {
+                "viewer": {"login": "roman"},
+                "repository": {
+                    "pullRequest": {
+                        "number": 7,
+                        "url": "https://example.invalid/pull/7",
+                        "createdAt": "2026-08-09T00:00:00Z",
+                        "headRefOid": head,
+                        "reviewThreads": {
+                            "nodes": [json.loads(json.dumps(thread))],
+                            "pageInfo": {"hasNextPage": False, "endCursor": None},
+                        },
+                    }
+                },
+            }
+        }
+        remaining_comments = {
+            "data": {
+                "node": {
+                    "comments": {
+                        "nodes": [
+                            {
+                                "id": "PRRC_2",
+                                "databaseId": 92,
+                                "body": "Fixed in the current head.",
+                                "url": "https://example.invalid/comment/92",
+                                "author": {"login": "roman"},
+                            }
+                        ],
+                        "pageInfo": {"hasNextPage": False, "endCursor": None},
+                    }
+                }
+            }
+        }
+        with mock.patch.object(
+            pr_codex_review,
+            "gh_graphql",
+            side_effect=[initial_page, remaining_comments],
+        ) as paged:
+            fetched = pr_codex_review.fetch_pr("owner", "repo", 7, cwd=ROOT)
+        self.assertEqual(
+            [
+                comment["databaseId"]
+                for comment in fetched["reviewThreads"][0]["comments"]["nodes"]
+            ],
+            [91, 92],
+        )
+        self.assertEqual(
+            paged.call_args_list[1].args[1],
+            {"thread": "PRRT_1", "cursor": "comments-1"},
+        )
         projected = pr_codex_review.active_codex_threads(
             {"reviewThreads": [thread]},
             {"chatgpt-codex-connector[bot]"},

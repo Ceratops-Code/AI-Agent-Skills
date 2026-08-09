@@ -45,6 +45,7 @@ SYNTHESIS_DECISION_SCHEMA = "ceratops-credit-analysis-synthesis-decision.v1"
 INDEX_SCHEMA = "ceratops-credit-analysis-index-record.v1"
 BATCH_STATE_SCHEMA = "ceratops-credit-analysis-batch-state.v1"
 BATCH_INDEX_SCHEMA = "ceratops-credit-analysis-batch-index-record.v1"
+EVIDENCE_NARRATIVE_LIMIT = 1200
 STATE_VERSION = 1
 BATCH_STATE_VERSION = 1
 STATE_FIELDS = {
@@ -206,6 +207,7 @@ FINDING_FIELDS = {
     "waste_kind",
     "affected_call_ids",
     "evidence_refs",
+    "evidence_narrative",
     "producer_type",
     "producer_owner",
     "proposed_durable_control",
@@ -291,9 +293,11 @@ DECISION_FINDING_FIELDS = {
     "waste_kind",
     "affected_selectors",
     "additional_evidence_selectors",
+    "evidence_narrative",
     "producer_type",
     "producer_owner",
     "proposed_durable_control",
+    "implementation_status",
     "targeted_verification",
     "recurrence",
     "confidence",
@@ -1426,6 +1430,12 @@ def _surface_decision_contract(
             else "Keep helper_categories empty outside helper-contracts."
         ),
         "producer_types": list(contract["producer_types"]),
+        "implementation_statuses": list(contract["implementation_statuses"]),
+        "evidence_narrative_limit": EVIDENCE_NARRATIVE_LIMIT,
+        "evidence_narrative_note": (
+            "State the concrete observed evidence without exact call IDs, controller "
+            "paths, or bookkeeping fields."
+        ),
         "finding_fields": sorted(DECISION_FINDING_FIELDS),
         "risk_fields": sorted(DECISION_RISK_FIELDS),
         "exclusion_fields": sorted(DECISION_EXCLUSION_FIELDS),
@@ -2072,6 +2082,17 @@ def _validate_finding(
     required_refs = {_evidence_ref(call_id) for call_id in affected}
     if not required_refs.issubset(refs):
         raise CreditAnalysisError(f"finding {finding_id} lacks affected-call evidence")
+    narrative = raw.get("evidence_narrative")
+    if not isinstance(narrative, str) or not narrative.strip():
+        raise CreditAnalysisError(f"finding {finding_id} evidence narrative is required")
+    narrative = narrative.strip()
+    if len(narrative) > EVIDENCE_NARRATIVE_LIMIT:
+        raise CreditAnalysisError(f"finding {finding_id} evidence narrative is too long")
+    exposed_call = next((call_id for call_id in known_calls if call_id in narrative), None)
+    if exposed_call is not None:
+        raise CreditAnalysisError(
+            f"finding {finding_id} evidence narrative exposes an exact call id"
+        )
     producer_type = raw.get("producer_type")
     if producer_type not in contract["producer_types"]:
         raise CreditAnalysisError(f"finding {finding_id} producer type is invalid")
@@ -2144,6 +2165,7 @@ def _validate_finding(
         "waste_kind": waste_kind,
         "affected_call_ids": affected,
         "evidence_refs": refs,
+        "evidence_narrative": narrative,
         "producer_owner": owner.strip() if isinstance(owner, str) else None,
         "proposed_durable_control": control.strip(),
         "targeted_verification": verification,
@@ -2629,10 +2651,11 @@ def _decision_finding(
         "waste_kind": waste_kind,
         "affected_call_ids": affected,
         "evidence_refs": [_evidence_ref(call_id) for call_id in refs],
+        "evidence_narrative": raw.get("evidence_narrative"),
         "producer_type": raw.get("producer_type"),
         "producer_owner": raw.get("producer_owner"),
         "proposed_durable_control": raw.get("proposed_durable_control"),
-        "implementation_status": "unimplemented",
+        "implementation_status": raw.get("implementation_status"),
         "targeted_verification": raw.get("targeted_verification"),
         "observed_avoidable_call_count": (
             0 if waste_kind == "context-volume" else len(affected)
@@ -3843,11 +3866,7 @@ def _render_final_report(final: Mapping[str, Any]) -> str:
                 "",
                 f"Problem: {finding['problem_summary']} The owning producer is {owner}.",
                 "",
-                (
-                    f"Evidence: {finding.get('source_surface', 'selected surface')} "
-                    f"confirmed {len(evidence_calls)} affected model call(s); exact "
-                    "call references remain in the retained analysis result."
-                ),
+                f"Evidence: {finding['evidence_narrative']}",
                 "",
                 f"Fix: {finding['proposed_durable_control']}",
                 "",

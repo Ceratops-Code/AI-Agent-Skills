@@ -125,7 +125,7 @@ query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
           startLine
           diffSide
           startDiffSide
-          comments(first: 30) {
+          comments(first: 100) {
             nodes {
               id
               databaseId
@@ -135,6 +135,10 @@ query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
               author {
                 login
               }
+            }
+            pageInfo {
+              hasNextPage
+              endCursor
             }
           }
         }
@@ -173,6 +177,61 @@ query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
             break
         cursor = page.get("endCursor")
     assert pr_data is not None
+    comment_query = """
+query($thread: ID!, $cursor: String) {
+  node(id: $thread) {
+    ... on PullRequestReviewThread {
+      comments(first: 100, after: $cursor) {
+        nodes {
+          id
+          databaseId
+          body
+          url
+          createdAt
+          author {
+            login
+          }
+        }
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+      }
+    }
+  }
+}
+"""
+    for thread in threads:
+        comments = thread.get("comments") or {}
+        nodes = list(comments.get("nodes") or [])
+        page = comments.get("pageInfo") or {}
+        while page.get("hasNextPage"):
+            cursor = page.get("endCursor")
+            thread_id = thread.get("id")
+            if not isinstance(thread_id, str) or not thread_id:
+                raise CommandError("review thread id is unavailable during comment pagination")
+            if not isinstance(cursor, str) or not cursor:
+                raise CommandError(
+                    f"review thread {thread_id} comment cursor is unavailable"
+                )
+            data = gh_graphql(
+                comment_query,
+                {"thread": thread_id, "cursor": cursor},
+                cwd=cwd,
+            )
+            node = (data.get("data") or {}).get("node")
+            if not isinstance(node, dict):
+                raise CommandError(f"review thread not found during pagination: {thread_id}")
+            next_comments = node.get("comments") or {}
+            nodes.extend(next_comments.get("nodes") or [])
+            next_page = next_comments.get("pageInfo") or {}
+            next_cursor = next_page.get("endCursor")
+            if next_page.get("hasNextPage") and next_cursor == cursor:
+                raise CommandError(
+                    f"review thread {thread_id} comment cursor did not advance"
+                )
+            page = next_page
+        thread["comments"] = {"nodes": nodes, "pageInfo": page}
     pr_data["reviewThreads"] = threads
     return pr_data
 

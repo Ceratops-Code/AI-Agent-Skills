@@ -537,6 +537,10 @@ def finding_record(
         "waste_kind": waste_kind,
         "affected_call_ids": calls,
         "evidence_refs": [f"evidence://calls/{call_id}" for call_id in calls],
+        "evidence_narrative": (
+            f"The synthetic episode for {finding_id} repeated work already visible "
+            "in the retained evidence."
+        ),
         "producer_type": producer_type,
         "producer_owner": owner,
         "proposed_durable_control": f"Prevent {finding_id} at {owner}",
@@ -637,6 +641,7 @@ def surface_decision_record(
     packet: Mapping[str, Any],
     *,
     finding_id: str | None = None,
+    implementation_status: str = "unimplemented",
     risks: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Build one compact model judgment for the end-to-end controller."""
@@ -660,11 +665,16 @@ def surface_decision_record(
                 "waste_kind": "model-calls",
                 "affected_selectors": [{"call_ids": [call_id]}],
                 "additional_evidence_selectors": [],
+                "evidence_narrative": (
+                    f"The {packet['surface_id']} evidence shows a repeated semantic "
+                    "decision after the producer had enough deterministic state to finish."
+                ),
                 "producer_type": "script",
                 "producer_owner": f"scripts/{packet['surface_id']}.py",
                 "proposed_durable_control": (
                     f"Complete {packet['surface_id']} deterministically in its producer."
                 ),
+                "implementation_status": implementation_status,
                 "targeted_verification": [
                     f"verify {packet['surface_id']} completes without the call"
                 ],
@@ -1519,6 +1529,7 @@ def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
         "tool-flow",
         "instruction-reasoning",
     ]
+    implemented_finding_id = "e2e-context-evidence"
     finding_ids: list[str] = []
     for semantic_number, surface_id in enumerate(expected_surfaces, start=1):
         assert packet["surface_id"] == surface_id
@@ -1561,7 +1572,14 @@ def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
         write_json_file(
             decision_path,
             surface_decision_record(
-                packet, finding_id=finding_id, risks=risks
+                packet,
+                finding_id=finding_id,
+                implementation_status=(
+                    "implemented"
+                    if finding_id == implemented_finding_id
+                    else "unimplemented"
+                ),
+                risks=risks,
             ),
         )
         submitted = run_credit_analysis_workflow(
@@ -1603,11 +1621,15 @@ def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
     assert final_packet["protocol_budget"]["semantic_model_calls"] == 6
     assert final_packet["protocol_budget"]["bookkeeping_model_calls"] == 0
     report = final_packet["report_markdown"]
-    assert "Confirmed: 5; outstanding: 5; already addressed: 0" in report
+    assert "Confirmed: 5; outstanding: 4; already addressed: 1" in report
     assert all(finding_id not in report for finding_id in finding_ids)
     assert all(
-        finding_id.replace("-", " ") in report for finding_id in finding_ids
+        finding_id.replace("-", " ") in report
+        for finding_id in finding_ids
+        if finding_id != implemented_finding_id
     )
+    assert implemented_finding_id.replace("-", " ") not in report
+    assert "Evidence: The helper-contracts evidence shows" in report
     assert all(call_id not in report for call_id in evidence["call_inventory"])
     assert "Unassessed:" in final_packet["report_markdown"]
     assert "Observed: The synthetic tool call was followed by a wait." in report
@@ -1640,7 +1662,7 @@ def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
     assert final_result["totals"]["unassessed_calls"] > 0
     assert {
         item["classification"] for item in final_result["primary_call_mappings"]
-    } <= {"avoidable_unimplemented", "unassessed"}
+    } <= {"avoidable_unimplemented", "avoidable_implemented", "unassessed"}
 
     resumed = run_credit_analysis_workflow(
         "status", "--state", str(state_path), "--packet"
