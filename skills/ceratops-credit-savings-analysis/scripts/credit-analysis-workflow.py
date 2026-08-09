@@ -46,11 +46,14 @@ INDEX_SCHEMA = "ceratops-credit-analysis-index-record.v1"
 BATCH_STATE_SCHEMA = "ceratops-credit-analysis-batch-state.v1"
 BATCH_INDEX_SCHEMA = "ceratops-credit-analysis-batch-index-record.v1"
 EVIDENCE_NARRATIVE_LIMIT = 1200
-PACKET_CALL_DETAIL_CHAR_BUDGET = 7_000
-PACKET_REVIEW_DETAIL_CHAR_BUDGET = 5_000
-PACKET_USER_MESSAGE_CHAR_BUDGET = 4_000
-PACKET_RUN_OUTCOME_CHAR_BUDGET = 2_000
-PASS_PACKET_CHAR_LIMIT = 60_000
+PASS_PACKET_CHAR_LIMIT = 29_500
+SURFACE_PACKET_BUDGETS = {
+    "helper-contracts": {"calls": 2_000, "reviews": 1_000, "users": 800, "outcomes": 500},
+    "context-evidence": {"calls": 3_000, "reviews": 1_500, "users": 2_500, "outcomes": 750},
+    "rework-validation": {"calls": 3_500, "reviews": 1_500, "users": 3_500, "outcomes": 750},
+    "tool-flow": {"calls": 2_500, "reviews": 1_000, "users": 800, "outcomes": 500},
+    "instruction-reasoning": {"calls": 2_000, "reviews": 1_000, "users": 3_000, "outcomes": 500},
+}
 STATE_VERSION = 1
 BATCH_STATE_VERSION = 1
 STATE_FIELDS = {
@@ -1357,6 +1360,8 @@ def _detail_packet_calls(
     candidates: Sequence[str],
     call_by_id: Mapping[str, Mapping[str, Any]],
     focused_runs: set[str],
+    *,
+    character_budget: int,
 ) -> list[dict[str, Any]]:
     """Select extra high-signal detail by packet size, not as a coverage proxy."""
 
@@ -1383,7 +1388,7 @@ def _detail_packet_calls(
     included = _budgeted_values(
         prepared,
         text_limit=700,
-        character_budget=PACKET_CALL_DETAIL_CHAR_BUDGET,
+        character_budget=character_budget,
     )
     selected = {str(call["call_id"]) for call in included}
     return [
@@ -1671,13 +1676,13 @@ def _candidate_clusters(
     ]
 
 
-def _volume_hotspots(
+def _volume_hotspot_ids(
     clusters: Sequence[Mapping[str, Any]],
     *,
     kind: str,
     limit: int = 12,
-) -> list[dict[str, Any]]:
-    """Project the largest recorded input or output clusters for model review."""
+) -> list[str]:
+    """Order cluster IDs by recorded volume without duplicating cluster payloads."""
 
     if kind not in {"input", "output"}:
         raise CreditAnalysisError("volume hotspot kind is invalid")
@@ -1693,17 +1698,7 @@ def _volume_hotspots(
         clusters,
         key=lambda cluster: (-score(cluster), str(cluster["cluster_id"])),
     )
-    return [
-        {
-            "cluster_id": cluster["cluster_id"],
-            "call_count": cluster["call_count"],
-            "turn_count": cluster["turn_count"],
-            "volume": cluster["volume"],
-            "event_counts": cluster["event_counts"],
-        }
-        for cluster in ranked[:limit]
-        if score(cluster) > 0
-    ]
+    return [str(cluster["cluster_id"]) for cluster in ranked[:limit] if score(cluster) > 0]
 
 
 def _run_outcome_calls(
@@ -1776,9 +1771,58 @@ def _surface_decision_contract(
             "State the concrete observed evidence without exact call IDs, controller "
             "paths, or bookkeeping fields."
         ),
-        "finding_fields": sorted(DECISION_FINDING_FIELDS),
-        "risk_fields": sorted(DECISION_RISK_FIELDS),
-        "exclusion_fields": sorted(DECISION_EXCLUSION_FIELDS),
+        "all_fields_required_no_extras": True,
+        "field_shapes": {
+            "finding": {
+                "identifier": ["id"],
+                "nonempty_strings": [
+                    "title",
+                    "problem_summary",
+                    "evidence_narrative",
+                    "proposed_durable_control",
+                ],
+                "producer_owner": "nonempty string; null only when producer_type is unknown",
+                "selector_lists": {
+                    "affected_selectors": "min 1",
+                    "additional_evidence_selectors": "may be empty",
+                },
+                "targeted_verification": "string list; min 1",
+                "helper_categories": "enum list; helper-contracts min 1, other surfaces empty",
+                "confidence": "number 0..1",
+                "enums": {
+                    "waste_kind": list(contract["waste_kinds"]),
+                    "producer_type": list(contract["producer_types"]),
+                    "implementation_status": list(contract["implementation_statuses"]),
+                    "complexity": list(contract["complexities"]),
+                    "helper_categories": list(contract["helper_categories"]),
+                },
+                "recurrence": {
+                    "additional_recurring_calls_per_affected_run": "number >= 0",
+                    "affected_similar_run_frequency": "number 0..1",
+                    "affected_similar_run_frequency_range": "two numbers low <= frequency <= high, all 0..1",
+                    "assumptions": "string list; min 1",
+                },
+                "one_time_implementation_cost": {
+                    "estimated_model_calls": "number >= 0",
+                    "description": "nonempty string",
+                },
+            },
+            "risk": {
+                "identifier": ["id"],
+                "nonempty_strings": ["description", "observed_sequence", "missing_fact"],
+                "competing_explanations": "string list; min 2",
+                "verification_needed": "string list; min 1",
+                "selector_lists": {
+                    "affected_selectors": "min 1",
+                    "additional_evidence_selectors": "may be empty",
+                },
+            },
+            "exclusion": {
+                "selectors": "selector list; min 1",
+                "reason_code": list(contract["necessary_reason_codes"]),
+                "reason": "nonempty string",
+            },
+        },
     }
 
 
@@ -1873,8 +1917,15 @@ def _surface_pass_packet(
                     "omitted clusters remain unassessed. The controller expands and "
                     "validates the judgments and derives all bookkeeping."
                 ),
-                "assessment_fields": sorted(SYNTHESIS_ASSESSMENT_FIELDS),
-                "necessary_reason_codes": list(contract["necessary_reason_codes"]),
+                "assessment_shape": {
+                    "cluster_ids": "string list; min 1; each cluster at most once",
+                    "classification": ["necessary", "unassessed"],
+                    "reason_code": {
+                        "necessary": list(contract["necessary_reason_codes"]),
+                        "unassessed": None,
+                    },
+                    "reason": "nonempty string",
+                },
             },
             "accepted_findings": finding_items,
             "accepted_risks": list(risks.values()),
@@ -1883,10 +1934,10 @@ def _surface_pass_packet(
                 "call_count": len(remaining_calls),
                 "cluster_count": len(remaining_clusters),
                 "clusters": remaining_clusters,
-                "input_volume_hotspots": _volume_hotspots(
+                "input_volume_hotspots": _volume_hotspot_ids(
                     remaining_clusters, kind="input"
                 ),
-                "output_volume_hotspots": _volume_hotspots(
+                "output_volume_hotspots": _volume_hotspot_ids(
                     remaining_clusters, kind="output"
                 ),
             },
@@ -1898,8 +1949,14 @@ def _surface_pass_packet(
     candidates = list(pending["candidate_call_ids"])
     call_by_id = {call["call_id"]: call for call in _all_calls(evidence)}
     focused_runs = set(evidence["focused_semantic_context"]["run_ids"])
+    budgets = SURFACE_PACKET_BUDGETS[surface_id]
     clusters = _candidate_clusters(candidates, evidence, focused_runs)
-    detailed_calls = _detail_packet_calls(candidates, call_by_id, focused_runs)
+    detailed_calls = _detail_packet_calls(
+        candidates,
+        call_by_id,
+        focused_runs,
+        character_budget=budgets["calls"],
+    )
     detailed_ids = [str(call["call_id"]) for call in detailed_calls]
     preparation, review_records, exclusions = _model_review_records_for_calls(
         evidence, candidates, focused_runs
@@ -1909,7 +1966,7 @@ def _surface_pass_packet(
     bounded_messages = _budgeted_values(
         user_messages,
         text_limit=400,
-        character_budget=PACKET_USER_MESSAGE_CHAR_BUDGET,
+        character_budget=budgets["users"],
     )
     detailed_id_set = set(detailed_ids)
     prioritized_records = sorted(
@@ -1919,12 +1976,12 @@ def _surface_pass_packet(
     bounded_records = _budgeted_values(
         prioritized_records,
         text_limit=450,
-        character_budget=PACKET_REVIEW_DETAIL_CHAR_BUDGET,
+        character_budget=budgets["reviews"],
     )
     bounded_outcomes = _budgeted_values(
         run_outcomes,
         text_limit=240,
-        character_budget=PACKET_RUN_OUTCOME_CHAR_BUDGET,
+        character_budget=budgets["outcomes"],
     )
     packet_evidence = {
         "deterministic_totals": evidence["totals"],
@@ -1934,7 +1991,7 @@ def _surface_pass_packet(
         "candidate_clusters": clusters,
         "detailed_call_count": len(detailed_calls),
         "detailed_calls": detailed_calls,
-        "detail_character_budget": PACKET_CALL_DETAIL_CHAR_BUDGET,
+        "detail_character_budget": budgets["calls"],
         "candidate_user_message_count": len(user_messages),
         "included_user_message_count": len(bounded_messages),
         "candidate_user_messages": bounded_messages,
@@ -1953,11 +2010,11 @@ def _surface_pass_packet(
         "complete_evidence_retained_on_disk": True,
     }
     if surface_id == "context-evidence":
-        packet_evidence["input_volume_hotspots"] = _volume_hotspots(
+        packet_evidence["input_volume_hotspots"] = _volume_hotspot_ids(
             clusters, kind="input"
         )
     if surface_id == "tool-flow":
-        packet_evidence["output_volume_hotspots"] = _volume_hotspots(
+        packet_evidence["output_volume_hotspots"] = _volume_hotspot_ids(
             clusters, kind="output"
         )
     return {
@@ -1978,9 +2035,9 @@ def _pass_packet(state_path: pathlib.Path) -> dict[str, Any]:
         return _final_packet(state, evidence, contract)
     packet = _surface_pass_packet(state, evidence, contract)
     size = _json_chars(packet)
-    if size > PASS_PACKET_CHAR_LIMIT:
+    if size >= PASS_PACKET_CHAR_LIMIT:
         raise CreditAnalysisError(
-            f"semantic pass packet exceeds {PASS_PACKET_CHAR_LIMIT} characters "
+            f"semantic pass packet must stay below {PASS_PACKET_CHAR_LIMIT} characters "
             f"({size}); refine deterministic clustering or detail budgets"
         )
     return packet

@@ -1570,7 +1570,19 @@ def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
         "delivery_model_calls": 1,
         "bookkeeping_model_calls": 0,
     }
-    assert len(started.stdout.encode("utf-8")) < 60_000
+    assert len(started.stdout.encode("utf-8")) < 30_000
+    shapes = packet["decision_contract"]["field_shapes"]
+    assert shapes["risk"]["competing_explanations"] == "string list; min 2"
+    assert shapes["risk"]["verification_needed"] == "string list; min 1"
+    assert shapes["exclusion"]["reason_code"] == [
+        "protocol-overhead",
+        "required-freshness",
+        "required-safety",
+        "required-verification",
+        "required-workflow",
+        "ordinary-model-error",
+        "controlled-iteration",
+    ]
     assert packet["evidence"]["candidate_call_count"] > 30
     clusters = packet["evidence"]["candidate_clusters"]
     assert packet["evidence"]["candidate_cluster_count"] == len(clusters)
@@ -1651,7 +1663,7 @@ def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
     implemented_finding_id = "e2e-context-evidence"
     finding_ids: list[str] = []
     for semantic_number, surface_id in enumerate(expected_surfaces, start=1):
-        assert len(json.dumps(packet).encode("utf-8")) < 60_000
+        assert len(json.dumps(packet, separators=(",", ":")).encode("utf-8")) < 30_000
         assert packet["surface_id"] == surface_id
         assert packet["protocol_budget"]["semantic_call_number"] == semantic_number
         assert packet["action_reference"]["path"] == f"references/{surface_id}.md"
@@ -1660,8 +1672,15 @@ def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
         assert packet["evidence"]["detailed_calls"]
         if surface_id == "context-evidence":
             assert packet["evidence"]["input_volume_hotspots"]
+            assert all(
+                isinstance(cluster_id, str)
+                for cluster_id in packet["evidence"]["input_volume_hotspots"]
+            )
         if surface_id == "tool-flow":
             assert packet["evidence"]["output_volume_hotspots"]
+            assert set(packet["evidence"]["output_volume_hotspots"]).issubset(
+                {cluster["cluster_id"] for cluster in packet["evidence"]["candidate_clusters"]}
+            )
         finding_id = f"e2e-{surface_id}"
         finding_ids.append(finding_id)
         risks: list[dict[str, Any]] = []
@@ -1718,12 +1737,16 @@ def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
             str(decision_path),
         )
         assert submitted.returncode == 0, submitted.stderr
+        assert len(submitted.stdout.encode("utf-8")) < 30_000
         packet = json.loads(submitted.stdout)
 
     assert packet["surface_id"] == "synthesis"
     assert packet["internal"] is True
     assert packet["action_reference"] is None
     assert packet["protocol_budget"]["semantic_call_number"] == 6
+    assert packet["decision_contract"]["assessment_shape"]["reason_code"][
+        "unassessed"
+    ] is None
     assert [item["id"] for item in packet["accepted_findings"]] == finding_ids
     remaining_clusters = packet["remaining_calls"]["clusters"]
     assert packet["remaining_calls"]["call_count"] > 0
