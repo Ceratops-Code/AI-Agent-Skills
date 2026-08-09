@@ -11,6 +11,10 @@ without blocking completed repository deployment.
 
 ### Script Bundle
 
+- (D) Invocation contract: set the working directory to `<skill-root>`, the
+  directory containing this action's parent `SKILL.md`; require
+  `<skill-root>/scripts/promote-repository.py` once before the first call. Stop
+  if it is absent; never try a helper path relative to the target repository.
 - (D) Promotion helper:
   `python scripts/promote-repository.py --repo-root PATH --source-branch BRANCH
   [--source-branch BRANCH...] --main-branch main --release-branch release/local
