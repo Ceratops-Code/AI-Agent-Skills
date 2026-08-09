@@ -1263,7 +1263,7 @@ def _selected_packet_calls(
     call_by_id: Mapping[str, Mapping[str, Any]],
     focused_runs: set[str],
     *,
-    limit: int = 60,
+    limit: int = 30,
 ) -> list[str]:
     """Select high-signal and boundary calls without claiming full review."""
 
@@ -1299,6 +1299,26 @@ def _packet_call(call: Mapping[str, Any], focused_runs: set[str]) -> dict[str, A
                 if key in raw
             }
         )
+    tool_results = []
+    for raw in call.get("tool_results", []):
+        if not isinstance(raw, Mapping):
+            continue
+        tool_results.append(
+            {
+                key: raw[key]
+                for key in (
+                    "name",
+                    "repeated",
+                    "retry",
+                    "explicit_failure",
+                    "argument_chars",
+                    "result_chars",
+                    "duration_ms",
+                    "outcomes",
+                )
+                if key in raw
+            }
+        )
     return {
         "call_id": call["call_id"],
         "turn_id": call["turn_id"],
@@ -1306,7 +1326,7 @@ def _packet_call(call: Mapping[str, Any], focused_runs: set[str]) -> dict[str, A
         "signal_score": _call_signal_score(call, focused_runs),
         "tokens": call["tokens"],
         "semantic_actions": semantics,
-        "tool_results": call.get("tool_results", []),
+        "tool_results": tool_results,
         "user_message_ids": call.get("user_message_ids", []),
         "run_duration_ms": call.get("run_duration_ms"),
     }
@@ -1509,8 +1529,12 @@ def _surface_pass_packet(
     preparation, review_records, exclusions = _model_review_records_for_calls(
         evidence, selected_ids, focused_runs
     )
+    selected_messages = _user_messages_for_calls(evidence, selected_ids)
+    bounded_messages = [
+        _bounded_value(message, text_limit=600) for message in selected_messages[:16]
+    ]
     bounded_records = [
-        _bounded_value(record, text_limit=900) for record in review_records[:120]
+        _bounded_value(record, text_limit=450) for record in review_records[:30]
     ]
     return {
         **common,
@@ -1530,13 +1554,13 @@ def _surface_pass_packet(
                 _packet_call(call_by_id[call_id], focused_runs)
                 for call_id in selected_ids
             ],
-            "selected_user_messages": [
-                _bounded_value(message, text_limit=1_200)
-                for message in _user_messages_for_calls(evidence, selected_ids)
-            ],
-            "model_review_preparation": preparation,
-            "model_review_exclusions": exclusions,
+            "selected_user_message_count": len(selected_messages),
+            "included_user_message_count": len(bounded_messages),
+            "selected_user_messages": bounded_messages,
+            "model_review_preparation": _bounded_value(preparation, text_limit=450),
+            "model_review_exclusions": _bounded_value(exclusions, text_limit=450),
             "model_review_record_count": len(review_records),
+            "included_model_review_record_count": len(bounded_records),
             "included_model_review_records": bounded_records,
             "full_candidate_and_review_evidence_retained": True,
         },

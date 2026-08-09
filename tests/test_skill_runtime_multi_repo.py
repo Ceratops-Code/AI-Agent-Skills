@@ -1391,6 +1391,16 @@ def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
         "delivery_model_calls": 1,
         "bookkeeping_model_calls": 0,
     }
+    assert len(started.stdout.encode("utf-8")) < 120_000
+    assert packet["evidence"]["selected_call_count"] <= 30
+    assert packet["evidence"]["included_user_message_count"] <= 16
+    assert packet["evidence"]["included_model_review_record_count"] <= 30
+    assert packet["evidence"]["selected_user_message_count"] >= packet["evidence"][
+        "included_user_message_count"
+    ]
+    assert packet["evidence"]["model_review_record_count"] >= packet["evidence"][
+        "included_model_review_record_count"
+    ]
     state_path = pathlib.Path(packet["submit_argv"][4])
     evidence_path = pathlib.Path(packet["retained_evidence_path"])
     evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
