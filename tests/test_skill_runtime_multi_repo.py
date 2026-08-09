@@ -1786,6 +1786,10 @@ def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
     assert packet["decision_contract"]["assessment_shape"]["reason_code"][
         "unassessed"
     ] is None
+    assert "Explicitly assess every listed input and output hotspot" in packet[
+        "decision_contract"
+    ]["rule"]
+    assert "more than half" in packet["decision_contract"]["rule"]
     assert [item["id"] for item in packet["accepted_findings"]] == finding_ids
     remaining_clusters = packet["remaining_calls"]["clusters"]
     assert packet["remaining_calls"]["call_count"] > 0
@@ -1799,6 +1803,62 @@ def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
     assert packet["remaining_calls"]["input_volume_hotspots"]
     assert packet["remaining_calls"]["output_volume_hotspots"]
     decision_path = pathlib.Path(packet["decision_path"])
+    write_json_file(
+        decision_path,
+        {
+            "schema": "ceratops-credit-analysis-synthesis-decision.v1",
+            "finding_order": list(reversed(finding_ids)),
+            "risk_order": ["e2e-tool-risk"],
+            "remaining_call_assessments": [],
+        },
+    )
+    rejected_hotspot = run_credit_analysis_workflow(
+        "submit",
+        "--state",
+        str(state_path),
+        "--decision",
+        str(decision_path),
+    )
+    assert rejected_hotspot.returncode == 2
+    assert "explicitly assess every input/output hotspot" in rejected_hotspot.stderr
+    assert json.loads(state_path.read_text(encoding="utf-8"))["pending"][
+        "surface_id"
+    ] == "synthesis"
+
+    assert packet["remaining_calls"]["call_count"] * 2 > evidence["totals"][
+        "model_calls"
+    ]
+    write_json_file(
+        decision_path,
+        {
+            "schema": "ceratops-credit-analysis-synthesis-decision.v1",
+            "finding_order": list(reversed(finding_ids)),
+            "risk_order": ["e2e-tool-risk"],
+            "remaining_call_assessments": [
+                {
+                    "cluster_ids": [
+                        cluster["cluster_id"] for cluster in remaining_clusters
+                    ],
+                    "classification": "unassessed",
+                    "reason_code": None,
+                    "reason": "Synthetic evidence omits the required outcome purpose.",
+                }
+            ],
+        },
+    )
+    rejected_majority = run_credit_analysis_workflow(
+        "submit",
+        "--state",
+        str(state_path),
+        "--decision",
+        str(decision_path),
+    )
+    assert rejected_majority.returncode == 2
+    assert "at or below 50%" in rejected_majority.stderr
+    assert json.loads(state_path.read_text(encoding="utf-8"))["pending"][
+        "surface_id"
+    ] == "synthesis"
+
     write_json_file(
         decision_path,
         {

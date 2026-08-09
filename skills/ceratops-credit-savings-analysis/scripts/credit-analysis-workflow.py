@@ -2020,8 +2020,11 @@ def _surface_pass_packet(
                     "Rank every finding and risk exactly once. Semantically classify "
                     "remaining cluster IDs as necessary or unassessed. Use unassessed "
                     "only when the stated missing fact prevents a supported decision; "
-                    "omitted clusters remain unassessed. The controller expands and "
-                    "validates the judgments and derives all bookkeeping."
+                    "omitted clusters remain unassessed. Explicitly assess every listed "
+                    "input and output hotspot. A full analysis leaving more than half "
+                    "of the inventory unassessed is rejected in the same pending pass. "
+                    "The controller expands and validates the judgments and derives all "
+                    "bookkeeping."
                 ),
                 "assessment_shape": {
                     "cluster_ids": "string list; min 1; each cluster at most once",
@@ -3828,12 +3831,19 @@ def _assemble_synthesis_decision(
 
     remaining_calls = _synthesis_remaining_calls(state, evidence, findings)
     focused_runs = set(evidence["focused_semantic_context"]["run_ids"])
+    remaining_partitions = _candidate_cluster_partition(
+        remaining_calls, evidence, focused_runs
+    )
     remaining_cluster_calls = {
         str(partition["cluster_id"]): list(partition["call_ids"])
-        for partition in _candidate_cluster_partition(
-            remaining_calls, evidence, focused_runs
-        )
+        for partition in remaining_partitions
     }
+    remaining_cluster_summaries = [
+        dict(partition["summary"]) for partition in remaining_partitions
+    ]
+    required_hotspot_clusters = set(
+        _volume_hotspot_ids(remaining_cluster_summaries, kind="input")
+    ) | set(_volume_hotspot_ids(remaining_cluster_summaries, kind="output"))
 
     inventory = list(evidence["call_inventory"])
     position_by_call = {
@@ -3968,6 +3978,12 @@ def _assemble_synthesis_decision(
                 "reason": reason.strip(),
             }
         )
+    missing_hotspots = sorted(required_hotspot_clusters - selected_clusters)
+    if missing_hotspots:
+        raise CreditAnalysisError(
+            "synthesis must explicitly assess every input/output hotspot; missing: "
+            f"{missing_hotspots[0]}"
+        )
     unassessed_positions = [
         position_by_call[call_id]
         for call_id in inventory
@@ -3987,6 +4003,18 @@ def _assemble_synthesis_decision(
                     "clusters, so the controller left them unassessed."
                 ),
             }
+        )
+    unassessed_count = sum(
+        len(group["inventory_positions"])
+        for group in classification_groups
+        if group["classification"] == "unassessed"
+    )
+    if state["mode"] == "full-analysis" and unassessed_count * 2 > len(inventory):
+        raise CreditAnalysisError(
+            "full-analysis synthesis leaves "
+            f"{unassessed_count} of {len(inventory)} calls unassessed; "
+            "assess enough clusters to keep unassessed at or below 50% and "
+            "resubmit the same synthesis pass"
         )
 
     secondary_by_call: defaultdict[str, list[str]] = defaultdict(list)
