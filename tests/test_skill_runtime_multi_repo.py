@@ -1467,6 +1467,56 @@ def test_credit_analysis_workflow_full_analysis_persists_every_finding(
 def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
     tmp_path: pathlib.Path,
 ) -> None:
+    loaded = runpy.run_path(str(CREDIT_ANALYSIS_WORKFLOW))
+    calls: list[dict[str, Any]] = []
+    for index, (summary, tools) in enumerate(
+        (
+            ("first semantic path", ["exec", "wait"]),
+            ("second semantic path", ["exec", "wait"]),
+            ("second semantic path", ["wait", "exec"]),
+            ("terminal semantic path", ["exec", "wait"]),
+        ),
+        start=1,
+    ):
+        calls.append(
+            {
+                "call_id": f"cluster-turn:{index}",
+                "turn_id": "cluster-turn",
+                "index": index,
+                "semantic_actions": [
+                    {"kind": "analysis", "name": "inspect", "summary": summary}
+                ],
+                "tool_results": [
+                    {
+                        "name": name,
+                        "argument_chars": 10,
+                        "result_chars": 20,
+                        "outcomes": {},
+                    }
+                    for name in tools
+                ],
+                "tokens": {"total_tokens": 100},
+                "user_message_ids": [],
+            }
+        )
+    semantic_clusters = loaded["_candidate_clusters"](
+        [call["call_id"] for call in calls],
+        {"runs": [{"turn_id": "cluster-turn", "calls": calls}]},
+        set(),
+    )
+    assert len(semantic_clusters) == 4
+    assert semantic_clusters[0]["representative"]["semantic_actions"] != (
+        semantic_clusters[1]["representative"]["semantic_actions"]
+    )
+    assert semantic_clusters[1]["representative"]["tool_sequence"] == [
+        "exec",
+        "wait",
+    ]
+    assert semantic_clusters[2]["representative"]["tool_sequence"] == [
+        "wait",
+        "exec",
+    ]
+
     request, session, _ = credit_analysis_request(
         tmp_path, extra_completed_turns=50
     )

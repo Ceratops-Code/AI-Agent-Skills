@@ -1415,7 +1415,17 @@ def _observable_call_signature(
             if isinstance(action, Mapping)
         }
     )
+    semantic_sequence = [
+        [
+            str(action.get("kind", "unknown")),
+            str(action.get("name", "unknown")),
+            str(action.get("summary", "")),
+        ]
+        for action in call.get("semantic_actions", [])
+        if isinstance(action, Mapping)
+    ]
     tool_names: set[str] = set()
+    tool_sequence: list[str] = []
     signals: set[str] = set()
     argument_chars = 0
     result_chars = 0
@@ -1424,6 +1434,7 @@ def _observable_call_signature(
             continue
         name = str(action.get("name", "unknown"))
         tool_names.add(name)
+        tool_sequence.append(name)
         lowered = name.casefold()
         if any(token in lowered for token in ("wait", "poll", "write_stdin")):
             signals.add("wait-or-poll")
@@ -1456,8 +1467,16 @@ def _observable_call_signature(
             result_chars += max(raw_result_chars, 0)
     tokens = call.get("tokens")
     total_tokens = tokens.get("total_tokens") if isinstance(tokens, Mapping) else None
+    detail_fingerprint = hashlib.sha256(
+        json.dumps(
+            {"semantic": semantic_sequence, "tools": tool_sequence},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()[:16]
     return {
         "semantic_actions": semantic_actions,
+        "detail_fingerprint": detail_fingerprint,
         "tools": sorted(tool_names),
         "signals": sorted(signals),
         "argument_size": _size_band(argument_chars),
@@ -1484,13 +1503,21 @@ def _cluster_representative(
                 if key in action
             }
         )
-    return {
+    representative = {
         "call_id": call["call_id"],
         "index": call["index"],
         "signal_score": _call_signal_score(call, focused_runs),
         "semantic_actions": semantic_actions[:2],
         "user_message_ids": call.get("user_message_ids", []),
     }
+    tool_sequence = [
+        str(action.get("name", "unknown"))
+        for action in call.get("tool_results", [])
+        if isinstance(action, Mapping)
+    ][:8]
+    if tool_sequence:
+        representative["tool_sequence"] = tool_sequence
+    return representative
 
 
 def _candidate_clusters(
@@ -1556,7 +1583,11 @@ def _candidate_clusters(
                             ),
                         }
                     ],
-                    "observable_signature": signatures[key],
+                    "observable_signature": {
+                        name: value
+                        for name, value in signatures[key].items()
+                        if name != "detail_fingerprint"
+                    },
                     "total_tokens": token_total,
                     "representative": _cluster_representative(
                         representative, focused_runs
