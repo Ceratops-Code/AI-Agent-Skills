@@ -28,7 +28,9 @@ Detect avoidable tool, command, wait, and model-mediated transitions.
 ## Completion Gate
 
 Account for every controller-exposed candidate, including protocol-only
-exclusions, then persist the complete result through `advance`.
+exclusions. Write the compact decision and invoke `submit` in the same
+orchestration tool call; the controller constructs and persists the complete
+surface result.
 
 ## Output Contract
 

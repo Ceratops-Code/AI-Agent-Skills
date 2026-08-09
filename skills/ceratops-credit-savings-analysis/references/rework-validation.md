@@ -28,8 +28,9 @@ controlled iteration.
 ## Completion Gate
 
 Account for every controller-exposed candidate and record why controlled
-iteration was necessary when excluded, then persist the result through
-`advance`.
+iteration was necessary when excluded. Write the compact decision and invoke
+`submit` in the same orchestration tool call; the controller constructs and
+persists the complete surface result.
 
 ## Output Contract
 

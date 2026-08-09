@@ -29,8 +29,9 @@ required freshness or safety work as waste.
 ## Completion Gate
 
 Account for every controller-exposed candidate as confirmed, plausible,
-dismissed, or necessary, then persist the complete surface result through
-`advance`.
+dismissed, or necessary. Write the compact decision and invoke `submit` in the
+same orchestration tool call; the controller constructs and persists the
+complete surface result.
 
 ## Output Contract
 

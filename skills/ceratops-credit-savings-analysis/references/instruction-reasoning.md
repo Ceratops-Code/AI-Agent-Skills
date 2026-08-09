@@ -26,7 +26,9 @@ cost.
 ## Completion Gate
 
 Account for every exposed model-call candidate and persist all confirmed
-findings, risks, dismissals, and necessary exclusions through `advance`.
+findings, risks, dismissals, and necessary exclusions by writing the compact
+decision and invoking `submit` in the same orchestration tool call. The
+controller constructs and persists the complete surface result.
 
 ## Output Contract
 
