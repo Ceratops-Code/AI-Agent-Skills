@@ -307,10 +307,11 @@ def _prepare_pending_command(
     *,
     repo_root: pathlib.Path,
     target_branch: str,
+    target_commit: str | None,
 ) -> list[str]:
     """Build canonical optional-scope preparation before remote mutation."""
 
-    return [
+    command = [
         sys.executable,
         str(PENDING_MANAGER),
         "--repo-root",
@@ -319,6 +320,9 @@ def _prepare_pending_command(
         "--target-branch",
         target_branch,
     ]
+    if target_commit:
+        command.extend(("--target-commit", target_commit))
+    return command
 
 
 def _prepared_scope(result: dict[str, Any]) -> pathlib.Path | None:
@@ -386,6 +390,7 @@ def ship_repository(args: argparse.Namespace) -> dict[str, object]:
         _prepare_pending_command(
             repo_root=repo_root,
             target_branch=args.head_branch,
+            target_commit=args.commit,
         )
     )
     if prepare_code == 2:
