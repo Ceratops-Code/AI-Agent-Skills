@@ -9,17 +9,18 @@ deployment operations or the first-install bootstrap.
 
 ### Script Bundle
 
-- (D) Invocation contract: set the working directory to `<skill-root>`, the
-  directory containing this action's parent `SKILL.md`; require
+- (D) Invocation contract: bind `<skill-root>` to the directory containing this
+  action's parent `SKILL.md`; require
   `<skill-root>/scripts/skills-consistency-source-validator.py` and
-  `<skill-root>/scripts/runtime/install-managed-skills.py` once before the
-  first call. Stop if either is absent; never try a helper path relative to the
-  target repository.
+  `<skill-root>/scripts/runtime/install-managed-skills.py` once before the first
+  call. Invoke those exact paths with the working directory equal to their
+  `--repo-root` value; stop if either is absent and never resolve them relative
+  to that repository.
 - (D) Source validation: `python
-  scripts/skills-consistency-source-validator.py --repo-root <repo-root>
+  "<skill-root>/scripts/skills-consistency-source-validator.py" --repo-root <repo-root>
   --mode full`.
 - (D) Managed runtime transaction: `python
-  scripts/runtime/install-managed-skills.py --repo-root <repo-root>
+  "<skill-root>/scripts/runtime/install-managed-skills.py" --repo-root <repo-root>
   [--install-root <skills-root>] [--skill <name>...]
   [--remove-skill <name>...] [--base-revision <full-sha>]` from the installed
   or source lifecycle bundle.
