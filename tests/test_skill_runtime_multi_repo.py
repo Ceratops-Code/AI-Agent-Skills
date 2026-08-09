@@ -8141,6 +8141,178 @@ def test_compatibility_materializer_supports_repositories_without_skills(
         "workflow": "preserved",
     }
 
+    def empty_repository(name: str) -> pathlib.Path:
+        target = tmp_path / name
+        target.mkdir()
+        (target / ".git").write_text("gitdir: test\n", encoding="utf-8", newline="\n")
+        (target / "README.md").write_text(
+            f"# {name}\n\n## Skills\n\n| Skill | Purpose |\n| --- | --- |\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        return target
+
+    pnpm_repo = empty_repository("pnpm-compatible")
+    (pnpm_repo / "package.json").write_text(
+        json.dumps(
+            {
+                "packageManager": "pnpm@10.33.4",
+                "scripts": {"build": "tsc --noEmit"},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    (pnpm_repo / "pnpm-lock.yaml").write_text(
+        "lockfileVersion: '9.0'\n", encoding="utf-8", newline="\n"
+    )
+    (pnpm_repo / "requirements-dev.txt").write_text(
+        "pytest==9.1.1\n", encoding="utf-8", newline="\n"
+    )
+    (pnpm_repo / "pyproject.toml").write_text(
+        '[tool.mypy]\npython_version = "3.12"\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    pnpm_result = run_compatibility_engine(
+        engine_scripts,
+        "materialize",
+        "--target-repo-root",
+        str(pnpm_repo),
+        "--runtime-source-id",
+        "example/pnpm-compatible",
+    )
+    assert pnpm_result.returncode == 0, pnpm_result.stdout
+    assert json.loads(pnpm_result.stdout)["repository_validation"]["checks"] == [
+        "pnpm-build",
+        "pytest",
+        "mypy",
+    ]
+    pnpm_workflow = (
+        pnpm_repo / ".github" / "workflows" / "validate.yml"
+    ).read_text(encoding="utf-8")
+    assert "actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903" in pnpm_workflow
+    assert "corepack prepare pnpm@10.33.4 --activate" in pnpm_workflow
+    assert "pnpm install --frozen-lockfile" in pnpm_workflow
+    assert "python -m pip install -r requirements-dev.txt" in pnpm_workflow
+    assert "python -m pip install mypy==2.3.0" in pnpm_workflow
+
+    uv_repo = empty_repository("uv-compatible")
+    (uv_repo / "uv.lock").write_text("version = 1\n", encoding="utf-8", newline="\n")
+    (uv_repo / "pyproject.toml").write_text(
+        '[project]\nname = "uv-compatible"\nversion = "1.0.0"\n'
+        '[project.optional-dependencies]\ndev = ["pytest", "ruff", "mypy"]\n'
+        "[tool.pytest.ini_options]\n"
+        "[tool.ruff]\n"
+        '[tool.mypy]\npython_version = "3.12"\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    uv_result = run_compatibility_engine(
+        engine_scripts,
+        "materialize",
+        "--target-repo-root",
+        str(uv_repo),
+        "--runtime-source-id",
+        "example/uv-compatible",
+    )
+    assert uv_result.returncode == 0, uv_result.stdout
+    assert json.loads(uv_result.stdout)["repository_validation"]["checks"] == [
+        "pytest",
+        "ruff",
+        "mypy",
+    ]
+    uv_workflow = (uv_repo / ".github" / "workflows" / "validate.yml").read_text(
+        encoding="utf-8"
+    )
+    assert "astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9" in uv_workflow
+    assert "uv sync --extra dev --frozen" in uv_workflow
+    assert "uv run --no-sync python scripts/validate-repository.py" in uv_workflow
+
+    powershell_repo = empty_repository("powershell-compatible")
+    for relative in (
+        "scripts/Test-CodexSourceReadiness.ps1",
+        "scripts/Test-CodexRuntimeHealth.ps1",
+        "tests/Run-PowerShellQuality.ps1",
+        "tests/Run-SmokeTests.ps1",
+    ):
+        path = powershell_repo / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("exit 0\n", encoding="utf-8", newline="\n")
+    powershell_result = run_compatibility_engine(
+        engine_scripts,
+        "materialize",
+        "--target-repo-root",
+        str(powershell_repo),
+        "--runtime-source-id",
+        "example/powershell-compatible",
+    )
+    assert powershell_result.returncode == 0, powershell_result.stdout
+    assert json.loads(powershell_result.stdout)["repository_validation"]["checks"] == [
+        "powershell-source-readiness",
+        "powershell-runtime-health",
+        "powershell-lint",
+        "powershell-smoke",
+    ]
+    powershell_workflow = (
+        powershell_repo / ".github" / "workflows" / "validate.yml"
+    ).read_text(encoding="utf-8")
+    assert "runs-on: windows-latest" in powershell_workflow
+    assert "Install-Module PSScriptAnalyzer" in powershell_workflow
+
+    unittest_repo = empty_repository("unittest-compatible")
+    (unittest_repo / "deploy").mkdir()
+    (unittest_repo / "deploy" / "validate-automations.py").write_text(
+        "print('OK')\n", encoding="utf-8", newline="\n"
+    )
+    (unittest_repo / "tests").mkdir()
+    (unittest_repo / "tests" / "test_example.py").write_text(
+        "import unittest\n", encoding="utf-8", newline="\n"
+    )
+    unittest_result = run_compatibility_engine(
+        engine_scripts,
+        "materialize",
+        "--target-repo-root",
+        str(unittest_repo),
+        "--runtime-source-id",
+        "example/unittest-compatible",
+    )
+    assert unittest_result.returncode == 0, unittest_result.stdout
+    assert json.loads(unittest_result.stdout)["repository_validation"]["checks"] == [
+        "automation-source-validation",
+        "unittest",
+    ]
+
+    authoritative_repo = empty_repository("authoritative-compatible")
+    (authoritative_repo / "scripts").mkdir()
+    (authoritative_repo / "scripts" / "validate_repository.py").write_text(
+        '"""Validator requiring --temp-root."""\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    (authoritative_repo / "pyproject.toml").write_text(
+        '[tool.mypy]\npython_version = "3.12"\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    authoritative_result = run_compatibility_engine(
+        engine_scripts,
+        "materialize",
+        "--target-repo-root",
+        str(authoritative_repo),
+        "--runtime-source-id",
+        "example/authoritative-compatible",
+    )
+    assert authoritative_result.returncode == 0, authoritative_result.stdout
+    assert json.loads(authoritative_result.stdout)["repository_validation"]["checks"] == [
+        "hasbaratops-validator"
+    ]
+    authoritative_validator = (
+        authoritative_repo / "scripts" / "validate-repository.py"
+    ).read_text(encoding="utf-8")
+    assert "{temp}/hasbaratops" in authoritative_validator
+
 
 def test_compatibility_materializer_preserves_existing_validator_and_ci(
     tmp_path: pathlib.Path,
@@ -8259,8 +8431,8 @@ def test_compatibility_materializer_rolls_back_every_target_write_on_blocker(
     )
     workflow_template.write_text(
         workflow_template.read_text(encoding="utf-8").replace(
-            "python scripts/validate-repository.py",
-            "python scripts/not-the-repository-validator.py",
+            "__VALIDATOR_PYTHON__ scripts/validate-repository.py",
+            "__VALIDATOR_PYTHON__ scripts/not-the-repository-validator.py",
         ),
         encoding="utf-8",
         newline="\n",

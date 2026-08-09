@@ -8,18 +8,33 @@ import json
 import pathlib
 import subprocess
 import sys
+import tempfile
 
 
 CHECK_DEFINITIONS = __CHECK_DEFINITIONS__
 COMMAND_NOT_FOUND_EXIT_CODE = 127
 
 
-def command(definition: dict[str, object]) -> list[str]:
+def command(definition: dict[str, object], temporary_root: pathlib.Path) -> list[str]:
     """Resolve portable executable tokens without shell parsing."""
 
     npm = "npm.cmd" if sys.platform == "win32" else "npm"
-    values = {"{python}": sys.executable, "{npm}": npm}
-    return [values.get(str(value), str(value)) for value in definition["command"]]
+    pnpm = "pnpm.cmd" if sys.platform == "win32" else "pnpm"
+    pwsh = "pwsh.exe" if sys.platform == "win32" else "pwsh"
+    values = {
+        "{python}": sys.executable,
+        "{npm}": npm,
+        "{pnpm}": pnpm,
+        "{pwsh}": pwsh,
+        "{temp}": str(temporary_root),
+    }
+    resolved: list[str] = []
+    for raw in definition["command"]:
+        value = str(raw)
+        for token, replacement in values.items():
+            value = value.replace(token, replacement)
+        resolved.append(value)
+    return resolved
 
 
 def cleanup_evidence(
@@ -56,59 +71,61 @@ def main() -> int:
         if args.evidence_file
         else repo_root / "build" / "deploy-validation" / "repository-validation.log"
     )
-    for definition in CHECK_DEFINITIONS:
-        argv = command(definition)
-        cwd = repo_root.joinpath(*pathlib.PurePosixPath(definition["cwd"]).parts)
-        try:
-            result = subprocess.run(
-                argv,
-                cwd=cwd,
-                capture_output=True,
-                text=True,
+    with tempfile.TemporaryDirectory(prefix="repository-validation-") as temporary:
+        temporary_root = pathlib.Path(temporary)
+        for definition in CHECK_DEFINITIONS:
+            argv = command(definition, temporary_root)
+            cwd = repo_root.joinpath(*pathlib.PurePosixPath(definition["cwd"]).parts)
+            try:
+                result = subprocess.run(
+                    argv,
+                    cwd=cwd,
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    check=False,
+                )
+            except OSError as exc:
+                result = subprocess.CompletedProcess(
+                    argv,
+                    COMMAND_NOT_FOUND_EXIT_CODE,
+                    "",
+                    f"{type(exc).__name__}: {exc}",
+                )
+            if result.returncode == 0:
+                continue
+            evidence_file.parent.mkdir(parents=True, exist_ok=True)
+            partial = evidence_file.with_name(f".{evidence_file.name}.tmp")
+            partial.write_text(
+                "\n".join(
+                    (
+                        f"check: {definition['id']}",
+                        f"exit_code: {result.returncode}",
+                        f"cwd: {cwd}",
+                        "command: " + json.dumps(argv, separators=(",", ":")),
+                        "stdout:",
+                        result.stdout or "",
+                        "stderr:",
+                        result.stderr or "",
+                    )
+                )
+                + "\n",
                 encoding="utf-8",
-                errors="replace",
-                check=False,
+                newline="\n",
             )
-        except OSError as exc:
-            result = subprocess.CompletedProcess(
-                argv,
-                COMMAND_NOT_FOUND_EXIT_CODE,
-                "",
-                f"{type(exc).__name__}: {exc}",
-            )
-        if result.returncode == 0:
-            continue
-        evidence_file.parent.mkdir(parents=True, exist_ok=True)
-        temporary = evidence_file.with_name(f".{evidence_file.name}.tmp")
-        temporary.write_text(
-            "\n".join(
-                (
-                    f"check: {definition['id']}",
-                    f"exit_code: {result.returncode}",
-                    f"cwd: {cwd}",
-                    "command: " + json.dumps(argv, separators=(",", ":")),
-                    "stdout:",
-                    result.stdout or "",
-                    "stderr:",
-                    result.stderr or "",
+            partial.replace(evidence_file)
+            print(
+                json.dumps(
+                    {
+                        "check": definition["id"],
+                        "exit_code": result.returncode,
+                        "evidence_file": str(evidence_file),
+                    },
+                    separators=(",", ":"),
                 )
             )
-            + "\n",
-            encoding="utf-8",
-            newline="\n",
-        )
-        temporary.replace(evidence_file)
-        print(
-            json.dumps(
-                {
-                    "check": definition["id"],
-                    "exit_code": result.returncode,
-                    "evidence_file": str(evidence_file),
-                },
-                separators=(",", ":"),
-            )
-        )
-        return result.returncode if result.returncode > 0 else 1
+            return result.returncode if result.returncode > 0 else 1
     try:
         cleanup_evidence(
             evidence_file,
