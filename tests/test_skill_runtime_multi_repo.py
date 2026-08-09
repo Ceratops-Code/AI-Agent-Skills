@@ -1555,8 +1555,11 @@ def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
         extra_completed_turns=50,
         extra_calls_per_turn=30,
     )
+    task_root = tmp_path / "analysis-full-analysis"
+    task_root.rmdir()
     started = run_credit_analysis_workflow("start", "--request", str(request))
     assert started.returncode == 0, started.stderr
+    assert task_root.is_dir()
     packet = json.loads(started.stdout)
     assert packet["schema"] == "ceratops-credit-analysis-pass-packet.v1"
     assert packet["surface_id"] == "helper-contracts"
@@ -2462,10 +2465,15 @@ def test_credit_analysis_batch_selects_recent_threads_and_projects_once(
             selector=selector,
             name=name,
         )
+        if name == "count-overall":
+            task_root = tmp_path / f"batch-{name}"
+            task_root.rmdir()
         prepared = run_credit_analysis_workflow(
             "prepare-batch", "--request", str(request)
         )
         assert prepared.returncode == 0, prepared.stderr
+        if name == "count-overall":
+            assert task_root.is_dir()
         status = json.loads(prepared.stdout)
         manifest = json.loads(
             pathlib.Path(status["manifest_path"]).read_text(encoding="utf-8")

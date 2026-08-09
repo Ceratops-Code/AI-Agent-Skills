@@ -508,6 +508,32 @@ def _existing_directory(value: Any, label: str) -> pathlib.Path:
     return path
 
 
+def _task_directory(value: Any, label: str) -> pathlib.Path:
+    """Return the caller-selected directory, creating only its final component."""
+
+    if not isinstance(value, str) or not value:
+        raise CreditAnalysisError(f"{label} must be nonempty text")
+    requested = pathlib.Path(value).expanduser()
+    if requested.exists() or requested.is_symlink():
+        return _existing_directory(value, label)
+    if requested.name in {"", ".", ".."}:
+        raise CreditAnalysisError(f"{label} must name a child directory")
+    try:
+        parent = requested.parent.resolve(strict=True)
+    except OSError as exc:
+        raise CreditAnalysisError(f"{label} parent does not exist: {value}") from exc
+    if requested.parent.is_symlink() or not parent.is_dir():
+        raise CreditAnalysisError(f"{label} parent must be a real directory")
+    path = parent / requested.name
+    try:
+        path.mkdir()
+    except FileExistsError:
+        return _existing_directory(str(path), label)
+    except OSError as exc:
+        raise CreditAnalysisError(f"cannot create {label}: {value}") from exc
+    return path.resolve(strict=True)
+
+
 def _new_file(value: Any, label: str) -> pathlib.Path:
     if not isinstance(value, str) or not value:
         raise CreditAnalysisError(f"{label} must be nonempty text")
@@ -801,7 +827,7 @@ def _validate_request(
         raise CreditAnalysisError("surface contract version mismatch")
     source, session = _request_source(request.get("source"), ledger)
     window, collector_window = _request_window(request.get("window"))
-    task_root = _existing_directory(request.get("task_temp_root"), "task_temp_root")
+    task_root = _task_directory(request.get("task_temp_root"), "task_temp_root")
     state_path = task_root / "state.json"
     evidence_path = _new_file(request.get("evidence_output"), "evidence output")
     findings_dir = task_root / "findings"
@@ -4784,7 +4810,7 @@ def _project_matches(
 def _batch_request_paths(
     request: Mapping[str, Any],
 ) -> tuple[pathlib.Path, dict[str, pathlib.Path]]:
-    task_root = _existing_directory(request.get("task_temp_root"), "task_temp_root")
+    task_root = _task_directory(request.get("task_temp_root"), "task_temp_root")
     manifest_value = request.get("manifest_output")
     if not isinstance(manifest_value, str) or not manifest_value:
         raise CreditAnalysisError("manifest_output must be nonempty text")
