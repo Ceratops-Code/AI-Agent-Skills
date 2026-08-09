@@ -305,17 +305,27 @@ def prepare_scope(
     repo_root: pathlib.Path,
     *,
     target_branch: str,
+    target_commit: str | None = None,
 ) -> dict[str, object]:
-    """Resolve and check the target branch's optional canonical scope."""
+    """Resolve and check the current or explicitly resumed target scope."""
 
     _validate_branch(repo_root, target_branch)
     path = _scope_path(repo_root, target_branch)
     if not path.exists():
         return _ready_without_scope()
-    target_commit = require_output(
-        _git(repo_root, "rev-parse", f"refs/heads/{target_branch}"),
-        cwd=repo_root,
-    ).splitlines()[0]
+    if target_commit is None:
+        target_commit = require_output(
+            _git(repo_root, "rev-parse", f"refs/heads/{target_branch}"),
+            cwd=repo_root,
+        ).splitlines()[0]
+    else:
+        target_commit = target_commit.lower()
+        if ship.FULL_SHA_RE.fullmatch(target_commit) is None:
+            raise PendingWorkError("Target commit must be a full Git SHA.")
+        require_success(
+            _git(repo_root, "cat-file", "-e", f"{target_commit}^{{commit}}"),
+            cwd=repo_root,
+        )
     return check_scope(
         repo_root,
         path,
@@ -439,6 +449,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     prepare = subparsers.add_parser("prepare")
     prepare.add_argument("--target-branch", required=True)
+    prepare.add_argument("--target-commit")
 
     record = subparsers.add_parser("record")
     record.add_argument("--target-branch", required=True)
@@ -475,6 +486,9 @@ def main(argv: list[str] | None = None) -> int:
             result = prepare_scope(
                 repo_root,
                 target_branch=args.target_branch,
+                target_commit=(
+                    args.target_commit.lower() if args.target_commit else None
+                ),
             )
         elif args.command == "record":
             result = record_scope(

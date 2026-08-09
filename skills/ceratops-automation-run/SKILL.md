@@ -1,6 +1,6 @@
 ---
 name: ceratops-automation-run
-description: Run recurring Codex automations with Ceratops defaults. Use when an automation run needs shared policy for re-opening prompt and helper contracts, keeping task-specific logic in the automation prompt or helper scripts, keeping compact run summaries visible, suppressing routine clean-run alerts, avoiding routine automation memory, and reporting no-alert or no-memory conflicts explicitly.
+description: Run recurring Codex automations with Ceratops defaults. Use when an automation run needs shared policy for re-opening prompt and helper contracts, keeping task-specific logic in the automation prompt or helper scripts, keeping compact run summaries visible, avoiding routine automation memory, and reporting no-memory conflicts explicitly.
 ---
 
 # Ceratops Automation Run
@@ -53,8 +53,8 @@ repeated in every automation prompt.
 - Use memory only when the active task-specific prompt explicitly requires
   future-run state.
 - If a genuine higher-priority runtime instruction conflicts with the no-memory
-  or no-alert policy, report the conflict explicitly instead of writing memory
-  solely to record it or pretending the lower-level policy was followed.
+  policy, report the conflict explicitly instead of writing memory solely to
+  record it or pretending the lower-level policy was followed.
 - Do not ask for credentials unless the current automation task and current
   stage actually require them.
 
@@ -86,11 +86,10 @@ repeated in every automation prompt.
 
 #### 3. Apply routine automation policy
 
-- Apply the compact-summary/no-inbox policy from Skill-Specific Rules before
-  closing.
+- Apply the compact-summary policy from Skill-Specific Rules before closing.
 - Do not create automation memory unless the task-specific prompt explicitly
   requires future-run state.
-- Report no-alert or no-memory conflicts explicitly when a higher-priority
+- Report no-memory conflicts explicitly when a higher-priority
   runtime instruction overrides the default automation policy.
 
 #### 4. Verify and close
