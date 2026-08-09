@@ -8329,7 +8329,14 @@ def test_compatibility_materializer_supports_repositories_without_skills(
     authoritative_repo = empty_repository("authoritative-compatible")
     (authoritative_repo / "scripts").mkdir()
     (authoritative_repo / "scripts" / "validate_repository.py").write_text(
-        '"""Validator requiring --temp-root."""\n',
+        "import argparse\n"
+        "import pathlib\n"
+        "parser = argparse.ArgumentParser()\n"
+        "parser.add_argument('--temp-root')\n"
+        "parser.add_argument('--evidence-file', type=pathlib.Path, required=True)\n"
+        "args = parser.parse_args()\n"
+        "args.evidence_file.write_text('inner diagnostic\\n', encoding='utf-8')\n"
+        "raise SystemExit(1)\n",
         encoding="utf-8",
         newline="\n",
     )
@@ -8354,6 +8361,23 @@ def test_compatibility_materializer_supports_repositories_without_skills(
         authoritative_repo / "scripts" / "validate-repository.py"
     ).read_text(encoding="utf-8")
     assert "{temp}/hasbaratops" in authoritative_validator
+    authoritative_evidence = tmp_path / "authoritative-validation.log"
+    authoritative_validation = subprocess.run(
+        [
+            sys.executable,
+            str(authoritative_repo / "scripts" / "validate-repository.py"),
+            "--evidence-file",
+            str(authoritative_evidence),
+        ],
+        cwd=authoritative_repo,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert authoritative_validation.returncode == 1
+    retained_evidence = authoritative_evidence.read_text(encoding="utf-8")
+    assert "child_evidence: hasbaratops-validation.log" in retained_evidence
+    assert "inner diagnostic" in retained_evidence
 
 
 def test_compatibility_materializer_preserves_existing_validator_and_ci(

@@ -59,6 +59,34 @@ def cleanup_evidence(
             raise
 
 
+def child_evidence(argv: list[str], temporary_root: pathlib.Path) -> list[str]:
+    """Retain declared child-validator evidence before temporary cleanup."""
+
+    paths: list[pathlib.Path] = []
+    for index, value in enumerate(argv):
+        if value == "--evidence-file" and index + 1 < len(argv):
+            paths.append(pathlib.Path(argv[index + 1]))
+        elif value.startswith("--evidence-file="):
+            paths.append(pathlib.Path(value.partition("=")[2]))
+    retained: list[str] = []
+    temporary_root = temporary_root.resolve()
+    for path in paths:
+        resolved = path.resolve()
+        try:
+            resolved.relative_to(temporary_root)
+        except ValueError:
+            continue
+        if resolved.is_symlink() or not resolved.is_file():
+            continue
+        retained.extend(
+            (
+                f"child_evidence: {resolved.relative_to(temporary_root).as_posix()}",
+                resolved.read_text(encoding="utf-8", errors="replace"),
+            )
+        )
+    return retained
+
+
 def main() -> int:
     """Run catalog-selected checks in order and emit one bounded result."""
 
@@ -97,6 +125,7 @@ def main() -> int:
                 continue
             evidence_file.parent.mkdir(parents=True, exist_ok=True)
             partial = evidence_file.with_name(f".{evidence_file.name}.tmp")
+            retained_child_evidence = child_evidence(argv, temporary_root)
             partial.write_text(
                 "\n".join(
                     (
@@ -108,6 +137,7 @@ def main() -> int:
                         result.stdout or "",
                         "stderr:",
                         result.stderr or "",
+                        *retained_child_evidence,
                     )
                 )
                 + "\n",
