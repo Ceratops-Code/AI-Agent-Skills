@@ -109,8 +109,9 @@ def credit_analysis_session(
     thread_id: str | None = None,
     cwd: pathlib.Path | None = None,
     repository_url: str | None = None,
+    extra_completed_turns: int = 0,
 ) -> None:
-    """Create three completed synthetic runs with six model calls."""
+    """Create completed synthetic runs and one active tail."""
 
     rows: list[dict[str, Any]] = [
         {
@@ -362,19 +363,45 @@ def credit_analysis_session(
         "Give the final result for this completed run.",
     )
     add_call("2026-08-01T00:02:01Z", "turn-3", final=True)
+    for index in range(extra_completed_turns):
+        minute = 3 + index
+        turn_id = f"turn-extra-{index + 1}"
+        prefix = f"2026-08-01T00:{minute:02d}"
+        rows.append(
+            {
+                "timestamp": f"{prefix}:00Z",
+                "type": "turn_context",
+                "payload": {"turn_id": turn_id},
+            }
+        )
+        add_user_message(
+            f"{prefix}:00.500Z",
+            f"Review synthetic overflow candidate {index + 1}.",
+        )
+        add_call(
+            f"{prefix}:01Z",
+            turn_id,
+            name="inspect_candidate",
+            call_id=f"overflow-{index + 1}",
+            arguments={"candidate": index + 1},
+            output={"reviewed": True, "candidate": index + 1},
+        )
+        add_call(f"{prefix}:02Z", turn_id, final=True)
+    active_minute = 3 + extra_completed_turns
+    active_prefix = f"2026-08-01T00:{active_minute:02d}"
     rows.append(
         {
-            "timestamp": "2026-08-01T00:03:00Z",
+            "timestamp": f"{active_prefix}:00Z",
             "type": "turn_context",
             "payload": {"turn_id": "turn-3"},
         }
     )
     add_user_message(
-        "2026-08-01T00:03:00.500Z",
+        f"{active_prefix}:00.500Z",
         "ACTIVE_TAIL_MUST_NOT_BE_COLLECTED",
     )
     add_call(
-        "2026-08-01T00:03:01Z",
+        f"{active_prefix}:01Z",
         "turn-3",
         name="active_tail_tool",
         call_id="active-tail-1",
@@ -391,11 +418,12 @@ def credit_analysis_request(
     tmp_path: pathlib.Path,
     *,
     action: str = "full-analysis",
+    extra_completed_turns: int = 0,
 ) -> tuple[pathlib.Path, pathlib.Path, pathlib.Path]:
     """Create one request with caller-selected controller and evidence paths."""
 
     session = tmp_path / "session.jsonl"
-    credit_analysis_session(session)
+    credit_analysis_session(session, extra_completed_turns=extra_completed_turns)
     task_root = tmp_path / f"analysis-{action}"
     task_root.mkdir()
     evidence = tmp_path / f"evidence-{action}.json"
@@ -609,6 +637,7 @@ def surface_decision_record(
     packet: Mapping[str, Any],
     *,
     finding_id: str | None = None,
+    risks: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Build one compact model judgment for the end-to-end controller."""
 
@@ -657,7 +686,7 @@ def surface_decision_record(
     return {
         "schema": "ceratops-credit-analysis-surface-decision.v1",
         "findings": findings,
-        "risks": [],
+        "risks": risks or [],
         "exclusions": [],
         "dismissal_reason": "No additional candidate confirmed avoidable work.",
     }
@@ -1041,6 +1070,16 @@ def test_credit_analysis_workflow_full_analysis_persists_every_finding(
                     {
                         "id": "tool-poll-risk",
                         "description": "wait may have been avoidable",
+                        "observed_sequence": (
+                            "The workflow waited after the external result was available."
+                        ),
+                        "competing_explanations": [
+                            "The wait was unnecessary because completion was already visible.",
+                            "The wait was required because completion had not propagated yet.",
+                        ],
+                        "missing_fact": (
+                            "The retained timestamps do not show when completion became visible"
+                        ),
                         "affected_call_ids": ["turn-2:1"],
                         "evidence_refs": ["evidence://calls/turn-2:1"],
                         "verification_needed": ["verify external completion timing"],
@@ -1389,13 +1428,36 @@ def test_credit_analysis_workflow_full_analysis_persists_every_finding(
         "secondary_call_mappings"
     ]
     assert final_result["priced_cost"] is None
+    final_packet = json.loads(
+        run_credit_analysis_workflow(
+            "status", "--state", str(state_path), "--packet"
+        ).stdout
+    )
+    report = final_packet["report_markdown"]
+    assert (
+        "Observed: The workflow waited after the external result was available."
+        in report
+    )
+    assert (
+        "Unknown: The wait was unnecessary because completion was already visible.; "
+        "The wait was required because completion had not propagated yet."
+        in report
+    )
+    assert (
+        "Why not confirmed: The retained timestamps do not show when completion "
+        "became visible; choosing between the competing explanations would be "
+        "speculation."
+        in report
+    )
     assert first_result is not None and first_result_path is not None
 
 
 def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
     tmp_path: pathlib.Path,
 ) -> None:
-    request, session, _ = credit_analysis_request(tmp_path)
+    request, session, _ = credit_analysis_request(
+        tmp_path, extra_completed_turns=28
+    )
     started = run_credit_analysis_workflow("start", "--request", str(request))
     assert started.returncode == 0, started.stderr
     packet = json.loads(started.stdout)
@@ -1415,15 +1477,21 @@ def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
         "bookkeeping_model_calls": 0,
     }
     assert len(started.stdout.encode("utf-8")) < 140_000
-    assert packet["evidence"]["selected_call_count"] <= 30
-    assert packet["evidence"]["included_user_message_count"] <= 16
-    assert packet["evidence"]["included_model_review_record_count"] <= 30
-    assert packet["evidence"]["selected_user_message_count"] >= packet["evidence"][
-        "included_user_message_count"
+    assert packet["evidence"]["candidate_call_count"] > 30
+    assert packet["evidence"]["selected_call_count"] == packet["evidence"][
+        "candidate_call_count"
     ]
-    assert packet["evidence"]["model_review_record_count"] >= packet["evidence"][
-        "included_model_review_record_count"
+    assert len(packet["evidence"]["selected_calls"]) == packet["evidence"][
+        "candidate_call_count"
     ]
+    assert packet["evidence"]["selected_user_message_count"] > 16
+    assert packet["evidence"]["included_user_message_count"] == packet["evidence"][
+        "selected_user_message_count"
+    ]
+    assert packet["evidence"]["included_model_review_record_count"] == packet[
+        "evidence"
+    ]["model_review_record_count"]
+    assert packet["evidence"]["model_review_record_count"] > 30
     assert packet["evidence"]["run_outcome_count"] == len(
         packet["evidence"]["run_outcomes"]
     )
@@ -1435,7 +1503,6 @@ def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
     }
     assert outcome_by_turn["turn-1"]["index"] == 3
     assert outcome_by_turn["turn-2"]["index"] == 2
-    assert outcome_by_turn["turn-3"]["index"] == 1
     state_path = pathlib.Path(packet["submit_argv"][4])
     evidence_path = pathlib.Path(packet["retained_evidence_path"])
     evidence_text = evidence_path.read_text(encoding="utf-8")
@@ -1461,10 +1528,41 @@ def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
         assert packet["evidence"]["selected_calls"]
         finding_id = f"e2e-{surface_id}"
         finding_ids.append(finding_id)
+        risks: list[dict[str, Any]] = []
+        if surface_id == "tool-flow":
+            risks.append(
+                {
+                    "id": "e2e-tool-risk",
+                    "description": "synthetic wait timing is ambiguous",
+                    "observed_sequence": (
+                        "The synthetic tool call was followed by a wait."
+                    ),
+                    "competing_explanations": [
+                        "The wait repeated an already complete check.",
+                        "The wait observed a still-running external operation.",
+                    ],
+                    "missing_fact": (
+                        "The exact external completion timestamp was not retained"
+                    ),
+                    "affected_selectors": [
+                        {
+                            "call_ids": [
+                                packet["evidence"]["selected_calls"][-1]["call_id"]
+                            ]
+                        }
+                    ],
+                    "additional_evidence_selectors": [],
+                    "verification_needed": [
+                        "retain the external completion timestamp"
+                    ],
+                }
+            )
         decision_path = pathlib.Path(packet["decision_path"])
         write_json_file(
             decision_path,
-            surface_decision_record(packet, finding_id=finding_id),
+            surface_decision_record(
+                packet, finding_id=finding_id, risks=risks
+            ),
         )
         submitted = run_credit_analysis_workflow(
             "submit",
@@ -1487,7 +1585,7 @@ def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
         {
             "schema": "ceratops-credit-analysis-synthesis-decision.v1",
             "finding_order": list(reversed(finding_ids)),
-            "risk_order": [],
+            "risk_order": ["e2e-tool-risk"],
         },
     )
     submitted = run_credit_analysis_workflow(
@@ -1512,6 +1610,17 @@ def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
     )
     assert all(call_id not in report for call_id in evidence["call_inventory"])
     assert "Unassessed:" in final_packet["report_markdown"]
+    assert "Observed: The synthetic tool call was followed by a wait." in report
+    assert (
+        "Unknown: The wait repeated an already complete check.; The wait observed "
+        "a still-running external operation."
+        in report
+    )
+    assert (
+        "Why not confirmed: The exact external completion timestamp was not "
+        "retained; choosing between the competing explanations would be speculation."
+        in report
+    )
 
     state = json.loads(state_path.read_text(encoding="utf-8"))
     assert state["finalized"] is True
@@ -1578,6 +1687,20 @@ def test_credit_analysis_workflow_rejects_invalid_and_conflicting_passes(
         {
             **valid,
             "dismissed_candidates": valid["dismissed_candidates"][:-1],
+        },
+        {
+            **valid,
+            "plausible_risks": [
+                {
+                    "id": "incomplete-risk",
+                    "description": "risk detail is incomplete",
+                    "affected_call_ids": [context["candidate_call_ids"][0]],
+                    "evidence_refs": [
+                        f"evidence://calls/{context['candidate_call_ids'][0]}"
+                    ],
+                    "verification_needed": ["inspect the missing evidence"],
+                }
+            ],
         },
     ]
     for invalid in invalid_values:

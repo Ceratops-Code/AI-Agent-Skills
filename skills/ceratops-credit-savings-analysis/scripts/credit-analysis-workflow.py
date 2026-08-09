@@ -230,6 +230,9 @@ COST_FIELDS = {"estimated_model_calls", "description"}
 RISK_FIELDS = {
     "id",
     "description",
+    "observed_sequence",
+    "competing_explanations",
+    "missing_fact",
     "affected_call_ids",
     "evidence_refs",
     "verification_needed",
@@ -307,6 +310,9 @@ DECISION_RECURRENCE_FIELDS = {
 DECISION_RISK_FIELDS = {
     "id",
     "description",
+    "observed_sequence",
+    "competing_explanations",
+    "missing_fact",
     "affected_selectors",
     "additional_evidence_selectors",
     "verification_needed",
@@ -1258,35 +1264,6 @@ def _call_signal_score(call: Mapping[str, Any], focused_runs: set[str]) -> int:
     return score
 
 
-def _selected_packet_calls(
-    candidates: Sequence[str],
-    call_by_id: Mapping[str, Mapping[str, Any]],
-    focused_runs: set[str],
-    *,
-    limit: int = 30,
-) -> list[str]:
-    """Select high-signal and boundary calls without claiming full review."""
-
-    positions = {call_id: index for index, call_id in enumerate(candidates)}
-    by_turn: defaultdict[str, list[str]] = defaultdict(list)
-    for call_id in candidates:
-        by_turn[str(call_by_id[call_id]["turn_id"])].append(call_id)
-    boundary: set[str] = set()
-    for values in by_turn.values():
-        boundary.update(values[:2])
-        boundary.update(values[-2:])
-    ranked = sorted(
-        candidates,
-        key=lambda call_id: (
-            -int(call_id in boundary),
-            -_call_signal_score(call_by_id[call_id], focused_runs),
-            positions[call_id],
-        ),
-    )
-    chosen = set(ranked[:limit])
-    return [call_id for call_id in candidates if call_id in chosen]
-
-
 def _packet_call(call: Mapping[str, Any], focused_runs: set[str]) -> dict[str, Any]:
     semantics: list[dict[str, Any]] = []
     for raw in call.get("semantic_actions", []):
@@ -1551,7 +1528,7 @@ def _surface_pass_packet(
     candidates = list(pending["candidate_call_ids"])
     call_by_id = {call["call_id"]: call for call in _all_calls(evidence)}
     focused_runs = set(evidence["focused_semantic_context"]["run_ids"])
-    selected_ids = _selected_packet_calls(candidates, call_by_id, focused_runs)
+    selected_ids = candidates
     selected = set(selected_ids)
     preparation, review_records, exclusions = _model_review_records_for_calls(
         evidence, selected_ids, focused_runs
@@ -1559,10 +1536,10 @@ def _surface_pass_packet(
     selected_messages = _user_messages_for_calls(evidence, selected_ids)
     run_outcomes = _run_outcome_calls(evidence, focused_runs)
     bounded_messages = [
-        _bounded_value(message, text_limit=600) for message in selected_messages[:16]
+        _bounded_value(message, text_limit=600) for message in selected_messages
     ]
     bounded_records = [
-        _bounded_value(record, text_limit=450) for record in review_records[:30]
+        _bounded_value(record, text_limit=450) for record in review_records
     ]
     return {
         **common,
@@ -2259,6 +2236,22 @@ def _validate_surface_result(
         description = raw.get("description")
         if not isinstance(description, str) or not description.strip():
             raise CreditAnalysisError(f"risk {risk_id} description is required")
+        observed_sequence = raw.get("observed_sequence")
+        if not isinstance(observed_sequence, str) or not observed_sequence.strip():
+            raise CreditAnalysisError(
+                f"risk {risk_id} observed sequence is required"
+            )
+        competing_explanations = _strings(
+            raw.get("competing_explanations"),
+            f"risk {risk_id} competing explanations",
+        )
+        if len(competing_explanations) < 2:
+            raise CreditAnalysisError(
+                f"risk {risk_id} requires at least two competing explanations"
+            )
+        missing_fact = raw.get("missing_fact")
+        if not isinstance(missing_fact, str) or not missing_fact.strip():
+            raise CreditAnalysisError(f"risk {risk_id} missing fact is required")
         affected = _strings(raw.get("affected_call_ids"), f"risk {risk_id} calls")
         unknown = sorted(set(affected) - known_calls)
         if unknown:
@@ -2276,6 +2269,9 @@ def _validate_surface_result(
                 **raw,
                 "id": risk_id,
                 "description": description.strip(),
+                "observed_sequence": observed_sequence.strip(),
+                "competing_explanations": competing_explanations,
+                "missing_fact": missing_fact.strip(),
                 "affected_call_ids": affected,
                 "evidence_refs": refs,
                 "verification_needed": verification,
@@ -2668,6 +2664,9 @@ def _decision_risk(
     return {
         "id": raw.get("id"),
         "description": raw.get("description"),
+        "observed_sequence": raw.get("observed_sequence"),
+        "competing_explanations": raw.get("competing_explanations"),
+        "missing_fact": raw.get("missing_fact"),
         "affected_call_ids": affected,
         "evidence_refs": [_evidence_ref(call_id) for call_id in refs],
         "verification_needed": raw.get("verification_needed"),
@@ -3877,14 +3876,13 @@ def _render_final_report(final: Mapping[str, Any]) -> str:
             [
                 f"### {risk['description']}",
                 "",
-                f"Observed: {risk['description']}",
+                f"Observed: {risk['observed_sequence']}",
                 "",
-                "Unknown: whether the observed sequence was avoidable or required.",
+                "Unknown: " + "; ".join(risk["competing_explanations"]),
                 "",
                 (
-                    "Why not confirmed: the retained evidence did not contain enough "
-                    "causal detail to choose between those explanations without "
-                    "speculation."
+                    f"Why not confirmed: {risk['missing_fact']}; choosing between "
+                    "the competing explanations would be speculation."
                 ),
                 "",
                 "How to confirm: " + "; ".join(verification),

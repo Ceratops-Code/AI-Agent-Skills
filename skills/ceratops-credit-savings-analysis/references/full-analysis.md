@@ -31,8 +31,8 @@ confirmed finding and present every outstanding finding.
 
 1. In one preparation model call, run controller `start` once. It collects the
    session once and returns the first bounded pass packet containing the direct
-   action reference, selected semantic evidence, compact candidate groups, the
-   decision contract, and exact paths.
+   action reference, every candidate's bounded semantic evidence, compact
+   candidate groups, the decision contract, and exact paths.
 2. For each of the five public surfaces, use exactly one model call. Analyze only
    that packet, write the compact surface decision, and run `submit` inside the
    same orchestration tool call. Do not use model turns to assemble the full
