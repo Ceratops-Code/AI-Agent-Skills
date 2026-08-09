@@ -326,22 +326,6 @@ def prepare_scope(
             _git(repo_root, "cat-file", "-e", f"{target_commit}^{{commit}}"),
             cwd=repo_root,
         )
-        ancestor = run_command(
-            _git(
-                repo_root,
-                "merge-base",
-                "--is-ancestor",
-                target_commit,
-                f"refs/heads/{target_branch}",
-            ),
-            cwd=repo_root,
-        )
-        if ancestor.returncode == 1:
-            raise PendingWorkError(
-                "Explicit target commit is not contained in the target branch."
-            )
-        if ancestor.returncode:
-            raise PendingWorkError("Could not compare the explicit target commit.")
     return check_scope(
         repo_root,
         path,

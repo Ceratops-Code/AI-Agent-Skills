@@ -7323,14 +7323,15 @@ def test_pending_work_scope_is_selected_generic_and_finalized_late(
     )
 
     tree = run_git(repo, "rev-parse", f"{target_commit}^{{tree}}").stdout.strip()
+    base_commit = run_git(repo, "rev-parse", "main").stdout.strip()
     advanced = run_git(
         repo,
         "commit-tree",
         tree,
         "-p",
-        target_commit,
+        base_commit,
         "-m",
-        "advance reusable release",
+        "realign reusable release after squash",
     )
     assert advanced.returncode == 0, advanced.stderr
     advanced_commit = advanced.stdout.strip()
@@ -7354,6 +7355,16 @@ def test_pending_work_scope_is_selected_generic_and_finalized_late(
     )
     assert resumed.returncode == 2, resumed.stderr
     assert json.loads(resumed.stdout)["findings"] == checked_payload["findings"]
+    assert (
+        run_git(
+            repo,
+            "update-ref",
+            "refs/heads/release/local",
+            target_commit,
+            advanced_commit,
+        ).returncode
+        == 0
+    )
 
     assert run_git(selected_worktree, "reset", "--hard", target_commit).returncode == 0
     assert run_git(repo, "merge", "--ff-only", "release/local").returncode == 0
