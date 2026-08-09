@@ -1395,6 +1395,29 @@ def _candidate_groups(
     return groups
 
 
+def _run_outcome_calls(
+    evidence: Mapping[str, Any],
+    focused_runs: set[str],
+    *,
+    recent_limit: int = 5,
+) -> list[dict[str, Any]]:
+    """Expose each focused or recent run's last call to prevent stale findings."""
+
+    ordered_turns: list[str] = []
+    last_by_turn: dict[str, Mapping[str, Any]] = {}
+    for call in _all_calls(evidence):
+        turn_id = str(call["turn_id"])
+        if turn_id not in last_by_turn:
+            ordered_turns.append(turn_id)
+        last_by_turn[turn_id] = call
+    selected_turns = focused_runs | set(ordered_turns[-recent_limit:])
+    return [
+        _packet_call(last_by_turn[turn_id], focused_runs)
+        for turn_id in ordered_turns
+        if turn_id in selected_turns
+    ]
+
+
 def _surface_decision_contract(surface_id: str) -> dict[str, Any]:
     template: dict[str, Any] = {
         "schema": SURFACE_DECISION_SCHEMA,
@@ -1530,6 +1553,7 @@ def _surface_pass_packet(
         evidence, selected_ids, focused_runs
     )
     selected_messages = _user_messages_for_calls(evidence, selected_ids)
+    run_outcomes = _run_outcome_calls(evidence, focused_runs)
     bounded_messages = [
         _bounded_value(message, text_limit=600) for message in selected_messages[:16]
     ]
@@ -1562,6 +1586,12 @@ def _surface_pass_packet(
             "model_review_record_count": len(review_records),
             "included_model_review_record_count": len(bounded_records),
             "included_model_review_records": bounded_records,
+            "run_outcome_purpose": (
+                "Check later run outcomes before confirming a historical gap; "
+                "do not return a finding whose durable control is already implemented."
+            ),
+            "run_outcome_count": len(run_outcomes),
+            "run_outcomes": run_outcomes,
             "full_candidate_and_review_evidence_retained": True,
         },
     }

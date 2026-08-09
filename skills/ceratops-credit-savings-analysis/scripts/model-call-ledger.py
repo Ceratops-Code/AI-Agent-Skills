@@ -1138,7 +1138,8 @@ def build_ledger(
                 runs[active_turn] = {
                     "turn_id": active_turn,
                     "started_at": row.get("timestamp"),
-                    "completed": False,
+                    "completed_call_count": 0,
+                    "pending_final_answer": False,
                     "calls": [],
                 }
             continue
@@ -1155,7 +1156,21 @@ def build_ledger(
                 and payload.get("role") != "user"
                 and payload.get("phase") == "final_answer"
             ):
-                runs[active_turn]["completed"] = True
+                runs[active_turn]["pending_final_answer"] = True
+            continue
+
+        if row_type == "event_msg" and payload.get("type") == "task_complete":
+            raw_turn = payload.get("turn_id")
+            completed_turn = (
+                raw_turn
+                if isinstance(raw_turn, str) and raw_turn in runs
+                else active_turn
+            )
+            if completed_turn is not None and runs[completed_turn]["calls"]:
+                runs[completed_turn]["completed_call_count"] = len(
+                    runs[completed_turn]["calls"]
+                )
+                runs[completed_turn]["pending_final_answer"] = False
             continue
 
         if row_type != "event_msg" or payload.get("type") != "token_count":
@@ -1177,13 +1192,23 @@ def build_ledger(
                 "tokens": usage,
             }
         )
+        if runs[active_turn]["pending_final_answer"]:
+            runs[active_turn]["completed_call_count"] = len(calls)
+            runs[active_turn]["pending_final_answer"] = False
         pending_actions = []
 
-    completed = [
-        runs[turn_id]
-        for turn_id in ordered_turns
-        if runs[turn_id]["completed"]
-    ]
+    completed = []
+    for turn_id in ordered_turns:
+        run = runs[turn_id]
+        completed_call_count = run["completed_call_count"]
+        if completed_call_count:
+            completed.append(
+                {
+                    "turn_id": run["turn_id"],
+                    "started_at": run["started_at"],
+                    "calls": run["calls"][:completed_call_count],
+                }
+            )
     if last_runs is not None and completed_turn_ids is not None:
         raise LedgerError("completed turn IDs do not accept a last-runs window")
     if completed_turn_ids is not None:
@@ -1201,7 +1226,8 @@ def build_ledger(
         ordered_requested = [turn_id for turn_id in completed_ids if turn_id in requested]
         if ordered_requested != completed_turn_ids:
             raise LedgerError("completed turn IDs are not in session order")
-        selected = [runs[turn_id] for turn_id in completed_turn_ids]
+        completed_by_id = {run["turn_id"]: run for run in completed}
+        selected = [completed_by_id[turn_id] for turn_id in completed_turn_ids]
     elif last_runs is not None:
         selected = completed[-last_runs:]
     else:
@@ -1223,7 +1249,6 @@ def build_ledger(
                 totals[field] += value
         run["model_calls"] = len(run["calls"])
         run["tokens"] = run_totals
-        del run["completed"]
 
     repeated = [
         {"name": name, "fingerprint": fingerprint, "count": count}
@@ -1277,6 +1302,9 @@ def build_semantic_runs(
         raise LedgerError(f"requested run is outside the completed window: {unknown[0]}")
 
     requested_set = set(requested)
+    call_limits = {
+        turn_id: runs_by_id[turn_id]["model_calls"] for turn_id in requested
+    }
     calls_by_id: dict[str, list[dict[str, Any]]] = {
         turn_id: [] for turn_id in requested
     }
@@ -1297,7 +1325,12 @@ def build_semantic_runs(
         if row_type == "turn_context":
             saw_turn_context = True
             turn_id = payload.get("turn_id")
-            active_turn = turn_id if turn_id in requested_set else None
+            active_turn = (
+                turn_id
+                if turn_id in requested_set
+                and len(calls_by_id[turn_id]) < call_limits[turn_id]
+                else None
+            )
             pending_actions = []
             pending_user_messages = []
             active_user_message_ids = []
@@ -1362,6 +1395,9 @@ def build_semantic_runs(
         )
         pending_actions = []
         pending_user_messages = []
+        if len(calls) == call_limits[active_turn]:
+            active_turn = None
+            active_user_message_ids = []
 
     result: list[dict[str, Any]] = []
     for turn_id in requested:
@@ -1408,6 +1444,8 @@ def build_model_review_evidence(
         "compaction_history_items_not_copied": 0,
     }
     active_turn: str | None = None
+    ignored_turn_context = False
+    selected_window_closed = False
 
     def call_index(turn_id: str, *, completed: bool = False) -> int:
         limit = call_limits[turn_id]
@@ -1464,6 +1502,15 @@ def build_model_review_evidence(
         if not isinstance(payload, dict):
             continue
         timestamp = row.get("timestamp")
+
+        if selected_window_closed:
+            is_selected_completion = (
+                row_type == "event_msg"
+                and payload.get("type") == "task_complete"
+                and payload.get("turn_id") in selected_turns
+            )
+            if not is_selected_completion:
+                continue
 
         if row_type == "session_meta":
             metadata = {
@@ -1554,7 +1601,13 @@ def build_model_review_evidence(
 
         if row_type == "turn_context":
             raw_turn = payload.get("turn_id")
-            active_turn = raw_turn if raw_turn in selected_turns else None
+            active_turn = (
+                raw_turn
+                if raw_turn in selected_turns
+                and completed_calls[raw_turn] < call_limits[raw_turn]
+                else None
+            )
+            ignored_turn_context = active_turn is None
             if active_turn is not None:
                 add_record(
                     kind="control",
@@ -1568,6 +1621,9 @@ def build_model_review_evidence(
                     turn_id=active_turn,
                     model_call_index=call_index(active_turn),
                 )
+            continue
+
+        if ignored_turn_context:
             continue
 
         if row_type == "response_item":
@@ -1770,6 +1826,12 @@ def build_model_review_evidence(
                 )
             ):
                 completed_calls[active_turn] += 1
+                if all(
+                    completed_calls[turn_id] >= call_limits[turn_id]
+                    for turn_id in selected_turns
+                ):
+                    selected_window_closed = True
+                    active_turn = None
             continue
         if event_type not in MODEL_REVIEW_EVENT_TYPES:
             continue
@@ -2140,6 +2202,8 @@ def build_usage_evidence(
             active_turn = (
                 turn_id
                 if isinstance(turn_id, str) and turn_id in selected_turns
+                and run_states[turn_id]["next_model_call"]
+                < run_states[turn_id]["model_calls"]
                 else None
             )
             pending_tool_actions = []
@@ -2234,6 +2298,8 @@ def build_usage_evidence(
         for pending_action in pending_tool_actions:
             pending_action["model_call_index"] = state["next_model_call"]
         pending_tool_actions = []
+        if state["next_model_call"] == state["model_calls"]:
+            active_turn = None
 
     evidence_runs: list[dict[str, Any]] = []
     all_actions: list[dict[str, Any]] = []

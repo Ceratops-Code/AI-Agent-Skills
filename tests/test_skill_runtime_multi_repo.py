@@ -362,6 +362,24 @@ def credit_analysis_session(
         "Give the final result for this completed run.",
     )
     add_call("2026-08-01T00:02:01Z", "turn-3", final=True)
+    rows.append(
+        {
+            "timestamp": "2026-08-01T00:03:00Z",
+            "type": "turn_context",
+            "payload": {"turn_id": "turn-3"},
+        }
+    )
+    add_user_message(
+        "2026-08-01T00:03:00.500Z",
+        "ACTIVE_TAIL_MUST_NOT_BE_COLLECTED",
+    )
+    add_call(
+        "2026-08-01T00:03:01Z",
+        "turn-3",
+        name="active_tail_tool",
+        call_id="active-tail-1",
+        output={"status": "still-running"},
+    )
     path.write_text(
         "".join(json.dumps(row) + "\n" for row in rows),
         encoding="utf-8",
@@ -1391,7 +1409,7 @@ def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
         "delivery_model_calls": 1,
         "bookkeeping_model_calls": 0,
     }
-    assert len(started.stdout.encode("utf-8")) < 120_000
+    assert len(started.stdout.encode("utf-8")) < 140_000
     assert packet["evidence"]["selected_call_count"] <= 30
     assert packet["evidence"]["included_user_message_count"] <= 16
     assert packet["evidence"]["included_model_review_record_count"] <= 30
@@ -1401,9 +1419,24 @@ def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
     assert packet["evidence"]["model_review_record_count"] >= packet["evidence"][
         "included_model_review_record_count"
     ]
+    assert packet["evidence"]["run_outcome_count"] == len(
+        packet["evidence"]["run_outcomes"]
+    )
+    assert packet["evidence"]["run_outcome_purpose"].startswith(
+        "Check later run outcomes"
+    )
+    outcome_by_turn = {
+        item["turn_id"]: item for item in packet["evidence"]["run_outcomes"]
+    }
+    assert outcome_by_turn["turn-1"]["index"] == 3
+    assert outcome_by_turn["turn-2"]["index"] == 2
+    assert outcome_by_turn["turn-3"]["index"] == 1
     state_path = pathlib.Path(packet["submit_argv"][4])
     evidence_path = pathlib.Path(packet["retained_evidence_path"])
-    evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+    evidence_text = evidence_path.read_text(encoding="utf-8")
+    assert "ACTIVE_TAIL_MUST_NOT_BE_COLLECTED" not in evidence_text
+    assert "active_tail_tool" not in evidence_text
+    evidence = json.loads(evidence_text)
     assert evidence["collection"]["session_reads"] == 1
     session.rename(tmp_path / "session-collected-once-end-to-end.jsonl")
 
@@ -2994,6 +3027,37 @@ def test_model_call_ledger_usage_summary_is_ranked_and_evidence_based(
             },
         },
         {
+            "timestamp": "2026-07-25T00:01:10Z",
+            "type": "turn_context",
+            "payload": {"turn_id": "turn-2"},
+        },
+        {
+            "timestamp": "2026-07-25T00:01:11Z",
+            "type": "response_item",
+            "payload": {
+                "type": "function_call",
+                "name": "active_tail_tool",
+                "call_id": "active-tail-call",
+                "arguments": "{}",
+            },
+        },
+        {
+            "timestamp": "2026-07-25T00:01:12Z",
+            "type": "event_msg",
+            "payload": {
+                "type": "token_count",
+                "info": {
+                    "last_token_usage": {
+                        "input_tokens": 8000,
+                        "cached_input_tokens": 0,
+                        "output_tokens": 800,
+                        "reasoning_output_tokens": 80,
+                        "total_tokens": 8800,
+                    }
+                },
+            },
+        },
+        {
             "timestamp": "2026-07-25T00:02:00Z",
             "type": "turn_context",
             "payload": {"turn_id": "incomplete-turn"},
@@ -3117,6 +3181,7 @@ def test_model_call_ledger_usage_summary_is_ranked_and_evidence_based(
 
     detailed = json.loads(evidence_text)
     assert detailed["schema"] == "ceratops-model-call-usage-evidence.v1"
+    assert "active_tail_tool" not in evidence_text
     assert [run["turn_id"] for run in detailed["runs"]] == ["turn-1", "turn-2"]
     first = detailed["runs"][0]
     assert first["totals"]["estimated_credit_cost"] == 0.001035
