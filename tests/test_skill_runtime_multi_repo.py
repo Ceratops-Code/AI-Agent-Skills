@@ -684,18 +684,18 @@ def surface_decision_record(
                 "affected_selectors": cluster_selectors,
                 "additional_evidence_selectors": [],
                 "evidence_narrative": (
-                    (
-                        "Aggregate evidence records "
-                        f"{selected_cluster['volume']['input_tokens']} input, "
-                        f"{selected_cluster['volume']['cached_input_tokens']} "
-                        "cached-input, "
-                        f"{selected_cluster['volume']['output_tokens']} output "
-                        "tokens, "
-                        f"{selected_cluster['volume']['tool_argument_chars']} "
-                        "tool-argument "
-                        "characters, and "
-                        f"{selected_cluster['volume']['tool_result_chars']} tool-result "
-                        "characters beyond the bounded decision payload."
+                        (
+                            "Aggregate evidence records "
+                            f"{selected_cluster.get('input_tokens', 0)} input, "
+                            f"{selected_cluster.get('cached_input_tokens', 0)} "
+                            "cached-input, "
+                            f"{selected_cluster.get('output_tokens', 0)} output "
+                            "tokens, "
+                            f"{selected_cluster.get('tool_argument_chars', 0)} "
+                            "tool-argument "
+                            "characters, and "
+                            f"{selected_cluster.get('tool_result_chars', 0)} tool-result "
+                            "characters beyond the bounded decision payload."
                     )
                     if waste_kind == "context-volume"
                     else (
@@ -1714,9 +1714,28 @@ def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
                 cluster["representative_summary"]
                 for cluster in packet["evidence"]["candidate_clusters"]
             )
+            assert all(
+                isinstance(cluster["representative_call_id"], str)
+                for cluster in packet["evidence"]["candidate_clusters"]
+            )
         elif surface_id != "context-evidence":
             assert all(
                 "representative_summary" not in cluster
+                for cluster in packet["evidence"]["candidate_clusters"]
+            )
+        if surface_id == "context-evidence":
+            assert all(
+                "input_tokens" in cluster and "tool_result_chars" not in cluster
+                for cluster in packet["evidence"]["candidate_clusters"]
+            )
+        elif surface_id == "tool-flow":
+            assert all(
+                "tool_result_chars" in cluster and "input_tokens" not in cluster
+                for cluster in packet["evidence"]["candidate_clusters"]
+            )
+        else:
+            assert all(
+                "input_tokens" not in cluster and "tool_result_chars" not in cluster
                 for cluster in packet["evidence"]["candidate_clusters"]
             )
         assert all(

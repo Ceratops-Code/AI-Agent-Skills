@@ -1689,6 +1689,7 @@ def _candidate_cluster_partition(
                 _cluster_representative(representative, focused_runs)["summary"],
                 140,
             ),
+            "representative_call_id": representative["call_id"],
         }
         partitions.append(
             {"cluster_id": cluster_id, "call_ids": call_ids, "summary": summary}
@@ -1716,7 +1717,56 @@ def _candidate_clusters(
     if not include_representative:
         for summary in summaries:
             summary.pop("representative_summary", None)
+            summary.pop("representative_call_id", None)
     return summaries
+
+
+def _surface_cluster_summary(
+    surface_id: str, cluster: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Project each cluster to the evidence fields relevant to one surface."""
+
+    signature = cluster["observable_signature"]
+    volume = cluster["volume"]
+    summary: dict[str, Any] = {
+        "cluster_id": cluster["cluster_id"],
+        "call_count": cluster["call_count"],
+        "turn_count": cluster["turn_count"],
+        "semantic_actions": signature["semantic_actions"],
+        "signals": signature["signals"],
+    }
+    if surface_id in {"helper-contracts", "tool-flow"}:
+        summary.update(
+            {
+                "tools": signature["tools"],
+                "argument_size": signature["argument_size"],
+                "result_size": signature["result_size"],
+            }
+        )
+    if surface_id == "context-evidence":
+        summary.update(
+            {
+                "input_tokens": volume["input_tokens"],
+                "cached_input_tokens": volume["cached_input_tokens"],
+                "uncached_input_tokens": volume["uncached_input_tokens"],
+            }
+        )
+    if surface_id == "tool-flow":
+        summary.update(
+            {
+                "tool_argument_chars": volume["tool_argument_chars"],
+                "tool_result_chars": volume["tool_result_chars"],
+            }
+        )
+    if surface_id in {"helper-contracts", "rework-validation", "tool-flow"} and cluster[
+        "event_counts"
+    ]:
+        summary["event_counts"] = cluster["event_counts"]
+    representative = cluster.get("representative_summary")
+    if representative:
+        summary["representative_summary"] = representative
+        summary["representative_call_id"] = cluster["representative_call_id"]
+    return summary
 
 
 def _volume_hotspot_ids(
@@ -2046,11 +2096,18 @@ def _surface_pass_packet(
         include_representative=surface_id
         in {"helper-contracts", "context-evidence", "tool-flow"},
     )
+    input_volume_hotspots: list[str] = []
+    output_volume_hotspots: list[str] = []
     if surface_id == "context-evidence":
-        input_hotspots = set(_volume_hotspot_ids(clusters, kind="input"))
+        input_volume_hotspots = _volume_hotspot_ids(clusters, kind="input")
+        input_hotspots = set(input_volume_hotspots)
         for cluster in clusters:
             if cluster["cluster_id"] not in input_hotspots:
                 cluster.pop("representative_summary", None)
+                cluster.pop("representative_call_id", None)
+    if surface_id == "tool-flow":
+        output_volume_hotspots = _volume_hotspot_ids(clusters, kind="output")
+    clusters = [_surface_cluster_summary(surface_id, cluster) for cluster in clusters]
     detailed_calls = _detail_packet_calls(
         candidates,
         call_by_id,
@@ -2147,13 +2204,9 @@ def _surface_pass_packet(
         "complete_evidence_retained_on_disk": True,
     }
     if surface_id == "context-evidence":
-        packet_evidence["input_volume_hotspots"] = _volume_hotspot_ids(
-            clusters, kind="input"
-        )
+        packet_evidence["input_volume_hotspots"] = input_volume_hotspots
     if surface_id == "tool-flow":
-        packet_evidence["output_volume_hotspots"] = _volume_hotspot_ids(
-            clusters, kind="output"
-        )
+        packet_evidence["output_volume_hotspots"] = output_volume_hotspots
     return {
         **common,
         "internal": False,
