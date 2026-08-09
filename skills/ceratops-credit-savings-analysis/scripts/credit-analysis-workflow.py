@@ -50,7 +50,7 @@ PACKET_CALL_DETAIL_CHAR_BUDGET = 7_000
 PACKET_REVIEW_DETAIL_CHAR_BUDGET = 5_000
 PACKET_USER_MESSAGE_CHAR_BUDGET = 4_000
 PACKET_RUN_OUTCOME_CHAR_BUDGET = 2_000
-PASS_PACKET_CHAR_LIMIT = 90_000
+PASS_PACKET_CHAR_LIMIT = 60_000
 STATE_VERSION = 1
 BATCH_STATE_VERSION = 1
 STATE_FIELDS = {
@@ -1409,7 +1409,6 @@ def _size_band(value: Any) -> str:
 
 def _observable_call_signature(
     call: Mapping[str, Any],
-    focused_runs: set[str],
 ) -> dict[str, Any]:
     """Describe only mechanically observable traits; this is not a judgment."""
 
@@ -1466,17 +1465,12 @@ def _observable_call_signature(
             raw_result_chars, bool
         ):
             result_chars += max(raw_result_chars, 0)
-    tokens = call.get("tokens")
-    total_tokens = tokens.get("total_tokens") if isinstance(tokens, Mapping) else None
     return {
         "semantic_actions": semantic_actions,
         "tools": sorted(tool_names),
         "signals": sorted(signals),
         "argument_size": _size_band(argument_chars),
         "result_size": _size_band(result_chars),
-        "token_size": _size_band(total_tokens),
-        "has_user_context": bool(call.get("user_message_ids")),
-        "focused_run": call.get("turn_id") in focused_runs,
     }
 
 
@@ -1604,7 +1598,7 @@ def _candidate_cluster_partition(
     signatures: dict[str, dict[str, Any]] = {}
     for call_id in candidates:
         call = call_by_id[call_id]
-        signature = _observable_call_signature(call, focused_runs)
+        signature = _observable_call_signature(call)
         key = json.dumps(signature, sort_keys=True, separators=(",", ":"))
         grouped.setdefault(key, []).append(call)
         signatures[key] = signature

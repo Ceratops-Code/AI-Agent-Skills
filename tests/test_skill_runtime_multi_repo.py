@@ -1510,10 +1510,11 @@ def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
         ),
         start=1,
     ):
+        turn_id = "cluster-turn-a" if index <= 2 else "cluster-turn-b"
         calls.append(
             {
-                "call_id": f"cluster-turn:{index}",
-                "turn_id": "cluster-turn",
+                "call_id": f"{turn_id}:{index}",
+                "turn_id": turn_id,
                 "index": index,
                 "semantic_actions": [
                     {"kind": "analysis", "name": "inspect", "summary": summary}
@@ -1527,14 +1528,19 @@ def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
                     }
                     for name in tools
                 ],
-                "tokens": {"total_tokens": 100},
-                "user_message_ids": [],
+                "tokens": {"total_tokens": 200_000 if index == 1 else 100},
+                "user_message_ids": ["user-1"] if index == 1 else [],
             }
         )
     semantic_clusters = loaded["_candidate_clusters"](
         [call["call_id"] for call in calls],
-        {"runs": [{"turn_id": "cluster-turn", "calls": calls}]},
-        set(),
+        {
+            "runs": [
+                {"turn_id": "cluster-turn-a", "calls": calls[:2]},
+                {"turn_id": "cluster-turn-b", "calls": calls[2:]},
+            ]
+        },
+        {"cluster-turn-a"},
     )
     assert len(semantic_clusters) == 1
     assert semantic_clusters[0]["call_count"] == 4
@@ -1564,7 +1570,7 @@ def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
         "delivery_model_calls": 1,
         "bookkeeping_model_calls": 0,
     }
-    assert len(started.stdout.encode("utf-8")) < 90_000
+    assert len(started.stdout.encode("utf-8")) < 60_000
     assert packet["evidence"]["candidate_call_count"] > 30
     clusters = packet["evidence"]["candidate_clusters"]
     assert packet["evidence"]["candidate_cluster_count"] == len(clusters)
@@ -1645,7 +1651,7 @@ def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
     implemented_finding_id = "e2e-context-evidence"
     finding_ids: list[str] = []
     for semantic_number, surface_id in enumerate(expected_surfaces, start=1):
-        assert len(json.dumps(packet).encode("utf-8")) < 90_000
+        assert len(json.dumps(packet).encode("utf-8")) < 60_000
         assert packet["surface_id"] == surface_id
         assert packet["protocol_budget"]["semantic_call_number"] == semantic_number
         assert packet["action_reference"]["path"] == f"references/{surface_id}.md"
