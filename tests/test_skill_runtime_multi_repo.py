@@ -684,15 +684,15 @@ def surface_decision_record(
                 "evidence_narrative": (
                     (
                         "Aggregate evidence records "
-                        f"{selected_cluster['token_totals']['input_tokens']} input, "
-                        f"{selected_cluster['token_totals']['cached_input_tokens']} "
+                        f"{selected_cluster['volume']['input_tokens']} input, "
+                        f"{selected_cluster['volume']['cached_input_tokens']} "
                         "cached-input, "
-                        f"{selected_cluster['token_totals']['output_tokens']} output "
+                        f"{selected_cluster['volume']['output_tokens']} output "
                         "tokens, "
-                        f"{selected_cluster['tool_totals']['argument_chars']} "
+                        f"{selected_cluster['volume']['tool_argument_chars']} "
                         "tool-argument "
                         "characters, and "
-                        f"{selected_cluster['tool_totals']['result_chars']} tool-result "
+                        f"{selected_cluster['volume']['tool_result_chars']} tool-result "
                         "characters beyond the bounded decision payload."
                     )
                     if waste_kind == "context-volume"
@@ -1537,8 +1537,8 @@ def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
     )
     assert len(semantic_clusters) == 1
     assert semantic_clusters[0]["call_count"] == 4
-    assert semantic_clusters[0]["token_totals"]["total_tokens"] == 400
-    assert semantic_clusters[0]["tool_totals"]["result_chars"] == 160
+    assert semantic_clusters[0]["volume"]["input_tokens"] == 0
+    assert semantic_clusters[0]["volume"]["tool_result_chars"] == 160
 
     request, session, _ = credit_analysis_request(
         tmp_path,
@@ -1588,7 +1588,7 @@ def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
         assert "selectors" not in cluster
         mapped_calls = cluster_calls[cluster["cluster_id"]]
         assert cluster["call_count"] == len(mapped_calls)
-        assert cluster["representative"]["call_id"] in mapped_calls
+        assert cluster["representative_call_id"] in mapped_calls
         clustered_calls.extend(mapped_calls)
     assert len(clustered_calls) == len(set(clustered_calls))
     assert set(clustered_calls) == set(pending_candidates)

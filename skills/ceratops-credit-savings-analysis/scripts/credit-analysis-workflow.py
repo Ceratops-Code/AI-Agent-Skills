@@ -46,10 +46,10 @@ INDEX_SCHEMA = "ceratops-credit-analysis-index-record.v1"
 BATCH_STATE_SCHEMA = "ceratops-credit-analysis-batch-state.v1"
 BATCH_INDEX_SCHEMA = "ceratops-credit-analysis-batch-index-record.v1"
 EVIDENCE_NARRATIVE_LIMIT = 1200
-PACKET_CALL_DETAIL_CHAR_BUDGET = 12_000
-PACKET_REVIEW_DETAIL_CHAR_BUDGET = 8_000
-PACKET_USER_MESSAGE_CHAR_BUDGET = 8_000
-PACKET_RUN_OUTCOME_CHAR_BUDGET = 6_000
+PACKET_CALL_DETAIL_CHAR_BUDGET = 7_000
+PACKET_REVIEW_DETAIL_CHAR_BUDGET = 5_000
+PACKET_USER_MESSAGE_CHAR_BUDGET = 4_000
+PACKET_RUN_OUTCOME_CHAR_BUDGET = 2_000
 PASS_PACKET_CHAR_LIMIT = 90_000
 STATE_VERSION = 1
 BATCH_STATE_VERSION = 1
@@ -1484,31 +1484,20 @@ def _cluster_representative(
     call: Mapping[str, Any],
     focused_runs: set[str],
 ) -> dict[str, Any]:
-    semantic_actions = []
+    summaries: list[str] = []
     for action in call.get("semantic_actions", []):
         if not isinstance(action, Mapping):
             continue
-        semantic_actions.append(
-            {
-                key: _truncate_text(action[key], 120)
-                for key in ("kind", "name", "summary")
-                if key in action
-            }
+        label = ":".join(
+            str(action[key]) for key in ("kind", "name") if key in action
         )
+        summary = str(_truncate_text(action.get("summary", ""), 100))
+        summaries.append(f"{label} - {summary}" if summary else label)
     representative = {
         "call_id": call["call_id"],
-        "index": call["index"],
         "signal_score": _call_signal_score(call, focused_runs),
-        "semantic_actions": semantic_actions[:2],
-        "user_message_ids": call.get("user_message_ids", []),
+        "summary": " | ".join(summaries[:2]),
     }
-    tool_sequence = [
-        str(action.get("name", "unknown"))
-        for action in call.get("tool_results", [])
-        if isinstance(action, Mapping)
-    ][:8]
-    if tool_sequence:
-        representative["tool_sequence"] = tool_sequence
     return representative
 
 
@@ -1638,14 +1627,32 @@ def _candidate_cluster_partition(
         call_ids = [str(call["call_id"]) for call in members]
         covered.extend(call_ids)
         turn_ids = {str(call["turn_id"]) for call in members}
+        token_totals = _cluster_token_totals(members)
+        tool_totals = _cluster_tool_totals(members)
         summary = {
             "cluster_id": cluster_id,
             "call_count": len(members),
             "turn_count": len(turn_ids),
             "observable_signature": signatures[key],
-            "token_totals": _cluster_token_totals(members),
-            "tool_totals": _cluster_tool_totals(members),
-            "representative": _cluster_representative(representative, focused_runs),
+            "volume": {
+                "input_tokens": token_totals["input_tokens"],
+                "cached_input_tokens": token_totals["cached_input_tokens"],
+                "uncached_input_tokens": token_totals["uncached_input_tokens"],
+                "output_tokens": token_totals["output_tokens"],
+                "tool_argument_chars": tool_totals["argument_chars"],
+                "tool_result_chars": tool_totals["result_chars"],
+            },
+            "event_counts": {
+                name: tool_totals[name]
+                for name in (
+                    "failures",
+                    "retries",
+                    "repeats",
+                    "waits_or_polls",
+                )
+                if tool_totals[name]
+            },
+            "representative_call_id": representative["call_id"],
         }
         partitions.append(
             {"cluster_id": cluster_id, "call_ids": call_ids, "summary": summary}
@@ -1683,9 +1690,9 @@ def _volume_hotspots(
 
     def score(cluster: Mapping[str, Any]) -> int:
         if kind == "input":
-            return int(cluster["token_totals"]["uncached_input_tokens"])
-        return int(cluster["token_totals"]["output_tokens"]) + int(
-            cluster["tool_totals"]["result_chars"]
+            return int(cluster["volume"]["uncached_input_tokens"])
+        return int(cluster["volume"]["output_tokens"]) + int(
+            cluster["volume"]["tool_result_chars"]
         )
 
     ranked = sorted(
@@ -1697,8 +1704,8 @@ def _volume_hotspots(
             "cluster_id": cluster["cluster_id"],
             "call_count": cluster["call_count"],
             "turn_count": cluster["turn_count"],
-            "token_totals": cluster["token_totals"],
-            "tool_totals": cluster["tool_totals"],
+            "volume": cluster["volume"],
+            "event_counts": cluster["event_counts"],
         }
         for cluster in ranked[:limit]
         if score(cluster) > 0
@@ -1951,11 +1958,11 @@ def _surface_pass_packet(
         "run_outcomes": bounded_outcomes,
         "complete_evidence_retained_on_disk": True,
     }
-    if surface_id in {"context-evidence", "instruction-reasoning"}:
+    if surface_id == "context-evidence":
         packet_evidence["input_volume_hotspots"] = _volume_hotspots(
             clusters, kind="input"
         )
-    if surface_id in {"tool-flow", "instruction-reasoning"}:
+    if surface_id == "tool-flow":
         packet_evidence["output_volume_hotspots"] = _volume_hotspots(
             clusters, kind="output"
         )
