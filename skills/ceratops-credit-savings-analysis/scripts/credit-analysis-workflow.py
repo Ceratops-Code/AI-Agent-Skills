@@ -2093,8 +2093,7 @@ def _surface_pass_packet(
         candidates,
         evidence,
         focused_runs,
-        include_representative=surface_id
-        in {"helper-contracts", "context-evidence", "tool-flow"},
+        include_representative=True,
     )
     input_volume_hotspots: list[str] = []
     output_volume_hotspots: list[str] = []

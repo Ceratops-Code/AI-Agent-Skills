@@ -1709,18 +1709,13 @@ def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
         assert packet["action_reference"]["content"]
         assert packet["evidence"]["candidate_clusters"]
         assert packet["evidence"]["detailed_calls"]
-        if surface_id in {"helper-contracts", "tool-flow"}:
+        if surface_id != "context-evidence":
             assert all(
                 cluster["representative_summary"]
                 for cluster in packet["evidence"]["candidate_clusters"]
             )
             assert all(
                 isinstance(cluster["representative_call_id"], str)
-                for cluster in packet["evidence"]["candidate_clusters"]
-            )
-        elif surface_id != "context-evidence":
-            assert all(
-                "representative_summary" not in cluster
                 for cluster in packet["evidence"]["candidate_clusters"]
             )
         if surface_id == "context-evidence":
