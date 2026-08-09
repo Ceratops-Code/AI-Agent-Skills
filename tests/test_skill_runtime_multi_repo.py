@@ -4002,21 +4002,18 @@ def enable_test_markdown_lint(repo: pathlib.Path) -> pathlib.Path:
     return log
 
 
-def fast_change_patch(
-    repo: pathlib.Path, replacements: dict[str, tuple[str, str]]
-) -> str:
-    """Create a Git patch for exact existing-file replacements, then restore."""
+def fast_change_edits(
+    replacements: dict[str, tuple[str, str]],
+) -> list[dict[str, object]]:
+    """Create one version-2 structured edit list from exact replacements."""
 
-    for relative, (old, new) in replacements.items():
-        path = repo / relative
-        path.write_text(
-            path.read_text(encoding="utf-8").replace(old, new),
-            encoding="utf-8",
-            newline="\n",
-        )
-    patch = run_git(repo, "diff", "--", *replacements).stdout
-    assert run_git(repo, "restore", "--", *replacements).returncode == 0
-    return patch
+    return [
+        {
+            "path": path,
+            "replacements": [{"old": old, "new": new}],
+        }
+        for path, (old, new) in replacements.items()
+    ]
 
 
 def run_fast_change(
@@ -4044,7 +4041,7 @@ def run_fast_change(
 
 def fast_change_request(
     repo: pathlib.Path,
-    patch: str,
+    edits: list[dict[str, object]],
     *,
     selected: list[str],
     classification: str = "rules-only",
@@ -4053,10 +4050,10 @@ def fast_change_request(
     """Return one complete versioned fast-change request."""
 
     return {
-        "version": 1,
+        "version": 2,
         "repo_root": str(repo),
         "release_branch": "release/local",
-        "patch": patch,
+        "edits": edits,
         "selected_skills": selected,
         "removed_skills": [],
         "classification": classification,
@@ -4651,11 +4648,16 @@ def test_fast_change_commits_cohesive_rules_only_multi_skill_scope(
         "skills/alpha-tool/references/change.md": ("# Change", "# Updated"),
         "skills/beta-tool/SKILL.md": ("description: Test", "description: Updated"),
     }
+    edits = fast_change_edits(paths)
+    edits[0]["replacements"] = [
+        {"old": "description: Test", "new": "description: Intermediate"},
+        {"old": "description: Intermediate", "new": "description: Updated"},
+    ]
     result = run_fast_change(
         repo,
         fast_change_request(
             repo,
-            fast_change_patch(repo, paths),
+            edits,
             selected=["alpha-tool", "beta-tool"],
         ),
     )
@@ -4678,14 +4680,14 @@ def test_fast_change_commits_cohesive_rules_only_multi_skill_scope(
         repo,
         fast_change_request(
             repo,
-            fast_change_patch(
-                repo,
-                {"skills/alpha-tool/notes.txt": ("Notes", "Updated notes")},
+            fast_change_edits(
+                {"skills/alpha-tool/notes.txt": ("Notes\n", "Updated notes")},
             ),
             selected=["alpha-tool"],
         ),
     )
     assert plain_text.returncode == 0, plain_text.stderr
+    assert (repo / "skills" / "alpha-tool" / "notes.txt").read_bytes() == b"Updated notes"
     assert lint_log.read_text(encoding="utf-8").splitlines() == ["run"]
 
     head_before_failure = run_git(repo, "rev-parse", "HEAD").stdout.strip()
@@ -4694,8 +4696,7 @@ def test_fast_change_commits_cohesive_rules_only_multi_skill_scope(
         repo,
         fast_change_request(
             repo,
-            fast_change_patch(
-                repo,
+            fast_change_edits(
                 {
                     "skills/alpha-tool/SKILL.md": (
                         "description: Updated skill.",
@@ -4737,13 +4738,12 @@ def test_fast_change_helper_tests_and_compensates_failures(
     )
     assert run_git(repo, "add", "tests/test_helper.py").returncode == 0
     assert run_git(repo, "commit", "-m", "add helper test").returncode == 0
-    patch = fast_change_patch(
-        repo,
+    edits = fast_change_edits(
         {"skills/alpha-tool/scripts/tool.py": ("VALUE = 1", "VALUE = 2")},
     )
     request = fast_change_request(
         repo,
-        patch,
+        edits,
         selected=["alpha-tool"],
         classification="helper",
         tests=["tests/test_helper.py::test_value"],
@@ -4755,13 +4755,12 @@ def test_fast_change_helper_tests_and_compensates_failures(
         repo / "skills" / "alpha-tool" / "scripts" / "tool.py"
     ).read_text(encoding="utf-8")
 
-    failing_patch = fast_change_patch(
-        repo,
+    failing_edits = fast_change_edits(
         {"skills/alpha-tool/scripts/tool.py": ("VALUE = 2", "VALUE = 3")},
     )
     failing_request = fast_change_request(
         repo,
-        failing_patch,
+        failing_edits,
         selected=["alpha-tool"],
         classification="helper",
         tests=["tests/test_helper.py::test_value"],
@@ -4777,8 +4776,7 @@ def test_fast_change_helper_tests_and_compensates_failures(
         repo,
         fast_change_request(
             repo,
-            fast_change_patch(
-                repo,
+            fast_change_edits(
                 {"skills/alpha-tool/SKILL.md": ("description: Test", "description: Failed")},
             ),
             selected=["alpha-tool"],
@@ -4802,8 +4800,7 @@ def test_fast_change_commit_failure_restores_source_and_runtime(
     original_head = run_git(repo, "rev-parse", "HEAD").stdout.strip()
     request = fast_change_request(
         repo,
-        fast_change_patch(
-            repo,
+        fast_change_edits(
             {"skills/alpha-tool/SKILL.md": ("description: Test", "description: Updated")},
         ),
         selected=["alpha-tool"],
@@ -4827,13 +4824,12 @@ def test_fast_change_rejects_complete_ineligible_or_dirty_scope_before_mutation(
     tmp_path: pathlib.Path,
 ) -> None:
     repo = prepare_fast_change_repo(tmp_path)
-    patch = fast_change_patch(
-        repo,
+    edits = fast_change_edits(
         {"skills/alpha-tool/SKILL.md": ("description: Test", "description: Updated")},
     )
     noncanonical_request = fast_change_request(
         repo,
-        patch,
+        edits,
         selected=["alpha-tool"],
     )
     noncanonical_request["release_branch"] = "release/task"
@@ -4847,7 +4843,7 @@ def test_fast_change_rejects_complete_ineligible_or_dirty_scope_before_mutation(
     assert run_git(repo, "status", "--porcelain").stdout == ""
     assert not (repo.parent / "install.log").exists()
 
-    request = fast_change_request(repo, patch, selected=["beta-tool"])
+    request = fast_change_request(repo, edits, selected=["beta-tool"])
 
     mismatch = run_fast_change(repo, request)
 
@@ -4861,10 +4857,61 @@ def test_fast_change_rejects_complete_ineligible_or_dirty_scope_before_mutation(
     assert run_git(repo, "status", "--porcelain").stdout == ""
     assert not (repo.parent / "install.log").exists()
 
+    raw_request = fast_change_request(repo, edits, selected=["alpha-tool"])
+    raw_request["version"] = 1
+    raw_request["patch"] = "@@ malformed caller hunk"
+    del raw_request["edits"]
+    raw = run_fast_change(repo, raw_request)
+
+    assert raw.returncode == 2
+    assert json.loads(raw.stderr)["reason"] == (
+        "request fields are invalid: missing edits; unknown patch"
+    )
+    assert run_git(repo, "status", "--porcelain").stdout == ""
+
+    ambiguous = run_fast_change(
+        repo,
+        fast_change_request(
+            repo,
+            [
+                {
+                    "path": "skills/alpha-tool/SKILL.md",
+                    "replacements": [{"old": "---", "new": "***"}],
+                }
+            ],
+            selected=["alpha-tool"],
+        ),
+    )
+
+    assert ambiguous.returncode == 2
+    assert "must occur exactly once" in json.loads(ambiguous.stderr)["reason"]
+    assert "found 2" in json.loads(ambiguous.stderr)["reason"]
+    assert run_git(repo, "status", "--porcelain").stdout == ""
+
+    missing = run_fast_change(
+        repo,
+        fast_change_request(
+            repo,
+            [
+                {
+                    "path": "skills/alpha-tool/SKILL.md",
+                    "replacements": [
+                        {"old": "not present", "new": "replacement"}
+                    ],
+                }
+            ],
+            selected=["alpha-tool"],
+        ),
+    )
+
+    assert missing.returncode == 2
+    assert "found 0" in json.loads(missing.stderr)["reason"]
+    assert run_git(repo, "status", "--porcelain").stdout == ""
+
     (repo / "dirty.txt").write_text("dirty\n", encoding="utf-8", newline="\n")
     dirty = run_fast_change(
         repo,
-        fast_change_request(repo, patch, selected=["alpha-tool"]),
+        fast_change_request(repo, edits, selected=["alpha-tool"]),
     )
     assert dirty.returncode == 2
     assert "must be clean" in json.loads(dirty.stderr)["reason"]
