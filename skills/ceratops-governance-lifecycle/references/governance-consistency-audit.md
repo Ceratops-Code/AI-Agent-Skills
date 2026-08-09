@@ -17,6 +17,9 @@ domain audits owned by other lifecycle actions.
   `global-governance-consistency-audit/decision.v1` with the evidence path,
   stable state fingerprint, and decision-cluster counts; nonzero execution,
   unreadable JSON, or unreadable evidence blocks the audit.
+- (D) `--automation-root` is installed runtime; automation source defaults to
+  `<projects-root>/Codex-Automations` and only `--automation-source-repo`
+  overrides that source repository.
 - Reuse the evidence file for later audit decisions until an inventoried
   surface changes; query it instead of rerunning the helper, refresh only after
   such a change, and remove the task-temporary evidence before closing.
@@ -34,9 +37,9 @@ domain audits owned by other lifecycle actions.
   under the selected projects root that is outside the root `tmp` tree and not
   excluded by its containing Git worktree's ignore rules, evaluated through
   its complete applicable global-to-local instruction stack.
-- Installed `$CODEX_HOME/automations/*/automation.toml`, automation repository
-  control files relevant to generated or runtime artifacts, and helpers directly
-  referenced by an in-scope control file.
+- Installed `$CODEX_HOME/automations/*/automation.toml`, source automation
+  definitions and repository controls under `<projects-root>/Codex-Automations`,
+  and helpers directly referenced by an in-scope control file.
 - Cross-scope ownership, instruction interaction, prompt/helper alignment,
   automation metadata, worktree policy, verification scope, and recurring
   credit-cost controls.
@@ -52,8 +55,9 @@ domain audits owned by other lifecycle actions.
 
 ### Inputs To Capture
 
-- `$CODEX_HOME`, automation root, projects root, current automation caller, and
-  whether project-thread context or saved credit-usage evidence is available.
+- `$CODEX_HOME`, installed automation root, automation source repository,
+  projects root, current automation caller, and whether project-thread context
+  or saved credit-usage evidence is available.
 - Current official OpenAI model evidence only when model freshness or prompt
   guidance is materially in question.
 - Any task-specific exceptions that narrow findings or authorize a mutation.
@@ -75,9 +79,9 @@ when the projects root remains ambiguous.
   invokes; keep outcome, blocker, cleanup, alert, and memory paths aligned.
 - Prefer local evidence and helper contracts. Use official OpenAI sources only
   to identify the latest model or resolve a concrete prompt-guidance ambiguity.
-- Do not report `xhigh` alone. Reasoning-effort findings require evidence of
-  avoidable cost, excessive breadth, weak stopping rules, or a better comparison
-  path.
+- Enforce `medium` reasoning effort for `diskfinventorycheck` and `pc-cleanup`
+  and `max` for every other automation in both source and installed runtime;
+  report each mismatch with its scope, automation ID, expected, and actual value.
 - Review config- and prompt-level credit waste without inferring actual usage or
   billing when saved local evidence is absent.
 - Do not treat portable variables or relative paths alone as contradictions.
@@ -107,10 +111,10 @@ when the projects root remains ambiguous.
 ### 1. Build the cheap-pass inventory
 
 - Run the deterministic helper once and inventory files, schedules, model and
-  effort, workspaces, prompt names, helper references, memory/alert contracts,
-  Git/worktree state, repeated text, rule IDs, metadata, statuses, histories,
-  relation edges and cycles, stack interaction, and `(D)` rule-brevity
-  candidates.
+  source/runtime effort-policy drift, workspaces, prompt names, helper
+  references, memory/alert contracts, Git/worktree state, repeated text, rule
+  IDs, metadata, statuses, histories, relation edges and cycles, stack
+  interaction, and `(D)` rule-brevity candidates.
 - If history contains invalid fields, route the exact repair through
   `propose-rules-update` before any other audit work. Apply it when authorized;
   otherwise stop and report only the repair blocker.

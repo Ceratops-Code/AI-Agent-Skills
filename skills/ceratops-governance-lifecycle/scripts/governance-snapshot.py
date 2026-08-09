@@ -28,8 +28,10 @@ from rule_graph import (
     validate_rule_stack,
 )
 
-
 D_RULE_CHAR_LIMIT = 220
+MEDIUM_REASONING_AUTOMATION_IDS = frozenset(
+    {"diskfinventorycheck", "pc-cleanup"}
+)
 D_RULE_RE = re.compile(r"^\s*-\s+\(D\)\s+(.+)$")
 ALL_BULLETS_FORCE_RE = re.compile(
     r"All instruction bullets in this file are mandatory,\s*blocking,\s*and\s*closure-gating",
@@ -190,6 +192,50 @@ def automations_inventory(automation_root: pathlib.Path) -> dict[str, object]:
         "items": items,
         "duplicate_schedules": {key: value for key, value in schedules.items() if value > 1},
         "models": dict(models),
+    }
+
+
+def expected_automation_reasoning_effort(automation_id: str) -> str:
+    """Return the closed governance policy for one automation identifier."""
+    return "medium" if automation_id in MEDIUM_REASONING_AUTOMATION_IDS else "max"
+
+
+def automation_reasoning_effort_inventory(
+    runtime_inventory: dict[str, object],
+    source_inventory: dict[str, object],
+) -> dict[str, object]:
+    """Report source and installed-runtime drift from one effort policy."""
+    mismatches: list[dict[str, object]] = []
+    checked_count = 0
+    for scope, inventory in (
+        ("runtime", runtime_inventory),
+        ("source", source_inventory),
+    ):
+        for item in cast(list[dict[str, object]], inventory["items"]):
+            automation_id = str(item.get("id") or "")
+            actual = item.get("reasoning_effort")
+            expected = expected_automation_reasoning_effort(automation_id)
+            checked_count += 1
+            if actual == expected:
+                continue
+            mismatches.append(
+                {
+                    "scope": scope,
+                    "root": inventory["root"],
+                    "path": item["path"],
+                    "id": automation_id,
+                    "expected": expected,
+                    "actual": actual,
+                }
+            )
+    return {
+        "policy": {
+            "medium_ids": sorted(MEDIUM_REASONING_AUTOMATION_IDS),
+            "default": "max",
+        },
+        "checked_count": checked_count,
+        "mismatch_count": len(mismatches),
+        "mismatches": mismatches,
     }
 
 
@@ -371,10 +417,13 @@ def repo_git_state(repo: pathlib.Path, kind: str) -> dict[str, object]:
     }
 
 
-def git_inventory(automation_root: pathlib.Path, projects_root: pathlib.Path) -> dict[str, object]:
+def git_inventory(
+    automation_source_repo: pathlib.Path,
+    projects_root: pathlib.Path,
+) -> dict[str, object]:
     """Collect compact Git/worktree state for the automation repo and AGENTS projects."""
     candidates = [
-        ("automation", automation_root),
+        ("automation", automation_source_repo),
         *(("project", path.parent) for path in iter_project_agents(projects_root)),
     ]
     targets: list[tuple[str, pathlib.Path]] = []
@@ -655,18 +704,23 @@ def agents_inventory(projects_root: pathlib.Path, codex_home: pathlib.Path) -> d
     }
 
 
-def gitignore_inventory(automation_root: pathlib.Path) -> dict[str, object]:
-    path = automation_root / ".gitignore"
+def gitignore_inventory(automation_source_repo: pathlib.Path) -> dict[str, object]:
+    """Validate ignore coverage at the versioned automation source root."""
+    path = automation_source_repo / ".gitignore"
     text = read_text(path) if path.exists() else ""
     expected = (
         ".run-jitter-salt",
         "*.bck",
-        "*/memory.md",
-        "*/downloads/",
-        "*/__pycache__/",
-        "pc-cleanup/deleted-files/",
-        "global-dependabot-alert-review/dependabot-org-queue-snapshot.json",
-        "global-dependabot-alert-review/local-checkout-sync.json",
+        "automations/*/memory.md",
+        "automations/*/downloads/",
+        "automations/*/__pycache__/",
+        "automations/__pycache__/",
+        "automations/pc-cleanup/deleted-files/",
+        "automations/global-dependabot-alert-review/dependabot-repository-queue-snapshot.json",
+        "automations/global-dependabot-alert-review/dependabot-repository-preflight.json",
+        "automations/global-dependabot-alert-review/dependabot-repository-finalize.json",
+        "automations/global-dependabot-alert-review/local-checkout-sync.json",
+        "deploy/__pycache__/",
         "worktrees/",
     )
     return {
@@ -697,19 +751,23 @@ def collect_overlong_d_rules(text: str, source: str, source_kind: str) -> list[d
 
 
 def d_rule_brevity_inventory(
-    automation_root: pathlib.Path,
+    automation_source_root: pathlib.Path,
     projects_root: pathlib.Path,
     codex_home: pathlib.Path,
 ) -> dict[str, object]:
     candidates: list[dict[str, object]] = []
     sources_checked = 0
 
-    for path in sorted(automation_root.glob("*/automation.toml")):
+    for path in sorted(automation_source_root.glob("*/automation.toml")):
         data = tomllib.loads(read_text(path))
         prompt = str(data.get("prompt", ""))
         sources_checked += 1
         candidates.extend(
-            collect_overlong_d_rules(prompt, maybe_rel(path, automation_root), "automation_prompt")
+            collect_overlong_d_rules(
+                prompt,
+                maybe_rel(path, automation_source_root),
+                "automation_prompt",
+            )
         )
 
     for path in iter_agents(projects_root, codex_home):
@@ -731,19 +789,37 @@ def d_rule_brevity_inventory(
     }
 
 
+def resolve_automation_source_repo(args: argparse.Namespace) -> pathlib.Path:
+    """Resolve the explicit source repo or its portable projects-root default."""
+    explicit = getattr(args, "automation_source_repo", None)
+    if explicit is not None:
+        return pathlib.Path(explicit).resolve()
+    return (pathlib.Path(args.projects_root).resolve() / "Codex-Automations").resolve()
+
+
 def build_snapshot(args: argparse.Namespace) -> dict[str, object]:
+    runtime_root = args.automation_root.resolve()
+    source_repo = resolve_automation_source_repo(args)
+    source_root = source_repo / "automations"
+    runtime_inventory = automations_inventory(runtime_root)
+    source_inventory = automations_inventory(source_root)
     return {
         "schema": "global-governance-consistency-audit/snapshot.v3",
         "generated_at": utc_now(),
-        "automations": automations_inventory(args.automation_root.resolve()),
+        "automations": runtime_inventory,
+        "automation_source": source_inventory,
+        "automation_reasoning_effort": automation_reasoning_effort_inventory(
+            runtime_inventory,
+            source_inventory,
+        ),
         "agents": agents_inventory(args.projects_root.resolve(), args.codex_home.resolve()),
         "agents_rule_graph": agents_rule_graph_inventory(
             args.projects_root.resolve(), args.codex_home.resolve()
         ),
-        "git": git_inventory(args.automation_root.resolve(), args.projects_root.resolve()),
-        "automation_gitignore": gitignore_inventory(args.automation_root.resolve()),
+        "git": git_inventory(source_repo, args.projects_root.resolve()),
+        "automation_gitignore": gitignore_inventory(source_repo),
         "d_rule_brevity": d_rule_brevity_inventory(
-            args.automation_root.resolve(),
+            source_root,
             args.projects_root.resolve(),
             args.codex_home.resolve(),
         ),
@@ -810,6 +886,11 @@ def build_decision_payload(
 ) -> dict[str, object]:
     """Reduce full evidence to the counts needed to select later deep reads."""
     automations = cast(dict[str, Any], snapshot["automations"])
+    automation_source = cast(dict[str, Any], snapshot["automation_source"])
+    reasoning_effort = cast(
+        dict[str, Any],
+        snapshot["automation_reasoning_effort"],
+    )
     agents = cast(dict[str, Any], snapshot["agents"])
     rule_graph = cast(dict[str, Any], snapshot["agents_rule_graph"])
     git = cast(dict[str, Any], snapshot["git"])
@@ -825,6 +906,10 @@ def build_decision_payload(
         "state_sha256": snapshot_state_sha256(snapshot),
         "counts": {
             "automations": automations["count"],
+            "source_automations": automation_source["count"],
+            "automation_reasoning_effort_mismatches": reasoning_effort[
+                "mismatch_count"
+            ],
             "duplicate_schedules": len(automations["duplicate_schedules"]),
             "agents": agents["count"],
             "repeated_rule_lines": len(agents["repeated_rule_lines"]),
@@ -846,6 +931,11 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--codex-home", type=pathlib.Path, default=default_codex_home())
     parser.add_argument("--automation-root", type=pathlib.Path, default=default_codex_home() / "automations")
+    parser.add_argument(
+        "--automation-source-repo",
+        type=pathlib.Path,
+        help="Automation source repository; defaults to <projects-root>/Codex-Automations.",
+    )
     parser.add_argument("--projects-root", type=pathlib.Path, required=True)
     parser.add_argument(
         "--evidence-output",

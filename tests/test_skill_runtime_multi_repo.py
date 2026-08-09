@@ -4450,7 +4450,7 @@ def test_proposal_workflow_validates_context_and_owns_iteration_transition(
     invalid_request["sources"] = [
         {
             **history_source,
-            "expected_text": ["missing exact current text"],
+            "expected_text": [current_text, "missing exact current text"],
         }
     ]
     invalid_path = invalid_run / "request.json"
@@ -4472,7 +4472,7 @@ def test_proposal_workflow_validates_context_and_owns_iteration_transition(
         check=False,
     )
     assert rejected.returncode == 2
-    assert "expected_text must occur exactly once" in rejected.stderr
+    assert "source 1 expected_text[1] must occur exactly once; found 0" in rejected.stderr
     assert not invalid_state.exists()
     assert not invalid_evidence.exists()
     assert not invalid_iterations.exists()
