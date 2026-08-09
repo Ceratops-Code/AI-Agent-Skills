@@ -57,6 +57,7 @@ PROMOTE_REPOSITORY = REPOSITORY_LIFECYCLE_SOURCE / "scripts" / "promote-reposito
 MANAGE_PENDING_WORK = REPOSITORY_LIFECYCLE_SOURCE / "scripts" / "manage-pending-work.py"
 SHIP_REPOSITORY = REPOSITORY_LIFECYCLE_SOURCE / "scripts" / "ship-repository.py"
 PR_WORKFLOW_SCRIPTS = REPOSITORY_LIFECYCLE_SOURCE / "scripts"
+PR_WORKFLOW_ENTRYPOINT = PR_WORKFLOW_SCRIPTS / "github_pr_workflow" / "__main__.py"
 MODEL_CALL_LEDGER = ROOT / "skills" / "ceratops-credit-savings-analysis" / "scripts" / "model-call-ledger.py"
 CREDIT_ANALYSIS_WORKFLOW = (
     ROOT
@@ -5512,6 +5513,7 @@ def test_unresolved_required_conversation_blocks_before_shared_merge(
 
 
 def test_merge_cli_emits_compact_critical_json(
+    tmp_path: pathlib.Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -5534,6 +5536,26 @@ def test_merge_cli_emits_compact_critical_json(
     assert json.loads(output)["status"] == "critical"
     assert '": "' not in output
     assert '", "' not in output
+
+    direct = subprocess.run(
+        [sys.executable, str(PR_WORKFLOW_ENTRYPOINT), "--help"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert direct.returncode == 0, direct.stderr
+    assert "GitHub PR workflows" in direct.stdout
+
+    module = subprocess.run(
+        [sys.executable, "-m", "github_pr_workflow", "--help"],
+        cwd=PR_WORKFLOW_SCRIPTS,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert module.returncode == 0, module.stderr
+    assert "GitHub PR workflows" in module.stdout
 
 
 def test_integrated_ship_delegates_admin_semantics_to_merge_owner(
