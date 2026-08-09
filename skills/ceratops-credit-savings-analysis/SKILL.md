@@ -30,19 +30,22 @@ applies them.
   recency. Exact-name and recent-thread selection use the versioned source
   contract. An incremental closure begins strictly after the previous completed
   closure; active runs and the boundary run are excluded.
-- Run `python scripts/credit-analysis-workflow.py prepare --request REQUEST`
+- Run `python scripts/credit-analysis-workflow.py start --request REQUEST`
   once per selected thread, directly or through controller-owned batch
-  preparation. Each request must use the controller-owned schema, set
+  preparation. This collects the session once and returns the first complete
+  semantic-pass packet. Each request must use the controller-owned schema, set
   `mutation_authority` to `false`, name a caller-selected task temporary root
   and retained evidence output, and use the current contract versions.
 - Treat the controller's structured contract, state, evidence fingerprint,
   pending surface, pass ID, context path, and result path as authoritative.
   Never skip, repeat, reorder, pre-analyze, or append a pass outside the
   controller.
-- For each pending pass, load only its direct action reference and controller
-  context, write one structured result to the required path, and invoke the
-  commanded `advance` or `finalize` operation. Use `status` to resume without
-  recollecting evidence.
+- For each pending packet, make the semantic judgment once, write only its
+  compact decision to the exact path, and invoke the packet's `submit` command
+  in the same orchestration tool call. The controller constructs and validates
+  the full result, persists it, advances or finalizes, cleans transient files,
+  and returns the next packet. Do not spend separate model turns on those
+  bookkeeping steps. Resume with `status --packet` without recollecting.
 - Keep session evidence, accepted surface results, the append-only index, and
   the final machine result at their controller-retained paths. Do not echo raw
   session material or caller-local paths unnecessarily.
@@ -58,7 +61,10 @@ applies them.
   recurrence.
 - Exclude calls required by active freshness, safety, verification, controlled
   iteration, or workflow gates. Record conversational tool-protocol overhead as
-  necessary rather than as a helper defect.
+  necessary rather than as a helper defect. Semantic passes propose supported
+  necessary exclusions; deterministic code only validates those exclusions.
+  Calls with neither an accepted finding nor a supported exclusion are
+  `unassessed`, never assumed necessary.
 - Tie every confirmed finding to evidence call IDs, its producer and concrete
   owner when known, a plain-language problem summary, one durable control,
   implementation status, targeted verification, observed avoidable calls,
@@ -88,27 +94,40 @@ applies them.
   coverage and immutable result. A zero-finding pass must dismiss or exclude
   every exposed candidate with a reason.
 - `full-analysis` is complete only after all five public surfaces and internal
-  synthesis are accepted exactly once, every model call has one primary
-  classification, every confirmed surface finding remains in the final result,
-  secondary overlaps are retained without double-counting savings, and
-  controller finalization succeeds.
+  synthesis are accepted exactly once, every assessed model call has one
+  primary classification, the remainder is explicitly `unassessed`, every
+  confirmed surface finding remains in the final result, secondary overlaps are
+  retained without double-counting savings, and controller finalization
+  succeeds.
 - A standalone action is complete only after the selected surface result is
   accepted and controller finalization succeeds.
 
 ### Output Contract
 
-- Retain every confirmed finding in machine evidence, but present only
-  findings whose implementation status is `unimplemented`. Give each a
-  plain-language title and about two short lines: `Problem` names what happened,
-  where, and the concrete waste; `Fix` names the smallest durable correction
-  and targeted verification. Do not show internal IDs, producer-group headings,
-  status labels, confidence, helper taxonomy, or call IDs unless requested or
-  needed to distinguish episodes.
-- Explain each plausible risk in plain language as the observed signal, missing
-  evidence, and evidence needed for confirmation. Combine overlapping risks for
-  presentation while retaining every machine record. For standalone actions,
-  state that the conclusion is limited to the selected surface and is not a
-  whole-thread reconciliation.
+- Retain every confirmed finding in machine evidence. Before the detailed list,
+  report `Confirmed: N; outstanding: M; already addressed: K`. Show details only
+  for outstanding findings unless the user requests all findings.
+- Give each outstanding finding a plain-language title followed by:
+  - `Problem:` two to four sentences naming the owner, concrete episode, what
+    failed, and why the resulting work was avoidable.
+  - `Evidence:` the affected-call count and relevant command, tool, artifact,
+    answer, and user-correction sequence; show IDs only on request.
+  - `Fix:` the exact durable control, its owner, and how it completes the flow
+    end to end.
+  - `Verification:` the exact behavior test proving every included gap.
+  - `Savings:` observed calls, expected similar-run savings, implementation
+    cost, ongoing complexity, and material assumptions.
+- Do not show status labels, confidence, internal IDs, or helper taxonomy unless
+  requested.
+- Present each plausible risk separately with `Observed:` for the concrete
+  sequence, `Unknown:` for competing explanations, `Why not confirmed:` for the
+  exact missing fact and why choosing an explanation would be speculation, and
+  `How to confirm:` for the exact metadata or test. Do not merge risks when that
+  hides a distinct unknown or evidence source, and do not include a risk in
+  confirmed savings. For standalone actions, state that the conclusion is
+  limited to the selected surface and is not a whole-thread reconciliation.
+- Report necessary, protocol-overhead, avoidable, and unassessed call totals
+  separately. Never describe unassessed calls as necessary.
 
 ## Analysis-Only Boundaries
 

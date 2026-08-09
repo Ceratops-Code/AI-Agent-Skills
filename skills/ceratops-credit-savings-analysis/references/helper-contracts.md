@@ -69,7 +69,9 @@ additional deterministic contract gap supported by evidence.
 
 Account for every controller-exposed candidate; persist all category reviews,
 cohesive remediation groups, confirmed findings, risks, dismissals, and
-necessary exclusions through `advance`.
+necessary exclusions by writing the compact decision and invoking `submit` in
+the same orchestration tool call. The controller constructs and persists the
+complete surface result.
 
 ## Output Contract
 

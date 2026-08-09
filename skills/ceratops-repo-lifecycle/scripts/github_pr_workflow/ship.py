@@ -27,10 +27,29 @@ from .command import CommandError, require_output, require_success, run_command
 
 PHASES = ("prepared", "pr_ready", "gates_passed", "merged", "synchronized")
 FULL_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+ACTION_LINK_RE = re.compile(
+    r"/actions/runs/(?P<run>\d+)(?:/job/(?P<job>\d+))?"
+)
+FAILING_CHECK_STATES = {
+    "ACTION_REQUIRED",
+    "CANCELLED",
+    "FAILURE",
+    "STALE",
+    "STARTUP_FAILURE",
+    "TIMED_OUT",
+}
 
 
 class ShipError(RuntimeError):
     """Raised when an exact-state shipping invariant is not satisfied."""
+
+
+class ShipBlocked(ShipError):
+    """A terminal ship gate with a decision-complete public payload."""
+
+    def __init__(self, message: str, payload: dict[str, Any]) -> None:
+        super().__init__(message)
+        self.payload = {"status": "blocked", "message": message, **payload}
 
 
 def _git(repo_root: pathlib.Path, *args: str) -> list[str]:
@@ -729,11 +748,159 @@ def _transient_readiness(finding: readiness.Finding) -> bool:
     return False
 
 
+def _compact_failed_log(value: str, *, limit: int = 2_000) -> str | None:
+    """Return the last nonempty failed-log lines within a fixed payload bound."""
+
+    lines = [line.strip() for line in value.splitlines() if line.strip()]
+    if not lines:
+        return None
+    excerpt = "\n".join(lines[-20:])
+    return excerpt if len(excerpt) <= limit else excerpt[-limit:]
+
+
+def _failed_check_detail(
+    pr: str,
+    repository: str,
+    repo_root: pathlib.Path,
+    fallback_names: list[str],
+) -> dict[str, Any]:
+    """Read the first failing check and its compact failed-log context."""
+
+    result = run_json_command(
+        [
+            "gh",
+            "pr",
+            "checks",
+            pr,
+            "--repo",
+            repository,
+            "--json",
+            "name,state,bucket,link,workflow",
+        ],
+        "gh pr checks",
+        cwd=repo_root,
+    )
+    raw_checks = result.data if result.ok and isinstance(result.data, list) else []
+    failing = [
+        check
+        for check in raw_checks
+        if isinstance(check, dict)
+        and (
+            str(check.get("bucket") or "").lower() == "fail"
+            or str(check.get("state") or "").upper() in FAILING_CHECK_STATES
+        )
+    ]
+    selected = failing[0] if failing else {}
+    link = selected.get("link")
+    match = ACTION_LINK_RE.search(link) if isinstance(link, str) else None
+    run_id = match.group("run") if match else None
+    job_id = match.group("job") if match else None
+    excerpt: str | None = None
+    if run_id is not None:
+        command = ["gh", "run", "view", run_id, "--repo", repository]
+        if job_id is not None:
+            command.extend(("--job", job_id))
+        command.append("--log-failed")
+        log = run_command(command, cwd=repo_root)
+        if log.returncode == 0:
+            excerpt = _compact_failed_log(log.stdout)
+    name = selected.get("name")
+    return {
+        "name": (
+            name
+            if isinstance(name, str) and name
+            else (fallback_names[0] if fallback_names else None)
+        ),
+        "state": selected.get("state"),
+        "workflow": selected.get("workflow"),
+        "url": link if isinstance(link, str) else None,
+        "run_id": run_id,
+        "job_id": job_id,
+        "failed_log_excerpt": excerpt,
+        "failing_names": [
+            str(check.get("name"))
+            for check in failing
+            if isinstance(check.get("name"), str)
+        ]
+        or fallback_names,
+        "diagnostic": (
+            None
+            if result.ok
+            else (result.message or "could not read PR checks")
+        ),
+    }
+
+
+def _ci_blocker(
+    pr: str,
+    repository: str,
+    repo_root: pathlib.Path,
+    summary: dict[str, Any],
+    terminal: list[readiness.Finding],
+) -> ShipBlocked:
+    """Construct one terminal readiness or CI payload."""
+
+    status_finding = next(
+        (finding for finding in terminal if finding.check == "pr.status_checks"),
+        None,
+    )
+    message = "PR readiness failed: " + "; ".join(
+        f"{finding.check}: {finding.message}" for finding in terminal[:8]
+    )
+    if status_finding is None:
+        return ShipBlocked(
+            message,
+            {
+                "phase": "gates",
+                "blocker": {
+                    "kind": "readiness",
+                    "repository": repository,
+                    "pr": summary.get("number"),
+                    "url": summary.get("url"),
+                    "head_oid": summary.get("head_oid"),
+                    "findings": [
+                        {
+                            "check": finding.check,
+                            "message": finding.message,
+                            "actual": finding.actual,
+                        }
+                        for finding in terminal[:8]
+                    ],
+                },
+            },
+        )
+    fallback = (
+        [str(name) for name in status_finding.actual]
+        if isinstance(status_finding.actual, list)
+        else []
+    )
+    return ShipBlocked(
+        message,
+        {
+            "phase": "gates",
+            "blocker": {
+                "kind": "ci",
+                "repository": repository,
+                "pr": summary.get("number"),
+                "url": summary.get("url"),
+                "head_oid": summary.get("head_oid"),
+                "check": _failed_check_detail(
+                    pr,
+                    repository,
+                    repo_root,
+                    fallback,
+                ),
+            },
+        },
+    )
+
+
 def wait_for_ci_gate(
     pr: str,
     repo_root: pathlib.Path,
     expected_head: str,
     *,
+    repository: str | None = None,
     wait_seconds: int,
     interval_seconds: int,
 ) -> dict[str, Any]:
@@ -767,10 +934,14 @@ def wait_for_ci_gate(
             if finding.level == ERROR and not _transient_readiness(finding)
         ]
         if terminal:
-            detail = "; ".join(
-                f"{finding.check}: {finding.message}" for finding in terminal[:8]
+            selected_repository = repository or _repository_name(repo_root, None)
+            raise _ci_blocker(
+                pr,
+                selected_repository,
+                repo_root,
+                summary,
+                terminal,
             )
-            raise ShipError(f"PR readiness failed: {detail}")
         pending = [finding for finding in findings if _transient_readiness(finding)]
         if not pending:
             return {
@@ -785,8 +956,22 @@ def wait_for_ci_gate(
             }
         if time.monotonic() >= deadline:
             checks = sorted({finding.check for finding in pending})
-            raise ShipError(
+            message = (
                 f"PR readiness timed out with pending checks: {', '.join(checks)}"
+            )
+            raise ShipBlocked(
+                message,
+                {
+                    "phase": "gates",
+                    "blocker": {
+                        "kind": "ci_pending",
+                        "repository": repository,
+                        "pr": summary.get("number"),
+                        "url": summary.get("url"),
+                        "head_oid": summary.get("head_oid"),
+                        "pending_checks": checks,
+                    },
+                },
             )
         time.sleep(max(0, interval_seconds))
 
@@ -806,6 +991,47 @@ def _review_thread_ids(
         and isinstance((thread_id := thread.get("id")), str)
         and thread_id
     ]
+
+
+def _review_blocker(
+    review_result: dict[str, Any],
+    key: str,
+    message: str,
+    *,
+    policy: str,
+) -> ShipBlocked:
+    """Construct one reply-ready review-thread blocker."""
+
+    raw_threads = review_result.get(key)
+    threads = raw_threads if isinstance(raw_threads, list) else []
+    compact = [
+        {
+            "thread_id": thread.get("thread_id") or thread.get("id"),
+            "path": thread.get("path"),
+            "line": thread.get("line"),
+            "is_outdated": bool(thread.get("is_outdated")),
+            "body": thread.get("body"),
+            "top_comment_database_id": thread.get("top_comment_database_id"),
+            "comment_url": thread.get("comment_url"),
+        }
+        for thread in threads
+        if isinstance(thread, dict)
+    ]
+    return ShipBlocked(
+        message,
+        {
+            "phase": "gates",
+            "blocker": {
+                "kind": "review_threads",
+                "policy": policy,
+                "repository": review_result.get("repo"),
+                "pr": review_result.get("pr"),
+                "url": review_result.get("url"),
+                "head_oid": review_result.get("head_oid"),
+                "threads": compact,
+            },
+        },
+    )
 
 
 def _enforce_review_thread_gate(
@@ -828,8 +1054,14 @@ def _enforce_review_thread_gate(
             review_result, "active_codex_threads"
         )
         detail = f": {', '.join(thread_ids)}" if thread_ids else ""
-        raise ShipError(
+        message = (
             f"Codex review gate found {active_count} active thread(s){detail}."
+        )
+        raise _review_blocker(
+            review_result,
+            "active_codex_threads",
+            message,
+            policy="codex",
         )
     unresolved_count = int(
         review_result.get("unresolved_review_thread_count") or 0
@@ -847,9 +1079,15 @@ def _enforce_review_thread_gate(
                 review_result, "unresolved_review_threads"
             )
             detail = f": {', '.join(thread_ids)}" if thread_ids else ""
-            raise ShipError(
+            message = (
                 "GitHub branch rules require resolution of "
                 f"{unresolved_count} unresolved review thread(s){detail}."
+            )
+            raise _review_blocker(
+                review_result,
+                "unresolved_review_threads",
+                message,
+                policy="branch_rule",
             )
     return active_count, unresolved_count
 
@@ -887,6 +1125,7 @@ def run_parallel_gates(
             pr,
             args.repo_root,
             commit,
+            repository=repository,
             wait_seconds=ci_wait_seconds,
             interval_seconds=args.interval_seconds,
         )
@@ -1273,6 +1512,16 @@ def main(argv: list[str] | None = None) -> int:
         result = ship(args)
         print(json.dumps(result, separators=(",", ":"), ensure_ascii=True))
         return 2 if result.get("status") == "pending_work" else 0
+    except ShipBlocked as exc:
+        print(
+            json.dumps(
+                exc.payload,
+                separators=(",", ":"),
+                ensure_ascii=True,
+            ),
+            file=sys.stderr,
+        )
+        return 1
     except (
         CommandError,
         ShipError,

@@ -8,25 +8,27 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from unittest import mock
 from typing import Any
-
+from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "skills" / "ceratops-repo-lifecycle" / "scripts"
 REFERENCES = SCRIPTS.parent / "references" / "contracts"
 sys.path.insert(0, str(SCRIPTS))
 
-from github_contract_engine import levels  # noqa: E402
-from github_contract_engine import schema_validation  # noqa: E402
-from github_contract_engine import github_api  # noqa: E402
-from github_contract_engine import collect_non_deterministic_evidence  # noqa: E402
-from github_contract_engine import codeql_disposition  # noqa: E402
-from github_contract_engine import audit_snapshot  # noqa: E402
-from github_contract_engine import organization_validator  # noqa: E402
-from github_contract_engine.operations import (  # noqa: E402
-    TOP_LEVEL_COMMANDS,
-    VALIDATION_TARGETS,
+from github_contract_engine import (
+    audit_snapshot,  # noqa: E402
+    codeql_disposition,  # noqa: E402
+    collect_non_deterministic_evidence,  # noqa: E402
+    github_api,  # noqa: E402
+    levels,  # noqa: E402
+    organization_validator,  # noqa: E402
+    schema_validation,  # noqa: E402
+)
+from github_contract_engine.collect_observed_states import (  # noqa: E402
+    _artifact_state,
+    _fetch_all,
+    state_producer,
 )
 from github_contract_engine.collectors import registries  # noqa: E402
 from github_contract_engine.collectors.local_repository import (  # noqa: E402
@@ -38,18 +40,16 @@ from github_contract_engine.collectors.repository import (  # noqa: E402
     stale_pull_request_candidates,
     stale_release_candidates,
 )
-from github_contract_engine.collect_observed_states import (  # noqa: E402
-    _artifact_state,
-    _fetch_all,
-    state_producer,
-)
 from github_contract_engine.compare_states import (  # noqa: E402
     OPERATORS,
     compare_states,
     condition_matches,
     pointer_get,
 )
-from github_contract_engine.compose_desired_state import compose_desired_state, repo_subset_ids  # noqa: E402
+from github_contract_engine.compose_desired_state import (  # noqa: E402
+    compose_desired_state,
+    repo_subset_ids,
+)
 from github_contract_engine.format_report import (  # noqa: E402
     build_report,
     build_summary_report,
@@ -57,7 +57,12 @@ from github_contract_engine.format_report import (  # noqa: E402
     write_json,
 )
 from github_contract_engine.github_api import ApiResult, load_json  # noqa: E402
+from github_contract_engine.operations import (  # noqa: E402
+    TOP_LEVEL_COMMANDS,
+    VALIDATION_TARGETS,
+)
 from github_contract_engine.remediations import HANDLERS  # noqa: E402
+from github_pr_workflow import cli as pr_cli  # noqa: E402
 from github_pr_workflow import codex_review as pr_codex_review  # noqa: E402
 from github_pr_workflow import merge as pr_merge  # noqa: E402
 from github_pr_workflow import readiness as pr_validator  # noqa: E402
@@ -1513,6 +1518,206 @@ class GHContractStateEngineTests(unittest.TestCase):
             "gh repo view",
             cwd=ROOT,
         )
+
+        head = "a" * 40
+        thread = {
+            "id": "PRRT_1",
+            "isResolved": False,
+            "isOutdated": False,
+            "path": "skills/example/SKILL.md",
+            "line": 17,
+            "comments": {
+                "nodes": [
+                    {
+                        "id": "PRRC_1",
+                        "databaseId": 91,
+                        "body": "Fix the contract.",
+                        "url": "https://example.invalid/comment/91",
+                        "author": {"login": "chatgpt-codex-connector[bot]"},
+                    }
+                ],
+                "pageInfo": {"hasNextPage": True, "endCursor": "comments-1"},
+            },
+        }
+        initial_page = {
+            "data": {
+                "viewer": {"login": "roman"},
+                "repository": {
+                    "pullRequest": {
+                        "number": 7,
+                        "url": "https://example.invalid/pull/7",
+                        "createdAt": "2026-08-09T00:00:00Z",
+                        "headRefOid": head,
+                        "reviewThreads": {
+                            "nodes": [json.loads(json.dumps(thread))],
+                            "pageInfo": {"hasNextPage": False, "endCursor": None},
+                        },
+                    }
+                },
+            }
+        }
+        remaining_comments = {
+            "data": {
+                "node": {
+                    "comments": {
+                        "nodes": [
+                            {
+                                "id": "PRRC_2",
+                                "databaseId": 92,
+                                "body": "Fixed in the current head.",
+                                "url": "https://example.invalid/comment/92",
+                                "author": {"login": "roman"},
+                            }
+                        ],
+                        "pageInfo": {"hasNextPage": False, "endCursor": None},
+                    }
+                }
+            }
+        }
+        with mock.patch.object(
+            pr_codex_review,
+            "gh_graphql",
+            side_effect=[initial_page, remaining_comments],
+        ) as paged:
+            fetched = pr_codex_review.fetch_pr("owner", "repo", 7, cwd=ROOT)
+        self.assertEqual(
+            [
+                comment["databaseId"]
+                for comment in fetched["reviewThreads"][0]["comments"]["nodes"]
+            ],
+            [91, 92],
+        )
+        self.assertEqual(
+            paged.call_args_list[1].args[1],
+            {"thread": "PRRT_1", "cursor": "comments-1"},
+        )
+        projected = pr_codex_review.active_codex_threads(
+            {"reviewThreads": [thread]},
+            {"chatgpt-codex-connector[bot]"},
+        )
+        self.assertEqual(
+            projected[0],
+            {
+                "id": "PRRT_1",
+                "thread_id": "PRRT_1",
+                "path": "skills/example/SKILL.md",
+                "line": 17,
+                "start_line": None,
+                "diff_side": None,
+                "start_diff_side": None,
+                "body": "Fix the contract.",
+                "top_comment_database_id": 91,
+                "comment_url": "https://example.invalid/comment/91",
+            },
+        )
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            request = pathlib.Path(temporary_directory) / "replies.json"
+            request.write_text(
+                json.dumps(
+                    {
+                        "schema": "ceratops-review-thread-replies.v1",
+                        "repo": "owner/repo",
+                        "pr": 7,
+                        "head_oid": head,
+                        "replies": [
+                            {
+                                "thread_id": "PRRT_1",
+                                "top_comment_database_id": 91,
+                                "reply": "Fixed in the current head.",
+                            }
+                        ],
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+            current: dict[str, Any] = {
+                "headRefOid": head,
+                "viewer_login": "roman",
+                "reviewThreads": [thread],
+            }
+            reply_result = ApiResult(
+                True,
+                "POST",
+                "/repos/owner/repo/pulls/7/comments/91/replies",
+                data={"id": 92},
+            )
+            resolved = {
+                "data": {
+                    "resolveReviewThread": {
+                        "thread": {"id": "PRRT_1", "isResolved": True}
+                    }
+                }
+            }
+            with (
+                mock.patch.object(
+                    pr_codex_review,
+                    "fetch_pr",
+                    return_value=current,
+                ),
+                mock.patch.object(
+                    pr_codex_review,
+                    "run_gh_api",
+                    return_value=reply_result,
+                ) as post_reply,
+                mock.patch.object(
+                    pr_codex_review,
+                    "gh_graphql",
+                    return_value=resolved,
+                ) as resolve_thread,
+                contextlib.redirect_stdout(io.StringIO()) as output,
+            ):
+                exit_code = pr_codex_review.address(
+                    argparse.Namespace(request=request, cwd=ROOT)
+                )
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(output.getvalue().strip(), "OK")
+            post_reply.assert_called_once_with(
+                "POST",
+                "/repos/owner/repo/pulls/7/comments/91/replies",
+                {"body": "Fixed in the current head."},
+                cwd=ROOT,
+            )
+            self.assertEqual(
+                resolve_thread.call_args.args[1],
+                {"threadId": "PRRT_1"},
+            )
+
+            current["reviewThreads"][0]["comments"]["nodes"].append(
+                {
+                    "id": "PRRC_2",
+                    "databaseId": 92,
+                    "body": "Fixed in the current head.",
+                    "author": {"login": "roman"},
+                }
+            )
+            with (
+                mock.patch.object(
+                    pr_codex_review,
+                    "fetch_pr",
+                    return_value=current,
+                ),
+                mock.patch.object(pr_codex_review, "run_gh_api") as duplicate,
+                mock.patch.object(
+                    pr_codex_review,
+                    "gh_graphql",
+                    return_value=resolved,
+                ),
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
+                self.assertEqual(
+                    pr_codex_review.address(
+                        argparse.Namespace(request=request, cwd=ROOT)
+                    ),
+                    0,
+                )
+            duplicate.assert_not_called()
+
+        with mock.patch.object(pr_cli.codex_review, "main", return_value=0) as routed:
+            self.assertEqual(pr_cli.main(["address", "--request", "replies.json"]), 0)
+        routed.assert_called_once_with(["address", "--request", "replies.json"])
 
     def test_remediation_registry_covers_contract_actions(self):
         actions = {
