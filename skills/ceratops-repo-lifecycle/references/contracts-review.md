@@ -80,8 +80,8 @@ request before asking.
 - Do not inspect skill consistency, skill governance, skill-design contracts,
   metadata alignment, shared-section alignment, or runtime payload review here;
   skill-design standards refresh belongs to `$ceratops-skill-lifecycle`
-  `skills-contract-review`, and repository contract compliance belongs to its
-  `skills-consistency-review` action.
+  `skills-contract-review`, and manifest-backed installed-skill contract
+  compliance belongs to its `skills-consistency-review` action.
 - If the task is normal repo shipping, PR handling, dependency updates,
   repo-health work, or already-prepared skill shipping rather than contract
   upkeep, return to this multi-action skill and select the lifecycle action that
