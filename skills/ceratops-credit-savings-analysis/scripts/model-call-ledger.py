@@ -133,7 +133,7 @@ PATH_KEY_RE = re.compile(
     re.IGNORECASE,
 )
 BINARY_DATA_URL_RE = re.compile(
-    r"^data:[^;,]+(?:;[^,]+)*;base64,",
+    r"^data:[^;,]+(?:;[^,;]+)*;base64,",
     re.IGNORECASE,
 )
 BASE64_BODY_RE = re.compile(r"^[A-Za-z0-9+/=_-]+$")
