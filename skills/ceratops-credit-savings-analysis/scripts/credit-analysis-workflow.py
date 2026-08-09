@@ -38,6 +38,10 @@ CONTRACT_PATH = SCRIPT_DIR / "credit-analysis-contract.json"
 LEDGER_PATH = SCRIPT_DIR / "model-call-ledger.py"
 STATE_SCHEMA = "ceratops-credit-analysis-state.v1"
 CONTEXT_SCHEMA = "ceratops-credit-analysis-context.v1"
+PASS_PACKET_SCHEMA = "ceratops-credit-analysis-pass-packet.v1"
+FINAL_PACKET_SCHEMA = "ceratops-credit-analysis-final-packet.v1"
+SURFACE_DECISION_SCHEMA = "ceratops-credit-analysis-surface-decision.v1"
+SYNTHESIS_DECISION_SCHEMA = "ceratops-credit-analysis-synthesis-decision.v1"
 INDEX_SCHEMA = "ceratops-credit-analysis-index-record.v1"
 BATCH_STATE_SCHEMA = "ceratops-credit-analysis-batch-state.v1"
 BATCH_INDEX_SCHEMA = "ceratops-credit-analysis-batch-index-record.v1"
@@ -270,6 +274,46 @@ PRODUCER_GROUP_FIELDS = {
     "recommended_control",
     "targeted_verification",
 }
+SURFACE_DECISION_FIELDS = {
+    "schema",
+    "findings",
+    "risks",
+    "exclusions",
+    "dismissal_reason",
+}
+DECISION_FINDING_FIELDS = {
+    "id",
+    "title",
+    "problem_summary",
+    "waste_kind",
+    "affected_selectors",
+    "additional_evidence_selectors",
+    "producer_type",
+    "producer_owner",
+    "proposed_durable_control",
+    "targeted_verification",
+    "recurrence",
+    "confidence",
+    "complexity",
+    "one_time_implementation_cost",
+    "helper_categories",
+}
+DECISION_RECURRENCE_FIELDS = {
+    "additional_recurring_calls_per_affected_run",
+    "affected_similar_run_frequency",
+    "affected_similar_run_frequency_range",
+    "assumptions",
+}
+DECISION_RISK_FIELDS = {
+    "id",
+    "description",
+    "affected_selectors",
+    "additional_evidence_selectors",
+    "verification_needed",
+}
+DECISION_EXCLUSION_FIELDS = {"selectors", "reason_code", "reason"}
+SYNTHESIS_DECISION_FIELDS = {"schema", "finding_order", "risk_order"}
+CALL_SELECTOR_FIELDS = {"call_ids", "turn_id", "ranges"}
 IDENTIFIER_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 ACTION_REFERENCE_RE = re.compile(r"`(references/[a-z0-9]+(?:-[a-z0-9]+)*\.md)`")
 READ_SEARCH_TOKENS = (
@@ -538,6 +582,9 @@ def _load_contract() -> dict[str, Any]:
         "advance",
         "status",
         "finalize",
+    ] or contract.get("end_to_end_controller_commands") != [
+        "start",
+        "submit",
     ] or contract.get("batch_controller_commands") != [
         "prepare-batch",
         "advance-batch",
@@ -1141,6 +1188,366 @@ def _public_status(state: Mapping[str, Any]) -> dict[str, Any]:
         "evidence_path": state["evidence"]["path"],
         "required_result_path": accepted_path,
     }
+
+
+def _truncate_text(value: Any, limit: int) -> Any:
+    """Bound prepared semantic text while retaining exact disk evidence."""
+
+    if not isinstance(value, str) or len(value) <= limit:
+        return value
+    return value[:limit] + f"...[{len(value) - limit} chars retained on disk]"
+
+
+def _bounded_value(value: Any, *, text_limit: int) -> Any:
+    if isinstance(value, str):
+        return _truncate_text(value, text_limit)
+    if isinstance(value, list):
+        return [_bounded_value(item, text_limit=text_limit) for item in value]
+    if isinstance(value, dict):
+        return {
+            key: _bounded_value(item, text_limit=text_limit)
+            for key, item in value.items()
+        }
+    return value
+
+
+def _integer_ranges(values: Sequence[int]) -> list[list[int]]:
+    ordered = sorted(set(values))
+    if not ordered:
+        return []
+    ranges: list[list[int]] = []
+    start = previous = ordered[0]
+    for value in ordered[1:]:
+        if value == previous + 1:
+            previous = value
+            continue
+        ranges.append([start, previous])
+        start = previous = value
+    ranges.append([start, previous])
+    return ranges
+
+
+def _call_signal_score(call: Mapping[str, Any], focused_runs: set[str]) -> int:
+    score = 5 if call.get("turn_id") in focused_runs else 0
+    tokens = call.get("tokens")
+    if isinstance(tokens, Mapping):
+        total = tokens.get("total_tokens")
+        if isinstance(total, int) and not isinstance(total, bool):
+            score += min(total // 5_000, 20)
+    for action in call.get("tool_results", []):
+        if not isinstance(action, Mapping):
+            continue
+        outcomes = action.get("outcomes")
+        if isinstance(outcomes, Mapping):
+            score += 120 * int(bool(outcomes.get("nonzero_process_result")))
+            score += 120 * int(bool(outcomes.get("structured_tool_error")))
+            score += 100 * int(bool(outcomes.get("timeout")))
+            score += 100 * int(bool(outcomes.get("termination")))
+        score += 80 * int(bool(action.get("explicit_failure")))
+        score += 60 * int(bool(action.get("retry")))
+        score += 40 * int(bool(action.get("repeated")))
+        name = str(action.get("name", "")).casefold()
+        if any(token in name for token in ("wait", "poll", "write_stdin")):
+            score += 35
+        result_chars = action.get("result_chars")
+        if isinstance(result_chars, int) and result_chars >= 20_000:
+            score += min(result_chars // 2_000, 50)
+        argument_chars = action.get("argument_chars")
+        if isinstance(argument_chars, int) and argument_chars >= 4_000:
+            score += min(argument_chars // 1_000, 20)
+    return score
+
+
+def _selected_packet_calls(
+    candidates: Sequence[str],
+    call_by_id: Mapping[str, Mapping[str, Any]],
+    focused_runs: set[str],
+    *,
+    limit: int = 60,
+) -> list[str]:
+    """Select high-signal and boundary calls without claiming full review."""
+
+    positions = {call_id: index for index, call_id in enumerate(candidates)}
+    by_turn: defaultdict[str, list[str]] = defaultdict(list)
+    for call_id in candidates:
+        by_turn[str(call_by_id[call_id]["turn_id"])].append(call_id)
+    boundary: set[str] = set()
+    for values in by_turn.values():
+        boundary.update(values[:2])
+        boundary.update(values[-2:])
+    ranked = sorted(
+        candidates,
+        key=lambda call_id: (
+            -int(call_id in boundary),
+            -_call_signal_score(call_by_id[call_id], focused_runs),
+            positions[call_id],
+        ),
+    )
+    chosen = set(ranked[:limit])
+    return [call_id for call_id in candidates if call_id in chosen]
+
+
+def _packet_call(call: Mapping[str, Any], focused_runs: set[str]) -> dict[str, Any]:
+    semantics: list[dict[str, Any]] = []
+    for raw in call.get("semantic_actions", []):
+        if not isinstance(raw, Mapping):
+            continue
+        semantics.append(
+            {
+                key: _truncate_text(raw[key], 700)
+                for key in ("kind", "name", "summary")
+                if key in raw
+            }
+        )
+    return {
+        "call_id": call["call_id"],
+        "turn_id": call["turn_id"],
+        "index": call["index"],
+        "signal_score": _call_signal_score(call, focused_runs),
+        "tokens": call["tokens"],
+        "semantic_actions": semantics,
+        "tool_results": call.get("tool_results", []),
+        "user_message_ids": call.get("user_message_ids", []),
+        "run_duration_ms": call.get("run_duration_ms"),
+    }
+
+
+def _candidate_groups(
+    candidates: Sequence[str],
+    selected: set[str],
+    evidence: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    candidate_set = set(candidates)
+    groups: list[dict[str, Any]] = []
+    for run in evidence["runs"]:
+        calls = [
+            call
+            for call in run["calls"]
+            if call["call_id"] in candidate_set
+        ]
+        if not calls:
+            continue
+        tool_names: Counter[str] = Counter()
+        signals: Counter[str] = Counter()
+        for call in calls:
+            for action in call.get("tool_results", []):
+                if not isinstance(action, Mapping):
+                    continue
+                tool_names[str(action.get("name", "unknown"))] += 1
+                outcomes = action.get("outcomes", {})
+                if action.get("repeated"):
+                    signals["repeated"] += 1
+                if action.get("retry"):
+                    signals["retry"] += 1
+                if action.get("explicit_failure"):
+                    signals["explicit_failure"] += 1
+                if isinstance(outcomes, Mapping) and outcomes.get(
+                    "nonzero_process_result"
+                ):
+                    signals["nonzero_process_result"] += 1
+                result_chars = action.get("result_chars")
+                if isinstance(result_chars, int) and result_chars >= 20_000:
+                    signals["result_at_least_20k_chars"] += 1
+                name = str(action.get("name", "")).casefold()
+                if any(token in name for token in ("wait", "poll", "write_stdin")):
+                    signals["wait_or_poll"] += 1
+        totals = run.get("totals", {})
+        groups.append(
+            {
+                "turn_id": run["turn_id"],
+                "candidate_call_count": len(calls),
+                "selected_call_count": sum(
+                    1 for call in calls if call["call_id"] in selected
+                ),
+                "call_index_ranges": _integer_ranges(
+                    [int(call["index"]) for call in calls]
+                ),
+                "model_calls_in_run": run["model_calls"],
+                "total_tokens": totals.get("total_tokens"),
+                "duration_ms": totals.get("duration_ms"),
+                "top_tools": [
+                    {"name": name, "count": count}
+                    for name, count in tool_names.most_common(8)
+                ],
+                "signals": dict(sorted(signals.items())),
+            }
+        )
+    return groups
+
+
+def _surface_decision_contract(surface_id: str) -> dict[str, Any]:
+    template: dict[str, Any] = {
+        "schema": SURFACE_DECISION_SCHEMA,
+        "findings": [],
+        "risks": [],
+        "exclusions": [],
+        "dismissal_reason": "State why remaining candidates do not confirm this surface's waste.",
+    }
+    return {
+        "template": template,
+        "selector_forms": [
+            {"call_ids": ["exact-call-id"]},
+            {"turn_id": "exact-turn-id", "ranges": [[1, 3], [7, 7]]},
+        ],
+        "computed_by_controller": [
+            "identity and artifact paths",
+            "affected call expansion and evidence references",
+            "observed and expected savings arithmetic",
+            "candidate dismissals and exact coverage",
+            "helper category reviews and owner remediation groups",
+            "persistence, advancement, cleanup, and final rendering",
+        ],
+        "surface_specific_note": (
+            "Findings on helper-contracts must list every applicable helper category."
+            if surface_id == "helper-contracts"
+            else "Keep helper_categories empty outside helper-contracts."
+        ),
+        "finding_fields": sorted(DECISION_FINDING_FIELDS),
+        "risk_fields": sorted(DECISION_RISK_FIELDS),
+        "exclusion_fields": sorted(DECISION_EXCLUSION_FIELDS),
+    }
+
+
+def _protocol_budget(state: Mapping[str, Any], semantic_number: int) -> dict[str, Any]:
+    semantic_total = 6 if state["mode"] == "full-analysis" else 1
+    return {
+        "target_total_model_calls": semantic_total + 2,
+        "preparation_model_calls": 1,
+        "semantic_model_calls": semantic_total,
+        "semantic_call_number": semantic_number,
+        "delivery_model_calls": 1,
+        "bookkeeping_model_calls": 0,
+    }
+
+
+def _surface_pass_packet(
+    state: Mapping[str, Any],
+    evidence: Mapping[str, Any],
+    contract: Mapping[str, Any],
+) -> dict[str, Any]:
+    pending = state.get("pending")
+    if not isinstance(pending, Mapping):
+        raise CreditAnalysisError("no semantic pass is pending")
+    surface_id = str(pending["surface_id"])
+    semantic_number = int(pending["ordinal"])
+    common = {
+        "schema": PASS_PACKET_SCHEMA,
+        "analysis_id": state["analysis_id"],
+        "mode": state["mode"],
+        "surface_id": surface_id,
+        "pass_id": pending["pass_id"],
+        "protocol_budget": _protocol_budget(state, semantic_number),
+        "evidence_fingerprint": state["evidence"]["fingerprint"],
+        "retained_evidence_path": state["evidence"]["path"],
+        "retained_context_path": pending["context_path"],
+        "decision_path": pending["result_path"],
+        "submit_argv": [
+            "python",
+            "scripts/credit-analysis-workflow.py",
+            "submit",
+            "--state",
+            state["paths"]["state"],
+            "--decision",
+            pending["result_path"],
+        ],
+    }
+    if surface_id == "synthesis":
+        findings, finding_surfaces, risks = _finding_inventory(state)
+        finding_items = []
+        for finding_id, finding in findings.items():
+            recurrence = finding["recurrence"]
+            finding_items.append(
+                {
+                    "id": finding_id,
+                    "title": finding["title"],
+                    "source_surface": finding_surfaces[finding_id],
+                    "problem_summary": finding["problem_summary"],
+                    "producer_type": finding["producer_type"],
+                    "producer_owner": finding["producer_owner"],
+                    "helper_categories": finding["helper_categories"],
+                    "affected_call_count": len(finding["affected_call_ids"]),
+                    "waste_kind": finding["waste_kind"],
+                    "expected_calls_saved_per_similar_run": recurrence[
+                        "estimated_calls_saved_per_similar_run"
+                    ],
+                    "complexity": finding["complexity"],
+                    "proposed_durable_control": finding[
+                        "proposed_durable_control"
+                    ],
+                }
+            )
+        return {
+            **common,
+            "internal": True,
+            "action_reference": None,
+            "decision_contract": {
+                "template": {
+                    "schema": SYNTHESIS_DECISION_SCHEMA,
+                    "finding_order": list(findings),
+                    "risk_order": list(risks),
+                },
+                "rule": (
+                    "Rank every finding and risk exactly once. The controller derives "
+                    "primary ownership, overlaps, evidence-backed necessity, the "
+                    "unassessed remainder, arithmetic, producer groups, finalization, "
+                    "cleanup, and rendering."
+                ),
+            },
+            "accepted_findings": finding_items,
+            "accepted_risks": list(risks.values()),
+            "deterministic_totals": evidence["totals"],
+        }
+
+    reference = next(
+        item["reference"] for item in contract["surfaces"] if item["id"] == surface_id
+    )
+    candidates = list(pending["candidate_call_ids"])
+    call_by_id = {call["call_id"]: call for call in _all_calls(evidence)}
+    focused_runs = set(evidence["focused_semantic_context"]["run_ids"])
+    selected_ids = _selected_packet_calls(candidates, call_by_id, focused_runs)
+    selected = set(selected_ids)
+    preparation, review_records, exclusions = _model_review_records_for_calls(
+        evidence, selected_ids, focused_runs
+    )
+    bounded_records = [
+        _bounded_value(record, text_limit=900) for record in review_records[:120]
+    ]
+    return {
+        **common,
+        "internal": False,
+        "action_reference": {
+            "path": reference,
+            "content": (SKILL_DIR / reference).read_text(encoding="utf-8"),
+        },
+        "decision_contract": _surface_decision_contract(surface_id),
+        "evidence": {
+            "deterministic_totals": evidence["totals"],
+            "focused_run_selection": evidence["focused_semantic_context"],
+            "candidate_call_count": len(candidates),
+            "selected_call_count": len(selected_ids),
+            "candidate_groups": _candidate_groups(candidates, selected, evidence),
+            "selected_calls": [
+                _packet_call(call_by_id[call_id], focused_runs)
+                for call_id in selected_ids
+            ],
+            "selected_user_messages": [
+                _bounded_value(message, text_limit=1_200)
+                for message in _user_messages_for_calls(evidence, selected_ids)
+            ],
+            "model_review_preparation": preparation,
+            "model_review_exclusions": exclusions,
+            "model_review_record_count": len(review_records),
+            "included_model_review_records": bounded_records,
+            "full_candidate_and_review_evidence_retained": True,
+        },
+    }
+
+
+def _pass_packet(state_path: pathlib.Path) -> dict[str, Any]:
+    state, evidence, contract = _load_state(state_path)
+    if state["finalized"]:
+        return _final_packet(state, evidence, contract)
+    return _surface_pass_packet(state, evidence, contract)
 
 
 def _initialize_analysis(
@@ -2023,6 +2430,350 @@ def _validate_surface_result(
     }
 
 
+def _expand_decision_selectors(
+    raw: Any,
+    known_calls: set[str],
+    label: str,
+    *,
+    allow_empty: bool = False,
+) -> list[str]:
+    selectors = _objects(raw, label)
+    if not selectors and not allow_empty:
+        raise CreditAnalysisError(f"{label} must select at least one call")
+    selected: list[str] = []
+    for index, selector in enumerate(selectors, start=1):
+        _allowed_fields(selector, CALL_SELECTOR_FIELDS, f"{label} selector {index}")
+        if "call_ids" in selector:
+            if set(selector) != {"call_ids"}:
+                raise CreditAnalysisError(
+                    f"{label} selector {index} mixes exact IDs and ranges"
+                )
+            candidates = _strings(
+                selector["call_ids"], f"{label} selector {index} call IDs"
+            )
+        else:
+            if set(selector) != {"turn_id", "ranges"}:
+                raise CreditAnalysisError(
+                    f"{label} selector {index} must use exact IDs or one turn range"
+                )
+            turn_id = selector.get("turn_id")
+            ranges = selector.get("ranges")
+            if (
+                not isinstance(turn_id, str)
+                or not turn_id
+                or not isinstance(ranges, list)
+                or not ranges
+            ):
+                raise CreditAnalysisError(f"{label} selector {index} range is invalid")
+            candidates = []
+            for raw_range in ranges:
+                if (
+                    not isinstance(raw_range, list)
+                    or len(raw_range) != 2
+                    or not all(
+                        isinstance(value, int)
+                        and not isinstance(value, bool)
+                        and value > 0
+                        for value in raw_range
+                    )
+                    or raw_range[0] > raw_range[1]
+                ):
+                    raise CreditAnalysisError(
+                        f"{label} selector {index} range is invalid"
+                    )
+                candidates.extend(
+                    f"{turn_id}:{call_index}"
+                    for call_index in range(raw_range[0], raw_range[1] + 1)
+                )
+        for call_id in candidates:
+            if call_id not in known_calls:
+                raise CreditAnalysisError(f"{label} selects unknown call: {call_id}")
+            if call_id not in selected:
+                selected.append(call_id)
+    return selected
+
+
+def _decision_recurrence(
+    raw: Any,
+    *,
+    observed_calls: int,
+    waste_kind: str,
+    label: str,
+) -> dict[str, Any]:
+    if not isinstance(raw, dict):
+        raise CreditAnalysisError(f"{label} must be an object")
+    _closed(raw, DECISION_RECURRENCE_FIELDS, label)
+    added = _number(
+        raw["additional_recurring_calls_per_affected_run"],
+        f"{label} additional calls",
+    )
+    frequency = _number(
+        raw["affected_similar_run_frequency"], f"{label} frequency"
+    )
+    if frequency > 1:
+        raise CreditAnalysisError(f"{label} frequency must be <= 1")
+    raw_range = raw["affected_similar_run_frequency_range"]
+    if (
+        not isinstance(raw_range, list)
+        or len(raw_range) != 2
+        or any(
+            not isinstance(value, (int, float))
+            or isinstance(value, bool)
+            or not math.isfinite(float(value))
+            for value in raw_range
+        )
+    ):
+        raise CreditAnalysisError(f"{label} frequency range is invalid")
+    low, high = map(float, raw_range)
+    if not 0 <= low <= frequency <= high <= 1:
+        raise CreditAnalysisError(f"{label} frequency range is inconsistent")
+    assumptions = _strings(raw["assumptions"], f"{label} assumptions")
+    saved = 0.0 if waste_kind == "context-volume" else float(observed_calls)
+    if waste_kind == "context-volume":
+        added = 0.0
+    if saved - added < 0:
+        raise CreditAnalysisError(f"{label} introduces more calls than it saves")
+    return {
+        "calls_saved_per_affected_run": saved,
+        "additional_recurring_calls_per_affected_run": added,
+        "affected_similar_run_frequency": frequency,
+        "affected_similar_run_frequency_range": [low, high],
+        "estimated_calls_saved_per_similar_run": round(
+            (saved - added) * frequency, 6
+        ),
+        "assumptions": assumptions,
+    }
+
+
+def _decision_finding(
+    raw: dict[str, Any],
+    *,
+    known_calls: set[str],
+) -> dict[str, Any]:
+    _closed(raw, DECISION_FINDING_FIELDS, "surface decision finding")
+    waste_kind = raw.get("waste_kind")
+    affected = _expand_decision_selectors(
+        raw.get("affected_selectors"), known_calls, "finding affected selectors"
+    )
+    additional = _expand_decision_selectors(
+        raw.get("additional_evidence_selectors"),
+        known_calls,
+        "finding additional evidence selectors",
+        allow_empty=True,
+    )
+    recurrence = _decision_recurrence(
+        raw.get("recurrence"),
+        observed_calls=len(affected),
+        waste_kind=str(waste_kind),
+        label=f"finding {raw.get('id')} recurrence",
+    )
+    refs = list(dict.fromkeys([*affected, *additional]))
+    return {
+        "id": raw.get("id"),
+        "title": raw.get("title"),
+        "problem_summary": raw.get("problem_summary"),
+        "waste_kind": waste_kind,
+        "affected_call_ids": affected,
+        "evidence_refs": [_evidence_ref(call_id) for call_id in refs],
+        "producer_type": raw.get("producer_type"),
+        "producer_owner": raw.get("producer_owner"),
+        "proposed_durable_control": raw.get("proposed_durable_control"),
+        "implementation_status": "unimplemented",
+        "targeted_verification": raw.get("targeted_verification"),
+        "observed_avoidable_call_count": (
+            0 if waste_kind == "context-volume" else len(affected)
+        ),
+        "recurrence": recurrence,
+        "confidence": raw.get("confidence"),
+        "complexity": raw.get("complexity"),
+        "one_time_implementation_cost": raw.get("one_time_implementation_cost"),
+        "helper_categories": raw.get("helper_categories"),
+    }
+
+
+def _decision_risk(
+    raw: dict[str, Any],
+    *,
+    known_calls: set[str],
+) -> dict[str, Any]:
+    _closed(raw, DECISION_RISK_FIELDS, "surface decision risk")
+    affected = _expand_decision_selectors(
+        raw.get("affected_selectors"), known_calls, "risk affected selectors"
+    )
+    additional = _expand_decision_selectors(
+        raw.get("additional_evidence_selectors"),
+        known_calls,
+        "risk additional evidence selectors",
+        allow_empty=True,
+    )
+    refs = list(dict.fromkeys([*affected, *additional]))
+    return {
+        "id": raw.get("id"),
+        "description": raw.get("description"),
+        "affected_call_ids": affected,
+        "evidence_refs": [_evidence_ref(call_id) for call_id in refs],
+        "verification_needed": raw.get("verification_needed"),
+    }
+
+
+def _helper_decision_metadata(
+    findings: Sequence[Mapping[str, Any]],
+    contract: Mapping[str, Any],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    reviews: list[dict[str, Any]] = []
+    for category in contract["helper_categories"]:
+        finding_ids = [
+            str(finding["id"])
+            for finding in findings
+            if category in finding["helper_categories"]
+        ]
+        reviews.append(
+            {
+                "category": category,
+                "status": "applies" if finding_ids else "not-applicable",
+                "finding_ids": finding_ids,
+                "reason": (
+                    "Confirmed by the mapped findings."
+                    if finding_ids
+                    else "No reviewed candidate confirmed this category."
+                ),
+            }
+        )
+    by_owner: defaultdict[str, list[Mapping[str, Any]]] = defaultdict(list)
+    for finding in findings:
+        owner = finding.get("producer_owner")
+        if not isinstance(owner, str) or not owner.strip():
+            raise CreditAnalysisError(
+                "helper decision finding must name a concrete remediation owner"
+            )
+        by_owner[owner.strip()].append(finding)
+    groups: list[dict[str, Any]] = []
+    for owner, members in by_owner.items():
+        groups.append(
+            {
+                "owner": owner,
+                "finding_ids": [str(item["id"]) for item in members],
+                "proposed_control": " ".join(
+                    dict.fromkeys(
+                        str(item["proposed_durable_control"]) for item in members
+                    )
+                ),
+                "targeted_verification": list(
+                    dict.fromkeys(
+                        str(check)
+                        for item in members
+                        for check in item["targeted_verification"]
+                    )
+                ),
+            }
+        )
+    return reviews, groups
+
+
+def _assemble_surface_decision(
+    decision: dict[str, Any],
+    *,
+    state: Mapping[str, Any],
+    evidence: Mapping[str, Any],
+    contract: Mapping[str, Any],
+) -> dict[str, Any]:
+    _closed(decision, SURFACE_DECISION_FIELDS, "surface decision")
+    if decision.get("schema") != SURFACE_DECISION_SCHEMA:
+        raise CreditAnalysisError("surface decision schema is invalid")
+    pending = state.get("pending")
+    if not isinstance(pending, Mapping) or pending.get("surface_id") == "synthesis":
+        raise CreditAnalysisError("a public surface decision is not pending")
+    known_calls = set(evidence["call_inventory"])
+    findings = [
+        _decision_finding(raw, known_calls=known_calls)
+        for raw in _objects(decision.get("findings"), "surface decision findings")
+    ]
+    risks = [
+        _decision_risk(raw, known_calls=known_calls)
+        for raw in _objects(decision.get("risks"), "surface decision risks")
+    ]
+    exclusions: list[dict[str, str]] = []
+    for raw in _objects(decision.get("exclusions"), "surface decision exclusions"):
+        _closed(raw, DECISION_EXCLUSION_FIELDS, "surface decision exclusion")
+        reason_code = raw.get("reason_code")
+        reason = raw.get("reason")
+        if (
+            reason_code not in contract["necessary_reason_codes"]
+            or not isinstance(reason, str)
+            or not reason.strip()
+        ):
+            raise CreditAnalysisError("surface decision exclusion is invalid")
+        exclusions.extend(
+            {
+                "call_id": call_id,
+                "reason_code": str(reason_code),
+                "reason": reason.strip(),
+            }
+            for call_id in _expand_decision_selectors(
+                raw.get("selectors"), known_calls, "exclusion selectors"
+            )
+        )
+    exclusion_calls = {item["call_id"] for item in exclusions}
+    if len(exclusion_calls) != len(exclusions):
+        raise CreditAnalysisError("surface decision exclusions repeat a call")
+    finding_calls = {
+        call_id for finding in findings for call_id in finding["affected_call_ids"]
+    }
+    if finding_calls & exclusion_calls:
+        raise CreditAnalysisError("a call cannot be both avoidable and necessary")
+    risk_calls = {call_id for risk in risks for call_id in risk["affected_call_ids"]}
+    dismissal_reason = decision.get("dismissal_reason")
+    if not isinstance(dismissal_reason, str) or not dismissal_reason.strip():
+        raise CreditAnalysisError("surface decision dismissal reason is required")
+    candidates = list(pending["candidate_call_ids"])
+    protected = finding_calls | exclusion_calls
+    if findings:
+        protected |= risk_calls
+    dismissals = [
+        {"call_id": call_id, "reason": dismissal_reason.strip()}
+        for call_id in candidates
+        if call_id not in protected
+    ]
+    nested_refs = [
+        ref for item in [*findings, *risks] for ref in item["evidence_refs"]
+    ]
+    top_refs = list(
+        dict.fromkeys(
+            [*[_evidence_ref(call_id) for call_id in candidates], *nested_refs]
+        )
+    )
+    if pending["surface_id"] == "helper-contracts":
+        helper_reviews, remediation_groups = _helper_decision_metadata(
+            findings, contract
+        )
+    else:
+        helper_reviews, remediation_groups = [], []
+    result = {
+        "schema": contract["surface_result_schema"],
+        "analysis_id": state["analysis_id"],
+        "pass_id": pending["pass_id"],
+        "surface_id": pending["surface_id"],
+        "evidence_fingerprint": state["evidence"]["fingerprint"],
+        "artifact_paths": {
+            "state": state["paths"]["state"],
+            "evidence": state["evidence"]["path"],
+            "context": pending["context_path"],
+            "result": pending["result_path"],
+        },
+        "reviewed_candidate_call_ids": candidates,
+        "confirmed_findings": findings,
+        "plausible_risks": risks,
+        "dismissed_candidates": dismissals,
+        "necessary_call_exclusions": exclusions,
+        "evidence_references": top_refs,
+        "helper_category_reviews": helper_reviews,
+        "remediation_groups": remediation_groups,
+    }
+    return _validate_surface_result(
+        result, state=state, evidence=evidence, contract=contract
+    )
+
+
 def _append_index(path: pathlib.Path, record: Mapping[str, Any]) -> None:
     payload = _canonical_bytes(record)
     try:
@@ -2214,6 +2965,11 @@ def _validated_classification_groups(
                 raise CreditAnalysisError(
                     f"classification group {index} necessary reason is invalid"
                 )
+        elif category == "unassessed":
+            if finding_id is not None or reason_code is not None:
+                raise CreditAnalysisError(
+                    f"classification group {index} unassessed mapping is invalid"
+                )
         else:
             if (
                 not isinstance(finding_id, str)
@@ -2249,7 +3005,7 @@ def _validated_classification_groups(
                     f"classification position is assigned more than once: {position}"
                 )
             call_id = inventory[position - 1]
-            if category != "necessary" and call_id not in dispositions[
+            if category.startswith("avoidable_") and call_id not in dispositions[
                 str(finding_id)
             ]["primary_call_ids"]:
                 raise CreditAnalysisError(
@@ -2287,11 +3043,195 @@ def _validated_classification_groups(
                 f"{finding_id}"
             )
         for call_id in disposition["secondary_call_ids"]:
-            if classification_by_call[call_id]["classification"] == "necessary":
+            if not classification_by_call[call_id]["classification"].startswith(
+                "avoidable_"
+            ):
                 raise CreditAnalysisError(
-                    f"secondary avoidable evidence is classified necessary: {call_id}"
+                    f"secondary avoidable evidence lacks an avoidable primary: {call_id}"
                 )
     return groups, classifications
+
+
+def _assemble_synthesis_decision(
+    decision: dict[str, Any],
+    *,
+    state: Mapping[str, Any],
+    evidence: Mapping[str, Any],
+    contract: Mapping[str, Any],
+) -> dict[str, Any]:
+    _closed(decision, SYNTHESIS_DECISION_FIELDS, "synthesis decision")
+    if decision.get("schema") != SYNTHESIS_DECISION_SCHEMA:
+        raise CreditAnalysisError("synthesis decision schema is invalid")
+    pending = state.get("pending")
+    if not isinstance(pending, Mapping) or pending.get("surface_id") != "synthesis":
+        raise CreditAnalysisError("internal synthesis is not pending")
+    findings, _, risks = _finding_inventory(state)
+    finding_order = _strings(
+        decision.get("finding_order"), "synthesis decision finding order", allow_empty=True
+    )
+    risk_order = _strings(
+        decision.get("risk_order"), "synthesis decision risk order", allow_empty=True
+    )
+    if set(finding_order) != set(findings) or len(finding_order) != len(findings):
+        raise CreditAnalysisError("synthesis decision must rank every finding once")
+    if set(risk_order) != set(risks) or len(risk_order) != len(risks):
+        raise CreditAnalysisError("synthesis decision must rank every risk once")
+
+    inventory = list(evidence["call_inventory"])
+    position_by_call = {
+        call_id: position for position, call_id in enumerate(inventory, start=1)
+    }
+    claimed_by_call: dict[str, str] = {}
+    dispositions: list[dict[str, Any]] = []
+    for finding_id in finding_order:
+        finding = findings[finding_id]
+        if finding["waste_kind"] == "context-volume":
+            primary: list[str] = []
+            secondary: list[str] = []
+        else:
+            primary = []
+            secondary = []
+            for call_id in finding["affected_call_ids"]:
+                if call_id in claimed_by_call:
+                    secondary.append(call_id)
+                else:
+                    claimed_by_call[call_id] = finding_id
+                    primary.append(call_id)
+        dispositions.append(
+            {
+                "finding_id": finding_id,
+                "primary_call_ids": primary,
+                "secondary_call_ids": secondary,
+            }
+        )
+
+    classification_groups: list[dict[str, Any]] = []
+    for disposition in dispositions:
+        positions = sorted(
+            position_by_call[call_id]
+            for call_id in disposition["primary_call_ids"]
+        )
+        if not positions:
+            continue
+        finding = findings[disposition["finding_id"]]
+        classification_groups.append(
+            {
+                "classification": (
+                    "avoidable_implemented"
+                    if finding["implementation_status"] == "implemented"
+                    else "avoidable_unimplemented"
+                ),
+                "inventory_positions": positions,
+                "primary_finding_id": finding["id"],
+                "reason_code": None,
+                "reason": finding["problem_summary"],
+            }
+        )
+
+    necessary_by_call: dict[str, dict[str, str]] = {}
+    for surface in _public_surface_results(state):
+        for exclusion in surface["necessary_call_exclusions"]:
+            call_id = exclusion["call_id"]
+            if call_id not in claimed_by_call and call_id not in necessary_by_call:
+                necessary_by_call[call_id] = exclusion
+    necessary_groups: defaultdict[tuple[str, str], list[int]] = defaultdict(list)
+    for call_id, exclusion in necessary_by_call.items():
+        necessary_groups[(exclusion["reason_code"], exclusion["reason"])].append(
+            position_by_call[call_id]
+        )
+    for (reason_code, reason), positions in necessary_groups.items():
+        classification_groups.append(
+            {
+                "classification": "necessary",
+                "inventory_positions": sorted(positions),
+                "primary_finding_id": None,
+                "reason_code": reason_code,
+                "reason": reason,
+            }
+        )
+    unassessed_positions = [
+        position_by_call[call_id]
+        for call_id in inventory
+        if call_id not in claimed_by_call and call_id not in necessary_by_call
+    ]
+    if unassessed_positions:
+        classification_groups.append(
+            {
+                "classification": "unassessed",
+                "inventory_positions": unassessed_positions,
+                "primary_finding_id": None,
+                "reason_code": None,
+                "reason": (
+                    "No accepted finding or evidence-backed necessary exclusion "
+                    "assessed these calls."
+                ),
+            }
+        )
+
+    secondary_by_call: defaultdict[str, list[str]] = defaultdict(list)
+    for disposition in dispositions:
+        for call_id in disposition["secondary_call_ids"]:
+            secondary_by_call[call_id].append(disposition["finding_id"])
+    secondary_mappings = [
+        {"call_id": call_id, "finding_ids": finding_ids}
+        for call_id, finding_ids in sorted(
+            secondary_by_call.items(), key=lambda item: position_by_call[item[0]]
+        )
+    ]
+
+    grouped: defaultdict[tuple[str, str | None], list[str]] = defaultdict(list)
+    for finding_id in finding_order:
+        finding = findings[finding_id]
+        grouped[(finding["producer_type"], finding["producer_owner"])].append(
+            finding_id
+        )
+    producer_groups: list[dict[str, Any]] = []
+    for index, ((producer_type, owner), finding_ids) in enumerate(
+        grouped.items(), start=1
+    ):
+        producer_groups.append(
+            {
+                "id": f"producer-group-{index:03d}",
+                "producer_type": producer_type,
+                "owner": owner,
+                "finding_ids": finding_ids,
+                "recommended_control": " ".join(
+                    dict.fromkeys(
+                        findings[finding_id]["proposed_durable_control"]
+                        for finding_id in finding_ids
+                    )
+                ),
+                "targeted_verification": list(
+                    dict.fromkeys(
+                        check
+                        for finding_id in finding_ids
+                        for check in findings[finding_id]["targeted_verification"]
+                    )
+                ),
+            }
+        )
+    result = {
+        "schema": contract["synthesis_result_schema"],
+        "analysis_id": state["analysis_id"],
+        "pass_id": pending["pass_id"],
+        "surface_id": "synthesis",
+        "evidence_fingerprint": state["evidence"]["fingerprint"],
+        "artifact_paths": {
+            "state": state["paths"]["state"],
+            "evidence": state["evidence"]["path"],
+            "context": pending["context_path"],
+            "result": pending["result_path"],
+        },
+        "finding_order": finding_order,
+        "risk_order": risk_order,
+        "finding_dispositions": dispositions,
+        "classification_groups": classification_groups,
+        "secondary_call_mappings": secondary_mappings,
+        "producer_groups": producer_groups,
+    }
+    return _validate_synthesis(
+        result, state=state, evidence=evidence, contract=contract
+    )
 
 
 def _validate_synthesis(
@@ -2669,6 +3609,7 @@ def _build_full_final(
             "avoidable_unimplemented": round(
                 category_costs["avoidable_unimplemented"], 12
             ),
+            "unassessed": round(category_costs["unassessed"], 12),
         }
     surface_totals = {}
     category_totals: Counter[str] = Counter()
@@ -2726,6 +3667,7 @@ def _build_full_final(
             "total_model_calls": len(evidence["call_inventory"]),
             "necessary_calls": classification_totals["necessary"],
             "protocol_overhead_calls": protocol_overhead,
+            "unassessed_calls": classification_totals["unassessed"],
             "avoidable_calls": avoidable,
             "avoidable_implemented_calls": classification_totals[
                 "avoidable_implemented"
@@ -2783,6 +3725,246 @@ def _cleanup_transients(state: Mapping[str, Any]) -> None:
             directory.rmdir()
 
 
+def _compact_call_list(values: Sequence[str], *, limit: int = 12) -> str:
+    shown = list(values[:limit])
+    suffix = f" (+{len(values) - limit} more)" if len(values) > limit else ""
+    return ", ".join(shown) + suffix
+
+
+def _finding_savings(finding: Mapping[str, Any]) -> float:
+    roi = finding.get("roi")
+    if isinstance(roi, Mapping):
+        value = roi.get("estimated_calls_saved_per_similar_run")
+    else:
+        recurrence = finding.get("recurrence")
+        value = (
+            recurrence.get("estimated_calls_saved_per_similar_run")
+            if isinstance(recurrence, Mapping)
+            else 0
+        )
+    return float(value) if isinstance(value, (int, float)) else 0.0
+
+
+def _finding_presentation_key(finding: Mapping[str, Any]) -> tuple[Any, ...]:
+    return (
+        0 if finding.get("complexity") == "Minimal" else 1,
+        -_finding_savings(finding),
+        -int(finding.get("deduplicated_avoidable_call_count", 0)),
+        str(finding.get("id", "")),
+    )
+
+
+def _render_final_report(final: Mapping[str, Any]) -> str:
+    """Render every finding without exposing controller bookkeeping fields."""
+
+    findings = sorted(
+        final.get("confirmed_findings", []), key=_finding_presentation_key
+    )
+    groups_by_id = {
+        group["id"]: group
+        for group in final.get("producer_grouped_recommendations", [])
+    }
+    grouped: defaultdict[str, list[Mapping[str, Any]]] = defaultdict(list)
+    for finding in findings:
+        group_id = str(
+            finding.get("producer_group_id")
+            or next(
+                (
+                    group["id"]
+                    for group in groups_by_id.values()
+                    if finding.get("id") in group.get("finding_ids", [])
+                ),
+                finding.get("producer_owner") or finding.get("producer_type"),
+            )
+        )
+        grouped[group_id].append(finding)
+    ordered_groups = sorted(
+        grouped.items(),
+        key=lambda item: min(_finding_presentation_key(value) for value in item[1]),
+    )
+    lines = ["# Credit-savings analysis", ""]
+    if final.get("scope_limitation"):
+        lines.extend([str(final["scope_limitation"]), ""])
+    if not findings:
+        lines.extend(["No confirmed findings.", ""])
+    for group_id, members in ordered_groups:
+        group = groups_by_id.get(group_id, {})
+        owner = group.get("owner") or members[0].get("producer_owner") or "Unknown owner"
+        lines.extend([f"## {owner}", ""])
+        for finding in members:
+            affected = finding.get("primary_call_ids") or finding.get(
+                "affected_call_ids", []
+            )
+            evidence_calls = finding.get("affected_call_ids", [])
+            recurrence = finding.get("recurrence", {})
+            categories = finding.get("helper_categories", [])
+            lines.extend(
+                [
+                    f"### {finding['id']}: {finding['title']}",
+                    "",
+                    f"Problem: {finding['problem_summary']}",
+                    "",
+                    (
+                        f"Evidence: {finding.get('source_surface', 'selected surface')}; "
+                        f"{len(evidence_calls)} affected call(s): "
+                        f"{_compact_call_list(evidence_calls)}."
+                    ),
+                    "",
+                    f"Fix: {finding['proposed_durable_control']}",
+                    "",
+                    "Verify: " + "; ".join(finding["targeted_verification"]),
+                    "",
+                    (
+                        "Savings: "
+                        f"{len(affected)} deduplicated observed call(s); "
+                        f"{_finding_savings(finding):g} estimated call(s) per similar run; "
+                        f"implementation cost {finding['one_time_implementation_cost']['estimated_model_calls']:g} "
+                        f"call(s); complexity {finding['complexity']}."
+                    ),
+                ]
+            )
+            if categories:
+                lines.extend(["", "Helper categories: " + ", ".join(categories) + "."])
+            assumptions = recurrence.get("assumptions", [])
+            if assumptions:
+                lines.extend(["", "Assumptions: " + "; ".join(assumptions)])
+            lines.append("")
+    risks = final.get("plausible_risks", [])
+    lines.extend(["## Plausible but unverified", ""])
+    if not risks:
+        lines.extend(["None.", ""])
+    for risk in risks:
+        verification = risk.get("verification_needed", [])
+        why = (
+            "The retained evidence did not contain enough causal detail to establish "
+            "this as avoidable rather than required behavior."
+        )
+        lines.extend(
+            [
+                f"- {risk['id']}: {risk['description']} {why} "
+                f"To confirm it: {'; '.join(verification)}",
+                "",
+            ]
+        )
+    totals = final.get("totals", {})
+    lines.extend(["## Totals", ""])
+    if final.get("mode") == "full-analysis":
+        lines.extend(
+            [
+                f"- Avoidable: {totals.get('avoidable_calls', 0)} of "
+                f"{totals.get('total_model_calls', 0)} calls.",
+                f"- Necessary: {totals.get('necessary_calls', 0)}, including "
+                f"{totals.get('protocol_overhead_calls', 0)} protocol-overhead calls.",
+                f"- Unassessed: {totals.get('unassessed_calls', 0)} calls. These were "
+                "not deterministically treated as necessary.",
+            ]
+        )
+    else:
+        lines.append(
+            f"- Surface avoidable: {totals.get('surface_observed_avoidable_calls', 0)} "
+            f"of {totals.get('surface_candidates', 0)} candidates."
+        )
+    priced = final.get("priced_cost")
+    if isinstance(priced, Mapping):
+        lines.append(f"- Priced cost: {json.dumps(priced, sort_keys=True)}")
+    retained = final.get("retained_paths", {})
+    lines.extend(
+        [
+            "",
+            "Retained analysis result: " + str(retained.get("final_machine_result")),
+        ]
+    )
+    return "\n".join(lines).rstrip()
+
+
+def _final_packet(
+    state: Mapping[str, Any],
+    evidence: Mapping[str, Any],
+    contract: Mapping[str, Any],
+) -> dict[str, Any]:
+    del evidence, contract
+    if state.get("finalized") is not True:
+        raise CreditAnalysisError("analysis is not finalized")
+    final = _read_json(
+        pathlib.Path(state["final_result"]["path"]), "final machine result"
+    )
+    semantic_total = 6 if state["mode"] == "full-analysis" else 1
+    return {
+        "schema": FINAL_PACKET_SCHEMA,
+        "analysis_id": state["analysis_id"],
+        "complete": True,
+        "protocol_budget": _protocol_budget(state, semantic_total),
+        "report_markdown": _render_final_report(final),
+        "retained_result_path": state["final_result"]["path"],
+        "retained_evidence_path": state["evidence"]["path"],
+    }
+
+
+def _persist_final_result(
+    state: dict[str, Any],
+    evidence: Mapping[str, Any],
+    contract: Mapping[str, Any],
+) -> dict[str, Any]:
+    _verify_completed(state)
+    final_result = (
+        _build_full_final(state, evidence, contract)
+        if state["mode"] == "full-analysis"
+        else _build_standalone_final(state, evidence, contract)
+    )
+    final_path = pathlib.Path(state["paths"]["final_result"])
+    final_hash = _write_final_result(final_path, final_result)
+    _cleanup_transients(state)
+    state["finalized"] = True
+    state["final_result"] = {
+        "path": str(final_path.resolve()),
+        "sha256": final_hash,
+        "content_hash": _content_hash(final_result),
+    }
+    _save_state(state)
+    return _final_packet(state, evidence, contract)
+
+
+def command_start(request_path: pathlib.Path) -> dict[str, Any]:
+    """Collect once and return the first model-ready semantic pass packet."""
+
+    status = command_prepare(request_path)
+    return _pass_packet(pathlib.Path(status["state_path"]))
+
+
+def command_submit(
+    state_path: pathlib.Path,
+    decision_path: pathlib.Path,
+) -> dict[str, Any]:
+    """Expand one compact judgment, persist it, and return the next pass."""
+
+    state, evidence, contract = _load_state(state_path)
+    if state["finalized"]:
+        return _final_packet(state, evidence, contract)
+    pending = state.get("pending")
+    if not isinstance(pending, Mapping):
+        raise CreditAnalysisError("no semantic pass is pending")
+    decision_file = _existing_file(str(decision_path), "semantic decision")
+    if decision_file.resolve() != pathlib.Path(pending["result_path"]).resolve():
+        raise CreditAnalysisError("decision path is not the exact pending path")
+    decision = _read_json(decision_file, "semantic decision")
+    if pending["surface_id"] == "synthesis":
+        normalized = _assemble_synthesis_decision(
+            decision, state=state, evidence=evidence, contract=contract
+        )
+    else:
+        normalized = _assemble_surface_decision(
+            decision, state=state, evidence=evidence, contract=contract
+        )
+    _accept_result(state, normalized)
+    _save_state(state)
+    if pending["surface_id"] == "synthesis" or state["mode"] != "full-analysis":
+        return _persist_final_result(state, evidence, contract)
+    _open_pending(state, evidence, contract)
+    _save_state(state)
+    _verify_completed(state)
+    return _surface_pass_packet(state, evidence, contract)
+
+
 def command_finalize(
     state_path: pathlib.Path,
     result_path: pathlib.Path,
@@ -2812,8 +3994,6 @@ def command_finalize(
             submitted = _read_json(result_file, "synthesis result")
             if not _idempotent_resubmission(state, submitted):
                 raise CreditAnalysisError("final result input is not the accepted synthesis")
-        _verify_completed(state)
-        final_result = _build_full_final(state, evidence, contract)
     else:
         if state.get("pending") is not None or state["current_index"] != len(state["queue"]):
             raise CreditAnalysisError("standalone surface has not been accepted")
@@ -2822,17 +4002,7 @@ def command_finalize(
             raise CreditAnalysisError("standalone finalization requires its accepted result path")
         if _content_hash(_read_json(result_file, "accepted surface result")) != state["completed"][-1]["content_hash"]:
             raise CreditAnalysisError("standalone accepted result changed")
-        final_result = _build_standalone_final(state, evidence, contract)
-    final_path = pathlib.Path(state["paths"]["final_result"])
-    final_hash = _write_final_result(final_path, final_result)
-    _cleanup_transients(state)
-    state["finalized"] = True
-    state["final_result"] = {
-        "path": str(final_path.resolve()),
-        "sha256": final_hash,
-        "content_hash": _content_hash(final_result),
-    }
-    _save_state(state)
+    _persist_final_result(state, evidence, contract)
 
 
 def _project_selector(raw: Any) -> dict[str, str] | None:
@@ -4321,6 +5491,11 @@ def command_finalize_batch(state_path: pathlib.Path) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
+    start = commands.add_parser("start")
+    start.add_argument("--request", required=True, type=pathlib.Path)
+    submit = commands.add_parser("submit")
+    submit.add_argument("--state", required=True, type=pathlib.Path)
+    submit.add_argument("--decision", required=True, type=pathlib.Path)
     prepare = commands.add_parser("prepare")
     prepare.add_argument("--request", required=True, type=pathlib.Path)
     advance = commands.add_parser("advance")
@@ -4328,6 +5503,7 @@ def build_parser() -> argparse.ArgumentParser:
     advance.add_argument("--result", required=True, type=pathlib.Path)
     status = commands.add_parser("status")
     status.add_argument("--state", required=True, type=pathlib.Path)
+    status.add_argument("--packet", action="store_true")
     finalize = commands.add_parser("finalize")
     finalize.add_argument("--state", required=True, type=pathlib.Path)
     finalize.add_argument("--result", required=True, type=pathlib.Path)
@@ -4346,12 +5522,16 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        if args.command == "prepare":
+        if args.command == "start":
+            output: Any = command_start(args.request.expanduser().resolve(strict=True))
+        elif args.command == "submit":
+            output = command_submit(args.state, args.decision)
+        elif args.command == "prepare":
             output: Any = command_prepare(args.request.expanduser().resolve(strict=True))
         elif args.command == "advance":
             output = command_advance(args.state, args.result)
         elif args.command == "status":
-            output = command_status(args.state)
+            output = _pass_packet(args.state) if args.packet else command_status(args.state)
         elif args.command == "finalize":
             command_finalize(args.state, args.result)
             output = "OK"

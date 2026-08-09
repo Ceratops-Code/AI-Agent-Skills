@@ -587,6 +587,64 @@ def surface_result_record(
     }
 
 
+def surface_decision_record(
+    packet: Mapping[str, Any],
+    *,
+    finding_id: str | None = None,
+) -> dict[str, Any]:
+    """Build one compact model judgment for the end-to-end controller."""
+
+    findings: list[dict[str, Any]] = []
+    if finding_id is not None:
+        call_id = packet["evidence"]["selected_calls"][0]["call_id"]
+        helper_categories = (
+            ["noisy-or-incomplete-result-contract"]
+            if packet["surface_id"] == "helper-contracts"
+            else []
+        )
+        findings.append(
+            {
+                "id": finding_id,
+                "title": finding_id.replace("-", " "),
+                "problem_summary": (
+                    f"The synthetic {packet['surface_id']} episode used an avoidable "
+                    "model call because its producer lacked a complete control."
+                ),
+                "waste_kind": "model-calls",
+                "affected_selectors": [{"call_ids": [call_id]}],
+                "additional_evidence_selectors": [],
+                "producer_type": "script",
+                "producer_owner": f"scripts/{packet['surface_id']}.py",
+                "proposed_durable_control": (
+                    f"Complete {packet['surface_id']} deterministically in its producer."
+                ),
+                "targeted_verification": [
+                    f"verify {packet['surface_id']} completes without the call"
+                ],
+                "recurrence": {
+                    "additional_recurring_calls_per_affected_run": 0.0,
+                    "affected_similar_run_frequency": 0.5,
+                    "affected_similar_run_frequency_range": [0.25, 0.75],
+                    "assumptions": ["synthetic recurrence"],
+                },
+                "confidence": 0.8,
+                "complexity": "Minimal",
+                "one_time_implementation_cost": {
+                    "estimated_model_calls": 1.0,
+                    "description": "one focused implementation pass",
+                },
+                "helper_categories": helper_categories,
+            }
+        )
+    return {
+        "schema": "ceratops-credit-analysis-surface-decision.v1",
+        "findings": findings,
+        "risks": [],
+        "exclusions": [],
+        "dismissal_reason": "No additional candidate confirmed avoidable work.",
+    }
+
+
 def complete_credit_analysis_with_instruction_finding(
     child_status: Mapping[str, Any],
 ) -> pathlib.Path:
@@ -1060,6 +1118,7 @@ def test_credit_analysis_workflow_full_analysis_persists_every_finding(
             "necessary",
             "avoidable_implemented",
             "avoidable_unimplemented",
+            "unassessed",
         ],
         "necessary_reason_codes": contract["necessary_reason_codes"],
     }
@@ -1282,6 +1341,7 @@ def test_credit_analysis_workflow_full_analysis_persists_every_finding(
         "total_model_calls": 6,
         "necessary_calls": 3,
         "protocol_overhead_calls": 1,
+        "unassessed_calls": 0,
         "avoidable_calls": 3,
         "avoidable_implemented_calls": 1,
         "avoidable_unimplemented_calls": 2,
@@ -1312,6 +1372,120 @@ def test_credit_analysis_workflow_full_analysis_persists_every_finding(
     ]
     assert final_result["priced_cost"] is None
     assert first_result is not None and first_result_path is not None
+
+
+def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
+    tmp_path: pathlib.Path,
+) -> None:
+    request, session, _ = credit_analysis_request(tmp_path)
+    started = run_credit_analysis_workflow("start", "--request", str(request))
+    assert started.returncode == 0, started.stderr
+    packet = json.loads(started.stdout)
+    assert packet["schema"] == "ceratops-credit-analysis-pass-packet.v1"
+    assert packet["surface_id"] == "helper-contracts"
+    assert packet["protocol_budget"] == {
+        "target_total_model_calls": 8,
+        "preparation_model_calls": 1,
+        "semantic_model_calls": 6,
+        "semantic_call_number": 1,
+        "delivery_model_calls": 1,
+        "bookkeeping_model_calls": 0,
+    }
+    state_path = pathlib.Path(packet["submit_argv"][4])
+    evidence_path = pathlib.Path(packet["retained_evidence_path"])
+    evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+    assert evidence["collection"]["session_reads"] == 1
+    session.rename(tmp_path / "session-collected-once-end-to-end.jsonl")
+
+    expected_surfaces = [
+        "helper-contracts",
+        "context-evidence",
+        "rework-validation",
+        "tool-flow",
+        "instruction-reasoning",
+    ]
+    finding_ids: list[str] = []
+    for semantic_number, surface_id in enumerate(expected_surfaces, start=1):
+        assert packet["surface_id"] == surface_id
+        assert packet["protocol_budget"]["semantic_call_number"] == semantic_number
+        assert packet["action_reference"]["path"] == f"references/{surface_id}.md"
+        assert packet["action_reference"]["content"]
+        assert packet["evidence"]["selected_calls"]
+        finding_id = f"e2e-{surface_id}"
+        finding_ids.append(finding_id)
+        decision_path = pathlib.Path(packet["decision_path"])
+        write_json_file(
+            decision_path,
+            surface_decision_record(packet, finding_id=finding_id),
+        )
+        submitted = run_credit_analysis_workflow(
+            "submit",
+            "--state",
+            str(state_path),
+            "--decision",
+            str(decision_path),
+        )
+        assert submitted.returncode == 0, submitted.stderr
+        packet = json.loads(submitted.stdout)
+
+    assert packet["surface_id"] == "synthesis"
+    assert packet["internal"] is True
+    assert packet["action_reference"] is None
+    assert packet["protocol_budget"]["semantic_call_number"] == 6
+    assert [item["id"] for item in packet["accepted_findings"]] == finding_ids
+    decision_path = pathlib.Path(packet["decision_path"])
+    write_json_file(
+        decision_path,
+        {
+            "schema": "ceratops-credit-analysis-synthesis-decision.v1",
+            "finding_order": list(reversed(finding_ids)),
+            "risk_order": [],
+        },
+    )
+    submitted = run_credit_analysis_workflow(
+        "submit",
+        "--state",
+        str(state_path),
+        "--decision",
+        str(decision_path),
+    )
+    assert submitted.returncode == 0, submitted.stderr
+    final_packet = json.loads(submitted.stdout)
+    assert final_packet["schema"] == "ceratops-credit-analysis-final-packet.v1"
+    assert final_packet["complete"] is True
+    assert final_packet["protocol_budget"]["target_total_model_calls"] == 8
+    assert final_packet["protocol_budget"]["semantic_model_calls"] == 6
+    assert final_packet["protocol_budget"]["bookkeeping_model_calls"] == 0
+    assert all(
+        finding_id in final_packet["report_markdown"] for finding_id in finding_ids
+    )
+    assert "Unassessed:" in final_packet["report_markdown"]
+
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["finalized"] is True
+    assert [item["surface_id"] for item in state["completed"]] == [
+        *expected_surfaces,
+        "synthesis",
+    ]
+    assert len(list(pathlib.Path(state["paths"]["findings_dir"]).glob("*.json"))) == 6
+    assert not pathlib.Path(state["paths"]["context_dir"]).exists()
+    assert not pathlib.Path(state["paths"]["pending_dir"]).exists()
+    final_result = json.loads(
+        pathlib.Path(final_packet["retained_result_path"]).read_text(encoding="utf-8")
+    )
+    assert [item["id"] for item in final_result["confirmed_findings"]] == list(
+        reversed(finding_ids)
+    )
+    assert final_result["totals"]["unassessed_calls"] > 0
+    assert {
+        item["classification"] for item in final_result["primary_call_mappings"]
+    } <= {"avoidable_unimplemented", "unassessed"}
+
+    resumed = run_credit_analysis_workflow(
+        "status", "--state", str(state_path), "--packet"
+    )
+    assert resumed.returncode == 0, resumed.stderr
+    assert json.loads(resumed.stdout) == final_packet
 
 
 def test_credit_analysis_workflow_rejects_invalid_and_conflicting_passes(

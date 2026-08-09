@@ -29,25 +29,29 @@ confirmed finding and present every outstanding finding.
 
 ## Workflow
 
-1. Run controller `prepare` once and use its pending surface, context, and exact
-   result path.
-2. For each of the five public surfaces, load that surface's direct reference
-   and pending context, perform one focused semantic pass, write one complete
-   surface result, and call `advance`.
-3. When `advance` opens `synthesis`, load only the complete call inventory,
-   compact normalized accepted findings, dismissals, exclusions, and
-   deterministic totals from its context. Do not reload raw session material.
-4. Preserve every confirmed finding; group cohesive remediation by owning
-   producer; assign each avoidable call to exactly one primary finding; retain
-   applicable secondary mappings; and order every finding without suppression.
-   For accounting, follow the controller's `classification_group_contract` and
-   group calls with the same classification, primary finding, and reason in
-   `classification_groups` using 1-based inventory positions; do not perform
-   separate semantic review for each call. Keep `context-volume` findings
-   outside call-savings mappings and write the synthesis result to the exact
-   pending path.
-5. Run controller `finalize`. On interruption, retain state and accepted results
-   and resume with `status`.
+1. In one preparation model call, run controller `start` once. It collects the
+   session once and returns the first bounded pass packet containing the direct
+   action reference, selected semantic evidence, compact candidate groups, the
+   decision contract, and exact paths.
+2. For each of the five public surfaces, use exactly one model call. Analyze only
+   that packet, write the compact surface decision, and run `submit` inside the
+   same orchestration tool call. Do not use model turns to assemble the full
+   result, calculate coverage, create evidence references, validate, persist,
+   advance, or load the next packet; the controller performs all of them.
+3. Use exactly one internal synthesis model call. Rank every accepted finding
+   and risk once, write that compact ordering decision, and run `submit` in the
+   same orchestration tool call. The controller derives primary and secondary
+   mappings, evidence-backed necessary classifications, the unassessed
+   remainder, totals, finalization, cleanup, and the complete rendered report.
+4. Deliver that rendered report in one final model call. A full single-thread
+   analysis therefore uses eight calls total: one preparation, five public
+   surfaces, one synthesis/finalization, and one delivery. Exactly six calls are
+   semantic and no call is reserved for model-mediated bookkeeping.
+
+On interruption, resume with `status --packet`; never recollect prepared
+evidence. The lower-level `prepare`, `advance`, `status`, and `finalize` commands
+remain available for validated direct callers, but are not the ordinary
+model-facing workflow.
 
 For a batch, run `prepare-batch` once to freeze the selection and prepare one
 controller per thread. Complete each child through `advance-batch` and resume
@@ -57,9 +61,10 @@ Never recollect a prepared session or create a temporary discovery script.
 
 ## Completion Gate
 
-Complete only when finalization returns `OK` and retained machine evidence
+Complete only when the final packet reports `complete: true` and retained evidence
 contains every accepted pass, finding, risk, dismissal, exclusion, primary and
-secondary mapping, category and surface total, producer group, and ROI input.
+secondary mapping, unassessed call, category and surface total, producer group,
+and ROI input.
 For a batch, every selected child must also be finalized and indexed exactly
 once before batch finalization succeeds.
 
@@ -78,8 +83,8 @@ internal controller identity as a presentation group.
 
 Explain plausible risks under the parent contract. Also report necessary and
 protocol-overhead totals; outstanding avoidable calls versus total calls;
-priced cost only when available; and the retained final machine-evidence path.
-Never suppress an outstanding finding.
+unassessed calls separately; priced cost only when available; and the retained
+analysis-result path. Never suppress an outstanding finding.
 
 For a batch, group similar findings across threads under plain-language problem
 titles, apply the same ordering, identify affected threads, report per-thread

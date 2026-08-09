@@ -10,6 +10,7 @@
   "synthesis_result_schema": "ceratops-credit-analysis-synthesis-result.v1",
   "final_result_schema": "ceratops-credit-analysis-final-result.v1",
   "single_controller_commands": ["prepare", "advance", "status", "finalize"],
+  "end_to_end_controller_commands": ["start", "submit"],
   "batch_controller_commands": [
     "prepare-batch",
     "advance-batch",
@@ -168,7 +169,8 @@
   "call_classifications": [
     "necessary",
     "avoidable_implemented",
-    "avoidable_unimplemented"
+    "avoidable_unimplemented",
+    "unassessed"
   ],
   "necessary_reason_codes": [
     "protocol-overhead",
@@ -177,7 +179,6 @@
     "required-verification",
     "required-workflow",
     "ordinary-model-error",
-    "controlled-iteration",
-    "other-necessary"
+    "controlled-iteration"
   ]
 }
