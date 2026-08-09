@@ -653,6 +653,7 @@ def surface_decision_record(
     implementation_status: str = "unimplemented",
     waste_kind: str = "model-calls",
     risks: list[dict[str, Any]] | None = None,
+    exclusions: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Build one compact model judgment for the end-to-end controller."""
 
@@ -731,7 +732,7 @@ def surface_decision_record(
         "schema": "ceratops-credit-analysis-surface-decision.v1",
         "findings": findings,
         "risks": risks or [],
-        "exclusions": [],
+        "exclusions": exclusions or [],
         "dismissal_reason": "No additional candidate confirmed avoidable work.",
     }
 
@@ -754,6 +755,7 @@ def complete_credit_analysis_with_instruction_finding(
             pathlib.Path(status["context_path"]).read_text(encoding="utf-8")
         )
         findings: list[dict[str, Any]] = []
+        exclusions: list[dict[str, Any]] = []
         helper_reviews: list[dict[str, Any]] = []
         if status["pending_surface"] == "helper-contracts":
             helper_reviews = [
@@ -773,11 +775,21 @@ def complete_credit_analysis_with_instruction_finding(
                 owner="synthetic request",
             )
             findings = [finding]
+            exclusions = [
+                {
+                    "call_id": call_id,
+                    "reason_code": "required-workflow",
+                    "reason": "synthetic required workflow calls",
+                }
+                for call_id in context["candidate_call_ids"]
+                if call_id not in finding["affected_call_ids"]
+            ]
         result = surface_result_record(
             status,
             context,
             evidence["evidence_fingerprint"],
             findings=findings,
+            exclusions=exclusions,
             helper_reviews=helper_reviews,
         )
         result_path = pathlib.Path(status["required_result_path"])
@@ -1138,7 +1150,17 @@ def test_credit_analysis_workflow_full_analysis_persists_every_finding(
                 ],
             }
         else:
-            kwargs = {"findings": [instruction_finding]}
+            kwargs = {
+                "findings": [instruction_finding],
+                "exclusions": [
+                    {
+                        "call_id": call_id,
+                        "reason_code": "required-workflow",
+                        "reason": "required final answers",
+                    }
+                    for call_id in ("turn-2:2", "turn-3:1")
+                ],
+            }
         result = surface_result_record(status, context, fingerprint, **kwargs)
         result_path = pathlib.Path(status["required_result_path"])
         if surface == "helper-contracts":
@@ -1678,6 +1700,7 @@ def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
     ]
     implemented_finding_id = "e2e-context-evidence"
     finding_ids: list[str] = []
+    claimed_call_ids: set[str] = set()
     for semantic_number, surface_id in enumerate(expected_surfaces, start=1):
         assert len(json.dumps(packet, separators=(",", ":")).encode("utf-8")) < 30_000
         assert packet["surface_id"] == surface_id
@@ -1699,6 +1722,22 @@ def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
         assert all(
             "model_call_id" in record
             for record in packet["evidence"]["included_model_review_records"]
+        )
+        pending = json.loads(state_path.read_text(encoding="utf-8"))["pending"]
+        partitions = loaded["_candidate_cluster_partition"](
+            pending["candidate_call_ids"],
+            evidence,
+            set(evidence["focused_semantic_context"]["run_ids"]),
+        )
+        selected_cluster_id = packet["evidence"]["candidate_clusters"][0][
+            "cluster_id"
+        ]
+        selected_calls = set(
+            next(
+                partition["call_ids"]
+                for partition in partitions
+                if partition["cluster_id"] == selected_cluster_id
+            )
         )
         if surface_id == "context-evidence":
             assert packet["evidence"]["candidate_call_count"] == evidence["totals"][
@@ -1723,6 +1762,7 @@ def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
         finding_id = f"e2e-{surface_id}"
         finding_ids.append(finding_id)
         risks: list[dict[str, Any]] = []
+        exclusions: list[dict[str, Any]] = []
         if surface_id == "tool-flow":
             risks.append(
                 {
@@ -1751,6 +1791,33 @@ def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
                     ],
                 }
             )
+        if surface_id == "instruction-reasoning":
+            retained_partition = min(
+                (
+                    partition
+                    for partition in partitions
+                    if partition["cluster_id"] != selected_cluster_id
+                    and set(partition["call_ids"]) - claimed_call_ids
+                ),
+                key=lambda partition: len(
+                    set(partition["call_ids"]) - claimed_call_ids
+                ),
+            )
+            retained_calls = set(retained_partition["call_ids"]) - claimed_call_ids
+            excluded_calls = [
+                call_id
+                for call_id in pending["candidate_call_ids"]
+                if call_id not in selected_calls and call_id not in retained_calls
+            ]
+            exclusions = [
+                {
+                    "selectors": [{"call_ids": excluded_calls}],
+                    "reason_code": "required-workflow",
+                    "reason": "Synthetic surface evidence proves required workflow work.",
+                }
+            ]
+        if surface_id != "tool-flow":
+            claimed_call_ids.update(selected_calls)
         decision_path = pathlib.Path(packet["decision_path"])
         write_json_file(
             decision_path,
@@ -1766,6 +1833,7 @@ def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
                     "context-volume" if surface_id == "tool-flow" else "model-calls"
                 ),
                 risks=risks,
+                exclusions=exclusions,
             ),
         )
         submitted = run_credit_analysis_workflow(
@@ -1783,9 +1851,13 @@ def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
     assert packet["internal"] is True
     assert packet["action_reference"] is None
     assert packet["protocol_budget"]["semantic_call_number"] == 6
-    assert packet["decision_contract"]["assessment_shape"]["reason_code"][
-        "unassessed"
-    ] is None
+    assert packet["decision_contract"]["assessment_shape"] == {
+        "cluster_ids": "string list; min 1; each cluster at most once",
+        "classification": ["unassessed"],
+        "reason_code": None,
+        "reason": "nonempty string",
+    }
+    assert "must not invent necessity" in packet["decision_contract"]["rule"]
     assert "Explicitly assess every listed input and output hotspot" in packet[
         "decision_contract"
     ]["rule"]
@@ -1794,7 +1866,7 @@ def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
     remaining_clusters = packet["remaining_calls"]["clusters"]
     assert packet["remaining_calls"]["call_count"] > 0
     assert remaining_clusters
-    assert any(cluster.get("representative_summary") for cluster in remaining_clusters)
+    assert all(cluster.get("representative_summary") for cluster in remaining_clusters)
     assert all("observable_signature" not in cluster for cluster in remaining_clusters)
     assert all("volume" not in cluster for cluster in remaining_clusters)
     assert all(cluster["semantic_actions"] for cluster in remaining_clusters)
@@ -1825,7 +1897,7 @@ def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
         "surface_id"
     ] == "synthesis"
 
-    assert packet["remaining_calls"]["call_count"] * 2 > evidence["totals"][
+    assert packet["remaining_calls"]["call_count"] * 2 <= evidence["totals"][
         "model_calls"
     ]
     write_json_file(
@@ -1839,22 +1911,24 @@ def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
                     "cluster_ids": [
                         cluster["cluster_id"] for cluster in remaining_clusters
                     ],
-                    "classification": "unassessed",
-                    "reason_code": None,
-                    "reason": "Synthetic evidence omits the required outcome purpose.",
+                    "classification": "necessary",
+                    "reason_code": "required-workflow",
+                    "reason": "Synthetic workflow work was required.",
                 }
             ],
         },
     )
-    rejected_majority = run_credit_analysis_workflow(
+    rejected_unsupported_necessary = run_credit_analysis_workflow(
         "submit",
         "--state",
         str(state_path),
         "--decision",
         str(decision_path),
     )
-    assert rejected_majority.returncode == 2
-    assert "at or below 50%" in rejected_majority.stderr
+    assert rejected_unsupported_necessary.returncode == 2
+    assert "necessary calls must come from accepted surface exclusions" in (
+        rejected_unsupported_necessary.stderr
+    )
     assert json.loads(state_path.read_text(encoding="utf-8"))["pending"][
         "surface_id"
     ] == "synthesis"
@@ -1870,12 +1944,9 @@ def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
                     "cluster_ids": [
                         cluster["cluster_id"] for cluster in remaining_clusters
                     ],
-                    "classification": "necessary",
-                    "reason_code": "required-workflow",
-                    "reason": (
-                        "The remaining synthetic clusters produced required workflow "
-                        "results and do not support another avoidable-call finding."
-                    ),
+                    "classification": "unassessed",
+                    "reason_code": None,
+                    "reason": "Synthetic evidence omits the required outcome purpose.",
                 }
             ],
         },
@@ -1936,10 +2007,17 @@ def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
     assert [item["id"] for item in final_result["confirmed_findings"]] == list(
         reversed(finding_ids)
     )
-    assert final_result["totals"]["unassessed_calls"] == 0
+    assert final_result["totals"]["unassessed_calls"] == packet[
+        "remaining_calls"
+    ]["call_count"]
     assert {
         item["classification"] for item in final_result["primary_call_mappings"]
-    } <= {"avoidable_unimplemented", "avoidable_implemented", "necessary"}
+    } <= {
+        "avoidable_unimplemented",
+        "avoidable_implemented",
+        "necessary",
+        "unassessed",
+    }
 
     resumed = run_credit_analysis_workflow(
         "status", "--state", str(state_path), "--packet"

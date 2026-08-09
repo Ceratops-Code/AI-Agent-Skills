@@ -1744,22 +1744,6 @@ def _volume_hotspot_ids(
     return [str(cluster["cluster_id"]) for cluster in ranked[:limit] if score(cluster) > 0]
 
 
-def _synthesis_representative_cluster_ids(
-    clusters: Sequence[Mapping[str, Any]],
-    *,
-    input_hotspots: Sequence[str],
-    output_hotspots: Sequence[str],
-) -> set[str]:
-    """Keep examples only where they can change the synthesis judgment."""
-
-    signaled = {
-        str(cluster["cluster_id"])
-        for cluster in clusters
-        if cluster["observable_signature"]["signals"]
-    }
-    return signaled | set(input_hotspots[:4]) | set(output_hotspots[:4])
-
-
 def _compact_synthesis_cluster(
     cluster: Mapping[str, Any],
     *,
@@ -1970,15 +1954,10 @@ def _surface_pass_packet(
         )
         input_hotspots = _volume_hotspot_ids(cluster_details, kind="input")
         output_hotspots = _volume_hotspot_ids(cluster_details, kind="output")
-        representative_ids = _synthesis_representative_cluster_ids(
-            cluster_details,
-            input_hotspots=input_hotspots,
-            output_hotspots=output_hotspots,
-        )
         remaining_clusters = [
             _compact_synthesis_cluster(
                 cluster,
-                keep_representative=cluster["cluster_id"] in representative_ids,
+                keep_representative=True,
             )
             for cluster in cluster_details
         ]
@@ -2017,22 +1996,20 @@ def _surface_pass_packet(
                     "remaining_call_assessments": [],
                 },
                 "rule": (
-                    "Rank every finding and risk exactly once. Semantically classify "
-                    "remaining cluster IDs as necessary or unassessed. Use unassessed "
-                    "only when the stated missing fact prevents a supported decision; "
-                    "omitted clusters remain unassessed. Explicitly assess every listed "
-                    "input and output hotspot. A full analysis leaving more than half "
-                    "of the inventory unassessed is rejected in the same pending pass. "
-                    "The controller expands and validates the judgments and derives all "
-                    "bookkeeping."
+                    "Rank every finding and risk exactly once. The controller already "
+                    "carries accepted surface exclusions into necessary classifications; "
+                    "synthesis must not invent necessity. Mark a remaining cluster "
+                    "unassessed only when the stated missing fact prevents a supported "
+                    "decision; omitted clusters remain unassessed. Explicitly assess "
+                    "every listed input and output hotspot. A full analysis leaving more "
+                    "than half of the inventory unassessed is rejected in the same "
+                    "pending pass. The controller expands and validates the judgments "
+                    "and derives all bookkeeping."
                 ),
                 "assessment_shape": {
                     "cluster_ids": "string list; min 1; each cluster at most once",
-                    "classification": ["necessary", "unassessed"],
-                    "reason_code": {
-                        "necessary": list(contract["necessary_reason_codes"]),
-                        "unassessed": None,
-                    },
+                    "classification": ["unassessed"],
+                    "reason_code": None,
                     "reason": "nonempty string",
                 },
             },
@@ -3679,14 +3656,21 @@ def _synthesis_remaining_calls(
 def _validated_classification_groups(
     value: Any,
     *,
+    state: Mapping[str, Any],
     evidence: Mapping[str, Any],
     findings: Mapping[str, Mapping[str, Any]],
     dispositions: Mapping[str, Mapping[str, Any]],
     contract: Mapping[str, Any],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Expand compact model judgments into controller-owned per-call records."""
+    """Expand judgments while refusing unsupported semantic necessity claims."""
 
     inventory = list(evidence["call_inventory"])
+    necessary_evidence: defaultdict[str, set[tuple[str, str]]] = defaultdict(set)
+    for surface in _public_surface_results(state):
+        for exclusion in surface["necessary_call_exclusions"]:
+            necessary_evidence[str(exclusion["call_id"])].add(
+                (str(exclusion["reason_code"]), str(exclusion["reason"]).strip())
+            )
     groups: list[dict[str, Any]] = []
     group_by_position: dict[int, dict[str, Any]] = {}
     for index, raw in enumerate(
@@ -3757,6 +3741,13 @@ def _validated_classification_groups(
                     f"classification position is assigned more than once: {position}"
                 )
             call_id = inventory[position - 1]
+            if category == "necessary" and (
+                str(reason_code), reason.strip()
+            ) not in necessary_evidence.get(call_id, set()):
+                raise CreditAnalysisError(
+                    "necessary classification lacks an exact accepted surface "
+                    f"exclusion at inventory position {position}"
+                )
             if category.startswith("avoidable_") and call_id not in dispositions[
                 str(finding_id)
             ]["primary_call_ids"]:
@@ -3952,19 +3943,15 @@ def _assemble_synthesis_decision(
             raise CreditAnalysisError(
                 f"synthesis call assessment {index} reason is required"
             )
-        if classification == "necessary":
-            if reason_code not in contract["necessary_reason_codes"]:
-                raise CreditAnalysisError(
-                    f"synthesis call assessment {index} reason code is invalid"
-                )
-        elif classification == "unassessed":
+        if classification == "unassessed":
             if reason_code is not None:
                 raise CreditAnalysisError(
                     f"synthesis call assessment {index} unassessed reason is invalid"
                 )
         else:
             raise CreditAnalysisError(
-                f"synthesis call assessment {index} classification is invalid"
+                "synthesis remaining-call assessments may only be unassessed; "
+                "necessary calls must come from accepted surface exclusions"
             )
         semantically_assessed_calls.update(selected_calls)
         classification_groups.append(
@@ -4167,6 +4154,7 @@ def _validate_synthesis(
 
     classification_groups, classifications = _validated_classification_groups(
         result.get("classification_groups"),
+        state=state,
         evidence=evidence,
         findings=findings,
         dispositions=disposition_by_id,
@@ -4432,6 +4420,7 @@ def _build_full_final(
         )
     _, classifications = _validated_classification_groups(
         synthesis["classification_groups"],
+        state=state,
         evidence=evidence,
         findings=findings,
         dispositions=dispositions,
