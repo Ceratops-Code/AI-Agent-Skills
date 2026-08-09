@@ -1456,9 +1456,13 @@ def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
     assert final_packet["protocol_budget"]["target_total_model_calls"] == 8
     assert final_packet["protocol_budget"]["semantic_model_calls"] == 6
     assert final_packet["protocol_budget"]["bookkeeping_model_calls"] == 0
+    report = final_packet["report_markdown"]
+    assert "Confirmed: 5; outstanding: 5; already addressed: 0" in report
+    assert all(finding_id not in report for finding_id in finding_ids)
     assert all(
-        finding_id in final_packet["report_markdown"] for finding_id in finding_ids
+        finding_id.replace("-", " ") in report for finding_id in finding_ids
     )
+    assert all(call_id not in report for call_id in evidence["call_inventory"])
     assert "Unassessed:" in final_packet["report_markdown"]
 
     state = json.loads(state_path.read_text(encoding="utf-8"))

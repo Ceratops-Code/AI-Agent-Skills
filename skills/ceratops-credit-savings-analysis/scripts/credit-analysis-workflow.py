@@ -3725,12 +3725,6 @@ def _cleanup_transients(state: Mapping[str, Any]) -> None:
             directory.rmdir()
 
 
-def _compact_call_list(values: Sequence[str], *, limit: int = 12) -> str:
-    shown = list(values[:limit])
-    suffix = f" (+{len(values) - limit} more)" if len(values) > limit else ""
-    return ", ".join(shown) + suffix
-
-
 def _finding_savings(finding: Mapping[str, Any]) -> float:
     roi = finding.get("roi")
     if isinstance(roi, Mapping):
@@ -3757,92 +3751,85 @@ def _finding_presentation_key(finding: Mapping[str, Any]) -> tuple[Any, ...]:
 def _render_final_report(final: Mapping[str, Any]) -> str:
     """Render every finding without exposing controller bookkeeping fields."""
 
+    all_findings = list(final.get("confirmed_findings", []))
     findings = sorted(
-        final.get("confirmed_findings", []), key=_finding_presentation_key
+        (
+            finding
+            for finding in all_findings
+            if finding.get("implementation_status") != "implemented"
+        ),
+        key=_finding_presentation_key,
     )
-    groups_by_id = {
-        group["id"]: group
-        for group in final.get("producer_grouped_recommendations", [])
-    }
-    grouped: defaultdict[str, list[Mapping[str, Any]]] = defaultdict(list)
-    for finding in findings:
-        group_id = str(
-            finding.get("producer_group_id")
-            or next(
-                (
-                    group["id"]
-                    for group in groups_by_id.values()
-                    if finding.get("id") in group.get("finding_ids", [])
-                ),
-                finding.get("producer_owner") or finding.get("producer_type"),
-            )
-        )
-        grouped[group_id].append(finding)
-    ordered_groups = sorted(
-        grouped.items(),
-        key=lambda item: min(_finding_presentation_key(value) for value in item[1]),
-    )
-    lines = ["# Credit-savings analysis", ""]
+    lines = [
+        "# Credit-savings analysis",
+        "",
+        (
+            f"Confirmed: {len(all_findings)}; outstanding: {len(findings)}; "
+            f"already addressed: {len(all_findings) - len(findings)}"
+        ),
+        "",
+    ]
     if final.get("scope_limitation"):
         lines.extend([str(final["scope_limitation"]), ""])
     if not findings:
-        lines.extend(["No confirmed findings.", ""])
-    for group_id, members in ordered_groups:
-        group = groups_by_id.get(group_id, {})
-        owner = group.get("owner") or members[0].get("producer_owner") or "Unknown owner"
-        lines.extend([f"## {owner}", ""])
-        for finding in members:
-            affected = finding.get("primary_call_ids") or finding.get(
-                "affected_call_ids", []
-            )
-            evidence_calls = finding.get("affected_call_ids", [])
-            recurrence = finding.get("recurrence", {})
-            categories = finding.get("helper_categories", [])
-            lines.extend(
-                [
-                    f"### {finding['id']}: {finding['title']}",
-                    "",
-                    f"Problem: {finding['problem_summary']}",
-                    "",
-                    (
-                        f"Evidence: {finding.get('source_surface', 'selected surface')}; "
-                        f"{len(evidence_calls)} affected call(s): "
-                        f"{_compact_call_list(evidence_calls)}."
-                    ),
-                    "",
-                    f"Fix: {finding['proposed_durable_control']}",
-                    "",
-                    "Verify: " + "; ".join(finding["targeted_verification"]),
-                    "",
-                    (
-                        "Savings: "
-                        f"{len(affected)} deduplicated observed call(s); "
-                        f"{_finding_savings(finding):g} estimated call(s) per similar run; "
-                        f"implementation cost {finding['one_time_implementation_cost']['estimated_model_calls']:g} "
-                        f"call(s); complexity {finding['complexity']}."
-                    ),
-                ]
-            )
-            if categories:
-                lines.extend(["", "Helper categories: " + ", ".join(categories) + "."])
-            assumptions = recurrence.get("assumptions", [])
-            if assumptions:
-                lines.extend(["", "Assumptions: " + "; ".join(assumptions)])
-            lines.append("")
+        lines.extend(["No outstanding findings.", ""])
+    for finding in findings:
+        affected = finding.get("primary_call_ids") or finding.get(
+            "affected_call_ids", []
+        )
+        evidence_calls = finding.get("affected_call_ids", [])
+        recurrence = finding.get("recurrence", {})
+        owner = finding.get("producer_owner") or finding.get("producer_type")
+        lines.extend(
+            [
+                f"## {finding['title']}",
+                "",
+                f"Problem: {finding['problem_summary']} The owning producer is {owner}.",
+                "",
+                (
+                    f"Evidence: {finding.get('source_surface', 'selected surface')} "
+                    f"confirmed {len(evidence_calls)} affected model call(s); exact "
+                    "call references remain in the retained analysis result."
+                ),
+                "",
+                f"Fix: {finding['proposed_durable_control']}",
+                "",
+                "Verification: " + "; ".join(finding["targeted_verification"]),
+                "",
+                (
+                    "Savings: "
+                    f"{len(affected)} deduplicated observed call(s); "
+                    f"{_finding_savings(finding):g} estimated call(s) per similar run; "
+                    f"implementation cost {finding['one_time_implementation_cost']['estimated_model_calls']:g} "
+                    f"call(s); complexity {finding['complexity']}."
+                ),
+            ]
+        )
+        assumptions = recurrence.get("assumptions", [])
+        if assumptions:
+            lines.extend(["", "Assumptions: " + "; ".join(assumptions)])
+        lines.append("")
     risks = final.get("plausible_risks", [])
     lines.extend(["## Plausible but unverified", ""])
     if not risks:
         lines.extend(["None.", ""])
     for risk in risks:
         verification = risk.get("verification_needed", [])
-        why = (
-            "The retained evidence did not contain enough causal detail to establish "
-            "this as avoidable rather than required behavior."
-        )
         lines.extend(
             [
-                f"- {risk['id']}: {risk['description']} {why} "
-                f"To confirm it: {'; '.join(verification)}",
+                f"### {risk['description']}",
+                "",
+                f"Observed: {risk['description']}",
+                "",
+                "Unknown: whether the observed sequence was avoidable or required.",
+                "",
+                (
+                    "Why not confirmed: the retained evidence did not contain enough "
+                    "causal detail to choose between those explanations without "
+                    "speculation."
+                ),
+                "",
+                "How to confirm: " + "; ".join(verification),
                 "",
             ]
         )
