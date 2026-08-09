@@ -46,6 +46,8 @@ INDEX_SCHEMA = "ceratops-credit-analysis-index-record.v1"
 BATCH_STATE_SCHEMA = "ceratops-credit-analysis-batch-state.v1"
 BATCH_INDEX_SCHEMA = "ceratops-credit-analysis-batch-index-record.v1"
 EVIDENCE_NARRATIVE_LIMIT = 1200
+PACKET_CALL_DETAIL_CHAR_BUDGET = 12_000
+PACKET_REVIEW_DETAIL_CHAR_BUDGET = 8_000
 STATE_VERSION = 1
 BATCH_STATE_VERSION = 1
 STATE_FIELDS = {
@@ -1268,6 +1270,30 @@ def _call_signal_score(call: Mapping[str, Any], focused_runs: set[str]) -> int:
     return score
 
 
+def _json_chars(value: Any) -> int:
+    return len(json.dumps(value, ensure_ascii=False, separators=(",", ":")))
+
+
+def _budgeted_values(
+    values: Sequence[Any],
+    *,
+    text_limit: int,
+    character_budget: int,
+) -> list[Any]:
+    """Retain the highest-priority prepared values within one packet budget."""
+
+    included: list[Any] = []
+    used = 2
+    for value in values:
+        bounded = _bounded_value(value, text_limit=text_limit)
+        size = _json_chars(bounded) + int(bool(included))
+        if included and used + size > character_budget:
+            continue
+        included.append(bounded)
+        used += size
+    return included
+
+
 def _packet_call(call: Mapping[str, Any], focused_runs: set[str]) -> dict[str, Any]:
     semantics: list[dict[str, Any]] = []
     for raw in call.get("semantic_actions", []):
@@ -1313,13 +1339,170 @@ def _packet_call(call: Mapping[str, Any], focused_runs: set[str]) -> dict[str, A
     }
 
 
-def _candidate_groups(
+def _detail_packet_calls(
     candidates: Sequence[str],
-    selected: set[str],
-    evidence: Mapping[str, Any],
+    call_by_id: Mapping[str, Mapping[str, Any]],
+    focused_runs: set[str],
 ) -> list[dict[str, Any]]:
+    """Select extra high-signal detail by packet size, not as a coverage proxy."""
+
+    positions = {call_id: index for index, call_id in enumerate(candidates)}
+    by_turn: defaultdict[str, list[str]] = defaultdict(list)
+    for call_id in candidates:
+        by_turn[str(call_by_id[call_id]["turn_id"])].append(call_id)
+    boundaries = {
+        call_id
+        for turn_calls in by_turn.values()
+        for call_id in (turn_calls[0], turn_calls[-1])
+    }
+    ranked = sorted(
+        candidates,
+        key=lambda call_id: (
+            -_call_signal_score(call_by_id[call_id], focused_runs),
+            -int(call_id in boundaries),
+            positions[call_id],
+        ),
+    )
+    prepared = [
+        _packet_call(call_by_id[call_id], focused_runs) for call_id in ranked
+    ]
+    included = _budgeted_values(
+        prepared,
+        text_limit=700,
+        character_budget=PACKET_CALL_DETAIL_CHAR_BUDGET,
+    )
+    selected = {str(call["call_id"]) for call in included}
+    return [
+        _packet_call(call_by_id[call_id], focused_runs)
+        for call_id in candidates
+        if call_id in selected
+    ]
+
+
+def _size_band(value: Any) -> str:
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        return "unknown"
+    if value == 0:
+        return "zero"
+    if value < 1_000:
+        return "under-1k"
+    if value < 20_000:
+        return "1k-20k"
+    if value < 100_000:
+        return "20k-100k"
+    return "100k-plus"
+
+
+def _observable_call_signature(
+    call: Mapping[str, Any],
+    focused_runs: set[str],
+    *,
+    run_terminal: bool,
+) -> dict[str, Any]:
+    """Describe only mechanically observable traits; this is not a judgment."""
+
+    semantic_actions = sorted(
+        {
+            ":".join(
+                part
+                for part in (
+                    str(action.get("kind", "unknown")),
+                    str(action.get("name", "unknown")),
+                )
+                if part
+            )
+            for action in call.get("semantic_actions", [])
+            if isinstance(action, Mapping)
+        }
+    )
+    tool_names: set[str] = set()
+    signals: set[str] = set()
+    argument_chars = 0
+    result_chars = 0
+    for action in call.get("tool_results", []):
+        if not isinstance(action, Mapping):
+            continue
+        name = str(action.get("name", "unknown"))
+        tool_names.add(name)
+        lowered = name.casefold()
+        if any(token in lowered for token in ("wait", "poll", "write_stdin")):
+            signals.add("wait-or-poll")
+        for key, label in (
+            ("repeated", "repeated"),
+            ("retry", "retry"),
+            ("explicit_failure", "explicit-failure"),
+        ):
+            if action.get(key):
+                signals.add(label)
+        outcomes = action.get("outcomes")
+        if isinstance(outcomes, Mapping):
+            for key, label in (
+                ("nonzero_process_result", "nonzero-process-result"),
+                ("structured_tool_error", "structured-tool-error"),
+                ("timeout", "timeout"),
+                ("termination", "termination"),
+            ):
+                if outcomes.get(key):
+                    signals.add(label)
+        raw_argument_chars = action.get("argument_chars")
+        if isinstance(raw_argument_chars, int) and not isinstance(
+            raw_argument_chars, bool
+        ):
+            argument_chars += max(raw_argument_chars, 0)
+        raw_result_chars = action.get("result_chars")
+        if isinstance(raw_result_chars, int) and not isinstance(
+            raw_result_chars, bool
+        ):
+            result_chars += max(raw_result_chars, 0)
+    tokens = call.get("tokens")
+    total_tokens = tokens.get("total_tokens") if isinstance(tokens, Mapping) else None
+    return {
+        "semantic_actions": semantic_actions,
+        "tools": sorted(tool_names),
+        "signals": sorted(signals),
+        "argument_size": _size_band(argument_chars),
+        "result_size": _size_band(result_chars),
+        "token_size": _size_band(total_tokens),
+        "has_user_context": bool(call.get("user_message_ids")),
+        "focused_run": call.get("turn_id") in focused_runs,
+        "run_terminal": run_terminal,
+    }
+
+
+def _cluster_representative(
+    call: Mapping[str, Any],
+    focused_runs: set[str],
+) -> dict[str, Any]:
+    semantic_actions = []
+    for action in call.get("semantic_actions", []):
+        if not isinstance(action, Mapping):
+            continue
+        semantic_actions.append(
+            {
+                key: _truncate_text(action[key], 120)
+                for key in ("kind", "name", "summary")
+                if key in action
+            }
+        )
+    return {
+        "call_id": call["call_id"],
+        "index": call["index"],
+        "signal_score": _call_signal_score(call, focused_runs),
+        "semantic_actions": semantic_actions[:2],
+        "user_message_ids": call.get("user_message_ids", []),
+    }
+
+
+def _candidate_clusters(
+    candidates: Sequence[str],
+    evidence: Mapping[str, Any],
+    focused_runs: set[str],
+) -> list[dict[str, Any]]:
+    """Partition every candidate into compact per-turn observable clusters."""
+
     candidate_set = set(candidates)
-    groups: list[dict[str, Any]] = []
+    clusters: list[dict[str, Any]] = []
+    covered: list[str] = []
     for run in evidence["runs"]:
         calls = [
             call
@@ -1328,52 +1511,61 @@ def _candidate_groups(
         ]
         if not calls:
             continue
-        tool_names: Counter[str] = Counter()
-        signals: Counter[str] = Counter()
+        run_calls = [
+            call for call in run.get("calls", []) if isinstance(call, Mapping)
+        ]
+        terminal_id = run_calls[-1]["call_id"] if run_calls else None
+        grouped: dict[str, list[Mapping[str, Any]]] = {}
+        signatures: dict[str, dict[str, Any]] = {}
         for call in calls:
-            for action in call.get("tool_results", []):
-                if not isinstance(action, Mapping):
-                    continue
-                tool_names[str(action.get("name", "unknown"))] += 1
-                outcomes = action.get("outcomes", {})
-                if action.get("repeated"):
-                    signals["repeated"] += 1
-                if action.get("retry"):
-                    signals["retry"] += 1
-                if action.get("explicit_failure"):
-                    signals["explicit_failure"] += 1
-                if isinstance(outcomes, Mapping) and outcomes.get(
-                    "nonzero_process_result"
-                ):
-                    signals["nonzero_process_result"] += 1
-                result_chars = action.get("result_chars")
-                if isinstance(result_chars, int) and result_chars >= 20_000:
-                    signals["result_at_least_20k_chars"] += 1
-                name = str(action.get("name", "")).casefold()
-                if any(token in name for token in ("wait", "poll", "write_stdin")):
-                    signals["wait_or_poll"] += 1
-        totals = run.get("totals", {})
-        groups.append(
-            {
-                "turn_id": run["turn_id"],
-                "candidate_call_count": len(calls),
-                "selected_call_count": sum(
-                    1 for call in calls if call["call_id"] in selected
+            signature = _observable_call_signature(
+                call,
+                focused_runs,
+                run_terminal=call["call_id"] == terminal_id,
+            )
+            key = json.dumps(signature, sort_keys=True, separators=(",", ":"))
+            grouped.setdefault(key, []).append(call)
+            signatures[key] = signature
+        for key, members in grouped.items():
+            representative = max(
+                members,
+                key=lambda call: (
+                    _call_signal_score(call, focused_runs),
+                    -int(call["index"]),
                 ),
-                "call_index_ranges": _integer_ranges(
-                    [int(call["index"]) for call in calls]
-                ),
-                "model_calls_in_run": run["model_calls"],
-                "total_tokens": totals.get("total_tokens"),
-                "duration_ms": totals.get("duration_ms"),
-                "top_tools": [
-                    {"name": name, "count": count}
-                    for name, count in tool_names.most_common(8)
-                ],
-                "signals": dict(sorted(signals.items())),
-            }
-        )
-    return groups
+            )
+            call_ids = [str(call["call_id"]) for call in members]
+            covered.extend(call_ids)
+            token_total = sum(
+                int(call["tokens"].get("total_tokens", 0))
+                for call in members
+                if isinstance(call.get("tokens"), Mapping)
+                and isinstance(call["tokens"].get("total_tokens"), int)
+                and not isinstance(call["tokens"].get("total_tokens"), bool)
+            )
+            clusters.append(
+                {
+                    "cluster_id": f"cluster-{len(clusters) + 1:03d}",
+                    "turn_id": run["turn_id"],
+                    "call_count": len(members),
+                    "selectors": [
+                        {
+                            "turn_id": run["turn_id"],
+                            "ranges": _integer_ranges(
+                                [int(call["index"]) for call in members]
+                            ),
+                        }
+                    ],
+                    "observable_signature": signatures[key],
+                    "total_tokens": token_total,
+                    "representative": _cluster_representative(
+                        representative, focused_runs
+                    ),
+                }
+            )
+    if len(covered) != len(candidates) or set(covered) != candidate_set:
+        raise CreditAnalysisError("candidate clusters do not partition the queue")
+    return clusters
 
 
 def _run_outcome_calls(
@@ -1393,7 +1585,10 @@ def _run_outcome_calls(
         last_by_turn[turn_id] = call
     selected_turns = focused_runs | set(ordered_turns[-recent_limit:])
     return [
-        _packet_call(last_by_turn[turn_id], focused_runs)
+        {
+            "turn_id": turn_id,
+            **_cluster_representative(last_by_turn[turn_id], focused_runs),
+        }
         for turn_id in ordered_turns
         if turn_id in selected_turns
     ]
@@ -1416,6 +1611,12 @@ def _surface_decision_contract(
             {"call_ids": ["exact-call-id"]},
             {"turn_id": "exact-turn-id", "ranges": [[1, 3], [7, 7]]},
         ],
+        "cluster_rule": (
+            "Review every candidate cluster. Reuse a cluster's selectors only when "
+            "the judgment applies to every selected call; otherwise select the "
+            "supported subset. Clusters describe observable similarity and are not "
+            "deterministic classifications."
+        ),
         "computed_by_controller": [
             "identity and artifact paths",
             "affected call expansion and evidence references",
@@ -1538,19 +1739,27 @@ def _surface_pass_packet(
     candidates = list(pending["candidate_call_ids"])
     call_by_id = {call["call_id"]: call for call in _all_calls(evidence)}
     focused_runs = set(evidence["focused_semantic_context"]["run_ids"])
-    selected_ids = candidates
-    selected = set(selected_ids)
+    clusters = _candidate_clusters(candidates, evidence, focused_runs)
+    detailed_calls = _detail_packet_calls(candidates, call_by_id, focused_runs)
+    detailed_ids = [str(call["call_id"]) for call in detailed_calls]
     preparation, review_records, exclusions = _model_review_records_for_calls(
-        evidence, selected_ids, focused_runs
+        evidence, candidates, focused_runs
     )
-    selected_messages = _user_messages_for_calls(evidence, selected_ids)
+    user_messages = _user_messages_for_calls(evidence, candidates)
     run_outcomes = _run_outcome_calls(evidence, focused_runs)
     bounded_messages = [
-        _bounded_value(message, text_limit=600) for message in selected_messages
+        _bounded_value(message, text_limit=400) for message in user_messages
     ]
-    bounded_records = [
-        _bounded_value(record, text_limit=450) for record in review_records
-    ]
+    detailed_id_set = set(detailed_ids)
+    prioritized_records = sorted(
+        review_records,
+        key=lambda record: int(record.get("call_id") not in detailed_id_set),
+    )
+    bounded_records = _budgeted_values(
+        prioritized_records,
+        text_limit=450,
+        character_budget=PACKET_REVIEW_DETAIL_CHAR_BUDGET,
+    )
     return {
         **common,
         "internal": False,
@@ -1563,18 +1772,16 @@ def _surface_pass_packet(
             "deterministic_totals": evidence["totals"],
             "focused_run_selection": evidence["focused_semantic_context"],
             "candidate_call_count": len(candidates),
-            "selected_call_count": len(selected_ids),
-            "candidate_groups": _candidate_groups(candidates, selected, evidence),
-            "selected_calls": [
-                _packet_call(call_by_id[call_id], focused_runs)
-                for call_id in selected_ids
-            ],
-            "selected_user_message_count": len(selected_messages),
-            "included_user_message_count": len(bounded_messages),
-            "selected_user_messages": bounded_messages,
+            "candidate_cluster_count": len(clusters),
+            "candidate_clusters": clusters,
+            "detailed_call_count": len(detailed_calls),
+            "detailed_calls": detailed_calls,
+            "detail_character_budget": PACKET_CALL_DETAIL_CHAR_BUDGET,
+            "candidate_user_message_count": len(user_messages),
+            "candidate_user_messages": bounded_messages,
             "model_review_preparation": _bounded_value(preparation, text_limit=450),
             "model_review_exclusions": _bounded_value(exclusions, text_limit=450),
-            "model_review_record_count": len(review_records),
+            "relevant_model_review_record_count": len(review_records),
             "included_model_review_record_count": len(bounded_records),
             "included_model_review_records": bounded_records,
             "run_outcome_purpose": (
@@ -1583,7 +1790,7 @@ def _surface_pass_packet(
             ),
             "run_outcome_count": len(run_outcomes),
             "run_outcomes": run_outcomes,
-            "full_candidate_and_review_evidence_retained": True,
+            "complete_evidence_retained_on_disk": True,
         },
     }
 
@@ -3857,7 +4064,6 @@ def _render_final_report(final: Mapping[str, Any]) -> str:
         affected = finding.get("primary_call_ids") or finding.get(
             "affected_call_ids", []
         )
-        evidence_calls = finding.get("affected_call_ids", [])
         recurrence = finding.get("recurrence", {})
         owner = finding.get("producer_owner") or finding.get("producer_type")
         lines.extend(

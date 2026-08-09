@@ -648,7 +648,9 @@ def surface_decision_record(
 
     findings: list[dict[str, Any]] = []
     if finding_id is not None:
-        call_id = packet["evidence"]["selected_calls"][0]["call_id"]
+        cluster_selectors = packet["evidence"]["candidate_clusters"][0][
+            "selectors"
+        ]
         helper_categories = (
             ["noisy-or-incomplete-result-contract"]
             if packet["surface_id"] == "helper-contracts"
@@ -663,7 +665,7 @@ def surface_decision_record(
                     "model call because its producer lacked a complete control."
                 ),
                 "waste_kind": "model-calls",
-                "affected_selectors": [{"call_ids": [call_id]}],
+                "affected_selectors": cluster_selectors,
                 "additional_evidence_selectors": [],
                 "evidence_narrative": (
                     f"The {packet['surface_id']} evidence shows a repeated semantic "
@@ -1466,7 +1468,7 @@ def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
     tmp_path: pathlib.Path,
 ) -> None:
     request, session, _ = credit_analysis_request(
-        tmp_path, extra_completed_turns=28
+        tmp_path, extra_completed_turns=50
     )
     started = run_credit_analysis_workflow("start", "--request", str(request))
     assert started.returncode == 0, started.stderr
@@ -1486,22 +1488,46 @@ def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
         "delivery_model_calls": 1,
         "bookkeeping_model_calls": 0,
     }
-    assert len(started.stdout.encode("utf-8")) < 140_000
+    assert len(started.stdout.encode("utf-8")) < 90_000
     assert packet["evidence"]["candidate_call_count"] > 30
-    assert packet["evidence"]["selected_call_count"] == packet["evidence"][
+    clusters = packet["evidence"]["candidate_clusters"]
+    assert packet["evidence"]["candidate_cluster_count"] == len(clusters)
+    state_path = pathlib.Path(packet["submit_argv"][4])
+    pending_candidates = json.loads(state_path.read_text(encoding="utf-8"))[
+        "pending"
+    ]["candidate_call_ids"]
+    clustered_calls: list[str] = []
+    for cluster in clusters:
+        cluster_calls: list[str] = []
+        for selector in cluster["selectors"]:
+            for first, last in selector["ranges"]:
+                cluster_calls.extend(
+                    f"{selector['turn_id']}:{index}"
+                    for index in range(first, last + 1)
+                )
+        assert cluster["call_count"] == len(cluster_calls)
+        assert cluster["representative"]["call_id"] in cluster_calls
+        clustered_calls.extend(cluster_calls)
+    assert len(clustered_calls) == len(set(clustered_calls))
+    assert set(clustered_calls) == set(pending_candidates)
+    assert packet["evidence"]["detailed_call_count"] == len(
+        packet["evidence"]["detailed_calls"]
+    )
+    assert 0 < packet["evidence"]["detailed_call_count"] < packet["evidence"][
         "candidate_call_count"
     ]
-    assert len(packet["evidence"]["selected_calls"]) == packet["evidence"][
-        "candidate_call_count"
-    ]
-    assert packet["evidence"]["selected_user_message_count"] > 16
-    assert packet["evidence"]["included_user_message_count"] == packet["evidence"][
-        "selected_user_message_count"
-    ]
-    assert packet["evidence"]["included_model_review_record_count"] == packet[
+    assert {
+        call["call_id"] for call in packet["evidence"]["detailed_calls"]
+    }.issubset(pending_candidates)
+    assert packet["evidence"]["candidate_user_message_count"] > 16
+    assert len(packet["evidence"]["candidate_user_messages"]) == packet[
         "evidence"
-    ]["model_review_record_count"]
-    assert packet["evidence"]["model_review_record_count"] > 30
+    ]["candidate_user_message_count"]
+    assert packet["evidence"]["included_model_review_record_count"] < packet[
+        "evidence"
+    ]["relevant_model_review_record_count"]
+    assert packet["evidence"]["relevant_model_review_record_count"] > 30
+    assert packet["evidence"]["complete_evidence_retained_on_disk"] is True
     assert packet["evidence"]["run_outcome_count"] == len(
         packet["evidence"]["run_outcomes"]
     )
@@ -1513,7 +1539,6 @@ def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
     }
     assert outcome_by_turn["turn-1"]["index"] == 3
     assert outcome_by_turn["turn-2"]["index"] == 2
-    state_path = pathlib.Path(packet["submit_argv"][4])
     evidence_path = pathlib.Path(packet["retained_evidence_path"])
     evidence_text = evidence_path.read_text(encoding="utf-8")
     assert "ACTIVE_TAIL_MUST_NOT_BE_COLLECTED" not in evidence_text
@@ -1536,7 +1561,8 @@ def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
         assert packet["protocol_budget"]["semantic_call_number"] == semantic_number
         assert packet["action_reference"]["path"] == f"references/{surface_id}.md"
         assert packet["action_reference"]["content"]
-        assert packet["evidence"]["selected_calls"]
+        assert packet["evidence"]["candidate_clusters"]
+        assert packet["evidence"]["detailed_calls"]
         finding_id = f"e2e-{surface_id}"
         finding_ids.append(finding_id)
         risks: list[dict[str, Any]] = []
@@ -1558,7 +1584,7 @@ def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
                     "affected_selectors": [
                         {
                             "call_ids": [
-                                packet["evidence"]["selected_calls"][-1]["call_id"]
+                                packet["evidence"]["detailed_calls"][-1]["call_id"]
                             ]
                         }
                     ],
