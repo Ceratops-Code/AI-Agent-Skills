@@ -112,7 +112,7 @@ without repository deduplication.
 | `skills/ceratops-repo-lifecycle/scripts/run-deploy-operation.py` | Uses the shared validator for `deploy/deploy.yml`, executes ordered argv steps without a shell, and returns any optional declarative agent handoff. |
 | `skills/ceratops-repo-lifecycle/scripts/ship-repository.py` | Orchestrates scoped pre-push checking, guarded GitHub shipping, main synchronization, deployment, and resumable selected-source cleanup while preserving decision-complete blockers from delegated phases. |
 | `skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py` | Skill-lifecycle-owned source, metadata, runtime-input, contract, and portability validator used only by explicit skill workflows. |
-| `skills/ceratops-skill-lifecycle/scripts/fast-change.py` | Classifies and owns one eligible direct-release patch through declared Markdown lint, exact helper tests, targeted installation, commit, and failure compensation. |
+| `skills/ceratops-skill-lifecycle/scripts/fast-change.py` | Classifies exact structured replacements, generates their diff, and owns the eligible direct-release change through declared Markdown lint, exact helper tests, targeted installation, commit, and failure compensation. |
 
 Lifecycle helpers suppress successful subcommand output and print only compact
 JSON on success. This repo keeps scripts only where they add reusable safety
@@ -123,9 +123,9 @@ coherent change stays within declared files under existing selected skills,
 preserves helper boundaries, and has sufficient targeted checks. It may cover
 multiple files and skills. The repository lifecycle helper prepares
 `release/local`; one `fast-change.py` request then classifies the complete
-scope before mutation and owns patching, repository-declared Markdown lint,
-exact helper tests when required, targeted installation, staging, commit, and
-compensation.
+scope before mutation and owns exact-match validation, diff generation,
+application, repository-declared Markdown lint, exact helper tests when
+required, targeted installation, staging, commit, and compensation.
 
 Promotion and deployment are separate repository actions. `promote` assembles
 the selected branches into `release/local` without deployment;

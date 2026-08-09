@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
 """Apply one classified direct-release skill change with compensation.
 
-One JSON request declares the exact patch, selected runtime skills, existing
-behavior tests, and commit. The helper classifies the complete request before
-mutation, owns patch-to-commit orchestration, and touches only declared paths.
-Markdown patches run repository-declared lint; broad source and runtime
+One JSON request declares exact text replacements, selected runtime skills,
+existing behavior tests, and commit. The helper resolves each replacement
+against the indexed UTF-8 source, generates and validates the unified diff,
+then owns diff-to-commit orchestration and touches only declared paths.
+Markdown edits run repository-declared lint; broad source and runtime
 validation remain outside this helper.
 """
 
 from __future__ import annotations
 
 import argparse
+import difflib
 import json
 import os
 import pathlib
@@ -22,12 +24,12 @@ from dataclasses import dataclass
 from typing import Any
 
 
-REQUEST_VERSION = 1
+REQUEST_VERSION = 2
 REQUIRED_ROOT_FIELDS = {
     "version",
     "repo_root",
     "release_branch",
-    "patch",
+    "edits",
     "selected_skills",
     "removed_skills",
     "classification",
@@ -35,6 +37,8 @@ REQUIRED_ROOT_FIELDS = {
     "commit_message",
 }
 ROOT_FIELDS = REQUIRED_ROOT_FIELDS | {"install_root"}
+EDIT_FIELDS = {"path", "replacements"}
+REPLACEMENT_FIELDS = {"old", "new"}
 CLASSIFICATIONS = {"rules-only", "helper"}
 RELEASE_BRANCH = "release/local"
 PYTEST_NODE_RE = re.compile(r"^tests/[A-Za-z0-9_./-]+\.py::\S+$")
@@ -62,8 +66,24 @@ class DecisionRequired(FastChangeError):
 
 
 @dataclass(frozen=True)
+class ReplacementSpec:
+    """One exact, ordered replacement inside an existing text file."""
+
+    old: str
+    new: str
+
+
+@dataclass(frozen=True)
+class EditSpec:
+    """All ordered replacements declared for one unique repository path."""
+
+    path: str
+    replacements: tuple[ReplacementSpec, ...]
+
+
+@dataclass(frozen=True)
 class ChangeSpec:
-    """Validated request plus mechanically extracted patch paths."""
+    """Validated request plus the helper-generated patch and edit paths."""
 
     repo_root: pathlib.Path
     release_branch: str
@@ -196,9 +216,142 @@ def _string_list(value: object, label: str) -> tuple[str, ...]:
     return result
 
 
+def _closed_fields(
+    value: Mapping[str, object], expected: set[str], label: str
+) -> None:
+    """Require one nested request object to use only its declared fields."""
+
+    actual = set(value)
+    if actual == expected:
+        return
+    missing = sorted(expected - actual)
+    extra = sorted(actual - expected)
+    detail: list[str] = []
+    if missing:
+        detail.append("missing " + ", ".join(missing))
+    if extra:
+        detail.append("unknown " + ", ".join(extra))
+    raise DecisionRequired(f"{label} fields are invalid: {'; '.join(detail)}")
+
+
+def _edit_specs(value: object) -> tuple[EditSpec, ...]:
+    """Validate the closed structured-edit request before reading targets."""
+
+    if (
+        not isinstance(value, Sequence)
+        or isinstance(value, (str, bytes))
+        or not value
+    ):
+        raise DecisionRequired("edits must be a nonempty list")
+    edits: list[EditSpec] = []
+    seen_paths: set[str] = set()
+    for edit_index, raw_edit in enumerate(value, start=1):
+        if not isinstance(raw_edit, Mapping):
+            raise DecisionRequired(f"edit {edit_index} must be an object")
+        _closed_fields(raw_edit, EDIT_FIELDS, f"edit {edit_index}")
+        path = raw_edit["path"]
+        if not isinstance(path, str) or not path:
+            raise DecisionRequired(f"edit {edit_index} path must be nonempty text")
+        if path in seen_paths:
+            raise DecisionRequired(f"edit paths must be unique: {path}")
+        seen_paths.add(path)
+        raw_replacements = raw_edit["replacements"]
+        if (
+            not isinstance(raw_replacements, Sequence)
+            or isinstance(raw_replacements, (str, bytes))
+            or not raw_replacements
+        ):
+            raise DecisionRequired(
+                f"edit {edit_index} replacements must be a nonempty list"
+            )
+        replacements: list[ReplacementSpec] = []
+        for replacement_index, raw_replacement in enumerate(
+            raw_replacements, start=1
+        ):
+            label = f"edit {edit_index} replacement {replacement_index}"
+            if not isinstance(raw_replacement, Mapping):
+                raise DecisionRequired(f"{label} must be an object")
+            _closed_fields(raw_replacement, REPLACEMENT_FIELDS, label)
+            old = raw_replacement["old"]
+            new = raw_replacement["new"]
+            if not isinstance(old, str) or not old:
+                raise DecisionRequired(f"{label} old must be nonempty text")
+            if not isinstance(new, str):
+                raise DecisionRequired(f"{label} new must be text")
+            if old == new:
+                raise DecisionRequired(f"{label} must change the matched text")
+            replacements.append(ReplacementSpec(old=old, new=new))
+        edits.append(EditSpec(path=path, replacements=tuple(replacements)))
+    return tuple(edits)
+
+
+def _indexed_text(repo_root: pathlib.Path, path: str) -> str:
+    """Read one exact indexed UTF-8 blob without mutating the clean worktree."""
+
+    result = subprocess.run(
+        ["git", "-C", str(repo_root), "show", f":{path}"],
+        cwd=repo_root,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode:
+        detail = (result.stderr or result.stdout).decode(
+            "utf-8", errors="replace"
+        ).strip()
+        raise DecisionRequired(
+            f"edit target must be an indexed file: {path}"
+            + (f": {detail}" if detail else "")
+        )
+    try:
+        return result.stdout.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise DecisionRequired(f"edit target must be UTF-8 text: {path}") from exc
+
+
+def _unified_diff(path: str, old: str, new: str) -> str:
+    """Generate one Git-applicable diff, including final-newline markers."""
+
+    lines: list[str] = []
+    for line in difflib.unified_diff(
+        old.splitlines(keepends=True),
+        new.splitlines(keepends=True),
+        fromfile=f"a/{path}",
+        tofile=f"b/{path}",
+        lineterm="\n",
+    ):
+        if line.endswith("\n"):
+            lines.append(line)
+        else:
+            lines.extend((line + "\n", "\\ No newline at end of file\n"))
+    return "".join(lines)
+
+
+def _generated_patch(repo_root: pathlib.Path, edits: Sequence[EditSpec]) -> str:
+    """Resolve exact replacements and return their deterministic unified diff."""
+
+    patches: list[str] = []
+    for edit_index, edit in enumerate(edits, start=1):
+        original = _indexed_text(repo_root, edit.path)
+        updated = original
+        for replacement_index, replacement in enumerate(
+            edit.replacements, start=1
+        ):
+            count = updated.count(replacement.old)
+            if count != 1:
+                raise DecisionRequired(
+                    f"edit {edit_index} replacement {replacement_index} old text "
+                    f"must occur exactly once in {edit.path}; found {count}"
+                )
+            updated = updated.replace(replacement.old, replacement.new, 1)
+        if updated == original:
+            raise DecisionRequired(f"edit {edit_index} has no net change: {edit.path}")
+        patches.append(_unified_diff(edit.path, original, updated))
+    return "".join(patches)
+
+
 def _patch_paths(repo_root: pathlib.Path, patch: str) -> tuple[str, ...]:
     if not patch.strip():
-        raise DecisionRequired("patch must not be empty")
+        raise DecisionRequired("structured edits produced no patch")
     check = _run(
         ["git", "-C", str(repo_root), "apply", "--check", "-"],
         cwd=repo_root,
@@ -206,7 +359,7 @@ def _patch_paths(repo_root: pathlib.Path, patch: str) -> tuple[str, ...]:
     )
     if check.returncode:
         detail = (check.stderr or check.stdout).strip()
-        raise DecisionRequired(f"patch does not apply cleanly: {detail}")
+        raise DecisionRequired(f"generated patch does not apply cleanly: {detail}")
     summary = _checked(
         ["git", "-C", str(repo_root), "apply", "--summary", "-"],
         cwd=repo_root,
@@ -215,7 +368,7 @@ def _patch_paths(repo_root: pathlib.Path, patch: str) -> tuple[str, ...]:
     )
     if summary:
         raise DecisionRequired(
-            "fast-change patch cannot create, delete, rename, or change file modes"
+            "fast-change edits cannot create, delete, rename, or change file modes"
         )
     numstat = _checked(
         ["git", "-C", str(repo_root), "apply", "--numstat", "-"],
@@ -227,10 +380,10 @@ def _patch_paths(repo_root: pathlib.Path, patch: str) -> tuple[str, ...]:
     for line in numstat.splitlines():
         parts = line.split("\t", 2)
         if len(parts) != 3 or parts[0] == "-" or parts[1] == "-":
-            raise DecisionRequired("fast-change patch must contain text-file modifications")
+            raise DecisionRequired("fast-change edits must modify text files")
         paths.append(parts[2])
     if not paths or len(set(paths)) != len(paths):
-        raise DecisionRequired("patch paths must be nonempty and unique")
+        raise DecisionRequired("generated patch paths must be nonempty and unique")
     return tuple(paths)
 
 
@@ -312,7 +465,7 @@ def classify_request(path: pathlib.Path) -> ChangeSpec:
     request = _request(path)
     repo_value = request["repo_root"]
     release_branch = request["release_branch"]
-    patch = request["patch"]
+    edits = _edit_specs(request["edits"])
     classification = request["classification"]
     commit_message = request["commit_message"]
     install_value = request.get("install_root")
@@ -320,8 +473,6 @@ def classify_request(path: pathlib.Path) -> ChangeSpec:
         raise DecisionRequired("repo_root must be nonempty text")
     if release_branch != RELEASE_BRANCH:
         raise DecisionRequired(f"release_branch must be {RELEASE_BRANCH}")
-    if not isinstance(patch, str):
-        raise DecisionRequired("patch must be text")
     if classification not in CLASSIFICATIONS:
         raise DecisionRequired(
             "classification must be rules-only or helper"
@@ -365,7 +516,7 @@ def classify_request(path: pathlib.Path) -> ChangeSpec:
             or not (root / "SKILL.md").is_file()
         ):
             raise DecisionRequired(f"selected skill is not an existing source: {skill}")
-    paths = _patch_paths(repo_root, patch)
+    paths = tuple(edit.path for edit in edits)
     owners: set[str] = set()
     has_helper = False
     for value in paths:
@@ -377,22 +528,22 @@ def classify_request(path: pathlib.Path) -> ChangeSpec:
             or windows.drive
             or ".." in pure.parts
         ):
-            raise DecisionRequired(f"patch path is unsafe: {value}")
+            raise DecisionRequired(f"edit path is unsafe: {value}")
         target = repo_root / pathlib.Path(*pure.parts)
         try:
             target.resolve(strict=True).relative_to(repo_root)
         except (FileNotFoundError, ValueError) as exc:
             raise DecisionRequired(
-                f"patch target must stay inside the repository: {value}"
+                f"edit target must stay inside the repository: {value}"
             ) from exc
         if target.is_symlink() or not target.is_file():
-            raise DecisionRequired(f"patch target must be an existing file: {value}")
+            raise DecisionRequired(f"edit target must be an existing file: {value}")
         matches = [
             skill for skill in selected if _inside_skill(pure, skill)
         ]
         if len(matches) != 1:
             raise DecisionRequired(
-                f"patch target must stay inside one selected skill: {value}"
+                f"edit target must stay inside one selected skill: {value}"
             )
         owner = matches[0]
         owners.add(owner)
@@ -409,8 +560,12 @@ def classify_request(path: pathlib.Path) -> ChangeSpec:
     missing = sorted(set(selected) - owners)
     if missing:
         raise DecisionRequired(
-            "every selected skill requires a patch path: " + ", ".join(missing)
+            "every selected skill requires an edit path: " + ", ".join(missing)
         )
+    patch = _generated_patch(repo_root, edits)
+    generated_paths = _patch_paths(repo_root, patch)
+    if generated_paths != paths:
+        raise DecisionRequired("generated patch paths differ from declared edit paths")
     if classification == "rules-only":
         if has_helper:
             raise DecisionRequired(
@@ -538,20 +693,20 @@ def execute(spec: ChangeSpec) -> dict[str, object]:
     staged = False
     runtime_activated = False
     committed = False
-    phase = "patch"
+    phase = "apply"
     try:
         _git(
             spec.repo_root,
             "apply",
             "-",
             input_text=spec.patch,
-            failure="patch application failed",
+            failure="generated diff application failed",
         )
         patch_applied = True
         changed = _working_paths(spec.repo_root)
         if changed != set(spec.paths):
             raise FastChangeError(
-                "applied diff escaped the declared patch paths"
+                "applied diff escaped the declared edit paths"
             )
         _git(
             spec.repo_root,
@@ -604,7 +759,7 @@ def execute(spec: ChangeSpec) -> dict[str, object]:
             or _working_paths(spec.repo_root) != set(spec.paths)
         ):
             raise FastChangeError(
-                "Git staging contains undeclared or unstaged patch paths"
+                "Git staging contains undeclared or unstaged edit paths"
             )
         phase = "commit"
         _git(
@@ -681,14 +836,14 @@ def _preserved_request_context(path: pathlib.Path) -> dict[str, object]:
         return {}
     if not isinstance(value, Mapping):
         return {}
-    patch = value.get("patch")
     files: list[str] = []
-    if isinstance(patch, str):
-        for line in patch.splitlines():
-            if not line.startswith("+++ b/"):
+    edits = value.get("edits")
+    if isinstance(edits, Sequence) and not isinstance(edits, (str, bytes)):
+        for edit in edits:
+            if not isinstance(edit, Mapping):
                 continue
-            candidate = line[6:]
-            if candidate and candidate not in files:
+            candidate = edit.get("path")
+            if isinstance(candidate, str) and candidate and candidate not in files:
                 files.append(candidate)
     skills: list[str] = []
     for field in ("selected_skills", "removed_skills"):

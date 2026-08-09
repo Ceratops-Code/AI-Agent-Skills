@@ -62,10 +62,11 @@ Infer missing inputs from the current repo state before asking.
   remains self-contained and never dispatches to lifecycle runtime code.
 - Use `fast-change` directly on verified primary `release/local` whenever
   its action contract and one-request orchestrator accept the complete intended
-  scope. The orchestrator owns patch, repository-declared Markdown lint, exact
-  helper tests, targeted installation, commit, and compensation. Use a task
-  worktree for `update` and for `create` outside this repo; new Ceratops skills
-  continue through repository lifecycle `promote-and-deploy`.
+  scope. The orchestrator owns exact-replacement validation, diff generation,
+  repository-declared Markdown lint, exact helper tests, targeted installation,
+  commit, and compensation. Use a task worktree for `update` and for `create`
+  outside this repo; new Ceratops skills continue through repository lifecycle
+  `promote-and-deploy`.
 
 ### Boundaries
 

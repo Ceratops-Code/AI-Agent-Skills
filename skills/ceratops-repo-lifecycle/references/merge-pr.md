@@ -12,28 +12,37 @@ detected before merge.
 
 ### Script Bundle
 
-- Run package commands from `skills/ceratops-repo-lifecycle/scripts` in a
-  source checkout or `scripts` in the installed skill folder.
+- (D) Invocation contract: bind `<skill-root>` to the directory containing this
+  action's parent `SKILL.md`; require
+  `<skill-root>/scripts/github_pr_workflow/__main__.py` once before the first
+  call. Invoke that exact path with the process working directory equal to the
+  target repository root; stop if it is absent, and never use `<skill-root>` or
+  its `scripts` subtree as the process working directory.
 - (D) Validate and merge helper:
-  `python -m github_pr_workflow merge --pr NUMBER_OR_URL --repo-root PATH
+  `python "<skill-root>/scripts/github_pr_workflow/__main__.py"
+  merge --pr NUMBER_OR_URL --repo-root PATH
   --repo OWNER/REPO [--expected-head SHA] [--admin] [--delete-branch]
   [--merge-method merge|squash|rebase]`.
   `--admin` is the explicit authorization for the helper's narrowly scoped,
   temporary admin-enforcement bypass when required review is the sole accepted
   blocker for an immediate merge.
 - (D) Post-merge sync helper:
-  `python -m github_pr_workflow sync --repo-root PATH --main-branch main
+  `python "<skill-root>/scripts/github_pr_workflow/__main__.py"
+  sync --repo-root PATH --main-branch main
   --remote-name origin [--align-branch BRANCH]`.
 - (D) PR readiness contract check:
-  `python -m github_pr_workflow validate
+  `python "<skill-root>/scripts/github_pr_workflow/__main__.py"
+  validate
   --pr NUMBER_OR_URL --cwd PATH --allow-admin-review-bypass` for direct admin
   merges.
 - (D) Codex review gate:
-  `python -m github_pr_workflow wait
+  `python "<skill-root>/scripts/github_pr_workflow/__main__.py"
+  wait
   --pr NUMBER_OR_URL --repo OWNER/REPO --cwd PATH --wait-seconds 260
   --interval-seconds 10 --json`
 - (D) Codex thread resolver:
-  `python -m github_pr_workflow resolve
+  `python "<skill-root>/scripts/github_pr_workflow/__main__.py"
+  resolve
   --thread-id THREAD_ID --json`
 - (D) Branch deletion policy check for reusable release or integration head
   branches: `gh repo view OWNER/REPO --json deleteBranchOnMerge`
@@ -77,14 +86,17 @@ before asking.
 
 #### 2. Run live PR checks first
 
-- (D) Prefer `python -m github_pr_workflow merge --repo-root PATH --repo
+- (D) Prefer `python
+  "<skill-root>/scripts/github_pr_workflow/__main__.py"
+  merge --repo-root PATH --repo
   OWNER/REPO` for ready direct merges; it runs PR readiness, waits on the Codex
   review and conversation-resolution gates, revalidates CI and requested-change
   state, merges the exact head, verifies the live PR state, restores any
   unfinished admin-enforcement checkpoint, and emits compact JSON.
 - (D) When not using the merge subcommand, run
-  `python -m github_pr_workflow validate --cwd PATH` before merge or auto-merge
-  decisions and run `python -m github_pr_workflow wait
+  `python "<skill-root>/scripts/github_pr_workflow/__main__.py"
+  validate --cwd PATH` before merge or auto-merge decisions and run `python
+  "<skill-root>/scripts/github_pr_workflow/__main__.py" wait
   --pr NUMBER_OR_URL --repo OWNER/REPO --cwd PATH --wait-seconds 260
   --interval-seconds 10 --json`; it must return zero active threads before merge.
 - If active Codex threads appear, fix only narrow authorized issues, push,
@@ -123,7 +135,8 @@ before asking.
   head, observed merge state, and the dedicated-endpoint recovery action.
 - If workflow refs or Actions permissions changed, confirm no mutable external
   action refs violate the repo policy.
-- Use `python -m github_pr_workflow merge --repo-root PATH --repo OWNER/REPO`
+- Use `python "<skill-root>/scripts/github_pr_workflow/__main__.py"
+  merge --repo-root PATH --repo OWNER/REPO`
   for admin direct merges; do not reproduce its protection toggle in callers or
   replace it with raw `gh pr merge --admin` when required-review bypass is needed.
 - For remote-only PR merges, run `gh pr merge <number> --repo OWNER/REPO` from
@@ -139,7 +152,8 @@ before asking.
 - For reusable release or integration branches, verify local and remote head
   refs still exist at the expected post-merge commit and restore them if GitHub
   auto-deleted the remote head.
-- (D) Use `python -m github_pr_workflow sync --repo-root PATH` for local
+- (D) Use `python "<skill-root>/scripts/github_pr_workflow/__main__.py"
+  sync --repo-root PATH` for local
   default-branch sync when a local checkout is in scope. It uses the clean
   worktree that already owns the default branch instead of checking that branch
   out twice. Pass `--align-branch` only for reusable local branches that should
