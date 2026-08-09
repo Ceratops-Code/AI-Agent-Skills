@@ -37,8 +37,12 @@ Infer the loop ledger from the current thread and local state before asking.
   unless evidence proves one owner.
 - If recent merges or inconsistent state make a clean fix impossible, report
   that blocker instead of patching around it.
-- Before changing code, list all locations that must change together and the
-  verification that proves the running system used them.
+- Before changing code, list all locations that must change together and
+  require a counterfactual regression through the closest executable boundary
+  that preserves the symptom's routing. It must include every observed
+  producer or competing structural match, fail with the latest attempted fix,
+  and prove the running system uses the selected owner; direct handler calls,
+  marker checks, and source-shape assertions do not satisfy this gate.
 
 ### Boundaries
 
@@ -56,8 +60,11 @@ Infer the loop ledger from the current thread and local state before asking.
 2. Build the previous-fix ledger from the thread, diffs, command output, and
    local state.
 3. Map every place the behavior can be produced or overwritten.
-4. Identify the first missed or false assumption that explains why the loop
-   persisted.
+4. Identify and falsify every missed or false assumption that could explain
+   the loop’s persistence. Mark the earliest causal assumption as the primary
+   break point, then continue scanning later assumptions for independent
+   failure classes. Another edit in the same layer does not establish a new
+   class.
 5. Propose the smallest fix that addresses every active producer together, or
    stop with a blocker if the root cause remains unproven.
 
