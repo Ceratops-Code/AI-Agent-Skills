@@ -1744,6 +1744,52 @@ def _volume_hotspot_ids(
     return [str(cluster["cluster_id"]) for cluster in ranked[:limit] if score(cluster) > 0]
 
 
+def _synthesis_representative_cluster_ids(
+    clusters: Sequence[Mapping[str, Any]],
+    *,
+    input_hotspots: Sequence[str],
+    output_hotspots: Sequence[str],
+) -> set[str]:
+    """Keep examples only where they can change the synthesis judgment."""
+
+    signaled = {
+        str(cluster["cluster_id"])
+        for cluster in clusters
+        if cluster["observable_signature"]["signals"]
+    }
+    return signaled | set(input_hotspots[:4]) | set(output_hotspots[:4])
+
+
+def _compact_synthesis_cluster(
+    cluster: Mapping[str, Any],
+    *,
+    keep_representative: bool,
+) -> dict[str, Any]:
+    """Project one full cluster into the smallest synthesis-useful record."""
+
+    signature = cluster["observable_signature"]
+    volume = cluster["volume"]
+    compact = {
+        "cluster_id": cluster["cluster_id"],
+        "call_count": cluster["call_count"],
+        "semantic_actions": signature["semantic_actions"],
+        "tools": signature["tools"],
+        "signals": signature["signals"],
+        "argument_size": signature["argument_size"],
+        "result_size": signature["result_size"],
+        "input_tokens": volume["input_tokens"],
+        "uncached_input_tokens": volume["uncached_input_tokens"],
+        "output_tokens": volume["output_tokens"],
+        "tool_result_chars": volume["tool_result_chars"],
+    }
+    if cluster["event_counts"]:
+        compact["event_counts"] = cluster["event_counts"]
+    representative = cluster.get("representative_summary")
+    if keep_representative and representative:
+        compact["representative_summary"] = representative
+    return compact
+
+
 def _run_outcome_calls(
     evidence: Mapping[str, Any],
     focused_runs: set[str],
@@ -1916,12 +1962,26 @@ def _surface_pass_packet(
         findings, finding_surfaces, risks = _finding_inventory(state)
         remaining_calls = _synthesis_remaining_calls(state, evidence, findings)
         focused_runs = set(evidence["focused_semantic_context"]["run_ids"])
-        remaining_clusters = _candidate_clusters(
+        cluster_details = _candidate_clusters(
             remaining_calls,
             evidence,
             focused_runs,
             include_representative=True,
         )
+        input_hotspots = _volume_hotspot_ids(cluster_details, kind="input")
+        output_hotspots = _volume_hotspot_ids(cluster_details, kind="output")
+        representative_ids = _synthesis_representative_cluster_ids(
+            cluster_details,
+            input_hotspots=input_hotspots,
+            output_hotspots=output_hotspots,
+        )
+        remaining_clusters = [
+            _compact_synthesis_cluster(
+                cluster,
+                keep_representative=cluster["cluster_id"] in representative_ids,
+            )
+            for cluster in cluster_details
+        ]
         finding_items = []
         for finding_id, finding in findings.items():
             recurrence = finding["recurrence"]
@@ -1974,18 +2034,21 @@ def _surface_pass_packet(
                 },
             },
             "accepted_findings": finding_items,
-            "accepted_risks": list(risks.values()),
+            "accepted_risks": [
+                {
+                    "id": risk_id,
+                    "description": risk["description"],
+                    "missing_fact": risk["missing_fact"],
+                }
+                for risk_id, risk in risks.items()
+            ],
             "deterministic_totals": evidence["totals"],
             "remaining_calls": {
                 "call_count": len(remaining_calls),
                 "cluster_count": len(remaining_clusters),
                 "clusters": remaining_clusters,
-                "input_volume_hotspots": _volume_hotspot_ids(
-                    remaining_clusters, kind="input"
-                ),
-                "output_volume_hotspots": _volume_hotspot_ids(
-                    remaining_clusters, kind="output"
-                ),
+                "input_volume_hotspots": input_hotspots,
+                "output_volume_hotspots": output_hotspots,
             },
         }
 

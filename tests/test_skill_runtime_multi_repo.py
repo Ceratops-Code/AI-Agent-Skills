@@ -1790,7 +1790,12 @@ def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
     remaining_clusters = packet["remaining_calls"]["clusters"]
     assert packet["remaining_calls"]["call_count"] > 0
     assert remaining_clusters
-    assert all(cluster["representative_summary"] for cluster in remaining_clusters)
+    assert any(cluster.get("representative_summary") for cluster in remaining_clusters)
+    assert all("observable_signature" not in cluster for cluster in remaining_clusters)
+    assert all("volume" not in cluster for cluster in remaining_clusters)
+    assert all(cluster["semantic_actions"] for cluster in remaining_clusters)
+    assert all("uncached_input_tokens" in cluster for cluster in remaining_clusters)
+    assert all("tool_result_chars" in cluster for cluster in remaining_clusters)
     assert packet["remaining_calls"]["input_volume_hotspots"]
     assert packet["remaining_calls"]["output_volume_hotspots"]
     decision_path = pathlib.Path(packet["decision_path"])
