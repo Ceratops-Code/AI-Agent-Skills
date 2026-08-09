@@ -1,4 +1,4 @@
-"""Wait for or resolve active Codex review threads on a GitHub pull request."""
+"""Wait for, address, or resolve Codex review threads on a pull request."""
 
 from __future__ import annotations
 
@@ -9,13 +9,21 @@ import pathlib
 import re
 import sys
 import time
+from collections.abc import Mapping, Sequence
 from typing import Any
 
-from github_contract_engine.github_api import run_gh_graphql, run_json_command
-
+from github_contract_engine.github_api import (
+    run_gh_api,
+    run_gh_graphql,
+    run_json_command,
+)
 
 DEFAULT_CODEX_AUTHORS = ("chatgpt-codex-connector[bot]", "chatgpt-codex-connector")
 PR_URL_RE = re.compile(r"https://github\.com/([^/]+)/([^/]+)/pull/(\d+)(?:\b|/|#|\?)")
+FULL_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+ADDRESS_SCHEMA = "ceratops-review-thread-replies.v1"
+ADDRESS_FIELDS = {"schema", "repo", "pr", "head_oid", "replies"}
+REPLY_FIELDS = {"thread_id", "top_comment_database_id", "reply"}
 
 
 class CommandError(RuntimeError):
@@ -98,6 +106,9 @@ def fetch_pr(
 
     query = """
 query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
+  viewer {
+    login
+  }
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
       number
@@ -145,11 +156,16 @@ query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
             {"owner": owner, "name": name, "number": number, "cursor": cursor},
             cwd=cwd,
         )
-        pr = ((data.get("data") or {}).get("repository") or {}).get("pullRequest")
+        response = data.get("data") or {}
+        pr = (response.get("repository") or {}).get("pullRequest")
         if not isinstance(pr, dict):
             raise CommandError(f"pull request not found: {owner}/{name}#{number}")
         if pr_data is None:
             pr_data = {key: pr.get(key) for key in ("number", "url", "createdAt", "headRefOid")}
+            viewer = response.get("viewer")
+            pr_data["viewer_login"] = (
+                viewer.get("login") if isinstance(viewer, dict) else None
+            )
         review_threads = pr.get("reviewThreads") or {}
         threads.extend(review_threads.get("nodes") or [])
         page = review_threads.get("pageInfo") or {}
@@ -171,7 +187,7 @@ def comment_author(comment: dict[str, Any]) -> str:
 
 
 def active_codex_threads(pr_data: dict[str, Any], authors: set[str]) -> list[dict[str, Any]]:
-    """Return unresolved, current review threads that contain a Codex comment."""
+    """Return compact reply-ready identities for current Codex threads."""
 
     active: list[dict[str, Any]] = []
     for thread in pr_data.get("reviewThreads") or []:
@@ -181,32 +197,47 @@ def active_codex_threads(pr_data: dict[str, Any], authors: set[str]) -> list[dic
         codex_comments = [comment for comment in comments if comment_author(comment).lower() in authors]
         if not codex_comments:
             continue
+        codex_comment = codex_comments[0]
+        top_comment = comments[0]
         active.append(
             {
                 "id": thread.get("id"),
+                "thread_id": thread.get("id"),
                 "path": thread.get("path"),
                 "line": thread.get("line"),
                 "start_line": thread.get("startLine"),
                 "diff_side": thread.get("diffSide"),
                 "start_diff_side": thread.get("startDiffSide"),
-                "comments": codex_comments,
+                "body": codex_comment.get("body"),
+                "top_comment_database_id": top_comment.get("databaseId"),
+                "comment_url": codex_comment.get("url"),
             }
         )
     return active
 
 
 def unresolved_review_threads(pr_data: dict[str, Any]) -> list[dict[str, Any]]:
-    """Return unresolved thread identities, including outdated threads."""
+    """Return compact reply-ready identities, including outdated threads."""
 
-    return [
-        {
-            "id": thread.get("id"),
-            "path": thread.get("path"),
-            "is_outdated": bool(thread.get("isOutdated")),
-        }
-        for thread in pr_data.get("reviewThreads") or []
-        if not thread.get("isResolved")
-    ]
+    unresolved: list[dict[str, Any]] = []
+    for thread in pr_data.get("reviewThreads") or []:
+        if thread.get("isResolved"):
+            continue
+        comments = ((thread.get("comments") or {}).get("nodes")) or []
+        top_comment = comments[0] if comments else {}
+        unresolved.append(
+            {
+                "id": thread.get("id"),
+                "thread_id": thread.get("id"),
+                "path": thread.get("path"),
+                "line": thread.get("line"),
+                "is_outdated": bool(thread.get("isOutdated")),
+                "body": top_comment.get("body"),
+                "top_comment_database_id": top_comment.get("databaseId"),
+                "comment_url": top_comment.get("url"),
+            }
+        )
+    return unresolved
 
 
 def wait_for_codex_threads(
@@ -276,9 +307,113 @@ def wait(args: argparse.Namespace) -> int:
     return 1 if output["active_codex_thread_count"] else 0
 
 
-def resolve(args: argparse.Namespace) -> int:
-    """Resolve selected review threads after their issues have been fixed."""
+def _closed_fields(
+    value: Mapping[str, object],
+    expected: set[str],
+    label: str,
+) -> None:
+    actual = set(value)
+    if actual != expected:
+        missing = sorted(expected - actual)
+        extra = sorted(actual - expected)
+        detail = "; ".join(
+            part
+            for part in (
+                f"missing {', '.join(missing)}" if missing else "",
+                f"unknown {', '.join(extra)}" if extra else "",
+            )
+            if part
+        )
+        raise CommandError(f"{label} fields are invalid: {detail}")
 
+
+def _address_request(path: pathlib.Path) -> dict[str, Any]:
+    """Load one closed prepared-reply request without implicit scope."""
+
+    expanded = path.expanduser()
+    if expanded.is_symlink():
+        raise CommandError("address request must be a regular file")
+    resolved = expanded.resolve(strict=True)
+    if not resolved.is_file():
+        raise CommandError("address request must be a regular file")
+    try:
+        raw = json.loads(resolved.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise CommandError(f"address request is unreadable: {exc}") from exc
+    if not isinstance(raw, Mapping):
+        raise CommandError("address request must be a JSON object")
+    _closed_fields(raw, ADDRESS_FIELDS, "address request")
+    if raw.get("schema") != ADDRESS_SCHEMA:
+        raise CommandError(f"address request schema must be {ADDRESS_SCHEMA}")
+    repo = raw.get("repo")
+    if (
+        not isinstance(repo, str)
+        or repo.count("/") != 1
+        or any(
+            not part or any(character.isspace() for character in part)
+            for part in repo.split("/")
+        )
+    ):
+        raise CommandError("address request repo must use OWNER/REPO")
+    pr = raw.get("pr")
+    if not isinstance(pr, int) or isinstance(pr, bool) or pr < 1:
+        raise CommandError("address request pr must be a positive integer")
+    head_oid = raw.get("head_oid")
+    if not isinstance(head_oid, str) or FULL_SHA_RE.fullmatch(head_oid) is None:
+        raise CommandError("address request head_oid must be a full lowercase SHA")
+    raw_replies = raw.get("replies")
+    if (
+        not isinstance(raw_replies, Sequence)
+        or isinstance(raw_replies, (str, bytes))
+        or not raw_replies
+    ):
+        raise CommandError("address request replies must be a nonempty list")
+    replies: list[dict[str, object]] = []
+    thread_ids: set[str] = set()
+    comment_ids: set[int] = set()
+    for index, item in enumerate(raw_replies, start=1):
+        if not isinstance(item, Mapping):
+            raise CommandError(f"address reply {index} must be an object")
+        _closed_fields(item, REPLY_FIELDS, f"address reply {index}")
+        thread_id = item.get("thread_id")
+        comment_id = item.get("top_comment_database_id")
+        reply = item.get("reply")
+        if not isinstance(thread_id, str) or not thread_id or len(thread_id) > 256:
+            raise CommandError(f"address reply {index} thread_id is invalid")
+        if (
+            not isinstance(comment_id, int)
+            or isinstance(comment_id, bool)
+            or comment_id < 1
+        ):
+            raise CommandError(
+                f"address reply {index} top_comment_database_id is invalid"
+            )
+        if not isinstance(reply, str) or not reply.strip() or len(reply) > 65_536:
+            raise CommandError(f"address reply {index} reply is invalid")
+        if thread_id in thread_ids or comment_id in comment_ids:
+            raise CommandError("address request thread and comment IDs must be unique")
+        thread_ids.add(thread_id)
+        comment_ids.add(comment_id)
+        replies.append(
+            {
+                "thread_id": thread_id,
+                "top_comment_database_id": comment_id,
+                "reply": reply,
+            }
+        )
+    return {
+        "repo": repo,
+        "pr": pr,
+        "head_oid": head_oid,
+        "replies": replies,
+    }
+
+
+def _resolve_review_thread(
+    thread_id: str,
+    *,
+    cwd: pathlib.Path | None = None,
+) -> dict[str, Any]:
     mutation = """
 mutation($threadId: ID!) {
   resolveReviewThread(input: {threadId: $threadId}) {
@@ -289,11 +424,92 @@ mutation($threadId: ID!) {
   }
 }
 """
-    results = []
-    for thread_id in args.thread_id:
-        data = gh_graphql(mutation, {"threadId": thread_id})
-        thread = (((data.get("data") or {}).get("resolveReviewThread") or {}).get("thread")) or {}
-        results.append({"id": thread.get("id", thread_id), "is_resolved": thread.get("isResolved")})
+    data = gh_graphql(mutation, {"threadId": thread_id}, cwd=cwd)
+    thread = (
+        ((data.get("data") or {}).get("resolveReviewThread") or {}).get("thread")
+    ) or {}
+    if thread.get("id") != thread_id or thread.get("isResolved") is not True:
+        raise CommandError(f"review thread did not resolve: {thread_id}")
+    return {"id": thread_id, "is_resolved": True}
+
+
+def address(args: argparse.Namespace) -> int:
+    """Post prepared replies and resolve exact threads in one retry-safe call."""
+
+    request = _address_request(args.request)
+    repo = str(request["repo"])
+    owner, name = repo.split("/", 1)
+    pr = int(request["pr"])
+    current = fetch_pr(owner, name, pr, cwd=args.cwd)
+    if current.get("headRefOid") != request["head_oid"]:
+        raise CommandError(
+            f"PR head {current.get('headRefOid')!r} does not match prepared head "
+            f"{request['head_oid']!r}"
+        )
+    viewer = current.get("viewer_login")
+    if not isinstance(viewer, str) or not viewer:
+        raise CommandError("GitHub viewer identity is unavailable")
+    raw_threads = current.get("reviewThreads") or []
+    threads = {
+        thread.get("id"): thread
+        for thread in raw_threads
+        if isinstance(thread, dict) and isinstance(thread.get("id"), str)
+    }
+    prepared: list[tuple[dict[str, object], bool, bool]] = []
+    raw_replies = request["replies"]
+    assert isinstance(raw_replies, list)
+    for reply in raw_replies:
+        thread_id = str(reply["thread_id"])
+        thread = threads.get(thread_id)
+        if thread is None:
+            raise CommandError(f"prepared review thread no longer exists: {thread_id}")
+        comments = ((thread.get("comments") or {}).get("nodes")) or []
+        top_comment = comments[0] if comments else {}
+        if top_comment.get("databaseId") != reply["top_comment_database_id"]:
+            raise CommandError(f"top comment changed for review thread: {thread_id}")
+        matching_reply = any(
+            comment.get("body") == reply["reply"]
+            and comment_author(comment).lower() == viewer.lower()
+            for comment in comments
+            if isinstance(comment, dict)
+        )
+        resolved = bool(thread.get("isResolved"))
+        if resolved and not matching_reply:
+            raise CommandError(
+                f"review thread resolved without the prepared reply: {thread_id}"
+            )
+        prepared.append((reply, matching_reply, resolved))
+
+    for reply, matching_reply, resolved in prepared:
+        thread_id = str(reply["thread_id"])
+        if resolved:
+            continue
+        if not matching_reply:
+            comment_id = reply["top_comment_database_id"]
+            assert isinstance(comment_id, int)
+            result = run_gh_api(
+                "POST",
+                f"/repos/{repo}/pulls/{pr}/comments/{comment_id}/replies",
+                {"body": reply["reply"]},
+                cwd=args.cwd,
+            )
+            if not result.ok:
+                raise CommandError(
+                    f"review reply failed for {thread_id}: "
+                    f"{result.message or result.status or 'unknown GitHub error'}"
+                )
+        _resolve_review_thread(thread_id, cwd=args.cwd)
+    print("OK")
+    return 0
+
+
+def resolve(args: argparse.Namespace) -> int:
+    """Resolve selected review threads after their issues have been fixed."""
+
+    results = [
+        _resolve_review_thread(thread_id, cwd=args.cwd)
+        for thread_id in args.thread_id
+    ]
     print(json.dumps({"resolved": results}, indent=2 if args.pretty else None, ensure_ascii=True))
     return 0
 
@@ -317,9 +533,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     resolve_parser = subparsers.add_parser("resolve", help="resolve fixed Codex review threads")
     resolve_parser.add_argument("--thread-id", action="append", required=True, help="GraphQL PullRequestReviewThread ID")
+    resolve_parser.add_argument("--cwd", type=pathlib.Path, default=pathlib.Path.cwd())
     resolve_parser.add_argument("--json", action="store_true", help="accepted for compatibility; output is always JSON")
     resolve_parser.add_argument("--pretty", action="store_true", help="pretty-print JSON")
     resolve_parser.set_defaults(func=resolve)
+    address_parser = subparsers.add_parser(
+        "address",
+        help="post prepared replies and resolve their exact review threads",
+    )
+    address_parser.add_argument("--request", required=True, type=pathlib.Path)
+    address_parser.add_argument("--cwd", type=pathlib.Path, default=pathlib.Path.cwd())
+    address_parser.set_defaults(func=address)
     return parser
 
 
@@ -330,7 +554,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         return int(args.func(args))
-    except CommandError as exc:
+    except (CommandError, OSError, ValueError) as exc:
         print(json.dumps({"status": "error", "message": str(exc)}, ensure_ascii=True), file=sys.stderr)
         return 1
 

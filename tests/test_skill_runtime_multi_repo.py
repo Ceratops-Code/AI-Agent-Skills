@@ -5366,6 +5366,121 @@ def test_integrated_ship_delegates_admin_semantics_to_merge_owner(
     assert result["status"] == "shipped"
     assert events == ["recover", "merge"]
 
+    review_result = {
+        "repo": "example/repository",
+        "pr": 24,
+        "url": "https://example.invalid/pull/24",
+        "head_oid": head,
+        "active_codex_thread_count": 1,
+        "active_codex_threads": [
+            {
+                "id": "PRRT_1",
+                "thread_id": "PRRT_1",
+                "path": "skills/example/SKILL.md",
+                "line": 17,
+                "body": "Preserve the exact contract.",
+                "top_comment_database_id": 91,
+                "comment_url": "https://example.invalid/comment/91",
+            }
+        ],
+        "unresolved_review_thread_count": 1,
+    }
+    with pytest.raises(ship.ShipBlocked) as review_blocked:
+        ship._enforce_review_thread_gate(
+            argparse.Namespace(repo_root=repo, base_branch="main"),
+            review_result,
+            head,
+            base_branch="main",
+        )
+    review_payload = review_blocked.value.payload["blocker"]
+    assert review_payload["kind"] == "review_threads"
+    assert review_payload["threads"][0] == {
+        "thread_id": "PRRT_1",
+        "path": "skills/example/SKILL.md",
+        "line": 17,
+        "is_outdated": False,
+        "body": "Preserve the exact contract.",
+        "top_comment_database_id": 91,
+        "comment_url": "https://example.invalid/comment/91",
+    }
+
+    failing = ship.readiness.Finding(
+        level="ERROR",
+        check="pr.status_checks",
+        message="One or more status checks are failing.",
+        actual=["validate"],
+    )
+    monkeypatch.setattr(
+        ship.readiness,
+        "validate_readiness",
+        lambda *args, **kwargs: (
+            {
+                "number": 24,
+                "url": "https://example.invalid/pull/24",
+                "head_oid": head,
+            },
+            [failing],
+        ),
+    )
+    monkeypatch.setattr(
+        ship,
+        "run_json_command",
+        lambda *args, **kwargs: argparse.Namespace(
+            ok=True,
+            data=[
+                {
+                    "name": "validate",
+                    "state": "FAILURE",
+                    "bucket": "fail",
+                    "workflow": "CI",
+                    "link": (
+                        "https://github.com/example/repository/"
+                        "actions/runs/42/job/84"
+                    ),
+                }
+            ],
+            message=None,
+        ),
+    )
+    monkeypatch.setattr(
+        ship,
+        "run_command",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args[0],
+            0,
+            stdout=(
+                "setup\nFAILED tests/test_example.py::test_contract\n"
+                "assert False\n"
+            ),
+            stderr="",
+        ),
+    )
+    with pytest.raises(ship.ShipBlocked) as ci_blocked:
+        ship.wait_for_ci_gate(
+            "24",
+            repo,
+            head,
+            repository="example/repository",
+            wait_seconds=0,
+            interval_seconds=0,
+        )
+    ci_payload = ci_blocked.value.payload["blocker"]
+    assert ci_payload["kind"] == "ci"
+    assert ci_payload["head_oid"] == head
+    assert ci_payload["check"] == {
+        "name": "validate",
+        "state": "FAILURE",
+        "workflow": "CI",
+        "url": "https://github.com/example/repository/actions/runs/42/job/84",
+        "run_id": "42",
+        "job_id": "84",
+        "failed_log_excerpt": (
+            "setup\nFAILED tests/test_example.py::test_contract\nassert False"
+        ),
+        "failing_names": ["validate"],
+        "diagnostic": None,
+    }
+
 
 def test_dependency_finalization_delegates_admin_to_shared_merge(
     tmp_path: pathlib.Path,
@@ -6529,6 +6644,57 @@ def test_repository_ship_absent_default_contract_is_no_op_and_finalizes(
         assert "--no-pending-work-check" in commands[1]
     deploy_runner = str(SHIP_REPOSITORY.parent / "run-deploy-operation.py")
     assert all(deploy_runner not in command for command in commands)
+
+    blocker = {
+        "status": "blocked",
+        "message": "Codex review gate found one active thread.",
+        "phase": "gates",
+        "blocker": {
+            "kind": "review_threads",
+            "head_oid": "a" * 40,
+            "threads": [{"thread_id": "PRRT_1", "body": "Fix this."}],
+        },
+    }
+    blocked_responses: list[tuple[int, dict[str, Any]]] = [
+        (
+            0,
+            {
+                "status": "ready",
+                "source_branches": [],
+                "pending_work_scope": "",
+            },
+        ),
+        (1, blocker),
+    ]
+
+    def blocked_run_json(
+        command: list[str], *, cwd: pathlib.Path | None = None
+    ) -> tuple[int, dict[str, Any]]:
+        return blocked_responses.pop(0)
+
+    ship_repository.__globals__["_run_json"] = blocked_run_json
+    with pytest.raises(loaded["RepositoryShipError"]) as captured:
+        ship_repository(
+            argparse.Namespace(
+                repo_root=repo,
+                repo="example/repository",
+                head_branch="release/local",
+                base_branch="main",
+                remote_name="origin",
+                commit="a" * 40,
+                title=None,
+                body=None,
+                merge_method="merge",
+                delete_branch=False,
+                reusable_head=True,
+                deploy_contract=pathlib.Path("deploy/deploy.yml"),
+                deploy_operation="deploy",
+                ci_wait_seconds=1,
+                review_wait_seconds=1,
+                interval_seconds=1,
+            )
+        )
+    assert captured.value.payload == blocker
 
 
 def test_repository_ship_missing_custom_contract_blocks_before_remote_mutation(

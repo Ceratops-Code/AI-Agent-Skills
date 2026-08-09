@@ -16,7 +16,6 @@ import subprocess
 import sys
 from typing import Any
 
-
 SCRIPT_ROOT = pathlib.Path(__file__).resolve().parent
 DEPLOY_RUNNER = SCRIPT_ROOT / "run-deploy-operation.py"
 PENDING_MANAGER = SCRIPT_ROOT / "manage-pending-work.py"
@@ -26,6 +25,14 @@ RELEASE_BRANCH = "release/local"
 
 class RepositoryShipError(RuntimeError):
     """Raised when a delegated lifecycle phase does not complete."""
+
+    def __init__(
+        self,
+        message: str,
+        payload: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.payload = {"status": "error", "message": message, **(payload or {})}
 
 
 def _inside(path: pathlib.Path, parent: pathlib.Path) -> bool:
@@ -385,7 +392,8 @@ def ship_repository(args: argparse.Namespace) -> dict[str, object]:
         return prepared
     if prepare_code:
         raise RepositoryShipError(
-            str(prepared.get("message", "Pending-work preparation failed."))
+            str(prepared.get("message", "Pending-work preparation failed.")),
+            prepared,
         )
     pending_scope = _prepared_scope(prepared)
     checkpoint_scope = pending_scope
@@ -394,7 +402,10 @@ def ship_repository(args: argparse.Namespace) -> dict[str, object]:
     if ship_code == 2:
         return shipped
     if ship_code:
-        raise RepositoryShipError(str(shipped.get("message", "Shipping failed.")))
+        raise RepositoryShipError(
+            str(shipped.get("message", "Shipping failed.")),
+            shipped,
+        )
     if shipped.get("status") not in {"shipped", "already_shipped"}:
         raise RepositoryShipError("GitHub ship returned a non-terminal result.")
     target_commit = shipped.get("commit")
@@ -424,7 +435,8 @@ def ship_repository(args: argparse.Namespace) -> dict[str, object]:
             }
         if check_code:
             raise RepositoryShipError(
-                str(checked.get("message", "Late pending-work check failed."))
+                str(checked.get("message", "Late pending-work check failed.")),
+                checked,
             )
         pending_scope = _prepared_scope(checked)
 
@@ -460,7 +472,8 @@ def ship_repository(args: argparse.Namespace) -> dict[str, object]:
         )
         if deploy_code:
             raise RepositoryShipError(
-                str(deployed.get("message", "Deployment failed."))
+                str(deployed.get("message", "Deployment failed.")),
+                deployed,
             )
         if checkpoint_path is not None and deployment_identity is not None:
             _write_deployment_checkpoint(
@@ -496,7 +509,8 @@ def ship_repository(args: argparse.Namespace) -> dict[str, object]:
             }
         if finalize_code:
             raise RepositoryShipError(
-                str(finalized.get("message", "Selected-work cleanup failed."))
+                str(finalized.get("message", "Selected-work cleanup failed.")),
+                finalized,
             )
     if checkpoint_path is not None:
         checkpoint_path.unlink(missing_ok=True)
@@ -561,7 +575,13 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         result = ship_repository(args)
-    except (RepositoryShipError, OSError, ValueError) as exc:
+    except RepositoryShipError as exc:
+        print(
+            json.dumps(exc.payload, separators=(",", ":")),
+            file=sys.stderr,
+        )
+        return 1
+    except (OSError, ValueError) as exc:
         print(
             json.dumps(
                 {"status": "error", "message": str(exc)},

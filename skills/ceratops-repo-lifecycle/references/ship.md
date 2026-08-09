@@ -38,11 +38,16 @@ Infer missing values from the checkout, scope file, and live PR before asking.
 
 ### Workflow
 
-1. Run the complete ship helper once. The initial ship request authorizes its
-   full deterministic workflow; do not request another confirmation after gates
-   pass. When it yields a running cell without new output, resume it with a
-   55-second wait; use a shorter wait only when a known completion or failure
-   deadline is sooner.
+1. Run the complete ship helper once inside the global OUT-11
+   `functions.exec` pattern; keep unchanged gate waits inside that call and
+   treat terminal JSON as the complete decision payload. CI blockers must name
+   the exact head and failed check plus available run, job, URL, and compact log
+   evidence; review blockers must include body, location, thread ID, and top
+   comment database ID. After fixing review findings, invoke `python -m
+   github_pr_workflow address --request REQUEST` once from the helper directory.
+   Its closed `ceratops-review-thread-replies.v1` request binds repository, PR,
+   head, thread and top-comment identities to prepared replies; the helper
+   verifies them, posts and resolves every reply, and emits only `OK` on success.
 2. Before automatically selecting an incomplete checkpoint to resume, the
    GitHub workflow removes a matching checkpoint only when its phase is exactly
    `prepared`, the local head branch has moved, a fresh fetch proves the commit

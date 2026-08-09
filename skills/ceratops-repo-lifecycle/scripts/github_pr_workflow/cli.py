@@ -16,7 +16,6 @@ from . import (
     sync,
 )
 
-
 Command = Callable[[list[str] | None], int]
 
 
@@ -35,6 +34,7 @@ def _parser() -> argparse.ArgumentParser:
             "ensure-pr",
             "validate",
             "wait",
+            "address",
             "resolve",
             "merge",
             "sync",
@@ -60,6 +60,7 @@ def main(argv: list[str] | None = None) -> int:
         "ensure-pr": ensure_pr.main,
         "validate": readiness.main,
         "wait": lambda values: codex_review.main(["wait", *(values or [])]),
+        "address": lambda values: codex_review.main(["address", *(values or [])]),
         "resolve": lambda values: codex_review.main(["resolve", *(values or [])]),
         "merge": merge.main,
         "sync": sync.main,
