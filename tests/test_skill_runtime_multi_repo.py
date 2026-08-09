@@ -1401,6 +1401,11 @@ def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
     packet = json.loads(started.stdout)
     assert packet["schema"] == "ceratops-credit-analysis-pass-packet.v1"
     assert packet["surface_id"] == "helper-contracts"
+    assert "prompt" in packet["decision_contract"]["producer_types"]
+    assert "tool-choice" in packet["decision_contract"]["producer_types"]
+    assert len(packet["decision_contract"]["producer_types"]) == len(
+        set(packet["decision_contract"]["producer_types"])
+    )
     assert packet["protocol_budget"] == {
         "target_total_model_calls": 8,
         "preparation_model_calls": 1,

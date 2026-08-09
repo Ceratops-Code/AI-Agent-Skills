@@ -1418,7 +1418,10 @@ def _run_outcome_calls(
     ]
 
 
-def _surface_decision_contract(surface_id: str) -> dict[str, Any]:
+def _surface_decision_contract(
+    surface_id: str,
+    contract: Mapping[str, Any],
+) -> dict[str, Any]:
     template: dict[str, Any] = {
         "schema": SURFACE_DECISION_SCHEMA,
         "findings": [],
@@ -1445,6 +1448,7 @@ def _surface_decision_contract(surface_id: str) -> dict[str, Any]:
             if surface_id == "helper-contracts"
             else "Keep helper_categories empty outside helper-contracts."
         ),
+        "producer_types": list(contract["producer_types"]),
         "finding_fields": sorted(DECISION_FINDING_FIELDS),
         "risk_fields": sorted(DECISION_RISK_FIELDS),
         "exclusion_fields": sorted(DECISION_EXCLUSION_FIELDS),
@@ -1567,7 +1571,7 @@ def _surface_pass_packet(
             "path": reference,
             "content": (SKILL_DIR / reference).read_text(encoding="utf-8"),
         },
-        "decision_contract": _surface_decision_contract(surface_id),
+        "decision_contract": _surface_decision_contract(surface_id, contract),
         "evidence": {
             "deterministic_totals": evidence["totals"],
             "focused_run_selection": evidence["focused_semantic_context"],
