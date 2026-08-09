@@ -6778,6 +6778,7 @@ def test_repository_ship_absent_default_contract_is_no_op_and_finalizes(
         {"status": "finalized"} if scope_present else None
     )
     assert "prepare" in commands[0]
+    assert commands[0][-2:] == ["--target-commit", "a" * 40]
     if scope_present:
         assert len(commands) == 4
         assert "--pending-work-check" in commands[1]
@@ -7321,6 +7322,50 @@ def test_pending_work_scope_is_selected_generic_and_finalized_late(
         item["subject"] != "unrelated" for item in checked_payload["findings"]
     )
 
+    tree = run_git(repo, "rev-parse", f"{target_commit}^{{tree}}").stdout.strip()
+    base_commit = run_git(repo, "rev-parse", "main").stdout.strip()
+    advanced = run_git(
+        repo,
+        "commit-tree",
+        tree,
+        "-p",
+        base_commit,
+        "-m",
+        "realign reusable release after squash",
+    )
+    assert advanced.returncode == 0, advanced.stderr
+    advanced_commit = advanced.stdout.strip()
+    assert (
+        run_git(
+            repo,
+            "update-ref",
+            "refs/heads/release/local",
+            advanced_commit,
+            target_commit,
+        ).returncode
+        == 0
+    )
+    resumed = run_pending_work(
+        repo,
+        "prepare",
+        "--target-branch",
+        "release/local",
+        "--target-commit",
+        target_commit,
+    )
+    assert resumed.returncode == 2, resumed.stderr
+    assert json.loads(resumed.stdout)["findings"] == checked_payload["findings"]
+    assert (
+        run_git(
+            repo,
+            "update-ref",
+            "refs/heads/release/local",
+            target_commit,
+            advanced_commit,
+        ).returncode
+        == 0
+    )
+
     assert run_git(selected_worktree, "reset", "--hard", target_commit).returncode == 0
     assert run_git(repo, "merge", "--ff-only", "release/local").returncode == 0
     current_commit = run_git(repo, "rev-parse", "HEAD").stdout.strip()
@@ -7368,6 +7413,8 @@ def test_pending_work_scope_is_selected_generic_and_finalized_late(
         "prepare",
         "--target-branch",
         "release/local",
+        "--target-commit",
+        target_commit,
     )
 
     assert prepared.returncode == 0, prepared.stderr
