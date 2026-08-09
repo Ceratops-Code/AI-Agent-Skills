@@ -5527,7 +5527,7 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "submit":
             output = command_submit(args.state, args.decision)
         elif args.command == "prepare":
-            output: Any = command_prepare(args.request.expanduser().resolve(strict=True))
+            output = command_prepare(args.request.expanduser().resolve(strict=True))
         elif args.command == "advance":
             output = command_advance(args.state, args.result)
         elif args.command == "status":

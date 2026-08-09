@@ -1392,7 +1392,7 @@ def build_model_review_evidence(
         run["turn_id"]: run["model_calls"] for run in ledger["runs"]
     }
     completed_calls = {turn_id: 0 for turn_id in selected_turns}
-    record_ids_by_call = {
+    record_ids_by_call: dict[str, dict[int, list[str]]] = {
         turn_id: {index: [] for index in range(1, limit + 1)}
         for turn_id, limit in call_limits.items()
     }
@@ -1656,10 +1656,12 @@ def build_model_review_evidence(
             }:
                 if active_turn is None:
                     continue
-                name = payload.get("name")
+                raw_tool_name = payload.get("name")
                 if item_type == "tool_search_call":
-                    name = "tool_search"
-                tool_name = name if isinstance(name, str) else "unknown"
+                    raw_tool_name = "tool_search"
+                tool_name = (
+                    raw_tool_name if isinstance(raw_tool_name, str) else "unknown"
+                )
                 content = {
                     key: value
                     for key, value in payload.items()
@@ -1730,16 +1732,16 @@ def build_model_review_evidence(
         if event_type in {"agent_message", "user_message"}:
             stats["duplicate_ui_message_events_excluded"] += 1
             if event_type == "user_message" and active_turn is not None:
-                attachments = {
+                event_attachments = {
                     key: payload[key]
                     for key in ("audio", "images", "local_audio", "local_images")
                     if payload.get(key)
                 }
-                if attachments:
+                if event_attachments:
                     add_record(
                         kind="message-metadata",
                         name="user-attachments",
-                        content=attachments,
+                        content=event_attachments,
                         timestamp=timestamp,
                         turn_id=active_turn,
                         model_call_index=call_index(active_turn),
