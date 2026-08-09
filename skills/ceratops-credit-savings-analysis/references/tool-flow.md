@@ -10,6 +10,8 @@ Detect avoidable tool, command, wait, and model-mediated transitions.
   selection, retries without diagnosis, unnecessary polling or waits, noisy
   or oversized command and tool output, missing deterministic orchestration,
   and avoidable model-mediated transitions.
+- Inspect the largest aggregate output-token and tool-result clusters even when
+  the likely control saves no model calls.
 - For an output-volume candidate, compare recorded argument and result sizes
   with the next decision's required payload. Record the excessive result, the
   bounded output that was needed, and the exact filter, quiet mode, projection,

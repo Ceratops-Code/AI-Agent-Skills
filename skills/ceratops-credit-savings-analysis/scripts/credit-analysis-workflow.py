@@ -48,6 +48,9 @@ BATCH_INDEX_SCHEMA = "ceratops-credit-analysis-batch-index-record.v1"
 EVIDENCE_NARRATIVE_LIMIT = 1200
 PACKET_CALL_DETAIL_CHAR_BUDGET = 12_000
 PACKET_REVIEW_DETAIL_CHAR_BUDGET = 8_000
+PACKET_USER_MESSAGE_CHAR_BUDGET = 8_000
+PACKET_RUN_OUTCOME_CHAR_BUDGET = 6_000
+PASS_PACKET_CHAR_LIMIT = 90_000
 STATE_VERSION = 1
 BATCH_STATE_VERSION = 1
 STATE_FIELDS = {
@@ -324,8 +327,19 @@ DECISION_RISK_FIELDS = {
     "verification_needed",
 }
 DECISION_EXCLUSION_FIELDS = {"selectors", "reason_code", "reason"}
-SYNTHESIS_DECISION_FIELDS = {"schema", "finding_order", "risk_order"}
-CALL_SELECTOR_FIELDS = {"call_ids", "turn_id", "ranges"}
+SYNTHESIS_DECISION_FIELDS = {
+    "schema",
+    "finding_order",
+    "risk_order",
+    "remaining_call_assessments",
+}
+SYNTHESIS_ASSESSMENT_FIELDS = {
+    "cluster_ids",
+    "classification",
+    "reason_code",
+    "reason",
+}
+CALL_SELECTOR_FIELDS = {"call_ids", "cluster_ids", "turn_id", "ranges"}
 IDENTIFIER_RE = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 ACTION_REFERENCE_RE = re.compile(r"`(references/[a-z0-9]+(?:-[a-z0-9]+)*\.md)`")
 READ_SEARCH_TOKENS = (
@@ -924,7 +938,7 @@ def _user_messages_for_calls(
     evidence: Mapping[str, Any],
     call_ids: list[str],
 ) -> list[dict[str, Any]]:
-    """Return each redacted user message referenced by selected calls once."""
+    """Return each formatted user message referenced by selected calls once."""
 
     selected = set(call_ids)
     required_message_ids: set[str] = set()
@@ -1396,8 +1410,6 @@ def _size_band(value: Any) -> str:
 def _observable_call_signature(
     call: Mapping[str, Any],
     focused_runs: set[str],
-    *,
-    run_terminal: bool,
 ) -> dict[str, Any]:
     """Describe only mechanically observable traits; this is not a judgment."""
 
@@ -1415,17 +1427,7 @@ def _observable_call_signature(
             if isinstance(action, Mapping)
         }
     )
-    semantic_sequence = [
-        [
-            str(action.get("kind", "unknown")),
-            str(action.get("name", "unknown")),
-            str(action.get("summary", "")),
-        ]
-        for action in call.get("semantic_actions", [])
-        if isinstance(action, Mapping)
-    ]
     tool_names: set[str] = set()
-    tool_sequence: list[str] = []
     signals: set[str] = set()
     argument_chars = 0
     result_chars = 0
@@ -1434,7 +1436,6 @@ def _observable_call_signature(
             continue
         name = str(action.get("name", "unknown"))
         tool_names.add(name)
-        tool_sequence.append(name)
         lowered = name.casefold()
         if any(token in lowered for token in ("wait", "poll", "write_stdin")):
             signals.add("wait-or-poll")
@@ -1467,16 +1468,8 @@ def _observable_call_signature(
             result_chars += max(raw_result_chars, 0)
     tokens = call.get("tokens")
     total_tokens = tokens.get("total_tokens") if isinstance(tokens, Mapping) else None
-    detail_fingerprint = hashlib.sha256(
-        json.dumps(
-            {"semantic": semantic_sequence, "tools": tool_sequence},
-            ensure_ascii=False,
-            separators=(",", ":"),
-        ).encode("utf-8")
-    ).hexdigest()[:16]
     return {
         "semantic_actions": semantic_actions,
-        "detail_fingerprint": detail_fingerprint,
         "tools": sorted(tool_names),
         "signals": sorted(signals),
         "argument_size": _size_band(argument_chars),
@@ -1484,7 +1477,6 @@ def _observable_call_signature(
         "token_size": _size_band(total_tokens),
         "has_user_context": bool(call.get("user_message_ids")),
         "focused_run": call.get("turn_id") in focused_runs,
-        "run_terminal": run_terminal,
     }
 
 
@@ -1520,83 +1512,197 @@ def _cluster_representative(
     return representative
 
 
+def _cluster_token_totals(members: Sequence[Mapping[str, Any]]) -> dict[str, int]:
+    """Aggregate recorded usage without inferring whether the usage was waste."""
+
+    totals = {
+        "input_tokens": 0,
+        "cached_input_tokens": 0,
+        "uncached_input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 0,
+    }
+    for call in members:
+        tokens = call.get("tokens")
+        if not isinstance(tokens, Mapping):
+            continue
+        values: dict[str, int] = {}
+        for name in (
+            "input_tokens",
+            "cached_input_tokens",
+            "output_tokens",
+            "reasoning_output_tokens",
+            "total_tokens",
+        ):
+            value = tokens.get(name)
+            values[name] = (
+                value
+                if isinstance(value, int) and not isinstance(value, bool) and value > 0
+                else 0
+            )
+            totals[name] += values[name]
+        totals["uncached_input_tokens"] += max(
+            values["input_tokens"] - values["cached_input_tokens"], 0
+        )
+    return totals
+
+
+def _cluster_tool_totals(members: Sequence[Mapping[str, Any]]) -> dict[str, int]:
+    """Aggregate emitted tool volume and mechanically recorded outcome signals."""
+
+    totals = {
+        "tool_calls": 0,
+        "argument_chars": 0,
+        "result_chars": 0,
+        "failures": 0,
+        "retries": 0,
+        "repeats": 0,
+        "waits_or_polls": 0,
+    }
+    for call in members:
+        for action in call.get("tool_results", []):
+            if not isinstance(action, Mapping):
+                continue
+            totals["tool_calls"] += 1
+            for source, target in (
+                ("argument_chars", "argument_chars"),
+                ("result_chars", "result_chars"),
+            ):
+                value = action.get(source)
+                if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+                    totals[target] += value
+            outcomes = action.get("outcomes")
+            totals["failures"] += int(
+                bool(action.get("explicit_failure"))
+                or (
+                    isinstance(outcomes, Mapping)
+                    and any(
+                        outcomes.get(name)
+                        for name in (
+                            "nonzero_process_result",
+                            "structured_tool_error",
+                            "timeout",
+                            "termination",
+                        )
+                    )
+                )
+            )
+            totals["retries"] += int(bool(action.get("retry")))
+            totals["repeats"] += int(bool(action.get("repeated")))
+            name = str(action.get("name", "")).casefold()
+            totals["waits_or_polls"] += int(
+                any(token in name for token in ("wait", "poll", "write_stdin"))
+            )
+    return totals
+
+
+def _candidate_cluster_partition(
+    candidates: Sequence[str],
+    evidence: Mapping[str, Any],
+    focused_runs: set[str],
+) -> list[dict[str, Any]]:
+    """Partition candidates across turns by coarse observable behavior.
+
+    The internal call mapping is never printed. Model decisions select the stable
+    cluster IDs, and the controller expands them from the retained evidence.
+    """
+
+    call_by_id = {str(call["call_id"]): call for call in _all_calls(evidence)}
+    if any(call_id not in call_by_id for call_id in candidates):
+        raise CreditAnalysisError("candidate cluster input references an unknown call")
+    grouped: dict[str, list[Mapping[str, Any]]] = {}
+    signatures: dict[str, dict[str, Any]] = {}
+    for call_id in candidates:
+        call = call_by_id[call_id]
+        signature = _observable_call_signature(call, focused_runs)
+        key = json.dumps(signature, sort_keys=True, separators=(",", ":"))
+        grouped.setdefault(key, []).append(call)
+        signatures[key] = signature
+
+    partitions: list[dict[str, Any]] = []
+    covered: list[str] = []
+    cluster_ids: set[str] = set()
+    for key, members in grouped.items():
+        cluster_id = "cluster-" + hashlib.sha256(key.encode("utf-8")).hexdigest()[:12]
+        if cluster_id in cluster_ids:
+            raise CreditAnalysisError("candidate cluster ID collision")
+        cluster_ids.add(cluster_id)
+        representative = max(
+            members,
+            key=lambda call: (
+                _call_signal_score(call, focused_runs),
+                -int(call["index"]),
+            ),
+        )
+        call_ids = [str(call["call_id"]) for call in members]
+        covered.extend(call_ids)
+        turn_ids = {str(call["turn_id"]) for call in members}
+        summary = {
+            "cluster_id": cluster_id,
+            "call_count": len(members),
+            "turn_count": len(turn_ids),
+            "observable_signature": signatures[key],
+            "token_totals": _cluster_token_totals(members),
+            "tool_totals": _cluster_tool_totals(members),
+            "representative": _cluster_representative(representative, focused_runs),
+        }
+        partitions.append(
+            {"cluster_id": cluster_id, "call_ids": call_ids, "summary": summary}
+        )
+    if len(covered) != len(candidates) or set(covered) != set(candidates):
+        raise CreditAnalysisError("candidate clusters do not partition the queue")
+    return partitions
+
+
 def _candidate_clusters(
     candidates: Sequence[str],
     evidence: Mapping[str, Any],
     focused_runs: set[str],
 ) -> list[dict[str, Any]]:
-    """Partition every candidate into compact per-turn observable clusters."""
+    """Return only model-facing cluster summaries, never the complete call map."""
 
-    candidate_set = set(candidates)
-    clusters: list[dict[str, Any]] = []
-    covered: list[str] = []
-    for run in evidence["runs"]:
-        calls = [
-            call
-            for call in run["calls"]
-            if call["call_id"] in candidate_set
-        ]
-        if not calls:
-            continue
-        run_calls = [
-            call for call in run.get("calls", []) if isinstance(call, Mapping)
-        ]
-        terminal_id = run_calls[-1]["call_id"] if run_calls else None
-        grouped: dict[str, list[Mapping[str, Any]]] = {}
-        signatures: dict[str, dict[str, Any]] = {}
-        for call in calls:
-            signature = _observable_call_signature(
-                call,
-                focused_runs,
-                run_terminal=call["call_id"] == terminal_id,
-            )
-            key = json.dumps(signature, sort_keys=True, separators=(",", ":"))
-            grouped.setdefault(key, []).append(call)
-            signatures[key] = signature
-        for key, members in grouped.items():
-            representative = max(
-                members,
-                key=lambda call: (
-                    _call_signal_score(call, focused_runs),
-                    -int(call["index"]),
-                ),
-            )
-            call_ids = [str(call["call_id"]) for call in members]
-            covered.extend(call_ids)
-            token_total = sum(
-                int(call["tokens"].get("total_tokens", 0))
-                for call in members
-                if isinstance(call.get("tokens"), Mapping)
-                and isinstance(call["tokens"].get("total_tokens"), int)
-                and not isinstance(call["tokens"].get("total_tokens"), bool)
-            )
-            clusters.append(
-                {
-                    "cluster_id": f"cluster-{len(clusters) + 1:03d}",
-                    "turn_id": run["turn_id"],
-                    "call_count": len(members),
-                    "selectors": [
-                        {
-                            "turn_id": run["turn_id"],
-                            "ranges": _integer_ranges(
-                                [int(call["index"]) for call in members]
-                            ),
-                        }
-                    ],
-                    "observable_signature": {
-                        name: value
-                        for name, value in signatures[key].items()
-                        if name != "detail_fingerprint"
-                    },
-                    "total_tokens": token_total,
-                    "representative": _cluster_representative(
-                        representative, focused_runs
-                    ),
-                }
-            )
-    if len(covered) != len(candidates) or set(covered) != candidate_set:
-        raise CreditAnalysisError("candidate clusters do not partition the queue")
-    return clusters
+    return [
+        dict(partition["summary"])
+        for partition in _candidate_cluster_partition(
+            candidates, evidence, focused_runs
+        )
+    ]
+
+
+def _volume_hotspots(
+    clusters: Sequence[Mapping[str, Any]],
+    *,
+    kind: str,
+    limit: int = 12,
+) -> list[dict[str, Any]]:
+    """Project the largest recorded input or output clusters for model review."""
+
+    if kind not in {"input", "output"}:
+        raise CreditAnalysisError("volume hotspot kind is invalid")
+
+    def score(cluster: Mapping[str, Any]) -> int:
+        if kind == "input":
+            return int(cluster["token_totals"]["uncached_input_tokens"])
+        return int(cluster["token_totals"]["output_tokens"]) + int(
+            cluster["tool_totals"]["result_chars"]
+        )
+
+    ranked = sorted(
+        clusters,
+        key=lambda cluster: (-score(cluster), str(cluster["cluster_id"])),
+    )
+    return [
+        {
+            "cluster_id": cluster["cluster_id"],
+            "call_count": cluster["call_count"],
+            "turn_count": cluster["turn_count"],
+            "token_totals": cluster["token_totals"],
+            "tool_totals": cluster["tool_totals"],
+        }
+        for cluster in ranked[:limit]
+        if score(cluster) > 0
+    ]
 
 
 def _run_outcome_calls(
@@ -1639,14 +1745,15 @@ def _surface_decision_contract(
     return {
         "template": template,
         "selector_forms": [
+            {"cluster_ids": ["exact-cluster-id"]},
             {"call_ids": ["exact-call-id"]},
             {"turn_id": "exact-turn-id", "ranges": [[1, 3], [7, 7]]},
         ],
         "cluster_rule": (
-            "Review every candidate cluster. Reuse a cluster's selectors only when "
-            "the judgment applies to every selected call; otherwise select the "
-            "supported subset. Clusters describe observable similarity and are not "
-            "deterministic classifications."
+            "Review every candidate cluster. Select a cluster ID only when the "
+            "judgment applies to every mapped call; otherwise select the supported "
+            "exact calls or turn ranges. Clusters describe observable similarity and "
+            "are not deterministic classifications."
         ),
         "computed_by_controller": [
             "identity and artifact paths",
@@ -1719,6 +1826,11 @@ def _surface_pass_packet(
     }
     if surface_id == "synthesis":
         findings, finding_surfaces, risks = _finding_inventory(state)
+        remaining_calls = _synthesis_remaining_calls(state, evidence, findings)
+        focused_runs = set(evidence["focused_semantic_context"]["run_ids"])
+        remaining_clusters = _candidate_clusters(
+            remaining_calls, evidence, focused_runs
+        )
         finding_items = []
         for finding_id, finding in findings.items():
             recurrence = finding["recurrence"]
@@ -1751,17 +1863,32 @@ def _surface_pass_packet(
                     "schema": SYNTHESIS_DECISION_SCHEMA,
                     "finding_order": list(findings),
                     "risk_order": list(risks),
+                    "remaining_call_assessments": [],
                 },
                 "rule": (
-                    "Rank every finding and risk exactly once. The controller derives "
-                    "primary ownership, overlaps, evidence-backed necessity, the "
-                    "unassessed remainder, arithmetic, producer groups, finalization, "
-                    "cleanup, and rendering."
+                    "Rank every finding and risk exactly once. Semantically classify "
+                    "remaining cluster IDs as necessary or unassessed. Use unassessed "
+                    "only when the stated missing fact prevents a supported decision; "
+                    "omitted clusters remain unassessed. The controller expands and "
+                    "validates the judgments and derives all bookkeeping."
                 ),
+                "assessment_fields": sorted(SYNTHESIS_ASSESSMENT_FIELDS),
+                "necessary_reason_codes": list(contract["necessary_reason_codes"]),
             },
             "accepted_findings": finding_items,
             "accepted_risks": list(risks.values()),
             "deterministic_totals": evidence["totals"],
+            "remaining_calls": {
+                "call_count": len(remaining_calls),
+                "cluster_count": len(remaining_clusters),
+                "clusters": remaining_clusters,
+                "input_volume_hotspots": _volume_hotspots(
+                    remaining_clusters, kind="input"
+                ),
+                "output_volume_hotspots": _volume_hotspots(
+                    remaining_clusters, kind="output"
+                ),
+            },
         }
 
     reference = next(
@@ -1778,9 +1905,11 @@ def _surface_pass_packet(
     )
     user_messages = _user_messages_for_calls(evidence, candidates)
     run_outcomes = _run_outcome_calls(evidence, focused_runs)
-    bounded_messages = [
-        _bounded_value(message, text_limit=400) for message in user_messages
-    ]
+    bounded_messages = _budgeted_values(
+        user_messages,
+        text_limit=400,
+        character_budget=PACKET_USER_MESSAGE_CHAR_BUDGET,
+    )
     detailed_id_set = set(detailed_ids)
     prioritized_records = sorted(
         review_records,
@@ -1791,6 +1920,45 @@ def _surface_pass_packet(
         text_limit=450,
         character_budget=PACKET_REVIEW_DETAIL_CHAR_BUDGET,
     )
+    bounded_outcomes = _budgeted_values(
+        run_outcomes,
+        text_limit=240,
+        character_budget=PACKET_RUN_OUTCOME_CHAR_BUDGET,
+    )
+    packet_evidence = {
+        "deterministic_totals": evidence["totals"],
+        "focused_run_selection": evidence["focused_semantic_context"],
+        "candidate_call_count": len(candidates),
+        "candidate_cluster_count": len(clusters),
+        "candidate_clusters": clusters,
+        "detailed_call_count": len(detailed_calls),
+        "detailed_calls": detailed_calls,
+        "detail_character_budget": PACKET_CALL_DETAIL_CHAR_BUDGET,
+        "candidate_user_message_count": len(user_messages),
+        "included_user_message_count": len(bounded_messages),
+        "candidate_user_messages": bounded_messages,
+        "model_review_preparation": _bounded_value(preparation, text_limit=450),
+        "model_review_exclusions": _bounded_value(exclusions, text_limit=450),
+        "relevant_model_review_record_count": len(review_records),
+        "included_model_review_record_count": len(bounded_records),
+        "included_model_review_records": bounded_records,
+        "run_outcome_purpose": (
+            "Check later run outcomes before confirming a historical gap; "
+            "do not return a finding whose durable control is already implemented."
+        ),
+        "run_outcome_count": len(run_outcomes),
+        "included_run_outcome_count": len(bounded_outcomes),
+        "run_outcomes": bounded_outcomes,
+        "complete_evidence_retained_on_disk": True,
+    }
+    if surface_id in {"context-evidence", "instruction-reasoning"}:
+        packet_evidence["input_volume_hotspots"] = _volume_hotspots(
+            clusters, kind="input"
+        )
+    if surface_id in {"tool-flow", "instruction-reasoning"}:
+        packet_evidence["output_volume_hotspots"] = _volume_hotspots(
+            clusters, kind="output"
+        )
     return {
         **common,
         "internal": False,
@@ -1799,30 +1967,7 @@ def _surface_pass_packet(
             "content": (SKILL_DIR / reference).read_text(encoding="utf-8"),
         },
         "decision_contract": _surface_decision_contract(surface_id, contract),
-        "evidence": {
-            "deterministic_totals": evidence["totals"],
-            "focused_run_selection": evidence["focused_semantic_context"],
-            "candidate_call_count": len(candidates),
-            "candidate_cluster_count": len(clusters),
-            "candidate_clusters": clusters,
-            "detailed_call_count": len(detailed_calls),
-            "detailed_calls": detailed_calls,
-            "detail_character_budget": PACKET_CALL_DETAIL_CHAR_BUDGET,
-            "candidate_user_message_count": len(user_messages),
-            "candidate_user_messages": bounded_messages,
-            "model_review_preparation": _bounded_value(preparation, text_limit=450),
-            "model_review_exclusions": _bounded_value(exclusions, text_limit=450),
-            "relevant_model_review_record_count": len(review_records),
-            "included_model_review_record_count": len(bounded_records),
-            "included_model_review_records": bounded_records,
-            "run_outcome_purpose": (
-                "Check later run outcomes before confirming a historical gap; "
-                "do not return a finding whose durable control is already implemented."
-            ),
-            "run_outcome_count": len(run_outcomes),
-            "run_outcomes": run_outcomes,
-            "complete_evidence_retained_on_disk": True,
-        },
+        "evidence": packet_evidence,
     }
 
 
@@ -1830,7 +1975,14 @@ def _pass_packet(state_path: pathlib.Path) -> dict[str, Any]:
     state, evidence, contract = _load_state(state_path)
     if state["finalized"]:
         return _final_packet(state, evidence, contract)
-    return _surface_pass_packet(state, evidence, contract)
+    packet = _surface_pass_packet(state, evidence, contract)
+    size = _json_chars(packet)
+    if size > PASS_PACKET_CHAR_LIMIT:
+        raise CreditAnalysisError(
+            f"semantic pass packet exceeds {PASS_PACKET_CHAR_LIMIT} characters "
+            f"({size}); refine deterministic clustering or detail budgets"
+        )
+    return packet
 
 
 def _initialize_analysis(
@@ -2749,6 +2901,7 @@ def _expand_decision_selectors(
     known_calls: set[str],
     label: str,
     *,
+    cluster_calls: Mapping[str, Sequence[str]] | None = None,
     allow_empty: bool = False,
 ) -> list[str]:
     selectors = _objects(raw, label)
@@ -2757,7 +2910,22 @@ def _expand_decision_selectors(
     selected: list[str] = []
     for index, selector in enumerate(selectors, start=1):
         _allowed_fields(selector, CALL_SELECTOR_FIELDS, f"{label} selector {index}")
-        if "call_ids" in selector:
+        if "cluster_ids" in selector:
+            if set(selector) != {"cluster_ids"}:
+                raise CreditAnalysisError(
+                    f"{label} selector {index} mixes cluster IDs with another form"
+                )
+            cluster_ids = _strings(
+                selector["cluster_ids"], f"{label} selector {index} cluster IDs"
+            )
+            candidates = []
+            for cluster_id in cluster_ids:
+                if cluster_calls is None or cluster_id not in cluster_calls:
+                    raise CreditAnalysisError(
+                        f"{label} selects unknown cluster: {cluster_id}"
+                    )
+                candidates.extend(str(call_id) for call_id in cluster_calls[cluster_id])
+        elif "call_ids" in selector:
             if set(selector) != {"call_ids"}:
                 raise CreditAnalysisError(
                     f"{label} selector {index} mixes exact IDs and ranges"
@@ -2768,7 +2936,8 @@ def _expand_decision_selectors(
         else:
             if set(selector) != {"turn_id", "ranges"}:
                 raise CreditAnalysisError(
-                    f"{label} selector {index} must use exact IDs or one turn range"
+                    f"{label} selector {index} must use cluster IDs, exact IDs, "
+                    "or one turn range"
                 )
             turn_id = selector.get("turn_id")
             ranges = selector.get("ranges")
@@ -2863,16 +3032,21 @@ def _decision_finding(
     raw: dict[str, Any],
     *,
     known_calls: set[str],
+    cluster_calls: Mapping[str, Sequence[str]],
 ) -> dict[str, Any]:
     _closed(raw, DECISION_FINDING_FIELDS, "surface decision finding")
     waste_kind = raw.get("waste_kind")
     affected = _expand_decision_selectors(
-        raw.get("affected_selectors"), known_calls, "finding affected selectors"
+        raw.get("affected_selectors"),
+        known_calls,
+        "finding affected selectors",
+        cluster_calls=cluster_calls,
     )
     additional = _expand_decision_selectors(
         raw.get("additional_evidence_selectors"),
         known_calls,
         "finding additional evidence selectors",
+        cluster_calls=cluster_calls,
         allow_empty=True,
     )
     recurrence = _decision_recurrence(
@@ -2910,15 +3084,20 @@ def _decision_risk(
     raw: dict[str, Any],
     *,
     known_calls: set[str],
+    cluster_calls: Mapping[str, Sequence[str]],
 ) -> dict[str, Any]:
     _closed(raw, DECISION_RISK_FIELDS, "surface decision risk")
     affected = _expand_decision_selectors(
-        raw.get("affected_selectors"), known_calls, "risk affected selectors"
+        raw.get("affected_selectors"),
+        known_calls,
+        "risk affected selectors",
+        cluster_calls=cluster_calls,
     )
     additional = _expand_decision_selectors(
         raw.get("additional_evidence_selectors"),
         known_calls,
         "risk additional evidence selectors",
+        cluster_calls=cluster_calls,
         allow_empty=True,
     )
     refs = list(dict.fromkeys([*affected, *additional]))
@@ -3002,12 +3181,21 @@ def _assemble_surface_decision(
     if not isinstance(pending, Mapping) or pending.get("surface_id") == "synthesis":
         raise CreditAnalysisError("a public surface decision is not pending")
     known_calls = set(evidence["call_inventory"])
+    focused_runs = set(evidence["focused_semantic_context"]["run_ids"])
+    cluster_calls = {
+        str(partition["cluster_id"]): list(partition["call_ids"])
+        for partition in _candidate_cluster_partition(
+            list(pending["candidate_call_ids"]), evidence, focused_runs
+        )
+    }
     findings = [
-        _decision_finding(raw, known_calls=known_calls)
+        _decision_finding(
+            raw, known_calls=known_calls, cluster_calls=cluster_calls
+        )
         for raw in _objects(decision.get("findings"), "surface decision findings")
     ]
     risks = [
-        _decision_risk(raw, known_calls=known_calls)
+        _decision_risk(raw, known_calls=known_calls, cluster_calls=cluster_calls)
         for raw in _objects(decision.get("risks"), "surface decision risks")
     ]
     exclusions: list[dict[str, str]] = []
@@ -3028,7 +3216,10 @@ def _assemble_surface_decision(
                 "reason": reason.strip(),
             }
             for call_id in _expand_decision_selectors(
-                raw.get("selectors"), known_calls, "exclusion selectors"
+                raw.get("selectors"),
+                known_calls,
+                "exclusion selectors",
+                cluster_calls=cluster_calls,
             )
         )
     exclusion_calls = {item["call_id"] for item in exclusions}
@@ -3242,6 +3433,31 @@ def _finding_inventory(
     return findings, finding_surfaces, risks
 
 
+def _synthesis_remaining_calls(
+    state: Mapping[str, Any],
+    evidence: Mapping[str, Any],
+    findings: Mapping[str, Mapping[str, Any]],
+) -> list[str]:
+    """Return calls not already claimed by a finding or surface exclusion."""
+
+    claimed_calls = {
+        str(call_id)
+        for finding in findings.values()
+        if finding["waste_kind"] != "context-volume"
+        for call_id in finding["affected_call_ids"]
+    }
+    excluded_calls = {
+        str(exclusion["call_id"])
+        for surface in _public_surface_results(state)
+        for exclusion in surface["necessary_call_exclusions"]
+    }
+    return [
+        str(call_id)
+        for call_id in evidence["call_inventory"]
+        if call_id not in claimed_calls and call_id not in excluded_calls
+    ]
+
+
 def _validated_classification_groups(
     value: Any,
     *,
@@ -3395,6 +3611,15 @@ def _assemble_synthesis_decision(
     if set(risk_order) != set(risks) or len(risk_order) != len(risks):
         raise CreditAnalysisError("synthesis decision must rank every risk once")
 
+    remaining_calls = _synthesis_remaining_calls(state, evidence, findings)
+    focused_runs = set(evidence["focused_semantic_context"]["run_ids"])
+    remaining_cluster_calls = {
+        str(partition["cluster_id"]): list(partition["call_ids"])
+        for partition in _candidate_cluster_partition(
+            remaining_calls, evidence, focused_runs
+        )
+    }
+
     inventory = list(evidence["call_inventory"])
     position_by_call = {
         call_id: position for position, call_id in enumerate(inventory, start=1)
@@ -3467,10 +3692,73 @@ def _assemble_synthesis_decision(
                 "reason": reason,
             }
         )
+    semantically_assessed_calls: set[str] = set()
+    selected_clusters: set[str] = set()
+    for index, raw in enumerate(
+        _objects(
+            decision.get("remaining_call_assessments"),
+            "synthesis remaining-call assessments",
+        ),
+        start=1,
+    ):
+        _closed(raw, SYNTHESIS_ASSESSMENT_FIELDS, "synthesis call assessment")
+        cluster_ids = _strings(
+            raw.get("cluster_ids"),
+            f"synthesis call assessment {index} cluster IDs",
+        )
+        duplicate_clusters = selected_clusters & set(cluster_ids)
+        if duplicate_clusters:
+            raise CreditAnalysisError(
+                "synthesis call assessment repeats cluster: "
+                f"{sorted(duplicate_clusters)[0]}"
+            )
+        selected_clusters.update(cluster_ids)
+        selected_calls: list[str] = []
+        for cluster_id in cluster_ids:
+            if cluster_id not in remaining_cluster_calls:
+                raise CreditAnalysisError(
+                    f"synthesis call assessment selects unknown cluster: {cluster_id}"
+                )
+            selected_calls.extend(remaining_cluster_calls[cluster_id])
+        classification = raw.get("classification")
+        reason_code = raw.get("reason_code")
+        reason = raw.get("reason")
+        if not isinstance(reason, str) or not reason.strip():
+            raise CreditAnalysisError(
+                f"synthesis call assessment {index} reason is required"
+            )
+        if classification == "necessary":
+            if reason_code not in contract["necessary_reason_codes"]:
+                raise CreditAnalysisError(
+                    f"synthesis call assessment {index} reason code is invalid"
+                )
+        elif classification == "unassessed":
+            if reason_code is not None:
+                raise CreditAnalysisError(
+                    f"synthesis call assessment {index} unassessed reason is invalid"
+                )
+        else:
+            raise CreditAnalysisError(
+                f"synthesis call assessment {index} classification is invalid"
+            )
+        semantically_assessed_calls.update(selected_calls)
+        classification_groups.append(
+            {
+                "classification": classification,
+                "inventory_positions": sorted(
+                    position_by_call[call_id] for call_id in selected_calls
+                ),
+                "primary_finding_id": None,
+                "reason_code": reason_code,
+                "reason": reason.strip(),
+            }
+        )
     unassessed_positions = [
         position_by_call[call_id]
         for call_id in inventory
-        if call_id not in claimed_by_call and call_id not in necessary_by_call
+        if call_id not in claimed_by_call
+        and call_id not in necessary_by_call
+        and call_id not in semantically_assessed_calls
     ]
     if unassessed_positions:
         classification_groups.append(
@@ -3480,8 +3768,8 @@ def _assemble_synthesis_decision(
                 "primary_finding_id": None,
                 "reason_code": None,
                 "reason": (
-                    "No accepted finding or evidence-backed necessary exclusion "
-                    "assessed these calls."
+                    "The synthesis decision omitted these remaining observable "
+                    "clusters, so the controller left them unassessed."
                 ),
             }
         )
@@ -4095,6 +4383,9 @@ def _render_final_report(final: Mapping[str, Any]) -> str:
         affected = finding.get("primary_call_ids") or finding.get(
             "affected_call_ids", []
         )
+        observed_calls = finding.get("deduplicated_avoidable_call_count")
+        if not isinstance(observed_calls, int):
+            observed_calls = len(affected)
         recurrence = finding.get("recurrence", {})
         owner = finding.get("producer_owner") or finding.get("producer_type")
         lines.extend(
@@ -4111,7 +4402,7 @@ def _render_final_report(final: Mapping[str, Any]) -> str:
                 "",
                 (
                     "Savings: "
-                    f"{len(affected)} deduplicated observed call(s); "
+                    f"{observed_calls} deduplicated observed call(s); "
                     f"{_finding_savings(finding):g} estimated call(s) per similar run; "
                     f"implementation cost {finding['one_time_implementation_cost']['estimated_model_calls']:g} "
                     f"call(s); complexity {finding['complexity']}."
@@ -4122,6 +4413,20 @@ def _render_final_report(final: Mapping[str, Any]) -> str:
         if assumptions:
             lines.extend(["", "Assumptions: " + "; ".join(assumptions)])
         lines.append("")
+    volume_findings = [
+        finding for finding in findings if finding.get("waste_kind") == "context-volume"
+    ]
+    lines.extend(["## Input/output token reduction", ""])
+    if not volume_findings:
+        lines.extend(["No input/output-volume reduction was confirmed.", ""])
+    for finding in volume_findings:
+        lines.extend(
+            [
+                f"- {finding['title']}: {finding['evidence_narrative']} "
+                f"Recommended control: {finding['proposed_durable_control']}",
+                "",
+            ]
+        )
     risks = final.get("plausible_risks", [])
     lines.extend(["## Plausible but unverified", ""])
     if not risks:
@@ -4261,7 +4566,7 @@ def command_submit(
     _open_pending(state, evidence, contract)
     _save_state(state)
     _verify_completed(state)
-    return _surface_pass_packet(state, evidence, contract)
+    return _pass_packet(state_path)
 
 
 def command_finalize(

@@ -61,10 +61,11 @@ applies them.
   recurrence.
 - Exclude calls required by active freshness, safety, verification, controlled
   iteration, or workflow gates. Record conversational tool-protocol overhead as
-  necessary rather than as a helper defect. Semantic passes propose supported
-  necessary exclusions; deterministic code only validates those exclusions.
-  Calls with neither an accepted finding nor a supported exclusion are
-  `unassessed`, never assumed necessary.
+  necessary rather than as a helper defect. Surface passes and synthesis make
+  evidence-backed semantic classifications; deterministic code only groups
+  observable evidence, expands selected clusters, and validates the result.
+  Calls without an accepted finding or supported semantic classification
+  remain `unassessed`.
 - Tie every confirmed finding to evidence call IDs, its producer and concrete
   owner when known, a plain-language problem summary, one durable control,
   implementation status, targeted verification, observed avoidable calls,

@@ -110,6 +110,7 @@ def credit_analysis_session(
     cwd: pathlib.Path | None = None,
     repository_url: str | None = None,
     extra_completed_turns: int = 0,
+    extra_calls_per_turn: int = 1,
 ) -> None:
     """Create completed synthetic runs and one active tail."""
 
@@ -378,14 +379,16 @@ def credit_analysis_session(
             f"{prefix}:00.500Z",
             f"Review synthetic overflow candidate {index + 1}.",
         )
-        add_call(
-            f"{prefix}:01Z",
-            turn_id,
-            name="inspect_candidate",
-            call_id=f"overflow-{index + 1}",
-            arguments={"candidate": index + 1},
-            output={"reviewed": True, "candidate": index + 1},
-        )
+        for call_index in range(extra_calls_per_turn):
+            candidate = index * extra_calls_per_turn + call_index + 1
+            add_call(
+                f"{prefix}:01Z",
+                turn_id,
+                name="inspect_candidate",
+                call_id=f"overflow-{index + 1}-{call_index + 1}",
+                arguments={"candidate": candidate},
+                output={"reviewed": True, "candidate": candidate},
+            )
         add_call(f"{prefix}:02Z", turn_id, final=True)
     active_minute = 3 + extra_completed_turns
     active_prefix = f"2026-08-01T00:{active_minute:02d}"
@@ -419,11 +422,16 @@ def credit_analysis_request(
     *,
     action: str = "full-analysis",
     extra_completed_turns: int = 0,
+    extra_calls_per_turn: int = 1,
 ) -> tuple[pathlib.Path, pathlib.Path, pathlib.Path]:
     """Create one request with caller-selected controller and evidence paths."""
 
     session = tmp_path / "session.jsonl"
-    credit_analysis_session(session, extra_completed_turns=extra_completed_turns)
+    credit_analysis_session(
+        session,
+        extra_completed_turns=extra_completed_turns,
+        extra_calls_per_turn=extra_calls_per_turn,
+    )
     task_root = tmp_path / f"analysis-{action}"
     task_root.mkdir()
     evidence = tmp_path / f"evidence-{action}.json"
@@ -642,14 +650,20 @@ def surface_decision_record(
     *,
     finding_id: str | None = None,
     implementation_status: str = "unimplemented",
+    waste_kind: str = "model-calls",
     risks: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Build one compact model judgment for the end-to-end controller."""
 
     findings: list[dict[str, Any]] = []
     if finding_id is not None:
-        cluster_selectors = packet["evidence"]["candidate_clusters"][0][
-            "selectors"
+        selected_cluster = packet["evidence"]["candidate_clusters"][0]
+        cluster_selectors = [
+            {
+                "cluster_ids": [
+                    selected_cluster["cluster_id"]
+                ]
+            }
         ]
         helper_categories = (
             ["noisy-or-incomplete-result-contract"]
@@ -664,12 +678,29 @@ def surface_decision_record(
                     f"The synthetic {packet['surface_id']} episode used an avoidable "
                     "model call because its producer lacked a complete control."
                 ),
-                "waste_kind": "model-calls",
+                "waste_kind": waste_kind,
                 "affected_selectors": cluster_selectors,
                 "additional_evidence_selectors": [],
                 "evidence_narrative": (
-                    f"The {packet['surface_id']} evidence shows a repeated semantic "
-                    "decision after the producer had enough deterministic state to finish."
+                    (
+                        "Aggregate evidence records "
+                        f"{selected_cluster['token_totals']['input_tokens']} input, "
+                        f"{selected_cluster['token_totals']['cached_input_tokens']} "
+                        "cached-input, "
+                        f"{selected_cluster['token_totals']['output_tokens']} output "
+                        "tokens, "
+                        f"{selected_cluster['tool_totals']['argument_chars']} "
+                        "tool-argument "
+                        "characters, and "
+                        f"{selected_cluster['tool_totals']['result_chars']} tool-result "
+                        "characters beyond the bounded decision payload."
+                    )
+                    if waste_kind == "context-volume"
+                    else (
+                        f"The {packet['surface_id']} evidence shows a repeated semantic "
+                        "decision after the producer had enough deterministic state "
+                        "to finish."
+                    )
                 ),
                 "producer_type": "script",
                 "producer_owner": f"scripts/{packet['surface_id']}.py",
@@ -1504,21 +1535,15 @@ def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
         {"runs": [{"turn_id": "cluster-turn", "calls": calls}]},
         set(),
     )
-    assert len(semantic_clusters) == 4
-    assert semantic_clusters[0]["representative"]["semantic_actions"] != (
-        semantic_clusters[1]["representative"]["semantic_actions"]
-    )
-    assert semantic_clusters[1]["representative"]["tool_sequence"] == [
-        "exec",
-        "wait",
-    ]
-    assert semantic_clusters[2]["representative"]["tool_sequence"] == [
-        "wait",
-        "exec",
-    ]
+    assert len(semantic_clusters) == 1
+    assert semantic_clusters[0]["call_count"] == 4
+    assert semantic_clusters[0]["token_totals"]["total_tokens"] == 400
+    assert semantic_clusters[0]["tool_totals"]["result_chars"] == 160
 
     request, session, _ = credit_analysis_request(
-        tmp_path, extra_completed_turns=50
+        tmp_path,
+        extra_completed_turns=50,
+        extra_calls_per_turn=30,
     )
     started = run_credit_analysis_workflow("start", "--request", str(request))
     assert started.returncode == 0, started.stderr
@@ -1542,24 +1567,38 @@ def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
     assert packet["evidence"]["candidate_call_count"] > 30
     clusters = packet["evidence"]["candidate_clusters"]
     assert packet["evidence"]["candidate_cluster_count"] == len(clusters)
+    assert len(clusters) * 10 < packet["evidence"]["candidate_call_count"]
     state_path = pathlib.Path(packet["submit_argv"][4])
     pending_candidates = json.loads(state_path.read_text(encoding="utf-8"))[
         "pending"
     ]["candidate_call_ids"]
+    evidence_path = pathlib.Path(packet["retained_evidence_path"])
+    evidence_text = evidence_path.read_text(encoding="utf-8")
+    evidence = json.loads(evidence_text)
+    partitions = loaded["_candidate_cluster_partition"](
+        pending_candidates,
+        evidence,
+        set(evidence["focused_semantic_context"]["run_ids"]),
+    )
+    cluster_calls = {
+        partition["cluster_id"]: partition["call_ids"] for partition in partitions
+    }
     clustered_calls: list[str] = []
     for cluster in clusters:
-        cluster_calls: list[str] = []
-        for selector in cluster["selectors"]:
-            for first, last in selector["ranges"]:
-                cluster_calls.extend(
-                    f"{selector['turn_id']}:{index}"
-                    for index in range(first, last + 1)
-                )
-        assert cluster["call_count"] == len(cluster_calls)
-        assert cluster["representative"]["call_id"] in cluster_calls
-        clustered_calls.extend(cluster_calls)
+        assert "selectors" not in cluster
+        mapped_calls = cluster_calls[cluster["cluster_id"]]
+        assert cluster["call_count"] == len(mapped_calls)
+        assert cluster["representative"]["call_id"] in mapped_calls
+        clustered_calls.extend(mapped_calls)
     assert len(clustered_calls) == len(set(clustered_calls))
     assert set(clustered_calls) == set(pending_candidates)
+    expanded = loaded["_expand_decision_selectors"](
+        [{"cluster_ids": [clusters[0]["cluster_id"]]}],
+        set(pending_candidates),
+        "test clusters",
+        cluster_calls=cluster_calls,
+    )
+    assert expanded == cluster_calls[clusters[0]["cluster_id"]]
     assert packet["evidence"]["detailed_call_count"] == len(
         packet["evidence"]["detailed_calls"]
     )
@@ -1572,28 +1611,26 @@ def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
     assert packet["evidence"]["candidate_user_message_count"] > 16
     assert len(packet["evidence"]["candidate_user_messages"]) == packet[
         "evidence"
+    ]["included_user_message_count"]
+    assert packet["evidence"]["included_user_message_count"] < packet[
+        "evidence"
     ]["candidate_user_message_count"]
     assert packet["evidence"]["included_model_review_record_count"] < packet[
         "evidence"
     ]["relevant_model_review_record_count"]
     assert packet["evidence"]["relevant_model_review_record_count"] > 30
     assert packet["evidence"]["complete_evidence_retained_on_disk"] is True
-    assert packet["evidence"]["run_outcome_count"] == len(
+    assert packet["evidence"]["included_run_outcome_count"] == len(
         packet["evidence"]["run_outcomes"]
     )
+    assert packet["evidence"]["included_run_outcome_count"] <= packet[
+        "evidence"
+    ]["run_outcome_count"]
     assert packet["evidence"]["run_outcome_purpose"].startswith(
         "Check later run outcomes"
     )
-    outcome_by_turn = {
-        item["turn_id"]: item for item in packet["evidence"]["run_outcomes"]
-    }
-    assert outcome_by_turn["turn-1"]["index"] == 3
-    assert outcome_by_turn["turn-2"]["index"] == 2
-    evidence_path = pathlib.Path(packet["retained_evidence_path"])
-    evidence_text = evidence_path.read_text(encoding="utf-8")
     assert "ACTIVE_TAIL_MUST_NOT_BE_COLLECTED" not in evidence_text
     assert "active_tail_tool" not in evidence_text
-    evidence = json.loads(evidence_text)
     assert evidence["collection"]["session_reads"] == 1
     session.rename(tmp_path / "session-collected-once-end-to-end.jsonl")
 
@@ -1607,12 +1644,17 @@ def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
     implemented_finding_id = "e2e-context-evidence"
     finding_ids: list[str] = []
     for semantic_number, surface_id in enumerate(expected_surfaces, start=1):
+        assert len(json.dumps(packet).encode("utf-8")) < 90_000
         assert packet["surface_id"] == surface_id
         assert packet["protocol_budget"]["semantic_call_number"] == semantic_number
         assert packet["action_reference"]["path"] == f"references/{surface_id}.md"
         assert packet["action_reference"]["content"]
         assert packet["evidence"]["candidate_clusters"]
         assert packet["evidence"]["detailed_calls"]
+        if surface_id == "context-evidence":
+            assert packet["evidence"]["input_volume_hotspots"]
+        if surface_id == "tool-flow":
+            assert packet["evidence"]["output_volume_hotspots"]
         finding_id = f"e2e-{surface_id}"
         finding_ids.append(finding_id)
         risks: list[dict[str, Any]] = []
@@ -1655,6 +1697,9 @@ def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
                     if finding_id == implemented_finding_id
                     else "unimplemented"
                 ),
+                waste_kind=(
+                    "context-volume" if surface_id == "tool-flow" else "model-calls"
+                ),
                 risks=risks,
             ),
         )
@@ -1673,6 +1718,11 @@ def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
     assert packet["action_reference"] is None
     assert packet["protocol_budget"]["semantic_call_number"] == 6
     assert [item["id"] for item in packet["accepted_findings"]] == finding_ids
+    remaining_clusters = packet["remaining_calls"]["clusters"]
+    assert packet["remaining_calls"]["call_count"] > 0
+    assert remaining_clusters
+    assert packet["remaining_calls"]["input_volume_hotspots"]
+    assert packet["remaining_calls"]["output_volume_hotspots"]
     decision_path = pathlib.Path(packet["decision_path"])
     write_json_file(
         decision_path,
@@ -1680,6 +1730,19 @@ def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
             "schema": "ceratops-credit-analysis-synthesis-decision.v1",
             "finding_order": list(reversed(finding_ids)),
             "risk_order": ["e2e-tool-risk"],
+            "remaining_call_assessments": [
+                {
+                    "cluster_ids": [
+                        cluster["cluster_id"] for cluster in remaining_clusters
+                    ],
+                    "classification": "necessary",
+                    "reason_code": "required-workflow",
+                    "reason": (
+                        "The remaining synthetic clusters produced required workflow "
+                        "results and do not support another avoidable-call finding."
+                    ),
+                }
+            ],
         },
     )
     submitted = run_credit_analysis_workflow(
@@ -1706,6 +1769,9 @@ def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
     )
     assert implemented_finding_id.replace("-", " ") not in report
     assert "Evidence: The helper-contracts evidence shows" in report
+    assert "## Input/output token reduction" in report
+    assert "Recommended control:" in report
+    assert "cached-input" in report
     assert all(call_id not in report for call_id in evidence["call_inventory"])
     assert "Unassessed:" in final_packet["report_markdown"]
     assert "Observed: The synthetic tool call was followed by a wait." in report
@@ -1735,10 +1801,10 @@ def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
     assert [item["id"] for item in final_result["confirmed_findings"]] == list(
         reversed(finding_ids)
     )
-    assert final_result["totals"]["unassessed_calls"] > 0
+    assert final_result["totals"]["unassessed_calls"] == 0
     assert {
         item["classification"] for item in final_result["primary_call_mappings"]
-    } <= {"avoidable_unimplemented", "avoidable_implemented", "unassessed"}
+    } <= {"avoidable_unimplemented", "avoidable_implemented", "necessary"}
 
     resumed = run_credit_analysis_workflow(
         "status", "--state", str(state_path), "--packet"

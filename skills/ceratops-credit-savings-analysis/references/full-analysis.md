@@ -30,21 +30,21 @@ confirmed finding and present every outstanding finding.
 ## Workflow
 
 1. In one preparation model call, run controller `start` once. It collects the
-   session once and returns the first bounded pass packet containing the direct
-   action reference, a complete compact observable-call cluster inventory,
-   bounded representative detail, the decision contract, and exact paths. Every
-   candidate appears in exactly one cluster; deterministic code groups only
-   observable attributes, while the model judges necessity and avoidability.
+   session once and returns one size-bounded packet containing the action
+   reference, cross-run observable cluster summaries, aggregate token and tool
+   volume, bounded representative detail, and exact paths. Complete call
+   evidence remains on disk; the model selects cluster IDs and deterministic
+   code expands them.
 2. For each of the five public surfaces, use exactly one model call. Analyze only
    that packet, write the compact surface decision, and run `submit` inside the
    same orchestration tool call. Do not use model turns to assemble the full
    result, calculate coverage, create evidence references, validate, persist,
    advance, or load the next packet; the controller performs all of them.
 3. Use exactly one internal synthesis model call. Rank every accepted finding
-   and risk once, write that compact ordering decision, and run `submit` in the
-   same orchestration tool call. The controller derives primary and secondary
-   mappings, evidence-backed necessary classifications, the unassessed
-   remainder, totals, finalization, cleanup, and the complete rendered report.
+   and risk, classify the remaining compact call clusters as necessary or
+   explicitly unassessed, and run `submit` in the same orchestration tool call.
+   The controller expands and validates those judgments, derives mappings and
+   totals, finalizes, cleans transient files, and renders the report.
 4. Deliver that rendered report in one final model call. A full single-thread
    analysis therefore uses eight calls total: one preparation, five public
    surfaces, one synthesis/finalization, and one delivery. Exactly six calls are
@@ -77,6 +77,8 @@ evidence. Follow the parent plain-language `Problem` and `Fix` format. Include
 expected calls saved per affected and similar run, implementation cost, and
 ongoing complexity. Report confirmed input/output-volume waste even when it
 saves zero model calls, but exclude it from call-savings arithmetic.
+For every such finding, report its aggregate input, cached-input, output,
+tool-argument, and tool-result evidence; state when none was confirmed.
 
 Put Minimal findings first. Within Minimal and then all remaining findings,
 sort by expected calls saved per similar run descending, using finding ID only
