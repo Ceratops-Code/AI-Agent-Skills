@@ -169,6 +169,29 @@
       "cwd": "."
     },
     {
+      "id": "ruff-critical",
+      "when": [
+        {
+          "kind": "file-contains",
+          "path": "README.md",
+          "value": "python -m ruff check --select E9,F63,F7,F82 scripts/run_form.py skills/claims-catalog-invoice/scripts tests/test_claims_tracker.py"
+        }
+      ],
+      "command": [
+        "{python}",
+        "-m",
+        "ruff",
+        "check",
+        "--select",
+        "E9,F63,F7,F82",
+        "scripts/run_form.py",
+        "skills/claims-catalog-invoice/scripts",
+        "tests/test_claims_tracker.py"
+      ],
+      "cwd": ".",
+      "python_packages": ["ruff==0.16.1"]
+    },
+    {
       "id": "ruff",
       "when": [
         {"kind": "path-any", "value": ["ruff.toml", ".ruff.toml"]},

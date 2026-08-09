@@ -8284,6 +8284,48 @@ def test_compatibility_materializer_supports_repositories_without_skills(
         "unittest",
     ]
 
+    docs_repo = empty_repository("docs-compatible")
+    (docs_repo / "README.md").write_text(
+        "python -m ruff check --select E9,F63,F7,F82 scripts/run_form.py "
+        "skills/claims-catalog-invoice/scripts tests/test_claims_tracker.py\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    (docs_repo / "requirements.txt").write_text(
+        "python-docx==1.2.0\n", encoding="utf-8", newline="\n"
+    )
+    (docs_repo / "scripts").mkdir()
+    (docs_repo / "scripts" / "run_form.py").write_text(
+        "print('OK')\n", encoding="utf-8", newline="\n"
+    )
+    (docs_repo / "skills" / "claims-catalog-invoice" / "scripts").mkdir(
+        parents=True
+    )
+    (docs_repo / "skills" / "claims-catalog-invoice" / "scripts" / "claim.py").write_text(
+        "CLAIM = True\n", encoding="utf-8", newline="\n"
+    )
+    (docs_repo / "tests").mkdir()
+    (docs_repo / "tests" / "test_claims_tracker.py").write_text(
+        "import unittest\n", encoding="utf-8", newline="\n"
+    )
+    docs_result = run_compatibility_engine(
+        engine_scripts,
+        "materialize",
+        "--target-repo-root",
+        str(docs_repo),
+        "--runtime-source-id",
+        "example/docs-compatible",
+    )
+    assert docs_result.returncode == 0, docs_result.stdout
+    assert json.loads(docs_result.stdout)["repository_validation"]["checks"] == [
+        "unittest",
+        "ruff-critical",
+    ]
+    docs_workflow = (
+        docs_repo / ".github" / "workflows" / "validate.yml"
+    ).read_text(encoding="utf-8")
+    assert "ruff==0.16.1" in docs_workflow
+
     authoritative_repo = empty_repository("authoritative-compatible")
     (authoritative_repo / "scripts").mkdir()
     (authoritative_repo / "scripts" / "validate_repository.py").write_text(
