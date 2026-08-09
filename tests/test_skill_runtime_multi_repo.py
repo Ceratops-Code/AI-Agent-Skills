@@ -8335,6 +8335,9 @@ def test_compatibility_materializer_supports_repositories_without_skills(
         "parser.add_argument('--temp-root')\n"
         "parser.add_argument('--evidence-file', type=pathlib.Path, required=True)\n"
         "args = parser.parse_args()\n"
+        "if not pathlib.Path(args.temp_root).is_dir():\n"
+        "    args.evidence_file.write_text('temp root missing\\n', encoding='utf-8')\n"
+        "    raise SystemExit(2)\n"
         "args.evidence_file.write_text('inner diagnostic\\n', encoding='utf-8')\n"
         "raise SystemExit(1)\n",
         encoding="utf-8",

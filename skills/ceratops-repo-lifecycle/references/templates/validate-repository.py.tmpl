@@ -10,7 +10,6 @@ import subprocess
 import sys
 import tempfile
 
-
 CHECK_DEFINITIONS = __CHECK_DEFINITIONS__
 COMMAND_NOT_FOUND_EXIT_CODE = 127
 
@@ -28,13 +27,33 @@ def command(definition: dict[str, object], temporary_root: pathlib.Path) -> list
         "{pwsh}": pwsh,
         "{temp}": str(temporary_root),
     }
+    raw_command = definition["command"]
+    if not isinstance(raw_command, list):
+        raise TypeError("check command must be a list")
     resolved: list[str] = []
-    for raw in definition["command"]:
+    for raw in raw_command:
         value = str(raw)
         for token, replacement in values.items():
             value = value.replace(token, replacement)
         resolved.append(value)
     return resolved
+
+
+def prepare_temporary_directories(
+    argv: list[str], temporary_root: pathlib.Path
+) -> None:
+    """Create only catalog-declared working directories inside the owned root."""
+
+    resolved_root = temporary_root.resolve()
+    for index, value in enumerate(argv[:-1]):
+        if value not in {"--temp-root", "--build-dir"}:
+            continue
+        path = pathlib.Path(argv[index + 1]).resolve()
+        try:
+            path.relative_to(resolved_root)
+        except ValueError:
+            continue
+        path.mkdir(parents=True, exist_ok=True)
 
 
 def cleanup_evidence(
@@ -103,7 +122,11 @@ def main() -> int:
         temporary_root = pathlib.Path(temporary)
         for definition in CHECK_DEFINITIONS:
             argv = command(definition, temporary_root)
-            cwd = repo_root.joinpath(*pathlib.PurePosixPath(definition["cwd"]).parts)
+            prepare_temporary_directories(argv, temporary_root)
+            raw_cwd = definition["cwd"]
+            if not isinstance(raw_cwd, str):
+                raise TypeError("check cwd must be a string")
+            cwd = repo_root.joinpath(*pathlib.PurePosixPath(raw_cwd).parts)
             try:
                 result = subprocess.run(
                     argv,
