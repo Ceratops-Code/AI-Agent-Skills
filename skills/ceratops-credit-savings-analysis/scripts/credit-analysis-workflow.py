@@ -2003,6 +2003,11 @@ def _surface_pass_packet(
         include_representative=surface_id
         in {"helper-contracts", "context-evidence", "tool-flow"},
     )
+    if surface_id == "context-evidence":
+        input_hotspots = set(_volume_hotspot_ids(clusters, kind="input"))
+        for cluster in clusters:
+            if cluster["cluster_id"] not in input_hotspots:
+                cluster.pop("representative_summary", None)
     detailed_calls = _detail_packet_calls(
         candidates,
         call_by_id,

@@ -1686,12 +1686,12 @@ def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
         assert packet["action_reference"]["content"]
         assert packet["evidence"]["candidate_clusters"]
         assert packet["evidence"]["detailed_calls"]
-        if surface_id in {"helper-contracts", "context-evidence", "tool-flow"}:
+        if surface_id in {"helper-contracts", "tool-flow"}:
             assert all(
                 cluster["representative_summary"]
                 for cluster in packet["evidence"]["candidate_clusters"]
             )
-        else:
+        elif surface_id != "context-evidence":
             assert all(
                 "representative_summary" not in cluster
                 for cluster in packet["evidence"]["candidate_clusters"]
@@ -1701,7 +1701,16 @@ def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
             for record in packet["evidence"]["included_model_review_records"]
         )
         if surface_id == "context-evidence":
+            assert packet["evidence"]["candidate_call_count"] == evidence["totals"][
+                "model_calls"
+            ]
             assert packet["evidence"]["input_volume_hotspots"]
+            hotspot_ids = set(packet["evidence"]["input_volume_hotspots"])
+            assert all(
+                cluster.get("representative_summary")
+                for cluster in packet["evidence"]["candidate_clusters"]
+                if cluster["cluster_id"] in hotspot_ids
+            )
             assert all(
                 isinstance(cluster_id, str)
                 for cluster_id in packet["evidence"]["input_volume_hotspots"]

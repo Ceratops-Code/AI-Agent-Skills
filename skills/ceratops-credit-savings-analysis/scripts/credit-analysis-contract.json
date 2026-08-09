@@ -99,7 +99,7 @@
     {
       "id": "context-evidence",
       "reference": "references/context-evidence.md",
-      "candidate_selectors": ["read-search-action", "repeated-action"]
+      "candidate_selectors": ["all-calls"]
     },
     {
       "id": "rework-validation",
