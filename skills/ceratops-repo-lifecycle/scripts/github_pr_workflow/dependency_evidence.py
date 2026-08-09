@@ -401,6 +401,7 @@ def registry_evidence(update: dict[str, Any]) -> dict[str, Any]:
                 "home_page": info.get("home_page"),
             }
         if ecosystem == "github-actions" and "/" in str(package):
+            action_repo = "/".join(str(package).strip("/").split("/")[:2])
             target_ref = str(target)
             if re.fullmatch(r"\d+(?:\.\d+)*", target_ref):
                 target_ref = f"v{target_ref}"
@@ -408,7 +409,7 @@ def registry_evidence(update: dict[str, Any]) -> dict[str, Any]:
                 [
                     "gh",
                     "api",
-                    f"repos/{package}/commits/{target_ref}",
+                    f"repos/{action_repo}/commits/{target_ref}",
                     "--jq",
                     "{sha:.sha,html_url:.html_url,committed_at:.commit.committer.date,"
                     "verified:.commit.verification.verified}",
