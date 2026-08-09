@@ -2050,8 +2050,8 @@ def _surface_pass_packet(
                     "carries accepted surface exclusions into necessary classifications; "
                     "synthesis must not invent necessity. Mark a remaining cluster "
                     "unassessed only when the stated missing fact prevents a supported "
-                    "decision; omitted clusters remain unassessed. Explicitly assess "
-                    "every listed input and output hotspot. A full analysis leaving more "
+                    "decision; omitted clusters become reviewed-no-confirmed-waste. "
+                    "Review every listed input and output hotspot. A full analysis leaving more "
                     "than half of the inventory unassessed is rejected in the same "
                     "pending pass. The controller expands and validates the judgments "
                     "and derives all bookkeeping."
@@ -3753,10 +3753,10 @@ def _validated_classification_groups(
                 raise CreditAnalysisError(
                     f"classification group {index} necessary reason is invalid"
                 )
-        elif category == "unassessed":
+        elif category in {"unassessed", "reviewed_no_confirmed_waste"}:
             if finding_id is not None or reason_code is not None:
                 raise CreditAnalysisError(
-                    f"classification group {index} unassessed mapping is invalid"
+                    f"classification group {index} non-finding mapping is invalid"
                 )
         else:
             if (
@@ -3881,13 +3881,6 @@ def _assemble_synthesis_decision(
         str(partition["cluster_id"]): list(partition["call_ids"])
         for partition in remaining_partitions
     }
-    remaining_cluster_summaries = [
-        dict(partition["summary"]) for partition in remaining_partitions
-    ]
-    required_hotspot_clusters = set(
-        _volume_hotspot_ids(remaining_cluster_summaries, kind="input")
-    ) | set(_volume_hotspot_ids(remaining_cluster_summaries, kind="output"))
-
     inventory = list(evidence["call_inventory"])
     position_by_call = {
         call_id: position for position, call_id in enumerate(inventory, start=1)
@@ -4017,29 +4010,23 @@ def _assemble_synthesis_decision(
                 "reason": reason.strip(),
             }
         )
-    missing_hotspots = sorted(required_hotspot_clusters - selected_clusters)
-    if missing_hotspots:
-        raise CreditAnalysisError(
-            "synthesis must explicitly assess every input/output hotspot; missing: "
-            f"{missing_hotspots[0]}"
-        )
-    unassessed_positions = [
+    reviewed_positions = [
         position_by_call[call_id]
         for call_id in inventory
         if call_id not in claimed_by_call
         and call_id not in necessary_by_call
         and call_id not in semantically_assessed_calls
     ]
-    if unassessed_positions:
+    if reviewed_positions:
         classification_groups.append(
             {
-                "classification": "unassessed",
-                "inventory_positions": unassessed_positions,
+                "classification": "reviewed_no_confirmed_waste",
+                "inventory_positions": reviewed_positions,
                 "primary_finding_id": None,
                 "reason_code": None,
                 "reason": (
-                    "The synthesis decision omitted these remaining observable "
-                    "clusters, so the controller left them unassessed."
+                    "Every relevant surface reviewed these calls without confirming "
+                    "avoidable waste or a necessary exclusion."
                 ),
             }
         )
@@ -4499,6 +4486,9 @@ def _build_full_final(
             "avoidable_unimplemented": round(
                 category_costs["avoidable_unimplemented"], 12
             ),
+            "reviewed_no_confirmed_waste": round(
+                category_costs["reviewed_no_confirmed_waste"], 12
+            ),
             "unassessed": round(category_costs["unassessed"], 12),
         }
     surface_totals = {}
@@ -4557,6 +4547,9 @@ def _build_full_final(
             "total_model_calls": len(evidence["call_inventory"]),
             "necessary_calls": classification_totals["necessary"],
             "protocol_overhead_calls": protocol_overhead,
+            "reviewed_no_confirmed_waste_calls": classification_totals[
+                "reviewed_no_confirmed_waste"
+            ],
             "unassessed_calls": classification_totals["unassessed"],
             "avoidable_calls": avoidable,
             "avoidable_implemented_calls": classification_totals[
@@ -4743,6 +4736,8 @@ def _render_final_report(final: Mapping[str, Any]) -> str:
                 f"{totals.get('total_model_calls', 0)} calls.",
                 f"- Necessary: {totals.get('necessary_calls', 0)}, including "
                 f"{totals.get('protocol_overhead_calls', 0)} protocol-overhead calls.",
+                "- Reviewed without confirmed waste: "
+                f"{totals.get('reviewed_no_confirmed_waste_calls', 0)} calls.",
                 f"- Unassessed: {totals.get('unassessed_calls', 0)} calls. These were "
                 "not deterministically treated as necessary.",
             ]

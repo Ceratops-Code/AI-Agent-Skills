@@ -64,8 +64,10 @@ applies them.
   necessary rather than as a helper defect. Surface passes and synthesis make
   evidence-backed semantic classifications; deterministic code only groups
   observable evidence, expands selected clusters, and validates the result.
-  Calls without an accepted finding or supported semantic classification
-  remain `unassessed`.
+  Calls with an explicit decision-blocking evidence gap remain `unassessed`.
+  Calls reviewed by every relevant surface without confirmed waste or a
+  necessary exclusion are `reviewed-no-confirmed-waste`; this category is
+  neither necessity nor savings.
 - Tie every confirmed finding to evidence call IDs, its producer and concrete
   owner when known, a plain-language problem summary, one durable control,
   implementation status, targeted verification, observed avoidable calls,
@@ -95,11 +97,11 @@ applies them.
   coverage and immutable result. A zero-finding pass must dismiss or exclude
   every exposed candidate with a reason.
 - `full-analysis` is complete only after all five public surfaces and internal
-  synthesis are accepted exactly once, every assessed model call has one
-  primary classification, the remainder is explicitly `unassessed`, every
-  confirmed surface finding remains in the final result, secondary overlaps are
-  retained without double-counting savings, and controller finalization
-  succeeds.
+  synthesis are accepted exactly once, every model call has one primary
+  classification, reviewed calls without confirmed waste are kept distinct
+  from explicit `unassessed` calls, every confirmed surface finding remains in
+  the final result, secondary overlaps are retained without double-counting
+  savings, and controller finalization succeeds.
 - A standalone action is complete only after the selected surface result is
   accepted and controller finalization succeeds.
 
@@ -127,8 +129,9 @@ applies them.
   hides a distinct unknown or evidence source, and do not include a risk in
   confirmed savings. For standalone actions, state that the conclusion is
   limited to the selected surface and is not a whole-thread reconciliation.
-- Report necessary, protocol-overhead, avoidable, and unassessed call totals
-  separately. Never describe unassessed calls as necessary.
+- Report necessary, protocol-overhead, avoidable,
+  reviewed-no-confirmed-waste, and unassessed call totals separately. Never
+  describe reviewed or unassessed calls as necessary.
 
 ## Analysis-Only Boundaries
 

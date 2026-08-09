@@ -41,11 +41,11 @@ confirmed finding and present every outstanding finding.
    result, calculate coverage, create evidence references, validate, persist,
    advance, or load the next packet; the controller performs all of them.
 3. Use exactly one internal synthesis model call. Rank every accepted finding
-   and risk, mark unsupported remaining compact call clusters explicitly
-   unassessed, and run `submit` in the same orchestration tool call. Accepted
-   surface exclusions are the only source of necessary classifications. The
-   controller expands and validates those judgments, derives mappings and
-   totals, finalizes, cleans transient files, and renders the report.
+   and risk, and mark only clusters whose missing fact blocks a supported
+   decision as `unassessed`. Omitted remaining clusters become
+   `reviewed-no-confirmed-waste`; accepted surface exclusions are the only
+   source of necessary classifications. Run `submit` in the same orchestration
+   tool call; the controller derives, validates, finalizes, and renders.
 4. Deliver that rendered report in one final model call. A full single-thread
    analysis therefore uses eight calls total: one preparation, five public
    surfaces, one synthesis/finalization, and one delivery. Exactly six calls are
@@ -66,8 +66,8 @@ Never recollect a prepared session or create a temporary discovery script.
 
 Complete only when the final packet reports `complete: true` and retained evidence
 contains every accepted pass, finding, risk, dismissal, exclusion, primary and
-secondary mapping, unassessed call, category and surface total, producer group,
-and ROI input.
+secondary mapping, reviewed-no-confirmed-waste and unassessed call, category
+and surface total, producer group, and ROI input.
 For a batch, every selected child must also be finalized and indexed exactly
 once before batch finalization succeeds.
 
@@ -86,10 +86,11 @@ sort by expected calls saved per similar run descending, using finding ID only
 as the deterministic tie-breaker. Do not use producer, helper category, or
 internal controller identity as a presentation group.
 
-Explain plausible risks under the parent contract. Also report necessary and
-protocol-overhead totals; outstanding avoidable calls versus total calls;
-unassessed calls separately; priced cost only when available; and the retained
-analysis-result path. Never suppress an outstanding finding.
+Explain plausible risks under the parent contract. Also report necessary,
+protocol-overhead, reviewed-no-confirmed-waste, and unassessed totals;
+outstanding avoidable calls versus total calls; priced cost only when
+available; and the retained analysis-result path. Never suppress an
+outstanding finding.
 
 For a batch, group similar findings across threads under plain-language problem
 titles, apply the same ordering, identify affected threads, report per-thread

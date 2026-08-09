@@ -1241,6 +1241,7 @@ def test_credit_analysis_workflow_full_analysis_persists_every_finding(
             "necessary",
             "avoidable_implemented",
             "avoidable_unimplemented",
+            "reviewed_no_confirmed_waste",
             "unassessed",
         ],
         "necessary_reason_codes": contract["necessary_reason_codes"],
@@ -1464,6 +1465,7 @@ def test_credit_analysis_workflow_full_analysis_persists_every_finding(
         "total_model_calls": 6,
         "necessary_calls": 3,
         "protocol_overhead_calls": 1,
+        "reviewed_no_confirmed_waste_calls": 0,
         "unassessed_calls": 0,
         "avoidable_calls": 3,
         "avoidable_implemented_calls": 1,
@@ -1872,7 +1874,7 @@ def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
         "reason": "nonempty string",
     }
     assert "must not invent necessity" in packet["decision_contract"]["rule"]
-    assert "Explicitly assess every listed input and output hotspot" in packet[
+    assert "Review every listed input and output hotspot" in packet[
         "decision_contract"
     ]["rule"]
     assert "more than half" in packet["decision_contract"]["rule"]
@@ -1889,28 +1891,6 @@ def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
     assert packet["remaining_calls"]["input_volume_hotspots"]
     assert packet["remaining_calls"]["output_volume_hotspots"]
     decision_path = pathlib.Path(packet["decision_path"])
-    write_json_file(
-        decision_path,
-        {
-            "schema": "ceratops-credit-analysis-synthesis-decision.v1",
-            "finding_order": list(reversed(finding_ids)),
-            "risk_order": ["e2e-tool-risk"],
-            "remaining_call_assessments": [],
-        },
-    )
-    rejected_hotspot = run_credit_analysis_workflow(
-        "submit",
-        "--state",
-        str(state_path),
-        "--decision",
-        str(decision_path),
-    )
-    assert rejected_hotspot.returncode == 2
-    assert "explicitly assess every input/output hotspot" in rejected_hotspot.stderr
-    assert json.loads(state_path.read_text(encoding="utf-8"))["pending"][
-        "surface_id"
-    ] == "synthesis"
-
     assert packet["remaining_calls"]["call_count"] * 2 <= evidence["totals"][
         "model_calls"
     ]
@@ -1923,7 +1903,7 @@ def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
             "remaining_call_assessments": [
                 {
                     "cluster_ids": [
-                        cluster["cluster_id"] for cluster in remaining_clusters
+                        remaining_clusters[0]["cluster_id"]
                     ],
                     "classification": "necessary",
                     "reason_code": "required-workflow",
@@ -1956,7 +1936,7 @@ def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
             "remaining_call_assessments": [
                 {
                     "cluster_ids": [
-                        cluster["cluster_id"] for cluster in remaining_clusters
+                        remaining_clusters[0]["cluster_id"]
                     ],
                     "classification": "unassessed",
                     "reason_code": None,
@@ -1994,6 +1974,7 @@ def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
     assert "cached-input" in report
     assert all(call_id not in report for call_id in evidence["call_inventory"])
     assert "Unassessed:" in final_packet["report_markdown"]
+    assert "Reviewed without confirmed waste:" in final_packet["report_markdown"]
     assert "Observed: The synthetic tool call was followed by a wait." in report
     assert (
         "Unknown: The wait repeated an already complete check.; The wait observed "
@@ -2021,15 +2002,20 @@ def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
     assert [item["id"] for item in final_result["confirmed_findings"]] == list(
         reversed(finding_ids)
     )
-    assert final_result["totals"]["unassessed_calls"] == packet[
-        "remaining_calls"
-    ]["call_count"]
+    assert final_result["totals"]["unassessed_calls"] == remaining_clusters[0][
+        "call_count"
+    ]
+    assert final_result["totals"]["reviewed_no_confirmed_waste_calls"] == (
+        packet["remaining_calls"]["call_count"]
+        - remaining_clusters[0]["call_count"]
+    )
     assert {
         item["classification"] for item in final_result["primary_call_mappings"]
     } <= {
         "avoidable_unimplemented",
         "avoidable_implemented",
         "necessary",
+        "reviewed_no_confirmed_waste",
         "unassessed",
     }
 

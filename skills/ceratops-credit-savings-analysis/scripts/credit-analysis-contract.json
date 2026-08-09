@@ -170,6 +170,7 @@
     "necessary",
     "avoidable_implemented",
     "avoidable_unimplemented",
+    "reviewed_no_confirmed_waste",
     "unassessed"
   ],
   "necessary_reason_codes": [
