@@ -461,11 +461,12 @@ def _validated_request(path: pathlib.Path) -> dict[str, object]:
                 f"source {index} rules are unreadable: {exc}"
             ) from exc
         text_records: list[dict[str, object]] = []
-        for text in expected_text:
+        for text_index, text in enumerate(expected_text):
             count = current.count(text)
             if count != 1:
                 raise ProposalWorkflowError(
-                    f"source {index} expected_text must occur exactly once; found {count}"
+                    f"source {index} expected_text[{text_index}] must occur "
+                    f"exactly once; found {count}"
                 )
             text_records.append(
                 {

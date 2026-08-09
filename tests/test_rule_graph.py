@@ -1,3 +1,4 @@
+import argparse
 import json
 import pathlib
 import runpy
@@ -24,9 +25,79 @@ from rule_graph import (  # noqa: E402
 
 GOVERNANCE_SNAPSHOT = runpy.run_path(str(SCRIPTS / "governance-snapshot.py"))
 agents_rule_graph_inventory = GOVERNANCE_SNAPSHOT["agents_rule_graph_inventory"]
+build_snapshot = GOVERNANCE_SNAPSHOT["build_snapshot"]
 
 
 class RuleGraphTests(unittest.TestCase):
+    @staticmethod
+    def write_automation(
+        root: pathlib.Path,
+        automation_id: str,
+        reasoning_effort: str,
+        prompt: str = "Audit deterministically.",
+    ) -> None:
+        automation = root / automation_id
+        automation.mkdir(parents=True)
+        (automation / "automation.toml").write_text(
+            f'id = "{automation_id}"\n'
+            f'name = "{automation_id}"\n'
+            f'prompt = "{prompt}"\n'
+            'status = "ACTIVE"\n'
+            'rrule = "FREQ=DAILY"\n'
+            'model = "gpt-5.6-sol"\n'
+            f'reasoning_effort = "{reasoning_effort}"\n',
+            encoding="utf-8",
+            newline="\n",
+        )
+
+    def test_governance_snapshot_uses_source_repo_and_checks_both_effort_scopes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            projects_root = root / "projects"
+            source_repo = projects_root / "Codex-Automations"
+            source_root = source_repo / "automations"
+            runtime_root = root / "runtime" / "automations"
+            codex_home = root / "codex-home"
+            codex_home.mkdir(parents=True)
+
+            self.write_automation(source_root, "diskfinventorycheck", "max")
+            self.write_automation(source_root, "routine-audit", "max")
+            self.write_automation(runtime_root, "diskfinventorycheck", "medium")
+            self.write_automation(runtime_root, "routine-audit", "medium")
+            (source_repo / ".gitignore").write_text(
+                "automations/*/memory.md\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+
+            snapshot = build_snapshot(
+                argparse.Namespace(
+                    automation_root=runtime_root,
+                    automation_source_repo=None,
+                    projects_root=projects_root,
+                    codex_home=codex_home,
+                )
+            )
+
+            self.assertEqual(snapshot["automations"]["root"], str(runtime_root))
+            self.assertEqual(
+                snapshot["automation_source"]["root"],
+                str(source_root),
+            )
+            self.assertEqual(
+                snapshot["automation_gitignore"]["path"],
+                str(source_repo / ".gitignore"),
+            )
+            mismatches = snapshot["automation_reasoning_effort"]["mismatches"]
+            self.assertEqual(
+                {(item["scope"], item["id"]) for item in mismatches},
+                {("source", "diskfinventorycheck"), ("runtime", "routine-audit")},
+            )
+            self.assertEqual(
+                snapshot["d_rule_brevity"]["sources_checked"],
+                2,
+            )
+
     def rules_update_request(
         self,
         root: pathlib.Path,

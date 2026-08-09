@@ -31,8 +31,10 @@ confirmed finding and present every outstanding finding.
 
 1. In one preparation model call, run controller `start` once. It collects the
    session once and returns the first bounded pass packet containing the direct
-   action reference, every candidate's bounded semantic evidence, compact
-   candidate groups, the decision contract, and exact paths.
+   action reference, a complete compact observable-call cluster inventory,
+   bounded representative detail, the decision contract, and exact paths. Every
+   candidate appears in exactly one cluster; deterministic code groups only
+   observable attributes, while the model judges necessity and avoidability.
 2. For each of the five public surfaces, use exactly one model call. Analyze only
    that packet, write the compact surface decision, and run `submit` inside the
    same orchestration tool call. Do not use model turns to assemble the full

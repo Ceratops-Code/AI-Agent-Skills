@@ -11,16 +11,23 @@ without blocking completed repository deployment.
 
 ### Script Bundle
 
+- (D) Invocation contract: bind `<skill-root>` to the directory containing this
+  action's parent `SKILL.md`; require
+  `<skill-root>/scripts/promote-repository.py` once before the first call.
+  Invoke that exact path with the working directory equal to its `--repo-root`
+  value; stop if it is absent and never resolve it relative to that repository.
 - (D) Promotion helper:
-  `python scripts/promote-repository.py --repo-root PATH --source-branch BRANCH
-  [--source-branch BRANCH...] --main-branch main --release-branch release/local
-  --remote-name origin --no-run-operation`.
+  `python
+  "<skill-root>/scripts/promote-repository.py" --repo-root PATH
+  --source-branch BRANCH [--source-branch BRANCH...] --main-branch main
+  --release-branch release/local --remote-name origin --no-run-operation`.
 - (D) Promotion plus deployment uses the same command with
   `--run-operation deploy` instead of `--no-run-operation`.
 - (D) Fast-change callers may prepare a clean release checkout without
   promotion or deployment:
-  `python scripts/promote-repository.py --repo-root PATH --main-branch main
-  --release-branch release/local --remote-name origin
+  `python
+  "<skill-root>/scripts/promote-repository.py" --repo-root PATH
+  --main-branch main --release-branch release/local --remote-name origin
   --prepare-release-only`.
 
 ### Inputs To Capture
