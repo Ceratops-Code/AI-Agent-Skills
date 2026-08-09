@@ -13,6 +13,7 @@ import argparse
 import json
 import os
 import pathlib
+import pprint
 import re
 import shutil
 import subprocess
@@ -493,7 +494,10 @@ def validation_surfaces(
         marker = "__CHECK_DEFINITIONS__"
         if template.count(marker) != 1:
             raise RuntimeError("repository validator template marker is invalid")
-        validator_text = template.replace(marker, repr(checks))
+        validator_text = template.replace(
+            marker,
+            pprint.pformat(checks, sort_dicts=False, width=72),
+        )
     workflow_text = None
     if not workflow.is_file():
         template = WORKFLOW_TEMPLATE.read_text(encoding="utf-8")

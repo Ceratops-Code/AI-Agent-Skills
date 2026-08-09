@@ -46,7 +46,7 @@ def prepare_temporary_directories(
 
     resolved_root = temporary_root.resolve()
     for index, value in enumerate(argv[:-1]):
-        if value not in {"--temp-root", "--build-dir"}:
+        if value != "--temp-root":
             continue
         path = pathlib.Path(argv[index + 1]).resolve()
         try:

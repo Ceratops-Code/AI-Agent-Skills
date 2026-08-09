@@ -8364,6 +8364,7 @@ def test_compatibility_materializer_supports_repositories_without_skills(
         authoritative_repo / "scripts" / "validate-repository.py"
     ).read_text(encoding="utf-8")
     assert "{temp}/hasbaratops" in authoritative_validator
+    assert max(len(line) for line in authoritative_validator.splitlines()) <= 100
     authoritative_evidence = tmp_path / "authoritative-validation.log"
     authoritative_validation = subprocess.run(
         [
