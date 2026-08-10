@@ -2231,6 +2231,40 @@ def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
     assert set(all_candidates).isdisjoint(second_candidates)
 
 
+def test_credit_analysis_model_catalog_decodes_cli_as_utf8(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workflow = load_credit_analysis_workflow_module()
+    observed: dict[str, Any] = {}
+
+    def fake_run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        observed.update(kwargs)
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            json.dumps(
+                {
+                    "models": [
+                        {"slug": "gpt-5.3-codex-spark", "display_name": "Spark ✨"},
+                        {"slug": "gpt-5.6-sol", "display_name": "Sol"},
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+            "",
+        )
+
+    monkeypatch.setattr(workflow.shutil, "which", lambda _name: "codex")
+    monkeypatch.setattr(workflow.subprocess, "run", fake_run)
+
+    assert workflow._codex_model_catalog() == {
+        "gpt-5.3-codex-spark",
+        "gpt-5.6-sol",
+    }
+    assert observed["encoding"] == "utf-8"
+    assert observed["text"] is True
+
+
 def test_credit_analysis_workflow_rejects_invalid_and_conflicting_passes(
     tmp_path: pathlib.Path,
 ) -> None:
