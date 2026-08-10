@@ -8784,6 +8784,71 @@ def prepare_repository_lifecycle_repo(
     return repo, approved_head, log, environment
 
 
+def prepare_divergent_promotion_repo(
+    root: pathlib.Path,
+    *,
+    conflict: bool = False,
+    published: bool = False,
+    nonlinear: bool = False,
+) -> tuple[pathlib.Path, pathlib.Path, str, str, dict[str, str]]:
+    """Create a release/source divergence with a dedicated source worktree."""
+
+    root.mkdir()
+    repo, _, _, environment = prepare_repository_lifecycle_repo(root)
+    if published:
+        assert run_git(repo, "push", "-u", "origin", "approved").returncode == 0
+    assert run_git(repo, "switch", "main").returncode == 0
+    source_worktree = root / "approved-worktree"
+    assert (
+        run_git(repo, "worktree", "add", str(source_worktree), "approved").returncode
+        == 0
+    )
+    if nonlinear:
+        assert (
+            run_git(source_worktree, "switch", "-c", "approved-side", "main").returncode
+            == 0
+        )
+        (source_worktree / "side.txt").write_text(
+            "side\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        assert run_git(source_worktree, "add", "side.txt").returncode == 0
+        assert run_git(source_worktree, "commit", "-m", "side change").returncode == 0
+        assert run_git(source_worktree, "switch", "approved").returncode == 0
+        assert (
+            run_git(
+                source_worktree,
+                "merge",
+                "--no-ff",
+                "approved-side",
+                "-m",
+                "merge side",
+            ).returncode
+            == 0
+        )
+    source_head = run_git(source_worktree, "rev-parse", "HEAD").stdout.strip()
+
+    assert run_git(repo, "switch", "-c", "release/local", "main").returncode == 0
+    if conflict:
+        (repo / "README.md").write_text(
+            "base\nrelease\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        assert run_git(repo, "add", "README.md").returncode == 0
+    else:
+        (repo / "release.txt").write_text(
+            "release\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        assert run_git(repo, "add", "release.txt").returncode == 0
+    assert run_git(repo, "commit", "-m", "release change").returncode == 0
+    release_head = run_git(repo, "rev-parse", "HEAD").stdout.strip()
+    return repo, source_worktree, source_head, release_head, environment
+
+
 @pytest.mark.parametrize(
     (
         "operation_arguments",
@@ -8959,6 +9024,61 @@ def test_promote_and_deploy_does_not_inject_base_revision(
     assert json.loads(second.stdout)["release_start"] == approved_head
     assert log.read_text(encoding="utf-8") == "no-base\n"
 
+    divergent = tmp_path / "automatic-rebase-success"
+    (
+        rebase_repo,
+        source_worktree,
+        source_head,
+        release_head,
+        rebase_environment,
+    ) = prepare_divergent_promotion_repo(divergent)
+    rebased = subprocess.run(
+        [
+            sys.executable,
+            str(PROMOTE_REPOSITORY),
+            "--repo-root",
+            str(rebase_repo),
+            "--source-branch",
+            "approved",
+            "--no-run-operation",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=rebase_environment,
+    )
+
+    assert rebased.returncode == 0, rebased.stderr
+    rebase_result = json.loads(rebased.stdout)
+    new_source_head = run_git(source_worktree, "rev-parse", "HEAD").stdout.strip()
+    assert new_source_head != source_head
+    assert rebase_result["head"] == new_source_head
+    assert rebase_result["rebased_branches"] == [
+        {
+            "branch": "approved",
+            "old_head": source_head,
+            "new_head": new_source_head,
+            "onto": release_head,
+        }
+    ]
+    assert (
+        run_git(
+            rebase_repo,
+            "merge-base",
+            "--is-ancestor",
+            release_head,
+            "approved",
+        ).returncode
+        == 0
+    )
+    assert run_git(source_worktree, "status", "--porcelain").stdout == ""
+    assert (source_worktree / "release.txt").read_text(encoding="utf-8") == (
+        "release\n"
+    )
+    assert "approved" in (source_worktree / "README.md").read_text(
+        encoding="utf-8"
+    )
+
 
 def test_promote_repository_rejects_noncanonical_release_branch_before_mutation(
     tmp_path: pathlib.Path,
@@ -8989,6 +9109,108 @@ def test_promote_repository_rejects_noncanonical_release_branch_before_mutation(
     )
     assert run_git(repo, "branch", "--show-current").stdout.strip() == "approved"
     assert run_git(repo, "branch", "--list", "release/task").stdout == ""
+
+    conflict_root = tmp_path / "automatic-rebase-conflict"
+    (
+        conflict_repo,
+        conflict_worktree,
+        conflict_source_head,
+        conflict_release_head,
+        conflict_environment,
+    ) = prepare_divergent_promotion_repo(conflict_root, conflict=True)
+    conflicted = subprocess.run(
+        [
+            sys.executable,
+            str(PROMOTE_REPOSITORY),
+            "--repo-root",
+            str(conflict_repo),
+            "--source-branch",
+            "approved",
+            "--no-run-operation",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=conflict_environment,
+    )
+
+    assert conflicted.returncode == 1
+    conflict_message = json.loads(conflicted.stderr)["message"]
+    assert "original head" in conflict_message
+    assert "conflicting paths: README.md" in conflict_message
+    assert run_git(conflict_worktree, "rev-parse", "HEAD").stdout.strip() == (
+        conflict_source_head
+    )
+    assert run_git(conflict_worktree, "status", "--porcelain").stdout == ""
+    assert run_git(conflict_repo, "rev-parse", "release/local").stdout.strip() == (
+        conflict_release_head
+    )
+
+    published_root = tmp_path / "automatic-rebase-published"
+    (
+        published_repo,
+        published_worktree,
+        published_source_head,
+        _,
+        published_environment,
+    ) = prepare_divergent_promotion_repo(published_root, published=True)
+    published = subprocess.run(
+        [
+            sys.executable,
+            str(PROMOTE_REPOSITORY),
+            "--repo-root",
+            str(published_repo),
+            "--source-branch",
+            "approved",
+            "--no-run-operation",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=published_environment,
+    )
+
+    assert published.returncode == 1
+    assert json.loads(published.stderr)["message"] == (
+        "Automatic rebase refuses published branch: approved"
+    )
+    assert run_git(published_worktree, "rev-parse", "HEAD").stdout.strip() == (
+        published_source_head
+    )
+    assert run_git(published_worktree, "status", "--porcelain").stdout == ""
+
+    nonlinear_root = tmp_path / "automatic-rebase-nonlinear"
+    (
+        nonlinear_repo,
+        nonlinear_worktree,
+        nonlinear_source_head,
+        _,
+        nonlinear_environment,
+    ) = prepare_divergent_promotion_repo(nonlinear_root, nonlinear=True)
+    nonlinear = subprocess.run(
+        [
+            sys.executable,
+            str(PROMOTE_REPOSITORY),
+            "--repo-root",
+            str(nonlinear_repo),
+            "--source-branch",
+            "approved",
+            "--no-run-operation",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        env=nonlinear_environment,
+    )
+
+    assert nonlinear.returncode == 1
+    assert json.loads(nonlinear.stderr)["message"] == (
+        "Automatic rebase requires linear source history: approved"
+    )
+    assert run_git(nonlinear_worktree, "rev-parse", "HEAD").stdout.strip() == (
+        nonlinear_source_head
+    )
+    assert run_git(nonlinear_worktree, "status", "--porcelain").stdout == ""
 
 
 def test_promote_and_deploy_rejects_operation_created_repository_work(
