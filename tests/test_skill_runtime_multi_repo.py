@@ -5434,6 +5434,49 @@ def test_skill_update_workflow_preserves_baseline_runs_checks_once_and_finalizes
     assert not evidence_path.exists()
     assert undeclared_input.is_file() and outside_evidence.is_file()
 
+    empty_task_temp_root = task_temp_root.parent / "empty-finalization"
+    empty_task_temp_root.mkdir()
+    empty_request_path = empty_task_temp_root / "request.json"
+    empty_state_path = empty_task_temp_root / "state.json"
+    empty_evidence_path = empty_task_temp_root / "evidence.json"
+    empty_request = json.loads(json.dumps(request))
+    empty_request["task_temp_root"] = str(empty_task_temp_root)
+    empty_request["evidence_output"] = str(empty_evidence_path)
+    empty_request_path.write_text(
+        json.dumps(empty_request) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    prepared_empty = run_skill_update_workflow(
+        "prepare",
+        "--request",
+        str(empty_request_path),
+        "--state",
+        str(empty_state_path),
+    )
+    assert prepared_empty.returncode == 0, prepared_empty.stderr
+    helper.write_text(
+        "VALUE = 2\n# second verified change\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    verified_empty = run_skill_update_workflow(
+        "verify",
+        "--state",
+        str(empty_state_path),
+        "--evidence-output",
+        str(empty_evidence_path),
+    )
+    assert verified_empty.returncode == 0, verified_empty.stderr
+    finalized_empty = run_skill_update_workflow(
+        "finalize",
+        "--state",
+        str(empty_state_path),
+    )
+    assert finalized_empty.returncode == 0, finalized_empty.stderr
+    assert finalized_empty.stdout.strip() == "OK"
+    assert not empty_task_temp_root.exists()
+
 
 def rule_candidate_markdown_policy(
     repository: pathlib.Path,

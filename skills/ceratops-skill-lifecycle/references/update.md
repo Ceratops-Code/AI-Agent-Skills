@@ -132,8 +132,9 @@ Infer missing inputs from current repo state before asking.
   scripts/skill-update-workflow.py finalize --state STATE`. This invocation is
   the explicit completion trigger. The helper must reject incomplete or changed
   ownership state, links, path escapes, repository files, and failed
-  verification; preserve undeclared inputs; and remove only the exact owned
-  request, state, and evidence files. A successful update run is not complete
+  verification; preserve undeclared inputs; remove only the exact owned
+  request, state, and evidence files; and remove the verified task-temp root
+  only when empty afterward. A successful update run is not complete
   until finalization returns `OK`; do not finalize failed or incomplete runs.
 - After committing, use `$ceratops-repo-lifecycle` `promote` when only local
   release staging is requested, `promote-and-deploy` when the repository's
