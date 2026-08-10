@@ -1993,7 +1993,7 @@ class FakeCreditModelRunner:
                 source_by_call.setdefault(
                     call_id, canonical_by_source[finding["id"]]
                 )
-        classifications = []
+        classifications: list[dict[str, Any]] = []
         for call_id in packet["call_inventory"]:
             finding_id = source_by_call.get(call_id)
             classifications.append(
@@ -2350,7 +2350,7 @@ def test_credit_analysis_child_command_places_global_approval_before_exec(
 
     state = {"analysis_id": "analysis-1"}
     contract = json.loads(CREDIT_ANALYSIS_CONTRACT.read_text(encoding="utf-8"))
-    tasks = [
+    tasks: list[dict[str, Any]] = [
         {
             "phase": "spark-primary",
             "task_id": "spark.helper-contracts.primary.0001",

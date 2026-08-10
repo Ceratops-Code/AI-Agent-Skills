@@ -2184,9 +2184,9 @@ def _surface_pass_packet(
     output_volume_hotspots: list[str] = []
     if surface_id == "context-evidence":
         input_volume_hotspots = _volume_hotspot_ids(clusters, kind="input")
-        input_hotspots = set(input_volume_hotspots)
+        input_hotspot_ids = set(input_volume_hotspots)
         for cluster in clusters:
-            if cluster["cluster_id"] not in input_hotspots:
+            if cluster["cluster_id"] not in input_hotspot_ids:
                 cluster.pop("representative_summary", None)
                 cluster.pop("representative_call_id", None)
     if surface_id == "tool-flow":
@@ -3242,6 +3242,7 @@ def _expand_decision_selectors(
     selected: list[str] = []
     for index, selector in enumerate(selectors, start=1):
         _allowed_fields(selector, CALL_SELECTOR_FIELDS, f"{label} selector {index}")
+        candidates: list[str]
         if "cluster_ids" in selector:
             if set(selector) != {"cluster_ids"}:
                 raise CreditAnalysisError(
@@ -4066,15 +4067,15 @@ def _assemble_synthesis_decision(
                     f"synthesis call assessment selects unknown cluster: {cluster_id}"
                 )
             selected_calls.extend(remaining_cluster_calls[cluster_id])
-        classification = raw.get("classification")
-        reason_code = raw.get("reason_code")
-        reason = raw.get("reason")
-        if not isinstance(reason, str) or not reason.strip():
+        assessment_classification = raw.get("classification")
+        assessment_reason_code = raw.get("reason_code")
+        assessment_reason = raw.get("reason")
+        if not isinstance(assessment_reason, str) or not assessment_reason.strip():
             raise CreditAnalysisError(
                 f"synthesis call assessment {index} reason is required"
             )
-        if classification == "unassessed":
-            if reason_code is not None:
+        if assessment_classification == "unassessed":
+            if assessment_reason_code is not None:
                 raise CreditAnalysisError(
                     f"synthesis call assessment {index} unassessed reason is invalid"
                 )
@@ -4086,13 +4087,13 @@ def _assemble_synthesis_decision(
         semantically_assessed_calls.update(selected_calls)
         classification_groups.append(
             {
-                "classification": classification,
+                "classification": assessment_classification,
                 "inventory_positions": sorted(
                     position_by_call[call_id] for call_id in selected_calls
                 ),
                 "primary_finding_id": None,
-                "reason_code": reason_code,
-                "reason": reason.strip(),
+                "reason_code": assessment_reason_code,
+                "reason": assessment_reason.strip(),
             }
         )
     reviewed_positions = [
@@ -7623,7 +7624,12 @@ def _validate_frozen_manifest(manifest: Mapping[str, Any], contract: Mapping[str
     surfaces = manifest.get("surfaces")
     spark_tasks = manifest.get("spark_tasks")
     confirmations = manifest.get("confirmation_tasks")
-    if not all(isinstance(value, list) for value in (surface_order, surfaces, spark_tasks, confirmations)):
+    if (
+        not isinstance(surface_order, list)
+        or not isinstance(surfaces, list)
+        or not isinstance(spark_tasks, list)
+        or not isinstance(confirmations, list)
+    ):
         raise CreditAnalysisError("chunk manifest collections are invalid")
     if [item.get("surface_id") for item in surfaces if isinstance(item, Mapping)] != surface_order:
         raise CreditAnalysisError("chunk manifest surface order is invalid")
@@ -7895,7 +7901,7 @@ def command_plan_orchestration(
         *[task["task_id"] for task in confirmation_tasks],
         synthesis_task_id,
     ]
-    execution = {
+    execution: dict[str, dict[str, Any]] = {
         task_id: {"status": "pending", "attempts": [], "result": None}
         for task_id in task_order
     }
@@ -10195,13 +10201,13 @@ def _validate_synthesis_result(
         surfaces = _result_strings(
             merge.get("contributing_surfaces"), "temporary merge surfaces"
         )
-        expected_surfaces = (
+        expected_merge_surfaces = (
             ({"rework-validation"} if merge_reviews else set())
             | {contribution_surfaces[item] for item in merge_contributions}
         )
         if (
             len(surfaces) != len(set(surfaces))
-            or set(surfaces) != expected_surfaces
+            or set(surfaces) != expected_merge_surfaces
             or not set(surfaces) <= set(state["manifest"]["surface_order"])
         ):
             raise CreditAnalysisError("temporary merge contributing surface is invalid")
@@ -10226,7 +10232,10 @@ def _validate_synthesis_result(
             f"call classification {index}",
         )
         category = classification.get("classification")
-        if category not in contract["call_classifications"]:
+        if (
+            not isinstance(category, str)
+            or category not in contract["call_classifications"]
+        ):
             raise CreditAnalysisError("call classification is invalid")
         calls = _result_strings(
             classification.get("call_ids"), "classified call IDs"
@@ -10716,7 +10725,7 @@ def _accept_or_recover_task(
 
     result_path = pathlib.Path(str(task["artifacts"]["result"]))
     recovered = raw is None
-    if recovered:
+    if raw is None:
         if not result_path.is_file() or result_path.is_symlink():
             return False
         raw = _read_json(result_path, f"recoverable result {task['task_id']}")
@@ -10872,7 +10881,7 @@ def _build_orchestration_final(
         canonical_findings.append(primary)
     risk_order = synthesis["risk_order"]
     ordered_risks = [risks[risk_id] for risk_id in risk_order]
-    classification_totals = Counter()
+    classification_totals: Counter[str] = Counter()
     protocol_overhead = 0
     for group in synthesis["call_classifications"]:
         classification_totals[group["classification"]] += len(group["call_ids"])
@@ -11255,9 +11264,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    output: Any
     try:
         if args.command == "plan":
-            output: Any = command_plan_orchestration(
+            output = command_plan_orchestration(
                 args.request.expanduser().resolve(strict=True)
             )
         elif args.command == "execute":
@@ -11265,7 +11275,7 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "orchestration-status":
             output = command_orchestration_status(args.state)
         elif args.command == "start":
-            output: Any = command_start(args.request.expanduser().resolve(strict=True))
+            output = command_start(args.request.expanduser().resolve(strict=True))
         elif args.command == "submit":
             output = command_submit(args.state, args.decision)
         elif args.command == "prepare":

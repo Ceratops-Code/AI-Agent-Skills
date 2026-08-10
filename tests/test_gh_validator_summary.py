@@ -1053,7 +1053,10 @@ class GHContractStateEngineTests(unittest.TestCase):
         manifest_results: dict[str, dict[str, Any]] = {}
         for case in cases:
             with self.subTest(case=case["name"], evidence="manifest_only"):
-                local = {"files": list(case["files"]), "texts": dict(case["texts"])}
+                local: dict[str, Any] = {
+                    "files": list(case["files"]),
+                    "texts": dict(case["texts"]),
+                }
                 manifest_only = classify_repository(
                     {}, local, [], self.contracts["artifact"]["artifact_type_system"]
                 )
@@ -1065,7 +1068,10 @@ class GHContractStateEngineTests(unittest.TestCase):
                 self.assertEqual(manifest_only["artifact_surface"], ["no_artifact"])
 
             with self.subTest(case=case["name"], evidence="confirmed"):
-                local = {"files": list(case["files"]), "texts": dict(case["texts"])}
+                local = {
+                    "files": list(case["files"]),
+                    "texts": dict(case["texts"]),
+                }
                 declared: list[str] = []
                 if case["workflow"]:
                     local["files"].append(".github/workflows/publish.yml")
