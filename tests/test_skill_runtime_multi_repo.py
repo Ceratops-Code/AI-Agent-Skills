@@ -2637,6 +2637,59 @@ def test_credit_analysis_workflow_rejects_invalid_and_conflicting_passes(
             available_models=available,
         )
 
+    normalized_strings_root = tmp_path / "normalized-descriptive-strings"
+    normalized_strings_root.mkdir()
+    normalized_strings_request, _, _ = credit_analysis_request(
+        normalized_strings_root
+    )
+    normalized_strings_plan = workflow.command_plan_orchestration(
+        normalized_strings_request,
+        available_models=available,
+    )
+
+    class DuplicateDescriptiveStringRunner(FakeCreditModelRunner):
+        def _spark(
+            self,
+            task: Mapping[str, Any],
+            packet: Mapping[str, Any],
+            digest: str,
+        ) -> dict[str, Any]:
+            result = super()._spark(task, packet, digest)
+            assessment = result["candidate_assessments"][0]
+            assessment["evidence_refs"].append(assessment["evidence_refs"][0])
+            return result
+
+    normalized_strings_state_path = pathlib.Path(
+        normalized_strings_plan["state_path"]
+    )
+    normalized_strings_status = workflow.command_execute_orchestration(
+        normalized_strings_state_path,
+        runner=DuplicateDescriptiveStringRunner(),
+        available_models=available,
+    )
+    assert normalized_strings_status["complete"] is True
+    normalized_strings_state = json.loads(
+        normalized_strings_state_path.read_text(encoding="utf-8")
+    )
+    normalized_first_task = normalized_strings_state["task_order"][0]
+    normalized_execution = normalized_strings_state["execution"][
+        normalized_first_task
+    ]
+    raw_duplicate = json.loads(
+        pathlib.Path(normalized_execution["attempts"][0]["raw_output_path"]).read_text(
+            encoding="utf-8"
+        )
+    )
+    accepted_normalized = json.loads(
+        pathlib.Path(normalized_execution["result"]["path"]).read_text(
+            encoding="utf-8"
+        )
+    )
+    assert len(raw_duplicate["candidate_assessments"][0]["evidence_refs"]) == 2
+    assert accepted_normalized["candidate_assessments"][0]["evidence_refs"] == [
+        "evidence://synthetic/primary"
+    ]
+
     retry_root = tmp_path / "failed-attempt-resume"
     retry_root.mkdir()
     retry_request, _, _ = credit_analysis_request(retry_root)

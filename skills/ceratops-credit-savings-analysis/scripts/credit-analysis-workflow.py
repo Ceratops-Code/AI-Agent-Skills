@@ -8446,6 +8446,21 @@ def _result_strings(value: Any, label: str, *, empty: bool = False) -> list[str]
     return result
 
 
+def _result_deduped_strings(
+    value: Any, label: str, *, empty: bool = False
+) -> list[str]:
+    """Normalize only exact duplicate descriptive strings while preserving order."""
+
+    if (
+        not isinstance(value, list)
+        or (not empty and not value)
+        or not all(isinstance(item, str) and item for item in value)
+    ):
+        qualifier = "string list" if empty else "nonempty string list"
+        raise CreditAnalysisError(f"{label} must be a {qualifier}")
+    return list(dict.fromkeys(value))
+
+
 def _result_objects(value: Any, label: str) -> list[dict[str, Any]]:
     if not isinstance(value, list) or not all(isinstance(item, dict) for item in value):
         raise CreditAnalysisError(f"{label} must be an object list")
@@ -8569,7 +8584,7 @@ def _validate_spark_result(
             "reason"
         ].strip():
             raise CreditAnalysisError("Spark assessment reason is missing")
-        assessment_refs = _result_strings(
+        assessment_refs = _result_deduped_strings(
             assessment.get("evidence_refs"), "Spark assessment evidence"
         )
         nested_findings = _result_objects(
@@ -8606,7 +8621,9 @@ def _validate_spark_result(
             if finding_id in finding_ids:
                 raise CreditAnalysisError("Spark finding ID is duplicated")
             finding_ids.add(finding_id)
-            _result_strings(child_finding.get("evidence_refs"), "Spark finding evidence")
+            finding_refs = _result_deduped_strings(
+                child_finding.get("evidence_refs"), "Spark finding evidence"
+            )
             variants = _result_strings(
                 child_finding.get("material_variant_ids"),
                 "Spark finding material variants",
@@ -8619,7 +8636,13 @@ def _validate_spark_result(
                 child_finding.get("savings_justifies_maintenance"), bool
             ):
                 raise CreditAnalysisError("Spark finding recurrence inputs are invalid")
-            findings.append({**child_finding, "candidate_ids": candidates})
+            findings.append(
+                {
+                    **child_finding,
+                    "candidate_ids": candidates,
+                    "evidence_refs": finding_refs,
+                }
+            )
         for risk_index, child_risk in enumerate(nested_risks, start=1):
             _closed_result(
                 child_risk,
@@ -8632,8 +8655,10 @@ def _validate_spark_result(
             if risk_id in risk_ids:
                 raise CreditAnalysisError("Spark risk ID is duplicated")
             risk_ids.add(risk_id)
-            _result_strings(child_risk.get("evidence_refs"), "Spark risk evidence")
-            _result_strings(
+            risk_refs = _result_deduped_strings(
+                child_risk.get("evidence_refs"), "Spark risk evidence"
+            )
+            risk_verification = _result_deduped_strings(
                 child_risk.get("verification_needed"), "Spark risk verification"
             )
             variants = _result_strings(
@@ -8642,7 +8667,14 @@ def _validate_spark_result(
                 empty=True,
             )
             used_material_variants.extend(variants)
-            risks.append({**child_risk, "candidate_ids": candidates})
+            risks.append(
+                {
+                    **child_risk,
+                    "candidate_ids": candidates,
+                    "evidence_refs": risk_refs,
+                    "verification_needed": risk_verification,
+                }
+            )
         for temporary_index, child_item in enumerate(nested_temporary, start=1):
             _closed_result(
                 child_item,
@@ -8653,7 +8685,7 @@ def _validate_spark_result(
             if item_id in temporary_ids:
                 raise CreditAnalysisError("Spark temporary candidate ID is duplicated")
             temporary_ids.add(item_id)
-            _result_strings(
+            temporary_refs = _result_deduped_strings(
                 child_item.get("evidence_refs"), "temporary candidate evidence"
             )
             variants = _result_strings(
@@ -8662,7 +8694,13 @@ def _validate_spark_result(
                 empty=True,
             )
             used_material_variants.extend(variants)
-            temporary.append({**child_item, "candidate_ids": candidates})
+            temporary.append(
+                {
+                    **child_item,
+                    "candidate_ids": candidates,
+                    "evidence_refs": temporary_refs,
+                }
+            )
         normalized_assessments.append(
             {
                 "candidate_ids": candidates,
@@ -8723,8 +8761,10 @@ def _validate_recurrence_inputs(value: Any, label: str) -> dict[str, Any]:
         or frequency_range[1] < frequency_range[0]
     ):
         raise CreditAnalysisError(f"{label} frequency range is invalid")
-    _result_strings(value.get("assumptions"), f"{label} assumptions")
-    return dict(value)
+    assumptions = _result_deduped_strings(
+        value.get("assumptions"), f"{label} assumptions"
+    )
+    return {**value, "assumptions": assumptions}
 
 
 def _validate_confirmation_finding(
@@ -8745,7 +8785,9 @@ def _validate_confirmation_finding(
     calls = _result_strings(finding.get("affected_call_ids"), f"{label} calls")
     if calls != expected_calls:
         raise CreditAnalysisError(f"{label} affected calls do not match candidates")
-    evidence_refs = _result_strings(finding.get("evidence_refs"), f"{label} evidence")
+    evidence_refs = _result_deduped_strings(
+        finding.get("evidence_refs"), f"{label} evidence"
+    )
     for candidate in candidates:
         if not set(evidence_refs) & allowed_refs[candidate]:
             raise CreditAnalysisError(f"{label} was not verified against original evidence")
@@ -8766,10 +8808,9 @@ def _validate_confirmation_finding(
         raise CreditAnalysisError(f"{label} implementation status is invalid")
     if finding.get("complexity") not in contract["complexities"]:
         raise CreditAnalysisError(f"{label} complexity is invalid")
-    verification = _result_strings(
+    verification = _result_deduped_strings(
         finding.get("targeted_verification"), f"{label} verification"
     )
-    _ = verification
     recurrence = _validate_recurrence_inputs(finding.get("recurrence"), f"{label} recurrence")
     observed = finding.get("observed_avoidable_call_count")
     if not isinstance(observed, int) or isinstance(observed, bool) or observed < 0:
@@ -8792,17 +8833,24 @@ def _validate_confirmation_finding(
     _number(cost.get("estimated_model_calls"), f"{label} implementation cost")
     if not isinstance(cost.get("description"), str) or not cost["description"].strip():
         raise CreditAnalysisError(f"{label} implementation cost description is missing")
-    helper_categories = _result_strings(
+    helper_categories = _result_deduped_strings(
         finding.get("helper_categories"), f"{label} helper categories", empty=True
     )
     if not set(helper_categories) <= set(contract["helper_categories"]):
         raise CreditAnalysisError(f"{label} helper category is invalid")
-    contributing = _result_strings(
+    contributing = _result_deduped_strings(
         finding.get("contributing_surfaces"), f"{label} contributing surfaces"
     )
     if surface_id not in contributing or not set(contributing) <= set(contract["surface_order"]):
         raise CreditAnalysisError(f"{label} contributing surfaces are invalid")
-    return dict(finding)
+    return {
+        **finding,
+        "evidence_refs": evidence_refs,
+        "targeted_verification": verification,
+        "recurrence": recurrence,
+        "helper_categories": helper_categories,
+        "contributing_surfaces": contributing,
+    }
 
 
 def _validate_temporary_review(
@@ -8821,8 +8869,10 @@ def _validate_temporary_review(
     ):
         if not isinstance(review.get(key), str) or not review[key].strip():
             raise CreditAnalysisError(f"{label} {key} is missing")
-    _result_strings(review.get("affected_call_ids"), f"{label} affected calls")
-    _result_strings(
+    affected_calls = _result_strings(
+        review.get("affected_call_ids"), f"{label} affected calls"
+    )
+    canonical_refs = _result_deduped_strings(
         review.get("final_canonical_evidence_refs"), f"{label} canonical evidence"
     )
     disposition = review.get("disposition")
@@ -8878,7 +8928,11 @@ def _validate_temporary_review(
             raise CreditAnalysisError("non-defect temporary disposition cannot link a finding")
         if not isinstance(no_finding, str) or not no_finding.strip():
             raise CreditAnalysisError("temporary disposition requires a no-finding reason")
-    return dict(review)
+    return {
+        **review,
+        "affected_call_ids": affected_calls,
+        "final_canonical_evidence_refs": canonical_refs,
+    }
 
 
 def _validate_confirmation_result(
@@ -8954,7 +9008,9 @@ def _validate_confirmation_result(
             "reason"
         ].strip():
             raise CreditAnalysisError("confirmation assessment reason is missing")
-        refs = _result_strings(assessment.get("evidence_refs"), "assessment evidence")
+        refs = _result_deduped_strings(
+            assessment.get("evidence_refs"), "assessment evidence"
+        )
         for candidate in candidates:
             if candidate not in allowed_refs or not set(refs) & allowed_refs[candidate]:
                 raise CreditAnalysisError(
@@ -9011,16 +9067,18 @@ def _validate_confirmation_result(
             if risk_id in risk_ids:
                 raise CreditAnalysisError("confirmation risk ID is duplicated")
             risk_ids.add(risk_id)
-            risk_refs = _result_strings(child_risk.get("evidence_refs"), "risk evidence")
+            risk_refs = _result_deduped_strings(
+                child_risk.get("evidence_refs"), "risk evidence"
+            )
             for candidate in candidates:
                 if not set(risk_refs) & allowed_refs[candidate]:
                     raise CreditAnalysisError(
                         "confirmation risk lacks original evidence"
                     )
-            _result_strings(
+            competing_explanations = _result_deduped_strings(
                 child_risk.get("competing_explanations"), "risk explanations"
             )
-            _result_strings(
+            risk_verification = _result_deduped_strings(
                 child_risk.get("verification_needed"), "risk verification"
             )
             if not isinstance(child_risk.get("missing_fact"), str) or not child_risk[
@@ -9032,6 +9090,9 @@ def _validate_confirmation_result(
                     **child_risk,
                     "candidate_ids": candidates,
                     "affected_call_ids": calls,
+                    "evidence_refs": risk_refs,
+                    "competing_explanations": competing_explanations,
+                    "verification_needed": risk_verification,
                 }
             )
         normalized_assessments.append(
@@ -9047,6 +9108,7 @@ def _validate_confirmation_result(
             "confirmation coverage is missing, duplicated, or reordered"
         )
     reviews = _result_objects(raw["temporary_control_reviews"], "temporary reviews")
+    normalized_reviews: list[dict[str, Any]] = []
     review_ids: set[str] = set()
     for index, review in enumerate(reviews, start=1):
         validated = _validate_temporary_review(
@@ -9064,6 +9126,7 @@ def _validate_confirmation_result(
                     "temporary review lacks controller-frozen canonical evidence"
                 )
         review_ids.add(validated["id"])
+        normalized_reviews.append(validated)
     if task["surface_id"] == "rework-validation":
         required_review_ids = {
             item["id"]
@@ -9081,6 +9144,7 @@ def _validate_confirmation_result(
     contributions = _result_objects(
         raw["temporary_control_contributions"], "temporary contributions"
     )
+    normalized_contributions: list[dict[str, Any]] = []
     contribution_ids: set[str] = set()
     for index, contribution in enumerate(contributions, start=1):
         _closed_result(
@@ -9097,7 +9161,9 @@ def _validate_confirmation_result(
         )
         if not set(candidates) <= set(candidate_to_call):
             raise CreditAnalysisError("temporary contribution references unknown candidate")
-        _result_strings(contribution.get("evidence_refs"), "contribution evidence")
+        contribution_refs = _result_deduped_strings(
+            contribution.get("evidence_refs"), "contribution evidence"
+        )
         for key in (
             "temporary_control_id",
             "owner_key",
@@ -9107,6 +9173,9 @@ def _validate_confirmation_result(
         ):
             if not isinstance(contribution.get(key), str) or not contribution[key].strip():
                 raise CreditAnalysisError(f"temporary contribution {key} is missing")
+        normalized_contributions.append(
+            {**contribution, "evidence_refs": contribution_refs}
+        )
     helper_reviews = _result_objects(
         raw["helper_category_reviews"], "helper category reviews"
     )
@@ -9125,8 +9194,8 @@ def _validate_confirmation_result(
         "candidate_assessments": normalized_assessments,
         "confirmed_findings": findings,
         "plausible_risks": risks,
-        "temporary_control_reviews": reviews,
-        "temporary_control_contributions": contributions,
+        "temporary_control_reviews": normalized_reviews,
+        "temporary_control_contributions": normalized_contributions,
         "helper_category_reviews": helper_reviews,
     }
 
