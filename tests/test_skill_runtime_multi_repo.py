@@ -2349,6 +2349,21 @@ def test_credit_analysis_child_command_places_global_approval_before_exec(
             if "const" in property_schema
         )
 
+        def assert_strict_objects(node: Any) -> None:
+            if not isinstance(node, dict):
+                return
+            if node.get("type") == "object":
+                assert node.get("additionalProperties") is False
+                assert set(node.get("required", [])) == set(
+                    node.get("properties", {})
+                )
+            for child in node.get("properties", {}).values():
+                assert_strict_objects(child)
+            if isinstance(node.get("items"), dict):
+                assert_strict_objects(node["items"])
+
+        assert_strict_objects(schema)
+
 
 def test_credit_analysis_workflow_rejects_invalid_and_conflicting_passes(
     tmp_path: pathlib.Path,

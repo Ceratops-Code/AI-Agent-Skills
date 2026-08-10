@@ -9209,13 +9209,89 @@ def _output_schema_for_task(
     task: Mapping[str, Any],
     input_sha256: str,
 ) -> dict[str, Any]:
-    """Return one bounded root schema; Python owns full semantic validation."""
+    """Return the exact strict schema also enforced by Python validation."""
 
-    def array_of_objects() -> dict[str, Any]:
-        return {"type": "array", "items": {"type": "object"}}
+    def string() -> dict[str, Any]:
+        return {"type": "string"}
+
+    def number() -> dict[str, Any]:
+        return {"type": "number"}
+
+    def integer() -> dict[str, Any]:
+        return {"type": "integer"}
+
+    def boolean() -> dict[str, Any]:
+        return {"type": "boolean"}
+
+    def nullable_string() -> dict[str, Any]:
+        return {"type": ["string", "null"]}
+
+    def strings() -> dict[str, Any]:
+        return {"type": "array", "items": string()}
+
+    def numbers() -> dict[str, Any]:
+        return {"type": "array", "items": number()}
+
+    def closed_object(properties: Mapping[str, Any]) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": dict(properties),
+            "required": list(properties),
+            "additionalProperties": False,
+        }
+
+    def objects(item: Mapping[str, Any]) -> dict[str, Any]:
+        return {"type": "array", "items": dict(item)}
 
     def fixed_string(value: str) -> dict[str, Any]:
         return {"type": "string", "const": value}
+
+    assessment = closed_object(
+        {
+            "candidate_ids": strings(),
+            "disposition": string(),
+            "reason": string(),
+            "provisional_finding_ids": strings(),
+            "risk_ids": strings(),
+            "evidence_refs": strings(),
+        }
+    )
+    spark_finding = closed_object(
+        {
+            "id": string(),
+            "title": string(),
+            "problem_summary": string(),
+            "candidate_ids": strings(),
+            "evidence_refs": strings(),
+            "producer_type": string(),
+            "producer_owner": string(),
+            "proposed_durable_control": string(),
+            "recurrence_likely": boolean(),
+            "savings_justifies_maintenance": boolean(),
+            "material_variant_ids": strings(),
+        }
+    )
+    spark_risk = closed_object(
+        {
+            "id": string(),
+            "description": string(),
+            "candidate_ids": strings(),
+            "evidence_refs": strings(),
+            "verification_needed": strings(),
+            "material_variant_ids": strings(),
+        }
+    )
+    spark_temporary = closed_object(
+        {
+            "id": string(),
+            "problem_solved": string(),
+            "candidate_ids": strings(),
+            "observed_temporary_control": string(),
+            "canonical_owner_hint": string(),
+            "evidence_refs": strings(),
+            "material_variant_ids": strings(),
+        }
+    )
 
     if task["phase"].startswith("spark-"):
         required = sorted(SPARK_RESULT_FIELDS)
@@ -9226,13 +9302,125 @@ def _output_schema_for_task(
             "surface_id": fixed_string(str(task["surface_id"])),
             "stage": fixed_string(str(task["stage"])),
             "input_sha256": fixed_string(input_sha256),
-            "candidate_assessments": array_of_objects(),
-            "provisional_findings": array_of_objects(),
-            "plausible_risks": array_of_objects(),
-            "temporary_control_candidates": array_of_objects(),
-            "preserved_variant_ids": {"type": "array", "items": {"type": "string"}},
+            "candidate_assessments": objects(assessment),
+            "provisional_findings": objects(spark_finding),
+            "plausible_risks": objects(spark_risk),
+            "temporary_control_candidates": objects(spark_temporary),
+            "preserved_variant_ids": strings(),
         }
     elif task["phase"] == "surface-confirmation":
+        confirmation_assessment = closed_object(
+            {
+                "candidate_ids": strings(),
+                "disposition": string(),
+                "reason": string(),
+                "finding_ids": strings(),
+                "risk_ids": strings(),
+                "evidence_refs": strings(),
+            }
+        )
+        recurrence = closed_object(
+            {
+                "calls_saved_per_affected_run": number(),
+                "additional_recurring_calls_per_affected_run": number(),
+                "affected_similar_run_frequency": number(),
+                "affected_similar_run_frequency_range": numbers(),
+                "estimated_calls_saved_per_similar_run": number(),
+                "assumptions": strings(),
+            }
+        )
+        implementation_cost = closed_object(
+            {
+                "estimated_model_calls": number(),
+                "description": string(),
+            }
+        )
+        confirmation_finding = closed_object(
+            {
+                "id": string(),
+                "title": string(),
+                "problem_summary": string(),
+                "waste_kind": string(),
+                "candidate_ids": strings(),
+                "affected_call_ids": strings(),
+                "evidence_refs": strings(),
+                "evidence_narrative": string(),
+                "producer_type": string(),
+                "producer_owner": string(),
+                "proposed_durable_control": string(),
+                "implementation_status": string(),
+                "targeted_verification": strings(),
+                "observed_avoidable_call_count": integer(),
+                "recurrence": recurrence,
+                "confidence": number(),
+                "complexity": string(),
+                "one_time_implementation_cost": implementation_cost,
+                "helper_categories": strings(),
+                "contributing_surfaces": strings(),
+            }
+        )
+        confirmation_risk = closed_object(
+            {
+                "id": string(),
+                "description": string(),
+                "candidate_ids": strings(),
+                "affected_call_ids": strings(),
+                "evidence_refs": strings(),
+                "competing_explanations": strings(),
+                "missing_fact": string(),
+                "verification_needed": strings(),
+            }
+        )
+        temporary_recurrence = closed_object(
+            {
+                "likely": boolean(),
+                "frequency_range": numbers(),
+                "basis": string(),
+            }
+        )
+        temporary_savings = closed_object(
+            {
+                "expected_calls_saved": number(),
+                "maintenance_model_calls": number(),
+                "justifies_maintenance": boolean(),
+                "basis": string(),
+            }
+        )
+        temporary_review = closed_object(
+            {
+                "id": string(),
+                "problem_solved": string(),
+                "affected_call_ids": strings(),
+                "observed_temporary_control": string(),
+                "final_canonical_evidence_refs": strings(),
+                "disposition": string(),
+                "owning_producer": string(),
+                "recurrence_inputs": temporary_recurrence,
+                "savings_inputs": temporary_savings,
+                "finding_id": nullable_string(),
+                "no_finding_reason": nullable_string(),
+            }
+        )
+        temporary_contribution = closed_object(
+            {
+                "id": string(),
+                "temporary_control_id": string(),
+                "owner_key": string(),
+                "control_key": string(),
+                "candidate_ids": strings(),
+                "evidence_refs": strings(),
+                "contribution": string(),
+                "material_variant_id": string(),
+            }
+        )
+        helper_review = closed_object(
+            {
+                "category": string(),
+                "status": string(),
+                "finding_ids": strings(),
+                "reason": string(),
+            }
+        )
         required = sorted(CONFIRMATION_RESULT_FIELDS)
         properties = {
             "schema": fixed_string(CONFIRMATION_RESULT_SCHEMA),
@@ -9240,26 +9428,83 @@ def _output_schema_for_task(
             "task_id": fixed_string(str(task["task_id"])),
             "surface_id": fixed_string(str(task["surface_id"])),
             "input_sha256": fixed_string(input_sha256),
-            "candidate_assessments": array_of_objects(),
-            "confirmed_findings": array_of_objects(),
-            "plausible_risks": array_of_objects(),
-            "temporary_control_reviews": array_of_objects(),
-            "temporary_control_contributions": array_of_objects(),
-            "helper_category_reviews": array_of_objects(),
+            "candidate_assessments": objects(confirmation_assessment),
+            "confirmed_findings": objects(confirmation_finding),
+            "plausible_risks": objects(confirmation_risk),
+            "temporary_control_reviews": objects(temporary_review),
+            "temporary_control_contributions": objects(temporary_contribution),
+            "helper_category_reviews": objects(helper_review),
         }
     else:
+        finding_group = closed_object(
+            {
+                "canonical_finding_id": string(),
+                "source_finding_ids": strings(),
+                "primary_source_finding_id": string(),
+                "title": string(),
+                "problem_summary": string(),
+                "owner_key": string(),
+                "control_key": string(),
+                "contributing_surfaces": strings(),
+                "savings_source_finding_id": string(),
+            }
+        )
+        temporary_merge = closed_object(
+            {
+                "merge_id": string(),
+                "owner_key": string(),
+                "control_key": string(),
+                "review_ids": strings(),
+                "contribution_ids": strings(),
+                "disposition": string(),
+                "finding_id": nullable_string(),
+                "no_finding_reason": nullable_string(),
+                "contributing_surfaces": strings(),
+            }
+        )
+        call_classification = closed_object(
+            {
+                "classification": string(),
+                "call_ids": strings(),
+                "primary_finding_id": nullable_string(),
+                "reason_code": nullable_string(),
+                "reason": string(),
+            }
+        )
+        producer_group = closed_object(
+            {
+                "id": string(),
+                "producer_type": string(),
+                "owner": string(),
+                "finding_ids": strings(),
+                "recommended_control": string(),
+                "targeted_verification": strings(),
+            }
+        )
+        analysis_summary = closed_object(
+            {
+                "confirmed_count": integer(),
+                "risk_count": integer(),
+                "necessary_calls": integer(),
+                "protocol_overhead_calls": integer(),
+                "reviewed_no_confirmed_waste_calls": integer(),
+                "unassessed_calls": integer(),
+                "avoidable_calls": integer(),
+                "meaningful_input_output_findings": strings(),
+            }
+        )
         required = sorted(SYNTHESIS_RESULT_FIELDS)
         properties = {
             "schema": fixed_string(ORCHESTRATION_SYNTHESIS_SCHEMA),
             "analysis_id": fixed_string(str(state["analysis_id"])),
             "task_id": fixed_string(str(task["task_id"])),
             "input_sha256": fixed_string(input_sha256),
-            "finding_groups": array_of_objects(),
-            "risk_order": {"type": "array", "items": {"type": "string"}},
-            "temporary_control_merges": array_of_objects(),
-            "call_classifications": array_of_objects(),
-            "producer_groups": array_of_objects(),
-            "analysis_summary": {"type": "object"},
+            "finding_groups": objects(finding_group),
+            "risk_order": strings(),
+            "temporary_control_merges": objects(temporary_merge),
+            "call_classifications": objects(call_classification),
+            "producer_groups": objects(producer_group),
+            "analysis_summary": analysis_summary,
         }
     return {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
