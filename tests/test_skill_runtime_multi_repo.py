@@ -9279,6 +9279,7 @@ def test_repository_ship_absent_default_contract_is_no_op_and_finalizes(
         "status": "ready",
         "source_branches": [] if not scope_present else ["selected"],
         "pending_work_scope": str(scope) if scope_present else "",
+        **({"target_commit": "a" * 40} if scope_present else {}),
     }
     responses: list[tuple[int, dict[str, Any]]] = [
         (0, prepared),
@@ -9316,7 +9317,7 @@ def test_repository_ship_absent_default_contract_is_no_op_and_finalizes(
             head_branch="release/local",
             base_branch="main",
             remote_name="origin",
-            commit="a" * 40,
+            commit=None if scope_present else "a" * 40,
             title=None,
             body=None,
             merge_method="merge",
@@ -9340,7 +9341,11 @@ def test_repository_ship_absent_default_contract_is_no_op_and_finalizes(
         {"status": "finalized"} if scope_present else None
     )
     assert "prepare" in commands[0]
-    assert commands[0][-2:] == ["--target-commit", "a" * 40]
+    if scope_present:
+        assert "--target-commit" not in commands[0]
+    else:
+        assert commands[0][-2:] == ["--target-commit", "a" * 40]
+    assert commands[1][commands[1].index("--commit") + 1] == "a" * 40
     if scope_present:
         assert len(commands) == 4
         assert "--pending-work-check" in commands[1]
@@ -9873,6 +9878,7 @@ def test_pending_work_scope_is_selected_generic_and_finalized_late(
     checked_payload = json.loads(checked.stdout)
     assert checked_payload["status"] == "pending_work"
     assert checked_payload["remote_mutation"] is False
+    assert checked_payload["target_commit"] == target_commit
     assert [(item["kind"], item["subject"]) for item in checked_payload["findings"]] == [
         ("dirty_worktree", "selected"),
         ("unmerged_branch_commits", "selected"),
@@ -9912,11 +9918,21 @@ def test_pending_work_scope_is_selected_generic_and_finalized_late(
         "prepare",
         "--target-branch",
         "release/local",
-        "--target-commit",
-        target_commit,
     )
     assert resumed.returncode == 2, resumed.stderr
-    assert json.loads(resumed.stdout)["findings"] == checked_payload["findings"]
+    resumed_payload = json.loads(resumed.stdout)
+    assert resumed_payload["target_commit"] == target_commit
+    assert resumed_payload["findings"] == checked_payload["findings"]
+    mismatched = run_pending_work(
+        repo,
+        "prepare",
+        "--target-branch",
+        "release/local",
+        "--target-commit",
+        advanced_commit,
+    )
+    assert mismatched.returncode == 1
+    assert "does not match" in json.loads(mismatched.stderr)["message"]
     assert (
         run_git(
             repo,
@@ -10004,6 +10020,7 @@ def test_pending_work_scope_is_selected_generic_and_finalized_late(
 
 def test_pending_work_finalization_persists_partial_cleanup_progress(
     tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repo = tmp_path / "Repository"
     repo.mkdir()
@@ -10055,7 +10072,67 @@ def test_pending_work_finalization_persists_partial_cleanup_progress(
         sys.path.remove(lifecycle_scripts)
     finalize_scope = loaded["finalize_scope"]
     original_require_success = finalize_scope.__globals__["require_success"]
+    original_run_command = finalize_scope.__globals__["run_command"]
+    original_remove_residual = finalize_scope.__globals__["_remove_recorded_residual"]
     pending_error = loaded["PendingWorkError"]
+
+    def leave_unregistered_residual(
+        command: list[str],
+        *,
+        cwd: pathlib.Path,
+    ) -> subprocess.CompletedProcess[str]:
+        if command[-3:] == ["worktree", "remove", str(selected_a.resolve())]:
+            removed = original_run_command(command, cwd=cwd)
+            assert removed.returncode == 0, removed.stderr
+            selected_a.mkdir(parents=True)
+            (selected_a / ".pytest_cache").mkdir()
+            return subprocess.CompletedProcess(
+                command,
+                1,
+                stdout="",
+                stderr="simulated failure after Git unregistered the worktree",
+            )
+        return original_run_command(command, cwd=cwd)
+
+    def interrupt_residual_recovery(
+        repo_root: pathlib.Path,
+        record_path: pathlib.Path,
+    ) -> None:
+        raise pending_error("simulated residual recovery interruption")
+
+    finalize_scope.__globals__["run_command"] = leave_unregistered_residual
+    finalize_scope.__globals__["_remove_recorded_residual"] = (
+        interrupt_residual_recovery
+    )
+    with pytest.raises(pending_error, match="residual recovery interruption"):
+        finalize_scope(
+            repo,
+            scope_path,
+            target_branch="release/local",
+            target_commit=target_commit,
+            current_branch="main",
+            current_commit=current_commit,
+        )
+
+    cleanup_record = loaded["_cleanup_record_path"](scope_path, "selected-a")
+    assert cleanup_record.is_file()
+    assert selected_a.is_dir()
+    assert (
+        run_git(
+            repo,
+            "for-each-ref",
+            "--format=%(worktreepath)",
+            "refs/heads/selected-a",
+        ).stdout.strip()
+        == ""
+    )
+    assert json.loads(scope_path.read_text(encoding="utf-8"))["source_branches"] == [
+        "selected-a",
+        "selected-b",
+    ]
+
+    finalize_scope.__globals__["run_command"] = original_run_command
+    finalize_scope.__globals__["_remove_recorded_residual"] = original_remove_residual
 
     def fail_second_branch(
         command: list[str],
@@ -10066,6 +10143,25 @@ def test_pending_work_finalization_persists_partial_cleanup_progress(
             raise pending_error("simulated second-branch cleanup failure")
         return original_require_success(command, cwd=cwd)
 
+    original_rmtree = shutil.rmtree
+    recovery_steps: list[str] = []
+
+    def deny_first_residual(path: pathlib.Path, *args: Any, **kwargs: Any) -> None:
+        if pathlib.Path(path) == selected_a and not recovery_steps:
+            recovery_steps.append("permission_denied")
+            raise PermissionError("simulated inaccessible cache")
+        original_rmtree(path, *args, **kwargs)
+
+    def ownership_recovery(
+        repo_root: pathlib.Path,
+        record_path: pathlib.Path,
+    ) -> None:
+        _, _, worktree, _ = loaded["_read_cleanup_record"](repo_root, record_path)
+        recovery_steps.append("ownership")
+        original_rmtree(worktree)
+
+    monkeypatch.setattr(shutil, "rmtree", deny_first_residual)
+    finalize_scope.__globals__["_run_recorded_recovery"] = ownership_recovery
     finalize_scope.__globals__["require_success"] = fail_second_branch
     with pytest.raises(pending_error, match="second-branch cleanup failure"):
         finalize_scope(
@@ -10077,11 +10173,15 @@ def test_pending_work_finalization_persists_partial_cleanup_progress(
             current_commit=current_commit,
         )
 
+    assert recovery_steps == ["permission_denied", "ownership"]
+    assert not selected_a.exists()
+    assert not cleanup_record.exists()
     assert json.loads(scope_path.read_text(encoding="utf-8"))["source_branches"] == [
         "selected-b"
     ]
     assert run_git(repo, "show-ref", "--verify", "refs/heads/selected-a").returncode != 0
     assert run_git(repo, "show-ref", "--verify", "refs/heads/selected-b").returncode == 0
+    monkeypatch.setattr(shutil, "rmtree", original_rmtree)
     finalize_scope.__globals__["require_success"] = original_require_success
 
     resumed = finalize_scope(
@@ -10097,6 +10197,57 @@ def test_pending_work_finalization_persists_partial_cleanup_progress(
     assert resumed["removed"] == ["selected-b"]
     assert not scope_path.exists()
     assert run_git(repo, "show-ref", "--verify", "refs/heads/selected-b").returncode != 0
+
+    ownership_target = worktree_root / "ownership-target"
+    ownership_target.mkdir()
+    ownership_commands: list[list[str]] = []
+    removed_targets: list[pathlib.Path] = []
+    take_ownership_and_remove = loaded["_take_ownership_and_remove"]
+    original_ownership_require = take_ownership_and_remove.__globals__["require_success"]
+
+    def capture_ownership_command(
+        command: list[str],
+        *,
+        cwd: pathlib.Path,
+    ) -> None:
+        assert cwd == worktree_root
+        ownership_commands.append(command)
+
+    def capture_ownership_removal(path: pathlib.Path) -> None:
+        removed_targets.append(pathlib.Path(path))
+        original_rmtree(path)
+
+    take_ownership_and_remove.__globals__["require_success"] = capture_ownership_command
+    monkeypatch.setattr(shutil, "rmtree", capture_ownership_removal)
+    take_ownership_and_remove(repo, ownership_target, worktree_root.resolve())
+    take_ownership_and_remove.__globals__["require_success"] = (
+        original_ownership_require
+    )
+
+    assert ownership_commands == [
+        [
+            "takeown.exe",
+            "/F",
+            str(ownership_target),
+            "/A",
+            "/R",
+            "/D",
+            "Y",
+            "/SKIPSL",
+        ],
+        [
+            "icacls.exe",
+            str(ownership_target),
+            "/grant",
+            "*S-1-5-32-544:(OI)(CI)F",
+            "/T",
+            "/C",
+            "/L",
+            "/Q",
+        ],
+    ]
+    assert removed_targets == [ownership_target]
+    assert not ownership_target.exists()
 
 
 def install_bundle_manifest(bundle_root: pathlib.Path) -> None:

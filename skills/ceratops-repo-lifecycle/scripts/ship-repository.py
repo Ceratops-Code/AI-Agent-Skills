@@ -255,6 +255,7 @@ def _ship_command(
     args: argparse.Namespace,
     repo_root: pathlib.Path,
     pending_scope: pathlib.Path | None,
+    target_commit: str | None,
 ) -> list[str]:
     command = [
         sys.executable,
@@ -280,8 +281,8 @@ def _ship_command(
     ]
     if args.repo:
         command.extend(("--repo", args.repo))
-    if args.commit:
-        command.extend(("--commit", args.commit))
+    if target_commit:
+        command.extend(("--commit", target_commit))
     if args.title:
         command.extend(("--title", args.title))
     if args.body:
@@ -336,6 +337,34 @@ def _prepared_scope(result: dict[str, Any]) -> pathlib.Path | None:
     if not isinstance(value, str):
         raise RepositoryShipError("Pending-work preparation lacks its scope result.")
     return pathlib.Path(value).resolve() if value else None
+
+
+def _prepared_target_commit(
+    result: dict[str, Any],
+    pending_scope: pathlib.Path | None,
+    explicit_commit: str | None,
+) -> str | None:
+    """Select the retained scope commit without requiring manual repetition."""
+
+    normalized_explicit = explicit_commit.lower() if explicit_commit else None
+    if pending_scope is None:
+        return normalized_explicit
+    recorded = result.get("target_commit")
+    if recorded is None and normalized_explicit is not None:
+        return normalized_explicit
+    if (
+        not isinstance(recorded, str)
+        or len(recorded) != 40
+        or any(character not in "0123456789abcdef" for character in recorded)
+    ):
+        raise RepositoryShipError(
+            "Pending-work preparation lacks its recorded target commit."
+        )
+    if normalized_explicit is not None and normalized_explicit != recorded:
+        raise RepositoryShipError(
+            "Explicit commit does not match the retained pending-work scope."
+        )
+    return recorded
 
 
 def _pending_command(
@@ -401,9 +430,21 @@ def ship_repository(args: argparse.Namespace) -> dict[str, object]:
             prepared,
         )
     pending_scope = _prepared_scope(prepared)
+    prepared_target_commit = _prepared_target_commit(
+        prepared,
+        pending_scope,
+        args.commit,
+    )
     checkpoint_scope = pending_scope
     _require_cleanup_safe_caller(repo_root, pending_scope)
-    ship_code, shipped = _run_json(_ship_command(args, repo_root, pending_scope))
+    ship_code, shipped = _run_json(
+        _ship_command(
+            args,
+            repo_root,
+            pending_scope,
+            prepared_target_commit,
+        )
+    )
     if ship_code == 2:
         return shipped
     if ship_code:
@@ -417,6 +458,13 @@ def ship_repository(args: argparse.Namespace) -> dict[str, object]:
     synchronized_head = shipped.get("synchronized_head")
     if not isinstance(target_commit, str) or not isinstance(synchronized_head, str):
         raise RepositoryShipError("Shipping result lacks exact commit identity.")
+    if (
+        prepared_target_commit is not None
+        and target_commit.lower() != prepared_target_commit
+    ):
+        raise RepositoryShipError(
+            "Shipping result does not match the prepared target commit."
+        )
 
     if pending_scope is not None:
         check_code, checked = _run_json(

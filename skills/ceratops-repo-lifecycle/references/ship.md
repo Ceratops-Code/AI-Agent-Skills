@@ -16,8 +16,10 @@ merged source branches and worktrees.
   --head-branch release/local --base-branch main --remote-name origin
   --reusable-head`.
 - The helper derives the canonical pending-work scope from `--head-branch`.
-  An absent scope is a cleanup no-op. Entries for missing source branches are
-  atomically removed from an existing scope before shipping continues.
+  When a retained scope exists, the wrapper reuses its recorded exact target
+  commit; a caller-supplied `--commit` must match it. An absent scope is a
+  cleanup no-op. Entries for missing source branches are atomically removed
+  from an existing scope before shipping continues.
 
 ### Inputs To Capture
 
@@ -53,8 +55,8 @@ Infer missing values from the checkout, scope file, and live PR before asking.
    `prepared`, the local head branch has moved, a fresh fetch proves the commit
    is contained in the remote base branch, and a paginated repository-wide PR
    lookup proves no PR has that exact head. Missing or uncertain evidence
-   retains the checkpoint and resumes or blocks; explicit `--commit` behavior
-   is unchanged.
+   retains the checkpoint and resumes or blocks. This checkpoint logic receives
+   the exact commit already selected by the wrapper.
 3. Before the first remote push, the helper checks the canonical scope when it
    exists. It atomically removes entries for missing source branches and deletes
    the scope if none remain. An absent or emptied scope is a cleanup no-op;
@@ -70,8 +72,15 @@ Infer missing values from the checkout, scope file, and live PR before asking.
 7. Before remote mutation, the wrapper classifies deployment. An absent default
    `deploy/deploy.yml` makes `deploy` an explicit no-op; a missing custom
    contract blocks. After synchronization it rechecks the selected scope, runs
-   a declared operation or records the no-op, rechecks, and removes only clean
-   selected worktrees and merged selected branches.
+   a declared operation or records the no-op, and rechecks. Before removing a
+   selected worktree, finalization records its exact path. If Git unregisters
+   the worktree but leaves that directory, the helper removes only the recorded
+   path after verifying that it is unregistered and remains below the canonical
+   worktree root. When the helper runs elevated, Windows permission recovery
+   may take ownership only of that validated path as part of the selected
+   cleanup, without a public recovery flag or second confirmation. The helper
+   removes the recovery record only after verifying the path is absent, then
+   removes the merged selected branch.
 8. After a declared `deploy` succeeds, the helper checkpoints its result
    against the exact target, operation, and resolved contract before
    finalization. A retry reuses that result while cleanup remains pending and
