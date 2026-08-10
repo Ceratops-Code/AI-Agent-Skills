@@ -2372,6 +2372,8 @@ def test_credit_analysis_child_command_places_global_approval_before_exec(
                 assert_strict_objects(node["items"])
 
         assert_strict_objects(schema)
+        if task["phase"] != "synthesis":
+            assert schema["properties"]["candidate_assessments"]["minItems"] == 1
 
         def assert_identifier_schema(identifier_schema: dict[str, Any]) -> None:
             pattern = identifier_schema["pattern"]
@@ -2389,6 +2391,11 @@ def test_credit_analysis_child_command_places_global_approval_before_exec(
             assert set(assessment_schema["disposition"]["enum"]) == set(
                 contract["spark_dispositions"]
             )
+            finding_schema = schema["properties"]["provisional_findings"][
+                "items"
+            ]["properties"]
+            assert finding_schema["candidate_ids"]["minItems"] == 1
+            assert finding_schema["evidence_refs"]["minItems"] == 1
         elif task["phase"] == "surface-confirmation":
             review_schema = schema["properties"]["temporary_control_reviews"][
                 "items"
@@ -2398,6 +2405,11 @@ def test_credit_analysis_child_command_places_global_approval_before_exec(
                 "items"
             ]["properties"]
             assert_identifier_schema(helper_schema["finding_ids"]["items"])
+            finding_schema = schema["properties"]["confirmed_findings"]["items"][
+                "properties"
+            ]
+            assert finding_schema["candidate_ids"]["minItems"] == 1
+            assert finding_schema["targeted_verification"]["minItems"] == 1
         else:
             merge_schema = schema["properties"]["temporary_control_merges"][
                 "items"
@@ -2405,6 +2417,7 @@ def test_credit_analysis_child_command_places_global_approval_before_exec(
             assert_identifier_schema(merge_schema["finding_id"])
             assert_identifier_schema(merge_schema["review_ids"]["items"])
             assert_identifier_schema(schema["properties"]["risk_order"]["items"])
+            assert schema["properties"]["call_classifications"]["minItems"] == 1
 
     spark_prompt = workflow._task_prompt(
         state=state,
@@ -2418,6 +2431,7 @@ def test_credit_analysis_child_command_places_global_approval_before_exec(
     assert "`plausible-risk` uses one or more risk_ids" in spark_prompt
     assert "`candidate_assessments` must be one ordered partition" in spark_prompt
     assert "Each candidate ID appears once total" in spark_prompt
+    assert "must own at least one candidate ID" in spark_prompt
 
 
 def test_credit_analysis_workflow_rejects_invalid_and_conflicting_passes(
