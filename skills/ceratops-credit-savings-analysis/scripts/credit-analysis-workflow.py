@@ -9351,7 +9351,7 @@ def _output_schema_for_task(
     """Return the exact strict schema also enforced by Python validation."""
 
     def string() -> dict[str, Any]:
-        return {"type": "string"}
+        return {"type": "string", "minLength": 1}
 
     def number() -> dict[str, Any]:
         return {"type": "number"}
@@ -9363,7 +9363,7 @@ def _output_schema_for_task(
         return {"type": "boolean"}
 
     def nullable_string() -> dict[str, Any]:
-        return {"type": ["string", "null"]}
+        return {"type": ["string", "null"], "minLength": 1}
 
     def identifier() -> dict[str, Any]:
         return {"type": "string", "pattern": r"^[a-z0-9][a-z0-9._-]*$"}

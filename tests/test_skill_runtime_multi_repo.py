@@ -2393,6 +2393,11 @@ def test_credit_analysis_child_command_places_global_approval_before_exec(
         assert_strict_objects(schema)
         if task["phase"] != "synthesis":
             assert schema["properties"]["candidate_assessments"]["minItems"] == 1
+            prose_schema = schema["properties"]["candidate_assessments"]["items"][
+                "properties"
+            ]
+            assert prose_schema["reason"]["minLength"] == 1
+            assert prose_schema["evidence_refs"]["items"]["minLength"] == 1
 
         def assert_identifier_schema(identifier_schema: dict[str, Any]) -> None:
             pattern = identifier_schema["pattern"]
