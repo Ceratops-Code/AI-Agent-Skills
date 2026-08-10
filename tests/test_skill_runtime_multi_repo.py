@@ -460,7 +460,7 @@ def credit_analysis_request(
             "task_temp_root": str(task_root),
             "evidence_output": str(evidence),
             "pricing_profile": None,
-            "expected_surface_contract_version": 2,
+            "expected_surface_contract_version": 3,
             "mutation_authority": False,
         },
     )
@@ -528,7 +528,7 @@ def credit_analysis_batch_request(
             "task_temp_root": str(task_root),
             "manifest_output": str(tmp_path / f"batch-manifest-{name}.json"),
             "pricing_profile": None,
-            "expected_surface_contract_version": 2,
+            "expected_surface_contract_version": 3,
             "expected_source_selection_contract_version": 1,
             "mutation_authority": False,
         },
@@ -1557,7 +1557,7 @@ def load_credit_analysis_workflow_module() -> Any:
 class FakeCreditModelRunner:
     """Return complete semantic contracts without making external model calls."""
 
-    available_models = {"gpt-5.3-codex-spark", "gpt-5.6-sol"}
+    available_models = {"gpt-5.6-luna", "gpt-5.6-sol"}
 
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []
@@ -1622,71 +1622,69 @@ class FakeCreditModelRunner:
             "contributing_surfaces": [surface],
         }
 
-    def _spark(self, task: Mapping[str, Any], packet: Mapping[str, Any], digest: str) -> dict[str, Any]:
+    def _luna(self, task: Mapping[str, Any], packet: Mapping[str, Any], digest: str) -> dict[str, Any]:
         candidate_ids = list(task["candidate_ids"])
         variants = list(packet.get("input_variant_ids", []))
         findings: list[dict[str, Any]] = []
         temporary: list[dict[str, Any]] = []
         assessments: list[dict[str, Any]] = []
         if task["stage"] == "primary":
-            if candidate_ids and task["surface_id"] in {
-                "context-evidence",
-                "rework-validation",
-                "tool-flow",
-            }:
-                finding_id = f"{task['surface_id']}.spark"
-                findings.append(
-                    {
-                        "id": finding_id,
-                        "title": finding_id.replace(".", " "),
-                        "problem_summary": "Synthetic primary evidence supports review.",
-                        "candidate_ids": [candidate_ids[0]],
-                        "evidence_refs": ["evidence://synthetic/primary"],
-                        "producer_type": "workflow",
-                        "producer_owner": f"workflow:{task['surface_id']}",
-                        "proposed_durable_control": "Confirm the control against original evidence",
-                        "recurrence_likely": True,
-                        "savings_justifies_maintenance": True,
-                        "material_variant_ids": [],
-                    }
-                )
-            if (
-                candidate_ids
-                and task["surface_id"] == "rework-validation"
-                and task["ordinal"] == 1
-            ):
-                temporary.append(
-                    {
-                        "id": "rework-validation.temporary",
-                        "problem_solved": "Synthetic temporary orchestration",
-                        "candidate_ids": [candidate_ids[0]],
-                        "observed_temporary_control": "temporary synthetic helper",
-                        "canonical_owner_hint": "workflow:shared",
-                        "evidence_refs": ["evidence://synthetic/temporary"],
-                        "material_variant_ids": [],
-                    }
-                )
-            finding_candidates = {
-                candidate
-                for finding in findings
-                for candidate in finding["candidate_ids"]
-            }
-            for candidate_id in candidate_ids:
-                nested_findings = [
-                    {key: value for key, value in finding.items() if key != "candidate_ids"}
-                    for finding in findings
-                    if candidate_id in finding["candidate_ids"]
-                ]
-                nested_temporary = [
-                    {key: value for key, value in item.items() if key != "candidate_ids"}
-                    for item in temporary
-                    if candidate_id in item["candidate_ids"]
-                ]
+            material_surfaces: set[str] = set()
+            for candidate_id, surface_id in task["candidate_pairs"]:
+                nested_findings: list[dict[str, Any]] = []
+                nested_temporary: list[dict[str, Any]] = []
+                if surface_id in {
+                    "context-evidence",
+                    "rework-validation",
+                    "tool-flow",
+                } and surface_id not in material_surfaces:
+                    material_surfaces.add(surface_id)
+                    finding_id = (
+                        f"{surface_id}.luna.{int(task['ordinal']):04d}"
+                    )
+                    nested_findings.append(
+                        {
+                            "id": finding_id,
+                            "title": finding_id.replace(".", " "),
+                            "problem_summary": (
+                                "Synthetic primary evidence supports review."
+                            ),
+                            "evidence_refs": ["evidence://synthetic/primary"],
+                            "producer_type": "workflow",
+                            "producer_owner": f"workflow:{surface_id}",
+                            "proposed_durable_control": (
+                                "Confirm the control against original evidence"
+                            ),
+                            "recurrence_likely": True,
+                            "savings_justifies_maintenance": True,
+                            "material_variant_ids": [],
+                        }
+                    )
+                if (
+                    surface_id == "rework-validation"
+                    and task["ordinal"] == 1
+                    and not temporary
+                ):
+                    nested_temporary.append(
+                        {
+                            "id": "rework-validation.temporary",
+                            "problem_solved": "Synthetic temporary orchestration",
+                            "observed_temporary_control": (
+                                "temporary synthetic helper"
+                            ),
+                            "canonical_owner_hint": "workflow:shared",
+                            "evidence_refs": ["evidence://synthetic/temporary"],
+                            "material_variant_ids": [],
+                        }
+                    )
+                    temporary.extend(nested_temporary)
                 assessments.append(
                     {
+                        "candidate_id": candidate_id,
+                        "surface_id": surface_id,
                         "disposition": (
                             "provisional-finding-evidence"
-                            if candidate_id in finding_candidates
+                            if nested_findings
                             else "dismissed-candidate"
                         ),
                         "reason": "Synthetic evidence was fully reviewed.",
@@ -1737,10 +1735,8 @@ class FakeCreditModelRunner:
                 }
             )
         return {
-            "schema": "ceratops-credit-analysis-spark-child-result.v4",
-            "analysis_id": task["candidate_ids"][0].split(".", 1)[0]
-            if candidate_ids
-            else str(packet["analysis_id"]),
+            "schema": "ceratops-credit-analysis-luna-child-result.v5",
+            "analysis_id": str(packet["analysis_id"]),
             "task_id": task["task_id"],
             "surface_id": task["surface_id"],
             "stage": task["stage"],
@@ -1900,7 +1896,7 @@ class FakeCreditModelRunner:
                 for category in packet["helper_categories"]
             ]
         return {
-            "schema": "ceratops-credit-analysis-confirmation-child-result.v3",
+            "schema": "ceratops-credit-analysis-confirmation-child-result.v4",
             "analysis_id": str(packet["analysis_id"]),
             "task_id": task["task_id"],
             "surface_id": surface,
@@ -2032,7 +2028,7 @@ class FakeCreditModelRunner:
             if item["classification"].startswith("avoidable_")
         )
         return {
-            "schema": "ceratops-credit-analysis-orchestration-synthesis.v2",
+            "schema": "ceratops-credit-analysis-orchestration-synthesis.v3",
             "analysis_id": str(packet["analysis_id"]),
             "task_id": task["task_id"],
             "input_sha256": digest,
@@ -2076,8 +2072,8 @@ class FakeCreditModelRunner:
                 "schema": schema["properties"]["schema"]["const"],
             }
         )
-        if task["phase"].startswith("spark-"):
-            return self._spark(task, input_payload, input_sha256)
+        if task["phase"].startswith("luna-"):
+            return self._luna(task, input_payload, input_sha256)
         if task["phase"] == "surface-confirmation":
             return self._confirmation(task, input_payload, input_sha256)
         return self._synthesis(task, input_payload, input_sha256)
@@ -2085,6 +2081,7 @@ class FakeCreditModelRunner:
 
 def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
     tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     workflow = load_credit_analysis_workflow_module()
     request, _, task_root = credit_analysis_request(
@@ -2093,14 +2090,15 @@ def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
         extra_calls_per_turn=4,
         oversized_user_message_chars=5_000,
     )
-    available = {"gpt-5.3-codex-spark", "gpt-5.6-sol"}
+    available = {"gpt-5.6-luna", "gpt-5.6-sol"}
     plan = workflow.command_plan_orchestration(
         request,
         available_models=available,
     )
     assert plan["phase"] == "planned"
-    assert plan["projected_spark_calls"] > 0
-    assert plan["projected_gpt_5_6_calls"] == 6
+    assert plan["projected_luna_calls"] > 0
+    assert plan["projected_sol_calls"] == 6
+    assert plan["projected_semantic_calls"] <= 96
     assert plan["canonical_state_records"] > 0
     assert len(json.dumps(plan)) < 30_000
 
@@ -2108,7 +2106,7 @@ def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
     manifest = json.loads(
         pathlib.Path(plan["manifest_path"]).read_text(encoding="utf-8")
     )
-    assert manifest["chunking"]["target_chars"] == 200_000
+    assert manifest["chunking"]["target_chars"] == 480_000
     assert manifest["surface_order"] == [
         "helper-contracts",
         "context-evidence",
@@ -2120,6 +2118,12 @@ def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
         pathlib.Path(plan["evidence_path"]).read_text(encoding="utf-8")
     )
     assert evidence["collection"]["session_reads"] == 1
+    assert evidence["analysis_lineage"] == manifest["source_freeze"]
+    assert manifest["source_freeze"]["controller_analysis_id"] == manifest[
+        "analysis_id"
+    ]
+    assert manifest["source_freeze"]["source_is_analysis_child"] is False
+    assert manifest["source_freeze"]["execution_recollects_session"] is False
     assert evidence["semantic_coverage"]["covered_percent"] == 100.0
     assert "TOOL_RESULT_TAIL_SENTINEL" in json.dumps(evidence)
     assert "OVERSIZED_USER_EVIDENCE_SENTINEL" in json.dumps(evidence)
@@ -2143,19 +2147,40 @@ def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
         for record in record["evidence_excerpts"]
     )
 
-    all_candidates: list[str] = []
+    all_candidates = list(manifest["shared_candidate_ids"])
+    primary_tasks = [
+        task
+        for task in manifest["luna_tasks"]
+        if task["phase"] == "luna-primary"
+    ]
+    assert [candidate for task in primary_tasks for candidate in task["candidate_ids"]] == all_candidates
+    assert len(all_candidates) == len(set(all_candidates))
+    assert set(manifest["shared_primary_membership"]) == set(all_candidates)
+    assert set(manifest["shared_primary_membership"].values()) == {
+        task["task_id"] for task in primary_tasks
+    }
     for surface in manifest["surfaces"]:
         primary_candidates = [
             candidate
-            for task in manifest["spark_tasks"]
-            if task["surface_id"] == surface["surface_id"]
-            and task["phase"] == "spark-primary"
-            for candidate in task["candidate_ids"]
+            for task in primary_tasks
+            for candidate, surface_id in task["candidate_pairs"]
+            if surface_id == surface["surface_id"]
         ]
         assert primary_candidates == surface["candidate_ids"]
         assert len(primary_candidates) == len(set(primary_candidates))
-        all_candidates.extend(primary_candidates)
-    assert len(all_candidates) == len(set(all_candidates))
+    assert len(primary_tasks) < sum(
+        1 for surface in manifest["surfaces"] if surface["candidate_ids"]
+    )
+
+    def reject_recollection(*args: Any, **kwargs: Any) -> None:
+        raise AssertionError("execute attempted to recollect the source session")
+
+    original_collector = workflow._collect_orchestration_evidence
+    monkeypatch.setattr(
+        workflow,
+        "_collect_orchestration_evidence",
+        reject_recollection,
+    )
 
     retained = task_root / "user-retained.txt"
     retained.write_text("caller-owned", encoding="utf-8", newline="\n")
@@ -2173,10 +2198,10 @@ def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
             break
     assert retained.read_text(encoding="utf-8") == "caller-owned"
     assert not (task_root / "orchestration" / "transient").exists()
-    assert len(runner.calls) == plan["projected_spark_calls"] + 6
+    assert len(runner.calls) == plan["projected_luna_calls"] + 6
     assert [call["model"] for call in runner.calls].count(
-        "gpt-5.3-codex-spark"
-    ) == plan["projected_spark_calls"]
+        "gpt-5.6-luna"
+    ) == plan["projected_luna_calls"]
     sol_calls = [
         call for call in runner.calls if call["model"] == "gpt-5.6-sol"
     ]
@@ -2194,8 +2219,8 @@ def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
     assert all(
         call["phase"]
         in {
-            "spark-primary",
-            "spark-consolidation",
+            "luna-primary",
+            "luna-consolidation",
             "surface-confirmation",
             "synthesis",
         }
@@ -2205,8 +2230,8 @@ def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
 
     completed_state = json.loads(state_path.read_text(encoding="utf-8"))
     assert completed_state["model_calls"] == {
-        "spark": plan["projected_spark_calls"],
-        "gpt_5_6": 6,
+        "luna": plan["projected_luna_calls"],
+        "sol": 6,
     }
     assert completed_state["model_attempts"] == completed_state["model_calls"]
     for task_id in completed_state["task_order"]:
@@ -2217,6 +2242,35 @@ def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
         ]
         assert result["analysis_id"] == completed_state["analysis_id"]
         assert result["task_id"] == task_id
+
+    synthesis_input = json.loads(
+        pathlib.Path(
+            completed_state["manifest"]["synthesis_task"]["artifacts"]["input"]
+        ).read_text(encoding="utf-8")
+    )
+    coverage = synthesis_input["luna_coverage_inventory"]
+    expected_pairs = [
+        pair for task in primary_tasks for pair in task["candidate_pairs"]
+    ]
+    assert [[row[0], row[1]] for row in coverage["rows"]] == expected_pairs
+    assert coverage["candidate_surface_pair_count"] == len(expected_pairs)
+    for confirmation_task in manifest["confirmation_tasks"]:
+        packet = json.loads(
+            pathlib.Path(confirmation_task["artifacts"]["input"]).read_text(
+                encoding="utf-8"
+            )
+        )
+        selection = packet["confirmation_selection"]
+        assert packet["candidate_ids"] == selection["selected_candidate_ids"]
+        assert set(selection["material_candidate_ids"]) <= set(
+            packet["candidate_ids"]
+        )
+        assert set(selection["high_signal_candidate_ids"]) <= set(
+            packet["candidate_ids"]
+        )
+        assert len(packet["original_evidence_dossiers"]) == len(
+            packet["candidate_ids"]
+        )
 
     final = json.loads(
         pathlib.Path(status["final_result_path"]).read_text(encoding="utf-8")
@@ -2272,6 +2326,11 @@ def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
     assert len(runner.calls) == calls_before_repeat
     loaded_state, loaded_evidence, _ = workflow._load_orchestration_state(state_path)
     workflow._finalize_orchestration(loaded_state, loaded_evidence)
+    monkeypatch.setattr(
+        workflow,
+        "_collect_orchestration_evidence",
+        original_collector,
+    )
 
     second_root = tmp_path / "second-analysis"
     second_root.mkdir()
@@ -2305,8 +2364,20 @@ def test_credit_analysis_model_catalog_decodes_cli_as_utf8(
             json.dumps(
                 {
                     "models": [
-                        {"slug": "gpt-5.3-codex-spark", "display_name": "Spark ✨"},
-                        {"slug": "gpt-5.6-sol", "display_name": "Sol"},
+                        {
+                            "slug": "gpt-5.6-luna",
+                            "display_name": "Luna",
+                            "supported_reasoning_levels": [{"effort": "max"}],
+                            "context_window": 272_000,
+                            "effective_context_window_percent": 95,
+                        },
+                        {
+                            "slug": "gpt-5.6-sol",
+                            "display_name": "Sol",
+                            "supported_reasoning_levels": [{"effort": "max"}],
+                            "context_window": 272_000,
+                            "effective_context_window_percent": 95,
+                        },
                     ]
                 },
                 ensure_ascii=False,
@@ -2318,8 +2389,14 @@ def test_credit_analysis_model_catalog_decodes_cli_as_utf8(
     monkeypatch.setattr(workflow.subprocess, "run", fake_run)
 
     assert workflow._codex_model_catalog() == {
-        "gpt-5.3-codex-spark",
-        "gpt-5.6-sol",
+        "gpt-5.6-luna": {
+            "reasoning_efforts": {"max"},
+            "effective_context_tokens": 258_400,
+        },
+        "gpt-5.6-sol": {
+            "reasoning_efforts": {"max"},
+            "effective_context_tokens": 258_400,
+        },
     }
     assert observed["encoding"] == "utf-8"
     assert observed["text"] is True
@@ -2331,7 +2408,7 @@ def test_credit_analysis_child_command_places_global_approval_before_exec(
     workflow = load_credit_analysis_workflow_module()
     command = workflow._codex_child_command(
         executable="codex",
-        model="gpt-5.3-codex-spark",
+        model="gpt-5.6-luna",
         schema_path=tmp_path / "schema.json",
         raw_output=tmp_path / "result.json",
         orchestration_root=tmp_path,
@@ -2342,23 +2419,38 @@ def test_credit_analysis_child_command_places_global_approval_before_exec(
         "--ask-for-approval",
         "never",
         "--config",
-        'model_reasoning_effort="high"',
+        'model_reasoning_effort="max"',
         "exec",
     ]
     assert command[command.index("--sandbox") + 1] == "read-only"
     assert "--ephemeral" in command
 
-    state = {"analysis_id": "analysis-1"}
+    state = {
+        "analysis_id": "analysis-1",
+        "manifest": {
+            "surface_order": [
+                "helper-contracts",
+                "context-evidence",
+                "rework-validation",
+                "tool-flow",
+                "instruction-reasoning",
+            ]
+        },
+    }
     contract = json.loads(CREDIT_ANALYSIS_CONTRACT.read_text(encoding="utf-8"))
     tasks: list[dict[str, Any]] = [
         {
-            "phase": "spark-primary",
-            "task_id": "spark.helper-contracts.primary.0001",
-            "surface_id": "helper-contracts",
+            "phase": "luna-primary",
+            "task_id": "luna.shared.primary.0001",
+            "surface_id": None,
             "stage": "primary",
             "candidate_ids": [
-                "analysis-1.hc.000001",
-                "analysis-1.hc.000002",
+                "analysis-1.c.000001",
+                "analysis-1.c.000002",
+            ],
+            "candidate_pairs": [
+                ["analysis-1.c.000001", "helper-contracts"],
+                ["analysis-1.c.000002", "context-evidence"],
             ],
         },
         {
@@ -2366,8 +2458,8 @@ def test_credit_analysis_child_command_places_global_approval_before_exec(
             "task_id": "confirm.helper-contracts",
             "surface_id": "helper-contracts",
             "candidate_ids": [
-                "analysis-1.hc.000001",
-                "analysis-1.hc.000002",
+                "analysis-1.c.000001",
+                "analysis-1.c.000002",
             ],
         },
         {"phase": "synthesis", "task_id": "synthesis", "surface_id": None},
@@ -2379,11 +2471,12 @@ def test_credit_analysis_child_command_places_global_approval_before_exec(
             input_sha256="0" * 64,
             contract=contract,
         )
-        assert all(
-            property_schema.get("type") == "string"
-            for property_schema in schema["properties"].values()
-            if "const" in property_schema
-        )
+        for property_schema in schema["properties"].values():
+            if "const" not in property_schema:
+                continue
+            assert property_schema.get("type") == (
+                "null" if property_schema["const"] is None else "string"
+            )
 
         def assert_strict_objects(node: Any) -> None:
             if not isinstance(node, dict):
@@ -2400,7 +2493,7 @@ def test_credit_analysis_child_command_places_global_approval_before_exec(
 
         assert_strict_objects(schema)
         if task["phase"] != "synthesis":
-            expected_items = 2 if task["phase"] == "spark-primary" else 1
+            expected_items = 2 if task["phase"] == "luna-primary" else 1
             assert (
                 schema["properties"]["candidate_assessments"]["minItems"]
                 == expected_items
@@ -2416,11 +2509,13 @@ def test_credit_analysis_child_command_places_global_approval_before_exec(
             assert workflow.re.fullmatch(pattern, "finding-1") is not None
             assert workflow.re.fullmatch(pattern, "risk://none") is None
 
-        if task["phase"] == "spark-primary":
+        if task["phase"] == "luna-primary":
             assessment_schema = schema["properties"]["candidate_assessments"][
                 "items"
             ]["properties"]
             assert set(assessment_schema) == {
+                "candidate_id",
+                "surface_id",
                 "disposition",
                 "reason",
                 "evidence_refs",
@@ -2430,7 +2525,7 @@ def test_credit_analysis_child_command_places_global_approval_before_exec(
             }
             assert schema["properties"]["candidate_assessments"]["maxItems"] == 2
             assert set(assessment_schema["disposition"]["enum"]) == set(
-                contract["spark_dispositions"]
+                contract["luna_dispositions"]
             )
             finding_schema = assessment_schema["provisional_findings"]["items"][
                 "properties"
@@ -2479,7 +2574,7 @@ def test_credit_analysis_child_command_places_global_approval_before_exec(
             assert_identifier_schema(schema["properties"]["risk_order"]["items"])
             assert schema["properties"]["call_classifications"]["minItems"] == 1
 
-    spark_prompt = workflow._task_prompt(
+    luna_prompt = workflow._task_prompt(
         state=state,
         task=tasks[0],
         input_payload={"analysis_id": "analysis-1"},
@@ -2487,19 +2582,19 @@ def test_credit_analysis_child_command_places_global_approval_before_exec(
         input_variant_ids=[],
         contract=contract,
     )
-    assert "Semantic ownership is nested and exclusive" in spark_prompt
-    assert "`plausible-risk` assessment" in spark_prompt
-    assert "`necessary-exclusion` assessments have neither" in spark_prompt
-    assert "exactly one candidate_assessments item per input candidate" in spark_prompt
-    assert "controller assigns the" in spark_prompt
-    assert "inherit their assessment's candidate assignment" in spark_prompt
+    assert "Semantic ownership is nested and exclusive" in luna_prompt
+    assert "`plausible-risk` assessment" in luna_prompt
+    assert "`necessary-exclusion` assessments have neither" in luna_prompt
+    assert "one candidate_assessments item" in luna_prompt
+    assert "candidate_id and surface_id" in luna_prompt
+    assert "inherit their assessment's candidate assignment" in luna_prompt
 
     large_task = {
         "phase": "surface-confirmation",
         "task_id": "confirm.helper-contracts",
         "surface_id": "helper-contracts",
         "candidate_ids": [
-            f"analysis-1.hc.{ordinal:06d}" for ordinal in range(1, 130)
+            f"analysis-1.c.{ordinal:06d}" for ordinal in range(1, 130)
         ],
     }
     large_schema = workflow._output_schema_for_task(
@@ -2514,7 +2609,7 @@ def test_credit_analysis_child_command_places_global_approval_before_exec(
     assert "enum" not in large_candidate_schema
     assert (
         workflow.re.fullmatch(
-            large_candidate_schema["pattern"], "analysis-1.hc.000129"
+            large_candidate_schema["pattern"], "analysis-1.c.000129"
         )
         is not None
     )
@@ -2524,7 +2619,7 @@ def test_credit_analysis_workflow_rejects_invalid_and_conflicting_passes(
     tmp_path: pathlib.Path,
 ) -> None:
     workflow = load_credit_analysis_workflow_module()
-    available = {"gpt-5.3-codex-spark", "gpt-5.6-sol"}
+    available = {"gpt-5.6-luna", "gpt-5.6-sol"}
 
     missing_root = tmp_path / "missing-model"
     missing_root.mkdir()
@@ -2536,6 +2631,38 @@ def test_credit_analysis_workflow_rejects_invalid_and_conflicting_passes(
         )
     assert list(missing_task_root.iterdir()) == []
     assert not (missing_root / "evidence-full-analysis.json").exists()
+
+    child_root = tmp_path / "analysis-child-source"
+    child_root.mkdir()
+    child_request, child_session, child_task_root = credit_analysis_request(
+        child_root
+    )
+    child_rows = [
+        json.loads(line)
+        for line in child_session.read_text(encoding="utf-8").splitlines()
+    ]
+    first_user = next(
+        row
+        for row in child_rows
+        if row.get("payload", {}).get("role") == "user"
+    )
+    first_user["payload"]["content"][0]["text"] = (
+        "CERATOPS_CREDIT_ANALYSIS_CHILD v1\ncontroller_analysis_id=child"
+    )
+    child_session.write_text(
+        "".join(json.dumps(row) + "\n" for row in child_rows),
+        encoding="utf-8",
+        newline="\n",
+    )
+    with pytest.raises(
+        workflow.CreditAnalysisError,
+        match="selected source is a credit-analysis child session",
+    ):
+        workflow.command_plan_orchestration(
+            child_request,
+            available_models=available,
+        )
+    assert list(child_task_root.iterdir()) == []
 
     invalid_root = tmp_path / "invalid-coverage"
     invalid_root.mkdir()
@@ -2549,8 +2676,8 @@ def test_credit_analysis_workflow_rejects_invalid_and_conflicting_passes(
     )
     first_primary = next(
         task
-        for task in invalid_manifest["spark_tasks"]
-        if task["phase"] == "spark-primary" and task["candidate_ids"]
+        for task in invalid_manifest["luna_tasks"]
+        if task["phase"] == "luna-primary" and task["candidate_ids"]
     )
     first_primary["candidate_ids"].append(first_primary["candidate_ids"][0])
     contract = json.loads(CREDIT_ANALYSIS_CONTRACT.read_text(encoding="utf-8"))
@@ -2616,13 +2743,13 @@ def test_credit_analysis_workflow_rejects_invalid_and_conflicting_passes(
     )
 
     class MixedSemanticOwnershipRunner(FakeCreditModelRunner):
-        def _spark(
+        def _luna(
             self,
             task: Mapping[str, Any],
             packet: Mapping[str, Any],
             digest: str,
         ) -> dict[str, Any]:
-            result = super()._spark(task, packet, digest)
+            result = super()._luna(task, packet, digest)
             if task["stage"] == "primary" and result["candidate_assessments"]:
                 risk_id = f"{task['surface_id']}.mixed-link"
                 assessment = result["candidate_assessments"][0]
@@ -2651,10 +2778,10 @@ def test_credit_analysis_workflow_rejects_invalid_and_conflicting_passes(
     mixed_ownership_saved = json.loads(
         mixed_ownership_state.read_text(encoding="utf-8")
     )
-    assert mixed_ownership_saved["model_calls"] == {"spark": 0, "gpt_5_6": 0}
+    assert mixed_ownership_saved["model_calls"] == {"luna": 0, "sol": 0}
     assert mixed_ownership_saved["model_attempts"] == {
-        "spark": 1,
-        "gpt_5_6": 0,
+        "luna": 1,
+        "sol": 0,
     }
 
     duplicate_assessment_root = tmp_path / "duplicate-assessment-coverage"
@@ -2666,13 +2793,13 @@ def test_credit_analysis_workflow_rejects_invalid_and_conflicting_passes(
     )
 
     class DuplicateAssessmentRunner(FakeCreditModelRunner):
-        def _spark(
+        def _luna(
             self,
             task: Mapping[str, Any],
             packet: Mapping[str, Any],
             digest: str,
         ) -> dict[str, Any]:
-            result = super()._spark(task, packet, digest)
+            result = super()._luna(task, packet, digest)
             if task["stage"] == "primary" and result["candidate_assessments"]:
                 result["candidate_assessments"].append(
                     result["candidate_assessments"][0]
@@ -2681,7 +2808,10 @@ def test_credit_analysis_workflow_rejects_invalid_and_conflicting_passes(
 
     with pytest.raises(
         workflow.CreditAnalysisError,
-        match="align one-to-one|coverage is missing, duplicated, or reordered",
+        match=(
+            "align with candidate-surface order|coverage is missing, duplicated, "
+            "or reordered"
+        ),
     ):
         workflow.command_execute_orchestration(
             pathlib.Path(duplicate_plan["state_path"]),
@@ -2700,13 +2830,13 @@ def test_credit_analysis_workflow_rejects_invalid_and_conflicting_passes(
     )
 
     class DuplicateDescriptiveStringRunner(FakeCreditModelRunner):
-        def _spark(
+        def _luna(
             self,
             task: Mapping[str, Any],
             packet: Mapping[str, Any],
             digest: str,
         ) -> dict[str, Any]:
-            result = super()._spark(task, packet, digest)
+            result = super()._luna(task, packet, digest)
             assessment = result["candidate_assessments"][0]
             assessment["evidence_refs"].append(assessment["evidence_refs"][0])
             return result
@@ -2765,7 +2895,7 @@ def test_credit_analysis_workflow_rejects_invalid_and_conflicting_passes(
 
     retry_runner = InvalidOnceRunner()
     retry_state_path = pathlib.Path(retry_plan["state_path"])
-    with pytest.raises(workflow.CreditAnalysisError, match="Spark child result"):
+    with pytest.raises(workflow.CreditAnalysisError, match="Luna child result"):
         workflow.command_execute_orchestration(
             retry_state_path,
             runner=retry_runner,
@@ -2777,8 +2907,8 @@ def test_credit_analysis_workflow_rejects_invalid_and_conflicting_passes(
     assert first_execution["status"] == "pending"
     assert first_execution["attempts"][0]["outcome"] == "validation-error"
     assert first_execution["attempts"][0]["attempt_number"] == 1
-    assert failed_state["model_calls"] == {"spark": 0, "gpt_5_6": 0}
-    assert failed_state["model_attempts"] == {"spark": 1, "gpt_5_6": 0}
+    assert failed_state["model_calls"] == {"luna": 0, "sol": 0}
+    assert failed_state["model_attempts"] == {"luna": 1, "sol": 0}
     assert all(
         artifact is not None and artifact["sha256"]
         for artifact in first_execution["attempts"][0]["artifacts"].values()
@@ -2791,12 +2921,12 @@ def test_credit_analysis_workflow_rejects_invalid_and_conflicting_passes(
     assert resumed_retry["complete"] is True
     resumed_state = json.loads(retry_state_path.read_text(encoding="utf-8"))
     assert resumed_state["model_calls"] == {
-        "spark": retry_plan["projected_spark_calls"],
-        "gpt_5_6": 6,
+        "luna": retry_plan["projected_luna_calls"],
+        "sol": 6,
     }
     assert resumed_state["model_attempts"] == {
-        "spark": retry_plan["projected_spark_calls"] + 1,
-        "gpt_5_6": 6,
+        "luna": retry_plan["projected_luna_calls"] + 1,
+        "sol": 6,
     }
     assert [
         attempt["outcome"]
@@ -3282,7 +3412,7 @@ def test_credit_analysis_workflow_resolves_current_and_named_threads(
                 "task_temp_root": str(root),
                 "evidence_output": str(tmp_path / f"single-evidence-{name}.json"),
                 "pricing_profile": None,
-                "expected_surface_contract_version": 2,
+                "expected_surface_contract_version": 3,
                 "mutation_authority": False,
             },
         )
