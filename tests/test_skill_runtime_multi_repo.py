@@ -10073,7 +10073,9 @@ def test_pending_work_finalization_persists_partial_cleanup_progress(
     finalize_scope = loaded["finalize_scope"]
     original_require_success = finalize_scope.__globals__["require_success"]
     original_run_command = finalize_scope.__globals__["run_command"]
-    original_remove_residual = finalize_scope.__globals__["_remove_recorded_residual"]
+    original_residual_cleanup = finalize_scope.__globals__[
+        "_finish_recorded_residual_cleanup"
+    ]
     pending_error = loaded["PendingWorkError"]
 
     def leave_unregistered_residual(
@@ -10094,17 +10096,17 @@ def test_pending_work_finalization_persists_partial_cleanup_progress(
             )
         return original_run_command(command, cwd=cwd)
 
-    def interrupt_residual_recovery(
+    def interrupt_residual_cleanup(
         repo_root: pathlib.Path,
         record_path: pathlib.Path,
     ) -> None:
-        raise pending_error("simulated residual recovery interruption")
+        raise pending_error("simulated residual cleanup interruption")
 
     finalize_scope.__globals__["run_command"] = leave_unregistered_residual
-    finalize_scope.__globals__["_remove_recorded_residual"] = (
-        interrupt_residual_recovery
+    finalize_scope.__globals__["_finish_recorded_residual_cleanup"] = (
+        interrupt_residual_cleanup
     )
-    with pytest.raises(pending_error, match="residual recovery interruption"):
+    with pytest.raises(pending_error, match="residual cleanup interruption"):
         finalize_scope(
             repo,
             scope_path,
@@ -10114,8 +10116,10 @@ def test_pending_work_finalization_persists_partial_cleanup_progress(
             current_commit=current_commit,
         )
 
-    cleanup_record = loaded["_cleanup_record_path"](scope_path, "selected-a")
-    assert cleanup_record.is_file()
+    residual_cleanup_record = loaded["_residual_cleanup_record_path"](
+        scope_path, "selected-a"
+    )
+    assert residual_cleanup_record.is_file()
     assert selected_a.is_dir()
     assert (
         run_git(
@@ -10132,7 +10136,9 @@ def test_pending_work_finalization_persists_partial_cleanup_progress(
     ]
 
     finalize_scope.__globals__["run_command"] = original_run_command
-    finalize_scope.__globals__["_remove_recorded_residual"] = original_remove_residual
+    finalize_scope.__globals__["_finish_recorded_residual_cleanup"] = (
+        original_residual_cleanup
+    )
 
     def fail_second_branch(
         command: list[str],
@@ -10144,24 +10150,28 @@ def test_pending_work_finalization_persists_partial_cleanup_progress(
         return original_require_success(command, cwd=cwd)
 
     original_rmtree = shutil.rmtree
-    recovery_steps: list[str] = []
+    residual_cleanup_steps: list[str] = []
 
     def deny_first_residual(path: pathlib.Path, *args: Any, **kwargs: Any) -> None:
-        if pathlib.Path(path) == selected_a and not recovery_steps:
-            recovery_steps.append("permission_denied")
+        if pathlib.Path(path) == selected_a and not residual_cleanup_steps:
+            residual_cleanup_steps.append("permission_denied")
             raise PermissionError("simulated inaccessible cache")
         original_rmtree(path, *args, **kwargs)
 
-    def ownership_recovery(
+    def ownership_cleanup(
         repo_root: pathlib.Path,
         record_path: pathlib.Path,
     ) -> None:
-        _, _, worktree, _ = loaded["_read_cleanup_record"](repo_root, record_path)
-        recovery_steps.append("ownership")
+        _, _, worktree, _ = loaded["_read_residual_cleanup_record"](
+            repo_root, record_path
+        )
+        residual_cleanup_steps.append("ownership")
         original_rmtree(worktree)
 
     monkeypatch.setattr(shutil, "rmtree", deny_first_residual)
-    finalize_scope.__globals__["_run_recorded_recovery"] = ownership_recovery
+    finalize_scope.__globals__["_run_recorded_residual_cleanup"] = (
+        ownership_cleanup
+    )
     finalize_scope.__globals__["require_success"] = fail_second_branch
     with pytest.raises(pending_error, match="second-branch cleanup failure"):
         finalize_scope(
@@ -10173,9 +10183,9 @@ def test_pending_work_finalization_persists_partial_cleanup_progress(
             current_commit=current_commit,
         )
 
-    assert recovery_steps == ["permission_denied", "ownership"]
+    assert residual_cleanup_steps == ["permission_denied", "ownership"]
     assert not selected_a.exists()
-    assert not cleanup_record.exists()
+    assert not residual_cleanup_record.exists()
     assert json.loads(scope_path.read_text(encoding="utf-8"))["source_branches"] == [
         "selected-b"
     ]

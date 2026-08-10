@@ -33,8 +33,8 @@ class PendingWorkError(RuntimeError):
     """Raised when selected-scope persistence or cleanup is unsafe."""
 
 
-CLEANUP_RECORD_VERSION = 1
-CLEANUP_RECORD_FIELDS = {
+RESIDUAL_CLEANUP_RECORD_VERSION = 1
+RESIDUAL_CLEANUP_RECORD_FIELDS = {
     "version",
     "scope",
     "branch",
@@ -77,8 +77,8 @@ def _scope_path(repo_root: pathlib.Path, target_branch: str) -> pathlib.Path:
     )
 
 
-def _cleanup_record_path(scope: pathlib.Path, branch: str) -> pathlib.Path:
-    """Return the exact retry record for one selected worktree removal."""
+def _residual_cleanup_record_path(scope: pathlib.Path, branch: str) -> pathlib.Path:
+    """Return the exact record for one automatic residual cleanup."""
 
     digest = hashlib.sha256(branch.encode("utf-8")).hexdigest()
     return scope.with_name(f"{scope.stem}.cleanup-sha256-{digest}.json")
@@ -158,30 +158,30 @@ def _registered_worktree_paths(repo_root: pathlib.Path) -> set[pathlib.Path]:
     }
 
 
-def _read_cleanup_record(
+def _read_residual_cleanup_record(
     repo_root: pathlib.Path,
     record_path: pathlib.Path,
 ) -> tuple[pathlib.Path, str, pathlib.Path, pathlib.Path]:
-    """Validate one persisted recovery record against repository topology."""
+    """Validate one residual-cleanup record against repository topology."""
 
     if record_path.is_symlink() or not record_path.is_file():
-        raise PendingWorkError("Worktree cleanup record is not a regular file.")
+        raise PendingWorkError("Residual-cleanup record is not a regular file.")
     try:
         value = json.loads(record_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise PendingWorkError(
-            f"Could not read worktree cleanup record {record_path}: {exc}"
+            f"Could not read residual-cleanup record {record_path}: {exc}"
         ) from exc
     if (
         not isinstance(value, dict)
-        or set(value) != CLEANUP_RECORD_FIELDS
-        or value.get("version") != CLEANUP_RECORD_VERSION
+        or set(value) != RESIDUAL_CLEANUP_RECORD_FIELDS
+        or value.get("version") != RESIDUAL_CLEANUP_RECORD_VERSION
         or any(
             not isinstance(value.get(field), str) or not value[field]
             for field in ("scope", "branch", "worktree_path", "expected_root")
         )
     ):
-        raise PendingWorkError("Worktree cleanup record has invalid structure.")
+        raise PendingWorkError("Residual-cleanup record has invalid structure.")
     branch = value["branch"]
     _validate_branch(repo_root, branch)
     scope = pathlib.Path(value["scope"])
@@ -189,9 +189,10 @@ def _read_cleanup_record(
     expected_root = pathlib.Path(value["expected_root"])
     canonical_root = (repo_root.parent / "worktrees" / repo_root.name).resolve()
     if expected_root != canonical_root:
-        raise PendingWorkError("Worktree cleanup record has an unexpected root.")
-    if record_path.resolve() != _cleanup_record_path(scope, branch).resolve():
-        raise PendingWorkError("Worktree cleanup record has an unexpected path.")
+        raise PendingWorkError("Residual-cleanup record has an unexpected root.")
+    expected_record = _residual_cleanup_record_path(scope, branch).resolve()
+    if record_path.resolve() != expected_record:
+        raise PendingWorkError("Residual-cleanup record has an unexpected path.")
     promotions = (
         _common_git_dir(repo_root)
         / "codex"
@@ -199,38 +200,38 @@ def _read_cleanup_record(
         / "promotions"
     ).resolve()
     if scope.parent.resolve() != promotions:
-        raise PendingWorkError("Worktree cleanup record has an unexpected scope.")
+        raise PendingWorkError("Residual-cleanup record has an unexpected scope.")
     _validate_worktree_path(worktree, expected_root, allow_inaccessible=True)
     return scope, branch, worktree, expected_root
 
 
-def _write_cleanup_record(
+def _write_residual_cleanup_record(
     repo_root: pathlib.Path,
     scope: pathlib.Path,
     branch: str,
     worktree: pathlib.Path,
     expected_root: pathlib.Path,
 ) -> pathlib.Path:
-    """Persist exact cleanup identity before Git can unregister a worktree."""
+    """Persist exact identity before automatic residual cleanup can be needed."""
 
-    record_path = _cleanup_record_path(scope, branch)
+    record_path = _residual_cleanup_record_path(scope, branch)
     record = {
-        "version": CLEANUP_RECORD_VERSION,
+        "version": RESIDUAL_CLEANUP_RECORD_VERSION,
         "scope": str(scope.resolve()),
         "branch": branch,
         "worktree_path": str(worktree),
         "expected_root": str(expected_root),
     }
     if record_path.exists():
-        _, existing_branch, existing_worktree, existing_root = _read_cleanup_record(
-            repo_root, record_path
+        _, existing_branch, existing_worktree, existing_root = (
+            _read_residual_cleanup_record(repo_root, record_path)
         )
         if (
             existing_branch != branch
             or existing_worktree != worktree
             or existing_root != expected_root
         ):
-            raise PendingWorkError("Worktree cleanup record has conflicting identity.")
+            raise PendingWorkError("Residual-cleanup record has conflicting identity.")
         return record_path
     _write_scope(record_path, record)
     return record_path
@@ -270,13 +271,15 @@ def _take_ownership_and_remove(
     shutil.rmtree(path)
 
 
-def _run_recorded_recovery(
+def _run_recorded_residual_cleanup(
     repo_root: pathlib.Path,
     record_path: pathlib.Path,
 ) -> None:
     """Revalidate and remove one unregistered residual worktree directory."""
 
-    _, branch, worktree, expected_root = _read_cleanup_record(repo_root, record_path)
+    _, branch, worktree, expected_root = _read_residual_cleanup_record(
+        repo_root, record_path
+    )
     _validate_worktree_path(worktree, expected_root, allow_inaccessible=False)
     registered = _selected_worktree(repo_root, branch)
     if registered is not None or worktree in _registered_worktree_paths(repo_root):
@@ -289,21 +292,21 @@ def _run_recorded_recovery(
         shutil.rmtree(worktree)
 
 
-def _remove_recorded_residual(
+def _finish_recorded_residual_cleanup(
     repo_root: pathlib.Path,
     record_path: pathlib.Path,
 ) -> None:
-    """Delete an exact unregistered leftover and retire its retry record."""
+    """Run automatic residual cleanup and retire its record after absence."""
 
-    _, branch, worktree, _ = _read_cleanup_record(repo_root, record_path)
+    _, branch, worktree, _ = _read_residual_cleanup_record(repo_root, record_path)
     registered = _selected_worktree(repo_root, branch)
     if registered is not None or worktree in _registered_worktree_paths(repo_root):
-        raise PendingWorkError("Refusing to recover a registered worktree path.")
+        raise PendingWorkError("Refusing to clean up a registered worktree path.")
     try:
         if _lstat(worktree) is not None:
             shutil.rmtree(worktree)
     except PermissionError:
-        _run_recorded_recovery(repo_root, record_path)
+        _run_recorded_residual_cleanup(repo_root, record_path)
     if _lstat(worktree) is not None:
         raise PendingWorkError("Residual worktree directory still exists after cleanup.")
     record_path.unlink()
@@ -585,10 +588,10 @@ def _remove_selected_worktree(
     path: pathlib.Path,
     expected_root: pathlib.Path,
 ) -> None:
-    """Remove a registered worktree with an exact crash-recovery record."""
+    """Remove a worktree with an exact automatic residual-cleanup record."""
 
     _validate_worktree_path(path, expected_root, allow_inaccessible=False)
-    record_path = _write_cleanup_record(
+    record_path = _write_residual_cleanup_record(
         repo_root,
         scope,
         branch,
@@ -613,7 +616,7 @@ def _remove_selected_worktree(
         )
         suffix = f"\n{detail}" if detail else ""
         raise CommandError(f"Git did not unregister selected worktree {branch!r}.{suffix}")
-    _remove_recorded_residual(repo_root, record_path)
+    _finish_recorded_residual_cleanup(repo_root, record_path)
 
 
 def finalize_scope(
@@ -671,9 +674,9 @@ def finalize_scope(
                 expected_root,
             )
         else:
-            record_path = _cleanup_record_path(path, branch)
+            record_path = _residual_cleanup_record_path(path, branch)
             if record_path.exists():
-                _remove_recorded_residual(repo_root, record_path)
+                _finish_recorded_residual_cleanup(repo_root, record_path)
         require_success(
             _git(repo_root, "branch", "-d", branch),
             cwd=repo_root,

@@ -73,14 +73,14 @@ Infer missing values from the checkout, scope file, and live PR before asking.
    `deploy/deploy.yml` makes `deploy` an explicit no-op; a missing custom
    contract blocks. After synchronization it rechecks the selected scope, runs
    a declared operation or records the no-op, and rechecks. Before removing a
-   selected worktree, finalization records its exact path. If Git unregisters
-   the worktree but leaves that directory, the helper removes only the recorded
-   path after verifying that it is unregistered and remains below the canonical
-   worktree root. When the helper runs elevated, Windows permission recovery
-   may take ownership only of that validated path as part of the selected
-   cleanup, without a public recovery flag or second confirmation. The helper
-   removes the recovery record only after verifying the path is absent, then
-   removes the merged selected branch.
+   selected worktree, finalization records its exact path. Automatic residual
+   cleanup handles only the case where Git unregisters the worktree but leaves
+   that recorded directory. The helper verifies that the path is unregistered
+   and remains below the canonical worktree root before deleting it. When the
+   helper runs elevated, the same cleanup may take ownership only of that
+   validated path, without a public flag or second confirmation. The helper
+   removes the residual-cleanup record only after verifying the path is absent,
+   then removes the merged selected branch.
 8. After a declared `deploy` succeeds, the helper checkpoints its result
    against the exact target, operation, and resolved contract before
    finalization. A retry reuses that result while cleanup remains pending and
