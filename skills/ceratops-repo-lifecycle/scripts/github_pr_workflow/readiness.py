@@ -588,7 +588,7 @@ def status_rollup_findings(
             )
             return
         if (
-            conclusion is not None
+            conclusion not in (None, "")
             and conclusion
             not in PASSING_CHECK_CONCLUSIONS | FAILING_CHECK_CONCLUSIONS
         ) or (status is not None and status not in KNOWN_CHECK_STATUSES) or (
