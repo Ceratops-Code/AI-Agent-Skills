@@ -383,7 +383,7 @@ def finalize_scope(
     current_branch: str,
     current_commit: str,
 ) -> dict[str, object]:
-    """Late-recheck and remove only clean, merged selected source work."""
+    """Late-recheck selected source work and prune its empty project root."""
 
     checked = check_scope(
         repo_root,
@@ -433,6 +433,8 @@ def finalize_scope(
             _write_scope(path, scope)
         else:
             path.unlink()
+    if expected_root.is_dir() and not any(expected_root.iterdir()):
+        expected_root.rmdir()
     return {
         "status": "finalized",
         "removed": removed,
