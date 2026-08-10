@@ -1743,6 +1743,14 @@ class FakeCreditModelRunner:
     ) -> dict[str, Any]:
         surface = str(task["surface_id"])
         dossiers = list(packet["original_evidence_dossiers"])
+        dossier_by_candidate = {
+            str(dossier["candidate_id"]): dossier for dossier in dossiers
+        }
+        evidence_mapping = packet["candidate_evidence_map"]
+        evidence_map = [
+            dict(zip(evidence_mapping["fields"], row, strict=True))
+            for row in evidence_mapping["rows"]
+        ]
         findings: list[dict[str, Any]] = []
         if dossiers and surface == "context-evidence":
             findings.append(
@@ -1765,9 +1773,10 @@ class FakeCreditModelRunner:
             for candidate in finding["candidate_ids"]
         }
         assessments = []
-        for dossier in dossiers:
-            candidate_id = str(dossier["candidate_id"])
+        for evidence in evidence_map:
+            candidate_id = str(evidence["candidate_id"])
             finding_id = candidate_to_finding.get(candidate_id)
+            dossier = dossier_by_candidate.get(candidate_id)
             assessments.append(
                 {
                     "candidate_ids": [candidate_id],
@@ -1777,7 +1786,11 @@ class FakeCreditModelRunner:
                     "reason": "Original evidence was checked directly.",
                     "finding_ids": [finding_id] if finding_id else [],
                     "risk_ids": [],
-                    "evidence_refs": [self._first_ref(dossier)],
+                    "evidence_refs": [
+                        self._first_ref(dossier)
+                        if dossier is not None
+                        else str(evidence["original_evidence_ref"])
+                    ],
                 }
             )
         reviews: list[dict[str, Any]] = []
@@ -1839,15 +1852,18 @@ class FakeCreditModelRunner:
                     }
                 )
         contributions: list[dict[str, Any]] = []
-        if surface != "rework-validation" and dossiers:
+        if surface != "rework-validation" and evidence_map:
+            first_evidence = evidence_map[0]
             contributions.append(
                 {
                     "id": f"{surface}.temporary-contribution",
                     "temporary_control_id": "rework-validation.temporary",
                     "owner_key": "workflow:shared",
                     "control_key": "shared temporary orchestration",
-                    "candidate_ids": [str(dossiers[0]["candidate_id"])],
-                    "evidence_refs": [self._first_ref(dossiers[0])],
+                    "candidate_ids": [str(first_evidence["candidate_id"])],
+                    "evidence_refs": [
+                        str(first_evidence["original_evidence_ref"])
+                    ],
                     "contribution": f"{surface} contributes owning evidence",
                     "material_variant_id": f"{surface}.temporary-variant",
                 }
@@ -2090,6 +2106,9 @@ def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
     assert "OVERSIZED_USER_EVIDENCE_SENTINEL" in json.dumps(evidence)
     assert any(
         message.get("text_mode") == "retained-projection"
+        and message.get("text_chars", 0) > 12_000
+        and isinstance(message.get("text_sha256"), str)
+        and len(message["relevant_segments"]) <= 2
         for surface in manifest["surfaces"]
         for dossier in json.loads(
             pathlib.Path(surface["index_path"]).read_text(encoding="utf-8")

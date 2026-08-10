@@ -6617,6 +6617,13 @@ SURFACE_EVIDENCE_KEYWORDS = {
         "skill",
     ),
 }
+SURFACE_CODES = {
+    "helper-contracts": "hc",
+    "context-evidence": "ce",
+    "rework-validation": "rv",
+    "tool-flow": "tf",
+    "instruction-reasoning": "ir",
+}
 
 OUTCOME_KEYS = frozenset(
     {
@@ -6904,7 +6911,6 @@ def _formatted_review_record(
     record: Mapping[str, Any],
     *,
     surface_id: str,
-    evidence_path: pathlib.Path,
     inline_limit: int,
 ) -> dict[str, Any]:
     """Format one complete record or an explicit retained-payload projection."""
@@ -6924,36 +6930,37 @@ def _formatted_review_record(
             "kind",
             "name",
             "timestamp",
-            "turn_id",
-            "model_call_index",
-            "available_to_model_call_index",
             "call_id",
-            "source_chars",
-            "prepared_chars",
             "content_hash",
         )
     }
-    common["retained_evidence"] = {
-        "path": str(evidence_path),
-        "reference": f"evidence://review/{record['record_id']}",
-        "complete": True,
-    }
+    common["evidence_ref"] = f"evidence://review/{record['record_id']}"
+    common["content_chars"] = len(serialized)
+    common["content_sha256"] = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
     common["structured_outcome"] = _structured_outcome(content)
     common["canonical_artifact_references"] = _canonical_artifact_references(
         serialized
     )
-    if len(serialized) <= inline_limit:
+    if record.get("name") in {"rate-limits", "user-message-metadata"}:
+        common["content_mode"] = "complete-inventory"
+        return common
+    if len(serialized) <= min(inline_limit, 160):
         common["content_mode"] = "complete-inline"
         common["content"] = content
         return common
     common.update(
         {
             "content_mode": "retained-projection",
-            "content_chars": len(serialized),
-            "content_sha256": hashlib.sha256(serialized.encode("utf-8")).hexdigest(),
-            "head": serialized[:1400],
-            "tail": serialized[-1400:],
-            "relevant_segments": _relevant_segments(serialized, surface_id),
+            "head": serialized[:180],
+            "tail": serialized[-180:],
+            "relevant_segments": [
+                {
+                    "start": segment["start"],
+                    "end": segment["end"],
+                    "text": str(segment["text"])[:240],
+                }
+                for segment in _relevant_segments(serialized, surface_id)[:1]
+            ],
         }
     )
     return common
@@ -6963,7 +6970,6 @@ def _formatted_user_message(
     message: Mapping[str, Any],
     *,
     surface_id: str,
-    evidence_path: pathlib.Path,
     inline_limit: int,
 ) -> dict[str, Any]:
     """Format one associated user message without inlining unbounded text."""
@@ -6977,16 +6983,11 @@ def _formatted_user_message(
         for key in (
             "message_id",
             "timestamp",
-            "turn_id",
             "first_model_call_index",
         )
     }
-    formatted["retained_evidence"] = {
-        "path": str(evidence_path),
-        "reference": f"evidence://user-messages/{message_id}",
-        "complete": True,
-    }
-    if len(text) <= inline_limit:
+    formatted["evidence_ref"] = f"evidence://user-messages/{message_id}"
+    if len(text) <= min(inline_limit, 1_000):
         formatted["text_mode"] = "complete-inline"
         formatted["text"] = text
         return formatted
@@ -6995,12 +6996,61 @@ def _formatted_user_message(
             "text_mode": "retained-projection",
             "text_chars": len(text),
             "text_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
-            "head": text[:1400],
-            "tail": text[-1400:],
-            "relevant_segments": _relevant_segments(text, surface_id),
+            "head": text[:400],
+            "tail": text[-400:],
+            "relevant_segments": [
+                {
+                    "start": segment["start"],
+                    "end": segment["end"],
+                    "text": str(segment["text"])[:500],
+                }
+                for segment in _relevant_segments(text, surface_id)[:1]
+            ],
         }
     )
     return formatted
+
+
+def _surface_canonical_record(
+    record: Mapping[str, Any], surface_id: str
+) -> dict[str, Any]:
+    """Keep one bounded surface-relevant view of a retained canonical snapshot."""
+
+    result = dict(record)
+    projection = record.get("projection")
+    if not isinstance(projection, Mapping):
+        return result
+    keywords = SURFACE_EVIDENCE_KEYWORDS[surface_id]
+    segments = [
+        segment
+        for segment in projection.get("relevant_segments", [])
+        if isinstance(segment, Mapping)
+        and any(
+            keyword in str(segment.get("text") or "").casefold()
+            for keyword in keywords
+        )
+    ]
+    if not segments:
+        segments = [
+            segment
+            for segment in projection.get("relevant_segments", [])
+            if isinstance(segment, Mapping)
+        ][:1]
+    result["projection"] = {
+        "protected_chars": projection.get("protected_chars"),
+        "protected_sha256": projection.get("protected_sha256"),
+        "head": str(projection.get("head") or "")[:400],
+        "tail": str(projection.get("tail") or "")[-400:],
+        "relevant_segments": [
+            {
+                "start": segment.get("start"),
+                "end": segment.get("end"),
+                "text": str(segment.get("text") or "")[:500],
+            }
+            for segment in segments[:1]
+        ],
+    }
+    return result
 
 
 def _call_neighbors(calls: Sequence[Mapping[str, Any]], index: int) -> dict[str, Any]:
@@ -7035,7 +7085,8 @@ def _format_surface_candidates(
     runs = _run_index(evidence)
     inline_limit = int(contract["chunking"]["large_payload_inline_chars"])
     repeated = evidence.get("repeated_tool_calls")
-    telemetry = evidence.get("telemetry")
+    if not isinstance(repeated, list):
+        raise CreditAnalysisError("repeated-tool-call evidence is invalid")
     result: list[dict[str, Any]] = []
     for ordinal, call_id in enumerate(selected_ids, start=1):
         call = calls[call_positions[call_id]]
@@ -7059,7 +7110,6 @@ def _format_surface_candidates(
             _formatted_user_message(
                 message,
                 surface_id=surface_id,
-                evidence_path=evidence_path,
                 inline_limit=inline_limit,
             )
             for message in raw_messages
@@ -7078,7 +7128,6 @@ def _format_surface_candidates(
                 _formatted_review_record(
                     raw_record,
                     surface_id=surface_id,
-                    evidence_path=evidence_path,
                     inline_limit=inline_limit,
                 )
             )
@@ -7090,11 +7139,11 @@ def _format_surface_candidates(
             )
         )
         canonical_records = [
-            dict(canonical_state[reference])
+            _surface_canonical_record(canonical_state[reference], surface_id)
             for reference in artifact_refs
             if reference in canonical_state
         ]
-        candidate_id = f"{analysis_id}.{surface_id}.{ordinal:06d}"
+        candidate_id = f"{analysis_id}.{SURFACE_CODES[surface_id]}.{ordinal:06d}"
         if not canonical_records:
             canonical_records.append(
                 {
@@ -7118,6 +7167,7 @@ def _format_surface_candidates(
                 "surface_id": surface_id,
                 "candidate_id": candidate_id,
                 "candidate_ordinal": ordinal,
+                "retained_evidence_path": str(evidence_path),
                 "call_identity": {
                     "call_id": call_id,
                     "turn_id": turn_id,
@@ -7135,7 +7185,6 @@ def _format_surface_candidates(
                     "run_duration_ms": call.get("run_duration_ms"),
                     "run_totals": run.get("totals"),
                     "run_tool_counts": run.get("tool_counts"),
-                    "analysis_telemetry": telemetry,
                 },
                 "volume": {
                     "tokens": call.get("tokens"),
@@ -7154,9 +7203,19 @@ def _format_surface_candidates(
                 "relationships": {
                     "canonical_artifact_references": artifact_refs,
                     "final_canonical_state": canonical_records,
-                    "repeated_tool_call_groups": repeated,
+                    "repeated_tool_call_groups": [
+                        group
+                        for group in repeated
+                        if isinstance(group, Mapping)
+                        and any(
+                            bool(item.get("repeated"))
+                            and item.get("fingerprint") == group.get("fingerprint")
+                            for item in call.get("tool_results", [])
+                            if isinstance(item, Mapping)
+                        )
+                    ],
                     "correction_reversion_and_final_outcome_evidence": [
-                        record["retained_evidence"]["reference"]
+                        record["evidence_ref"]
                         for record in formatted_records
                         if record.get("name")
                         in {
@@ -7170,14 +7229,8 @@ def _format_surface_candidates(
                 },
                 "original_evidence_refs": [
                     f"evidence://calls/{call_id}",
-                    *[
-                        message["retained_evidence"]["reference"]
-                        for message in messages
-                    ],
-                    *[
-                        record["retained_evidence"]["reference"]
-                        for record in formatted_records
-                    ],
+                    *[message["evidence_ref"] for message in messages],
+                    *[record["evidence_ref"] for record in formatted_records],
                     *[record["evidence_ref"] for record in canonical_records],
                 ],
             }
@@ -7204,7 +7257,7 @@ def _verification_dossier(record: Mapping[str, Any]) -> dict[str, Any]:
                 "content_mode",
                 "structured_outcome",
                 "canonical_artifact_references",
-                "retained_evidence",
+                "evidence_ref",
             )
         }
         if item.get("content_mode") == "complete-inline":
@@ -7215,42 +7268,148 @@ def _verification_dossier(record: Mapping[str, Any]) -> dict[str, Any]:
                 ensure_ascii=False,
                 default=str,
             )
-            if len(serialized) <= 1800:
-                projection["excerpt"] = serialized
-                projection["excerpt_complete"] = True
-            else:
-                projection["head"] = serialized[:900]
-                projection["tail"] = serialized[-900:]
-                projection["relevant_segments"] = _relevant_segments(
-                    serialized,
-                    str(record["surface_id"]),
-                )
-                projection["excerpt_complete"] = False
-        else:
-            projection["head"] = str(item.get("head") or "")[:500]
-            projection["tail"] = str(item.get("tail") or "")[-500:]
+            projection["excerpt"] = serialized[:300]
+            projection["excerpt_complete"] = len(serialized) <= 300
+        elif item.get("content_mode") == "retained-projection":
+            projection["head"] = str(item.get("head") or "")[:150]
+            projection["tail"] = str(item.get("tail") or "")[-150:]
             projection["relevant_segments"] = [
                 {
                     "start": segment.get("start"),
                     "end": segment.get("end"),
-                    "text": str(segment.get("text") or "")[:700],
+                    "text": str(segment.get("text") or "")[:240],
                 }
-                for segment in item.get("relevant_segments", [])[:2]
+                for segment in item.get("relevant_segments", [])[:1]
                 if isinstance(segment, Mapping)
             ]
         projected_records.append(projection)
+    projected_messages: list[dict[str, Any]] = []
+    for message in record["user_messages"]:
+        projection = {
+            key: message.get(key)
+            for key in (
+                "message_id",
+                "timestamp",
+                "first_model_call_index",
+                "text_mode",
+                "evidence_ref",
+                "text_chars",
+                "text_sha256",
+            )
+        }
+        if message.get("text_mode") == "complete-inline":
+            text = str(message.get("text") or "")
+            projection["excerpt"] = text[:300]
+            projection["excerpt_complete"] = len(text) <= 300
+        else:
+            projection["head"] = str(message.get("head") or "")[:150]
+            projection["tail"] = str(message.get("tail") or "")[-150:]
+            projection["relevant_segments"] = [
+                {
+                    "start": segment.get("start"),
+                    "end": segment.get("end"),
+                    "text": str(segment.get("text") or "")[:240],
+                }
+                for segment in message.get("relevant_segments", [])[:1]
+                if isinstance(segment, Mapping)
+            ]
+        projected_messages.append(projection)
+    relationships = record["relationships"]
     return {
         "candidate_id": record["candidate_id"],
         "call_identity": record["call_identity"],
-        "user_messages": record["user_messages"],
+        "user_messages": projected_messages,
         "original_evidence_refs": record["original_evidence_refs"],
         "evidence_excerpts": projected_records,
         "actions": record["actions"],
         "tool_results": record["tool_results"],
         "volume": record["volume"],
         "process_and_run_telemetry": record["process_and_run_telemetry"],
-        "relationships": record["relationships"],
+        "relationships": {
+            "final_canonical_state": relationships["final_canonical_state"],
+            "correction_reversion_and_final_outcome_evidence": relationships[
+                "correction_reversion_and_final_outcome_evidence"
+            ],
+        },
     }
+
+
+def _confirmation_evidence_map(
+    dossiers: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Map every candidate to one original reference and bounded evidence excerpt."""
+
+    rows: list[list[str]] = []
+    for dossier in dossiers:
+        excerpt = ""
+        for item in dossier["evidence_excerpts"]:
+            values = [
+                item.get("excerpt"),
+                item.get("head"),
+                *[
+                    segment.get("text")
+                    for segment in item.get("relevant_segments", [])
+                    if isinstance(segment, Mapping)
+                ],
+                item.get("tail"),
+            ]
+            excerpt = " ".join(str(value) for value in values if value).strip()[:120]
+            if excerpt:
+                break
+        if not excerpt:
+            for message in dossier["user_messages"]:
+                values = [
+                    message.get("excerpt"),
+                    message.get("head"),
+                    *[
+                        segment.get("text")
+                        for segment in message.get("relevant_segments", [])
+                        if isinstance(segment, Mapping)
+                    ],
+                    message.get("tail"),
+                ]
+                excerpt = " ".join(
+                    str(value) for value in values if value
+                ).strip()[:120]
+                if excerpt:
+                    break
+        rows.append(
+            [
+                str(dossier["candidate_id"]),
+                str(dossier["original_evidence_refs"][0]),
+                excerpt,
+            ]
+        )
+    return {
+        "fields": [
+            "candidate_id",
+            "original_evidence_ref",
+            "original_evidence_excerpt",
+        ],
+        "rows": rows,
+    }
+
+
+def _semantic_candidate_ids(
+    results: Sequence[Mapping[str, Any]], candidate_order: Sequence[str]
+) -> list[str]:
+    """Select candidates attached to a Spark finding, risk, or temporary control."""
+
+    selected: set[str] = set()
+    for result in results:
+        for key in (
+            "provisional_findings",
+            "plausible_risks",
+            "temporary_control_candidates",
+        ):
+            for item in result.get(key, []):
+                if isinstance(item, Mapping):
+                    selected.update(
+                        str(candidate)
+                        for candidate in item.get("candidate_ids", [])
+                        if isinstance(candidate, str)
+                    )
+    return [candidate for candidate in candidate_order if candidate in selected]
 
 
 def _chunk_records(
@@ -7350,15 +7509,14 @@ def _plan_surface_tasks(
     if list(candidate_membership) != all_candidate_ids:
         raise CreditAnalysisError("primary chunks do not preserve candidate order")
 
-    minimum_confirmation_chars = sum(len(candidate_id) + 180 for candidate_id in all_candidate_ids)
+    dossiers = [_verification_dossier(record) for record in records]
+    evidence_map = _confirmation_evidence_map(dossiers)
+    minimum_confirmation_chars = _json_chars(evidence_map) + len(all_candidate_ids) * 30
     confirmation_limit = int(contract["chunking"]["confirmation_packet_chars"])
     if minimum_confirmation_chars >= confirmation_limit:
         raise CreditAnalysisError(
             f"surface plan is clearly runaway before model execution: {surface_id}"
         )
-    estimated_confirmation_chars = sum(
-        _json_chars(_verification_dossier(record)) for record in records
-    ) + len(all_candidate_ids) * 900
     fan_in = int(contract["chunking"]["consolidation_fan_in"])
     maximum_depth = int(contract["chunking"]["maximum_consolidation_depth"])
     if fan_in < 2 or maximum_depth < 1:
@@ -7366,7 +7524,7 @@ def _plan_surface_tasks(
     consolidation: list[dict[str, Any]] = []
     current = primary
     depth = 0
-    while estimated_confirmation_chars >= confirmation_limit and len(current) > 1:
+    while len(current) > 1:
         depth += 1
         if depth > maximum_depth:
             raise CreditAnalysisError("Spark consolidation plan exceeds maximum depth")
@@ -7399,11 +7557,6 @@ def _plan_surface_tasks(
             consolidation.append(task)
             next_level.append(task)
         current = next_level
-        estimated_confirmation_chars = (
-            sum(_json_chars(_verification_dossier(record)) for record in records)
-            + len(all_candidate_ids) * 350
-            + len(current) * 1200
-        )
     final_units = [item["task_id"] for item in current]
     confirmation_task_id = f"confirm.{surface_id}"
     confirmation = {
@@ -7430,7 +7583,8 @@ def _plan_surface_tasks(
         "consolidation_task_ids": [task["task_id"] for task in consolidation],
         "confirmation_task_id": confirmation_task_id,
         "final_spark_task_ids": final_units,
-        "verification_dossiers": [_verification_dossier(record) for record in records],
+        "verification_dossiers": dossiers,
+        "candidate_evidence_map": evidence_map,
     }
     index_path = surface_dir / "index.json"
     _exclusive_json(index_path, surface_index, "surface evidence index")
@@ -8989,6 +9143,9 @@ def _materialize_task_input(
         }
     elif task["phase"] == "surface-confirmation":
         surface_index = _read_surface_index(state, str(task["surface_id"]))
+        semantic_candidates = set(
+            _semantic_candidate_ids(dependencies, task["candidate_ids"])
+        )
         payload = {
             "schema": MODEL_TASK_SCHEMA,
             "analysis_id": state["analysis_id"],
@@ -8997,7 +9154,12 @@ def _materialize_task_input(
             "surface_id": task["surface_id"],
             "candidate_ids": task["candidate_ids"],
             "spark_results": dependencies,
-            "original_evidence_dossiers": surface_index["verification_dossiers"],
+            "candidate_evidence_map": surface_index["candidate_evidence_map"],
+            "original_evidence_dossiers": [
+                dossier
+                for dossier in surface_index["verification_dossiers"]
+                if dossier["candidate_id"] in semantic_candidates
+            ],
             "temporary_control_dispositions": contract[
                 "temporary_control_dispositions"
             ],
@@ -9144,6 +9306,8 @@ exclusions only with concrete evidence. Never use a catch-all necessity reason.
 Every assessment must cite original `evidence://` references from its candidates.
 Return all material variants. Use globally unique IDs prefixed with the surface.
 Primary `preserved_variant_ids` and every item's `material_variant_ids` are empty.
+Group adjacent candidates into one assessment when disposition, reason, and semantic
+links match; cite the ordered union of their evidence refs and keep expanded order exact.
 """
     elif task["phase"] == "spark-consolidation":
         instructions = f"""Spark consolidation for `{task['surface_id']}`.
@@ -9154,6 +9318,8 @@ must occur exactly once across the material_variant_ids of output findings, risk
 or temporary-control candidates, and the top-level preserved_variant_ids must equal
 this ordered list: {json.dumps(input_variant_ids)}. Do not invent a new semantic
 disposition merely to shorten the packet.
+Group adjacent candidates into one assessment when disposition, reason, and semantic
+links match; cite the ordered union of their evidence refs and preserve exact order.
 """
     elif task["phase"] == "surface-confirmation":
         surface = str(task["surface_id"])
@@ -9175,14 +9341,20 @@ disposition merely to shorten the packet.
         )
         instructions = f"""Single GPT-5.6 confirmation for `{surface}`.
 
-Confirm or dismiss every Spark candidate against the embedded original-evidence
-dossiers, not Spark summaries alone. Account for candidates in exact input order,
-each exactly once, using one of: {', '.join(contract['confirmation_dispositions'])}.
-Every assessment and every finding/risk must cite an original evidence reference for
-each candidate. Preserve every supported finding. A volume-only finding uses
+Confirm or dismiss every Spark candidate against the embedded candidate evidence
+map, and use the fuller original-evidence dossiers for every Spark finding, risk, or
+temporary-control candidate; never rely on Spark summaries alone. Account for
+candidates in exact input order, each exactly once, using one of:
+{', '.join(contract['confirmation_dispositions'])}. Every assessment and every
+finding/risk must cite an original evidence reference for each candidate. Preserve
+every supported finding. A volume-only finding uses
 `context-volume` and zero call savings. Do not classify ordinary model error as
 avoidable without a concise durable recurring control. Do not use catch-all
-necessity, and leave a genuinely decision-blocking gap as a risk. {temporary} {helper}
+necessity, and leave a genuinely decision-blocking gap as a risk. The evidence map
+declares its compact mapping columns in `fields` and its complete ordered values in
+`rows`; it is not a semantic classification. Group adjacent candidates into one
+assessment when disposition, reason, and semantic links match; cite the ordered union
+of their evidence refs and preserve exact expanded order. {temporary} {helper}
 """
         instructions += "\nSurface contract:\n" + _surface_reference_text(surface, contract)
     else:

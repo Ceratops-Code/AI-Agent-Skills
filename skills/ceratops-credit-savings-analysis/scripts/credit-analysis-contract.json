@@ -30,13 +30,13 @@
     "bookkeeping_calls": 0
   },
   "chunking": {
-    "target_chars": 50000,
-    "maximum_chars": 70000,
-    "maximum_candidates": 32,
+    "target_chars": 260000,
+    "maximum_chars": 330000,
+    "maximum_candidates": 64,
     "large_payload_inline_chars": 12000,
-    "confirmation_packet_chars": 220000,
-    "synthesis_packet_chars": 220000,
-    "consolidation_fan_in": 4,
+    "confirmation_packet_chars": 750000,
+    "synthesis_packet_chars": 750000,
+    "consolidation_fan_in": 16,
     "maximum_spark_tasks": 512,
     "maximum_consolidation_depth": 8
   },
