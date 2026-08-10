@@ -9481,8 +9481,6 @@ def _output_schema_for_task(
                 "evidence reference here."
             ),
         }
-        if len(values) <= 128:
-            item["enum"] = values
         result: dict[str, Any] = {
             "type": "array",
             "items": item,

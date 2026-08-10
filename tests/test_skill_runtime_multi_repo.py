@@ -2407,7 +2407,7 @@ def test_credit_analysis_child_command_places_global_approval_before_exec(
             assert prose_schema["reason"]["minLength"] == 1
             assert prose_schema["evidence_refs"]["items"]["minLength"] == 1
             candidate_schema = prose_schema["candidate_ids"]["items"]
-            assert candidate_schema["enum"] == task["candidate_ids"]
+            assert "enum" not in candidate_schema
             assert (
                 workflow.re.fullmatch(
                     candidate_schema["pattern"], task["candidate_ids"][0]
