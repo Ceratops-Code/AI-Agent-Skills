@@ -9589,6 +9589,13 @@ def _task_prompt(
         "uses one or more risk_ids and no provisional_finding_ids; "
         "`dismissed-candidate` and `necessary-exclusion` use empty arrays for both."
     )
+    assessment_partition_contract = (
+        "`candidate_assessments` must be one ordered partition: concatenating every "
+        "assessment's candidate_ids must reproduce the input candidate_ids exactly, "
+        "with the same length and order. Each candidate ID appears once total. Never "
+        "repeat a candidate in parallel assessments for secondary interpretations; "
+        "choose its single disposition and attach any permitted semantic links there."
+    )
     if task["phase"] == "spark-primary":
         instructions = f"""Primary Spark discovery for `{task['surface_id']}`.
 
@@ -9605,7 +9612,7 @@ links match; cite the ordered union of their evidence refs and keep expanded ord
 Every linked finding/risk ID must name an object returned in this same result. Use an
 empty array when there is no link; never emit `none`, a sentinel, or an evidence URI as
 a semantic ID. {spark_link_contract} Producer types must be one of:
-{', '.join(contract['producer_types'])}.
+{', '.join(contract['producer_types'])}. {assessment_partition_contract}
 """
     elif task["phase"] == "spark-consolidation":
         instructions = f"""Spark consolidation for `{task['surface_id']}`.
@@ -9620,7 +9627,7 @@ Group adjacent candidates into one assessment when disposition, reason, and sema
 links match; cite the ordered union of their evidence refs and preserve exact order.
 Every linked finding/risk ID must name an object returned in this same result. Use an
 empty array for no link and never emit a placeholder or sentinel semantic ID.
-{spark_link_contract}
+{spark_link_contract} {assessment_partition_contract}
 """
     elif task["phase"] == "surface-confirmation":
         surface = str(task["surface_id"])
@@ -9658,7 +9665,8 @@ assessment when disposition, reason, and semantic links match; cite the ordered 
 of their evidence refs and preserve exact expanded order. Disposition/link mapping is
 exclusive: `confirmed-finding` uses one or more finding_ids and no risk_ids;
 `plausible-risk` uses one or more risk_ids and no finding_ids; `dismissed-candidate`
-and `necessary-exclusion` use empty arrays for both. {temporary} {helper}
+and `necessary-exclusion` use empty arrays for both. {assessment_partition_contract}
+{temporary} {helper}
 """
         instructions += "\nSurface contract:\n" + _surface_reference_text(surface, contract)
     else:

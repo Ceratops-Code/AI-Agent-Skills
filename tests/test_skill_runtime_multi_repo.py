@@ -2416,6 +2416,8 @@ def test_credit_analysis_child_command_places_global_approval_before_exec(
     )
     assert "`necessary-exclusion` use empty arrays for both" in spark_prompt
     assert "`plausible-risk` uses one or more risk_ids" in spark_prompt
+    assert "`candidate_assessments` must be one ordered partition" in spark_prompt
+    assert "Each candidate ID appears once total" in spark_prompt
 
 
 def test_credit_analysis_workflow_rejects_invalid_and_conflicting_passes(
@@ -2553,6 +2555,38 @@ def test_credit_analysis_workflow_rejects_invalid_and_conflicting_passes(
     mixed_links_saved = json.loads(mixed_links_state.read_text(encoding="utf-8"))
     assert mixed_links_saved["model_calls"] == {"spark": 0, "gpt_5_6": 0}
     assert mixed_links_saved["model_attempts"] == {"spark": 1, "gpt_5_6": 0}
+
+    duplicate_assessment_root = tmp_path / "duplicate-assessment-coverage"
+    duplicate_assessment_root.mkdir()
+    duplicate_request, _, _ = credit_analysis_request(duplicate_assessment_root)
+    duplicate_plan = workflow.command_plan_orchestration(
+        duplicate_request,
+        available_models=available,
+    )
+
+    class DuplicateAssessmentRunner(FakeCreditModelRunner):
+        def _spark(
+            self,
+            task: Mapping[str, Any],
+            packet: Mapping[str, Any],
+            digest: str,
+        ) -> dict[str, Any]:
+            result = super()._spark(task, packet, digest)
+            if task["stage"] == "primary" and result["candidate_assessments"]:
+                result["candidate_assessments"].append(
+                    result["candidate_assessments"][0]
+                )
+            return result
+
+    with pytest.raises(
+        workflow.CreditAnalysisError,
+        match="coverage is missing, duplicated, or reordered",
+    ):
+        workflow.command_execute_orchestration(
+            pathlib.Path(duplicate_plan["state_path"]),
+            runner=DuplicateAssessmentRunner(),
+            available_models=available,
+        )
 
     retry_root = tmp_path / "failed-attempt-resume"
     retry_root.mkdir()
