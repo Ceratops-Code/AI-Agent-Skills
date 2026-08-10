@@ -8595,10 +8595,16 @@ def _validate_spark_result(
             raise CreditAnalysisError("Spark assessment links an unknown semantic item")
         _result_strings(assessment.get("evidence_refs"), "Spark assessment evidence")
         disposition = assessment["disposition"]
-        if disposition == "provisional-finding-evidence" and not linked_findings:
-            raise CreditAnalysisError("provisional finding evidence lacks a finding")
-        if disposition == "plausible-risk" and not linked_risks:
-            raise CreditAnalysisError("plausible risk assessment lacks a risk")
+        if disposition == "provisional-finding-evidence" and (
+            not linked_findings or linked_risks
+        ):
+            raise CreditAnalysisError(
+                "provisional finding evidence requires only finding links"
+            )
+        if disposition == "plausible-risk" and (
+            not linked_risks or linked_findings
+        ):
+            raise CreditAnalysisError("plausible risk requires only risk links")
         if disposition in {"dismissed-candidate", "necessary-exclusion"} and (
             linked_findings or linked_risks
         ):
@@ -8908,10 +8914,16 @@ def _validate_confirmation_result(
                     "confirmation assessment was not checked against original evidence"
                 )
         disposition = assessment["disposition"]
-        if disposition == "confirmed-finding" and not linked_findings:
-            raise CreditAnalysisError("confirmed assessment lacks a finding")
-        if disposition == "plausible-risk" and not linked_risks:
-            raise CreditAnalysisError("risk assessment lacks a risk")
+        if disposition == "confirmed-finding" and (
+            not linked_findings or linked_risks
+        ):
+            raise CreditAnalysisError(
+                "confirmed assessment requires only finding links"
+            )
+        if disposition == "plausible-risk" and (
+            not linked_risks or linked_findings
+        ):
+            raise CreditAnalysisError("risk assessment requires only risk links")
         if disposition in {"dismissed-candidate", "necessary-exclusion"} and (
             linked_findings or linked_risks
         ):
@@ -9571,6 +9583,12 @@ def _task_prompt(
         f"Analysis: {state['analysis_id']}\nTask: {task['task_id']}\n"
         f"Phase: {task['phase']}\nInput SHA-256: {input_sha256}\n\n"
     )
+    spark_link_contract = (
+        "Disposition/link mapping is exclusive: `provisional-finding-evidence` "
+        "uses one or more provisional_finding_ids and no risk_ids; `plausible-risk` "
+        "uses one or more risk_ids and no provisional_finding_ids; "
+        "`dismissed-candidate` and `necessary-exclusion` use empty arrays for both."
+    )
     if task["phase"] == "spark-primary":
         instructions = f"""Primary Spark discovery for `{task['surface_id']}`.
 
@@ -9586,7 +9604,8 @@ Group adjacent candidates into one assessment when disposition, reason, and sema
 links match; cite the ordered union of their evidence refs and keep expanded order exact.
 Every linked finding/risk ID must name an object returned in this same result. Use an
 empty array when there is no link; never emit `none`, a sentinel, or an evidence URI as
-a semantic ID. Producer types must be one of: {', '.join(contract['producer_types'])}.
+a semantic ID. {spark_link_contract} Producer types must be one of:
+{', '.join(contract['producer_types'])}.
 """
     elif task["phase"] == "spark-consolidation":
         instructions = f"""Spark consolidation for `{task['surface_id']}`.
@@ -9601,6 +9620,7 @@ Group adjacent candidates into one assessment when disposition, reason, and sema
 links match; cite the ordered union of their evidence refs and preserve exact order.
 Every linked finding/risk ID must name an object returned in this same result. Use an
 empty array for no link and never emit a placeholder or sentinel semantic ID.
+{spark_link_contract}
 """
     elif task["phase"] == "surface-confirmation":
         surface = str(task["surface_id"])
@@ -9635,7 +9655,10 @@ necessity, and leave a genuinely decision-blocking gap as a risk. The evidence m
 declares its compact mapping columns in `fields` and its complete ordered values in
 `rows`; it is not a semantic classification. Group adjacent candidates into one
 assessment when disposition, reason, and semantic links match; cite the ordered union
-of their evidence refs and preserve exact expanded order. {temporary} {helper}
+of their evidence refs and preserve exact expanded order. Disposition/link mapping is
+exclusive: `confirmed-finding` uses one or more finding_ids and no risk_ids;
+`plausible-risk` uses one or more risk_ids and no finding_ids; `dismissed-candidate`
+and `necessary-exclusion` use empty arrays for both. {temporary} {helper}
 """
         instructions += "\nSurface contract:\n" + _surface_reference_text(surface, contract)
     else:

@@ -2406,6 +2406,17 @@ def test_credit_analysis_child_command_places_global_approval_before_exec(
             assert_identifier_schema(merge_schema["review_ids"]["items"])
             assert_identifier_schema(schema["properties"]["risk_order"]["items"])
 
+    spark_prompt = workflow._task_prompt(
+        state=state,
+        task=tasks[0],
+        input_payload={"analysis_id": "analysis-1"},
+        input_sha256="0" * 64,
+        input_variant_ids=[],
+        contract=contract,
+    )
+    assert "`necessary-exclusion` use empty arrays for both" in spark_prompt
+    assert "`plausible-risk` uses one or more risk_ids" in spark_prompt
+
 
 def test_credit_analysis_workflow_rejects_invalid_and_conflicting_passes(
     tmp_path: pathlib.Path,
@@ -2493,6 +2504,55 @@ def test_credit_analysis_workflow_rejects_invalid_and_conflicting_passes(
             contract=contract,
             label="bad temporary review",
         )
+
+    mixed_links_root = tmp_path / "mixed-disposition-links"
+    mixed_links_root.mkdir()
+    mixed_links_request, _, _ = credit_analysis_request(mixed_links_root)
+    mixed_links_plan = workflow.command_plan_orchestration(
+        mixed_links_request,
+        available_models=available,
+    )
+
+    class MixedDispositionLinksRunner(FakeCreditModelRunner):
+        def _spark(
+            self,
+            task: Mapping[str, Any],
+            packet: Mapping[str, Any],
+            digest: str,
+        ) -> dict[str, Any]:
+            result = super()._spark(task, packet, digest)
+            if task["stage"] == "primary" and result["candidate_assessments"]:
+                candidate_id = str(task["candidate_ids"][0])
+                risk_id = f"{task['surface_id']}.mixed-link"
+                result["plausible_risks"].append(
+                    {
+                        "id": risk_id,
+                        "description": "Synthetic risk linked to the wrong disposition.",
+                        "candidate_ids": [candidate_id],
+                        "evidence_refs": ["evidence://synthetic/mixed-link"],
+                        "verification_needed": ["inspect the original evidence"],
+                        "material_variant_ids": [],
+                    }
+                )
+                assessment = result["candidate_assessments"][0]
+                assessment["disposition"] = "necessary-exclusion"
+                assessment["provisional_finding_ids"] = []
+                assessment["risk_ids"] = [risk_id]
+            return result
+
+    mixed_links_state = pathlib.Path(mixed_links_plan["state_path"])
+    with pytest.raises(
+        workflow.CreditAnalysisError,
+        match="dismissed or necessary Spark candidate has semantic links",
+    ):
+        workflow.command_execute_orchestration(
+            mixed_links_state,
+            runner=MixedDispositionLinksRunner(),
+            available_models=available,
+        )
+    mixed_links_saved = json.loads(mixed_links_state.read_text(encoding="utf-8"))
+    assert mixed_links_saved["model_calls"] == {"spark": 0, "gpt_5_6": 0}
+    assert mixed_links_saved["model_attempts"] == {"spark": 1, "gpt_5_6": 0}
 
     retry_root = tmp_path / "failed-attempt-resume"
     retry_root.mkdir()
