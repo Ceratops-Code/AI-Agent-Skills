@@ -10027,6 +10027,8 @@ def _codex_child_command(
         executable,
         "--ask-for-approval",
         "never",
+        "--config",
+        'model_reasoning_effort="high"',
         "exec",
         "--model",
         model,

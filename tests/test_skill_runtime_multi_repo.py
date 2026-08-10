@@ -2318,7 +2318,14 @@ def test_credit_analysis_child_command_places_global_approval_before_exec(
         orchestration_root=tmp_path,
     )
 
-    assert command[:4] == ["codex", "--ask-for-approval", "never", "exec"]
+    assert command[:6] == [
+        "codex",
+        "--ask-for-approval",
+        "never",
+        "--config",
+        'model_reasoning_effort="high"',
+        "exec",
+    ]
     assert command[command.index("--sandbox") + 1] == "read-only"
     assert "--ephemeral" in command
 
