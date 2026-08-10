@@ -2330,6 +2330,7 @@ def test_credit_analysis_child_command_places_global_approval_before_exec(
     assert "--ephemeral" in command
 
     state = {"analysis_id": "analysis-1"}
+    contract = json.loads(CREDIT_ANALYSIS_CONTRACT.read_text(encoding="utf-8"))
     tasks = [
         {
             "phase": "spark-primary",
@@ -2349,6 +2350,7 @@ def test_credit_analysis_child_command_places_global_approval_before_exec(
             state=state,
             task=task,
             input_sha256="0" * 64,
+            contract=contract,
         )
         assert all(
             property_schema.get("type") == "string"
@@ -2370,6 +2372,15 @@ def test_credit_analysis_child_command_places_global_approval_before_exec(
                 assert_strict_objects(node["items"])
 
         assert_strict_objects(schema)
+        if task["phase"] == "spark-primary":
+            assessment_schema = schema["properties"]["candidate_assessments"][
+                "items"
+            ]["properties"]
+            identifier_pattern = assessment_schema["risk_ids"]["items"]["pattern"]
+            assert workflow.re.fullmatch(identifier_pattern, "risk://none") is None
+            assert set(assessment_schema["disposition"]["enum"]) == set(
+                contract["spark_dispositions"]
+            )
 
 
 def test_credit_analysis_workflow_rejects_invalid_and_conflicting_passes(

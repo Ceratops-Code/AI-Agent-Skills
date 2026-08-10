@@ -9208,6 +9208,7 @@ def _output_schema_for_task(
     state: Mapping[str, Any],
     task: Mapping[str, Any],
     input_sha256: str,
+    contract: Mapping[str, Any],
 ) -> dict[str, Any]:
     """Return the exact strict schema also enforced by Python validation."""
 
@@ -9226,8 +9227,20 @@ def _output_schema_for_task(
     def nullable_string() -> dict[str, Any]:
         return {"type": ["string", "null"]}
 
+    def identifier() -> dict[str, Any]:
+        return {"type": "string", "pattern": r"^[a-z0-9][a-z0-9._-]*$"}
+
+    def enum_string(values: Sequence[str]) -> dict[str, Any]:
+        return {"type": "string", "enum": list(values)}
+
+    def nullable_enum(values: Sequence[str]) -> dict[str, Any]:
+        return {"type": ["string", "null"], "enum": [*values, None]}
+
     def strings() -> dict[str, Any]:
         return {"type": "array", "items": string()}
+
+    def identifiers() -> dict[str, Any]:
+        return {"type": "array", "items": identifier()}
 
     def numbers() -> dict[str, Any]:
         return {"type": "array", "items": number()}
@@ -9249,47 +9262,47 @@ def _output_schema_for_task(
     assessment = closed_object(
         {
             "candidate_ids": strings(),
-            "disposition": string(),
+            "disposition": enum_string(contract["spark_dispositions"]),
             "reason": string(),
-            "provisional_finding_ids": strings(),
-            "risk_ids": strings(),
+            "provisional_finding_ids": identifiers(),
+            "risk_ids": identifiers(),
             "evidence_refs": strings(),
         }
     )
     spark_finding = closed_object(
         {
-            "id": string(),
+            "id": identifier(),
             "title": string(),
             "problem_summary": string(),
             "candidate_ids": strings(),
             "evidence_refs": strings(),
-            "producer_type": string(),
+            "producer_type": enum_string(contract["producer_types"]),
             "producer_owner": string(),
             "proposed_durable_control": string(),
             "recurrence_likely": boolean(),
             "savings_justifies_maintenance": boolean(),
-            "material_variant_ids": strings(),
+            "material_variant_ids": identifiers(),
         }
     )
     spark_risk = closed_object(
         {
-            "id": string(),
+            "id": identifier(),
             "description": string(),
             "candidate_ids": strings(),
             "evidence_refs": strings(),
             "verification_needed": strings(),
-            "material_variant_ids": strings(),
+            "material_variant_ids": identifiers(),
         }
     )
     spark_temporary = closed_object(
         {
-            "id": string(),
+            "id": identifier(),
             "problem_solved": string(),
             "candidate_ids": strings(),
             "observed_temporary_control": string(),
             "canonical_owner_hint": string(),
             "evidence_refs": strings(),
-            "material_variant_ids": strings(),
+            "material_variant_ids": identifiers(),
         }
     )
 
@@ -9306,16 +9319,16 @@ def _output_schema_for_task(
             "provisional_findings": objects(spark_finding),
             "plausible_risks": objects(spark_risk),
             "temporary_control_candidates": objects(spark_temporary),
-            "preserved_variant_ids": strings(),
+            "preserved_variant_ids": identifiers(),
         }
     elif task["phase"] == "surface-confirmation":
         confirmation_assessment = closed_object(
             {
                 "candidate_ids": strings(),
-                "disposition": string(),
+                "disposition": enum_string(contract["confirmation_dispositions"]),
                 "reason": string(),
-                "finding_ids": strings(),
-                "risk_ids": strings(),
+                "finding_ids": identifiers(),
+                "risk_ids": identifiers(),
                 "evidence_refs": strings(),
             }
         )
@@ -9337,31 +9350,36 @@ def _output_schema_for_task(
         )
         confirmation_finding = closed_object(
             {
-                "id": string(),
+                "id": identifier(),
                 "title": string(),
                 "problem_summary": string(),
-                "waste_kind": string(),
+                "waste_kind": enum_string(contract["waste_kinds"]),
                 "candidate_ids": strings(),
                 "affected_call_ids": strings(),
                 "evidence_refs": strings(),
                 "evidence_narrative": string(),
-                "producer_type": string(),
+                "producer_type": enum_string(contract["producer_types"]),
                 "producer_owner": string(),
                 "proposed_durable_control": string(),
-                "implementation_status": string(),
+                "implementation_status": enum_string(
+                    contract["implementation_statuses"]
+                ),
                 "targeted_verification": strings(),
                 "observed_avoidable_call_count": integer(),
                 "recurrence": recurrence,
                 "confidence": number(),
-                "complexity": string(),
+                "complexity": enum_string(contract["complexities"]),
                 "one_time_implementation_cost": implementation_cost,
-                "helper_categories": strings(),
+                "helper_categories": {
+                    "type": "array",
+                    "items": enum_string(contract["helper_categories"]),
+                },
                 "contributing_surfaces": strings(),
             }
         )
         confirmation_risk = closed_object(
             {
-                "id": string(),
+                "id": identifier(),
                 "description": string(),
                 "candidate_ids": strings(),
                 "affected_call_ids": strings(),
@@ -9388,12 +9406,14 @@ def _output_schema_for_task(
         )
         temporary_review = closed_object(
             {
-                "id": string(),
+                "id": identifier(),
                 "problem_solved": string(),
                 "affected_call_ids": strings(),
                 "observed_temporary_control": string(),
                 "final_canonical_evidence_refs": strings(),
-                "disposition": string(),
+                "disposition": enum_string(
+                    contract["temporary_control_dispositions"]
+                ),
                 "owning_producer": string(),
                 "recurrence_inputs": temporary_recurrence,
                 "savings_inputs": temporary_savings,
@@ -9403,19 +9423,19 @@ def _output_schema_for_task(
         )
         temporary_contribution = closed_object(
             {
-                "id": string(),
-                "temporary_control_id": string(),
+                "id": identifier(),
+                "temporary_control_id": identifier(),
                 "owner_key": string(),
                 "control_key": string(),
                 "candidate_ids": strings(),
                 "evidence_refs": strings(),
                 "contribution": string(),
-                "material_variant_id": string(),
+                "material_variant_id": identifier(),
             }
         )
         helper_review = closed_object(
             {
-                "category": string(),
+                "category": enum_string(contract["helper_categories"]),
                 "status": string(),
                 "finding_ids": strings(),
                 "reason": string(),
@@ -9438,25 +9458,27 @@ def _output_schema_for_task(
     else:
         finding_group = closed_object(
             {
-                "canonical_finding_id": string(),
-                "source_finding_ids": strings(),
-                "primary_source_finding_id": string(),
+                "canonical_finding_id": identifier(),
+                "source_finding_ids": identifiers(),
+                "primary_source_finding_id": identifier(),
                 "title": string(),
                 "problem_summary": string(),
                 "owner_key": string(),
                 "control_key": string(),
                 "contributing_surfaces": strings(),
-                "savings_source_finding_id": string(),
+                "savings_source_finding_id": identifier(),
             }
         )
         temporary_merge = closed_object(
             {
-                "merge_id": string(),
+                "merge_id": identifier(),
                 "owner_key": string(),
                 "control_key": string(),
                 "review_ids": strings(),
                 "contribution_ids": strings(),
-                "disposition": string(),
+                "disposition": enum_string(
+                    contract["temporary_control_dispositions"]
+                ),
                 "finding_id": nullable_string(),
                 "no_finding_reason": nullable_string(),
                 "contributing_surfaces": strings(),
@@ -9464,17 +9486,17 @@ def _output_schema_for_task(
         )
         call_classification = closed_object(
             {
-                "classification": string(),
+                "classification": enum_string(contract["call_classifications"]),
                 "call_ids": strings(),
                 "primary_finding_id": nullable_string(),
-                "reason_code": nullable_string(),
+                "reason_code": nullable_enum(contract["necessary_reason_codes"]),
                 "reason": string(),
             }
         )
         producer_group = closed_object(
             {
-                "id": string(),
-                "producer_type": string(),
+                "id": identifier(),
+                "producer_type": enum_string(contract["producer_types"]),
                 "owner": string(),
                 "finding_ids": strings(),
                 "recommended_control": string(),
@@ -9556,6 +9578,9 @@ Return all material variants. Use globally unique IDs prefixed with the surface.
 Primary `preserved_variant_ids` and every item's `material_variant_ids` are empty.
 Group adjacent candidates into one assessment when disposition, reason, and semantic
 links match; cite the ordered union of their evidence refs and keep expanded order exact.
+Every linked finding/risk ID must name an object returned in this same result. Use an
+empty array when there is no link; never emit `none`, a sentinel, or an evidence URI as
+a semantic ID. Producer types must be one of: {', '.join(contract['producer_types'])}.
 """
     elif task["phase"] == "spark-consolidation":
         instructions = f"""Spark consolidation for `{task['surface_id']}`.
@@ -9568,6 +9593,8 @@ this ordered list: {json.dumps(input_variant_ids)}. Do not invent a new semantic
 disposition merely to shorten the packet.
 Group adjacent candidates into one assessment when disposition, reason, and semantic
 links match; cite the ordered union of their evidence refs and preserve exact order.
+Every linked finding/risk ID must name an object returned in this same result. Use an
+empty array for no link and never emit a placeholder or sentinel semantic ID.
 """
     elif task["phase"] == "surface-confirmation":
         surface = str(task["surface_id"])
@@ -9649,7 +9676,10 @@ def _prepare_model_task(
         state, evidence, contract, task
     )
     schema = _output_schema_for_task(
-        state=state, task=task, input_sha256=input_sha256
+        state=state,
+        task=task,
+        input_sha256=input_sha256,
+        contract=contract,
     )
     schema_path = pathlib.Path(str(task["artifacts"]["schema"]))
     if schema_path.exists():
