@@ -12,7 +12,7 @@ from typing import Any
 from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-SCRIPT = ROOT / "tools" / "windows-shell-sanity.py"
+SCRIPT = ROOT / "hooks" / "windows-shell-sanity.py"
 SPEC = importlib.util.spec_from_file_location("windows_shell_sanity", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
 SANITY = importlib.util.module_from_spec(SPEC)

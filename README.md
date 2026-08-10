@@ -39,7 +39,9 @@ skills/ceratops-repo-lifecycle/references/templates/
   skill-sections-template.json
 skills/ceratops-skill-lifecycle/references/templates/
   ceratops-logo-500.png
-tools/
+hooks/
+  bounded-source-search.py
+  preserve-eol-for-apply-patch-tool.py
   windows-shell-sanity.py
   README.md
 ```
@@ -66,7 +68,7 @@ Each Ceratops skill declares the runtime-local icon path
 `skills/ceratops-skill-lifecycle/references/templates/ceratops-logo-500.png`.
 Reusable skill-runtime helper logic lives in skill-local lifecycle scripts
 under `skills/*/scripts/`, not in an installed Python package. User-global
-operational tools that are not owned by one managed skill live under `tools/`.
+operational hooks that are not owned by one managed skill live under `hooks/`.
 Contract sources live inside their owning lifecycle skill.
 `skills/ceratops-repo-lifecycle/references/` owns GitHub org, GitHub repo,
 repo-code, PR readiness, artifact, release, code-comment, and CodeQL disposition
@@ -91,7 +93,9 @@ without repository deduplication.
 
 | Script | Caller And Timing |
 | --- | --- |
-| `tools/windows-shell-sanity.py` | Repository-owned source for the user-global Windows PowerShell preflight; rewrites exact command defects, annotates ordinary failures, and blocks unreliable or policy-prohibited forms. |
+| `hooks/bounded-source-search.py` | Runs bounded two-phase ripgrep searches and replaces oversized successful ripgrep hook output with a compact per-file projection. |
+| `hooks/preserve-eol-for-apply-patch-tool.py` | Preserves each updated text file's existing encoding and uniform line-ending convention around `apply_patch`. |
+| `hooks/windows-shell-sanity.py` | Repository-owned source for the user-global Windows PowerShell preflight; rewrites exact command defects, annotates ordinary failures, and blocks unreliable or policy-prohibited forms. |
 | `scripts/install-skills-bootstrap.py` | Self-contained first-install bootstrap; stages and validates one complete selected batch under the install root and never calls lifecycle runtime code. |
 | `scripts/validate-repository.py` | Sole full local-and-CI validation owner; captures child output, writes first-failure evidence to a caller-selected file, and removes stale evidence after the next successful run. |
 | `skills/ceratops-repo-lifecycle/references/templates/install-skills-bootstrap-template.py` | Authoritative standard-library-only bootstrap copied into compatible skill repositories as `scripts/install-skills-bootstrap.py`. |

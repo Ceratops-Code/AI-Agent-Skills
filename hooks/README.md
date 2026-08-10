@@ -1,4 +1,46 @@
-# Windows Shell Sanity Helper
+# User-global Hook Helpers
+
+This directory owns user-global operational hooks that are not part of one
+managed skill runtime:
+
+- `bounded-source-search.py` performs bounded two-phase ripgrep searches and
+  replaces oversized successful ripgrep output in `PostToolUse`.
+- `preserve-eol-for-apply-patch-tool.py` records and restores encoding and
+  uniform line endings around `apply_patch`.
+- `windows-shell-sanity.py` preflights Windows PowerShell commands.
+
+The source files are not installed automatically. Runtime activation copies
+them to `$CODEX_HOME/hooks` and registers them in `$CODEX_HOME/hooks.json`.
+
+## Bounded Source Search
+
+Run a direct search with one model-facing result:
+
+```powershell
+python .\hooks\bounded-source-search.py --root PATH --query TEXT
+```
+
+The helper first counts and ranks matches without emitting the intermediate
+file list, then extracts context from only the selected files. It excludes
+binary files through ripgrep's default behavior and caps files, matches,
+context, line length, and total JSON bytes.
+
+Hook mode reads one Codex `PostToolUse` event. It leaves small, failed, and
+non-ripgrep results unchanged. Oversized successful ripgrep results are replaced
+with bounded per-file feedback:
+
+```powershell
+python "$env:CODEX_HOME\hooks\bounded-source-search.py" --hook
+```
+
+## Apply-patch EOL Preservation
+
+Register `preserve-eol-for-apply-patch-tool.py pre` for `PreToolUse` and
+`preserve-eol-for-apply-patch-tool.py post` for `PostToolUse`, both matched to
+`apply_patch`. Matching temporary manifests are removed by post execution;
+stale manifests are collected after 24 hours.
+
+## Windows Shell Sanity
 
 `windows-shell-sanity.py` is the repository-owned source for the Windows
 PowerShell preflight used by Codex shell calls. It can run as a Codex
@@ -11,14 +53,14 @@ unreliable result or violate the active structured-command policy.
 
 ## Ownership And Runtime Boundary
 
-This directory owns user-global operational tools that are not part of one
+This directory owns user-global operational hooks that are not part of one
 managed skill runtime. Skill-local lifecycle helpers remain under
 `skills/*/scripts/`.
 
 The source file is not installed automatically. The active hook normally calls:
 
 ```text
-$CODEX_HOME/tools/windows-shell-sanity.py
+$CODEX_HOME/hooks/windows-shell-sanity.py
 ```
 
 Copy or deploy the repository source to that location separately when runtime
@@ -64,7 +106,7 @@ executable, and a non-idempotent rewrite are separate blocking/runtime errors.
 The hook reads one Codex `PreToolUse` JSON event from standard input:
 
 ```powershell
-python "$env:CODEX_HOME\tools\windows-shell-sanity.py" --hook
+python "$env:CODEX_HOME\hooks\windows-shell-sanity.py" --hook
 ```
 
 A typical user-level `hooks.json` registration is:
@@ -102,14 +144,14 @@ The encoded helper invocation is recognized and allowed without recursion.
 Pass command text directly:
 
 ```powershell
-python .\tools\windows-shell-sanity.py --command "Get-Date"
+python .\hooks\windows-shell-sanity.py --command "Get-Date"
 ```
 
 Or provide UTF-8 command text on standard input:
 
 ```powershell
 Get-Content -LiteralPath .\command.ps1 -Raw |
-  python .\tools\windows-shell-sanity.py
+  python .\hooks\windows-shell-sanity.py
 ```
 
 Hook callers use `--encoded-command` with a base64-encoded UTF-8 payload.
@@ -149,10 +191,11 @@ Run the focused behavior suite from the repository root:
 
 ```powershell
 python -m pytest -q tests/test_windows_shell_sanity.py
+python -m pytest -q tests/test_bounded_source_search.py
 ```
 
 Smoke-test the command interface with:
 
 ```powershell
-python .\tools\windows-shell-sanity.py --help
+python .\hooks\windows-shell-sanity.py --help
 ```
