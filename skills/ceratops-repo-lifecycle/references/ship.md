@@ -63,6 +63,13 @@ Infer missing values from the checkout, scope file, and live PR before asking.
    remaining `pending_work` performs no remote mutation.
 4. The delegated GitHub workflow ensures the PR, waits for readiness, CI, and
    Codex review, immediately rereads every gate, and verifies the exact head.
+   Explicitly pending checks use the configured CI wait. An unrecognized or
+   incomplete check state, or required checks not yet attached, receives one
+   immediate reread and at most a 60-second grace. Persistent uncertainty
+   blocks with the exact check-state fields and head, the normalized `gh pr
+   checks` result, and linked Actions-run state when available. An empty rollup
+   is accepted only when applicable branch protection and rulesets require no
+   status checks.
 5. Only after those gates pass, integrated ship delegates the final exact-head
    merge to `merge.merge_verified_pr(admin=True)`. It inherits the shared
    merge action's checkpointed dedicated-endpoint bypass, restoration, read-back,

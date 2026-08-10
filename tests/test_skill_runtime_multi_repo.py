@@ -7598,6 +7598,116 @@ def test_admin_bypass_accepts_only_review_required_readiness(
                 "24", tmp_path, allow_admin_review_bypass=True
             )
 
+    queries: list[str] = []
+
+    def branch_rules(
+        query: str,
+        variables: dict[str, Any],
+        cwd: pathlib.Path,
+    ) -> dict[str, Any]:
+        queries.append(query)
+        assert variables["qualifiedName"] == "refs/heads/main"
+        assert cwd == tmp_path
+        return {
+            "data": {
+                "repository": {
+                    "ref": {
+                        "name": "main",
+                        "branchProtectionRule": {
+                            "requiresApprovingReviews": False,
+                            "requiredApprovingReviewCount": 0,
+                            "requiresConversationResolution": False,
+                            "requiresStatusChecks": True,
+                            "requiredStatusChecks": [{"context": "classic-ci"}],
+                        },
+                        "rules": {
+                            "nodes": [
+                                {
+                                    "type": "REQUIRED_STATUS_CHECKS",
+                                    "parameters": {
+                                        "__typename": (
+                                            "RequiredStatusChecksParameters"
+                                        ),
+                                        "requiredStatusChecks": [
+                                            {"context": "ruleset-ci"}
+                                        ],
+                                    },
+                                }
+                            ],
+                            "pageInfo": {
+                                "hasNextPage": False,
+                                "endCursor": None,
+                            },
+                        },
+                    }
+                }
+            }
+        }
+
+    monkeypatch.setattr(readiness, "current_repository", lambda cwd: ("acme", "repo"))
+    monkeypatch.setattr(readiness, "gh_graphql", branch_rules)
+    policy = readiness.branch_rule_policy("main", tmp_path)
+    assert policy == {
+        "required_approving_review_count": 0,
+        "required_review_thread_resolution": False,
+        "required_status_checks": ["classic-ci", "ruleset-ci"],
+    }
+    assert "RequiredStatusChecksParameters" in queries[0]
+    assert "requiredStatusChecks" in queries[0]
+
+    pr_data = {
+        "number": 24,
+        "url": "https://example.invalid/pull/24",
+        "state": "OPEN",
+        "isDraft": False,
+        "mergeable": "MERGEABLE",
+        "reviewDecision": "APPROVED",
+        "statusCheckRollup": [],
+        "headRefName": "release/local",
+        "headRefOid": head,
+        "baseRefName": "main",
+        "autoMergeRequest": None,
+    }
+    monkeypatch.setattr(readiness, "gh_pr_view", lambda *args: pr_data)
+    monkeypatch.setattr(readiness, "branch_rule_policy", lambda *args: policy)
+    _, findings = readiness.pr_readiness("24", tmp_path)
+    status_finding = next(
+        finding for finding in findings if finding.check == "pr.status_checks"
+    )
+    assert status_finding.message == readiness.REQUIRED_STATUS_CHECKS_MISSING_MESSAGE
+    assert status_finding.actual == ["classic-ci", "ruleset-ci"]
+
+    no_ci_policy = {**policy, "required_status_checks": []}
+    monkeypatch.setattr(
+        readiness,
+        "branch_rule_policy",
+        lambda *args: no_ci_policy,
+    )
+    _, findings = readiness.pr_readiness("24", tmp_path)
+    status_finding = next(
+        finding for finding in findings if finding.check == "pr.status_checks"
+    )
+    assert status_finding.message == readiness.NO_STATUS_CHECKS_MESSAGE
+    assert status_finding.actual is None
+
+    findings = []
+    readiness.status_rollup_findings(
+        {
+            "statusCheckRollup": [
+                {"name": "future-ci", "status": "FUTURE_STATE"}
+            ]
+        },
+        findings,
+    )
+    assert findings[0].message == readiness.UNKNOWN_STATUS_CHECK_MESSAGE
+    assert findings[0].actual == {
+        "index": 0,
+        "name": "future-ci",
+        "conclusion": None,
+        "status": "FUTURE_STATE",
+        "state": None,
+    }
+
 
 def test_merge_pr_runs_all_gates_before_shared_merge(
     tmp_path: pathlib.Path,
@@ -7965,6 +8075,187 @@ def test_integrated_ship_delegates_admin_semantics_to_merge_owner(
         "failing_names": ["validate"],
         "diagnostic": None,
     }
+
+    clock = {"now": 0.0}
+    validation_times: list[float] = []
+    ambiguous = ship.readiness.Finding(
+        level="ERROR",
+        check="pr.status_checks",
+        message=ship.readiness.UNKNOWN_STATUS_CHECK_MESSAGE,
+        actual={
+            "index": 0,
+            "name": "validate",
+            "conclusion": None,
+            "status": "FUTURE_STATE",
+            "state": None,
+        },
+    )
+
+    def ambiguous_readiness(
+        *args: Any, **kwargs: Any
+    ) -> tuple[dict[str, Any], list[Any]]:
+        validation_times.append(clock["now"])
+        return (
+            {
+                "number": 24,
+                "url": "https://example.invalid/pull/24",
+                "head_oid": head,
+            },
+            [ambiguous],
+        )
+
+    def uncertainty_json(
+        command: list[str],
+        *args: Any,
+        **kwargs: Any,
+    ) -> argparse.Namespace:
+        if command[1:3] == ["pr", "checks"]:
+            return argparse.Namespace(
+                ok=True,
+                data=[
+                    {
+                        "name": "validate",
+                        "state": "FUTURE_STATE",
+                        "bucket": "pending",
+                        "workflow": "CI",
+                        "link": (
+                            "https://github.com/example/repository/"
+                            "actions/runs/42/job/84"
+                        ),
+                    }
+                ],
+                message=None,
+            )
+        if command[1:3] == ["run", "view"]:
+            return argparse.Namespace(
+                ok=True,
+                data={
+                    "status": "in_progress",
+                    "conclusion": None,
+                    "headSha": head,
+                    "url": (
+                        "https://github.com/example/repository/actions/runs/42"
+                    ),
+                    "name": "CI",
+                    "workflowName": "CI",
+                },
+                message=None,
+            )
+        raise AssertionError(command)
+
+    monkeypatch.setattr(ship.time, "monotonic", lambda: clock["now"])
+    monkeypatch.setattr(
+        ship.time,
+        "sleep",
+        lambda seconds: clock.__setitem__("now", clock["now"] + seconds),
+    )
+    monkeypatch.setattr(ship.readiness, "validate_readiness", ambiguous_readiness)
+    monkeypatch.setattr(ship, "run_json_command", uncertainty_json)
+    with pytest.raises(ship.ShipBlocked) as ambiguous_blocked:
+        ship.wait_for_ci_gate(
+            "24",
+            repo,
+            head,
+            repository="example/repository",
+            wait_seconds=900,
+            interval_seconds=10,
+        )
+    ambiguous_payload = ambiguous_blocked.value.payload["blocker"]
+    assert ambiguous_payload["kind"] == "ci_ambiguous"
+    assert ambiguous_payload["head_oid"] == head
+    assert ambiguous_payload["grace_seconds"] == 60
+    assert ambiguous_payload["diagnostic"]["finding"]["actual"] == ambiguous.actual
+    assert ambiguous_payload["diagnostic"]["normalized_checks"][0]["bucket"] == (
+        "pending"
+    )
+    assert ambiguous_payload["diagnostic"]["action_run"]["head_matches"] is True
+    assert validation_times[:2] == [0.0, 0.0]
+    assert validation_times[-1] == 60.0
+
+    clock["now"] = 0.0
+    pending_times: list[float] = []
+    explicit_pending = ship.readiness.Finding(
+        level="WARN",
+        check="pr.status_checks",
+        message="Status checks are still pending.",
+        actual=["validate"],
+    )
+
+    def pending_then_pass(*args: Any, **kwargs: Any) -> tuple[dict[str, Any], list[Any]]:
+        pending_times.append(clock["now"])
+        findings = [explicit_pending] if clock["now"] < 70 else []
+        return (
+            {
+                "number": 24,
+                "url": "https://example.invalid/pull/24",
+                "head_oid": head,
+            },
+            findings,
+        )
+
+    monkeypatch.setattr(ship.readiness, "validate_readiness", pending_then_pass)
+    monkeypatch.setattr(
+        ship,
+        "run_json_command",
+        lambda *args, **kwargs: pytest.fail(
+            "explicit pending checks must not use uncertainty diagnostics"
+        ),
+    )
+    completed = ship.wait_for_ci_gate(
+        "24",
+        repo,
+        head,
+        repository="example/repository",
+        wait_seconds=900,
+        interval_seconds=10,
+    )
+    assert completed["pending"] == 0
+    assert 60.0 in pending_times
+    assert pending_times[-1] == 70.0
+
+    clock["now"] = 0.0
+    missing = ship.readiness.Finding(
+        level="WARN",
+        check="pr.status_checks",
+        message=ship.readiness.REQUIRED_STATUS_CHECKS_MISSING_MESSAGE,
+        actual=["validate"],
+    )
+    monkeypatch.setattr(
+        ship.readiness,
+        "validate_readiness",
+        lambda *args, **kwargs: (
+            {
+                "number": 24,
+                "url": "https://example.invalid/pull/24",
+                "head_oid": head,
+            },
+            [missing],
+        ),
+    )
+    monkeypatch.setattr(
+        ship,
+        "run_json_command",
+        lambda *args, **kwargs: argparse.Namespace(
+            ok=False,
+            data=None,
+            message="no checks reported on the release/local branch",
+        ),
+    )
+    with pytest.raises(ship.ShipBlocked) as missing_blocked:
+        ship.wait_for_ci_gate(
+            "24",
+            repo,
+            head,
+            repository="example/repository",
+            wait_seconds=900,
+            interval_seconds=10,
+        )
+    missing_payload = missing_blocked.value.payload["blocker"]
+    assert missing_payload["kind"] == "checks_missing"
+    assert missing_payload["grace_seconds"] == 60
+    assert missing_payload["diagnostic"]["checks_diagnostic"].startswith(
+        "no checks reported"
+    )
 
 
 def test_dependency_finalization_delegates_admin_to_shared_merge(

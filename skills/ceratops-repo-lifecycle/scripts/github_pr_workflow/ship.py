@@ -38,6 +38,7 @@ FAILING_CHECK_STATES = {
     "STARTUP_FAILURE",
     "TIMED_OUT",
 }
+CHECK_UNCERTAINTY_GRACE_SECONDS = 60
 
 
 class ShipError(RuntimeError):
@@ -735,22 +736,14 @@ def _transient_readiness(finding: readiness.Finding) -> bool:
     if finding.check == "pr.mergeable" and finding.level == WARN:
         return True
     if finding.check == "pr.status_checks" and finding.level == WARN:
-        # Only concrete pending checks consume the CI wait. An empty rollup is
-        # advisory; the parallel review window and final gate re-read still
-        # protect against checks that attach after PR creation.
+        # Concrete pending checks consume the configured CI wait. Required
+        # checks awaiting attachment use the shorter uncertainty grace below.
         return isinstance(finding.actual, list) and bool(finding.actual)
     if (
         finding.check == "pr.status_checks"
         and finding.level == ERROR
-        and finding.message
-        in {
-            "Status-check entry has unknown state.",
-            "Status-check entry has no terminal or pending state.",
-        }
+        and finding.message in readiness.SHORT_STATUS_CHECK_UNCERTAINTY_MESSAGES
     ):
-        # GitHub can expose incomplete rollup snapshots while check state
-        # propagates. Keep them inside the existing bounded CI wait, with one
-        # immediate confirmation before normal polling begins.
         return True
     if (
         finding.check == "pr.review_decision"
@@ -759,6 +752,15 @@ def _transient_readiness(finding: readiness.Finding) -> bool:
     ):
         return True
     return False
+
+
+def _short_check_uncertainty(finding: readiness.Finding) -> bool:
+    """Return whether one check finding uses the fixed diagnostic grace."""
+
+    return (
+        finding.check == "pr.status_checks"
+        and finding.message in readiness.SHORT_STATUS_CHECK_UNCERTAINTY_MESSAGES
+    )
 
 
 def _compact_failed_log(value: str, *, limit: int = 2_000) -> str | None:
@@ -771,13 +773,12 @@ def _compact_failed_log(value: str, *, limit: int = 2_000) -> str | None:
     return excerpt if len(excerpt) <= limit else excerpt[-limit:]
 
 
-def _failed_check_detail(
+def _read_pr_checks(
     pr: str,
     repository: str,
     repo_root: pathlib.Path,
-    fallback_names: list[str],
-) -> dict[str, Any]:
-    """Read the first failing check and its compact failed-log context."""
+) -> tuple[list[dict[str, Any]], str | None]:
+    """Return normalized PR checks plus one compact query diagnostic."""
 
     result = run_json_command(
         [
@@ -793,7 +794,32 @@ def _failed_check_detail(
         "gh pr checks",
         cwd=repo_root,
     )
-    raw_checks = result.data if result.ok and isinstance(result.data, list) else []
+    if not result.ok:
+        return [], result.message or "could not read PR checks"
+    if not isinstance(result.data, list):
+        return [], "gh pr checks returned an invalid response"
+    checks = [check for check in result.data if isinstance(check, dict)]
+    diagnostic = (
+        None
+        if len(checks) == len(result.data)
+        else "gh pr checks returned one or more invalid entries"
+    )
+    return checks, diagnostic
+
+
+def _failed_check_detail(
+    pr: str,
+    repository: str,
+    repo_root: pathlib.Path,
+    fallback_names: list[str],
+) -> dict[str, Any]:
+    """Read the first failing check and its compact failed-log context."""
+
+    raw_checks, checks_diagnostic = _read_pr_checks(
+        pr,
+        repository,
+        repo_root,
+    )
     failing = [
         check
         for check in raw_checks
@@ -836,12 +862,149 @@ def _failed_check_detail(
             if isinstance(check.get("name"), str)
         ]
         or fallback_names,
-        "diagnostic": (
-            None
-            if result.ok
-            else (result.message or "could not read PR checks")
-        ),
+        "diagnostic": checks_diagnostic,
     }
+
+
+def _check_uncertainty_detail(
+    pr: str,
+    repository: str,
+    repo_root: pathlib.Path,
+    finding: readiness.Finding,
+    expected_head: str,
+) -> dict[str, Any]:
+    """Collect bounded evidence for one persistent status-check uncertainty."""
+
+    raw_checks, checks_diagnostic = _read_pr_checks(
+        pr,
+        repository,
+        repo_root,
+    )
+    checks = [
+        {
+            "name": check.get("name"),
+            "state": check.get("state"),
+            "bucket": check.get("bucket"),
+            "workflow": check.get("workflow"),
+            "url": check.get("link"),
+        }
+        for check in raw_checks[:50]
+    ]
+    target_names: list[str] = []
+    if isinstance(finding.actual, dict):
+        name = finding.actual.get("name")
+        if isinstance(name, str) and name:
+            target_names.append(name)
+    elif isinstance(finding.actual, list):
+        target_names.extend(
+            name for name in finding.actual if isinstance(name, str) and name
+        )
+    selected = next(
+        (
+            check
+            for check in raw_checks
+            if check.get("name") in target_names
+            and isinstance(check.get("link"), str)
+        ),
+        None,
+    )
+    if selected is None:
+        selected = next(
+            (
+                check
+                for check in raw_checks
+                if isinstance(check.get("link"), str)
+            ),
+            {},
+        )
+    link = selected.get("link")
+    match = ACTION_LINK_RE.search(link) if isinstance(link, str) else None
+    run_id = match.group("run") if match else None
+    action_run: dict[str, Any] | None = None
+    action_diagnostic: str | None = None
+    if run_id is not None:
+        action_result = run_json_command(
+            [
+                "gh",
+                "run",
+                "view",
+                run_id,
+                "--repo",
+                repository,
+                "--json",
+                "status,conclusion,headSha,url,name,workflowName",
+            ],
+            "gh run view",
+            cwd=repo_root,
+        )
+        if action_result.ok and isinstance(action_result.data, dict):
+            action_run = {
+                "run_id": run_id,
+                "status": action_result.data.get("status"),
+                "conclusion": action_result.data.get("conclusion"),
+                "head_sha": action_result.data.get("headSha"),
+                "head_matches": action_result.data.get("headSha") == expected_head,
+                "url": action_result.data.get("url"),
+                "name": action_result.data.get("name"),
+                "workflow": action_result.data.get("workflowName"),
+            }
+        else:
+            action_diagnostic = (
+                action_result.message or "could not read linked Actions run"
+            )
+    return {
+        "finding": {
+            "message": finding.message,
+            "actual": finding.actual,
+        },
+        "normalized_checks": checks,
+        "normalized_checks_truncated": len(raw_checks) > len(checks),
+        "checks_diagnostic": checks_diagnostic,
+        "action_run": action_run,
+        "action_run_diagnostic": action_diagnostic,
+    }
+
+
+def _check_uncertainty_blocker(
+    pr: str,
+    repository: str,
+    repo_root: pathlib.Path,
+    summary: dict[str, Any],
+    finding: readiness.Finding,
+    expected_head: str,
+    grace_seconds: int,
+) -> ShipBlocked:
+    """Build a decision-complete blocker after the short uncertainty grace."""
+
+    missing = finding.message == readiness.REQUIRED_STATUS_CHECKS_MISSING_MESSAGE
+    kind = "checks_missing" if missing else "ci_ambiguous"
+    reason = (
+        "required status checks did not attach"
+        if missing
+        else "status-check state remained unclassifiable"
+    )
+    message = f"PR readiness blocked: {reason} after {grace_seconds} seconds."
+    return ShipBlocked(
+        message,
+        {
+            "phase": "gates",
+            "blocker": {
+                "kind": kind,
+                "repository": repository,
+                "pr": summary.get("number"),
+                "url": summary.get("url"),
+                "head_oid": summary.get("head_oid"),
+                "grace_seconds": grace_seconds,
+                "diagnostic": _check_uncertainty_detail(
+                    pr,
+                    repository,
+                    repo_root,
+                    finding,
+                    expected_head,
+                ),
+            },
+        },
+    )
 
 
 def _ci_blocker(
@@ -924,7 +1087,8 @@ def wait_for_ci_gate(
     """
 
     deadline = time.monotonic() + wait_seconds
-    confirming_transient_error = False
+    uncertainty_started: float | None = None
+    confirming_uncertainty = False
     while True:
         summary, findings = readiness.validate_readiness(
             pr,
@@ -952,11 +1116,18 @@ def wait_for_ci_gate(
             for finding in findings
             if finding.level == ERROR and not _transient_readiness(finding)
         ]
-        if not terminal and transient_errors and not confirming_transient_error:
-            confirming_transient_error = True
+        short_uncertainties = [
+            finding for finding in findings if _short_check_uncertainty(finding)
+        ]
+        now = time.monotonic()
+        if short_uncertainties and uncertainty_started is None:
+            uncertainty_started = now
+        if not terminal and short_uncertainties and not confirming_uncertainty:
+            confirming_uncertainty = True
             continue
-        if not transient_errors:
-            confirming_transient_error = False
+        if not short_uncertainties:
+            confirming_uncertainty = False
+            uncertainty_started = None
         if terminal:
             selected_repository = repository or _repository_name(repo_root, None)
             raise _ci_blocker(
@@ -966,6 +1137,27 @@ def wait_for_ci_gate(
                 summary,
                 terminal,
             )
+        if short_uncertainties:
+            assert uncertainty_started is not None
+            uncertainty_deadline = min(
+                deadline,
+                uncertainty_started + CHECK_UNCERTAINTY_GRACE_SECONDS,
+            )
+            if now >= uncertainty_deadline:
+                selected_repository = repository or _repository_name(repo_root, None)
+                grace_seconds = max(
+                    0,
+                    min(CHECK_UNCERTAINTY_GRACE_SECONDS, wait_seconds),
+                )
+                raise _check_uncertainty_blocker(
+                    pr,
+                    selected_repository,
+                    repo_root,
+                    summary,
+                    short_uncertainties[0],
+                    expected_head,
+                    grace_seconds,
+                )
         pending = [finding for finding in findings if _transient_readiness(finding)]
         if not pending:
             return {
@@ -978,7 +1170,7 @@ def wait_for_ci_gate(
                     review_authorization_required
                 ),
             }
-        if time.monotonic() >= deadline:
+        if now >= deadline:
             if transient_errors:
                 selected_repository = repository or _repository_name(repo_root, None)
                 raise _ci_blocker(
@@ -1006,7 +1198,19 @@ def wait_for_ci_gate(
                     },
                 },
             )
-        time.sleep(max(0, interval_seconds))
+        sleep_seconds = max(0, interval_seconds)
+        if short_uncertainties:
+            assert uncertainty_started is not None
+            remaining_grace = max(
+                0,
+                min(
+                    deadline,
+                    uncertainty_started + CHECK_UNCERTAINTY_GRACE_SECONDS,
+                )
+                - now,
+            )
+            sleep_seconds = min(sleep_seconds, remaining_grace)
+        time.sleep(sleep_seconds)
 
 
 def _review_thread_ids(

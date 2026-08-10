@@ -22,14 +22,18 @@
       "reviewDecision",
       "statusCheckRollup",
       "headRefName",
+      "headRefOid",
       "baseRefName",
       "autoMergeRequest",
       "ref.rules.type",
       "ref.rules.parameters.requiredApprovingReviewCount",
       "ref.rules.parameters.requiredReviewThreadResolution",
+      "ref.rules.parameters.requiredStatusChecks.context",
       "ref.branchProtectionRule.requiresApprovingReviews",
       "ref.branchProtectionRule.requiredApprovingReviewCount",
-      "ref.branchProtectionRule.requiresConversationResolution"
+      "ref.branchProtectionRule.requiresConversationResolution",
+      "ref.branchProtectionRule.requiresStatusChecks",
+      "ref.branchProtectionRule.requiredStatusChecks.context"
     ]
   },
   "checks": [
@@ -56,7 +60,7 @@
     {
       "id": "pr.status_checks",
       "level_on_drift": "ERROR_OR_WARN",
-      "expectation": "Visible status checks are passing for direct merge. Failing checks block; pending checks require auto-merge or waiting."
+      "expectation": "Visible status checks are passing for direct merge. Failing checks block; explicitly pending checks require auto-merge or the configured wait. An empty rollup is accepted only when applicable branch protection and rulesets require no status checks; missing required checks and unclassifiable entries receive a short grace, then block with diagnostic evidence."
     },
     {
       "id": "pr.auto_merge_request",
