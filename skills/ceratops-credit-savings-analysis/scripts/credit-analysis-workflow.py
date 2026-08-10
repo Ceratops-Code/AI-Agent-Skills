@@ -50,6 +50,10 @@ ORCHESTRATION_STATE_SCHEMA = "ceratops-credit-analysis-orchestration-state.v2"
 CHUNK_MANIFEST_SCHEMA = "ceratops-credit-analysis-chunk-manifest.v2"
 SPARK_RESULT_SCHEMA = "ceratops-credit-analysis-spark-result.v2"
 CONFIRMATION_RESULT_SCHEMA = "ceratops-credit-analysis-confirmation-result.v2"
+SPARK_CHILD_RESULT_SCHEMA = "ceratops-credit-analysis-spark-child-result.v3"
+CONFIRMATION_CHILD_RESULT_SCHEMA = (
+    "ceratops-credit-analysis-confirmation-child-result.v3"
+)
 ORCHESTRATION_SYNTHESIS_SCHEMA = (
     "ceratops-credit-analysis-orchestration-synthesis.v2"
 )
@@ -8281,6 +8285,24 @@ SPARK_TEMPORARY_FIELDS = {
     "evidence_refs",
     "material_variant_ids",
 }
+SPARK_CHILD_ASSESSMENT_FIELDS = SPARK_ASSESSMENT_FIELDS | {
+    "provisional_findings",
+    "plausible_risks",
+    "temporary_control_candidates",
+}
+SPARK_CHILD_FINDING_FIELDS = SPARK_FINDING_FIELDS - {"candidate_ids"}
+SPARK_CHILD_RISK_FIELDS = SPARK_RISK_FIELDS - {"candidate_ids"}
+SPARK_CHILD_TEMPORARY_FIELDS = SPARK_TEMPORARY_FIELDS - {"candidate_ids"}
+SPARK_CHILD_RESULT_FIELDS = {
+    "schema",
+    "analysis_id",
+    "task_id",
+    "surface_id",
+    "stage",
+    "input_sha256",
+    "candidate_assessments",
+    "preserved_variant_ids",
+}
 SPARK_RESULT_FIELDS = {
     "schema",
     "analysis_id",
@@ -8332,6 +8354,18 @@ CONFIRMATION_RISK_FIELDS = {
     "missing_fact",
     "verification_needed",
 }
+CONFIRMATION_CHILD_ASSESSMENT_FIELDS = CONFIRMATION_ASSESSMENT_FIELDS | {
+    "confirmed_findings",
+    "plausible_risks",
+}
+CONFIRMATION_CHILD_FINDING_FIELDS = CONFIRMATION_FINDING_FIELDS - {
+    "candidate_ids",
+    "affected_call_ids",
+}
+CONFIRMATION_CHILD_RISK_FIELDS = CONFIRMATION_RISK_FIELDS - {
+    "candidate_ids",
+    "affected_call_ids",
+}
 TEMPORARY_REVIEW_FIELDS = {
     "id",
     "problem_solved",
@@ -8367,6 +8401,10 @@ CONFIRMATION_RESULT_FIELDS = {
     "temporary_control_reviews",
     "temporary_control_contributions",
     "helper_category_reviews",
+}
+CONFIRMATION_CHILD_RESULT_FIELDS = CONFIRMATION_RESULT_FIELDS - {
+    "confirmed_findings",
+    "plausible_risks",
 }
 SYNTHESIS_RESULT_FIELDS = {
     "schema",
@@ -8487,9 +8525,9 @@ def _validate_spark_result(
     input_variant_ids: list[str],
     contract: Mapping[str, Any],
 ) -> dict[str, Any]:
-    _closed_result(raw, SPARK_RESULT_FIELDS, "Spark result")
+    _closed_result(raw, SPARK_CHILD_RESULT_FIELDS, "Spark child result")
     if (
-        raw.get("schema") != SPARK_RESULT_SCHEMA
+        raw.get("schema") != SPARK_CHILD_RESULT_SCHEMA
         or raw.get("analysis_id") != state["analysis_id"]
         or raw.get("task_id") != task["task_id"]
         or raw.get("surface_id") != task["surface_id"]
@@ -8499,122 +8537,162 @@ def _validate_spark_result(
         raise CreditAnalysisError("Spark result identity is invalid")
     dispositions = set(contract["spark_dispositions"])
     assessments = _result_objects(raw["candidate_assessments"], "Spark assessments")
-    finding_ids: set[str] = set()
-    risk_ids: set[str] = set()
-    finding_candidate_ids: set[str] = set()
-    risk_candidate_ids: set[str] = set()
-    findings = _result_objects(raw["provisional_findings"], "Spark findings")
-    risks = _result_objects(raw["plausible_risks"], "Spark risks")
-    temporary = _result_objects(
-        raw["temporary_control_candidates"], "Spark temporary-control candidates"
-    )
     preserved = _result_strings(
         raw["preserved_variant_ids"], "preserved variant IDs", empty=True
     )
     if preserved != input_variant_ids:
         raise CreditAnalysisError("Spark consolidation did not preserve input variants")
     allowed_candidates = set(task["candidate_ids"])
-    used_material_variants: list[str] = []
-    for index, finding in enumerate(findings, start=1):
-        _closed_result(finding, SPARK_FINDING_FIELDS, f"Spark finding {index}")
-        finding_id = _identifier(finding.get("id"), f"Spark finding {index} ID")
-        if finding_id in finding_ids:
-            raise CreditAnalysisError("Spark finding ID is duplicated")
-        finding_ids.add(finding_id)
-        candidates = _result_strings(
-            finding.get("candidate_ids"), f"Spark finding {finding_id} candidates"
-        )
-        if not set(candidates) <= allowed_candidates:
-            raise CreditAnalysisError("Spark finding references an unknown candidate")
-        finding_candidate_ids.update(candidates)
-        _result_strings(finding.get("evidence_refs"), "Spark finding evidence")
-        variants = _result_strings(
-            finding.get("material_variant_ids"),
-            "Spark finding material variants",
-            empty=True,
-        )
-        used_material_variants.extend(variants)
-        if not isinstance(finding.get("recurrence_likely"), bool) or not isinstance(
-            finding.get("savings_justifies_maintenance"), bool
-        ):
-            raise CreditAnalysisError("Spark finding recurrence inputs are invalid")
-    for index, risk in enumerate(risks, start=1):
-        _closed_result(risk, SPARK_RISK_FIELDS, f"Spark risk {index}")
-        risk_id = _identifier(risk.get("id"), f"Spark risk {index} ID")
-        if risk_id in risk_ids:
-            raise CreditAnalysisError("Spark risk ID is duplicated")
-        risk_ids.add(risk_id)
-        candidates = _result_strings(risk.get("candidate_ids"), "Spark risk candidates")
-        if not set(candidates) <= allowed_candidates:
-            raise CreditAnalysisError("Spark risk references an unknown candidate")
-        risk_candidate_ids.update(candidates)
-        _result_strings(risk.get("evidence_refs"), "Spark risk evidence")
-        _result_strings(risk.get("verification_needed"), "Spark risk verification")
-        variants = _result_strings(
-            risk.get("material_variant_ids"), "Spark risk variants", empty=True
-        )
-        used_material_variants.extend(variants)
+    normalized_assessments: list[dict[str, Any]] = []
+    findings: list[dict[str, Any]] = []
+    risks: list[dict[str, Any]] = []
+    temporary: list[dict[str, Any]] = []
+    finding_ids: set[str] = set()
+    risk_ids: set[str] = set()
     temporary_ids: set[str] = set()
-    for index, item in enumerate(temporary, start=1):
-        _closed_result(item, SPARK_TEMPORARY_FIELDS, f"Spark temporary candidate {index}")
-        item_id = _identifier(item.get("id"), "Spark temporary candidate ID")
-        if item_id in temporary_ids:
-            raise CreditAnalysisError("Spark temporary candidate ID is duplicated")
-        temporary_ids.add(item_id)
-        candidates = _result_strings(item.get("candidate_ids"), "temporary candidates")
-        if not set(candidates) <= allowed_candidates:
-            raise CreditAnalysisError("temporary candidate references an unknown candidate")
-        _result_strings(item.get("evidence_refs"), "temporary candidate evidence")
-        variants = _result_strings(
-            item.get("material_variant_ids"), "temporary material variants", empty=True
+    used_material_variants: list[str] = []
+    for index, assessment in enumerate(assessments, start=1):
+        _closed_result(
+            assessment,
+            SPARK_CHILD_ASSESSMENT_FIELDS,
+            f"Spark assessment {index}",
         )
-        used_material_variants.extend(variants)
+        candidates = _result_strings(
+            assessment.get("candidate_ids"), f"Spark assessment {index} candidates"
+        )
+        if not set(candidates) <= allowed_candidates:
+            raise CreditAnalysisError("Spark assessment references an unknown candidate")
+        disposition = assessment.get("disposition")
+        if disposition not in dispositions:
+            raise CreditAnalysisError("Spark assessment disposition is invalid")
+        if not isinstance(assessment.get("reason"), str) or not assessment[
+            "reason"
+        ].strip():
+            raise CreditAnalysisError("Spark assessment reason is missing")
+        assessment_refs = _result_strings(
+            assessment.get("evidence_refs"), "Spark assessment evidence"
+        )
+        nested_findings = _result_objects(
+            assessment.get("provisional_findings"), "Spark assessment findings"
+        )
+        nested_risks = _result_objects(
+            assessment.get("plausible_risks"), "Spark assessment risks"
+        )
+        nested_temporary = _result_objects(
+            assessment.get("temporary_control_candidates"),
+            "Spark assessment temporary controls",
+        )
+        if disposition == "provisional-finding-evidence":
+            if not nested_findings or nested_risks:
+                raise CreditAnalysisError(
+                    "provisional finding assessment requires findings only"
+                )
+        elif disposition == "plausible-risk":
+            if not nested_risks or nested_findings:
+                raise CreditAnalysisError("risk assessment requires risks only")
+        elif nested_findings or nested_risks:
+            raise CreditAnalysisError(
+                "dismissed or necessary assessment has semantic objects"
+            )
+        for finding_index, child_finding in enumerate(nested_findings, start=1):
+            _closed_result(
+                child_finding,
+                SPARK_CHILD_FINDING_FIELDS,
+                f"Spark finding {index}.{finding_index}",
+            )
+            finding_id = _identifier(
+                child_finding.get("id"), f"Spark finding {index}.{finding_index} ID"
+            )
+            if finding_id in finding_ids:
+                raise CreditAnalysisError("Spark finding ID is duplicated")
+            finding_ids.add(finding_id)
+            _result_strings(child_finding.get("evidence_refs"), "Spark finding evidence")
+            variants = _result_strings(
+                child_finding.get("material_variant_ids"),
+                "Spark finding material variants",
+                empty=True,
+            )
+            used_material_variants.extend(variants)
+            if not isinstance(
+                child_finding.get("recurrence_likely"), bool
+            ) or not isinstance(
+                child_finding.get("savings_justifies_maintenance"), bool
+            ):
+                raise CreditAnalysisError("Spark finding recurrence inputs are invalid")
+            findings.append({**child_finding, "candidate_ids": candidates})
+        for risk_index, child_risk in enumerate(nested_risks, start=1):
+            _closed_result(
+                child_risk,
+                SPARK_CHILD_RISK_FIELDS,
+                f"Spark risk {index}.{risk_index}",
+            )
+            risk_id = _identifier(
+                child_risk.get("id"), f"Spark risk {index}.{risk_index} ID"
+            )
+            if risk_id in risk_ids:
+                raise CreditAnalysisError("Spark risk ID is duplicated")
+            risk_ids.add(risk_id)
+            _result_strings(child_risk.get("evidence_refs"), "Spark risk evidence")
+            _result_strings(
+                child_risk.get("verification_needed"), "Spark risk verification"
+            )
+            variants = _result_strings(
+                child_risk.get("material_variant_ids"),
+                "Spark risk variants",
+                empty=True,
+            )
+            used_material_variants.extend(variants)
+            risks.append({**child_risk, "candidate_ids": candidates})
+        for temporary_index, child_item in enumerate(nested_temporary, start=1):
+            _closed_result(
+                child_item,
+                SPARK_CHILD_TEMPORARY_FIELDS,
+                f"Spark temporary candidate {index}.{temporary_index}",
+            )
+            item_id = _identifier(child_item.get("id"), "Spark temporary candidate ID")
+            if item_id in temporary_ids:
+                raise CreditAnalysisError("Spark temporary candidate ID is duplicated")
+            temporary_ids.add(item_id)
+            _result_strings(
+                child_item.get("evidence_refs"), "temporary candidate evidence"
+            )
+            variants = _result_strings(
+                child_item.get("material_variant_ids"),
+                "temporary material variants",
+                empty=True,
+            )
+            used_material_variants.extend(variants)
+            temporary.append({**child_item, "candidate_ids": candidates})
+        normalized_assessments.append(
+            {
+                "candidate_ids": candidates,
+                "disposition": disposition,
+                "reason": assessment["reason"],
+                "evidence_refs": assessment_refs,
+            }
+        )
     if sorted(used_material_variants) != sorted(input_variant_ids):
         if input_variant_ids:
             raise CreditAnalysisError("Spark consolidation dropped a material variant")
         if used_material_variants:
             raise CreditAnalysisError("primary Spark result invented a material variant")
-    if finding_candidate_ids & risk_candidate_ids:
-        raise CreditAnalysisError(
-            "Spark candidate cannot be owned by both a finding and a risk"
-        )
-    for index, assessment in enumerate(assessments, start=1):
-        _closed_result(assessment, SPARK_ASSESSMENT_FIELDS, f"Spark assessment {index}")
-        candidates = _result_strings(
-            assessment.get("candidate_ids"), f"Spark assessment {index} candidates"
-        )
-        if assessment.get("disposition") not in dispositions:
-            raise CreditAnalysisError("Spark assessment disposition is invalid")
-        if not isinstance(assessment.get("reason"), str) or not assessment["reason"].strip():
-            raise CreditAnalysisError("Spark assessment reason is missing")
-        _result_strings(assessment.get("evidence_refs"), "Spark assessment evidence")
-        disposition = assessment["disposition"]
-        candidate_set = set(candidates)
-        if disposition == "provisional-finding-evidence" and (
-            not candidate_set <= finding_candidate_ids
-            or bool(candidate_set & risk_candidate_ids)
-        ):
-            raise CreditAnalysisError(
-                "provisional finding evidence requires finding-only ownership"
-            )
-        if disposition == "plausible-risk" and (
-            not candidate_set <= risk_candidate_ids
-            or bool(candidate_set & finding_candidate_ids)
-        ):
-            raise CreditAnalysisError("plausible risk requires risk-only ownership")
-        if disposition in {"dismissed-candidate", "necessary-exclusion"} and (
-            candidate_set & (finding_candidate_ids | risk_candidate_ids)
-        ):
-            raise CreditAnalysisError(
-                "dismissed or necessary Spark candidate has semantic ownership"
-            )
-        if not set(candidates) <= allowed_candidates:
-            raise CreditAnalysisError("Spark assessment references an unknown candidate")
-    if _expanded_assessment_candidates(assessments) != task["candidate_ids"]:
+    if _expanded_assessment_candidates(normalized_assessments) != task["candidate_ids"]:
         raise CreditAnalysisError(
             "Spark candidate coverage is missing, duplicated, or reordered"
         )
-    return dict(raw)
+    return {
+        "schema": SPARK_RESULT_SCHEMA,
+        "analysis_id": raw["analysis_id"],
+        "task_id": raw["task_id"],
+        "surface_id": raw["surface_id"],
+        "stage": raw["stage"],
+        "input_sha256": raw["input_sha256"],
+        "candidate_assessments": normalized_assessments,
+        "provisional_findings": findings,
+        "plausible_risks": risks,
+        "temporary_control_candidates": temporary,
+        "preserved_variant_ids": preserved,
+    }
 
 
 def _validate_recurrence_inputs(value: Any, label: str) -> dict[str, Any]:
@@ -8812,9 +8890,11 @@ def _validate_confirmation_result(
     surface_index: Mapping[str, Any],
     contract: Mapping[str, Any],
 ) -> dict[str, Any]:
-    _closed_result(raw, CONFIRMATION_RESULT_FIELDS, "confirmation result")
+    _closed_result(
+        raw, CONFIRMATION_CHILD_RESULT_FIELDS, "confirmation child result"
+    )
     if (
-        raw.get("schema") != CONFIRMATION_RESULT_SCHEMA
+        raw.get("schema") != CONFIRMATION_CHILD_RESULT_SCHEMA
         or raw.get("analysis_id") != state["analysis_id"]
         or raw.get("task_id") != task["task_id"]
         or raw.get("surface_id") != task["surface_id"]
@@ -8845,66 +8925,34 @@ def _validate_confirmation_result(
                 if isinstance(item, Mapping)
                 and isinstance(item.get("evidence_ref"), str)
             )
-    findings_raw = _result_objects(raw["confirmed_findings"], "confirmed findings")
-    findings: list[dict[str, Any]] = []
-    finding_ids: set[str] = set()
-    finding_candidate_ids: set[str] = set()
-    for index, finding in enumerate(findings_raw, start=1):
-        validated = _validate_confirmation_finding(
-            finding,
-            surface_id=str(task["surface_id"]),
-            candidate_to_call=candidate_to_call,
-            allowed_refs=allowed_refs,
-            contract=contract,
-            label=f"confirmed finding {index}",
-        )
-        if validated["id"] in finding_ids:
-            raise CreditAnalysisError("confirmed finding ID is duplicated")
-        finding_ids.add(validated["id"])
-        finding_candidate_ids.update(validated["candidate_ids"])
-        findings.append(validated)
-    risks = _result_objects(raw["plausible_risks"], "confirmation risks")
-    risk_ids: set[str] = set()
-    risk_candidate_ids: set[str] = set()
-    for index, risk in enumerate(risks, start=1):
-        _closed_result(risk, CONFIRMATION_RISK_FIELDS, f"confirmation risk {index}")
-        risk_id = _identifier(risk.get("id"), "confirmation risk ID")
-        if risk_id in risk_ids:
-            raise CreditAnalysisError("confirmation risk ID is duplicated")
-        risk_ids.add(risk_id)
-        candidates = _result_strings(risk.get("candidate_ids"), "risk candidates")
-        if not set(candidates) <= set(candidate_to_call):
-            raise CreditAnalysisError("confirmation risk references an unknown candidate")
-        risk_candidate_ids.update(candidates)
-        calls = _result_strings(risk.get("affected_call_ids"), "risk calls")
-        if calls != list(dict.fromkeys(candidate_to_call[item] for item in candidates)):
-            raise CreditAnalysisError("confirmation risk calls do not match candidates")
-        refs = _result_strings(risk.get("evidence_refs"), "risk evidence")
-        for candidate in candidates:
-            if not set(refs) & allowed_refs[candidate]:
-                raise CreditAnalysisError("confirmation risk lacks original evidence")
-        _result_strings(risk.get("competing_explanations"), "risk explanations")
-        _result_strings(risk.get("verification_needed"), "risk verification")
-        if not isinstance(risk.get("missing_fact"), str) or not risk["missing_fact"].strip():
-            raise CreditAnalysisError("confirmation risk missing fact is absent")
-    if finding_candidate_ids & risk_candidate_ids:
-        raise CreditAnalysisError(
-            "confirmation candidate cannot be owned by both a finding and a risk"
-        )
     assessments = _result_objects(
         raw["candidate_assessments"], "confirmation assessments"
     )
     dispositions = set(contract["confirmation_dispositions"])
+    normalized_assessments: list[dict[str, Any]] = []
+    findings: list[dict[str, Any]] = []
+    risks: list[dict[str, Any]] = []
+    finding_ids: set[str] = set()
+    risk_ids: set[str] = set()
     for index, assessment in enumerate(assessments, start=1):
         _closed_result(
-            assessment, CONFIRMATION_ASSESSMENT_FIELDS, f"confirmation assessment {index}"
+            assessment,
+            CONFIRMATION_CHILD_ASSESSMENT_FIELDS,
+            f"confirmation assessment {index}",
         )
         candidates = _result_strings(
             assessment.get("candidate_ids"), "confirmation assessment candidates"
         )
-        if assessment.get("disposition") not in dispositions:
+        if not set(candidates) <= set(candidate_to_call):
+            raise CreditAnalysisError(
+                "confirmation assessment references an unknown candidate"
+            )
+        disposition = assessment.get("disposition")
+        if disposition not in dispositions:
             raise CreditAnalysisError("confirmation assessment disposition is invalid")
-        if not isinstance(assessment.get("reason"), str) or not assessment["reason"].strip():
+        if not isinstance(assessment.get("reason"), str) or not assessment[
+            "reason"
+        ].strip():
             raise CreditAnalysisError("confirmation assessment reason is missing")
         refs = _result_strings(assessment.get("evidence_refs"), "assessment evidence")
         for candidate in candidates:
@@ -8912,27 +8960,89 @@ def _validate_confirmation_result(
                 raise CreditAnalysisError(
                     "confirmation assessment was not checked against original evidence"
                 )
-        disposition = assessment["disposition"]
-        candidate_set = set(candidates)
-        if disposition == "confirmed-finding" and (
-            not candidate_set <= finding_candidate_ids
-            or bool(candidate_set & risk_candidate_ids)
-        ):
+        nested_findings = _result_objects(
+            assessment.get("confirmed_findings"), "assessment confirmed findings"
+        )
+        nested_risks = _result_objects(
+            assessment.get("plausible_risks"), "assessment plausible risks"
+        )
+        if disposition == "confirmed-finding":
+            if not nested_findings or nested_risks:
+                raise CreditAnalysisError(
+                    "confirmed assessment requires findings only"
+                )
+        elif disposition == "plausible-risk":
+            if not nested_risks or nested_findings:
+                raise CreditAnalysisError("risk assessment requires risks only")
+        elif nested_findings or nested_risks:
             raise CreditAnalysisError(
-                "confirmed assessment requires finding-only ownership"
+                "dismissed or necessary assessment has semantic objects"
             )
-        if disposition == "plausible-risk" and (
-            not candidate_set <= risk_candidate_ids
-            or bool(candidate_set & finding_candidate_ids)
-        ):
-            raise CreditAnalysisError("risk assessment requires risk-only ownership")
-        if disposition in {"dismissed-candidate", "necessary-exclusion"} and (
-            candidate_set & (finding_candidate_ids | risk_candidate_ids)
-        ):
-            raise CreditAnalysisError(
-                "dismissed or necessary assessment has semantic ownership"
+        calls = list(dict.fromkeys(candidate_to_call[item] for item in candidates))
+        for finding_index, child_finding in enumerate(nested_findings, start=1):
+            _closed_result(
+                child_finding,
+                CONFIRMATION_CHILD_FINDING_FIELDS,
+                f"confirmed child finding {index}.{finding_index}",
             )
-    if _expanded_assessment_candidates(assessments) != task["candidate_ids"]:
+            validated = _validate_confirmation_finding(
+                {
+                    **child_finding,
+                    "candidate_ids": candidates,
+                    "affected_call_ids": calls,
+                },
+                surface_id=str(task["surface_id"]),
+                candidate_to_call=candidate_to_call,
+                allowed_refs=allowed_refs,
+                contract=contract,
+                label=f"confirmed finding {index}.{finding_index}",
+            )
+            if validated["id"] in finding_ids:
+                raise CreditAnalysisError("confirmed finding ID is duplicated")
+            finding_ids.add(validated["id"])
+            findings.append(validated)
+        for risk_index, child_risk in enumerate(nested_risks, start=1):
+            _closed_result(
+                child_risk,
+                CONFIRMATION_CHILD_RISK_FIELDS,
+                f"confirmation risk {index}.{risk_index}",
+            )
+            risk_id = _identifier(child_risk.get("id"), "confirmation risk ID")
+            if risk_id in risk_ids:
+                raise CreditAnalysisError("confirmation risk ID is duplicated")
+            risk_ids.add(risk_id)
+            risk_refs = _result_strings(child_risk.get("evidence_refs"), "risk evidence")
+            for candidate in candidates:
+                if not set(risk_refs) & allowed_refs[candidate]:
+                    raise CreditAnalysisError(
+                        "confirmation risk lacks original evidence"
+                    )
+            _result_strings(
+                child_risk.get("competing_explanations"), "risk explanations"
+            )
+            _result_strings(
+                child_risk.get("verification_needed"), "risk verification"
+            )
+            if not isinstance(child_risk.get("missing_fact"), str) or not child_risk[
+                "missing_fact"
+            ].strip():
+                raise CreditAnalysisError("confirmation risk missing fact is absent")
+            risks.append(
+                {
+                    **child_risk,
+                    "candidate_ids": candidates,
+                    "affected_call_ids": calls,
+                }
+            )
+        normalized_assessments.append(
+            {
+                "candidate_ids": candidates,
+                "disposition": disposition,
+                "reason": assessment["reason"],
+                "evidence_refs": refs,
+            }
+        )
+    if _expanded_assessment_candidates(normalized_assessments) != task["candidate_ids"]:
         raise CreditAnalysisError(
             "confirmation coverage is missing, duplicated, or reordered"
         )
@@ -9006,7 +9116,19 @@ def _validate_confirmation_result(
             raise CreditAnalysisError("helper category review is incomplete or reordered")
     elif helper_reviews:
         raise CreditAnalysisError("helper category reviews belong to helper-contracts")
-    return dict(raw)
+    return {
+        "schema": CONFIRMATION_RESULT_SCHEMA,
+        "analysis_id": raw["analysis_id"],
+        "task_id": raw["task_id"],
+        "surface_id": raw["surface_id"],
+        "input_sha256": raw["input_sha256"],
+        "candidate_assessments": normalized_assessments,
+        "confirmed_findings": findings,
+        "plausible_risks": risks,
+        "temporary_control_reviews": reviews,
+        "temporary_control_contributions": contributions,
+        "helper_category_reviews": helper_reviews,
+    }
 
 
 FINDING_GROUP_FIELDS = {
@@ -9296,20 +9418,11 @@ def _output_schema_for_task(
     def fixed_string(value: str) -> dict[str, Any]:
         return {"type": "string", "const": value}
 
-    assessment = closed_object(
-        {
-            "candidate_ids": strings(nonempty=True),
-            "disposition": enum_string(contract["spark_dispositions"]),
-            "reason": string(),
-            "evidence_refs": strings(nonempty=True),
-        }
-    )
     spark_finding = closed_object(
         {
             "id": identifier(),
             "title": string(),
             "problem_summary": string(),
-            "candidate_ids": strings(nonempty=True),
             "evidence_refs": strings(nonempty=True),
             "producer_type": enum_string(contract["producer_types"]),
             "producer_owner": string(),
@@ -9323,7 +9436,6 @@ def _output_schema_for_task(
         {
             "id": identifier(),
             "description": string(),
-            "candidate_ids": strings(nonempty=True),
             "evidence_refs": strings(nonempty=True),
             "verification_needed": strings(nonempty=True),
             "material_variant_ids": identifiers(),
@@ -9333,38 +9445,37 @@ def _output_schema_for_task(
         {
             "id": identifier(),
             "problem_solved": string(),
-            "candidate_ids": strings(nonempty=True),
             "observed_temporary_control": string(),
             "canonical_owner_hint": string(),
             "evidence_refs": strings(nonempty=True),
             "material_variant_ids": identifiers(),
         }
     )
+    assessment = closed_object(
+        {
+            "candidate_ids": strings(nonempty=True),
+            "disposition": enum_string(contract["spark_dispositions"]),
+            "reason": string(),
+            "evidence_refs": strings(nonempty=True),
+            "provisional_findings": objects(spark_finding),
+            "plausible_risks": objects(spark_risk),
+            "temporary_control_candidates": objects(spark_temporary),
+        }
+    )
 
     if task["phase"].startswith("spark-"):
-        required = sorted(SPARK_RESULT_FIELDS)
+        required = sorted(SPARK_CHILD_RESULT_FIELDS)
         properties: dict[str, Any] = {
-            "schema": fixed_string(SPARK_RESULT_SCHEMA),
+            "schema": fixed_string(SPARK_CHILD_RESULT_SCHEMA),
             "analysis_id": fixed_string(str(state["analysis_id"])),
             "task_id": fixed_string(str(task["task_id"])),
             "surface_id": fixed_string(str(task["surface_id"])),
             "stage": fixed_string(str(task["stage"])),
             "input_sha256": fixed_string(input_sha256),
             "candidate_assessments": objects(assessment, nonempty=True),
-            "provisional_findings": objects(spark_finding),
-            "plausible_risks": objects(spark_risk),
-            "temporary_control_candidates": objects(spark_temporary),
             "preserved_variant_ids": identifiers(),
         }
     elif task["phase"] == "surface-confirmation":
-        confirmation_assessment = closed_object(
-            {
-                "candidate_ids": strings(nonempty=True),
-                "disposition": enum_string(contract["confirmation_dispositions"]),
-                "reason": string(),
-                "evidence_refs": strings(nonempty=True),
-            }
-        )
         recurrence = closed_object(
             {
                 "calls_saved_per_affected_run": number(),
@@ -9387,8 +9498,6 @@ def _output_schema_for_task(
                 "title": string(),
                 "problem_summary": string(),
                 "waste_kind": enum_string(contract["waste_kinds"]),
-                "candidate_ids": strings(nonempty=True),
-                "affected_call_ids": strings(nonempty=True),
                 "evidence_refs": strings(nonempty=True),
                 "evidence_narrative": string(),
                 "producer_type": enum_string(contract["producer_types"]),
@@ -9414,12 +9523,20 @@ def _output_schema_for_task(
             {
                 "id": identifier(),
                 "description": string(),
-                "candidate_ids": strings(nonempty=True),
-                "affected_call_ids": strings(nonempty=True),
                 "evidence_refs": strings(nonempty=True),
                 "competing_explanations": strings(nonempty=True),
                 "missing_fact": string(),
                 "verification_needed": strings(nonempty=True),
+            }
+        )
+        confirmation_assessment = closed_object(
+            {
+                "candidate_ids": strings(nonempty=True),
+                "disposition": enum_string(contract["confirmation_dispositions"]),
+                "reason": string(),
+                "evidence_refs": strings(nonempty=True),
+                "confirmed_findings": objects(confirmation_finding),
+                "plausible_risks": objects(confirmation_risk),
             }
         )
         temporary_recurrence = closed_object(
@@ -9474,9 +9591,9 @@ def _output_schema_for_task(
                 "reason": string(),
             }
         )
-        required = sorted(CONFIRMATION_RESULT_FIELDS)
+        required = sorted(CONFIRMATION_CHILD_RESULT_FIELDS)
         properties = {
-            "schema": fixed_string(CONFIRMATION_RESULT_SCHEMA),
+            "schema": fixed_string(CONFIRMATION_CHILD_RESULT_SCHEMA),
             "analysis_id": fixed_string(str(state["analysis_id"])),
             "task_id": fixed_string(str(task["task_id"])),
             "surface_id": fixed_string(str(task["surface_id"])),
@@ -9484,8 +9601,6 @@ def _output_schema_for_task(
             "candidate_assessments": objects(
                 confirmation_assessment, nonempty=True
             ),
-            "confirmed_findings": objects(confirmation_finding),
-            "plausible_risks": objects(confirmation_risk),
             "temporary_control_reviews": objects(temporary_review),
             "temporary_control_contributions": objects(temporary_contribution),
             "helper_category_reviews": objects(helper_review),
@@ -9601,18 +9716,21 @@ def _task_prompt(
         f"Phase: {task['phase']}\nInput SHA-256: {input_sha256}\n\n"
     )
     spark_ownership_contract = (
-        "Semantic ownership is single-source and exclusive: every candidate classified "
-        "as `provisional-finding-evidence` appears in candidate_ids of at least one "
-        "provisional finding and no risk; every `plausible-risk` candidate appears in "
-        "candidate_ids of at least one risk and no finding; `dismissed-candidate` and "
-        "`necessary-exclusion` candidates appear in neither findings nor risks."
+        "Semantic ownership is nested and exclusive: a "
+        "`provisional-finding-evidence` assessment has one or more nested "
+        "provisional_findings and no plausible_risks; a `plausible-risk` assessment "
+        "has one or more nested plausible_risks and no provisional_findings; "
+        "`dismissed-candidate` and `necessary-exclusion` assessments have neither. "
+        "Nested semantic objects inherit their assessment's candidate_ids; do not "
+        "repeat candidate_ids inside them."
     )
     assessment_partition_contract = (
         "`candidate_assessments` must be one ordered partition: concatenating every "
         "assessment's candidate_ids must reproduce the input candidate_ids exactly, "
         "with the same length and order. Each candidate ID appears once total. Never "
         "repeat a candidate in parallel assessments for secondary interpretations; "
-        "choose its single disposition."
+        "choose its single disposition and split adjacent candidates when their nested "
+        "semantic objects differ."
     )
     if task["phase"] == "spark-primary":
         instructions = f"""Primary Spark discovery for `{task['surface_id']}`.
@@ -9629,7 +9747,8 @@ Group adjacent candidates into one assessment when disposition and reason match;
 the ordered union of their evidence refs and keep expanded order exact.
 {spark_ownership_contract} Producer types must be one of:
 {', '.join(contract['producer_types'])}. Every finding, risk, and temporary-control
-object must own at least one candidate ID and one evidence reference.
+object must contain at least one evidence reference. Temporary-control candidates are
+nested in the assessment whose candidate IDs they inherit.
 {assessment_partition_contract}
 """
     elif task["phase"] == "spark-consolidation":
@@ -9643,8 +9762,8 @@ this ordered list: {json.dumps(input_variant_ids)}. Do not invent a new semantic
 disposition merely to shorten the packet.
 Group adjacent candidates into one assessment when disposition and reason match; cite
 the ordered union of their evidence refs and preserve exact order.
-{spark_ownership_contract} Every finding, risk, and temporary-control object must own at
-least one candidate ID and one evidence reference. {assessment_partition_contract}
+{spark_ownership_contract} Every finding, risk, and temporary-control object must contain
+at least one evidence reference. {assessment_partition_contract}
 """
     elif task["phase"] == "surface-confirmation":
         surface = str(task["surface_id"])
@@ -9672,7 +9791,8 @@ temporary-control candidate; never rely on Spark summaries alone. Account for
 candidates in exact input order, each exactly once, using one of:
 {', '.join(contract['confirmation_dispositions'])}. Every assessment and every
 finding/risk must cite an original evidence reference for each candidate. Preserve
-every supported finding. Every finding and risk must own at least one candidate ID.
+every supported finding. Findings and risks are nested in their owning assessment and
+inherit its candidate IDs and affected call IDs; do not repeat those fields inside.
 A volume-only finding uses
 `context-volume` and zero call savings. Do not classify ordinary model error as
 avoidable without a concise durable recurring control. Do not use catch-all
@@ -9680,11 +9800,11 @@ necessity, and leave a genuinely decision-blocking gap as a risk. The evidence m
 declares its compact mapping columns in `fields` and its complete ordered values in
 `rows`; it is not a semantic classification. Group adjacent candidates into one
 assessment when disposition and reason match; cite the ordered union of their evidence
-refs and preserve exact expanded order. Semantic ownership is single-source and
-exclusive: every `confirmed-finding` candidate appears in candidate_ids of at least one
-finding and no risk; every `plausible-risk` candidate appears in candidate_ids of at
-least one risk and no finding; `dismissed-candidate` and `necessary-exclusion`
-candidates appear in neither. {assessment_partition_contract}
+refs and preserve exact expanded order. Semantic ownership is nested and exclusive: a
+`confirmed-finding` assessment has one or more nested confirmed_findings and no
+plausible_risks; a `plausible-risk` assessment has one or more nested plausible_risks
+and no confirmed_findings; `dismissed-candidate` and `necessary-exclusion` assessments
+have neither. {assessment_partition_contract}
 {temporary} {helper}
 """
         instructions += "\nSurface contract:\n" + _surface_reference_text(surface, contract)

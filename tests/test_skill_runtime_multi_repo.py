@@ -1626,7 +1626,6 @@ class FakeCreditModelRunner:
         candidate_ids = list(task["candidate_ids"])
         variants = list(packet.get("input_variant_ids", []))
         findings: list[dict[str, Any]] = []
-        risks: list[dict[str, Any]] = []
         temporary: list[dict[str, Any]] = []
         assessments: list[dict[str, Any]] = []
         if task["stage"] == "primary":
@@ -1660,7 +1659,7 @@ class FakeCreditModelRunner:
                     {
                         "id": "rework-validation.temporary",
                         "problem_solved": "Synthetic temporary orchestration",
-                        "candidate_ids": candidate_ids[:5],
+                        "candidate_ids": [candidate_ids[0]],
                         "observed_temporary_control": "temporary synthetic helper",
                         "canonical_owner_hint": "workflow:shared",
                         "evidence_refs": ["evidence://synthetic/temporary"],
@@ -1673,17 +1672,29 @@ class FakeCreditModelRunner:
                 for candidate in finding["candidate_ids"]
             }
             for candidate_id in candidate_ids:
-                finding_owned = candidate_id in finding_candidates
+                nested_findings = [
+                    {key: value for key, value in finding.items() if key != "candidate_ids"}
+                    for finding in findings
+                    if candidate_id in finding["candidate_ids"]
+                ]
+                nested_temporary = [
+                    {key: value for key, value in item.items() if key != "candidate_ids"}
+                    for item in temporary
+                    if candidate_id in item["candidate_ids"]
+                ]
                 assessments.append(
                     {
                         "candidate_ids": [candidate_id],
                         "disposition": (
                             "provisional-finding-evidence"
-                            if finding_owned
+                            if candidate_id in finding_candidates
                             else "dismissed-candidate"
                         ),
                         "reason": "Synthetic evidence was fully reviewed.",
                         "evidence_refs": ["evidence://synthetic/primary"],
+                        "provisional_findings": nested_findings,
+                        "plausible_risks": [],
+                        "temporary_control_candidates": nested_temporary,
                     }
                 )
         else:
@@ -1704,22 +1715,30 @@ class FakeCreditModelRunner:
                         "material_variant_ids": [variant_id],
                     }
                 )
-            finding_owned = bool(findings)
-            for candidate_id in candidate_ids:
-                assessments.append(
-                    {
-                        "candidate_ids": [candidate_id],
-                        "disposition": (
-                            "provisional-finding-evidence"
-                            if finding_owned
-                            else "dismissed-candidate"
-                        ),
-                        "reason": "Consolidation preserved the candidate and variants.",
-                        "evidence_refs": ["evidence://synthetic/consolidated"],
-                    }
-                )
+            assessments.append(
+                {
+                    "candidate_ids": candidate_ids,
+                    "disposition": (
+                        "provisional-finding-evidence"
+                        if findings
+                        else "dismissed-candidate"
+                    ),
+                    "reason": "Consolidation preserved the candidate and variants.",
+                    "evidence_refs": ["evidence://synthetic/consolidated"],
+                    "provisional_findings": [
+                        {
+                            key: value
+                            for key, value in finding.items()
+                            if key != "candidate_ids"
+                        }
+                        for finding in findings
+                    ],
+                    "plausible_risks": [],
+                    "temporary_control_candidates": [],
+                }
+            )
         return {
-            "schema": "ceratops-credit-analysis-spark-result.v2",
+            "schema": "ceratops-credit-analysis-spark-child-result.v3",
             "analysis_id": task["candidate_ids"][0].split(".", 1)[0]
             if candidate_ids
             else str(packet["analysis_id"]),
@@ -1728,9 +1747,6 @@ class FakeCreditModelRunner:
             "stage": task["stage"],
             "input_sha256": digest,
             "candidate_assessments": assessments,
-            "provisional_findings": findings,
-            "plausible_risks": risks,
-            "temporary_control_candidates": temporary,
             "preserved_variant_ids": variants,
         }
 
@@ -1773,6 +1789,15 @@ class FakeCreditModelRunner:
             candidate_id = str(evidence["candidate_id"])
             finding_id = candidate_to_finding.get(candidate_id)
             dossier = dossier_by_candidate.get(candidate_id)
+            nested_findings = [
+                {
+                    key: value
+                    for key, value in finding.items()
+                    if key not in {"candidate_ids", "affected_call_ids"}
+                }
+                for finding in findings
+                if candidate_id in finding["candidate_ids"]
+            ]
             assessments.append(
                 {
                     "candidate_ids": [candidate_id],
@@ -1785,6 +1810,8 @@ class FakeCreditModelRunner:
                         if dossier is not None
                         else str(evidence["original_evidence_ref"])
                     ],
+                    "confirmed_findings": nested_findings,
+                    "plausible_risks": [],
                 }
             )
         reviews: list[dict[str, Any]] = []
@@ -1874,14 +1901,12 @@ class FakeCreditModelRunner:
                 for category in packet["helper_categories"]
             ]
         return {
-            "schema": "ceratops-credit-analysis-confirmation-result.v2",
+            "schema": "ceratops-credit-analysis-confirmation-child-result.v3",
             "analysis_id": str(packet["analysis_id"]),
             "task_id": task["task_id"],
             "surface_id": surface,
             "input_sha256": digest,
             "candidate_assessments": assessments,
-            "confirmed_findings": findings,
-            "plausible_risks": [],
             "temporary_control_reviews": reviews,
             "temporary_control_contributions": contributions,
             "helper_category_reviews": helper_reviews,
@@ -2383,14 +2408,17 @@ def test_credit_analysis_child_command_places_global_approval_before_exec(
                 "disposition",
                 "reason",
                 "evidence_refs",
+                "provisional_findings",
+                "plausible_risks",
+                "temporary_control_candidates",
             }
             assert set(assessment_schema["disposition"]["enum"]) == set(
                 contract["spark_dispositions"]
             )
-            finding_schema = schema["properties"]["provisional_findings"][
-                "items"
-            ]["properties"]
-            assert finding_schema["candidate_ids"]["minItems"] == 1
+            finding_schema = assessment_schema["provisional_findings"]["items"][
+                "properties"
+            ]
+            assert "candidate_ids" not in finding_schema
             assert finding_schema["evidence_refs"]["minItems"] == 1
         elif task["phase"] == "surface-confirmation":
             review_schema = schema["properties"]["temporary_control_reviews"][
@@ -2401,10 +2429,14 @@ def test_credit_analysis_child_command_places_global_approval_before_exec(
                 "items"
             ]["properties"]
             assert_identifier_schema(helper_schema["finding_ids"]["items"])
-            finding_schema = schema["properties"]["confirmed_findings"]["items"][
+            assessment_schema = schema["properties"]["candidate_assessments"][
+                "items"
+            ]["properties"]
+            finding_schema = assessment_schema["confirmed_findings"]["items"][
                 "properties"
             ]
-            assert finding_schema["candidate_ids"]["minItems"] == 1
+            assert "candidate_ids" not in finding_schema
+            assert "affected_call_ids" not in finding_schema
             assert finding_schema["targeted_verification"]["minItems"] == 1
         else:
             merge_schema = schema["properties"]["temporary_control_merges"][
@@ -2423,12 +2455,12 @@ def test_credit_analysis_child_command_places_global_approval_before_exec(
         input_variant_ids=[],
         contract=contract,
     )
-    assert "Semantic ownership is single-source and exclusive" in spark_prompt
-    assert "`plausible-risk` candidate appears in" in spark_prompt
-    assert "`necessary-exclusion` candidates appear in neither" in spark_prompt
+    assert "Semantic ownership is nested and exclusive" in spark_prompt
+    assert "`plausible-risk` assessment" in spark_prompt
+    assert "`necessary-exclusion` assessments have neither" in spark_prompt
     assert "`candidate_assessments` must be one ordered partition" in spark_prompt
     assert "Each candidate ID appears once total" in spark_prompt
-    assert "must own at least one candidate ID" in spark_prompt
+    assert "inherit their assessment's candidate_ids" in spark_prompt
 
 
 def test_credit_analysis_workflow_rejects_invalid_and_conflicting_passes(
@@ -2535,26 +2567,24 @@ def test_credit_analysis_workflow_rejects_invalid_and_conflicting_passes(
         ) -> dict[str, Any]:
             result = super()._spark(task, packet, digest)
             if task["stage"] == "primary" and result["candidate_assessments"]:
-                candidate_id = str(task["candidate_ids"][0])
                 risk_id = f"{task['surface_id']}.mixed-link"
-                result["plausible_risks"].append(
+                assessment = result["candidate_assessments"][0]
+                assessment["plausible_risks"].append(
                     {
                         "id": risk_id,
                         "description": "Synthetic risk linked to the wrong disposition.",
-                        "candidate_ids": [candidate_id],
                         "evidence_refs": ["evidence://synthetic/mixed-link"],
                         "verification_needed": ["inspect the original evidence"],
                         "material_variant_ids": [],
                     }
                 )
-                assessment = result["candidate_assessments"][0]
                 assessment["disposition"] = "necessary-exclusion"
             return result
 
     mixed_ownership_state = pathlib.Path(mixed_ownership_plan["state_path"])
     with pytest.raises(
         workflow.CreditAnalysisError,
-        match="dismissed or necessary Spark candidate has semantic ownership",
+        match="dismissed or necessary assessment has semantic objects",
     ):
         workflow.command_execute_orchestration(
             mixed_ownership_state,
@@ -2625,7 +2655,7 @@ def test_credit_analysis_workflow_rejects_invalid_and_conflicting_passes(
 
     retry_runner = InvalidOnceRunner()
     retry_state_path = pathlib.Path(retry_plan["state_path"])
-    with pytest.raises(workflow.CreditAnalysisError, match="Spark result"):
+    with pytest.raises(workflow.CreditAnalysisError, match="Spark child result"):
         workflow.command_execute_orchestration(
             retry_state_path,
             runner=retry_runner,
