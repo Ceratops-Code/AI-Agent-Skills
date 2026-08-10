@@ -1,22 +1,24 @@
 #!/usr/bin/env python3
-"""Apply one approved, mechanically validated rules/history transaction.
+"""Apply one approved, validated champion without reformatting its text.
 
 The UTF-8 JSON request has the closed top-level fields ``version``,
-``task_temp_root``, ``request_disposable``, ``rule_stack``,
-``rule_replacements``, and ``history_operations``.
+``task_temp_root``, ownership flags, ``rule_stack``, the exact validated
+candidate path and hash, caller-selected validation evidence, and
+``history_operations``.
 ``rule_stack`` lists the global source first and every source in one complete
-project scope after it. Paths are resolved from the caller's working directory.
-Each replacement names its rules source, companion history source, exact
-expected-old text, and exact replacement text. History operations support only
-an approved ``append`` entry.
+project scope after it. The candidate is the sole replacement-text owner and
+names each target, companion history, source hash, declared Markdown policy,
+and every exact replacement. History operations support only an approved
+``append`` entry.
 
 This helper owns stale-text detection, structural validation, change coverage,
 rollback-protected writes, and successful-request cleanup. It deletes the exact
-unchanged request only when the request declares workflow ownership beneath a
+unchanged artifacts only when the request declares workflow ownership beneath a
 verified task-temp root and the transaction, reopen, and validation all pass.
-Every failure preserves the request for diagnosis. It does not establish
-semantic equivalence; the calling governance workflow must account for every
-operative old-text clause.
+Every failure preserves them for diagnosis. It invokes the shared candidate
+validator in check-only mode, applies the approved replacement text unchanged,
+and never reformats it. Semantic equivalence remains the calling workflow's
+responsibility.
 """
 
 from __future__ import annotations
@@ -39,28 +41,29 @@ from rule_graph import (
     HISTORY_VERSION,
     ParsedRuleSource,
     RuleRecord,
-    instruction_scope_map,
     load_history_source,
     parse_history_text,
-    parse_rule_text,
-    validate_rule_stack,
+)
+from validate_rule_candidate import (
+    RuleCandidateValidationError,
+    TextSource,
+    read_source,
+    validate_rule_candidate,
+    validate_stack_texts,
 )
 
-REQUEST_VERSION = 2
-UTF8_BOM = b"\xef\xbb\xbf"
+REQUEST_VERSION = 3
 ROOT_FIELDS = {
     "version",
     "task_temp_root",
     "request_disposable",
     "rule_stack",
-    "rule_replacements",
+    "validated_candidate",
+    "validated_candidate_sha256",
+    "candidate_disposable",
+    "validation_evidence",
+    "validation_evidence_disposable",
     "history_operations",
-}
-REPLACEMENT_FIELDS = {
-    "rules",
-    "history",
-    "expected_old",
-    "replacement",
 }
 HISTORY_OPERATION_FIELDS = {"history", "operation", "entry"}
 
@@ -76,22 +79,6 @@ class CompactParser(argparse.ArgumentParser):
         raise ApplicationError(message)
 
 
-@dataclass(frozen=True)
-class TextSource:
-    """Original bytes plus the encoding and newline state that must survive."""
-
-    path: Path
-    raw: bytes
-    text: str
-    has_bom: bool
-    newline: str
-    trailing_newline: bool
-
-    def encode(self, text: str) -> bytes:
-        encoded = text.encode("utf-8")
-        return UTF8_BOM + encoded if self.has_bom else encoded
-
-
 @dataclass
 class PreparedUpdate:
     """Fully validated candidates and evidence needed for commit/reopen checks."""
@@ -103,6 +90,13 @@ class PreparedUpdate:
     expected_history_entries: dict[Path, list[dict[str, object]]]
     task_temp_root: Path
     request_disposable: bool
+    candidate_path: Path
+    candidate_sha256: str
+    candidate_disposable: bool
+    validation_evidence: Path
+    validation_evidence_sha256: str
+    validation_evidence_disposable: bool
+    policy_hashes: dict[Path, str]
 
 
 def require_fields(value: object, fields: set[str], label: str) -> dict[str, Any]:
@@ -185,29 +179,35 @@ def verified_task_temp_root(value: object) -> Path:
     return resolved
 
 
-def workflow_request(path: Path, task_temp_root: Path) -> Path:
-    """Validate the exact disposable request without deriving its name."""
+def workflow_artifact(path: Path, task_temp_root: Path, label: str) -> Path:
+    """Validate one exact disposable artifact without deriving its name."""
 
     lexical = absolute_path(path)
     try:
         relative = lexical.relative_to(task_temp_root)
     except ValueError as error:
-        raise ApplicationError("disposable request escapes task_temp_root") from error
+        raise ApplicationError(f"disposable {label} escapes task_temp_root") from error
     if not relative.parts:
-        raise ApplicationError("disposable request must be beneath task_temp_root")
+        raise ApplicationError(f"disposable {label} must be beneath task_temp_root")
     current = task_temp_root
     for part in relative.parts:
         current = current / part
         if is_link(current):
             raise ApplicationError(
-                f"disposable request uses a symlink or junction: {current}"
+                f"disposable {label} uses a symlink or junction: {current}"
             )
     if not lexical.is_file():
-        raise ApplicationError(f"disposable request is not a regular file: {lexical}")
-    if inside_git_worktree(lexical.parent, "disposable request"):
-        raise ApplicationError("disposable request must not be a repository file")
+        raise ApplicationError(
+            f"disposable {label} is not a regular file: {lexical}"
+        )
+    if inside_git_worktree(lexical.parent, f"disposable {label}"):
+        raise ApplicationError(
+            f"disposable {label} must not be a repository file"
+        )
     if lexical.resolve(strict=True).parent != lexical.parent.resolve(strict=True):
-        raise ApplicationError("disposable request resolves outside its directory")
+        raise ApplicationError(
+            f"disposable {label} resolves outside its directory"
+        )
     return lexical
 
 
@@ -221,46 +221,6 @@ def file_hash(path: Path) -> str:
     return digest.hexdigest()
 
 
-def newline_styles(text: str) -> set[str]:
-    """Return every concrete line-ending form present in text."""
-    without_crlf = text.replace("\r\n", "")
-    styles: set[str] = set()
-    if "\r\n" in text:
-        styles.add("\r\n")
-    if "\n" in without_crlf:
-        styles.add("\n")
-    if "\r" in without_crlf:
-        styles.add("\r")
-    return styles
-
-
-def read_source(path: Path, label: str) -> TextSource:
-    """Read one UTF-8 source without normalizing bytes or line endings."""
-    if not path.is_file():
-        raise ApplicationError(f"{label} does not exist: {path}")
-    raw = path.read_bytes()
-    has_bom = raw.startswith(UTF8_BOM)
-    payload = raw[len(UTF8_BOM) :] if has_bom else raw
-    try:
-        text = payload.decode("utf-8")
-    except UnicodeDecodeError as error:
-        raise ApplicationError(f"{label} is not UTF-8: {path}") from error
-    if not text.strip():
-        raise ApplicationError(f"{label} is empty: {path}")
-    styles = newline_styles(text)
-    if len(styles) > 1:
-        raise ApplicationError(f"{label} has mixed line endings: {path}")
-    newline = next(iter(styles), "\n")
-    return TextSource(
-        path=path,
-        raw=raw,
-        text=text,
-        has_bom=has_bom,
-        newline=newline,
-        trailing_newline=text.endswith(newline),
-    )
-
-
 def finding_text(prefix: str, finding: dict[str, object]) -> str:
     """Compress one validator finding without dumping the full graph."""
     code = finding.get("code", "unknown")
@@ -270,49 +230,6 @@ def finding_text(prefix: str, finding: dict[str, object]) -> str:
     line = finding.get("line")
     location = f" {source}:{line}" if source and line else ""
     return f"{prefix}: {code}{rule}{target}{location}"
-
-
-def review_key(review: dict[str, object]) -> str:
-    """Ignore line drift while retaining semantic-review identity."""
-    stable = {key: value for key, value in review.items() if key != "line"}
-    return json.dumps(stable, separators=(",", ":"), sort_keys=True)
-
-
-def validate_stack_texts(
-    stack_paths: list[Path],
-    texts: dict[Path, str],
-    *,
-    label: str,
-    allow_findings: bool = False,
-) -> tuple[list[ParsedRuleSource], dict[str, Any], set[str]]:
-    """Run shared validators over one global-plus-project instruction unit."""
-    parsed = [
-        parse_rule_text(texts[path], str(path))
-        for path in stack_paths
-    ]
-    for source in parsed:
-        if source.findings and not allow_findings:
-            raise ApplicationError(finding_text(label, source.findings[0]))
-    validation = validate_rule_stack(
-        parsed,
-        scope_by_source=instruction_scope_map(
-            parsed,
-            global_source=str(stack_paths[0]),
-        ),
-    )
-    findings = cast(list[dict[str, object]], validation["findings"])
-    if findings and not allow_findings:
-        raise ApplicationError(finding_text(label, findings[0]))
-    reviews = [
-        *(
-            review
-            for source in parsed
-            for review in source.semantic_reviews
-        ),
-        *cast(list[dict[str, object]], validation["semantic_reviews"]),
-    ]
-    review_keys = {review_key(review) for review in reviews}
-    return parsed, validation, review_keys
 
 
 def record_signature(record: RuleRecord) -> tuple[object, ...]:
@@ -338,62 +255,6 @@ def changed_rule_ids(
         for rule_id in old.keys() | new.keys()
         if old.get(rule_id) != new.get(rule_id)
     }
-
-
-def exact_occurrences(text: str, needle: str) -> list[int]:
-    """Return overlapping exact-match starts so ambiguity cannot hide."""
-    return [
-        match.start()
-        for match in re.finditer(f"(?={re.escape(needle)})", text)
-    ]
-
-
-def apply_replacements(
-    source: TextSource, replacements: list[dict[str, Any]]
-) -> str:
-    """Construct one non-overlapping exact replacement candidate in memory."""
-    spans: list[tuple[int, int, str]] = []
-    for index, replacement in enumerate(replacements):
-        expected = replacement["expected_old"]
-        new_text = replacement["replacement"]
-        if not isinstance(expected, str) or not expected:
-            raise ApplicationError(
-                f"rule_replacements[{index}].expected_old must be non-empty text"
-            )
-        if not isinstance(new_text, str):
-            raise ApplicationError(
-                f"rule_replacements[{index}].replacement must be text"
-            )
-        matches = exact_occurrences(source.text, expected)
-        if len(matches) != 1:
-            raise ApplicationError(
-                f"expected_old occurrence count is {len(matches)} in {source.path}"
-            )
-        start = matches[0]
-        spans.append((start, start + len(expected), new_text))
-    spans.sort(key=lambda item: item[0])
-    for previous, current in zip(spans, spans[1:], strict=False):
-        if current[0] < previous[1]:
-            raise ApplicationError(
-                f"rule replacements overlap in {source.path}"
-            )
-    parts: list[str] = []
-    cursor = 0
-    for start, end, new_value in spans:
-        parts.extend((source.text[cursor:start], new_value))
-        cursor = end
-    parts.append(source.text[cursor:])
-    candidate = "".join(parts)
-    styles = newline_styles(candidate)
-    if styles and styles != {source.newline}:
-        raise ApplicationError(
-            f"replacement changes line-ending convention in {source.path}"
-        )
-    if candidate.endswith(source.newline) != source.trailing_newline:
-        raise ApplicationError(
-            f"replacement changes trailing newline state in {source.path}"
-        )
-    return candidate
 
 
 def render_history(
@@ -441,6 +302,54 @@ def prepare(request: dict[str, Any]) -> PreparedUpdate:
     if len(stack_paths) != len(set(stack_paths)):
         raise ApplicationError("rule_stack paths must be unique")
 
+    candidate_path = require_path(
+        request["validated_candidate"],
+        "validated_candidate",
+    )
+    expected_candidate_hash = request["validated_candidate_sha256"]
+    if (
+        not isinstance(expected_candidate_hash, str)
+        or not re.fullmatch(r"[0-9a-f]{64}", expected_candidate_hash)
+    ):
+        raise ApplicationError("validated_candidate_sha256 is invalid")
+    if not candidate_path.is_file():
+        raise ApplicationError(f"validated_candidate does not exist: {candidate_path}")
+    if file_hash(candidate_path) != expected_candidate_hash:
+        raise ApplicationError("validated_candidate_sha256 is stale")
+    validation_evidence = require_path(
+        request["validation_evidence"],
+        "validation_evidence",
+    )
+    if not validation_evidence.parent.is_dir():
+        raise ApplicationError("validation_evidence directory does not exist")
+    if validation_evidence == candidate_path:
+        raise ApplicationError("validation_evidence must differ from candidate")
+    candidate_disposable = request["candidate_disposable"]
+    evidence_disposable = request["validation_evidence_disposable"]
+    if not isinstance(candidate_disposable, bool):
+        raise ApplicationError("candidate_disposable must be boolean")
+    if not isinstance(evidence_disposable, bool):
+        raise ApplicationError("validation_evidence_disposable must be boolean")
+    if candidate_disposable:
+        workflow_artifact(candidate_path, task_temp_root, "candidate")
+
+    try:
+        validation = validate_rule_candidate(
+            candidate_path,
+            validation_evidence,
+            fix=False,
+        )
+    except RuleCandidateValidationError as error:
+        raise ApplicationError(str(error)) from error
+    if validation.candidate_sha256 != expected_candidate_hash:
+        raise ApplicationError("validated candidate changed during check-only validation")
+    if evidence_disposable:
+        workflow_artifact(validation_evidence, task_temp_root, "validation evidence")
+    validation_evidence_sha256 = file_hash(validation_evidence)
+
+    candidate_stack = validation.candidate["rule_stack"]
+    if [require_path(value, "candidate rule_stack") for value in candidate_stack] != stack_paths:
+        raise ApplicationError("candidate rule_stack differs from request rule_stack")
     rule_sources = {
         path: read_source(path, "rules source") for path in stack_paths
     }
@@ -453,20 +362,21 @@ def prepare(request: dict[str, Any]) -> PreparedUpdate:
         allow_findings=True,
     )
 
-    replacement_values = request["rule_replacements"]
-    if not isinstance(replacement_values, list) or not replacement_values:
-        raise ApplicationError("rule_replacements must be a non-empty list")
-    replacements_by_rules: dict[Path, list[dict[str, Any]]] = {}
     history_by_rules: dict[Path, Path] = {}
-    for index, value in enumerate(replacement_values):
-        replacement = require_fields(
-            value, REPLACEMENT_FIELDS, f"rule_replacements[{index}]"
-        )
-        rules = require_path(
-            replacement["rules"], f"rule_replacements[{index}].rules"
-        )
+    policy_hashes: dict[Path, str] = {}
+    targets = validation.candidate["targets"]
+    if not isinstance(targets, list) or not targets:
+        raise ApplicationError("validated candidate has no targets")
+    for index, target in enumerate(targets):
+        if not isinstance(target, dict):
+            raise ApplicationError(f"candidate target {index} must be an object")
+        rules = require_path(target["rules"], f"candidate target {index}.rules")
+        if target["history"] is None:
+            raise ApplicationError(
+                f"candidate target lacks companion history: {rules}"
+            )
         history = require_path(
-            replacement["history"], f"rule_replacements[{index}].history"
+            target["history"], f"candidate target {index}.history"
         )
         if rules not in rule_sources:
             raise ApplicationError(
@@ -480,15 +390,28 @@ def prepare(request: dict[str, Any]) -> PreparedUpdate:
         prior_history = history_by_rules.setdefault(rules, history)
         if prior_history != history:
             raise ApplicationError(f"rules target has multiple histories: {rules}")
-        replacements_by_rules.setdefault(rules, []).append(replacement)
+        policy = target["markdown_policy"]
+        if not isinstance(policy, dict):
+            raise ApplicationError(f"candidate target {index} policy is invalid")
+        configuration = require_path(
+            policy["configuration"],
+            f"candidate target {index}.markdown_policy.configuration",
+        )
+        configuration_hash = policy["configuration_sha256"]
+        if not isinstance(configuration_hash, str):
+            raise ApplicationError(
+                f"candidate target {index} policy hash is invalid"
+            )
+        prior_policy = policy_hashes.setdefault(configuration, configuration_hash)
+        if prior_policy != configuration_hash:
+            raise ApplicationError(
+                f"candidate has conflicting policy hashes: {configuration}"
+            )
 
     candidate_rule_texts = {
         path: source.text for path, source in rule_sources.items()
     }
-    for rules, replacements in replacements_by_rules.items():
-        candidate_rule_texts[rules] = apply_replacements(
-            rule_sources[rules], replacements
-        )
+    candidate_rule_texts.update(validation.prospective_texts)
     candidate_parsed, _, candidate_reviews = validate_stack_texts(
         stack_paths,
         candidate_rule_texts,
@@ -545,11 +468,11 @@ def prepare(request: dict[str, Any]) -> PreparedUpdate:
         )
 
     originals: dict[Path, TextSource] = {
-        rules: rule_sources[rules] for rules in replacements_by_rules
+        rules: rule_sources[rules] for rules in history_by_rules
     }
     candidates = {
         rules: rule_sources[rules].encode(candidate_rule_texts[rules])
-        for rules in replacements_by_rules
+        for rules in history_by_rules
     }
     expected_history_entries: dict[Path, list[dict[str, object]]] = {}
     for history, changed in changed_by_history.items():
@@ -595,6 +518,13 @@ def prepare(request: dict[str, Any]) -> PreparedUpdate:
         expected_history_entries=expected_history_entries,
         task_temp_root=task_temp_root,
         request_disposable=request_disposable,
+        candidate_path=candidate_path,
+        candidate_sha256=expected_candidate_hash,
+        candidate_disposable=candidate_disposable,
+        validation_evidence=validation_evidence,
+        validation_evidence_sha256=validation_evidence_sha256,
+        validation_evidence_disposable=evidence_disposable,
+        policy_hashes=policy_hashes,
     )
 
 
@@ -635,11 +565,24 @@ def rollback(
     return failures
 
 
+def verify_application_inputs(update: PreparedUpdate) -> None:
+    """Recheck the exact approved artifact and declared Markdown policies."""
+
+    if file_hash(update.candidate_path) != update.candidate_sha256:
+        raise ApplicationError("validated candidate changed before application")
+    for configuration, expected_hash in update.policy_hashes.items():
+        if file_hash(configuration) != expected_hash:
+            raise ApplicationError(
+                f"Markdown policy changed before application: {configuration}"
+            )
+
+
 def revalidate(update: PreparedUpdate) -> None:
     """Reopen committed targets and repeat shared validation and byte checks."""
     for path, expected in update.candidates.items():
         if path.read_bytes() != expected:
             raise ApplicationError(f"post-write bytes differ: {path}")
+    verify_application_inputs(update)
     reopened_rules = {
         path: read_source(path, "rules source").text
         for path in update.stack_paths
@@ -663,13 +606,16 @@ def commit(update: PreparedUpdate) -> None:
     staged: dict[Path, Path] = {}
     applied: list[Path] = []
     try:
+        verify_application_inputs(update)
         for path in targets:
             backups[path] = staged_copy(path, update.originals[path].raw, ".bak")
             staged[path] = staged_copy(path, update.candidates[path], ".new")
         for path in targets:
+            verify_application_inputs(update)
             if path.read_bytes() != update.originals[path].raw:
                 raise ApplicationError(f"source changed before commit: {path}")
         for path in targets:
+            verify_application_inputs(update)
             if path.read_bytes() != update.originals[path].raw:
                 raise ApplicationError(f"source changed during commit: {path}")
             applied.append(path)
@@ -708,13 +654,49 @@ def main() -> int:
         request_sha256 = file_hash(request_path)
         update = prepare(load_request(request_path))
         if update.request_disposable:
-            request_path = workflow_request(request_path, update.task_temp_root)
+            request_path = workflow_artifact(
+                request_path,
+                update.task_temp_root,
+                "request",
+            )
+        if request_path in {update.candidate_path, update.validation_evidence}:
+            raise ApplicationError("request, candidate, and evidence paths must differ")
         commit(update)
+        cleanup: list[tuple[Path, str, str]] = []
+        if update.candidate_disposable:
+            candidate = workflow_artifact(
+                update.candidate_path,
+                update.task_temp_root,
+                "candidate",
+            )
+            cleanup.append((candidate, update.candidate_sha256, "candidate"))
+        if update.validation_evidence_disposable:
+            evidence = workflow_artifact(
+                update.validation_evidence,
+                update.task_temp_root,
+                "validation evidence",
+            )
+            cleanup.append(
+                (
+                    evidence,
+                    update.validation_evidence_sha256,
+                    "validation evidence",
+                )
+            )
         if update.request_disposable:
-            request_path = workflow_request(request_path, update.task_temp_root)
-            if file_hash(request_path) != request_sha256:
-                raise ApplicationError("disposable request changed during transaction")
-            request_path.unlink()
+            request_path = workflow_artifact(
+                request_path,
+                update.task_temp_root,
+                "request",
+            )
+            cleanup.append((request_path, request_sha256, "request"))
+        for path, expected_hash, label in cleanup:
+            if file_hash(path) != expected_hash:
+                raise ApplicationError(
+                    f"disposable {label} changed during transaction"
+                )
+        for path, _, _ in cleanup:
+            path.unlink()
         print("OK")
         return 0
     except (

@@ -52,6 +52,9 @@ SKILL_UPDATE_WORKFLOW = LIFECYCLE_SOURCE / "scripts" / "skill-update-workflow.py
 GOVERNANCE_SOURCE = ROOT / "skills" / "ceratops-governance-lifecycle"
 PROPOSAL_WORKFLOW = GOVERNANCE_SOURCE / "scripts" / "proposal-workflow.py"
 ITERATION_CONTROLLER = GOVERNANCE_SOURCE / "scripts" / "iteration_controller.py"
+RULE_CANDIDATE_VALIDATOR = (
+    GOVERNANCE_SOURCE / "scripts" / "validate_rule_candidate.py"
+)
 DEPLOY_OPERATION = REPOSITORY_LIFECYCLE_SOURCE / "scripts" / "run-deploy-operation.py"
 PROMOTE_REPOSITORY = REPOSITORY_LIFECYCLE_SOURCE / "scripts" / "promote-repository.py"
 MANAGE_PENDING_WORK = REPOSITORY_LIFECYCLE_SOURCE / "scripts" / "manage-pending-work.py"
@@ -5064,6 +5067,419 @@ def test_skill_update_workflow_preserves_baseline_runs_checks_once_and_finalizes
     assert undeclared_input.is_file() and outside_evidence.is_file()
 
 
+def rule_candidate_markdown_policy(
+    repository: pathlib.Path,
+    *,
+    line_length: int,
+    fix_mode: str | None = None,
+) -> dict[str, object]:
+    """Declare an isolated target-specific Markdown command for helper tests."""
+
+    repository.mkdir(parents=True, exist_ok=True)
+    configuration = repository / ".markdownlint.json"
+    configuration.write_text(
+        json.dumps(
+            {
+                "default": False,
+                "MD013": {
+                    "line_length": line_length,
+                    "code_blocks": False,
+                    "tables": False,
+                },
+                "MD047": True,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    tool = repository / "markdown-policy.py"
+    tool.write_text(
+        "import json, pathlib, re, sys\n"
+        "mode, config_name, file_name = sys.argv[1:]\n"
+        "path = pathlib.Path(file_name)\n"
+        "if mode == 'mutate':\n"
+        "    value = path.read_text(encoding='utf-8-sig')\n"
+        "    path.write_text(value.replace('safe', 'unsafe', 1), "
+        "encoding='utf-8', newline='\\n')\n"
+        "    raise SystemExit(0)\n"
+        "config = json.loads(pathlib.Path(config_name).read_text(encoding='utf-8'))\n"
+        "limit = config['MD013']['line_length']\n"
+        "fence = None\n"
+        "html = None\n"
+        "reference = False\n"
+        "for number, line in enumerate(path.read_text(encoding='utf-8-sig').splitlines(), 1):\n"
+        "    stripped = line.strip()\n"
+        "    marker = re.match(r'^(`{3,}|~{3,})', stripped)\n"
+        "    if fence is not None:\n"
+        "        if marker and marker.group(1)[0] == fence[0] and "
+        "len(marker.group(1)) >= fence[1]:\n"
+        "            fence = None\n"
+        "        continue\n"
+        "    if marker:\n"
+        "        fence = (marker.group(1)[0], len(marker.group(1)))\n"
+        "        continue\n"
+        "    if html is not None:\n"
+        "        if f'</{html}>' in stripped.lower():\n"
+        "            html = None\n"
+        "        continue\n"
+        "    html_open = re.match("
+        "r'^<([A-Za-z][A-Za-z0-9:-]*)(?:\\s[^>]*)?>', stripped)\n"
+        "    if html_open:\n"
+        "        opening = html_open.group(0)\n"
+        "        tag = html_open.group(1).lower()\n"
+        "        if not opening.endswith('/>') and "
+        "f'</{tag}>' not in stripped[html_open.end():].lower():\n"
+        "            html = tag\n"
+        "        continue\n"
+        "    definition = bool(re.match(r'^\\s{0,3}\\[[^]]+\\]:', line))\n"
+        "    continuation = reference and bool(re.match(r'^\\s{1,3}\\S', line))\n"
+        "    if definition:\n"
+        "        reference = True\n"
+        "    elif not continuation:\n"
+        "        reference = False\n"
+        "    protected = (definition or continuation or "
+        "line.startswith(('    ', '\\t')) or "
+        "bool(re.match(r'^\\s{0,3}#', line)) or "
+        "(stripped.startswith('|') and stripped.endswith('|')) or "
+        "bool(re.match(r'^\\s*<[^>]+>', line)) or "
+        "bool(re.match(r'^\\s*\\[[^]]+\\]:', line)))\n"
+        "    if not protected and len(line) > limit:\n"
+        "        print(f'{path}:{number}:1 MD013 line too long', file=sys.stderr)\n"
+        "        raise SystemExit(1)\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    validate_command = [
+        sys.executable,
+        str(tool),
+        "validate",
+        "{config}",
+        "{file}",
+    ]
+    fix_command = (
+        None
+        if fix_mode is None
+        else [
+            sys.executable,
+            str(tool),
+            fix_mode,
+            "{config}",
+            "{file}",
+        ]
+    )
+    return {
+        "repository_root": str(repository.resolve()),
+        "configuration": str(configuration.resolve()),
+        "configuration_sha256": hashlib.sha256(
+            configuration.read_bytes()
+        ).hexdigest(),
+        "validate_command": validate_command,
+        "fix_command": fix_command,
+    }
+
+
+def write_rule_candidate(
+    path: pathlib.Path,
+    *,
+    rule_stack: list[pathlib.Path],
+    targets: list[dict[str, object]],
+) -> None:
+    path.write_text(
+        json.dumps(
+            {
+                "schema": "ceratops-rule-candidate.v1",
+                "rule_stack": [str(item.resolve()) for item in rule_stack],
+                "targets": targets,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+
+
+def run_rule_candidate_validator(
+    candidate: pathlib.Path,
+    evidence: pathlib.Path,
+    *extra: str,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            sys.executable,
+            str(RULE_CANDIDATE_VALIDATOR),
+            "--candidate",
+            str(candidate),
+            "--evidence",
+            str(evidence),
+            *extra,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def test_rule_candidate_repairs_multiple_targets_and_is_idempotent(
+    tmp_path: pathlib.Path,
+) -> None:
+    first_repo = tmp_path / "first-repo"
+    second_repo = tmp_path / "second-repo"
+    first_policy = rule_candidate_markdown_policy(first_repo, line_length=48)
+    second_policy = rule_candidate_markdown_policy(second_repo, line_length=68)
+    first = first_repo / "contract.md"
+    second = second_repo / "contract.md"
+    first_text = (
+        "# First\n\n"
+        "Old prose.\n\n"
+        "  - Old nested item.\n\n"
+        "> > - Old quoted item.\n\n"
+        "````text\n"
+        "```\n"
+        "protected code line that is intentionally much longer than the limit\n"
+        "````\n\n"
+        "<div>\n"
+        "Old raw HTML.\n"
+        "</div>\n\n"
+        "[sample]: https://example.test/reference\n"
+        "  \"Old reference title.\"\n"
+    )
+    second_text = "# Second\n\nOld alpha.\n\nOld beta.\n"
+    first.write_text(first_text, encoding="utf-8", newline="\n")
+    second.write_text(second_text, encoding="utf-8", newline="\r\n")
+    candidate = tmp_path / "candidate.json"
+    evidence = tmp_path / "evidence.json"
+    first_replacements = [
+        {
+            "expected_old": "Old prose.",
+            "replacement": (
+                "Safe ordinary prose wraps deterministically while preserving "
+                "every original non-whitespace content character."
+            ),
+        },
+        {
+            "expected_old": "  - Old nested item.",
+            "replacement": (
+                "  - Nested list continuation wrapping preserves its exact "
+                "nesting and marker structure."
+            ),
+        },
+        {
+            "expected_old": "> > - Old quoted item.",
+            "replacement": (
+                "> > - Nested blockquote continuation wrapping preserves "
+                "both quote depths and list nesting."
+            ),
+        },
+        {
+            "expected_old": (
+                "````text\n"
+                "```\n"
+                "protected code line that is intentionally much longer than the limit\n"
+                "````"
+            ),
+            "replacement": (
+                "````text\n"
+                "```\n"
+                "protected code line that is intentionally much longer than the limit\n"
+                "````"
+            ),
+        },
+        {
+            "expected_old": "Old raw HTML.",
+            "replacement": (
+                "Raw HTML content remains byte-for-byte unwrapped even when its "
+                "opening tag is outside this replacement."
+            ),
+        },
+        {
+            "expected_old": '  "Old reference title."',
+            "replacement": (
+                '  "A reference definition continuation remains byte-for-byte '
+                'unwrapped under its surrounding Markdown context."'
+            ),
+        },
+    ]
+    second_replacements = [
+        {
+            "expected_old": "Old alpha.",
+            "replacement": "Alpha stays on one line under its wider configured policy.",
+        },
+        {
+            "expected_old": "Old beta.",
+            "replacement": (
+                "Beta remains independently replaceable and wraps with the "
+                "second target's CRLF convention when it exceeds that policy."
+            ),
+        },
+    ]
+    write_rule_candidate(
+        candidate,
+        rule_stack=[first, second],
+        targets=[
+            {
+                "rules": str(first.resolve()),
+                "history": None,
+                "source_sha256": hashlib.sha256(first.read_bytes()).hexdigest(),
+                "markdown_policy": first_policy,
+                "replacements": first_replacements,
+            },
+            {
+                "rules": str(second.resolve()),
+                "history": None,
+                "source_sha256": hashlib.sha256(second.read_bytes()).hexdigest(),
+                "markdown_policy": second_policy,
+                "replacements": second_replacements,
+            },
+        ],
+    )
+    original_sources = (first.read_bytes(), second.read_bytes())
+    validated = run_rule_candidate_validator(candidate, evidence)
+    assert validated.returncode == 0, validated.stderr
+    assert validated.stdout.strip() == "OK"
+    fixed = json.loads(candidate.read_text(encoding="utf-8"))
+    fixed_first = fixed["targets"][0]["replacements"]
+    fixed_second = fixed["targets"][1]["replacements"]
+    assert "\n" in fixed_first[0]["replacement"]
+    assert "\n    " in fixed_first[1]["replacement"]
+    assert "\n> >   " in fixed_first[2]["replacement"]
+    assert fixed_first[3]["replacement"] == first_replacements[3]["replacement"]
+    assert fixed_first[4]["replacement"] == first_replacements[4]["replacement"]
+    assert fixed_first[5]["replacement"] == first_replacements[5]["replacement"]
+    assert "\n" not in fixed_second[0]["replacement"]
+    assert "\r\n" in fixed_second[1]["replacement"]
+    assert "\n" not in fixed_second[1]["replacement"].replace("\r\n", "")
+    assert (first.read_bytes(), second.read_bytes()) == original_sources
+    detail = json.loads(evidence.read_text(encoding="utf-8"))
+    assert detail["status"] == "passed" and detail["idempotent"] is True
+    first_hash = hashlib.sha256(candidate.read_bytes()).hexdigest()
+    second_evidence = tmp_path / "second-evidence.json"
+    repeated = run_rule_candidate_validator(candidate, second_evidence)
+    assert repeated.returncode == 0, repeated.stderr
+    assert hashlib.sha256(candidate.read_bytes()).hexdigest() == first_hash
+    assert json.loads(second_evidence.read_text(encoding="utf-8"))["changed"] is False
+
+
+def test_rule_candidate_failures_are_atomic_and_actionable(
+    tmp_path: pathlib.Path,
+) -> None:
+    safe_repo = tmp_path / "safe-repo"
+    blocked_repo = tmp_path / "blocked-repo"
+    safe_policy = rule_candidate_markdown_policy(safe_repo, line_length=44)
+    blocked_policy = rule_candidate_markdown_policy(blocked_repo, line_length=32)
+    safe = safe_repo / "contract.md"
+    blocked = blocked_repo / "contract.md"
+    safe.write_text("Old safe.\n", encoding="utf-8", newline="\n")
+    blocked.write_text("Old blocked.\n", encoding="utf-8", newline="\n")
+    candidate = tmp_path / "atomic-candidate.json"
+    evidence = tmp_path / "atomic-evidence.json"
+    token = "https://example.test/" + "x" * 70
+    write_rule_candidate(
+        candidate,
+        rule_stack=[safe, blocked],
+        targets=[
+            {
+                "rules": str(safe.resolve()),
+                "history": None,
+                "source_sha256": hashlib.sha256(safe.read_bytes()).hexdigest(),
+                "markdown_policy": safe_policy,
+                "replacements": [
+                    {
+                        "expected_old": "Old safe.",
+                        "replacement": (
+                            "Safe prose would wrap if every target completed "
+                            "mechanical validation."
+                        ),
+                    }
+                ],
+            },
+            {
+                "rules": str(blocked.resolve()),
+                "history": None,
+                "source_sha256": hashlib.sha256(blocked.read_bytes()).hexdigest(),
+                "markdown_policy": blocked_policy,
+                "replacements": [
+                    {"expected_old": "Old blocked.", "replacement": token}
+                ],
+            },
+        ],
+    )
+    before = candidate.read_bytes()
+    failed = run_rule_candidate_validator(candidate, evidence)
+    assert failed.returncode == 1
+    assert str(blocked.resolve()) in failed.stderr
+    assert "replacement=0" in failed.stderr
+    assert "MD013" in failed.stderr
+    assert "indivisible token" in failed.stderr
+    assert candidate.read_bytes() == before
+    assert json.loads(evidence.read_text(encoding="utf-8"))["status"] == "failed"
+
+    mutating_policy = rule_candidate_markdown_policy(
+        safe_repo,
+        line_length=80,
+        fix_mode="mutate",
+    )
+    write_rule_candidate(
+        candidate,
+        rule_stack=[safe],
+        targets=[
+            {
+                "rules": str(safe.resolve()),
+                "history": None,
+                "source_sha256": hashlib.sha256(safe.read_bytes()).hexdigest(),
+                "markdown_policy": mutating_policy,
+                "replacements": [
+                    {"expected_old": "Old safe.", "replacement": "safe value"}
+                ],
+            }
+        ],
+    )
+    before_mutation = candidate.read_bytes()
+    mutated = run_rule_candidate_validator(candidate, tmp_path / "mutation.json")
+    assert mutated.returncode == 1
+    assert "non-whitespace" in mutated.stderr
+    assert candidate.read_bytes() == before_mutation
+
+
+def test_rule_candidate_rejects_stale_and_duplicate_expected_old(
+    tmp_path: pathlib.Path,
+) -> None:
+    repository = tmp_path / "repo"
+    policy = rule_candidate_markdown_policy(repository, line_length=80)
+    target = repository / "contract.md"
+    target.write_text("Old value.\n", encoding="utf-8", newline="\n")
+    candidate = tmp_path / "candidate.json"
+    target_entry: dict[str, object] = {
+        "rules": str(target.resolve()),
+        "history": None,
+        "source_sha256": hashlib.sha256(target.read_bytes()).hexdigest(),
+        "markdown_policy": policy,
+        "replacements": [
+            {"expected_old": "Old value.", "replacement": "New value."},
+            {"expected_old": "Old value.", "replacement": "Other value."},
+        ],
+    }
+    write_rule_candidate(
+        candidate,
+        rule_stack=[target],
+        targets=[target_entry],
+    )
+    duplicate = run_rule_candidate_validator(candidate, tmp_path / "duplicate.json")
+    assert duplicate.returncode == 1
+    assert "duplicates expected_old" in duplicate.stderr
+
+    target_entry["replacements"] = [
+        {"expected_old": "Old value.", "replacement": "New value."}
+    ]
+    write_rule_candidate(candidate, rule_stack=[target], targets=[target_entry])
+    target.write_text("Changed value.\n", encoding="utf-8", newline="\n")
+    stale = run_rule_candidate_validator(candidate, tmp_path / "stale.json")
+    assert stale.returncode == 1
+    assert "source-hash" in stale.stderr and "source is stale" in stale.stderr
+
+
 def test_proposal_workflow_validates_context_and_owns_iteration_transition(
     tmp_path: pathlib.Path,
 ) -> None:
@@ -5077,6 +5493,7 @@ def test_proposal_workflow_validates_context_and_owns_iteration_transition(
     request_path = task_temp_root / "proposal-request.json"
     state = task_temp_root / "proposal-state.json"
     evidence = task_temp_root / "proposal-context.json"
+    champion_output = task_temp_root / "validated-champion.json"
     iterations = task_temp_root / "iterations"
     undeclared_input = task_temp_root / "user-owned.md"
     original.write_text("Observed failure\n", encoding="utf-8", newline="\n")
@@ -5086,6 +5503,10 @@ def test_proposal_workflow_validates_context_and_owns_iteration_transition(
         "# Contract\n\nCurrent exact target.\n",
         encoding="utf-8",
         newline="\n",
+    )
+    markdown_policy = rule_candidate_markdown_policy(
+        target_dir,
+        line_length=48,
     )
     current_text = (
         "- [SKILLS-GOV-01] Before proposing or editing a repository control surface,\n"
@@ -5100,15 +5521,19 @@ def test_proposal_workflow_validates_context_and_owns_iteration_transition(
         "history": str(ROOT / "AGENTS.history.json"),
         "rule_ids": ["SKILLS-GOV-01"],
         "expected_text": [current_text],
+        "candidate_target": False,
+        "markdown_policy": None,
     }
     target_source: dict[str, object] = {
         "rules": str(target),
         "history": None,
         "rule_ids": [],
         "expected_text": ["Current exact target."],
+        "candidate_target": True,
+        "markdown_policy": markdown_policy,
     }
     request: dict[str, object] = {
-        "schema": "ceratops-governance-proposal-request.v2",
+        "schema": "ceratops-governance-proposal-request.v3",
         "task_temp_root": str(task_temp_root),
         "iteration_artifacts": str(iterations),
         "disposable_artifacts": [
@@ -5123,6 +5548,7 @@ def test_proposal_workflow_validates_context_and_owns_iteration_transition(
         "original": str(original),
         "regressions": str(regressions),
         "evidence_output": str(evidence),
+        "champion_output": str(champion_output),
         "max_iterations": 1,
         "mutation_authorized": False,
         "expected_side_effects": [
@@ -5152,9 +5578,12 @@ def test_proposal_workflow_validates_context_and_owns_iteration_transition(
     pending = json.loads(prepared.stdout)
     assert pending["iteration"] == 1
     context = json.loads(evidence.read_text(encoding="utf-8"))
-    assert context["schema"] == "ceratops-governance-proposal-context.v2"
+    assert context["schema"] == "ceratops-governance-proposal-context.v3"
     assert context["history_lookup"]["unknown"] == []
     assert context["sources"][1]["history"] is None
+    assert context["candidate_validation"]["targets"][0]["rules"] == str(
+        target.resolve()
+    )
     incomplete = subprocess.run(
         [
             sys.executable,
@@ -5174,13 +5603,50 @@ def test_proposal_workflow_validates_context_and_owns_iteration_transition(
         for path in (request_path, original, regressions, evidence, state)
     )
     assert iterations.is_dir() and undeclared_input.is_file()
-    pathlib.Path(pending["candidate"]).write_text(
-        "Exact candidate\n",
+    candidate_path = pathlib.Path(pending["candidate"])
+    candidate_value = json.loads(candidate_path.read_text(encoding="utf-8"))
+    candidate_value["targets"][0]["replacements"][0]["replacement"] = (
+        "https://example.test/" + "x" * 80
+    )
+    candidate_path.write_text(
+        json.dumps(candidate_value, indent=2) + "\n",
         encoding="utf-8",
         newline="\n",
     )
     pathlib.Path(pending["assessment"]).write_text(
         "Regression assessment\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    candidate_before_failure = candidate_path.read_bytes()
+    mechanical_failure = subprocess.run(
+        [
+            sys.executable,
+            str(PROPOSAL_WORKFLOW),
+            "advance",
+            "--state",
+            str(state),
+            "--outcome",
+            "improved",
+            "--regressions",
+            "passed",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert mechanical_failure.returncode == 2
+    assert "indivisible token" in mechanical_failure.stderr
+    failed_state = json.loads(state.read_text(encoding="utf-8"))
+    assert failed_state["records"] == []
+    assert failed_state["pending"]["iteration"] == 1
+    assert candidate_path.read_bytes() == candidate_before_failure
+    candidate_value["targets"][0]["replacements"][0]["replacement"] = (
+        "Validated candidate prose is safely wrapped before the controller "
+        "records its exact post-validation hash."
+    )
+    candidate_path.write_text(
+        json.dumps(candidate_value, indent=2) + "\n",
         encoding="utf-8",
         newline="\n",
     )
@@ -5204,6 +5670,15 @@ def test_proposal_workflow_validates_context_and_owns_iteration_transition(
     status = json.loads(advanced.stdout)
     assert status["complete"] is True
     assert status["pending"] is None
+    completed_state = json.loads(state.read_text(encoding="utf-8"))
+    record = completed_state["records"][0]
+    assert record["candidate_sha256"] == hashlib.sha256(
+        candidate_path.read_bytes()
+    ).hexdigest()
+    fixed_candidate = json.loads(candidate_path.read_text(encoding="utf-8"))
+    assert "\n" in fixed_candidate["targets"][0]["replacements"][0]["replacement"]
+    assert pathlib.Path(record["validation_evidence"]).is_file()
+    champion_bytes = candidate_path.read_bytes()
     completed_state_text = state.read_text(encoding="utf-8")
     escaped_state = json.loads(completed_state_text)
     outside_evidence = tmp_path / "outside-evidence.json"
@@ -5253,6 +5728,11 @@ def test_proposal_workflow_validates_context_and_owns_iteration_transition(
     )
     assert finalized.returncode == 0, finalized.stderr
     assert finalized.stdout.strip() == "OK"
+    assert champion_output.is_file()
+    assert champion_output.read_bytes() == champion_bytes
+    assert hashlib.sha256(champion_output.read_bytes()).hexdigest() == record[
+        "candidate_sha256"
+    ]
     assert not state.exists()
     assert not iterations.exists()
     assert not request_path.exists()
@@ -5268,11 +5748,13 @@ def test_proposal_workflow_validates_context_and_owns_iteration_transition(
     invalid_regressions.write_text("Boundary\n", encoding="utf-8", newline="\n")
     invalid_state = invalid_run / "state.json"
     invalid_evidence = invalid_run / "context.json"
+    invalid_champion = invalid_run / "champion.json"
     invalid_iterations = invalid_run / "iterations"
     invalid_request["state"] = str(invalid_state)
     invalid_request["original"] = str(invalid_original)
     invalid_request["regressions"] = str(invalid_regressions)
     invalid_request["evidence_output"] = str(invalid_evidence)
+    invalid_request["champion_output"] = str(invalid_champion)
     invalid_request["iteration_artifacts"] = str(invalid_iterations)
     invalid_request["sources"] = [
         {
@@ -5307,11 +5789,39 @@ def test_proposal_workflow_validates_context_and_owns_iteration_transition(
     assert invalid_original.is_file() and invalid_regressions.is_file()
 
 
-def test_iteration_controller_preserves_legacy_commands(
+def test_iteration_controller_direct_commands_record_validated_candidate(
     tmp_path: pathlib.Path,
 ) -> None:
-    original = tmp_path / "legacy-original.md"
-    state = tmp_path / "legacy-state.json"
+    original = tmp_path / "original.md"
+    state = tmp_path / "state.json"
+    repository = tmp_path / "repository"
+    policy = rule_candidate_markdown_policy(repository, line_length=44)
+    target = repository / "AGENTS.md"
+    target.write_text("Old target.\n", encoding="utf-8", newline="\n")
+    validation_context = tmp_path / "validation-context.json"
+    validation_context.write_text(
+        json.dumps(
+            {
+                "schema": "ceratops-rule-candidate-context.v1",
+                "rule_stack": [str(target.resolve())],
+                "targets": [
+                    {
+                        "rules": str(target.resolve()),
+                        "history": None,
+                        "source_sha256": hashlib.sha256(
+                            target.read_bytes()
+                        ).hexdigest(),
+                        "markdown_policy": policy,
+                        "expected_old": ["Old target."],
+                    }
+                ],
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
     original.write_text("Original\n", encoding="utf-8", newline="\n")
     initialized = subprocess.run(
         [
@@ -5322,6 +5832,8 @@ def test_iteration_controller_preserves_legacy_commands(
             str(state),
             "--original",
             str(original),
+            "--validation-context",
+            str(validation_context),
             "--max-iterations",
             "1",
         ],
@@ -5339,8 +5851,16 @@ def test_iteration_controller_preserves_legacy_commands(
     )
     assert opened.returncode == 0, opened.stderr
     pending = json.loads(opened.stdout)
-    pathlib.Path(pending["candidate"]).write_text(
-        "Candidate\n", encoding="utf-8", newline="\n"
+    candidate_path = pathlib.Path(pending["candidate"])
+    candidate_value = json.loads(candidate_path.read_text(encoding="utf-8"))
+    candidate_value["targets"][0]["replacements"][0]["replacement"] = (
+        "Controller submit automatically wraps and validates this candidate "
+        "before hashing it."
+    )
+    candidate_path.write_text(
+        json.dumps(candidate_value, indent=2) + "\n",
+        encoding="utf-8",
+        newline="\n",
     )
     pathlib.Path(pending["assessment"]).write_text(
         "Assessment\n", encoding="utf-8", newline="\n"
@@ -5367,6 +5887,13 @@ def test_iteration_controller_preserves_legacy_commands(
     )
     assert submitted.returncode == 0, submitted.stderr
     assert json.loads(submitted.stdout)["complete"] is True
+    recorded_state = json.loads(state.read_text(encoding="utf-8"))
+    assert recorded_state["records"][0]["candidate_sha256"] == hashlib.sha256(
+        candidate_path.read_bytes()
+    ).hexdigest()
+    assert pathlib.Path(
+        recorded_state["records"][0]["validation_evidence"]
+    ).is_file()
     status = subprocess.run(
         [sys.executable, str(ITERATION_CONTROLLER), "status", "--state", str(state)],
         capture_output=True,
@@ -5389,7 +5916,7 @@ def test_iteration_controller_preserves_legacy_commands(
     )
     assert finalized.returncode == 0, finalized.stderr
     assert finalized.stdout.strip() == "OK"
-    assert original.is_file() and not state.exists()
+    assert original.is_file() and validation_context.is_file() and not state.exists()
 
 
 def test_fast_change_commits_cohesive_rules_only_multi_skill_scope(

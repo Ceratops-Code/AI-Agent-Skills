@@ -1,4 +1,5 @@
 import argparse
+import hashlib
 import json
 import pathlib
 import runpy
@@ -111,6 +112,7 @@ class RuleGraphTests(unittest.TestCase):
         global_rules.parent.mkdir()
         local_rules.parent.mkdir()
         task_temp_root.mkdir()
+        markdown_config = root / ".markdownlint.json"
         global_rules.write_text(
             "- [AUTH-10] An explicit current user instruction overrides "
             "default behavior.\n",
@@ -137,19 +139,64 @@ class RuleGraphTests(unittest.TestCase):
             encoding="utf-8",
             newline="",
         )
+        markdown_config.write_text(
+            '{"default": false}\n',
+            encoding="utf-8",
+            newline="\n",
+        )
+        policy = {
+            "repository_root": str(root.resolve()),
+            "configuration": str(markdown_config.resolve()),
+            "configuration_sha256": hashlib.sha256(
+                markdown_config.read_bytes()
+            ).hexdigest(),
+            "validate_command": [
+                sys.executable,
+                "-c",
+                "import pathlib,sys; pathlib.Path(sys.argv[1]).read_bytes()",
+                "{file}",
+            ],
+            "fix_command": None,
+        }
+        candidate_path = task_temp_root / "validated-candidate.json"
+        evidence_path = task_temp_root / "application-validation.json"
+        candidate = {
+            "schema": "ceratops-rule-candidate.v1",
+            "rule_stack": [str(global_rules.resolve()), str(local_rules.resolve())],
+            "targets": [
+                {
+                    "rules": str(local_rules.resolve()),
+                    "history": str(history.resolve()),
+                    "source_sha256": hashlib.sha256(
+                        local_rules.read_bytes()
+                    ).hexdigest(),
+                    "markdown_policy": policy,
+                    "replacements": [
+                        {
+                            "expected_old": current_rule,
+                            "replacement": replacement_rule,
+                        }
+                    ],
+                }
+            ],
+        }
+        candidate_path.write_text(
+            json.dumps(candidate, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
         request = {
-            "version": 2,
+            "version": 3,
             "task_temp_root": str(task_temp_root),
             "request_disposable": True,
             "rule_stack": [str(global_rules), str(local_rules)],
-            "rule_replacements": [
-                {
-                    "rules": str(local_rules),
-                    "history": str(history),
-                    "expected_old": current_rule,
-                    "replacement": replacement_rule,
-                }
-            ],
+            "validated_candidate": str(candidate_path),
+            "validated_candidate_sha256": hashlib.sha256(
+                candidate_path.read_bytes()
+            ).hexdigest(),
+            "candidate_disposable": True,
+            "validation_evidence": str(evidence_path),
+            "validation_evidence_disposable": True,
             "history_operations": [
                 {
                     "history": str(history),
@@ -440,7 +487,17 @@ class RuleGraphTests(unittest.TestCase):
             failed_request, failed_rules = self.rules_update_request(
                 failed_root, current, replacement
             )
-            failed_request["rule_replacements"][0]["expected_old"] = "missing"
+            failed_candidate = pathlib.Path(failed_request["validated_candidate"])
+            failed_value = json.loads(failed_candidate.read_text(encoding="utf-8"))
+            failed_value["targets"][0]["replacements"][0]["expected_old"] = "missing"
+            failed_candidate.write_text(
+                json.dumps(failed_value, indent=2) + "\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+            failed_request["validated_candidate_sha256"] = hashlib.sha256(
+                failed_candidate.read_bytes()
+            ).hexdigest()
             failed_path = failed_root / "task-temp" / "request.json"
             failed_path.write_text(
                 json.dumps(failed_request) + "\n",
@@ -513,6 +570,12 @@ class RuleGraphTests(unittest.TestCase):
             self.assertEqual(applied.returncode, 0, applied.stderr)
             self.assertEqual(applied.stdout.strip(), "OK")
             self.assertFalse(request_path.exists())
+            self.assertFalse(
+                pathlib.Path(request["validated_candidate"]).exists()
+            )
+            self.assertFalse(
+                pathlib.Path(request["validation_evidence"]).exists()
+            )
             self.assertEqual(local_rules.read_text(encoding="utf-8"), replacement)
             self.assertNotEqual(failed.returncode, 0)
             self.assertIn("occurrence count", failed.stderr)
