@@ -1,4 +1,5 @@
 import argparse
+import copy
 import hashlib
 import json
 import pathlib
@@ -7,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SCRIPTS = (
@@ -17,7 +19,7 @@ SCRIPTS = (
 )
 sys.path.insert(0, str(SCRIPTS))
 
-from apply_rules_update import ApplicationError, prepare  # noqa: E402
+from apply_rules_update import ApplicationError, commit, prepare  # noqa: E402
 from rule_graph import (  # noqa: E402
     parse_rule_text,
     rule_source_summary,
@@ -186,10 +188,18 @@ class RuleGraphTests(unittest.TestCase):
             newline="\n",
         )
         request = {
-            "version": 3,
+            "version": 4,
             "task_temp_root": str(task_temp_root),
             "request_disposable": True,
             "rule_stack": [str(global_rules), str(local_rules)],
+            "rule_stack_sha256": {
+                str(global_rules): hashlib.sha256(
+                    global_rules.read_bytes()
+                ).hexdigest(),
+                str(local_rules): hashlib.sha256(
+                    local_rules.read_bytes()
+                ).hexdigest(),
+            },
             "validated_candidate": str(candidate_path),
             "validated_candidate_sha256": hashlib.sha256(
                 candidate_path.read_bytes()
@@ -211,6 +221,113 @@ class RuleGraphTests(unittest.TestCase):
             ],
         }
         return request, local_rules
+
+    def history_only_update_request(self, root: pathlib.Path):
+        rules = root / "AGENTS.md"
+        history = root / "AGENTS.history.json"
+        task_temp_root = root / "task-temp"
+        root.mkdir(parents=True)
+        task_temp_root.mkdir()
+        rules.write_text(
+            "- [CODE-03] Preserve the persistent-test confirmation gate.\n"
+            "- [CODE-04] Use behavioral evidence.\n"
+            "- [CODE-05] Run the narrowest covering test.\n",
+            encoding="utf-8",
+            newline="",
+        )
+        rename_decision = (
+            "Rename TEST-01, TEST-02, and TEST-03 to the next unused Coding "
+            "IDs CODE-03, CODE-04, and CODE-05 and place them after CODE-01 "
+            "and CODE-02 without changing their behavior."
+        )
+        history.write_text(
+            json.dumps(
+                {
+                    "version": 2,
+                    "entries": [
+                        {
+                            "rules": ["TEST-01"],
+                            "decision": "Preserve TEST-01 behavior.",
+                            "reason": "Keep the original gate.",
+                            "regression": "Preserve TEST-01's confirmation gate.",
+                        },
+                        {
+                            "rules": [
+                                "TEST-01",
+                                "TEST-02",
+                                "TEST-03",
+                                "CODE-03",
+                                "CODE-04",
+                                "CODE-05",
+                            ],
+                            "decision": rename_decision,
+                            "reason": "Consolidate coding governance.",
+                            "regression": "Keep all three behaviors unchanged.",
+                        },
+                    ],
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+            newline="",
+        )
+        request = {
+            "version": 4,
+            "task_temp_root": str(task_temp_root),
+            "request_disposable": True,
+            "rule_stack": [str(rules)],
+            "rule_stack_sha256": {
+                str(rules): hashlib.sha256(rules.read_bytes()).hexdigest(),
+            },
+            "validated_candidate": None,
+            "validated_candidate_sha256": None,
+            "candidate_disposable": False,
+            "validation_evidence": str(task_temp_root / "evidence.json"),
+            "validation_evidence_disposable": True,
+            "history_operations": [
+                {
+                    "history": str(history),
+                    "operation": "rename",
+                    "renames": [
+                        {"old": "TEST-01", "new": "CODE-03"},
+                        {"old": "TEST-02", "new": "CODE-04"},
+                        {"old": "TEST-03", "new": "CODE-05"},
+                    ],
+                    "semantic_replacements": [
+                        {
+                            "expected_old": rename_decision,
+                            "replacement": (
+                                "Consolidate the test-governance rules under "
+                                "Coding IDs CODE-03, CODE-04, and CODE-05 and "
+                                "place them after CODE-01 and CODE-02 without "
+                                "changing their behavior."
+                            ),
+                        }
+                    ],
+                }
+            ],
+        }
+        return request, rules, history
+
+    @staticmethod
+    def run_rules_update(request: dict, request_path: pathlib.Path):
+        request_path.write_text(
+            json.dumps(request) + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        return subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPTS / "apply_rules_update.py"),
+                "--request",
+                str(request_path),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
 
     def test_rule_local_user_override_is_rejected_case_insensitively(self):
         parsed = parse_rule_text(
@@ -588,6 +705,182 @@ class RuleGraphTests(unittest.TestCase):
             self.assertEqual(user_applied.returncode, 0, user_applied.stderr)
             self.assertTrue(user_path.is_file())
             self.assertEqual(user_rules.read_text(encoding="utf-8"), replacement)
+
+            coupled_root = root / "coupled"
+            coupled_root.mkdir()
+            coupled_request, coupled_rules = self.rules_update_request(
+                coupled_root,
+                "- [LOCAL-01] Preserve the old identity.\n",
+                "- [LOCAL-02] Preserve the new identity.\n",
+            )
+            coupled_history = coupled_rules.with_name("AGENTS.history.json")
+            coupled_request["history_operations"] = [
+                {
+                    "history": str(coupled_history),
+                    "operation": "rename",
+                    "renames": [{"old": "LOCAL-01", "new": "LOCAL-02"}],
+                    "semantic_replacements": [],
+                },
+                {
+                    "history": str(coupled_history),
+                    "operation": "append",
+                    "entry": {
+                        "rules": ["LOCAL-02"],
+                        "decision": "Use the new local rule identity.",
+                        "reason": "The rule was renamed.",
+                        "regression": "Keep its behavior unchanged.",
+                    },
+                },
+            ]
+            coupled_path = coupled_root / "task-temp" / "request.json"
+            coupled = self.run_rules_update(coupled_request, coupled_path)
+            self.assertEqual(coupled.returncode, 0, coupled.stderr)
+            self.assertNotIn(
+                "LOCAL-01",
+                coupled_history.read_text(encoding="utf-8"),
+            )
+            self.assertIn(
+                "LOCAL-02",
+                coupled_rules.read_text(encoding="utf-8"),
+            )
+
+            migration_root = root / "history-only"
+            migration_request, _, migration_history = (
+                self.history_only_update_request(migration_root)
+            )
+            migration_path = migration_root / "task-temp" / "request.json"
+            migrated = self.run_rules_update(migration_request, migration_path)
+            self.assertEqual(migrated.returncode, 0, migrated.stderr)
+            migrated_text = migration_history.read_text(encoding="utf-8")
+            self.assertNotRegex(migrated_text, r"TEST-0[123]")
+            migrated_entries = json.loads(migrated_text)["entries"]
+            self.assertEqual(migrated_entries[0]["rules"], ["CODE-03"])
+            self.assertEqual(
+                migrated_entries[1]["rules"],
+                ["CODE-03", "CODE-04", "CODE-05"],
+            )
+            self.assertEqual(
+                migrated_entries[1]["decision"],
+                "Consolidate the test-governance rules under Coding IDs "
+                "CODE-03, CODE-04, and CODE-05 and place them after CODE-01 "
+                "and CODE-02 without changing their behavior.",
+            )
+            self.assertFalse(migration_path.exists())
+            self.assertFalse(
+                pathlib.Path(migration_request["validation_evidence"]).exists()
+            )
+
+            semantic_root = root / "missing-semantic"
+            semantic_request, _, _ = self.history_only_update_request(
+                semantic_root
+            )
+            semantic_request["history_operations"][0][
+                "semantic_replacements"
+            ] = []
+            with self.assertRaisesRegex(
+                ApplicationError,
+                "requires an exact semantic replacement",
+            ):
+                prepare(semantic_request)
+
+            duplicate_root = root / "duplicate-target"
+            duplicate_request, _, _ = self.history_only_update_request(
+                duplicate_root
+            )
+            duplicate_request["history_operations"][0]["renames"][1][
+                "new"
+            ] = "CODE-03"
+            with self.assertRaisesRegex(
+                ApplicationError,
+                "new IDs must be unique",
+            ):
+                prepare(duplicate_request)
+
+            cascade_root = root / "cascading-map"
+            cascade_request, _, _ = self.history_only_update_request(cascade_root)
+            cascade_request["history_operations"][0]["renames"][0][
+                "new"
+            ] = "TEST-02"
+            with self.assertRaisesRegex(
+                ApplicationError,
+                "must not cascade",
+            ):
+                prepare(cascade_request)
+
+            ambiguous_root = root / "ambiguous-semantic"
+            ambiguous_request, _, ambiguous_history = (
+                self.history_only_update_request(ambiguous_root)
+            )
+            ambiguous_value = json.loads(
+                ambiguous_history.read_text(encoding="utf-8")
+            )
+            ambiguous_value["entries"].append(
+                copy.deepcopy(ambiguous_value["entries"][1])
+            )
+            ambiguous_history.write_text(
+                json.dumps(ambiguous_value, indent=2) + "\n",
+                encoding="utf-8",
+                newline="",
+            )
+            with self.assertRaisesRegex(
+                ApplicationError,
+                "semantic expected_old match count is 2",
+            ):
+                prepare(ambiguous_request)
+
+            old_present_root = root / "old-present"
+            old_present_request, old_present_rules, _ = (
+                self.history_only_update_request(old_present_root)
+            )
+            old_present_rules.write_text(
+                old_present_rules.read_text(encoding="utf-8")
+                + "- [TEST-01] Keep the stale identity.\n",
+                encoding="utf-8",
+                newline="",
+            )
+            old_present_request["rule_stack_sha256"][str(old_present_rules)] = (
+                hashlib.sha256(old_present_rules.read_bytes()).hexdigest()
+            )
+            with self.assertRaisesRegex(
+                ApplicationError,
+                "old ID remains in current rules",
+            ):
+                prepare(old_present_request)
+
+            new_absent_root = root / "new-absent"
+            new_absent_request, new_absent_rules, _ = (
+                self.history_only_update_request(new_absent_root)
+            )
+            new_absent_rules.write_text(
+                new_absent_rules.read_text(encoding="utf-8").replace(
+                    "- [CODE-05] Run the narrowest covering test.\n",
+                    "- [CODE-06] Run the narrowest covering test.\n",
+                ),
+                encoding="utf-8",
+                newline="",
+            )
+            new_absent_request["rule_stack_sha256"][str(new_absent_rules)] = (
+                hashlib.sha256(new_absent_rules.read_bytes()).hexdigest()
+            )
+            with self.assertRaisesRegex(
+                ApplicationError,
+                "new ID is absent from current rules",
+            ):
+                prepare(new_absent_request)
+
+            rollback_root = root / "rollback"
+            rollback_request, _, rollback_history = (
+                self.history_only_update_request(rollback_root)
+            )
+            rollback_before = rollback_history.read_bytes()
+            rollback_update = prepare(rollback_request)
+            with mock.patch(
+                "apply_rules_update.revalidate",
+                side_effect=ApplicationError("forced revalidation failure"),
+            ):
+                with self.assertRaisesRegex(ApplicationError, "update rolled back"):
+                    commit(rollback_update)
+            self.assertEqual(rollback_history.read_bytes(), rollback_before)
 
     def test_rules_update_accepts_list_heavy_approved_metadata(self):
         current = "- [LOCAL-01] Preserve the exact enumeration.\n"

@@ -646,7 +646,7 @@ def rule_source_summary(source: ParsedRuleSource) -> dict[str, Any]:
 
 
 def parse_history_text(text: str) -> list[dict[str, object]]:
-    """Validate canonical append-only decision-log text."""
+    """Validate canonical decision-log text."""
     if not text.strip():
         raise ValueError("history is empty")
     data = json.loads(text)
@@ -701,7 +701,7 @@ def parse_history_text(text: str) -> list[dict[str, object]]:
 
 
 def load_history_source(path: Path) -> list[dict[str, object]]:
-    """Load the canonical non-empty append-only decision log."""
+    """Load the canonical non-empty decision log."""
     resolved = path.resolve()
     if not resolved.is_file():
         raise ValueError(f"history does not exist: {resolved}")

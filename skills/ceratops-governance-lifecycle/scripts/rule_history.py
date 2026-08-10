@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""Return append-only decisions for named rules and direct graph neighbors.
+"""Return decisions for named rules and direct graph neighbors.
 
 Usage:
     python scripts/rule_history.py lookup \
         --history HISTORY --rules RULES [--history ... --rules ...] \
         [--full] [ID...]
 
-The helper is read-only. Compact lookup selects decisions by their historical
-rule context. ``--full`` returns every entry so renamed or retired rules cannot
-hide relevant rationale.
+The helper is read-only. Compact lookup selects decisions by their current rule
+context. ``--full`` returns every entry so retired or indirectly related rules
+cannot hide relevant rationale.
 """
 
 from __future__ import annotations

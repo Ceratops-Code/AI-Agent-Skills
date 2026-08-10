@@ -65,23 +65,31 @@ it does not prove semantic equivalence. The model remains responsible for
 mapping every operative part of the old text, including commands and examples,
 to preserved behavior or an explicitly approved change.
 
-- (D) For every approved rule mutation, create one request naming the complete
-  rule stack, exact validated champion artifact and hash, every approved
-  history append, caller-selected validation evidence, the verified task-temp
-  root, and exact request, champion, and evidence ownership; then run `python
+- (D) For every approved rule mutation or history-only ID repair, create one
+  request naming the complete rule stack, any exact validated champion and
+  hash, every approved history append or ID migration, caller-selected
+  validation evidence, the verified task-temp root, and exact request,
+  champion, and evidence ownership; then run `python
   scripts/apply_rules_update.py --request <path>`.
-- (D) The helper must verify the champion hash, current source and policy
-  hashes, expected-old uniqueness, and mechanical validity through
-  `validate_rule_candidate.py` with fixing disabled; apply the approved
-  replacement text unchanged and without reformatting; reuse rule-graph and
-  history validation; preserve encoding and line endings; cover every changed
-  rule ID in append-only history; protect coupled writes with rollback; reopen
-  and revalidate exact bytes; remove only unchanged explicitly disposable
-  artifacts after success; preserve them on failure; and emit only `OK` or one
-  compact actionable error.
+- (D) The helper must verify current source and policy hashes and, when a
+  champion is present, its hash, expected-old uniqueness, and mechanical
+  validity through `validate_rule_candidate.py` with fixing disabled; apply
+  approved rule replacement text unchanged and without reformatting; reuse
+  rule-graph and history validation; preserve encoding and line endings; cover
+  every changed current rule ID in history; protect coupled writes with
+  rollback; reopen and revalidate exact bytes; remove only unchanged explicitly
+  disposable artifacts after success; preserve them on failure; and emit only
+  `OK` or one compact actionable error.
+- (D) For an ID migration, the helper must apply approved one-to-one mappings
+  simultaneously to exact rule-ID tokens in every history field,
+  stable-deduplicate `rules` arrays, require approved exact semantic
+  replacements where substitution would change meaning, preserve all other
+  content and entry order, and prove no old ID remains. It may perform a
+  history-only ID repair only when each old ID is absent and each new ID is
+  present in the current rule stack.
 
-Append one decision per approved rule change under the history contract in
-[rule-design.md](rule-design.md).
+Append one decision per approved rule change and apply any approved ID migration
+under the history contract in [rule-design.md](rule-design.md).
 
 ## Iterative optimization
 
@@ -123,8 +131,9 @@ Append one decision per approved rule change under the history contract in
 ### Completion Gate
 
 A proposal is complete only when it prevents the current recorded failure,
-leaves the rule graph structurally valid, preserves the append-only decision
-log, and is better than the current state and material alternative.
+leaves the rule graph structurally valid, preserves the decision log under its
+append-and-ID-migration contract, and is better than the current state and
+material alternative.
 Otherwise change the intervention or report the unresolved decision point.
 
 ### Output Contract
