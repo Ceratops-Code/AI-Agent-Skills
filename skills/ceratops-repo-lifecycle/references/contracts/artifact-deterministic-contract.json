@@ -40,7 +40,7 @@
     "artifact_contracts": {
       "type": "array",
       "required": false,
-      "description": "Optional per-artifact expected identity records. If omitted, the checker derives candidates and reports missing contract data.",
+      "description": "Optional explicit external-artifact identity records. Every non-no_artifact record confirms publication even when no workflow is present.",
       "item_shape": {
         "artifact_id": "stable local contract id",
         "artifact_type": "one artifact_type_system.artifact_types value",
@@ -242,34 +242,17 @@
         ]
       }
     ],
-    "detectors": [
+    "classification_fields": {
+      "local_buildable_candidates": "artifact_candidates",
+      "confirmed_external_artifacts": "artifact_surface"
+    },
+    "candidate_detectors": [
       {
         "artifact_type": "docker_oci_image",
         "confidence": "high",
         "when_any_path_matches": [
           "Dockerfile",
           "**/Dockerfile"
-        ]
-      },
-      {
-        "artifact_type": "github_container_registry_image",
-        "confidence": "high",
-        "when_workflow_contains_any": [
-          "ghcr.io/",
-          "docker/build-push-action",
-          "docker/login-action"
-        ]
-      },
-      {
-        "artifact_type": "generic_oci_registry_image",
-        "confidence": "medium",
-        "when_workflow_contains_any": [
-          "docker push",
-          "oras push",
-          "podman push",
-          "registry-1.docker.io",
-          "quay.io",
-          "public.ecr.aws"
         ]
       },
       {
@@ -284,14 +267,8 @@
           "[project]",
           "[tool.poetry]",
           "[tool.flit.metadata]",
-          "[metadata]"
-        ],
-        "and_when_workflow_contains_any": [
-          "pypa/gh-action-pypi-publish",
-          "twine upload",
-          "uv publish",
-          "hatch publish",
-          "poetry publish"
+          "[metadata]",
+          "setup("
         ]
       },
       {
@@ -300,16 +277,10 @@
         "when_any_path_matches": [
           "package.json"
         ],
-        "and_when_matching_path_contains_any": [
+        "and_when_matching_path_contains_all": [
           "\"name\"",
-          "\"version\"",
-          "\"publishConfig\"",
-          "\"workspaces\"",
-          "npm publish",
-          "npm stage publish",
-          "registry.npmjs.org"
-        ],
-        "except_when_root_manifest_is_private_without_publish_surface": true
+          "\"version\""
+        ]
       },
       {
         "artifact_type": "maven_package",
@@ -389,22 +360,12 @@
         ]
       },
       {
-        "artifact_type": "github_release_binary",
-        "confidence": "high",
-        "when_release_assets_count_gt": 0
-      },
-      {
         "artifact_type": "generic_binary_archive",
         "confidence": "medium",
         "when_any_path_matches": [
           "dist/**",
           "build/**",
           "artifacts/**"
-        ],
-        "and_when_workflow_contains_any": [
-          "gh release upload",
-          "upload-release-asset",
-          "softprops/action-gh-release"
         ]
       },
       {
@@ -415,18 +376,280 @@
           ".goreleaser.yaml",
           "goreleaser*.yml",
           "goreleaser*.yaml",
-          ".github/workflows/*.yml",
-          ".github/workflows/*.yaml"
+          "*.wxs",
+          "*.iss",
+          "*.nsi",
+          "winget/**",
+          "scoop/**",
+          "Formula/**"
+        ]
+      },
+      {
+        "artifact_type": "static_docs_site",
+        "confidence": "medium",
+        "when_any_path_matches": [
+          "mkdocs.yml",
+          "mkdocs.yaml",
+          "docusaurus.config.js",
+          "docusaurus.config.ts"
+        ]
+      },
+      {
+        "artifact_type": "terraform_module",
+        "confidence": "medium",
+        "when_any_path_matches": [
+          "*.tf",
+          "modules/**"
+        ]
+      },
+      {
+        "artifact_type": "helm_chart",
+        "confidence": "high",
+        "when_any_path_matches": [
+          "Chart.yaml",
+          "charts/**/Chart.yaml"
+        ]
+      }
+    ],
+    "external_publish_detectors": [
+      {
+        "artifact_type": "docker_oci_image",
+        "confidence": "high",
+        "when_workflow_contains_any": [
+          "docker push",
+          "podman push",
+          "oras push"
+        ]
+      },
+      {
+        "artifact_type": "docker_oci_image",
+        "confidence": "high",
+        "when_workflow_contains_any": [
+          "docker/build-push-action@"
         ],
-        "and_when_matching_path_contains_any": [
-          "goreleaser",
-          "cargo install",
-          "winget",
-          "scoop",
-          "brew tap",
-          "msix",
-          "msi",
-          "setup.exe"
+        "and_when_workflow_contains_any": [
+          "push: true",
+          "push:true",
+          "push: 'true'",
+          "push: \"true\""
+        ]
+      },
+      {
+        "artifact_type": "github_container_registry_image",
+        "confidence": "high",
+        "when_workflow_contains_any": [
+          "docker push ghcr.io/",
+          "podman push ghcr.io/",
+          "oras push ghcr.io/"
+        ]
+      },
+      {
+        "artifact_type": "github_container_registry_image",
+        "confidence": "high",
+        "when_workflow_contains_any": [
+          "docker/build-push-action@"
+        ],
+        "and_when_workflow_contains_any": [
+          "push: true",
+          "push:true",
+          "push: 'true'",
+          "push: \"true\""
+        ],
+        "and_when_workflow_contains_all": [
+          "ghcr.io/"
+        ]
+      },
+      {
+        "artifact_type": "generic_oci_registry_image",
+        "confidence": "medium",
+        "when_workflow_contains_any": [
+          "docker push",
+          "podman push",
+          "oras push"
+        ],
+        "and_when_workflow_contains_any": [
+          "registry-1.docker.io",
+          "quay.io",
+          "public.ecr.aws"
+        ]
+      },
+      {
+        "artifact_type": "pypi_python_package",
+        "confidence": "high",
+        "when_workflow_contains_any": [
+          "pypa/gh-action-pypi-publish",
+          "twine upload",
+          "uv publish",
+          "hatch publish",
+          "poetry publish"
+        ]
+      },
+      {
+        "artifact_type": "npm_package",
+        "confidence": "high",
+        "when_workflow_contains_any": [
+          "npm publish",
+          "npm stage publish"
+        ]
+      },
+      {
+        "artifact_type": "maven_package",
+        "confidence": "high",
+        "when_workflow_contains_any": [
+          "mvn deploy",
+          "mvnw deploy"
+        ]
+      },
+      {
+        "artifact_type": "gradle_maven_package",
+        "confidence": "high",
+        "when_workflow_contains_any": [
+          "gradle publish",
+          "gradlew publish"
+        ]
+      },
+      {
+        "artifact_type": "nuget_package",
+        "confidence": "high",
+        "when_workflow_contains_any": [
+          "dotnet nuget push",
+          "nuget push"
+        ]
+      },
+      {
+        "artifact_type": "crates_package",
+        "confidence": "high",
+        "when_workflow_contains_any": [
+          "cargo publish"
+        ]
+      },
+      {
+        "artifact_type": "rubygems_package",
+        "confidence": "high",
+        "when_workflow_contains_any": [
+          "gem push"
+        ]
+      },
+      {
+        "artifact_type": "powershell_gallery_module",
+        "confidence": "high",
+        "when_workflow_contains_any": [
+          "Publish-Module"
+        ]
+      },
+      {
+        "artifact_type": "github_packages_container",
+        "confidence": "high",
+        "when_workflow_contains_any": [
+          "docker push ghcr.io/",
+          "podman push ghcr.io/",
+          "oras push ghcr.io/"
+        ]
+      },
+      {
+        "artifact_type": "github_packages_npm",
+        "confidence": "high",
+        "when_workflow_contains_any": [
+          "npm publish",
+          "npm stage publish"
+        ],
+        "and_when_workflow_contains_any": [
+          "npm.pkg.github.com"
+        ]
+      },
+      {
+        "artifact_type": "github_packages_maven",
+        "confidence": "high",
+        "when_workflow_contains_any": [
+          "mvn deploy",
+          "mvnw deploy"
+        ],
+        "and_when_workflow_contains_any": [
+          "maven.pkg.github.com"
+        ]
+      },
+      {
+        "artifact_type": "github_packages_gradle",
+        "confidence": "high",
+        "when_workflow_contains_any": [
+          "gradle publish",
+          "gradlew publish"
+        ],
+        "and_when_workflow_contains_any": [
+          "maven.pkg.github.com"
+        ]
+      },
+      {
+        "artifact_type": "github_packages_nuget",
+        "confidence": "high",
+        "when_workflow_contains_any": [
+          "dotnet nuget push",
+          "nuget push"
+        ],
+        "and_when_workflow_contains_any": [
+          "nuget.pkg.github.com"
+        ]
+      },
+      {
+        "artifact_type": "github_packages_rubygems",
+        "confidence": "high",
+        "when_workflow_contains_any": [
+          "gem push"
+        ],
+        "and_when_workflow_contains_any": [
+          "rubygems.pkg.github.com"
+        ]
+      },
+      {
+        "artifact_type": "github_release_binary",
+        "confidence": "high",
+        "when_release_assets_count_gt": 0
+      },
+      {
+        "artifact_type": "github_release_binary",
+        "confidence": "high",
+        "when_workflow_contains_any": [
+          "gh release create",
+          "gh release upload",
+          "actions/upload-release-asset@",
+          "softprops/action-gh-release@"
+        ]
+      },
+      {
+        "artifact_type": "generic_binary_archive",
+        "confidence": "medium",
+        "when_any_path_matches": [
+          "dist/**",
+          "build/**",
+          "artifacts/**"
+        ],
+        "when_workflow_contains_any": [
+          "gh release create",
+          "gh release upload",
+          "actions/upload-release-asset@",
+          "softprops/action-gh-release@"
+        ]
+      },
+      {
+        "artifact_type": "installer_or_cli_binary",
+        "confidence": "medium",
+        "when_any_path_matches": [
+          ".goreleaser.yml",
+          ".goreleaser.yaml",
+          "goreleaser*.yml",
+          "goreleaser*.yaml",
+          "*.wxs",
+          "*.iss",
+          "*.nsi",
+          "winget/**",
+          "scoop/**",
+          "Formula/**"
+        ],
+        "when_workflow_contains_any": [
+          "goreleaser release",
+          "wingetcreate submit",
+          "gh release upload",
+          "softprops/action-gh-release@"
         ]
       },
       {
@@ -437,17 +660,8 @@
       {
         "artifact_type": "static_docs_site",
         "confidence": "medium",
-        "when_any_path_matches": [
-          ".github/workflows/*.yml",
-          ".github/workflows/*.yaml",
-          ".circleci/config.yml",
-          ".circleci/config.yaml",
-          ".gitlab-ci.yml",
-          ".gitlab-ci.yaml"
-        ],
-        "and_when_matching_path_contains_any": [
+        "when_workflow_contains_any": [
           "actions/deploy-pages@",
-          "actions/upload-pages-artifact@",
           "peaceiris/actions-gh-pages@",
           "JamesIves/github-pages-deploy-action@",
           "mkdocs gh-deploy",
@@ -456,29 +670,11 @@
         ]
       },
       {
-        "artifact_type": "terraform_module",
-        "confidence": "medium",
-        "when_any_path_matches": [
-          "*.tf",
-          "modules/**"
-        ],
-        "and_when_matching_path_contains_any": [
-          "terraform registry",
-          "registry.terraform.io"
-        ]
-      },
-      {
         "artifact_type": "helm_chart",
         "confidence": "high",
-        "when_any_path_matches": [
-          "Chart.yaml",
-          "charts/**/Chart.yaml"
+        "when_workflow_contains_any": [
+          "helm push"
         ]
-      },
-      {
-        "artifact_type": "no_artifact",
-        "confidence": "high",
-        "when": "no_artifact_detectors_match && release_assets_count == 0 && no_publish_workflow_detected"
       }
     ],
     "resolution_rules": [
@@ -487,8 +683,12 @@
         "rule": "A repo may publish several artifact types; every detected external artifact gets its own identity record and applicable checks."
       },
       {
-        "id": "registry_signal_beats_manifest_presence_for_publish_claim",
-        "rule": "A manifest can indicate a buildable package, but a publish workflow, release asset, registry package, or explicit contract is needed before claiming it is externally published."
+        "id": "candidate_evidence_is_not_publication",
+        "rule": "Manifest and build metadata populate artifact_candidates only; artifact_surface requires an actual publish or push workflow, a release asset, matching registry evidence, or an explicit artifact contract."
+      },
+      {
+        "id": "explicit_contract_confirms_manual_publication",
+        "rule": "A non-no_artifact explicit contract enters artifact_surface without requiring a workflow, so manual publication remains representable."
       },
       {
         "id": "github_packages_is_registry_not_artifact_shape",
@@ -496,7 +696,7 @@
       },
       {
         "id": "no_artifact_is_a_state",
-        "rule": "No-artifact is valid only when manifests, workflows, releases, docs, and package registry signals are consistent with that posture."
+        "rule": "When candidates exist without external publication evidence, retain artifact_candidates, report artifact_surface as no_artifact, keep external counts at zero, and do not require artifact identity or registry contracts."
       }
     ]
   },

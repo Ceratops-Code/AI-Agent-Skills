@@ -378,13 +378,9 @@ def collect_repository(
     tags = _items(
         _result(fetched, "/repos/${owner}/${repo}/tags?per_page=100", parameters).data
     )
-    detected_artifacts = set(types.get("artifact_surface", [])) - {"no_artifact"}
-    detected_artifacts.update(
-        str(item.get("artifact_type"))
-        for item in parameters.get("artifact_contracts", [])
-        if isinstance(item, dict) and item.get("artifact_type")
-    )
-    types["artifact_surface"] = sorted(detected_artifacts or {"no_artifact"})
+    confirmed_artifacts = set(types.get("artifact_surface", [])) - {"no_artifact"}
+    confirmed_artifacts.update(declared_artifact_types)
+    types["artifact_surface"] = sorted(confirmed_artifacts or {"no_artifact"})
     checks = {rule["id"]: rule for rule in rules}
     stale_expected = {
         key: checks.get(key, {}).get("collection", {})

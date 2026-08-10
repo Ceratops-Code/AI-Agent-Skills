@@ -22,12 +22,24 @@ from ceratops_repo_compatibility_engine.deploy_contract_validation import (
 USES_RE = re.compile(r"^\s*uses:\s*([^@\s]+)@([^\s#]+)", re.MULTILINE)
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 PUBLISH_RE = re.compile(
-    r"(gh release|npm\s+(?:stage\s+)?publish|twine upload|pypa/gh-action-pypi-publish|docker/build-push-action|docker push|cargo publish|gem push|nuget push|mvn deploy|Publish-Module)",
+    r"(gh\s+release\s+(?:create|upload)|softprops/action-gh-release|"
+    r"actions/upload-release-asset|npm\s+(?:stage\s+)?publish|twine upload|"
+    r"pypa/gh-action-pypi-publish|uv publish|hatch publish|poetry publish|"
+    r"docker push|podman push|oras push|cargo publish|gem push|nuget push|"
+    r"mvn(?:w)?\s+deploy|gradle(?:w)?\s+publish|Publish-Module|helm push|"
+    r"goreleaser release|wingetcreate submit)",
     re.IGNORECASE,
 )
-NPM_PUBLISH_RE = re.compile(r"\bnpm\s+(?:stage\s+)?publish\b", re.IGNORECASE)
+DOCKER_BUILD_PUSH_ACTION_RE = re.compile(
+    r"docker/build-push-action@", re.IGNORECASE
+)
+DOCKER_PUSH_ENABLED_RE = re.compile(
+    r"(?im)^\s*push\s*:\s*['\"]?true['\"]?\s*(?:#.*)?$"
+)
 SITE_PUBLISH_RE = re.compile(
-    r"(actions/(?:deploy-pages|upload-pages-artifact)@|peaceiris/actions-gh-pages@|github-pages-deploy-action@|mkdocs\s+gh-deploy\b|\bgh-pages\s+(?:-d|--dist)\b)",
+    r"(actions/deploy-pages@|peaceiris/actions-gh-pages@|"
+    r"github-pages-deploy-action@|mkdocs\s+gh-deploy\b|"
+    r"\bgh-pages\s+(?:-d|--dist)\b)",
     re.IGNORECASE,
 )
 SECRET_NAME_RE = re.compile(
@@ -87,15 +99,26 @@ ARTIFACT_DETECTOR_KEYS = {
     "when_any_path_matches",
     "and_when_any_path_matches",
     "and_when_matching_path_contains_any",
+    "and_when_matching_path_contains_all",
     "when_workflow_contains_any",
     "and_when_workflow_contains_any",
+    "and_when_workflow_contains_all",
     "when_release_assets_count_gt",
     "when",
-    "except_when_root_manifest_is_private_without_publish_surface",
+}
+ARTIFACT_DETECTOR_SURFACES = (
+    "candidate_detectors",
+    "external_publish_detectors",
+)
+ARTIFACT_PUBLICATION_EVIDENCE_KEYS = {
+    "when_workflow_contains_any",
+    "and_when_workflow_contains_any",
+    "and_when_workflow_contains_all",
+    "when_release_assets_count_gt",
+    "when",
 }
 ARTIFACT_DETECTOR_WHEN = {
     "repo.has_pages == true",
-    "no_artifact_detectors_match && release_assets_count == 0 && no_publish_workflow_detected",
 }
 COLLECTION_KEYS = {
     "ignore_paths",
@@ -289,6 +312,19 @@ def _workflow_files(local: dict[str, Any]) -> dict[str, str]:
     }
 
 
+def _workflow_has_publish_evidence(text: str) -> bool:
+    """Return whether one workflow contains an actual publication operation."""
+
+    return bool(
+        PUBLISH_RE.search(text)
+        or SITE_PUBLISH_RE.search(text)
+        or (
+            DOCKER_BUILD_PUSH_ACTION_RE.search(text)
+            and DOCKER_PUSH_ENABLED_RE.search(text)
+        )
+    )
+
+
 def workflows_with_unpinned_refs(workflows: dict[str, str]) -> list[dict[str, str]]:
     """Find external Actions references that are not pinned to full SHAs."""
 
@@ -385,26 +421,18 @@ def _json(text: str) -> tuple[dict[str, Any], str | None]:
 def _artifact_types(
     repo: dict[str, Any],
     local: dict[str, Any],
-    type_system: dict[str, Any] | None,
+    detectors: list[dict[str, Any]],
     release_assets_count: int,
-    declared_artifact_types: list[str] | None = None,
 ) -> list[str]:
     """Interpret contract-declared artifact detectors over factual local signals."""
 
-    if not type_system:
-        return ["no_artifact"]
     files, texts = local["files"], local["texts"]
-    workflow_text = "\n".join(
+    workflow_texts = [
         text for path, text in texts.items() if path.startswith(".github/workflows/")
-    )
-    package, _ = _json(texts.get("package.json", ""))
-    result = set(declared_artifact_types or [])
-    no_artifact_detector = False
-    for detector in type_system.get("detectors", []):
+    ]
+    result: set[str] = set()
+    for detector in detectors:
         artifact_type = str(detector.get("artifact_type") or "")
-        if artifact_type == "no_artifact":
-            no_artifact_detector = True
-            continue
         matched = True
         if detector.get("when_any_path_matches"):
             matched = matched and path_matches(files, detector["when_any_path_matches"])
@@ -421,16 +449,42 @@ def _artifact_types(
                 token.lower() in matching_text.lower()
                 for token in detector["and_when_matching_path_contains_any"]
             )
+        if detector.get("and_when_matching_path_contains_all"):
+            matched = matched and all(
+                token.lower() in matching_text.lower()
+                for token in detector["and_when_matching_path_contains_all"]
+            )
+        matching_workflows = workflow_texts
         if detector.get("when_workflow_contains_any"):
-            matched = matched and any(
-                token.lower() in workflow_text.lower()
-                for token in detector["when_workflow_contains_any"]
-            )
+            matching_workflows = [
+                text
+                for text in matching_workflows
+                if any(
+                    token.lower() in text.lower()
+                    for token in detector["when_workflow_contains_any"]
+                )
+            ]
+            matched = matched and bool(matching_workflows)
         if detector.get("and_when_workflow_contains_any"):
-            matched = matched and any(
-                token.lower() in workflow_text.lower()
-                for token in detector["and_when_workflow_contains_any"]
-            )
+            matching_workflows = [
+                text
+                for text in matching_workflows
+                if any(
+                    token.lower() in text.lower()
+                    for token in detector["and_when_workflow_contains_any"]
+                )
+            ]
+            matched = matched and bool(matching_workflows)
+        if detector.get("and_when_workflow_contains_all"):
+            matching_workflows = [
+                text
+                for text in matching_workflows
+                if all(
+                    token.lower() in text.lower()
+                    for token in detector["and_when_workflow_contains_all"]
+                )
+            ]
+            matched = matched and bool(matching_workflows)
         if detector.get("when_release_assets_count_gt") is not None:
             matched = matched and release_assets_count > int(
                 detector["when_release_assets_count_gt"]
@@ -440,17 +494,8 @@ def _artifact_types(
             matched = matched and repo.get("has_pages") is True
         elif condition is not None and condition not in ARTIFACT_DETECTOR_WHEN:
             raise ValueError(f"unsupported artifact detector condition: {condition}")
-        if detector.get("except_when_root_manifest_is_private_without_publish_surface"):
-            publish_surface = bool(package.get("workspaces")) or bool(
-                NPM_PUBLISH_RE.search(workflow_text)
-            )
-            matched = matched and not (
-                package.get("private") is True and not publish_surface
-            )
         if matched and artifact_type:
             result.add(artifact_type)
-    if not result and no_artifact_detector:
-        result.add("no_artifact")
     return sorted(result)
 
 
@@ -494,13 +539,26 @@ def classify_repository(
         r"(?m)^kind:\s*(?:Deployment|Service|Ingress)\s*$", yaml_text
     ):
         languages.add("kubernetes")
-    artifacts = _artifact_types(
+    type_system = artifact_type_system or {}
+    candidates = _artifact_types(
         repo,
         local,
-        artifact_type_system,
+        type_system.get("candidate_detectors", []),
         release_assets_count,
-        declared_artifact_types,
     )
+    externally_detected = _artifact_types(
+        repo,
+        local,
+        type_system.get("external_publish_detectors", []),
+        release_assets_count,
+    )
+    externally_detected.extend(
+        artifact_type
+        for artifact_type in declared_artifact_types or []
+        if artifact_type != "no_artifact"
+    )
+    artifacts = sorted(set(externally_detected) or {"no_artifact"})
+    artifact_shapes = set(candidates) | (set(artifacts) - {"no_artifact"})
     project: set[str] = set()
     if path_matches(
         files,
@@ -515,7 +573,7 @@ def classify_repository(
         ],
     ):
         project.add("service_or_app")
-    if set(artifacts) & {
+    if artifact_shapes & {
         "pypi_python_package",
         "npm_package",
         "maven_package",
@@ -528,7 +586,7 @@ def classify_repository(
         project.add("library_or_sdk")
     if languages & {"terraform", "helm", "kubernetes"}:
         project.add("iac")
-    if set(artifacts) & {"github_pages_site", "static_docs_site"}:
+    if artifact_shapes & {"github_pages_site", "static_docs_site"}:
         project.add("website")
     if "github_actions" in languages or path_matches(
         files, ["action.yml", "action.yaml", "scripts/**"]
@@ -559,6 +617,7 @@ def classify_repository(
             )
         },
         "language_or_iac": sorted(languages),
+        "artifact_candidates": candidates,
         "artifact_surface": artifacts,
         "project_surface": sorted(project),
     }
@@ -860,7 +919,9 @@ def collect_local_repository(
                 + _permission_matches(workflows, name, top_level=True)
                 for name in permission_names
             },
-            "publish_detected": bool(PUBLISH_RE.search(workflow_text)),
+            "publish_detected": any(
+                _workflow_has_publish_evidence(text) for text in workflows.values()
+            ),
             "attestation_detected": bool(
                 re.search(
                     r"(?i)(actions/attest|attestations:\s*write|--provenance\b|sbom|cosign)",
