@@ -9461,6 +9461,40 @@ def _output_schema_for_task(
             result["minItems"] = 1
         return result
 
+    def candidate_identifiers(*, nonempty: bool = False) -> dict[str, Any]:
+        values = [str(value) for value in task.get("candidate_ids", [])]
+        surface_id = str(task.get("surface_id") or "")
+        if task["phase"] == "synthesis":
+            return strings(nonempty=nonempty)
+        if not values or surface_id not in SURFACE_CODES:
+            raise CreditAnalysisError(
+                f"model task has no typed candidate identifiers: {task['task_id']}"
+            )
+        prefix = re.escape(
+            f"{state['analysis_id']}.{SURFACE_CODES[surface_id]}."
+        ).replace(r"\-", "-")
+        item: dict[str, Any] = {
+            "type": "string",
+            "pattern": rf"^{prefix}[0-9]{{6}}$",
+            "description": (
+                "Copy a candidate ID from the supplied candidate list; never place an "
+                "evidence reference here."
+            ),
+        }
+        if len(values) <= 128:
+            item["enum"] = values
+        result: dict[str, Any] = {
+            "type": "array",
+            "items": item,
+            "description": (
+                "Candidate identifiers only. Values beginning with evidence:// belong "
+                "in evidence_refs."
+            ),
+        }
+        if nonempty:
+            result["minItems"] = 1
+        return result
+
     def numbers(*, exact_items: int | None = None) -> dict[str, Any]:
         result: dict[str, Any] = {"type": "array", "items": number()}
         if exact_items is not None:
@@ -9522,7 +9556,7 @@ def _output_schema_for_task(
     )
     assessment = closed_object(
         {
-            "candidate_ids": strings(nonempty=True),
+            "candidate_ids": candidate_identifiers(nonempty=True),
             "disposition": enum_string(contract["spark_dispositions"]),
             "reason": string(),
             "evidence_refs": strings(nonempty=True),
@@ -9600,7 +9634,7 @@ def _output_schema_for_task(
         )
         confirmation_assessment = closed_object(
             {
-                "candidate_ids": strings(nonempty=True),
+                "candidate_ids": candidate_identifiers(nonempty=True),
                 "disposition": enum_string(contract["confirmation_dispositions"]),
                 "reason": string(),
                 "evidence_refs": strings(nonempty=True),
@@ -9646,7 +9680,7 @@ def _output_schema_for_task(
                 "temporary_control_id": identifier(),
                 "owner_key": string(),
                 "control_key": string(),
-                "candidate_ids": strings(nonempty=True),
+                "candidate_ids": candidate_identifiers(nonempty=True),
                 "evidence_refs": strings(nonempty=True),
                 "contribution": string(),
                 "material_variant_id": identifier(),
@@ -9799,7 +9833,9 @@ def _task_prompt(
         "with the same length and order. Each candidate ID appears once total. Never "
         "repeat a candidate in parallel assessments for secondary interpretations; "
         "choose its single disposition and split adjacent candidates when their nested "
-        "semantic objects differ."
+        "semantic objects differ. Candidate IDs and evidence references are distinct: "
+        "copy candidate_ids only from the input candidate IDs and put every "
+        "evidence:// value only in evidence_refs."
     )
     if task["phase"] == "spark-primary":
         instructions = f"""Primary Spark discovery for `{task['surface_id']}`.

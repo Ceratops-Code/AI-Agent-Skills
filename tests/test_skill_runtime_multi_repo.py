@@ -2356,11 +2356,19 @@ def test_credit_analysis_child_command_places_global_approval_before_exec(
             "task_id": "spark.helper-contracts.primary.0001",
             "surface_id": "helper-contracts",
             "stage": "primary",
+            "candidate_ids": [
+                "analysis-1.hc.000001",
+                "analysis-1.hc.000002",
+            ],
         },
         {
             "phase": "surface-confirmation",
             "task_id": "confirm.helper-contracts",
             "surface_id": "helper-contracts",
+            "candidate_ids": [
+                "analysis-1.hc.000001",
+                "analysis-1.hc.000002",
+            ],
         },
         {"phase": "synthesis", "task_id": "synthesis", "surface_id": None},
     ]
@@ -2398,6 +2406,21 @@ def test_credit_analysis_child_command_places_global_approval_before_exec(
             ]
             assert prose_schema["reason"]["minLength"] == 1
             assert prose_schema["evidence_refs"]["items"]["minLength"] == 1
+            candidate_schema = prose_schema["candidate_ids"]["items"]
+            assert candidate_schema["enum"] == task["candidate_ids"]
+            assert (
+                workflow.re.fullmatch(
+                    candidate_schema["pattern"], task["candidate_ids"][0]
+                )
+                is not None
+            )
+            assert (
+                workflow.re.fullmatch(
+                    candidate_schema["pattern"],
+                    "evidence://review/review:000197",
+                )
+                is None
+            )
 
         def assert_identifier_schema(identifier_schema: dict[str, Any]) -> None:
             pattern = identifier_schema["pattern"]
@@ -2466,6 +2489,32 @@ def test_credit_analysis_child_command_places_global_approval_before_exec(
     assert "`candidate_assessments` must be one ordered partition" in spark_prompt
     assert "Each candidate ID appears once total" in spark_prompt
     assert "inherit their assessment's candidate_ids" in spark_prompt
+    assert "evidence:// value only in evidence_refs" in spark_prompt
+
+    large_task = {
+        "phase": "surface-confirmation",
+        "task_id": "confirm.helper-contracts",
+        "surface_id": "helper-contracts",
+        "candidate_ids": [
+            f"analysis-1.hc.{ordinal:06d}" for ordinal in range(1, 130)
+        ],
+    }
+    large_schema = workflow._output_schema_for_task(
+        state=state,
+        task=large_task,
+        input_sha256="0" * 64,
+        contract=contract,
+    )
+    large_candidate_schema = large_schema["properties"]["candidate_assessments"][
+        "items"
+    ]["properties"]["candidate_ids"]["items"]
+    assert "enum" not in large_candidate_schema
+    assert (
+        workflow.re.fullmatch(
+            large_candidate_schema["pattern"], "analysis-1.hc.000129"
+        )
+        is not None
+    )
 
 
 def test_credit_analysis_workflow_rejects_invalid_and_conflicting_passes(
