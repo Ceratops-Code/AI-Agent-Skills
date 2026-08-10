@@ -1074,11 +1074,43 @@ class ShipTests(unittest.TestCase):
                 "17",
                 pathlib.Path.cwd(),
                 self.commit,
+                repository="owner/repo",
                 wait_seconds=0,
                 interval_seconds=0,
             )
 
         self.assertEqual(validate.call_count, 2)
+
+        failed = ship.readiness.Finding(
+            level="ERROR",
+            check="pr.status_checks",
+            message="One or more status checks are failing.",
+            actual=["CI"],
+        )
+        surfaced = ship.ShipBlocked("surfaced check failure", {})
+        with (
+            mock.patch.object(
+                ship.readiness,
+                "validate_readiness",
+                side_effect=[
+                    (summary, [opaque]),
+                    (summary, [opaque]),
+                    (summary, [failed]),
+                ],
+            ) as validate,
+            mock.patch.object(ship, "_ci_blocker", return_value=surfaced),
+            self.assertRaisesRegex(ship.ShipBlocked, "surfaced check failure"),
+        ):
+            ship.wait_for_ci_gate(
+                "17",
+                pathlib.Path.cwd(),
+                self.commit,
+                repository="owner/repo",
+                wait_seconds=30,
+                interval_seconds=0,
+            )
+
+        self.assertEqual(validate.call_count, 3)
 
     def test_admin_review_bypass_is_not_treated_as_pending(self) -> None:
         bypassed = ship.readiness.Finding(
