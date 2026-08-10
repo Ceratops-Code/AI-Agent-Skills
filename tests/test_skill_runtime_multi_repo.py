@@ -1684,7 +1684,6 @@ class FakeCreditModelRunner:
                 ]
                 assessments.append(
                     {
-                        "candidate_ids": [candidate_id],
                         "disposition": (
                             "provisional-finding-evidence"
                             if candidate_id in finding_candidates
@@ -1738,7 +1737,7 @@ class FakeCreditModelRunner:
                 }
             )
         return {
-            "schema": "ceratops-credit-analysis-spark-child-result.v3",
+            "schema": "ceratops-credit-analysis-spark-child-result.v4",
             "analysis_id": task["candidate_ids"][0].split(".", 1)[0]
             if candidate_ids
             else str(packet["analysis_id"]),
@@ -2400,12 +2399,44 @@ def test_credit_analysis_child_command_places_global_approval_before_exec(
 
         assert_strict_objects(schema)
         if task["phase"] != "synthesis":
-            assert schema["properties"]["candidate_assessments"]["minItems"] == 1
+            expected_items = 2 if task["phase"] == "spark-primary" else 1
+            assert (
+                schema["properties"]["candidate_assessments"]["minItems"]
+                == expected_items
+            )
             prose_schema = schema["properties"]["candidate_assessments"]["items"][
                 "properties"
             ]
             assert prose_schema["reason"]["minLength"] == 1
             assert prose_schema["evidence_refs"]["items"]["minLength"] == 1
+
+        def assert_identifier_schema(identifier_schema: dict[str, Any]) -> None:
+            pattern = identifier_schema["pattern"]
+            assert workflow.re.fullmatch(pattern, "finding-1") is not None
+            assert workflow.re.fullmatch(pattern, "risk://none") is None
+
+        if task["phase"] == "spark-primary":
+            assessment_schema = schema["properties"]["candidate_assessments"][
+                "items"
+            ]["properties"]
+            assert set(assessment_schema) == {
+                "disposition",
+                "reason",
+                "evidence_refs",
+                "provisional_findings",
+                "plausible_risks",
+                "temporary_control_candidates",
+            }
+            assert schema["properties"]["candidate_assessments"]["maxItems"] == 2
+            assert set(assessment_schema["disposition"]["enum"]) == set(
+                contract["spark_dispositions"]
+            )
+            finding_schema = assessment_schema["provisional_findings"]["items"][
+                "properties"
+            ]
+            assert "candidate_ids" not in finding_schema
+            assert finding_schema["evidence_refs"]["minItems"] == 1
+        elif task["phase"] == "surface-confirmation":
             candidate_schema = prose_schema["candidate_ids"]["items"]
             assert "enum" not in candidate_schema
             assert (
@@ -2421,34 +2452,6 @@ def test_credit_analysis_child_command_places_global_approval_before_exec(
                 )
                 is None
             )
-
-        def assert_identifier_schema(identifier_schema: dict[str, Any]) -> None:
-            pattern = identifier_schema["pattern"]
-            assert workflow.re.fullmatch(pattern, "finding-1") is not None
-            assert workflow.re.fullmatch(pattern, "risk://none") is None
-
-        if task["phase"] == "spark-primary":
-            assessment_schema = schema["properties"]["candidate_assessments"][
-                "items"
-            ]["properties"]
-            assert set(assessment_schema) == {
-                "candidate_ids",
-                "disposition",
-                "reason",
-                "evidence_refs",
-                "provisional_findings",
-                "plausible_risks",
-                "temporary_control_candidates",
-            }
-            assert set(assessment_schema["disposition"]["enum"]) == set(
-                contract["spark_dispositions"]
-            )
-            finding_schema = assessment_schema["provisional_findings"]["items"][
-                "properties"
-            ]
-            assert "candidate_ids" not in finding_schema
-            assert finding_schema["evidence_refs"]["minItems"] == 1
-        elif task["phase"] == "surface-confirmation":
             review_schema = schema["properties"]["temporary_control_reviews"][
                 "items"
             ]["properties"]
@@ -2486,10 +2489,9 @@ def test_credit_analysis_child_command_places_global_approval_before_exec(
     assert "Semantic ownership is nested and exclusive" in spark_prompt
     assert "`plausible-risk` assessment" in spark_prompt
     assert "`necessary-exclusion` assessments have neither" in spark_prompt
-    assert "`candidate_assessments` must be one ordered partition" in spark_prompt
-    assert "Each candidate ID appears once total" in spark_prompt
-    assert "inherit their assessment's candidate_ids" in spark_prompt
-    assert "evidence:// value only in evidence_refs" in spark_prompt
+    assert "exactly one candidate_assessments item per input candidate" in spark_prompt
+    assert "controller assigns the" in spark_prompt
+    assert "inherit their assessment's candidate assignment" in spark_prompt
 
     large_task = {
         "phase": "surface-confirmation",
@@ -2678,7 +2680,7 @@ def test_credit_analysis_workflow_rejects_invalid_and_conflicting_passes(
 
     with pytest.raises(
         workflow.CreditAnalysisError,
-        match="coverage is missing, duplicated, or reordered",
+        match="align one-to-one|coverage is missing, duplicated, or reordered",
     ):
         workflow.command_execute_orchestration(
             pathlib.Path(duplicate_plan["state_path"]),

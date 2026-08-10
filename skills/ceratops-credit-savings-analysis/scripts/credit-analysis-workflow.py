@@ -50,7 +50,7 @@ ORCHESTRATION_STATE_SCHEMA = "ceratops-credit-analysis-orchestration-state.v2"
 CHUNK_MANIFEST_SCHEMA = "ceratops-credit-analysis-chunk-manifest.v2"
 SPARK_RESULT_SCHEMA = "ceratops-credit-analysis-spark-result.v2"
 CONFIRMATION_RESULT_SCHEMA = "ceratops-credit-analysis-confirmation-result.v2"
-SPARK_CHILD_RESULT_SCHEMA = "ceratops-credit-analysis-spark-child-result.v3"
+SPARK_CHILD_RESULT_SCHEMA = "ceratops-credit-analysis-spark-child-result.v4"
 CONFIRMATION_CHILD_RESULT_SCHEMA = (
     "ceratops-credit-analysis-confirmation-child-result.v3"
 )
@@ -8290,6 +8290,9 @@ SPARK_CHILD_ASSESSMENT_FIELDS = SPARK_ASSESSMENT_FIELDS | {
     "plausible_risks",
     "temporary_control_candidates",
 }
+SPARK_PRIMARY_CHILD_ASSESSMENT_FIELDS = SPARK_CHILD_ASSESSMENT_FIELDS - {
+    "candidate_ids"
+}
 SPARK_CHILD_FINDING_FIELDS = SPARK_FINDING_FIELDS - {"candidate_ids"}
 SPARK_CHILD_RISK_FIELDS = SPARK_RISK_FIELDS - {"candidate_ids"}
 SPARK_CHILD_TEMPORARY_FIELDS = SPARK_TEMPORARY_FIELDS - {"candidate_ids"}
@@ -8566,14 +8569,28 @@ def _validate_spark_result(
     risk_ids: set[str] = set()
     temporary_ids: set[str] = set()
     used_material_variants: list[str] = []
+    primary = task["phase"] == "spark-primary"
+    if primary and len(assessments) != len(task["candidate_ids"]):
+        raise CreditAnalysisError(
+            "primary Spark assessments must align one-to-one with candidate order"
+        )
     for index, assessment in enumerate(assessments, start=1):
         _closed_result(
             assessment,
-            SPARK_CHILD_ASSESSMENT_FIELDS,
+            (
+                SPARK_PRIMARY_CHILD_ASSESSMENT_FIELDS
+                if primary
+                else SPARK_CHILD_ASSESSMENT_FIELDS
+            ),
             f"Spark assessment {index}",
         )
-        candidates = _result_strings(
-            assessment.get("candidate_ids"), f"Spark assessment {index} candidates"
+        candidates = (
+            [str(task["candidate_ids"][index - 1])]
+            if primary
+            else _result_strings(
+                assessment.get("candidate_ids"),
+                f"Spark assessment {index} candidates",
+            )
         )
         if not set(candidates) <= allowed_candidates:
             raise CreditAnalysisError("Spark assessment references an unknown candidate")
@@ -9509,10 +9526,16 @@ def _output_schema_for_task(
         }
 
     def objects(
-        item: Mapping[str, Any], *, nonempty: bool = False
+        item: Mapping[str, Any],
+        *,
+        nonempty: bool = False,
+        exact_items: int | None = None,
     ) -> dict[str, Any]:
         result: dict[str, Any] = {"type": "array", "items": dict(item)}
-        if nonempty:
+        if exact_items is not None:
+            result["minItems"] = exact_items
+            result["maxItems"] = exact_items
+        elif nonempty:
             result["minItems"] = 1
         return result
 
@@ -9552,15 +9575,21 @@ def _output_schema_for_task(
             "material_variant_ids": identifiers(),
         }
     )
-    assessment = closed_object(
+    assessment_properties = {
+        "candidate_ids": candidate_identifiers(nonempty=True),
+        "disposition": enum_string(contract["spark_dispositions"]),
+        "reason": string(),
+        "evidence_refs": strings(nonempty=True),
+        "provisional_findings": objects(spark_finding),
+        "plausible_risks": objects(spark_risk),
+        "temporary_control_candidates": objects(spark_temporary),
+    }
+    assessment = closed_object(assessment_properties)
+    primary_assessment = closed_object(
         {
-            "candidate_ids": candidate_identifiers(nonempty=True),
-            "disposition": enum_string(contract["spark_dispositions"]),
-            "reason": string(),
-            "evidence_refs": strings(nonempty=True),
-            "provisional_findings": objects(spark_finding),
-            "plausible_risks": objects(spark_risk),
-            "temporary_control_candidates": objects(spark_temporary),
+            key: value
+            for key, value in assessment_properties.items()
+            if key != "candidate_ids"
         }
     )
 
@@ -9573,7 +9602,17 @@ def _output_schema_for_task(
             "surface_id": fixed_string(str(task["surface_id"])),
             "stage": fixed_string(str(task["stage"])),
             "input_sha256": fixed_string(input_sha256),
-            "candidate_assessments": objects(assessment, nonempty=True),
+            "candidate_assessments": objects(
+                primary_assessment
+                if task["phase"] == "spark-primary"
+                else assessment,
+                exact_items=(
+                    len(task["candidate_ids"])
+                    if task["phase"] == "spark-primary"
+                    else None
+                ),
+                nonempty=task["phase"] != "spark-primary",
+            ),
             "preserved_variant_ids": identifiers(),
         }
     elif task["phase"] == "surface-confirmation":
@@ -9822,8 +9861,8 @@ def _task_prompt(
         "provisional_findings and no plausible_risks; a `plausible-risk` assessment "
         "has one or more nested plausible_risks and no provisional_findings; "
         "`dismissed-candidate` and `necessary-exclusion` assessments have neither. "
-        "Nested semantic objects inherit their assessment's candidate_ids; do not "
-        "repeat candidate_ids inside them."
+        "Nested semantic objects inherit their assessment's candidate assignment; do "
+        "not repeat candidate_ids inside them."
     )
     assessment_partition_contract = (
         "`candidate_assessments` must be one ordered partition: concatenating every "
@@ -9840,19 +9879,19 @@ def _task_prompt(
 
 Inspect every causally ordered candidate record. Account for candidates in their
 exact input order, each exactly once, using one of: {', '.join(contract['spark_dispositions'])}.
+Return exactly one candidate_assessments item per input candidate in that order.
+Do not emit candidate_ids in a primary assessment; the controller assigns the
+corresponding input candidate by position and validates the exact item count.
 Use provisional findings for supported recurring-control evidence, plausible risks
 for a decision-blocking unknown, dismissals with concrete reasons, and necessary
 exclusions only with concrete evidence. Never use a catch-all necessity reason.
 Every assessment must cite original `evidence://` references from its candidates.
 Return all material variants. Use globally unique IDs prefixed with the surface.
 Primary `preserved_variant_ids` and every item's `material_variant_ids` are empty.
-Group adjacent candidates into one assessment when disposition and reason match; cite
-the ordered union of their evidence refs and keep expanded order exact.
 {spark_ownership_contract} Producer types must be one of:
 {', '.join(contract['producer_types'])}. Every finding, risk, and temporary-control
 object must contain at least one evidence reference. Temporary-control candidates are
-nested in the assessment whose candidate IDs they inherit.
-{assessment_partition_contract}
+nested in the assessment whose positional candidate ID they inherit.
 """
     elif task["phase"] == "spark-consolidation":
         instructions = f"""Spark consolidation for `{task['surface_id']}`.
