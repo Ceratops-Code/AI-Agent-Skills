@@ -740,6 +740,19 @@ def _transient_readiness(finding: readiness.Finding) -> bool:
         # protect against checks that attach after PR creation.
         return isinstance(finding.actual, list) and bool(finding.actual)
     if (
+        finding.check == "pr.status_checks"
+        and finding.level == ERROR
+        and finding.message
+        in {
+            "Status-check entry has unknown state.",
+            "Status-check entry has no terminal or pending state.",
+        }
+    ):
+        # GitHub can expose an incomplete status-rollup snapshot while check
+        # state propagates. The gate confirms this once before treating it as
+        # a persistent unsupported state.
+        return True
+    if (
         finding.check == "pr.review_decision"
         and finding.level == ERROR
         and finding.actual == "REVIEW_REQUIRED"
@@ -911,6 +924,7 @@ def wait_for_ci_gate(
     """
 
     deadline = time.monotonic() + wait_seconds
+    confirming_transient_error = False
     while True:
         summary, findings = readiness.validate_readiness(
             pr,
@@ -928,11 +942,24 @@ def wait_for_ci_gate(
             and finding.actual == "REVIEW_REQUIRED"
             for finding in findings
         )
+        transient_errors = [
+            finding
+            for finding in findings
+            if finding.level == ERROR and _transient_readiness(finding)
+        ]
         terminal = [
             finding
             for finding in findings
             if finding.level == ERROR and not _transient_readiness(finding)
         ]
+        if not terminal and transient_errors:
+            if confirming_transient_error:
+                terminal = transient_errors
+            else:
+                confirming_transient_error = True
+                continue
+        else:
+            confirming_transient_error = False
         if terminal:
             selected_repository = repository or _repository_name(repo_root, None)
             raise _ci_blocker(
