@@ -1673,18 +1673,16 @@ class FakeCreditModelRunner:
                 for candidate in finding["candidate_ids"]
             }
             for candidate_id in candidate_ids:
-                linked = [findings[0]["id"]] if candidate_id in finding_candidates else []
+                finding_owned = candidate_id in finding_candidates
                 assessments.append(
                     {
                         "candidate_ids": [candidate_id],
                         "disposition": (
                             "provisional-finding-evidence"
-                            if linked
+                            if finding_owned
                             else "dismissed-candidate"
                         ),
                         "reason": "Synthetic evidence was fully reviewed.",
-                        "provisional_finding_ids": linked,
-                        "risk_ids": [],
                         "evidence_refs": ["evidence://synthetic/primary"],
                     }
                 )
@@ -1706,19 +1704,17 @@ class FakeCreditModelRunner:
                         "material_variant_ids": [variant_id],
                     }
                 )
-            linked = [finding["id"] for finding in findings]
+            finding_owned = bool(findings)
             for candidate_id in candidate_ids:
                 assessments.append(
                     {
                         "candidate_ids": [candidate_id],
                         "disposition": (
                             "provisional-finding-evidence"
-                            if linked
+                            if finding_owned
                             else "dismissed-candidate"
                         ),
                         "reason": "Consolidation preserved the candidate and variants.",
-                        "provisional_finding_ids": linked,
-                        "risk_ids": [],
                         "evidence_refs": ["evidence://synthetic/consolidated"],
                     }
                 )
@@ -1784,8 +1780,6 @@ class FakeCreditModelRunner:
                         "confirmed-finding" if finding_id else "dismissed-candidate"
                     ),
                     "reason": "Original evidence was checked directly.",
-                    "finding_ids": [finding_id] if finding_id else [],
-                    "risk_ids": [],
                     "evidence_refs": [
                         self._first_ref(dossier)
                         if dossier is not None
@@ -2384,10 +2378,12 @@ def test_credit_analysis_child_command_places_global_approval_before_exec(
             assessment_schema = schema["properties"]["candidate_assessments"][
                 "items"
             ]["properties"]
-            assert_identifier_schema(assessment_schema["risk_ids"]["items"])
-            assert_identifier_schema(
-                assessment_schema["provisional_finding_ids"]["items"]
-            )
+            assert set(assessment_schema) == {
+                "candidate_ids",
+                "disposition",
+                "reason",
+                "evidence_refs",
+            }
             assert set(assessment_schema["disposition"]["enum"]) == set(
                 contract["spark_dispositions"]
             )
@@ -2427,8 +2423,9 @@ def test_credit_analysis_child_command_places_global_approval_before_exec(
         input_variant_ids=[],
         contract=contract,
     )
-    assert "`necessary-exclusion` use empty arrays for both" in spark_prompt
-    assert "`plausible-risk` uses one or more risk_ids" in spark_prompt
+    assert "Semantic ownership is single-source and exclusive" in spark_prompt
+    assert "`plausible-risk` candidate appears in" in spark_prompt
+    assert "`necessary-exclusion` candidates appear in neither" in spark_prompt
     assert "`candidate_assessments` must be one ordered partition" in spark_prompt
     assert "Each candidate ID appears once total" in spark_prompt
     assert "must own at least one candidate ID" in spark_prompt
@@ -2521,15 +2518,15 @@ def test_credit_analysis_workflow_rejects_invalid_and_conflicting_passes(
             label="bad temporary review",
         )
 
-    mixed_links_root = tmp_path / "mixed-disposition-links"
-    mixed_links_root.mkdir()
-    mixed_links_request, _, _ = credit_analysis_request(mixed_links_root)
-    mixed_links_plan = workflow.command_plan_orchestration(
-        mixed_links_request,
+    mixed_ownership_root = tmp_path / "mixed-semantic-ownership"
+    mixed_ownership_root.mkdir()
+    mixed_ownership_request, _, _ = credit_analysis_request(mixed_ownership_root)
+    mixed_ownership_plan = workflow.command_plan_orchestration(
+        mixed_ownership_request,
         available_models=available,
     )
 
-    class MixedDispositionLinksRunner(FakeCreditModelRunner):
+    class MixedSemanticOwnershipRunner(FakeCreditModelRunner):
         def _spark(
             self,
             task: Mapping[str, Any],
@@ -2552,23 +2549,26 @@ def test_credit_analysis_workflow_rejects_invalid_and_conflicting_passes(
                 )
                 assessment = result["candidate_assessments"][0]
                 assessment["disposition"] = "necessary-exclusion"
-                assessment["provisional_finding_ids"] = []
-                assessment["risk_ids"] = [risk_id]
             return result
 
-    mixed_links_state = pathlib.Path(mixed_links_plan["state_path"])
+    mixed_ownership_state = pathlib.Path(mixed_ownership_plan["state_path"])
     with pytest.raises(
         workflow.CreditAnalysisError,
-        match="dismissed or necessary Spark candidate has semantic links",
+        match="dismissed or necessary Spark candidate has semantic ownership",
     ):
         workflow.command_execute_orchestration(
-            mixed_links_state,
-            runner=MixedDispositionLinksRunner(),
+            mixed_ownership_state,
+            runner=MixedSemanticOwnershipRunner(),
             available_models=available,
         )
-    mixed_links_saved = json.loads(mixed_links_state.read_text(encoding="utf-8"))
-    assert mixed_links_saved["model_calls"] == {"spark": 0, "gpt_5_6": 0}
-    assert mixed_links_saved["model_attempts"] == {"spark": 1, "gpt_5_6": 0}
+    mixed_ownership_saved = json.loads(
+        mixed_ownership_state.read_text(encoding="utf-8")
+    )
+    assert mixed_ownership_saved["model_calls"] == {"spark": 0, "gpt_5_6": 0}
+    assert mixed_ownership_saved["model_attempts"] == {
+        "spark": 1,
+        "gpt_5_6": 0,
+    }
 
     duplicate_assessment_root = tmp_path / "duplicate-assessment-coverage"
     duplicate_assessment_root.mkdir()
