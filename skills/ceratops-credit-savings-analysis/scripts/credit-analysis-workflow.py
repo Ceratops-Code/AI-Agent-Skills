@@ -1,16 +1,14 @@
 #!/usr/bin/env python3
 """Own resumable single-thread and per-thread-batch credit analyses.
 
-The controller validates a closed request, invokes the reusable ledger
-collector exactly once, fingerprints one retained evidence bundle, opens a
-versioned fixed queue, and persists accepted passes as immutable files plus an
-append-only index. It makes no model calls and no semantic findings. Surface
-judgment belongs to the pending action reference; synthesis is an internal
-model-gated phase. All state writes are atomic, stdout is decision-sized, and
-successful finalization deletes only recorded controller-owned context and
-pending-result files. Batch commands freeze indexed source selection, prepare
-one ordinary controller per selected thread, and open one validated internal
-batch-summary pass before grouped final publication.
+The primary workflow collects one selected session once, freezes complete
+surface evidence and a finite Spark manifest, launches explicitly modeled
+analysis-only Codex children, validates complete semantic coverage, runs one
+GPT-5.6 confirmation per public surface and one GPT-5.6 synthesis, and retains
+hashed prompts, evidence, results, telemetry, and the final report. The
+controller performs deterministic orchestration and validation only; child
+models make every semantic classification. Legacy direct-result commands remain
+lower-level controller interfaces for validated callers and batch composition.
 """
 
 from __future__ import annotations
@@ -25,8 +23,11 @@ import os
 import pathlib
 import re
 import secrets
+import shutil
+import subprocess
 import sys
 import tempfile
+import time
 from collections import Counter, defaultdict
 from collections.abc import Mapping, Sequence
 from types import ModuleType
@@ -45,6 +46,18 @@ SYNTHESIS_DECISION_SCHEMA = "ceratops-credit-analysis-synthesis-decision.v1"
 INDEX_SCHEMA = "ceratops-credit-analysis-index-record.v1"
 BATCH_STATE_SCHEMA = "ceratops-credit-analysis-batch-state.v1"
 BATCH_INDEX_SCHEMA = "ceratops-credit-analysis-batch-index-record.v1"
+ORCHESTRATION_STATE_SCHEMA = "ceratops-credit-analysis-orchestration-state.v2"
+CHUNK_MANIFEST_SCHEMA = "ceratops-credit-analysis-chunk-manifest.v2"
+SPARK_RESULT_SCHEMA = "ceratops-credit-analysis-spark-result.v2"
+CONFIRMATION_RESULT_SCHEMA = "ceratops-credit-analysis-confirmation-result.v2"
+ORCHESTRATION_SYNTHESIS_SCHEMA = (
+    "ceratops-credit-analysis-orchestration-synthesis.v2"
+)
+ORCHESTRATION_FINAL_SCHEMA = "ceratops-credit-analysis-orchestration-final.v2"
+FORMATTED_EVIDENCE_SCHEMA = "ceratops-credit-analysis-formatted-evidence.v2"
+CANONICAL_STATE_SCHEMA = "ceratops-credit-analysis-canonical-state.v1"
+MODEL_TASK_SCHEMA = "ceratops-credit-analysis-model-task.v2"
+MODEL_PROGRESS_SECONDS = 60
 EVIDENCE_NARRATIVE_LIMIT = 1200
 PASS_PACKET_CHAR_LIMIT = 29_500
 SURFACE_PACKET_BUDGETS = {
@@ -638,8 +651,8 @@ def _load_contract() -> dict[str, Any]:
         "status",
         "finalize",
     ] or contract.get("end_to_end_controller_commands") != [
-        "start",
-        "submit",
+        "plan",
+        "execute",
     ] or contract.get("batch_controller_commands") != [
         "prepare-batch",
         "advance-batch",
@@ -714,6 +727,74 @@ def _load_contract() -> dict[str, Any]:
             raise CreditAnalysisError(f"action title is invalid: {item['reference']}")
     if (SKILL_DIR / "references" / "synthesis.md").exists():
         raise CreditAnalysisError("internal synthesis must not be a public reference")
+    orchestration_schemas = {
+        "canonical_state_schema": CANONICAL_STATE_SCHEMA,
+        "orchestration_state_schema": ORCHESTRATION_STATE_SCHEMA,
+        "chunk_manifest_schema": CHUNK_MANIFEST_SCHEMA,
+        "spark_result_schema": SPARK_RESULT_SCHEMA,
+        "confirmation_result_schema": CONFIRMATION_RESULT_SCHEMA,
+        "orchestration_synthesis_schema": ORCHESTRATION_SYNTHESIS_SCHEMA,
+        "orchestration_final_schema": ORCHESTRATION_FINAL_SCHEMA,
+    }
+    if any(contract.get(key) != value for key, value in orchestration_schemas.items()):
+        raise CreditAnalysisError("orchestration schema contract is invalid")
+    models = contract.get("models")
+    if not isinstance(models, Mapping) or set(models) != {
+        "spark",
+        "confirmation",
+        "synthesis",
+    } or not all(isinstance(value, str) and value for value in models.values()):
+        raise CreditAnalysisError("orchestration model contract is invalid")
+    semantic_calls = contract.get("semantic_call_contract")
+    if semantic_calls != {
+        "full_analysis_gpt_5_6_calls": 6,
+        "surface_confirmation_calls": 5,
+        "synthesis_calls": 1,
+        "bookkeeping_calls": 0,
+    }:
+        raise CreditAnalysisError("semantic call contract is invalid")
+    chunking = contract.get("chunking")
+    chunking_keys = {
+        "target_chars",
+        "maximum_chars",
+        "maximum_candidates",
+        "large_payload_inline_chars",
+        "confirmation_packet_chars",
+        "synthesis_packet_chars",
+        "consolidation_fan_in",
+        "maximum_spark_tasks",
+        "maximum_consolidation_depth",
+    }
+    if (
+        not isinstance(chunking, Mapping)
+        or set(chunking) != chunking_keys
+        or any(
+            not isinstance(value, int) or isinstance(value, bool) or value < 1
+            for value in chunking.values()
+        )
+        or chunking["target_chars"] > chunking["maximum_chars"]
+        or chunking["large_payload_inline_chars"] >= chunking["maximum_chars"]
+        or chunking["consolidation_fan_in"] < 2
+    ):
+        raise CreditAnalysisError("orchestration chunking contract is invalid")
+    if contract.get("spark_dispositions") != [
+        "provisional-finding-evidence",
+        "plausible-risk",
+        "dismissed-candidate",
+        "necessary-exclusion",
+    ] or contract.get("confirmation_dispositions") != [
+        "confirmed-finding",
+        "plausible-risk",
+        "dismissed-candidate",
+        "necessary-exclusion",
+    ] or contract.get("temporary_control_dispositions") != [
+        "transient-by-design",
+        "permanently-implemented",
+        "run-only-useful",
+        "durable-control-missing",
+        "final-state-unclear",
+    ]:
+        raise CreditAnalysisError("orchestration disposition contract is invalid")
     return contract
 
 
@@ -1166,7 +1247,7 @@ def _open_pending(
         candidates = list(evidence["call_inventory"])
     else:
         candidates = _candidate_ids(surface_id, evidence, contract)
-        focused_runs = set(evidence["focused_semantic_context"]["run_ids"])
+        focused_runs = set(evidence["semantic_coverage"]["run_ids"])
         candidate_set = set(candidates)
         review_preparation, review_records, review_exclusions = (
             _model_review_records_for_calls(evidence, candidates, focused_runs)
@@ -1995,7 +2076,7 @@ def _surface_pass_packet(
     if surface_id == "synthesis":
         findings, finding_surfaces, risks = _finding_inventory(state)
         remaining_calls = _synthesis_remaining_calls(state, evidence, findings)
-        focused_runs = set(evidence["focused_semantic_context"]["run_ids"])
+        focused_runs = set(evidence["semantic_coverage"]["run_ids"])
         cluster_details = _candidate_clusters(
             remaining_calls,
             evidence,
@@ -2087,7 +2168,7 @@ def _surface_pass_packet(
     )
     candidates = list(pending["candidate_call_ids"])
     call_by_id = {call["call_id"]: call for call in _all_calls(evidence)}
-    focused_runs = set(evidence["focused_semantic_context"]["run_ids"])
+    focused_runs = set(evidence["semantic_coverage"]["run_ids"])
     budgets = SURFACE_PACKET_BUDGETS[surface_id]
     clusters = _candidate_clusters(
         candidates,
@@ -2180,7 +2261,7 @@ def _surface_pass_packet(
     )
     packet_evidence = {
         "deterministic_totals": evidence["totals"],
-        "focused_run_selection": evidence["focused_semantic_context"],
+        "semantic_coverage": evidence["semantic_coverage"],
         "candidate_call_count": len(candidates),
         "candidate_cluster_count": len(clusters),
         "candidate_clusters": clusters,
@@ -3428,7 +3509,7 @@ def _assemble_surface_decision(
     if not isinstance(pending, Mapping) or pending.get("surface_id") == "synthesis":
         raise CreditAnalysisError("a public surface decision is not pending")
     known_calls = set(evidence["call_inventory"])
-    focused_runs = set(evidence["focused_semantic_context"]["run_ids"])
+    focused_runs = set(evidence["semantic_coverage"]["run_ids"])
     cluster_calls = {
         str(partition["cluster_id"]): list(partition["call_ids"])
         for partition in _candidate_cluster_partition(
@@ -3873,7 +3954,7 @@ def _assemble_synthesis_decision(
         raise CreditAnalysisError("synthesis decision must rank every risk once")
 
     remaining_calls = _synthesis_remaining_calls(state, evidence, findings)
-    focused_runs = set(evidence["focused_semantic_context"]["run_ids"])
+    focused_runs = set(evidence["semantic_coverage"]["run_ids"])
     remaining_partitions = _candidate_cluster_partition(
         remaining_calls, evidence, focused_runs
     )
@@ -6371,9 +6452,3930 @@ def command_finalize_batch(state_path: pathlib.Path) -> None:
     _cleanup_batch_transients(state)
 
 
+def _exclusive_text(path: pathlib.Path, value: str, label: str) -> None:
+    """Create one immutable UTF-8 controller artifact."""
+
+    if path.exists() or path.is_symlink():
+        raise CreditAnalysisError(f"refusing to overwrite {label}")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with path.open("x", encoding="utf-8", newline="\n") as handle:
+            handle.write(value)
+    except OSError as exc:
+        raise CreditAnalysisError(f"could not write {label}: {exc}") from exc
+
+
+def _codex_model_catalog() -> set[str]:
+    """Read the local Codex catalog without issuing a model request."""
+
+    executable = shutil.which("codex")
+    if executable is None:
+        raise CreditAnalysisError("Codex CLI is unavailable")
+    try:
+        completed = subprocess.run(
+            [executable, "debug", "models"],
+            cwd=SCRIPT_DIR,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise CreditAnalysisError(f"could not read the Codex model catalog: {exc}") from exc
+    if completed.returncode:
+        detail = " ".join((completed.stderr or completed.stdout).split())
+        raise CreditAnalysisError(
+            "could not read the Codex model catalog"
+            + (f": {detail[:500]}" if detail else "")
+        )
+    try:
+        payload = json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise CreditAnalysisError("Codex model catalog is invalid JSON") from exc
+    models = payload.get("models") if isinstance(payload, Mapping) else None
+    if not isinstance(models, list):
+        raise CreditAnalysisError("Codex model catalog has no model list")
+    slugs = {
+        str(item["slug"])
+        for item in models
+        if isinstance(item, Mapping) and isinstance(item.get("slug"), str)
+    }
+    if not slugs:
+        raise CreditAnalysisError("Codex model catalog is empty")
+    return slugs
+
+
+def _required_orchestration_models(contract: Mapping[str, Any]) -> dict[str, str]:
+    raw = contract.get("models")
+    if not isinstance(raw, Mapping):
+        raise CreditAnalysisError("orchestration model contract is missing")
+    expected = {"spark", "confirmation", "synthesis"}
+    if set(raw) != expected or not all(
+        isinstance(raw[key], str) and raw[key] for key in expected
+    ):
+        raise CreditAnalysisError("orchestration model contract is invalid")
+    return {key: str(raw[key]) for key in expected}
+
+
+def _validate_orchestration_models(
+    contract: Mapping[str, Any], available_models: set[str]
+) -> dict[str, str]:
+    models = _required_orchestration_models(contract)
+    missing = sorted(set(models.values()) - available_models)
+    if missing:
+        raise CreditAnalysisError(f"required model is unavailable: {missing[0]}")
+    return models
+
+
+def _surface_order_for_request(
+    request: Mapping[str, Any], contract: Mapping[str, Any]
+) -> list[str]:
+    if request["mode"] == "full-analysis":
+        return list(contract["surface_order"])
+    return [str(request["action"])]
+
+
+def _review_record_index(evidence: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    model_review = evidence.get("model_review")
+    if not isinstance(model_review, Mapping):
+        raise CreditAnalysisError("model-review evidence is invalid")
+    records = model_review.get("records")
+    if not isinstance(records, list):
+        raise CreditAnalysisError("model-review records are invalid")
+    indexed: dict[str, dict[str, Any]] = {}
+    for record in records:
+        if not isinstance(record, dict):
+            raise CreditAnalysisError("model-review record is invalid")
+        record_id = record.get("record_id")
+        if not isinstance(record_id, str) or record_id in indexed:
+            raise CreditAnalysisError("model-review record ID is invalid")
+        indexed[record_id] = record
+    return indexed
+
+
+def _run_index(evidence: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    runs = evidence.get("runs")
+    if not isinstance(runs, list):
+        raise CreditAnalysisError("evidence runs are invalid")
+    result: dict[str, dict[str, Any]] = {}
+    for run in runs:
+        if not isinstance(run, dict) or not isinstance(run.get("turn_id"), str):
+            raise CreditAnalysisError("evidence run is invalid")
+        if run["turn_id"] in result:
+            raise CreditAnalysisError("duplicate evidence run")
+        result[run["turn_id"]] = run
+    return result
+
+
+SURFACE_EVIDENCE_KEYWORDS = {
+    "helper-contracts": (
+        "helper",
+        "script",
+        "contract",
+        "cleanup",
+        "rollback",
+        "dependency",
+        "output",
+    ),
+    "context-evidence": (
+        "read",
+        "search",
+        "context",
+        "evidence",
+        "token",
+        "cached",
+        "path",
+    ),
+    "rework-validation": (
+        "failed",
+        "error",
+        "retry",
+        "again",
+        "temporary",
+        "workaround",
+        "patch",
+        "revert",
+        "correct",
+    ),
+    "tool-flow": (
+        "tool",
+        "command",
+        "wait",
+        "timeout",
+        "terminated",
+        "result",
+        "exit",
+    ),
+    "instruction-reasoning": (
+        "instruction",
+        "rule",
+        "prompt",
+        "clarif",
+        "approve",
+        "plan",
+        "skill",
+    ),
+}
+
+OUTCOME_KEYS = frozenset(
+    {
+        "code",
+        "error",
+        "errors",
+        "exit_code",
+        "returncode",
+        "status",
+        "stderr",
+        "success",
+        "terminated",
+        "termination",
+        "timed_out",
+        "timeout",
+    }
+)
+
+
+def _structured_outcome(value: Any, *, depth: int = 0) -> Any:
+    """Project explicit process/result telemetry without semantic judgment."""
+
+    if depth > 5:
+        return None
+    if isinstance(value, Mapping):
+        result: dict[str, Any] = {}
+        for key, item in value.items():
+            normalized = str(key).casefold()
+            if normalized in OUTCOME_KEYS:
+                result[str(key)] = _bounded_value(item, text_limit=600)
+                continue
+            nested = _structured_outcome(item, depth=depth + 1)
+            if nested not in (None, {}, []):
+                result[str(key)] = nested
+        return result or None
+    if isinstance(value, list):
+        items = [
+            projected
+            for item in value
+            if (projected := _structured_outcome(item, depth=depth + 1))
+            is not None
+        ]
+        return items or None
+    return None
+
+
+def _relevant_segments(text: str, surface_id: str) -> list[dict[str, Any]]:
+    """Retain bounded deterministic windows around surface-relevant terms."""
+
+    lowered = text.casefold()
+    segments: list[dict[str, Any]] = []
+    seen: set[tuple[int, int]] = set()
+    for keyword in SURFACE_EVIDENCE_KEYWORDS[surface_id]:
+        start = 0
+        while len(segments) < 4:
+            position = lowered.find(keyword, start)
+            if position < 0:
+                break
+            left = max(0, position - 350)
+            right = min(len(text), position + len(keyword) + 650)
+            bounds = (left, right)
+            if not any(left < old_right and right > old_left for old_left, old_right in seen):
+                seen.add(bounds)
+                segments.append(
+                    {
+                        "start": left,
+                        "end": right,
+                        "text": text[left:right],
+                    }
+                )
+            start = position + len(keyword)
+        if len(segments) >= 4:
+            break
+    return segments
+
+
+WORKSPACE_REFERENCE_RE = re.compile(
+    r"<workspace:[^>]+>(?:[\\/][^\s\"'<>|,;}\]]+)*"
+)
+
+
+def _canonical_artifact_references(text: str) -> list[str]:
+    refs: list[str] = []
+    for match in WORKSPACE_REFERENCE_RE.finditer(text):
+        value = match.group(0).replace("\\", "/")
+        if value not in refs:
+            refs.append(value)
+    return refs
+
+
+def _canonical_references_from_evidence(evidence: Mapping[str, Any]) -> list[str]:
+    """Inventory portable workspace references without exposing local roots."""
+
+    references: list[str] = []
+    model_review = evidence.get("model_review")
+    records = model_review.get("records") if isinstance(model_review, Mapping) else None
+    if not isinstance(records, list):
+        raise CreditAnalysisError("model-review records are unavailable")
+    for record in records:
+        if not isinstance(record, Mapping):
+            raise CreditAnalysisError("model-review record is invalid")
+        serialized = json.dumps(
+            record.get("content"),
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            default=str,
+        )
+        for reference in _canonical_artifact_references(serialized):
+            if reference not in references:
+                references.append(reference)
+    return references
+
+
+def _canonical_projection(text: str) -> dict[str, Any]:
+    """Project protected final-state text while retaining its complete snapshot."""
+
+    segments: list[dict[str, Any]] = []
+    seen: set[tuple[int, int]] = set()
+    for surface_id in SURFACE_EVIDENCE_KEYWORDS:
+        for segment in _relevant_segments(text, surface_id):
+            bounds = (int(segment["start"]), int(segment["end"]))
+            if bounds not in seen:
+                seen.add(bounds)
+                segments.append(segment)
+            if len(segments) >= 8:
+                break
+        if len(segments) >= 8:
+            break
+    return {
+        "protected_chars": len(text),
+        "protected_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        "head": text[:1400],
+        "tail": text[-1400:],
+        "relevant_segments": segments,
+    }
+
+
+def _collect_canonical_state_snapshot(
+    *,
+    evidence: Mapping[str, Any],
+    path_roots: list[tuple[str, str]],
+    orchestration_root: pathlib.Path,
+    ledger: ModuleType,
+) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
+    """Read referenced final artifacts once and retain protected immutable evidence."""
+
+    snapshot_root = orchestration_root / "canonical-state"
+    payload_root = snapshot_root / "payloads"
+    snapshot_root.mkdir(parents=True, exist_ok=False)
+    payload_root.mkdir()
+    workspace_roots = {
+        label: pathlib.Path(root).expanduser().resolve()
+        for root, label in path_roots
+        if label.startswith("<workspace:")
+    }
+    retained_records: list[dict[str, Any]] = []
+    public_by_reference: dict[str, dict[str, Any]] = {}
+    for ordinal, reference in enumerate(
+        _canonical_references_from_evidence(evidence), start=1
+    ):
+        match = re.fullmatch(r"(<workspace:[^>]+>)(?:/(.*))?", reference)
+        artifact_id = f"canonical.{ordinal:04d}"
+        public: dict[str, Any] = {
+            "id": artifact_id,
+            "artifact_reference": reference,
+            "evidence_ref": f"evidence://canonical-state/{artifact_id}",
+            "status": "unresolved",
+            "kind": None,
+            "source_bytes": None,
+            "source_sha256": None,
+            "retained_snapshot": None,
+            "projection": None,
+        }
+        snapshot_path: pathlib.Path | None = None
+        if match is None or match.group(1) not in workspace_roots:
+            public["status"] = "workspace-root-unavailable"
+        else:
+            workspace_root = workspace_roots[match.group(1)]
+            relative = match.group(2) or ""
+            parts = [part for part in re.split(r"[\\/]+", relative) if part]
+            if any(part in {".", ".."} for part in parts):
+                public["status"] = "unsafe-relative-reference"
+            else:
+                unresolved = workspace_root.joinpath(*parts)
+                resolved = unresolved.resolve(strict=False)
+                if not (
+                    resolved == workspace_root
+                    or resolved.is_relative_to(workspace_root)
+                ):
+                    public["status"] = "outside-workspace"
+                elif unresolved.is_symlink():
+                    public["status"] = "symlink-withheld"
+                elif not unresolved.exists():
+                    public["status"] = "missing"
+                elif unresolved.is_dir():
+                    try:
+                        listing = "\n".join(
+                            sorted(child.name for child in unresolved.iterdir())
+                        )
+                    except OSError:
+                        public.update(
+                            {"status": "read-error", "kind": "directory-listing"}
+                        )
+                    else:
+                        protected = ledger.prepare_review_text(listing, path_roots)
+                        snapshot_path = payload_root / f"{artifact_id}.txt"
+                        _exclusive_text(
+                            snapshot_path,
+                            protected,
+                            "canonical directory snapshot",
+                        )
+                        public.update(
+                            {
+                                "status": "captured",
+                                "kind": "directory-listing",
+                                "source_bytes": len(listing.encode("utf-8")),
+                                "source_sha256": hashlib.sha256(
+                                    listing.encode("utf-8")
+                                ).hexdigest(),
+                                "projection": _canonical_projection(protected),
+                            }
+                        )
+                elif unresolved.is_file():
+                    try:
+                        data = unresolved.read_bytes()
+                    except OSError:
+                        public.update({"status": "read-error", "kind": "file"})
+                    else:
+                        public["source_bytes"] = len(data)
+                        public["source_sha256"] = hashlib.sha256(data).hexdigest()
+                        try:
+                            decoded = data.decode("utf-8")
+                        except UnicodeDecodeError:
+                            public.update(
+                                {"status": "captured", "kind": "binary-hash"}
+                            )
+                        else:
+                            protected = ledger.prepare_review_text(decoded, path_roots)
+                            snapshot_path = payload_root / f"{artifact_id}.txt"
+                            _exclusive_text(
+                                snapshot_path,
+                                protected,
+                                "canonical file snapshot",
+                            )
+                            public.update(
+                                {
+                                    "status": "captured",
+                                    "kind": "protected-text",
+                                    "projection": _canonical_projection(protected),
+                                }
+                            )
+                else:
+                    public["status"] = "unsupported-artifact-kind"
+        retained = dict(public)
+        if snapshot_path is not None:
+            snapshot_hash = _file_hash(snapshot_path)
+            retained["snapshot_path"] = str(snapshot_path)
+            retained["snapshot_sha256"] = snapshot_hash
+            public["retained_snapshot"] = {
+                "complete": True,
+                "sha256": snapshot_hash,
+                "evidence_ref": public["evidence_ref"],
+            }
+        else:
+            retained["snapshot_path"] = None
+            retained["snapshot_sha256"] = None
+        retained_records.append(retained)
+        public_by_reference[reference] = public
+    index = {
+        "schema": CANONICAL_STATE_SCHEMA,
+        "record_count": len(retained_records),
+        "records": retained_records,
+    }
+    index_path = snapshot_root / "index.json"
+    _exclusive_json(index_path, index, "canonical-state index")
+    return public_by_reference, {
+        "path": str(index_path),
+        "sha256": _file_hash(index_path),
+        "record_count": len(retained_records),
+    }
+
+
+def _formatted_review_record(
+    record: Mapping[str, Any],
+    *,
+    surface_id: str,
+    evidence_path: pathlib.Path,
+    inline_limit: int,
+) -> dict[str, Any]:
+    """Format one complete record or an explicit retained-payload projection."""
+
+    content = record.get("content")
+    serialized = json.dumps(
+        content,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        default=str,
+    )
+    common = {
+        key: record.get(key)
+        for key in (
+            "record_id",
+            "kind",
+            "name",
+            "timestamp",
+            "turn_id",
+            "model_call_index",
+            "available_to_model_call_index",
+            "call_id",
+            "source_chars",
+            "prepared_chars",
+            "content_hash",
+        )
+    }
+    common["retained_evidence"] = {
+        "path": str(evidence_path),
+        "reference": f"evidence://review/{record['record_id']}",
+        "complete": True,
+    }
+    common["structured_outcome"] = _structured_outcome(content)
+    common["canonical_artifact_references"] = _canonical_artifact_references(
+        serialized
+    )
+    if len(serialized) <= inline_limit:
+        common["content_mode"] = "complete-inline"
+        common["content"] = content
+        return common
+    common.update(
+        {
+            "content_mode": "retained-projection",
+            "content_chars": len(serialized),
+            "content_sha256": hashlib.sha256(serialized.encode("utf-8")).hexdigest(),
+            "head": serialized[:1400],
+            "tail": serialized[-1400:],
+            "relevant_segments": _relevant_segments(serialized, surface_id),
+        }
+    )
+    return common
+
+
+def _call_neighbors(calls: Sequence[Mapping[str, Any]], index: int) -> dict[str, Any]:
+    return {
+        "previous_call_id": str(calls[index - 1]["call_id"]) if index > 0 else None,
+        "next_call_id": (
+            str(calls[index + 1]["call_id"]) if index + 1 < len(calls) else None
+        ),
+    }
+
+
+def _format_surface_candidates(
+    *,
+    analysis_id: str,
+    surface_id: str,
+    evidence: Mapping[str, Any],
+    evidence_path: pathlib.Path,
+    canonical_state: Mapping[str, Mapping[str, Any]],
+    contract: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    """Format every selected candidate in causal order exactly once."""
+
+    selected_ids = _candidate_ids(surface_id, evidence, contract)
+    selected = set(selected_ids)
+    calls = _all_calls(evidence)
+    call_positions = {str(call["call_id"]): index for index, call in enumerate(calls)}
+    if len(call_positions) != len(calls):
+        raise CreditAnalysisError("evidence call IDs are not unique")
+    if len(selected) != len(selected_ids):
+        raise CreditAnalysisError("surface candidate IDs are not unique")
+    records = _review_record_index(evidence)
+    runs = _run_index(evidence)
+    inline_limit = int(contract["chunking"]["large_payload_inline_chars"])
+    repeated = evidence.get("repeated_tool_calls")
+    telemetry = evidence.get("telemetry")
+    result: list[dict[str, Any]] = []
+    for ordinal, call_id in enumerate(selected_ids, start=1):
+        call = calls[call_positions[call_id]]
+        turn_id = str(call["turn_id"])
+        run = runs.get(turn_id)
+        if run is None:
+            raise CreditAnalysisError("candidate run is missing")
+        message_ids = call.get("user_message_ids")
+        if not isinstance(message_ids, list):
+            raise CreditAnalysisError("candidate user-message IDs are invalid")
+        messages = [
+            message
+            for message in run.get("user_messages", [])
+            if isinstance(message, Mapping) and message.get("message_id") in message_ids
+        ]
+        if {str(message.get("message_id")) for message in messages} != set(message_ids):
+            raise CreditAnalysisError("candidate user message is missing")
+        raw_record_ids = call.get("model_review_record_ids")
+        if not isinstance(raw_record_ids, list) or not all(
+            isinstance(record_id, str) for record_id in raw_record_ids
+        ):
+            raise CreditAnalysisError("candidate review-record IDs are invalid")
+        formatted_records: list[dict[str, Any]] = []
+        for record_id in raw_record_ids:
+            raw_record = records.get(record_id)
+            if raw_record is None:
+                raise CreditAnalysisError("candidate review record is missing")
+            formatted_records.append(
+                _formatted_review_record(
+                    raw_record,
+                    surface_id=surface_id,
+                    evidence_path=evidence_path,
+                    inline_limit=inline_limit,
+                )
+            )
+        artifact_refs = list(
+            dict.fromkeys(
+                ref
+                for record in formatted_records
+                for ref in record["canonical_artifact_references"]
+            )
+        )
+        canonical_records = [
+            dict(canonical_state[reference])
+            for reference in artifact_refs
+            if reference in canonical_state
+        ]
+        candidate_id = f"{analysis_id}.{surface_id}.{ordinal:06d}"
+        if not canonical_records:
+            canonical_records.append(
+                {
+                    "id": f"canonical-unresolved.{surface_id}.{ordinal:06d}",
+                    "artifact_reference": None,
+                    "evidence_ref": (
+                        f"evidence://canonical-state/unresolved/{candidate_id}"
+                    ),
+                    "status": "no-resolvable-workspace-reference",
+                    "kind": None,
+                    "source_bytes": None,
+                    "source_sha256": None,
+                    "retained_snapshot": None,
+                    "projection": None,
+                }
+            )
+        result.append(
+            {
+                "schema": FORMATTED_EVIDENCE_SCHEMA,
+                "analysis_id": analysis_id,
+                "surface_id": surface_id,
+                "candidate_id": candidate_id,
+                "candidate_ordinal": ordinal,
+                "call_identity": {
+                    "call_id": call_id,
+                    "turn_id": turn_id,
+                    "model_call_index": call.get("index"),
+                    "timestamp": call.get("timestamp"),
+                    "sequence_position": call_positions[call_id] + 1,
+                    **_call_neighbors(calls, call_positions[call_id]),
+                },
+                "user_messages": messages,
+                "assistant_and_tool_evidence": formatted_records,
+                "actions": call.get("actions", []),
+                "semantic_actions": call.get("semantic_actions", []),
+                "tool_results": call.get("tool_results", []),
+                "process_and_run_telemetry": {
+                    "run_duration_ms": call.get("run_duration_ms"),
+                    "run_totals": run.get("totals"),
+                    "run_tool_counts": run.get("tool_counts"),
+                    "analysis_telemetry": telemetry,
+                },
+                "volume": {
+                    "tokens": call.get("tokens"),
+                    "estimated_credit_cost": call.get("estimated_credit_cost"),
+                    "tool_argument_chars": sum(
+                        int(item.get("argument_chars") or 0)
+                        for item in call.get("tool_results", [])
+                        if isinstance(item, Mapping)
+                    ),
+                    "tool_result_chars": sum(
+                        int(item.get("result_chars") or 0)
+                        for item in call.get("tool_results", [])
+                        if isinstance(item, Mapping)
+                    ),
+                },
+                "relationships": {
+                    "canonical_artifact_references": artifact_refs,
+                    "final_canonical_state": canonical_records,
+                    "repeated_tool_call_groups": repeated,
+                    "correction_reversion_and_final_outcome_evidence": [
+                        record["retained_evidence"]["reference"]
+                        for record in formatted_records
+                        if record.get("name")
+                        in {
+                            "agent_message",
+                            "task_complete",
+                            "turn_aborted",
+                            "final",
+                        }
+                        or record.get("structured_outcome") is not None
+                    ],
+                },
+                "original_evidence_refs": [
+                    f"evidence://calls/{call_id}",
+                    *[
+                        record["retained_evidence"]["reference"]
+                        for record in formatted_records
+                    ],
+                    *[record["evidence_ref"] for record in canonical_records],
+                ],
+            }
+        )
+    if [item["call_identity"]["call_id"] for item in result] != selected_ids:
+        raise CreditAnalysisError("surface candidate formatting reordered calls")
+    return result
+
+
+def _verification_dossier(record: Mapping[str, Any]) -> dict[str, Any]:
+    """Build a bounded original-evidence dossier for GPT-5.6 verification."""
+
+    projected_records: list[dict[str, Any]] = []
+    for item in record["assistant_and_tool_evidence"]:
+        projection = {
+            key: item.get(key)
+            for key in (
+                "record_id",
+                "kind",
+                "name",
+                "timestamp",
+                "call_id",
+                "content_hash",
+                "content_mode",
+                "structured_outcome",
+                "canonical_artifact_references",
+                "retained_evidence",
+            )
+        }
+        if item.get("content_mode") == "complete-inline":
+            serialized = json.dumps(
+                item.get("content"),
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+                default=str,
+            )
+            if len(serialized) <= 1800:
+                projection["excerpt"] = serialized
+                projection["excerpt_complete"] = True
+            else:
+                projection["head"] = serialized[:900]
+                projection["tail"] = serialized[-900:]
+                projection["relevant_segments"] = _relevant_segments(
+                    serialized,
+                    str(record["surface_id"]),
+                )
+                projection["excerpt_complete"] = False
+        else:
+            projection["head"] = str(item.get("head") or "")[:500]
+            projection["tail"] = str(item.get("tail") or "")[-500:]
+            projection["relevant_segments"] = [
+                {
+                    "start": segment.get("start"),
+                    "end": segment.get("end"),
+                    "text": str(segment.get("text") or "")[:700],
+                }
+                for segment in item.get("relevant_segments", [])[:2]
+                if isinstance(segment, Mapping)
+            ]
+        projected_records.append(projection)
+    return {
+        "candidate_id": record["candidate_id"],
+        "call_identity": record["call_identity"],
+        "user_messages": record["user_messages"],
+        "original_evidence_refs": record["original_evidence_refs"],
+        "evidence_excerpts": projected_records,
+        "actions": record["actions"],
+        "tool_results": record["tool_results"],
+        "volume": record["volume"],
+        "process_and_run_telemetry": record["process_and_run_telemetry"],
+        "relationships": record["relationships"],
+    }
+
+
+def _chunk_records(
+    records: list[dict[str, Any]], contract: Mapping[str, Any]
+) -> list[list[dict[str, Any]]]:
+    chunking = contract["chunking"]
+    target = int(chunking["target_chars"])
+    maximum = int(chunking["maximum_chars"])
+    maximum_candidates = int(chunking["maximum_candidates"])
+    if not (0 < target <= maximum) or maximum_candidates < 1:
+        raise CreditAnalysisError("chunking contract is malformed")
+    chunks: list[list[dict[str, Any]]] = []
+    current: list[dict[str, Any]] = []
+    for record in records:
+        record_size = _json_chars(record)
+        if record_size >= maximum:
+            raise CreditAnalysisError(
+                f"formatted candidate exceeds the chunk maximum: {record['candidate_id']}"
+            )
+        proposed = [*current, record]
+        if current and (
+            len(current) >= maximum_candidates or _json_chars(proposed) >= target
+        ):
+            chunks.append(current)
+            current = [record]
+        else:
+            current = proposed
+    if current:
+        chunks.append(current)
+    if not chunks and records:
+        raise CreditAnalysisError("chunk partition unexpectedly produced no chunks")
+    return chunks
+
+
+def _task_artifact_paths(root: pathlib.Path, task_id: str) -> dict[str, str]:
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "-", task_id)
+    return {
+        "input": str(root / "inputs" / f"{safe}.json"),
+        "prompt": str(root / "prompts" / f"{safe}.md"),
+        "schema": str(root / "schemas" / f"{safe}.json"),
+        "result": str(root / "results" / f"{safe}.json"),
+        "attempts": str(root / "attempts" / safe),
+    }
+
+
+def _plan_surface_tasks(
+    *,
+    analysis_id: str,
+    surface_id: str,
+    records: list[dict[str, Any]],
+    orchestration_root: pathlib.Path,
+    contract: Mapping[str, Any],
+) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any]]:
+    """Write primary evidence chunks and freeze finite Spark consolidation."""
+
+    chunks = _chunk_records(records, contract)
+    primary: list[dict[str, Any]] = []
+    candidate_membership: dict[str, str] = {}
+    surface_dir = orchestration_root / "surface-evidence" / surface_id
+    surface_dir.mkdir(parents=True, exist_ok=False)
+    for ordinal, chunk_records in enumerate(chunks, start=1):
+        task_id = f"spark.{surface_id}.primary.{ordinal:04d}"
+        candidate_ids = [str(record["candidate_id"]) for record in chunk_records]
+        if any(candidate_id in candidate_membership for candidate_id in candidate_ids):
+            raise CreditAnalysisError("candidate belongs to multiple primary chunks")
+        candidate_membership.update({candidate_id: task_id for candidate_id in candidate_ids})
+        chunk_path = surface_dir / f"primary-{ordinal:04d}.json"
+        payload = {
+            "schema": FORMATTED_EVIDENCE_SCHEMA,
+            "analysis_id": analysis_id,
+            "surface_id": surface_id,
+            "chunk_ordinal": ordinal,
+            "candidate_ids": candidate_ids,
+            "candidate_count": len(candidate_ids),
+            "records": chunk_records,
+        }
+        if _json_chars(payload) >= int(contract["chunking"]["maximum_chars"]):
+            raise CreditAnalysisError(f"planned Spark chunk is oversized: {task_id}")
+        _exclusive_json(chunk_path, payload, "formatted Spark evidence")
+        artifacts = _task_artifact_paths(orchestration_root, task_id)
+        artifacts["input"] = str(chunk_path)
+        primary.append(
+            {
+                "task_id": task_id,
+                "phase": "spark-primary",
+                "stage": "primary",
+                "surface_id": surface_id,
+                "ordinal": ordinal,
+                "depth": 0,
+                "dependencies": [],
+                "candidate_ids": candidate_ids,
+                "input_sha256": _file_hash(chunk_path),
+                "artifacts": artifacts,
+            }
+        )
+    all_candidate_ids = [str(record["candidate_id"]) for record in records]
+    if list(candidate_membership) != all_candidate_ids:
+        raise CreditAnalysisError("primary chunks do not preserve candidate order")
+
+    minimum_confirmation_chars = sum(len(candidate_id) + 180 for candidate_id in all_candidate_ids)
+    confirmation_limit = int(contract["chunking"]["confirmation_packet_chars"])
+    if minimum_confirmation_chars >= confirmation_limit:
+        raise CreditAnalysisError(
+            f"surface plan is clearly runaway before model execution: {surface_id}"
+        )
+    estimated_confirmation_chars = sum(
+        _json_chars(_verification_dossier(record)) for record in records
+    ) + len(all_candidate_ids) * 900
+    fan_in = int(contract["chunking"]["consolidation_fan_in"])
+    maximum_depth = int(contract["chunking"]["maximum_consolidation_depth"])
+    if fan_in < 2 or maximum_depth < 1:
+        raise CreditAnalysisError("consolidation contract is malformed")
+    consolidation: list[dict[str, Any]] = []
+    current = primary
+    depth = 0
+    while estimated_confirmation_chars >= confirmation_limit and len(current) > 1:
+        depth += 1
+        if depth > maximum_depth:
+            raise CreditAnalysisError("Spark consolidation plan exceeds maximum depth")
+        next_level: list[dict[str, Any]] = []
+        for group_number, start in enumerate(range(0, len(current), fan_in), start=1):
+            dependencies = current[start : start + fan_in]
+            if len(dependencies) == 1:
+                next_level.append(dependencies[0])
+                continue
+            task_id = (
+                f"spark.{surface_id}.consolidate.{depth:02d}.{group_number:04d}"
+            )
+            candidate_ids = [
+                candidate_id
+                for dependency in dependencies
+                for candidate_id in dependency["candidate_ids"]
+            ]
+            task = {
+                "task_id": task_id,
+                "phase": "spark-consolidation",
+                "stage": "consolidation",
+                "surface_id": surface_id,
+                "ordinal": group_number,
+                "depth": depth,
+                "dependencies": [item["task_id"] for item in dependencies],
+                "candidate_ids": candidate_ids,
+                "input_sha256": None,
+                "artifacts": _task_artifact_paths(orchestration_root, task_id),
+            }
+            consolidation.append(task)
+            next_level.append(task)
+        current = next_level
+        estimated_confirmation_chars = (
+            sum(_json_chars(_verification_dossier(record)) for record in records)
+            + len(all_candidate_ids) * 350
+            + len(current) * 1200
+        )
+    final_units = [item["task_id"] for item in current]
+    confirmation_task_id = f"confirm.{surface_id}"
+    confirmation = {
+        "task_id": confirmation_task_id,
+        "phase": "surface-confirmation",
+        "stage": "confirmation",
+        "surface_id": surface_id,
+        "ordinal": 1,
+        "depth": 0,
+        "dependencies": final_units,
+        "candidate_ids": all_candidate_ids,
+        "input_sha256": None,
+        "artifacts": _task_artifact_paths(orchestration_root, confirmation_task_id),
+    }
+    surface_index = {
+        "schema": FORMATTED_EVIDENCE_SCHEMA,
+        "analysis_id": analysis_id,
+        "surface_id": surface_id,
+        "candidate_count": len(all_candidate_ids),
+        "candidate_ids": all_candidate_ids,
+        "call_ids": [str(record["call_identity"]["call_id"]) for record in records],
+        "primary_membership": candidate_membership,
+        "primary_task_ids": [task["task_id"] for task in primary],
+        "consolidation_task_ids": [task["task_id"] for task in consolidation],
+        "confirmation_task_id": confirmation_task_id,
+        "final_spark_task_ids": final_units,
+        "verification_dossiers": [_verification_dossier(record) for record in records],
+    }
+    index_path = surface_dir / "index.json"
+    _exclusive_json(index_path, surface_index, "surface evidence index")
+    surface_summary = {
+        "surface_id": surface_id,
+        "candidate_count": len(all_candidate_ids),
+        "candidate_ids": all_candidate_ids,
+        "call_ids": surface_index["call_ids"],
+        "primary_task_ids": surface_index["primary_task_ids"],
+        "consolidation_task_ids": surface_index["consolidation_task_ids"],
+        "final_spark_task_ids": final_units,
+        "confirmation_task_id": confirmation_task_id,
+        "index_path": str(index_path),
+        "index_sha256": _file_hash(index_path),
+    }
+    return [*primary, *consolidation], confirmation, surface_summary
+
+
+def _validate_frozen_manifest(manifest: Mapping[str, Any], contract: Mapping[str, Any]) -> None:
+    if manifest.get("schema") != CHUNK_MANIFEST_SCHEMA:
+        raise CreditAnalysisError("chunk manifest schema is invalid")
+    canonical_state = manifest.get("canonical_state")
+    if (
+        not isinstance(canonical_state, Mapping)
+        or set(canonical_state) != {"path", "sha256", "record_count"}
+        or not isinstance(canonical_state.get("record_count"), int)
+        or isinstance(canonical_state.get("record_count"), bool)
+        or canonical_state["record_count"] < 0
+    ):
+        raise CreditAnalysisError("chunk manifest canonical-state record is invalid")
+    surface_order = manifest.get("surface_order")
+    surfaces = manifest.get("surfaces")
+    spark_tasks = manifest.get("spark_tasks")
+    confirmations = manifest.get("confirmation_tasks")
+    if not all(isinstance(value, list) for value in (surface_order, surfaces, spark_tasks, confirmations)):
+        raise CreditAnalysisError("chunk manifest collections are invalid")
+    if [item.get("surface_id") for item in surfaces if isinstance(item, Mapping)] != surface_order:
+        raise CreditAnalysisError("chunk manifest surface order is invalid")
+    task_ids: set[str] = set()
+    task_by_id: dict[str, Mapping[str, Any]] = {}
+    for task in [*spark_tasks, *confirmations, manifest.get("synthesis_task")]:
+        if not isinstance(task, Mapping):
+            raise CreditAnalysisError("chunk manifest task is invalid")
+        task_id = task.get("task_id")
+        if not isinstance(task_id, str) or task_id in task_ids:
+            raise CreditAnalysisError("chunk manifest task identity is invalid")
+        task_ids.add(task_id)
+        task_by_id[task_id] = task
+    observed_primary: dict[str, list[str]] = defaultdict(list)
+    for task in spark_tasks:
+        if task.get("phase") != "spark-primary":
+            continue
+        surface_id = str(task.get("surface_id"))
+        candidates = task.get("candidate_ids")
+        if not isinstance(candidates, list) or not all(isinstance(item, str) for item in candidates):
+            raise CreditAnalysisError("primary candidate membership is invalid")
+        observed_primary[surface_id].extend(candidates)
+    for surface in surfaces:
+        surface_id = str(surface["surface_id"])
+        expected = surface.get("candidate_ids")
+        if observed_primary[surface_id] != expected:
+            raise CreditAnalysisError("primary candidate coverage is incomplete or reordered")
+        if len(observed_primary[surface_id]) != len(set(observed_primary[surface_id])):
+            raise CreditAnalysisError("primary candidate coverage is duplicated")
+    ordered_ids = [str(task["task_id"]) for task in spark_tasks]
+    position = {task_id: index for index, task_id in enumerate(ordered_ids)}
+    for task in spark_tasks:
+        dependencies = task.get("dependencies")
+        if not isinstance(dependencies, list):
+            raise CreditAnalysisError("Spark dependencies are invalid")
+        for dependency in dependencies:
+            if dependency not in position or position[dependency] >= position[str(task["task_id"])]:
+                raise CreditAnalysisError("Spark dependency order is malformed")
+    projected = manifest.get("projected_spark_calls")
+    if projected != len(spark_tasks):
+        raise CreditAnalysisError("projected Spark call count is invalid")
+    maximum = int(contract["chunking"]["maximum_spark_tasks"])
+    if not isinstance(projected, int) or projected < 1 or projected > maximum:
+        raise CreditAnalysisError("Spark plan is empty or clearly runaway")
+    expected_sol = len(surface_order) + 1
+    if manifest.get("projected_gpt_5_6_calls") != expected_sol:
+        raise CreditAnalysisError("projected GPT-5.6 call count is invalid")
+    if len(confirmations) != len(surface_order):
+        raise CreditAnalysisError("confirmation task count is invalid")
+
+
+def _orchestration_public_status(state: Mapping[str, Any]) -> dict[str, Any]:
+    execution = state.get("execution")
+    if not isinstance(execution, Mapping):
+        raise CreditAnalysisError("orchestration execution state is invalid")
+    task_order = state.get("task_order")
+    if not isinstance(task_order, list):
+        raise CreditAnalysisError("orchestration task order is invalid")
+    completed = sum(
+        1
+        for task_id in task_order
+        if isinstance(execution.get(task_id), Mapping)
+        and execution[task_id].get("status") == "complete"
+    )
+    manifest = state["manifest"]
+    return {
+        "schema": ORCHESTRATION_STATE_SCHEMA,
+        "analysis_id": state["analysis_id"],
+        "phase": state["phase"],
+        "complete": state["phase"] == "complete",
+        "state_path": state["paths"]["state"],
+        "manifest_path": manifest["path"],
+        "evidence_path": state["evidence"]["path"],
+        "final_result_path": (
+            state["final_result"]["path"]
+            if isinstance(state.get("final_result"), Mapping)
+            else None
+        ),
+        "report_path": (
+            state["final_result"]["report_path"]
+            if isinstance(state.get("final_result"), Mapping)
+            else None
+        ),
+        "projected_spark_calls": manifest["projected_spark_calls"],
+        "projected_gpt_5_6_calls": manifest["projected_gpt_5_6_calls"],
+        "canonical_state_records": manifest["canonical_state"]["record_count"],
+        "actual_spark_calls": state["model_attempts"]["spark"],
+        "actual_gpt_5_6_calls": state["model_attempts"]["gpt_5_6"],
+        "accepted_spark_calls": state["model_calls"]["spark"],
+        "accepted_gpt_5_6_calls": state["model_calls"]["gpt_5_6"],
+        "completed_tasks": completed,
+        "total_tasks": len(task_order),
+        "next_task": next(
+            (
+                task_id
+                for task_id in task_order
+                if execution[task_id]["status"] != "complete"
+            ),
+            None,
+        ),
+        "surfaces": [
+            {
+                "surface_id": item["surface_id"],
+                "candidate_count": item["candidate_count"],
+                "primary_chunks": len(item["primary_task_ids"]),
+                "spark_consolidations": len(item["consolidation_task_ids"]),
+            }
+            for item in manifest["surfaces"]
+        ],
+    }
+
+
+def _collect_orchestration_evidence(
+    *,
+    request: Mapping[str, Any],
+    contract: Mapping[str, Any],
+    ledger: ModuleType,
+    analysis_id: str,
+) -> tuple[dict[str, Any], str, str, list[tuple[str, str]]]:
+    collector_window = request["collector_window"]
+    try:
+        rows, source_fingerprint = ledger.load_rows_with_fingerprint(
+            request["session"]
+        )
+        path_roots = ledger.review_path_roots(rows)
+        collected = ledger.collect_session_evidence_from_rows(
+            rows,
+            session=request["session"],
+            source_fingerprint=source_fingerprint,
+            last_runs=collector_window["last_runs"],
+            completed_turn_ids=collector_window["completed_turn_ids"],
+            pricing_profile=request["pricing"],
+        )
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise CreditAnalysisError(f"session collection failed: {exc}") from exc
+    if collected.get("collection", {}).get("session_reads") != 1:
+        raise CreditAnalysisError("session collector did not report exactly one read")
+    if collected.get("collection", {}).get("model_calls", 0) < 1:
+        raise CreditAnalysisError("selected completed-run window has no model calls")
+    collector_schema = collected.pop("schema", None)
+    evidence = {
+        **collected,
+        "schema": contract["evidence_schema"],
+        "collector_schema": collector_schema,
+        "analysis_id": analysis_id,
+        "source": request["source"],
+        "requested_window": request["window"],
+        "surface_contract_version": contract["surface_contract_version"],
+        "surface_contract_hash": _file_hash(CONTRACT_PATH),
+        "mutation_authority": False,
+    }
+    fingerprint = _content_hash(evidence)
+    evidence["evidence_fingerprint"] = fingerprint
+    evidence_path = pathlib.Path(request["evidence_path"])
+    _exclusive_json(evidence_path, evidence, "retained evidence")
+    return evidence, fingerprint, _file_hash(evidence_path), path_roots
+
+
+def command_plan_orchestration(
+    request_path: pathlib.Path,
+    *,
+    available_models: set[str] | None = None,
+) -> dict[str, Any]:
+    """Collect once and freeze a finite complete two-tier analysis plan."""
+
+    contract = _load_contract()
+    if contract.get("orchestration_state_schema") != ORCHESTRATION_STATE_SCHEMA:
+        raise CreditAnalysisError("orchestration state contract is invalid")
+    if contract.get("chunk_manifest_schema") != CHUNK_MANIFEST_SCHEMA:
+        raise CreditAnalysisError("chunk manifest contract is invalid")
+    models = _validate_orchestration_models(
+        contract,
+        _codex_model_catalog() if available_models is None else available_models,
+    )
+    ledger = _load_ledger()
+    request = _validate_request(request_path, contract, ledger)
+    analysis_id = secrets.token_hex(12)
+    evidence, evidence_fingerprint, evidence_sha256, path_roots = (
+        _collect_orchestration_evidence(
+            request=request,
+            contract=contract,
+            ledger=ledger,
+            analysis_id=analysis_id,
+        )
+    )
+    orchestration_root = pathlib.Path(request["task_root"]) / "orchestration"
+    if orchestration_root.exists() or orchestration_root.is_symlink():
+        raise CreditAnalysisError("task root already contains orchestration state")
+    orchestration_root.mkdir(parents=True)
+    canonical_state, canonical_state_record = _collect_canonical_state_snapshot(
+        evidence=evidence,
+        path_roots=path_roots,
+        orchestration_root=orchestration_root,
+        ledger=ledger,
+    )
+    surfaces: list[dict[str, Any]] = []
+    spark_tasks: list[dict[str, Any]] = []
+    confirmation_tasks: list[dict[str, Any]] = []
+    surface_order = _surface_order_for_request(request, contract)
+    for surface_id in surface_order:
+        formatted = _format_surface_candidates(
+            analysis_id=analysis_id,
+            surface_id=surface_id,
+            evidence=evidence,
+            evidence_path=pathlib.Path(request["evidence_path"]),
+            canonical_state=canonical_state,
+            contract=contract,
+        )
+        planned_spark, confirmation, surface = _plan_surface_tasks(
+            analysis_id=analysis_id,
+            surface_id=surface_id,
+            records=formatted,
+            orchestration_root=orchestration_root,
+            contract=contract,
+        )
+        spark_tasks.extend(planned_spark)
+        confirmation_tasks.append(confirmation)
+        surfaces.append(surface)
+    maximum_spark_tasks = int(contract["chunking"]["maximum_spark_tasks"])
+    if len(spark_tasks) > maximum_spark_tasks:
+        raise CreditAnalysisError(
+            f"projected Spark queue is clearly runaway: {len(spark_tasks)} calls"
+        )
+    synthesis_task_id = "synthesis"
+    synthesis_task = {
+        "task_id": synthesis_task_id,
+        "phase": "synthesis",
+        "stage": "synthesis",
+        "surface_id": None,
+        "ordinal": 1,
+        "depth": 0,
+        "dependencies": [task["task_id"] for task in confirmation_tasks],
+        "candidate_ids": [],
+        "input_sha256": None,
+        "artifacts": _task_artifact_paths(orchestration_root, synthesis_task_id),
+    }
+    semantic_contract = contract["semantic_call_contract"]
+    projected_sol = len(confirmation_tasks) + 1
+    if request["mode"] == "full-analysis":
+        if projected_sol != semantic_contract["full_analysis_gpt_5_6_calls"]:
+            raise CreditAnalysisError("full analysis must project exactly six GPT-5.6 calls")
+        if len(confirmation_tasks) != semantic_contract["surface_confirmation_calls"]:
+            raise CreditAnalysisError("full analysis surface confirmation count is invalid")
+    manifest = {
+        "schema": CHUNK_MANIFEST_SCHEMA,
+        "analysis_id": analysis_id,
+        "action": request["action"],
+        "mode": request["mode"],
+        "mutation_authority": False,
+        "evidence_fingerprint": evidence_fingerprint,
+        "surface_contract_version": contract["surface_contract_version"],
+        "surface_order": surface_order,
+        "models": models,
+        "chunking": contract["chunking"],
+        "canonical_state": canonical_state_record,
+        "surfaces": surfaces,
+        "spark_tasks": spark_tasks,
+        "confirmation_tasks": confirmation_tasks,
+        "synthesis_task": synthesis_task,
+        "projected_spark_calls": len(spark_tasks),
+        "projected_gpt_5_6_calls": projected_sol,
+    }
+    _validate_frozen_manifest(manifest, contract)
+    manifest_path = orchestration_root / "chunk-manifest.json"
+    _exclusive_json(manifest_path, manifest, "chunk manifest")
+    manifest_sha256 = _file_hash(manifest_path)
+    task_order = [
+        *[task["task_id"] for task in spark_tasks],
+        *[task["task_id"] for task in confirmation_tasks],
+        synthesis_task_id,
+    ]
+    execution = {
+        task_id: {"status": "pending", "attempts": [], "result": None}
+        for task_id in task_order
+    }
+    state = {
+        "schema": ORCHESTRATION_STATE_SCHEMA,
+        "version": 2,
+        "analysis_id": analysis_id,
+        "action": request["action"],
+        "mode": request["mode"],
+        "mutation_authority": False,
+        "phase": "planned",
+        "surface_contract_version": contract["surface_contract_version"],
+        "models": models,
+        "source": {
+            **request["source"],
+            "resolved_session": str(request["session"]),
+            "fingerprint": evidence["source_fingerprint"],
+        },
+        "window": {
+            "requested": request["window"],
+            "resolved": evidence["window"],
+            "fingerprint": evidence["window_fingerprint"],
+        },
+        "evidence": {
+            "path": str(request["evidence_path"]),
+            "fingerprint": evidence_fingerprint,
+            "sha256": evidence_sha256,
+            "session_reads": evidence["collection"]["session_reads"],
+        },
+        "manifest": {
+            **manifest,
+            "path": str(manifest_path),
+            "sha256": manifest_sha256,
+        },
+        "immutable_artifacts": {
+            "request": {
+                "path": str(request["request_path"]),
+                "sha256": request["request_hash"],
+            },
+            "surface_contract": {
+                "path": str(CONTRACT_PATH),
+                "sha256": _file_hash(CONTRACT_PATH),
+            },
+            "evidence": {
+                "path": str(request["evidence_path"]),
+                "sha256": evidence_sha256,
+            },
+            "manifest": {"path": str(manifest_path), "sha256": manifest_sha256},
+            "canonical_state": canonical_state_record,
+            "pricing_profile": (
+                {"path": str(request["pricing"]), "sha256": _file_hash(request["pricing"])}
+                if request["pricing"] is not None
+                else None
+            ),
+        },
+        "task_order": task_order,
+        "execution": execution,
+        "model_calls": {"spark": 0, "gpt_5_6": 0},
+        "model_attempts": {"spark": 0, "gpt_5_6": 0},
+        "paths": {
+            "state": str(request["state_path"]),
+            "orchestration_root": str(orchestration_root),
+            "transient": str(orchestration_root / "transient"),
+            "final_result": request["paths"]["final_result"],
+            "report": str(pathlib.Path(request["task_root"]) / "final-report.md"),
+        },
+        "cleanup": {
+            "owner": "credit-analysis-workflow",
+            "trigger": "successful-finalization",
+            "transient_root": str(orchestration_root / "transient"),
+        },
+        "final_result": None,
+    }
+    pathlib.Path(state["paths"]["transient"]).mkdir()
+    _exclusive_json(pathlib.Path(request["state_path"]), state, "orchestration state")
+    return _orchestration_public_status(state)
+
+
+def _manifest_without_runtime_fields(state: Mapping[str, Any]) -> dict[str, Any]:
+    manifest = dict(state["manifest"])
+    manifest.pop("path", None)
+    manifest.pop("sha256", None)
+    return manifest
+
+
+def _verify_attempt_record(
+    state: Mapping[str, Any],
+    task: Mapping[str, Any],
+    attempt: Mapping[str, Any],
+    attempt_number: int,
+) -> None:
+    """Verify persisted child identity and every retained attempt artifact hash."""
+
+    if (
+        attempt.get("analysis_id") != state["analysis_id"]
+        or attempt.get("task_id") != task["task_id"]
+        or attempt.get("phase") != task["phase"]
+        or attempt.get("attempt_number") != attempt_number
+        or attempt.get("model") != _task_model(state, task)
+        or not isinstance(attempt.get("model_invoked"), bool)
+        or attempt.get("outcome")
+        not in {"accepted", "runner-error", "validation-error"}
+    ):
+        raise CreditAnalysisError("child attempt identity is invalid")
+    artifacts = attempt.get("artifacts")
+    expected_labels = {"prompt", "schema", "raw_output", "events", "stderr"}
+    if not isinstance(artifacts, Mapping) or set(artifacts) != expected_labels:
+        raise CreditAnalysisError("child attempt artifact ledger is invalid")
+    root = pathlib.Path(str(state["paths"]["orchestration_root"])).resolve()
+    path_fields = {
+        "prompt": "prompt_path",
+        "schema": "schema_path",
+        "raw_output": "raw_output_path",
+        "events": "events_path",
+        "stderr": "stderr_path",
+    }
+    for label, path_field in path_fields.items():
+        artifact = artifacts[label]
+        if artifact is None:
+            if label != "raw_output" or attempt.get("outcome") != "runner-error":
+                raise CreditAnalysisError("child attempt artifact is unexpectedly absent")
+            continue
+        if not isinstance(artifact, Mapping) or set(artifact) != {"path", "sha256"}:
+            raise CreditAnalysisError("child attempt artifact record is invalid")
+        path = pathlib.Path(str(artifact["path"])).resolve(strict=True)
+        if (
+            path.is_symlink()
+            or not path.is_file()
+            or not (path == root or path.is_relative_to(root))
+            or str(path) != str(attempt.get(path_field))
+            or _file_hash(path) != artifact.get("sha256")
+        ):
+            raise CreditAnalysisError("child attempt artifact changed")
+
+
+def _verify_canonical_state_index(state: Mapping[str, Any]) -> None:
+    """Verify every protected final-state snapshot retained during planning."""
+
+    record = state["immutable_artifacts"]["canonical_state"]
+    index_path = pathlib.Path(str(record["path"])).resolve(strict=True)
+    index = _read_json(index_path, "canonical-state index")
+    records = index.get("records")
+    if (
+        index.get("schema") != CANONICAL_STATE_SCHEMA
+        or not isinstance(records, list)
+        or index.get("record_count") != len(records)
+        or record.get("record_count") != len(records)
+    ):
+        raise CreditAnalysisError("canonical-state index is invalid")
+    root = index_path.parent.resolve()
+    identities: set[str] = set()
+    references: set[str] = set()
+    for item in records:
+        if not isinstance(item, Mapping):
+            raise CreditAnalysisError("canonical-state record is invalid")
+        item_id = item.get("id")
+        reference = item.get("artifact_reference")
+        if (
+            not isinstance(item_id, str)
+            or item_id in identities
+            or not isinstance(reference, str)
+            or reference in references
+        ):
+            raise CreditAnalysisError("canonical-state identity is invalid")
+        identities.add(item_id)
+        references.add(reference)
+        snapshot_path = item.get("snapshot_path")
+        snapshot_hash = item.get("snapshot_sha256")
+        if snapshot_path is None:
+            if snapshot_hash is not None:
+                raise CreditAnalysisError("canonical-state snapshot hash is orphaned")
+            continue
+        path = pathlib.Path(str(snapshot_path)).resolve(strict=True)
+        if (
+            path.is_symlink()
+            or not path.is_file()
+            or not path.is_relative_to(root)
+            or _file_hash(path) != snapshot_hash
+        ):
+            raise CreditAnalysisError("canonical-state snapshot changed")
+
+
+def _load_orchestration_state(
+    state_path: pathlib.Path,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    path = state_path.expanduser().resolve(strict=True)
+    state = _read_json(path, "orchestration state")
+    if state.get("schema") != ORCHESTRATION_STATE_SCHEMA or state.get("version") != 2:
+        raise CreditAnalysisError("orchestration state schema is invalid")
+    if state.get("mutation_authority") is not False:
+        raise CreditAnalysisError("orchestration mutation authority is invalid")
+    if state.get("phase") not in {"planned", "executing", "complete"}:
+        raise CreditAnalysisError("orchestration phase is invalid")
+    if state.get("paths", {}).get("state") != str(path):
+        raise CreditAnalysisError("orchestration state path is invalid")
+    immutable = state.get("immutable_artifacts")
+    if not isinstance(immutable, Mapping):
+        raise CreditAnalysisError("orchestration immutable artifacts are invalid")
+    for label in (
+        "request",
+        "surface_contract",
+        "evidence",
+        "manifest",
+        "canonical_state",
+    ):
+        record = immutable.get(label)
+        if not isinstance(record, Mapping):
+            raise CreditAnalysisError(f"immutable {label} record is invalid")
+        artifact = pathlib.Path(str(record.get("path"))).resolve(strict=True)
+        if artifact.is_symlink() or not artifact.is_file():
+            raise CreditAnalysisError(f"immutable {label} artifact is invalid")
+        if _file_hash(artifact) != record.get("sha256"):
+            raise CreditAnalysisError(f"immutable {label} artifact changed")
+    _verify_canonical_state_index(state)
+    pricing = immutable.get("pricing_profile")
+    if pricing is not None:
+        if not isinstance(pricing, Mapping):
+            raise CreditAnalysisError("immutable pricing record is invalid")
+        pricing_path = pathlib.Path(str(pricing.get("path"))).resolve(strict=True)
+        if _file_hash(pricing_path) != pricing.get("sha256"):
+            raise CreditAnalysisError("immutable pricing profile changed")
+    contract = _load_contract()
+    manifest_path = pathlib.Path(str(state["manifest"]["path"]))
+    manifest = _read_json(manifest_path, "chunk manifest")
+    if manifest != _manifest_without_runtime_fields(state):
+        raise CreditAnalysisError("orchestration manifest state mismatch")
+    _validate_frozen_manifest(manifest, contract)
+    evidence_path = pathlib.Path(str(state["evidence"]["path"]))
+    evidence = _read_json(evidence_path, "retained evidence")
+    if (
+        evidence.get("analysis_id") != state.get("analysis_id")
+        or evidence.get("evidence_fingerprint") != state["evidence"]["fingerprint"]
+        or evidence.get("collection", {}).get("session_reads") != 1
+    ):
+        raise CreditAnalysisError("orchestration evidence identity is invalid")
+    task_order = state.get("task_order")
+    execution = state.get("execution")
+    expected_order = [
+        *[task["task_id"] for task in manifest["spark_tasks"]],
+        *[task["task_id"] for task in manifest["confirmation_tasks"]],
+        manifest["synthesis_task"]["task_id"],
+    ]
+    if task_order != expected_order or not isinstance(execution, Mapping):
+        raise CreditAnalysisError("orchestration task order is invalid")
+    if set(execution) != set(expected_order):
+        raise CreditAnalysisError("orchestration execution records are invalid")
+    for ledger_name in ("model_calls", "model_attempts"):
+        ledger = state.get(ledger_name)
+        if (
+            not isinstance(ledger, Mapping)
+            or set(ledger) != {"spark", "gpt_5_6"}
+            or any(
+                not isinstance(value, int) or isinstance(value, bool) or value < 0
+                for value in ledger.values()
+            )
+        ):
+            raise CreditAnalysisError(f"orchestration {ledger_name} is invalid")
+    if any(
+        state["model_calls"][key] > state["model_attempts"][key]
+        for key in ("spark", "gpt_5_6")
+    ):
+        raise CreditAnalysisError("accepted model calls exceed model attempts")
+    frozen_tasks = _task_map(manifest)
+    for task_id in expected_order:
+        record = execution[task_id]
+        if not isinstance(record, Mapping) or record.get("status") not in {
+            "pending",
+            "complete",
+        }:
+            raise CreditAnalysisError("orchestration task status is invalid")
+        if not isinstance(record.get("attempts"), list):
+            raise CreditAnalysisError("orchestration task attempts are invalid")
+        for attempt_number, attempt in enumerate(record["attempts"], start=1):
+            if not isinstance(attempt, Mapping):
+                raise CreditAnalysisError("orchestration task attempt is invalid")
+            _verify_attempt_record(
+                state,
+                frozen_tasks[task_id],
+                attempt,
+                attempt_number,
+            )
+        result_record = record.get("result")
+        if record.get("status") == "complete":
+            if not isinstance(result_record, Mapping):
+                raise CreditAnalysisError("completed task result record is invalid")
+            task = frozen_tasks[task_id]
+            result_path = pathlib.Path(str(result_record.get("path"))).resolve(strict=True)
+            expected_result_path = pathlib.Path(str(task["artifacts"]["result"])).resolve()
+            if (
+                result_path.is_symlink()
+                or not result_path.is_file()
+                or result_path != expected_result_path
+                or result_record.get("analysis_id") != state["analysis_id"]
+                or result_record.get("task_id") != task_id
+                or result_record.get("phase") != task["phase"]
+                or result_record.get("model") != _task_model(state, task)
+            ):
+                raise CreditAnalysisError("completed task result is missing")
+            result_value = _read_json(result_path, f"completed result {task_id}")
+            if (
+                _file_hash(result_path) != result_record.get("sha256")
+                or _content_hash(result_value) != result_record.get("content_hash")
+            ):
+                raise CreditAnalysisError("completed task result changed")
+            for label in ("prompt", "schema"):
+                artifact_path = pathlib.Path(str(task["artifacts"][label])).resolve(
+                    strict=True
+                )
+                if _file_hash(artifact_path) != result_record.get(f"{label}_sha256"):
+                    raise CreditAnalysisError(f"completed task {label} changed")
+            if (
+                record["attempts"]
+                and record["attempts"][-1].get("outcome") != "accepted"
+                and result_record.get("recovered_without_model_call") is not True
+            ):
+                raise CreditAnalysisError("completed task has no accepted final attempt")
+        elif result_record is not None:
+            raise CreditAnalysisError("pending task has an accepted result")
+        elif any(attempt.get("outcome") == "accepted" for attempt in record["attempts"]):
+            raise CreditAnalysisError("pending task has an accepted attempt")
+    final_record = state.get("final_result")
+    if state["phase"] == "complete":
+        if not all(execution[task_id]["status"] == "complete" for task_id in expected_order):
+            raise CreditAnalysisError("complete orchestration has pending tasks")
+        if not isinstance(final_record, Mapping):
+            raise CreditAnalysisError("complete orchestration final record is invalid")
+        final_path = pathlib.Path(str(final_record.get("path"))).resolve(strict=True)
+        report_path = pathlib.Path(str(final_record.get("report_path"))).resolve(
+            strict=True
+        )
+        if (
+            final_path != pathlib.Path(str(state["paths"]["final_result"])).resolve()
+            or report_path != pathlib.Path(str(state["paths"]["report"])).resolve()
+            or _file_hash(final_path) != final_record.get("sha256")
+            or _file_hash(report_path) != final_record.get("report_sha256")
+            or _content_hash(_read_json(final_path, "orchestration final result"))
+            != final_record.get("content_hash")
+        ):
+            raise CreditAnalysisError("complete orchestration final artifact changed")
+    elif final_record is not None:
+        raise CreditAnalysisError("incomplete orchestration has a final record")
+    return state, evidence, contract
+
+
+def _save_orchestration_state(state: Mapping[str, Any]) -> None:
+    _atomic_json(pathlib.Path(state["paths"]["state"]), state, "orchestration state")
+
+
+def command_orchestration_status(state_path: pathlib.Path) -> dict[str, Any]:
+    state, _, _ = _load_orchestration_state(state_path)
+    return _orchestration_public_status(state)
+
+
+SPARK_ASSESSMENT_FIELDS = {
+    "candidate_ids",
+    "disposition",
+    "reason",
+    "provisional_finding_ids",
+    "risk_ids",
+    "evidence_refs",
+}
+SPARK_FINDING_FIELDS = {
+    "id",
+    "title",
+    "problem_summary",
+    "candidate_ids",
+    "evidence_refs",
+    "producer_type",
+    "producer_owner",
+    "proposed_durable_control",
+    "recurrence_likely",
+    "savings_justifies_maintenance",
+    "material_variant_ids",
+}
+SPARK_RISK_FIELDS = {
+    "id",
+    "description",
+    "candidate_ids",
+    "evidence_refs",
+    "verification_needed",
+    "material_variant_ids",
+}
+SPARK_TEMPORARY_FIELDS = {
+    "id",
+    "problem_solved",
+    "candidate_ids",
+    "observed_temporary_control",
+    "canonical_owner_hint",
+    "evidence_refs",
+    "material_variant_ids",
+}
+SPARK_RESULT_FIELDS = {
+    "schema",
+    "analysis_id",
+    "task_id",
+    "surface_id",
+    "stage",
+    "input_sha256",
+    "candidate_assessments",
+    "provisional_findings",
+    "plausible_risks",
+    "temporary_control_candidates",
+    "preserved_variant_ids",
+}
+CONFIRMATION_ASSESSMENT_FIELDS = {
+    "candidate_ids",
+    "disposition",
+    "reason",
+    "finding_ids",
+    "risk_ids",
+    "evidence_refs",
+}
+CONFIRMATION_FINDING_FIELDS = {
+    "id",
+    "title",
+    "problem_summary",
+    "waste_kind",
+    "candidate_ids",
+    "affected_call_ids",
+    "evidence_refs",
+    "evidence_narrative",
+    "producer_type",
+    "producer_owner",
+    "proposed_durable_control",
+    "implementation_status",
+    "targeted_verification",
+    "observed_avoidable_call_count",
+    "recurrence",
+    "confidence",
+    "complexity",
+    "one_time_implementation_cost",
+    "helper_categories",
+    "contributing_surfaces",
+}
+CONFIRMATION_RISK_FIELDS = {
+    "id",
+    "description",
+    "candidate_ids",
+    "affected_call_ids",
+    "evidence_refs",
+    "competing_explanations",
+    "missing_fact",
+    "verification_needed",
+}
+TEMPORARY_REVIEW_FIELDS = {
+    "id",
+    "problem_solved",
+    "affected_call_ids",
+    "observed_temporary_control",
+    "final_canonical_evidence_refs",
+    "disposition",
+    "owning_producer",
+    "recurrence_inputs",
+    "savings_inputs",
+    "finding_id",
+    "no_finding_reason",
+}
+TEMPORARY_CONTRIBUTION_FIELDS = {
+    "id",
+    "temporary_control_id",
+    "owner_key",
+    "control_key",
+    "candidate_ids",
+    "evidence_refs",
+    "contribution",
+    "material_variant_id",
+}
+CONFIRMATION_RESULT_FIELDS = {
+    "schema",
+    "analysis_id",
+    "task_id",
+    "surface_id",
+    "input_sha256",
+    "candidate_assessments",
+    "confirmed_findings",
+    "plausible_risks",
+    "temporary_control_reviews",
+    "temporary_control_contributions",
+    "helper_category_reviews",
+}
+SYNTHESIS_RESULT_FIELDS = {
+    "schema",
+    "analysis_id",
+    "task_id",
+    "input_sha256",
+    "finding_groups",
+    "risk_order",
+    "temporary_control_merges",
+    "call_classifications",
+    "producer_groups",
+    "analysis_summary",
+}
+
+
+def _closed_result(value: Mapping[str, Any], fields: set[str], label: str) -> None:
+    if set(value) != fields:
+        missing = sorted(fields - set(value))
+        extra = sorted(set(value) - fields)
+        detail = []
+        if missing:
+            detail.append("missing " + ", ".join(missing))
+        if extra:
+            detail.append("unknown " + ", ".join(extra))
+        raise CreditAnalysisError(f"{label} fields are invalid: {'; '.join(detail)}")
+
+
+def _result_strings(value: Any, label: str, *, empty: bool = False) -> list[str]:
+    if (
+        not isinstance(value, list)
+        or (not empty and not value)
+        or not all(isinstance(item, str) and item for item in value)
+    ):
+        qualifier = "string list" if empty else "nonempty string list"
+        raise CreditAnalysisError(f"{label} must be a {qualifier}")
+    result = list(value)
+    if len(result) != len(set(result)):
+        raise CreditAnalysisError(f"{label} values must be unique")
+    return result
+
+
+def _result_objects(value: Any, label: str) -> list[dict[str, Any]]:
+    if not isinstance(value, list) or not all(isinstance(item, dict) for item in value):
+        raise CreditAnalysisError(f"{label} must be an object list")
+    return list(value)
+
+
+def _task_map(manifest: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    tasks = [
+        *manifest["spark_tasks"],
+        *manifest["confirmation_tasks"],
+        manifest["synthesis_task"],
+    ]
+    return {str(task["task_id"]): task for task in tasks}
+
+
+def _surface_manifest(
+    manifest: Mapping[str, Any], surface_id: str
+) -> dict[str, Any]:
+    for surface in manifest["surfaces"]:
+        if surface["surface_id"] == surface_id:
+            return surface
+    raise CreditAnalysisError(f"surface is absent from manifest: {surface_id}")
+
+
+def _variant_id(kind: str, item: Mapping[str, Any]) -> str:
+    return f"variant.{kind}.{_content_hash(item)[:24]}"
+
+
+def _spark_variant_ids(result: Mapping[str, Any]) -> list[str]:
+    values: list[str] = []
+    for kind, key in (
+        ("finding", "provisional_findings"),
+        ("risk", "plausible_risks"),
+        ("temporary", "temporary_control_candidates"),
+    ):
+        for item in result[key]:
+            variant = _variant_id(kind, item)
+            if variant not in values:
+                values.append(variant)
+    return values
+
+
+def _allowed_evidence_refs_by_candidate(
+    surface_index: Mapping[str, Any],
+) -> dict[str, set[str]]:
+    dossiers = surface_index.get("verification_dossiers")
+    if not isinstance(dossiers, list):
+        raise CreditAnalysisError("surface verification dossiers are invalid")
+    result: dict[str, set[str]] = {}
+    for dossier in dossiers:
+        if not isinstance(dossier, Mapping):
+            raise CreditAnalysisError("surface verification dossier is invalid")
+        candidate_id = dossier.get("candidate_id")
+        refs = dossier.get("original_evidence_refs")
+        if not isinstance(candidate_id, str) or not isinstance(refs, list):
+            raise CreditAnalysisError("surface verification dossier identity is invalid")
+        result[candidate_id] = {str(ref) for ref in refs if isinstance(ref, str)}
+    return result
+
+
+def _expanded_assessment_candidates(
+    assessments: Sequence[Mapping[str, Any]],
+) -> list[str]:
+    return [
+        candidate_id
+        for assessment in assessments
+        for candidate_id in assessment["candidate_ids"]
+    ]
+
+
+def _validate_spark_result(
+    raw: Mapping[str, Any],
+    *,
+    state: Mapping[str, Any],
+    task: Mapping[str, Any],
+    input_sha256: str,
+    input_variant_ids: list[str],
+    contract: Mapping[str, Any],
+) -> dict[str, Any]:
+    _closed_result(raw, SPARK_RESULT_FIELDS, "Spark result")
+    if (
+        raw.get("schema") != SPARK_RESULT_SCHEMA
+        or raw.get("analysis_id") != state["analysis_id"]
+        or raw.get("task_id") != task["task_id"]
+        or raw.get("surface_id") != task["surface_id"]
+        or raw.get("stage") != task["stage"]
+        or raw.get("input_sha256") != input_sha256
+    ):
+        raise CreditAnalysisError("Spark result identity is invalid")
+    dispositions = set(contract["spark_dispositions"])
+    assessments = _result_objects(raw["candidate_assessments"], "Spark assessments")
+    finding_ids: set[str] = set()
+    risk_ids: set[str] = set()
+    findings = _result_objects(raw["provisional_findings"], "Spark findings")
+    risks = _result_objects(raw["plausible_risks"], "Spark risks")
+    temporary = _result_objects(
+        raw["temporary_control_candidates"], "Spark temporary-control candidates"
+    )
+    preserved = _result_strings(
+        raw["preserved_variant_ids"], "preserved variant IDs", empty=True
+    )
+    if preserved != input_variant_ids:
+        raise CreditAnalysisError("Spark consolidation did not preserve input variants")
+    allowed_candidates = set(task["candidate_ids"])
+    used_material_variants: list[str] = []
+    for index, finding in enumerate(findings, start=1):
+        _closed_result(finding, SPARK_FINDING_FIELDS, f"Spark finding {index}")
+        finding_id = _identifier(finding.get("id"), f"Spark finding {index} ID")
+        if finding_id in finding_ids:
+            raise CreditAnalysisError("Spark finding ID is duplicated")
+        finding_ids.add(finding_id)
+        candidates = _result_strings(
+            finding.get("candidate_ids"), f"Spark finding {finding_id} candidates"
+        )
+        if not set(candidates) <= allowed_candidates:
+            raise CreditAnalysisError("Spark finding references an unknown candidate")
+        _result_strings(finding.get("evidence_refs"), "Spark finding evidence")
+        variants = _result_strings(
+            finding.get("material_variant_ids"),
+            "Spark finding material variants",
+            empty=True,
+        )
+        used_material_variants.extend(variants)
+        if not isinstance(finding.get("recurrence_likely"), bool) or not isinstance(
+            finding.get("savings_justifies_maintenance"), bool
+        ):
+            raise CreditAnalysisError("Spark finding recurrence inputs are invalid")
+    for index, risk in enumerate(risks, start=1):
+        _closed_result(risk, SPARK_RISK_FIELDS, f"Spark risk {index}")
+        risk_id = _identifier(risk.get("id"), f"Spark risk {index} ID")
+        if risk_id in risk_ids:
+            raise CreditAnalysisError("Spark risk ID is duplicated")
+        risk_ids.add(risk_id)
+        candidates = _result_strings(risk.get("candidate_ids"), "Spark risk candidates")
+        if not set(candidates) <= allowed_candidates:
+            raise CreditAnalysisError("Spark risk references an unknown candidate")
+        _result_strings(risk.get("evidence_refs"), "Spark risk evidence")
+        _result_strings(risk.get("verification_needed"), "Spark risk verification")
+        variants = _result_strings(
+            risk.get("material_variant_ids"), "Spark risk variants", empty=True
+        )
+        used_material_variants.extend(variants)
+    temporary_ids: set[str] = set()
+    for index, item in enumerate(temporary, start=1):
+        _closed_result(item, SPARK_TEMPORARY_FIELDS, f"Spark temporary candidate {index}")
+        item_id = _identifier(item.get("id"), "Spark temporary candidate ID")
+        if item_id in temporary_ids:
+            raise CreditAnalysisError("Spark temporary candidate ID is duplicated")
+        temporary_ids.add(item_id)
+        candidates = _result_strings(item.get("candidate_ids"), "temporary candidates")
+        if not set(candidates) <= allowed_candidates:
+            raise CreditAnalysisError("temporary candidate references an unknown candidate")
+        _result_strings(item.get("evidence_refs"), "temporary candidate evidence")
+        variants = _result_strings(
+            item.get("material_variant_ids"), "temporary material variants", empty=True
+        )
+        used_material_variants.extend(variants)
+    if sorted(used_material_variants) != sorted(input_variant_ids):
+        if input_variant_ids:
+            raise CreditAnalysisError("Spark consolidation dropped a material variant")
+        if used_material_variants:
+            raise CreditAnalysisError("primary Spark result invented a material variant")
+    for index, assessment in enumerate(assessments, start=1):
+        _closed_result(assessment, SPARK_ASSESSMENT_FIELDS, f"Spark assessment {index}")
+        candidates = _result_strings(
+            assessment.get("candidate_ids"), f"Spark assessment {index} candidates"
+        )
+        if assessment.get("disposition") not in dispositions:
+            raise CreditAnalysisError("Spark assessment disposition is invalid")
+        if not isinstance(assessment.get("reason"), str) or not assessment["reason"].strip():
+            raise CreditAnalysisError("Spark assessment reason is missing")
+        linked_findings = _result_strings(
+            assessment.get("provisional_finding_ids"),
+            "Spark assessment finding IDs",
+            empty=True,
+        )
+        linked_risks = _result_strings(
+            assessment.get("risk_ids"), "Spark assessment risk IDs", empty=True
+        )
+        if not set(linked_findings) <= finding_ids or not set(linked_risks) <= risk_ids:
+            raise CreditAnalysisError("Spark assessment links an unknown semantic item")
+        _result_strings(assessment.get("evidence_refs"), "Spark assessment evidence")
+        disposition = assessment["disposition"]
+        if disposition == "provisional-finding-evidence" and not linked_findings:
+            raise CreditAnalysisError("provisional finding evidence lacks a finding")
+        if disposition == "plausible-risk" and not linked_risks:
+            raise CreditAnalysisError("plausible risk assessment lacks a risk")
+        if disposition in {"dismissed-candidate", "necessary-exclusion"} and (
+            linked_findings or linked_risks
+        ):
+            raise CreditAnalysisError("dismissed or necessary Spark candidate has semantic links")
+        if not set(candidates) <= allowed_candidates:
+            raise CreditAnalysisError("Spark assessment references an unknown candidate")
+    if _expanded_assessment_candidates(assessments) != task["candidate_ids"]:
+        raise CreditAnalysisError(
+            "Spark candidate coverage is missing, duplicated, or reordered"
+        )
+    return dict(raw)
+
+
+def _validate_recurrence_inputs(value: Any, label: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise CreditAnalysisError(f"{label} must be an object")
+    required = {
+        "calls_saved_per_affected_run",
+        "additional_recurring_calls_per_affected_run",
+        "affected_similar_run_frequency",
+        "affected_similar_run_frequency_range",
+        "estimated_calls_saved_per_similar_run",
+        "assumptions",
+    }
+    _closed_result(value, required, label)
+    for key in (
+        "calls_saved_per_affected_run",
+        "additional_recurring_calls_per_affected_run",
+        "affected_similar_run_frequency",
+        "estimated_calls_saved_per_similar_run",
+    ):
+        _number(value.get(key), f"{label} {key}")
+    frequency_range = value.get("affected_similar_run_frequency_range")
+    if (
+        not isinstance(frequency_range, list)
+        or len(frequency_range) != 2
+        or any(not isinstance(item, (int, float)) for item in frequency_range)
+        or frequency_range[0] < 0
+        or frequency_range[1] < frequency_range[0]
+    ):
+        raise CreditAnalysisError(f"{label} frequency range is invalid")
+    _result_strings(value.get("assumptions"), f"{label} assumptions")
+    return dict(value)
+
+
+def _validate_confirmation_finding(
+    finding: Mapping[str, Any],
+    *,
+    surface_id: str,
+    candidate_to_call: Mapping[str, str],
+    allowed_refs: Mapping[str, set[str]],
+    contract: Mapping[str, Any],
+    label: str,
+) -> dict[str, Any]:
+    _closed_result(finding, CONFIRMATION_FINDING_FIELDS, label)
+    _identifier(finding.get("id"), f"{label} ID")
+    candidates = _result_strings(finding.get("candidate_ids"), f"{label} candidates")
+    if not set(candidates) <= set(candidate_to_call):
+        raise CreditAnalysisError(f"{label} references an unknown candidate")
+    expected_calls = list(dict.fromkeys(candidate_to_call[item] for item in candidates))
+    calls = _result_strings(finding.get("affected_call_ids"), f"{label} calls")
+    if calls != expected_calls:
+        raise CreditAnalysisError(f"{label} affected calls do not match candidates")
+    evidence_refs = _result_strings(finding.get("evidence_refs"), f"{label} evidence")
+    for candidate in candidates:
+        if not set(evidence_refs) & allowed_refs[candidate]:
+            raise CreditAnalysisError(f"{label} was not verified against original evidence")
+    for key in (
+        "title",
+        "problem_summary",
+        "evidence_narrative",
+        "producer_owner",
+        "proposed_durable_control",
+    ):
+        if not isinstance(finding.get(key), str) or not finding[key].strip():
+            raise CreditAnalysisError(f"{label} {key} is missing")
+    if finding.get("waste_kind") not in contract["waste_kinds"]:
+        raise CreditAnalysisError(f"{label} waste kind is invalid")
+    if finding.get("producer_type") not in contract["producer_types"]:
+        raise CreditAnalysisError(f"{label} producer type is invalid")
+    if finding.get("implementation_status") not in contract["implementation_statuses"]:
+        raise CreditAnalysisError(f"{label} implementation status is invalid")
+    if finding.get("complexity") not in contract["complexities"]:
+        raise CreditAnalysisError(f"{label} complexity is invalid")
+    verification = _result_strings(
+        finding.get("targeted_verification"), f"{label} verification"
+    )
+    _ = verification
+    recurrence = _validate_recurrence_inputs(finding.get("recurrence"), f"{label} recurrence")
+    observed = finding.get("observed_avoidable_call_count")
+    if not isinstance(observed, int) or isinstance(observed, bool) or observed < 0:
+        raise CreditAnalysisError(f"{label} observed count is invalid")
+    if finding["waste_kind"] == "context-volume":
+        if observed != 0 or any(
+            recurrence[key] != 0
+            for key in (
+                "calls_saved_per_affected_run",
+                "estimated_calls_saved_per_similar_run",
+            )
+        ):
+            raise CreditAnalysisError("context-volume finding must save zero model calls")
+    confidence = finding.get("confidence")
+    if not isinstance(confidence, (int, float)) or isinstance(confidence, bool) or not 0 <= confidence <= 1:
+        raise CreditAnalysisError(f"{label} confidence is invalid")
+    cost = finding.get("one_time_implementation_cost")
+    if not isinstance(cost, dict) or set(cost) != COST_FIELDS:
+        raise CreditAnalysisError(f"{label} implementation cost is invalid")
+    _number(cost.get("estimated_model_calls"), f"{label} implementation cost")
+    if not isinstance(cost.get("description"), str) or not cost["description"].strip():
+        raise CreditAnalysisError(f"{label} implementation cost description is missing")
+    helper_categories = _result_strings(
+        finding.get("helper_categories"), f"{label} helper categories", empty=True
+    )
+    if not set(helper_categories) <= set(contract["helper_categories"]):
+        raise CreditAnalysisError(f"{label} helper category is invalid")
+    contributing = _result_strings(
+        finding.get("contributing_surfaces"), f"{label} contributing surfaces"
+    )
+    if surface_id not in contributing or not set(contributing) <= set(contract["surface_order"]):
+        raise CreditAnalysisError(f"{label} contributing surfaces are invalid")
+    return dict(finding)
+
+
+def _validate_temporary_review(
+    review: Mapping[str, Any],
+    *,
+    finding_ids: set[str],
+    contract: Mapping[str, Any],
+    label: str,
+) -> dict[str, Any]:
+    _closed_result(review, TEMPORARY_REVIEW_FIELDS, label)
+    _identifier(review.get("id"), f"{label} ID")
+    for key in (
+        "problem_solved",
+        "observed_temporary_control",
+        "owning_producer",
+    ):
+        if not isinstance(review.get(key), str) or not review[key].strip():
+            raise CreditAnalysisError(f"{label} {key} is missing")
+    _result_strings(review.get("affected_call_ids"), f"{label} affected calls")
+    _result_strings(
+        review.get("final_canonical_evidence_refs"), f"{label} canonical evidence"
+    )
+    disposition = review.get("disposition")
+    if disposition not in contract["temporary_control_dispositions"]:
+        raise CreditAnalysisError(f"{label} disposition is invalid")
+    recurrence = review.get("recurrence_inputs")
+    savings = review.get("savings_inputs")
+    if not isinstance(recurrence, dict) or set(recurrence) != {
+        "likely",
+        "frequency_range",
+        "basis",
+    }:
+        raise CreditAnalysisError(f"{label} recurrence inputs are invalid")
+    if not isinstance(recurrence.get("likely"), bool):
+        raise CreditAnalysisError(f"{label} recurrence likelihood is invalid")
+    frequency_range = recurrence.get("frequency_range")
+    if (
+        not isinstance(frequency_range, list)
+        or len(frequency_range) != 2
+        or any(not isinstance(item, (int, float)) for item in frequency_range)
+        or frequency_range[0] < 0
+        or frequency_range[1] < frequency_range[0]
+    ):
+        raise CreditAnalysisError(f"{label} recurrence range is invalid")
+    if not isinstance(recurrence.get("basis"), str) or not recurrence["basis"].strip():
+        raise CreditAnalysisError(f"{label} recurrence basis is missing")
+    if not isinstance(savings, dict) or set(savings) != {
+        "expected_calls_saved",
+        "maintenance_model_calls",
+        "justifies_maintenance",
+        "basis",
+    }:
+        raise CreditAnalysisError(f"{label} savings inputs are invalid")
+    _number(savings.get("expected_calls_saved"), f"{label} expected savings")
+    _number(savings.get("maintenance_model_calls"), f"{label} maintenance cost")
+    if not isinstance(savings.get("justifies_maintenance"), bool):
+        raise CreditAnalysisError(f"{label} maintenance gate is invalid")
+    if not isinstance(savings.get("basis"), str) or not savings["basis"].strip():
+        raise CreditAnalysisError(f"{label} savings basis is missing")
+    finding_id = review.get("finding_id")
+    no_finding = review.get("no_finding_reason")
+    if disposition == "durable-control-missing":
+        if recurrence["likely"] is not True or savings["justifies_maintenance"] is not True:
+            raise CreditAnalysisError(
+                "durable-control-missing requires recurrence and ROI gates"
+            )
+        if not isinstance(finding_id, str) or finding_id not in finding_ids:
+            raise CreditAnalysisError("durable-control-missing must link its finding")
+        if no_finding is not None:
+            raise CreditAnalysisError("durable-control-missing cannot have no-finding reason")
+    else:
+        if finding_id is not None:
+            raise CreditAnalysisError("non-defect temporary disposition cannot link a finding")
+        if not isinstance(no_finding, str) or not no_finding.strip():
+            raise CreditAnalysisError("temporary disposition requires a no-finding reason")
+    return dict(review)
+
+
+def _validate_confirmation_result(
+    raw: Mapping[str, Any],
+    *,
+    state: Mapping[str, Any],
+    task: Mapping[str, Any],
+    input_sha256: str,
+    surface_index: Mapping[str, Any],
+    contract: Mapping[str, Any],
+) -> dict[str, Any]:
+    _closed_result(raw, CONFIRMATION_RESULT_FIELDS, "confirmation result")
+    if (
+        raw.get("schema") != CONFIRMATION_RESULT_SCHEMA
+        or raw.get("analysis_id") != state["analysis_id"]
+        or raw.get("task_id") != task["task_id"]
+        or raw.get("surface_id") != task["surface_id"]
+        or raw.get("input_sha256") != input_sha256
+    ):
+        raise CreditAnalysisError("confirmation result identity is invalid")
+    allowed_refs = _allowed_evidence_refs_by_candidate(surface_index)
+    candidate_to_call = dict(
+        zip(
+            surface_index["candidate_ids"],
+            surface_index["call_ids"],
+            strict=True,
+        )
+    )
+    canonical_refs_by_call: dict[str, set[str]] = defaultdict(set)
+    for dossier in surface_index["verification_dossiers"]:
+        call_id = str(dossier["call_identity"]["call_id"])
+        relationships = dossier.get("relationships")
+        final_state = (
+            relationships.get("final_canonical_state")
+            if isinstance(relationships, Mapping)
+            else None
+        )
+        if isinstance(final_state, list):
+            canonical_refs_by_call[call_id].update(
+                str(item["evidence_ref"])
+                for item in final_state
+                if isinstance(item, Mapping)
+                and isinstance(item.get("evidence_ref"), str)
+            )
+    findings_raw = _result_objects(raw["confirmed_findings"], "confirmed findings")
+    findings: list[dict[str, Any]] = []
+    finding_ids: set[str] = set()
+    for index, finding in enumerate(findings_raw, start=1):
+        validated = _validate_confirmation_finding(
+            finding,
+            surface_id=str(task["surface_id"]),
+            candidate_to_call=candidate_to_call,
+            allowed_refs=allowed_refs,
+            contract=contract,
+            label=f"confirmed finding {index}",
+        )
+        if validated["id"] in finding_ids:
+            raise CreditAnalysisError("confirmed finding ID is duplicated")
+        finding_ids.add(validated["id"])
+        findings.append(validated)
+    risks = _result_objects(raw["plausible_risks"], "confirmation risks")
+    risk_ids: set[str] = set()
+    for index, risk in enumerate(risks, start=1):
+        _closed_result(risk, CONFIRMATION_RISK_FIELDS, f"confirmation risk {index}")
+        risk_id = _identifier(risk.get("id"), "confirmation risk ID")
+        if risk_id in risk_ids:
+            raise CreditAnalysisError("confirmation risk ID is duplicated")
+        risk_ids.add(risk_id)
+        candidates = _result_strings(risk.get("candidate_ids"), "risk candidates")
+        if not set(candidates) <= set(candidate_to_call):
+            raise CreditAnalysisError("confirmation risk references an unknown candidate")
+        calls = _result_strings(risk.get("affected_call_ids"), "risk calls")
+        if calls != list(dict.fromkeys(candidate_to_call[item] for item in candidates)):
+            raise CreditAnalysisError("confirmation risk calls do not match candidates")
+        refs = _result_strings(risk.get("evidence_refs"), "risk evidence")
+        for candidate in candidates:
+            if not set(refs) & allowed_refs[candidate]:
+                raise CreditAnalysisError("confirmation risk lacks original evidence")
+        _result_strings(risk.get("competing_explanations"), "risk explanations")
+        _result_strings(risk.get("verification_needed"), "risk verification")
+        if not isinstance(risk.get("missing_fact"), str) or not risk["missing_fact"].strip():
+            raise CreditAnalysisError("confirmation risk missing fact is absent")
+    assessments = _result_objects(
+        raw["candidate_assessments"], "confirmation assessments"
+    )
+    dispositions = set(contract["confirmation_dispositions"])
+    for index, assessment in enumerate(assessments, start=1):
+        _closed_result(
+            assessment, CONFIRMATION_ASSESSMENT_FIELDS, f"confirmation assessment {index}"
+        )
+        candidates = _result_strings(
+            assessment.get("candidate_ids"), "confirmation assessment candidates"
+        )
+        if assessment.get("disposition") not in dispositions:
+            raise CreditAnalysisError("confirmation assessment disposition is invalid")
+        if not isinstance(assessment.get("reason"), str) or not assessment["reason"].strip():
+            raise CreditAnalysisError("confirmation assessment reason is missing")
+        linked_findings = _result_strings(
+            assessment.get("finding_ids"), "confirmation finding links", empty=True
+        )
+        linked_risks = _result_strings(
+            assessment.get("risk_ids"), "confirmation risk links", empty=True
+        )
+        if not set(linked_findings) <= finding_ids or not set(linked_risks) <= risk_ids:
+            raise CreditAnalysisError("confirmation assessment links an unknown item")
+        refs = _result_strings(assessment.get("evidence_refs"), "assessment evidence")
+        for candidate in candidates:
+            if candidate not in allowed_refs or not set(refs) & allowed_refs[candidate]:
+                raise CreditAnalysisError(
+                    "confirmation assessment was not checked against original evidence"
+                )
+        disposition = assessment["disposition"]
+        if disposition == "confirmed-finding" and not linked_findings:
+            raise CreditAnalysisError("confirmed assessment lacks a finding")
+        if disposition == "plausible-risk" and not linked_risks:
+            raise CreditAnalysisError("risk assessment lacks a risk")
+        if disposition in {"dismissed-candidate", "necessary-exclusion"} and (
+            linked_findings or linked_risks
+        ):
+            raise CreditAnalysisError("dismissed or necessary assessment has semantic links")
+    if _expanded_assessment_candidates(assessments) != task["candidate_ids"]:
+        raise CreditAnalysisError(
+            "confirmation coverage is missing, duplicated, or reordered"
+        )
+    reviews = _result_objects(raw["temporary_control_reviews"], "temporary reviews")
+    review_ids: set[str] = set()
+    for index, review in enumerate(reviews, start=1):
+        validated = _validate_temporary_review(
+            review,
+            finding_ids=finding_ids,
+            contract=contract,
+            label=f"temporary review {index}",
+        )
+        if validated["id"] in review_ids:
+            raise CreditAnalysisError("temporary review ID is duplicated")
+        review_refs = set(validated["final_canonical_evidence_refs"])
+        for call_id in validated["affected_call_ids"]:
+            if not review_refs & canonical_refs_by_call[str(call_id)]:
+                raise CreditAnalysisError(
+                    "temporary review lacks controller-frozen canonical evidence"
+                )
+        review_ids.add(validated["id"])
+    if task["surface_id"] == "rework-validation":
+        required_review_ids = {
+            item["id"]
+            for item in _primary_temporary_control_inventory(
+                state,
+                str(task["surface_id"]),
+            )
+        }
+        if not required_review_ids <= review_ids:
+            raise CreditAnalysisError(
+                "mandatory temporary-control review omitted a Spark candidate"
+            )
+    elif reviews:
+        raise CreditAnalysisError("temporary-control reviews belong to rework-validation")
+    contributions = _result_objects(
+        raw["temporary_control_contributions"], "temporary contributions"
+    )
+    contribution_ids: set[str] = set()
+    for index, contribution in enumerate(contributions, start=1):
+        _closed_result(
+            contribution,
+            TEMPORARY_CONTRIBUTION_FIELDS,
+            f"temporary contribution {index}",
+        )
+        contribution_id = _identifier(contribution.get("id"), "contribution ID")
+        if contribution_id in contribution_ids:
+            raise CreditAnalysisError("temporary contribution ID is duplicated")
+        contribution_ids.add(contribution_id)
+        candidates = _result_strings(
+            contribution.get("candidate_ids"), "contribution candidates"
+        )
+        if not set(candidates) <= set(candidate_to_call):
+            raise CreditAnalysisError("temporary contribution references unknown candidate")
+        _result_strings(contribution.get("evidence_refs"), "contribution evidence")
+        for key in (
+            "temporary_control_id",
+            "owner_key",
+            "control_key",
+            "contribution",
+            "material_variant_id",
+        ):
+            if not isinstance(contribution.get(key), str) or not contribution[key].strip():
+                raise CreditAnalysisError(f"temporary contribution {key} is missing")
+    helper_reviews = _result_objects(
+        raw["helper_category_reviews"], "helper category reviews"
+    )
+    if task["surface_id"] == "helper-contracts":
+        categories = [item.get("category") for item in helper_reviews]
+        if categories != contract["helper_categories"]:
+            raise CreditAnalysisError("helper category review is incomplete or reordered")
+    elif helper_reviews:
+        raise CreditAnalysisError("helper category reviews belong to helper-contracts")
+    return dict(raw)
+
+
+FINDING_GROUP_FIELDS = {
+    "canonical_finding_id",
+    "source_finding_ids",
+    "primary_source_finding_id",
+    "title",
+    "problem_summary",
+    "owner_key",
+    "control_key",
+    "contributing_surfaces",
+    "savings_source_finding_id",
+}
+TEMPORARY_MERGE_FIELDS = {
+    "merge_id",
+    "owner_key",
+    "control_key",
+    "review_ids",
+    "contribution_ids",
+    "disposition",
+    "finding_id",
+    "no_finding_reason",
+    "contributing_surfaces",
+}
+CALL_CLASSIFICATION_FIELDS = {
+    "classification",
+    "call_ids",
+    "primary_finding_id",
+    "reason_code",
+    "reason",
+}
+ORCHESTRATION_PRODUCER_GROUP_FIELDS = {
+    "id",
+    "producer_type",
+    "owner",
+    "finding_ids",
+    "recommended_control",
+    "targeted_verification",
+}
+ANALYSIS_SUMMARY_FIELDS = {
+    "confirmed_count",
+    "risk_count",
+    "necessary_calls",
+    "protocol_overhead_calls",
+    "reviewed_no_confirmed_waste_calls",
+    "unassessed_calls",
+    "avoidable_calls",
+    "meaningful_input_output_findings",
+}
+
+
+def _accepted_result(
+    state: Mapping[str, Any], task_id: str
+) -> dict[str, Any]:
+    execution = state["execution"][task_id]
+    result = execution.get("result")
+    if execution.get("status") != "complete" or not isinstance(result, Mapping):
+        raise CreditAnalysisError(f"dependency is incomplete: {task_id}")
+    return _read_json(pathlib.Path(str(result["path"])), f"result {task_id}")
+
+
+def _spark_material_variant_inventory(result: Mapping[str, Any]) -> list[str]:
+    if result.get("stage") == "primary":
+        return _spark_variant_ids(result)
+    return _result_strings(
+        result.get("preserved_variant_ids"), "consolidated variants", empty=True
+    )
+
+
+def _read_surface_index(
+    state: Mapping[str, Any], surface_id: str
+) -> dict[str, Any]:
+    surface = _surface_manifest(state["manifest"], surface_id)
+    path = pathlib.Path(str(surface["index_path"]))
+    if _file_hash(path) != surface["index_sha256"]:
+        raise CreditAnalysisError("surface evidence index changed")
+    value = _read_json(path, f"surface index {surface_id}")
+    if (
+        value.get("analysis_id") != state["analysis_id"]
+        or value.get("surface_id") != surface_id
+        or value.get("candidate_ids") != surface["candidate_ids"]
+    ):
+        raise CreditAnalysisError("surface evidence index identity is invalid")
+    return value
+
+
+def _write_or_verify_task_input(path: pathlib.Path, payload: Mapping[str, Any]) -> str:
+    if path.exists():
+        if path.is_symlink() or not path.is_file():
+            raise CreditAnalysisError("model task input path is invalid")
+        existing = _read_json(path, "model task input")
+        if existing != payload:
+            raise CreditAnalysisError("model task input changed across resume")
+    else:
+        _exclusive_json(path, payload, "model task input")
+    return _file_hash(path)
+
+
+def _primary_temporary_control_inventory(
+    state: Mapping[str, Any], surface_id: str
+) -> list[dict[str, Any]]:
+    """Retain every primary Spark temporary-control candidate for confirmation."""
+
+    inventory: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for task in state["manifest"]["spark_tasks"]:
+        if task["phase"] != "spark-primary" or task["surface_id"] != surface_id:
+            continue
+        result = _accepted_result(state, str(task["task_id"]))
+        for item in result["temporary_control_candidates"]:
+            item_id = str(item["id"])
+            if item_id in seen:
+                raise CreditAnalysisError("Spark temporary-control ID is duplicated")
+            seen.add(item_id)
+            inventory.append({**item, "source_task_id": task["task_id"]})
+    return inventory
+
+
+def _materialize_task_input(
+    state: Mapping[str, Any],
+    evidence: Mapping[str, Any],
+    contract: Mapping[str, Any],
+    task: Mapping[str, Any],
+) -> tuple[dict[str, Any], str, list[str]]:
+    input_path = pathlib.Path(str(task["artifacts"]["input"]))
+    if task["phase"] == "spark-primary":
+        payload = _read_json(input_path, "Spark primary input")
+        digest = _file_hash(input_path)
+        if digest != task["input_sha256"]:
+            raise CreditAnalysisError("Spark primary input changed")
+        return payload, digest, []
+    dependencies = [
+        _accepted_result(state, dependency) for dependency in task["dependencies"]
+    ]
+    input_variant_ids: list[str] = []
+    if task["phase"] == "spark-consolidation":
+        for result in dependencies:
+            for variant in _spark_material_variant_inventory(result):
+                if variant not in input_variant_ids:
+                    input_variant_ids.append(variant)
+        payload = {
+            "schema": MODEL_TASK_SCHEMA,
+            "analysis_id": state["analysis_id"],
+            "task_id": task["task_id"],
+            "phase": task["phase"],
+            "surface_id": task["surface_id"],
+            "candidate_ids": task["candidate_ids"],
+            "input_variant_ids": input_variant_ids,
+            "dependency_results": dependencies,
+        }
+    elif task["phase"] == "surface-confirmation":
+        surface_index = _read_surface_index(state, str(task["surface_id"]))
+        payload = {
+            "schema": MODEL_TASK_SCHEMA,
+            "analysis_id": state["analysis_id"],
+            "task_id": task["task_id"],
+            "phase": task["phase"],
+            "surface_id": task["surface_id"],
+            "candidate_ids": task["candidate_ids"],
+            "spark_results": dependencies,
+            "original_evidence_dossiers": surface_index["verification_dossiers"],
+            "temporary_control_dispositions": contract[
+                "temporary_control_dispositions"
+            ],
+            "primary_temporary_control_inventory": (
+                _primary_temporary_control_inventory(
+                    state,
+                    str(task["surface_id"]),
+                )
+                if task["surface_id"] == "rework-validation"
+                else []
+            ),
+            "necessary_reason_codes": contract["necessary_reason_codes"],
+            "helper_categories": contract["helper_categories"],
+        }
+        if _json_chars(payload) >= int(contract["chunking"]["confirmation_packet_chars"]):
+            raise CreditAnalysisError(
+                f"confirmation packet exceeds the frozen limit: {task['surface_id']}"
+            )
+    elif task["phase"] == "synthesis":
+        payload = {
+            "schema": MODEL_TASK_SCHEMA,
+            "analysis_id": state["analysis_id"],
+            "task_id": task["task_id"],
+            "phase": task["phase"],
+            "surface_order": state["manifest"]["surface_order"],
+            "confirmation_results": dependencies,
+            "call_inventory": evidence["call_inventory"],
+            "deterministic_totals": evidence["totals"],
+            "pricing": evidence["pricing"],
+            "call_classifications": contract["call_classifications"],
+            "necessary_reason_codes": contract["necessary_reason_codes"],
+            "temporary_control_dispositions": contract[
+                "temporary_control_dispositions"
+            ],
+        }
+        if _json_chars(payload) >= int(contract["chunking"]["synthesis_packet_chars"]):
+            raise CreditAnalysisError("synthesis packet exceeds the frozen limit")
+    else:
+        raise CreditAnalysisError(f"unknown model task phase: {task['phase']}")
+    digest = _write_or_verify_task_input(input_path, payload)
+    return payload, digest, input_variant_ids
+
+
+def _output_schema_for_task(
+    *,
+    state: Mapping[str, Any],
+    task: Mapping[str, Any],
+    input_sha256: str,
+) -> dict[str, Any]:
+    """Return one bounded root schema; Python owns full semantic validation."""
+
+    def array_of_objects() -> dict[str, Any]:
+        return {"type": "array", "items": {"type": "object"}}
+
+    if task["phase"].startswith("spark-"):
+        required = sorted(SPARK_RESULT_FIELDS)
+        properties: dict[str, Any] = {
+            "schema": {"const": SPARK_RESULT_SCHEMA},
+            "analysis_id": {"const": state["analysis_id"]},
+            "task_id": {"const": task["task_id"]},
+            "surface_id": {"const": task["surface_id"]},
+            "stage": {"const": task["stage"]},
+            "input_sha256": {"const": input_sha256},
+            "candidate_assessments": array_of_objects(),
+            "provisional_findings": array_of_objects(),
+            "plausible_risks": array_of_objects(),
+            "temporary_control_candidates": array_of_objects(),
+            "preserved_variant_ids": {"type": "array", "items": {"type": "string"}},
+        }
+    elif task["phase"] == "surface-confirmation":
+        required = sorted(CONFIRMATION_RESULT_FIELDS)
+        properties = {
+            "schema": {"const": CONFIRMATION_RESULT_SCHEMA},
+            "analysis_id": {"const": state["analysis_id"]},
+            "task_id": {"const": task["task_id"]},
+            "surface_id": {"const": task["surface_id"]},
+            "input_sha256": {"const": input_sha256},
+            "candidate_assessments": array_of_objects(),
+            "confirmed_findings": array_of_objects(),
+            "plausible_risks": array_of_objects(),
+            "temporary_control_reviews": array_of_objects(),
+            "temporary_control_contributions": array_of_objects(),
+            "helper_category_reviews": array_of_objects(),
+        }
+    else:
+        required = sorted(SYNTHESIS_RESULT_FIELDS)
+        properties = {
+            "schema": {"const": ORCHESTRATION_SYNTHESIS_SCHEMA},
+            "analysis_id": {"const": state["analysis_id"]},
+            "task_id": {"const": task["task_id"]},
+            "input_sha256": {"const": input_sha256},
+            "finding_groups": array_of_objects(),
+            "risk_order": {"type": "array", "items": {"type": "string"}},
+            "temporary_control_merges": array_of_objects(),
+            "call_classifications": array_of_objects(),
+            "producer_groups": array_of_objects(),
+            "analysis_summary": {"type": "object"},
+        }
+    return {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": properties,
+        "required": required,
+        "additionalProperties": False,
+    }
+
+
+def _surface_reference_text(surface_id: str, contract: Mapping[str, Any]) -> str:
+    reference = next(
+        item["reference"] for item in contract["surfaces"] if item["id"] == surface_id
+    )
+    return (SKILL_DIR / reference).read_text(encoding="utf-8")
+
+
+def _task_prompt(
+    *,
+    state: Mapping[str, Any],
+    task: Mapping[str, Any],
+    input_payload: Mapping[str, Any],
+    input_sha256: str,
+    input_variant_ids: list[str],
+    contract: Mapping[str, Any],
+) -> str:
+    base = (
+        "You are one analysis-only semantic child in a deterministic credit-analysis "
+        "controller. Do not call tools, inspect any path, mutate any file, or perform "
+        "bookkeeping. All permitted evidence is embedded below. Return exactly one JSON "
+        "object matching the supplied output schema. Do not wrap JSON in Markdown. "
+        "Deterministic code validates identity and coverage but never supplies semantic "
+        "classifications.\n\n"
+    )
+    identity = (
+        f"Analysis: {state['analysis_id']}\nTask: {task['task_id']}\n"
+        f"Phase: {task['phase']}\nInput SHA-256: {input_sha256}\n\n"
+    )
+    if task["phase"] == "spark-primary":
+        instructions = f"""Primary Spark discovery for `{task['surface_id']}`.
+
+Inspect every causally ordered candidate record. Account for candidates in their
+exact input order, each exactly once, using one of: {', '.join(contract['spark_dispositions'])}.
+Use provisional findings for supported recurring-control evidence, plausible risks
+for a decision-blocking unknown, dismissals with concrete reasons, and necessary
+exclusions only with concrete evidence. Never use a catch-all necessity reason.
+Every assessment must cite original `evidence://` references from its candidates.
+Return all material variants. Use globally unique IDs prefixed with the surface.
+Primary `preserved_variant_ids` and every item's `material_variant_ids` are empty.
+"""
+    elif task["phase"] == "spark-consolidation":
+        instructions = f"""Spark consolidation for `{task['surface_id']}`.
+
+Consolidate without suppressing evidence. Account for every candidate in the exact
+input order and preserve every input material variant ID. Each preserved variant ID
+must occur exactly once across the material_variant_ids of output findings, risks,
+or temporary-control candidates, and the top-level preserved_variant_ids must equal
+this ordered list: {json.dumps(input_variant_ids)}. Do not invent a new semantic
+disposition merely to shorten the packet.
+"""
+    elif task["phase"] == "surface-confirmation":
+        surface = str(task["surface_id"])
+        temporary = (
+            "Perform the mandatory temporary-control review. Each detected temporary "
+            "control receives exactly one disposition and a complete review record. "
+            "Every primary_temporary_control_inventory item must have one review whose "
+            "id is that temporary-control ID; add distinct IDs for controls first "
+            "detected during confirmation. "
+            "Only durable-control-missing may link a finding, and only when recurrence "
+            "and maintenance ROI are both positive."
+            if surface == "rework-validation"
+            else "Contribute temporary-control evidence only through temporary_control_contributions; do not create a review."
+        )
+        helper = (
+            "Return exactly one helper_category_reviews record for each mandatory helper category in contract order."
+            if surface == "helper-contracts"
+            else "Return an empty helper_category_reviews array."
+        )
+        instructions = f"""Single GPT-5.6 confirmation for `{surface}`.
+
+Confirm or dismiss every Spark candidate against the embedded original-evidence
+dossiers, not Spark summaries alone. Account for candidates in exact input order,
+each exactly once, using one of: {', '.join(contract['confirmation_dispositions'])}.
+Every assessment and every finding/risk must cite an original evidence reference for
+each candidate. Preserve every supported finding. A volume-only finding uses
+`context-volume` and zero call savings. Do not classify ordinary model error as
+avoidable without a concise durable recurring control. Do not use catch-all
+necessity, and leave a genuinely decision-blocking gap as a risk. {temporary} {helper}
+"""
+        instructions += "\nSurface contract:\n" + _surface_reference_text(surface, contract)
+    else:
+        instructions = """Single GPT-5.6 synthesis.
+
+Map every confirmed surface finding into exactly one canonical finding group. Merge
+only contributions or findings with the same owning producer/control, preserve all
+source finding IDs and contributing surfaces, and select exactly one savings source
+per canonical finding. Map every risk once. Merge every temporary-control review and
+contribution once by owner/control and assign any finding once. Classify every call
+exactly once in original inventory order. Necessary classifications require a
+specific supported reason; do not use necessity as a catch-all. `unassessed` is only
+for an explicit decision-blocking gap and must not be used merely to avoid review.
+List every context-volume finding with meaningful input/output/tool volume in
+analysis_summary.meaningful_input_output_findings.
+"""
+    packet = json.dumps(
+        input_payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+    return base + identity + instructions + "\n\nINPUT PACKET\n" + packet + "\n"
+
+
+def _write_or_verify_text(path: pathlib.Path, text_value: str, label: str) -> str:
+    if path.exists():
+        if path.is_symlink() or not path.is_file():
+            raise CreditAnalysisError(f"{label} path is invalid")
+        if path.read_text(encoding="utf-8") != text_value:
+            raise CreditAnalysisError(f"{label} changed across resume")
+    else:
+        _exclusive_text(path, text_value, label)
+    return _file_hash(path)
+
+
+def _prepare_model_task(
+    state: Mapping[str, Any],
+    evidence: Mapping[str, Any],
+    contract: Mapping[str, Any],
+    task: Mapping[str, Any],
+) -> tuple[dict[str, Any], str, pathlib.Path, pathlib.Path, list[str]]:
+    input_payload, input_sha256, input_variant_ids = _materialize_task_input(
+        state, evidence, contract, task
+    )
+    schema = _output_schema_for_task(
+        state=state, task=task, input_sha256=input_sha256
+    )
+    schema_path = pathlib.Path(str(task["artifacts"]["schema"]))
+    if schema_path.exists():
+        if _read_json(schema_path, "model output schema") != schema:
+            raise CreditAnalysisError("model output schema changed across resume")
+    else:
+        _exclusive_json(schema_path, schema, "model output schema")
+    prompt = _task_prompt(
+        state=state,
+        task=task,
+        input_payload=input_payload,
+        input_sha256=input_sha256,
+        input_variant_ids=input_variant_ids,
+        contract=contract,
+    )
+    prompt_path = pathlib.Path(str(task["artifacts"]["prompt"]))
+    _write_or_verify_text(prompt_path, prompt, "model prompt")
+    return input_payload, input_sha256, prompt_path, schema_path, input_variant_ids
+
+
+def _confirmation_result_inventory(
+    state: Mapping[str, Any],
+) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    findings: dict[str, dict[str, Any]] = {}
+    risks: dict[str, dict[str, Any]] = {}
+    reviews: list[dict[str, Any]] = []
+    contributions: list[dict[str, Any]] = []
+    for task in state["manifest"]["confirmation_tasks"]:
+        result = _accepted_result(state, task["task_id"])
+        for finding in result["confirmed_findings"]:
+            finding_id = finding["id"]
+            if finding_id in findings:
+                raise CreditAnalysisError("confirmed finding ID is not globally unique")
+            findings[finding_id] = finding
+        for risk in result["plausible_risks"]:
+            risk_id = risk["id"]
+            if risk_id in risks:
+                raise CreditAnalysisError("risk ID is not globally unique")
+            risks[risk_id] = risk
+        reviews.extend(result["temporary_control_reviews"])
+        contributions.extend(result["temporary_control_contributions"])
+    review_ids = [item["id"] for item in reviews]
+    contribution_ids = [item["id"] for item in contributions]
+    if len(review_ids) != len(set(review_ids)) or len(contribution_ids) != len(
+        set(contribution_ids)
+    ):
+        raise CreditAnalysisError("temporary-control identity is not globally unique")
+    return findings, risks, reviews, contributions
+
+
+def _validate_synthesis_result(
+    raw: Mapping[str, Any],
+    *,
+    state: Mapping[str, Any],
+    evidence: Mapping[str, Any],
+    task: Mapping[str, Any],
+    input_sha256: str,
+    contract: Mapping[str, Any],
+) -> dict[str, Any]:
+    _closed_result(raw, SYNTHESIS_RESULT_FIELDS, "synthesis result")
+    if (
+        raw.get("schema") != ORCHESTRATION_SYNTHESIS_SCHEMA
+        or raw.get("analysis_id") != state["analysis_id"]
+        or raw.get("task_id") != task["task_id"]
+        or raw.get("input_sha256") != input_sha256
+    ):
+        raise CreditAnalysisError("synthesis result identity is invalid")
+    findings, risks, reviews, contributions = _confirmation_result_inventory(state)
+    groups = _result_objects(raw["finding_groups"], "synthesis finding groups")
+    canonical_ids: set[str] = set()
+    canonical_sources: dict[str, list[str]] = {}
+    source_to_canonical: dict[str, str] = {}
+    assigned_sources: list[str] = []
+    for index, group in enumerate(groups, start=1):
+        _closed_result(group, FINDING_GROUP_FIELDS, f"finding group {index}")
+        canonical_id = _identifier(
+            group.get("canonical_finding_id"), "canonical finding ID"
+        )
+        if canonical_id in canonical_ids:
+            raise CreditAnalysisError("canonical finding ID is duplicated")
+        canonical_ids.add(canonical_id)
+        sources = _result_strings(group.get("source_finding_ids"), "source findings")
+        if not set(sources) <= set(findings):
+            raise CreditAnalysisError("finding group references an unknown source")
+        assigned_sources.extend(sources)
+        canonical_sources[canonical_id] = sources
+        source_to_canonical.update({source: canonical_id for source in sources})
+        for field in ("primary_source_finding_id", "savings_source_finding_id"):
+            if group.get(field) not in sources:
+                raise CreditAnalysisError(f"finding group {field} is invalid")
+        for field in ("title", "problem_summary", "owner_key", "control_key"):
+            if not isinstance(group.get(field), str) or not group[field].strip():
+                raise CreditAnalysisError(f"finding group {field} is missing")
+        surfaces = _result_strings(
+            group.get("contributing_surfaces"), "finding contributing surfaces"
+        )
+        expected_surfaces = list(
+            dict.fromkeys(
+                surface
+                for source in sources
+                for surface in findings[source]["contributing_surfaces"]
+            )
+        )
+        if surfaces != expected_surfaces:
+            raise CreditAnalysisError("finding group dropped a contributing surface")
+    if sorted(assigned_sources) != sorted(findings) or len(assigned_sources) != len(
+        set(assigned_sources)
+    ):
+        raise CreditAnalysisError("synthesis did not preserve every confirmed finding")
+    risk_order = _result_strings(raw["risk_order"], "risk order", empty=True)
+    if set(risk_order) != set(risks) or len(risk_order) != len(risks):
+        raise CreditAnalysisError("synthesis risk order is incomplete")
+    merges = _result_objects(raw["temporary_control_merges"], "temporary merges")
+    assigned_reviews: list[str] = []
+    assigned_contributions: list[str] = []
+    review_by_id = {item["id"]: item for item in reviews}
+    contribution_by_id = {item["id"]: item for item in contributions}
+    contribution_surfaces: dict[str, str] = {}
+    for confirmation_task in state["manifest"]["confirmation_tasks"]:
+        confirmation = _accepted_result(state, confirmation_task["task_id"])
+        for contribution in confirmation["temporary_control_contributions"]:
+            contribution_surfaces[contribution["id"]] = confirmation["surface_id"]
+    merge_keys: set[tuple[str, str]] = set()
+    for index, merge in enumerate(merges, start=1):
+        _closed_result(merge, TEMPORARY_MERGE_FIELDS, f"temporary merge {index}")
+        _identifier(merge.get("merge_id"), "temporary merge ID")
+        for field in ("owner_key", "control_key"):
+            if not isinstance(merge.get(field), str) or not merge[field].strip():
+                raise CreditAnalysisError(f"temporary merge {field} is missing")
+        merge_key = (str(merge["owner_key"]), str(merge["control_key"]))
+        if merge_key in merge_keys:
+            raise CreditAnalysisError("temporary owner/control was split across merges")
+        merge_keys.add(merge_key)
+        merge_reviews = _result_strings(
+            merge.get("review_ids"), "temporary merge review IDs", empty=True
+        )
+        merge_contributions = _result_strings(
+            merge.get("contribution_ids"),
+            "temporary merge contribution IDs",
+            empty=True,
+        )
+        if not set(merge_reviews) <= set(review_by_id) or not set(
+            merge_contributions
+        ) <= set(contribution_by_id):
+            raise CreditAnalysisError("temporary merge references an unknown contribution")
+        if not merge_reviews and not merge_contributions:
+            raise CreditAnalysisError("temporary merge is empty")
+        member_keys = {
+            (
+                str(review_by_id[item]["owning_producer"]),
+                str(review_by_id[item]["observed_temporary_control"]),
+            )
+            for item in merge_reviews
+        } | {
+            (
+                str(contribution_by_id[item]["owner_key"]),
+                str(contribution_by_id[item]["control_key"]),
+            )
+            for item in merge_contributions
+        }
+        if member_keys != {merge_key}:
+            raise CreditAnalysisError("temporary merge crossed owner/control boundaries")
+        if merge_reviews and any(
+            contribution_by_id[item]["temporary_control_id"] not in merge_reviews
+            for item in merge_contributions
+        ):
+            raise CreditAnalysisError("temporary contribution links a different control")
+        assigned_reviews.extend(merge_reviews)
+        assigned_contributions.extend(merge_contributions)
+        disposition = merge.get("disposition")
+        review_dispositions = {
+            review_by_id[item]["disposition"] for item in merge_reviews
+        }
+        if len(review_dispositions) > 1 or (
+            review_dispositions and disposition not in review_dispositions
+        ):
+            raise CreditAnalysisError("temporary merge changed a review disposition")
+        if disposition not in contract["temporary_control_dispositions"]:
+            raise CreditAnalysisError("temporary merge disposition is invalid")
+        finding_id = merge.get("finding_id")
+        no_finding = merge.get("no_finding_reason")
+        if disposition == "durable-control-missing":
+            if finding_id not in canonical_ids or no_finding is not None:
+                raise CreditAnalysisError("durable temporary merge must link one finding")
+            expected_findings = {
+                source_to_canonical[review_by_id[item]["finding_id"]]
+                for item in merge_reviews
+                if review_by_id[item]["finding_id"] is not None
+            }
+            if expected_findings != {finding_id}:
+                raise CreditAnalysisError("temporary merge assigned savings to another finding")
+        else:
+            if finding_id is not None or not isinstance(no_finding, str) or not no_finding.strip():
+                raise CreditAnalysisError("non-defect temporary merge requires no-finding reason")
+        surfaces = _result_strings(
+            merge.get("contributing_surfaces"), "temporary merge surfaces"
+        )
+        expected_surfaces = (
+            ({"rework-validation"} if merge_reviews else set())
+            | {contribution_surfaces[item] for item in merge_contributions}
+        )
+        if (
+            len(surfaces) != len(set(surfaces))
+            or set(surfaces) != expected_surfaces
+            or not set(surfaces) <= set(state["manifest"]["surface_order"])
+        ):
+            raise CreditAnalysisError("temporary merge contributing surface is invalid")
+    if sorted(assigned_reviews) != sorted(review_by_id) or len(assigned_reviews) != len(
+        set(assigned_reviews)
+    ):
+        raise CreditAnalysisError("temporary reviews were not merged exactly once")
+    if sorted(assigned_contributions) != sorted(contribution_by_id) or len(
+        assigned_contributions
+    ) != len(set(assigned_contributions)):
+        raise CreditAnalysisError("temporary contributions were not merged exactly once")
+    classifications = _result_objects(
+        raw["call_classifications"], "call classifications"
+    )
+    classified_calls: list[str] = []
+    classification_counts: Counter[str] = Counter()
+    protocol_overhead_calls = 0
+    for index, classification in enumerate(classifications, start=1):
+        _closed_result(
+            classification,
+            CALL_CLASSIFICATION_FIELDS,
+            f"call classification {index}",
+        )
+        category = classification.get("classification")
+        if category not in contract["call_classifications"]:
+            raise CreditAnalysisError("call classification is invalid")
+        calls = _result_strings(
+            classification.get("call_ids"), "classified call IDs"
+        )
+        classified_calls.extend(calls)
+        classification_counts[str(category)] += len(calls)
+        finding_id = classification.get("primary_finding_id")
+        reason_code = classification.get("reason_code")
+        if category.startswith("avoidable_"):
+            if finding_id not in canonical_ids or reason_code is not None:
+                raise CreditAnalysisError("avoidable classification lacks a finding")
+        elif finding_id is not None:
+            raise CreditAnalysisError("non-avoidable classification links a finding")
+        if category == "necessary":
+            if reason_code not in contract["necessary_reason_codes"]:
+                raise CreditAnalysisError("necessary classification reason is invalid")
+            if reason_code == "protocol-overhead":
+                protocol_overhead_calls += len(calls)
+        elif reason_code is not None:
+            raise CreditAnalysisError("non-necessary classification has a reason code")
+        if not isinstance(classification.get("reason"), str) or not classification[
+            "reason"
+        ].strip():
+            raise CreditAnalysisError("call classification reason is missing")
+    if classified_calls != evidence["call_inventory"]:
+        raise CreditAnalysisError(
+            "call classifications are missing, duplicated, or reordered"
+        )
+    producer_groups = _result_objects(raw["producer_groups"], "producer groups")
+    assigned_canonical: list[str] = []
+    for index, producer in enumerate(producer_groups, start=1):
+        _closed_result(
+            producer,
+            ORCHESTRATION_PRODUCER_GROUP_FIELDS,
+            f"producer group {index}",
+        )
+        _identifier(producer.get("id"), "producer group ID")
+        if producer.get("producer_type") not in contract["producer_types"]:
+            raise CreditAnalysisError("producer group type is invalid")
+        linked = _result_strings(producer.get("finding_ids"), "producer findings")
+        if not set(linked) <= canonical_ids:
+            raise CreditAnalysisError("producer group references an unknown finding")
+        assigned_canonical.extend(linked)
+        _result_strings(producer.get("targeted_verification"), "producer verification")
+    if sorted(assigned_canonical) != sorted(canonical_ids) or len(assigned_canonical) != len(
+        set(assigned_canonical)
+    ):
+        raise CreditAnalysisError("producer groups do not cover canonical findings once")
+    summary = raw.get("analysis_summary")
+    if not isinstance(summary, dict):
+        raise CreditAnalysisError("analysis summary is invalid")
+    _closed_result(summary, ANALYSIS_SUMMARY_FIELDS, "analysis summary")
+    for field in ANALYSIS_SUMMARY_FIELDS - {"meaningful_input_output_findings"}:
+        if not isinstance(summary.get(field), int) or isinstance(summary[field], bool) or summary[
+            field
+        ] < 0:
+            raise CreditAnalysisError(f"analysis summary {field} is invalid")
+    meaningful = _result_strings(
+        summary.get("meaningful_input_output_findings"),
+        "meaningful input/output findings",
+        empty=True,
+    )
+    if not set(meaningful) <= canonical_ids:
+        raise CreditAnalysisError("analysis summary references an unknown volume finding")
+    if any(
+        not any(findings[source]["waste_kind"] == "context-volume" for source in canonical_sources[item])
+        for item in meaningful
+    ):
+        raise CreditAnalysisError("analysis summary volume finding is not context-volume")
+    if summary["confirmed_count"] != len(canonical_ids) or summary["risk_count"] != len(
+        risk_order
+    ):
+        raise CreditAnalysisError("analysis summary counts are inconsistent")
+    expected_summary_counts = {
+        "necessary_calls": classification_counts["necessary"],
+        "protocol_overhead_calls": protocol_overhead_calls,
+        "reviewed_no_confirmed_waste_calls": classification_counts[
+            "reviewed_no_confirmed_waste"
+        ],
+        "unassessed_calls": classification_counts["unassessed"],
+        "avoidable_calls": classification_counts["avoidable_implemented"]
+        + classification_counts["avoidable_unimplemented"],
+    }
+    if any(summary[key] != value for key, value in expected_summary_counts.items()):
+        raise CreditAnalysisError("analysis summary classification totals are inconsistent")
+    return dict(raw)
+
+
+def _jsonl_event_summary(path: pathlib.Path) -> dict[str, Any]:
+    """Summarize child events without emitting their model-visible payloads."""
+
+    event_types: Counter[str] = Counter()
+    usage = {
+        "input_tokens": 0,
+        "cached_input_tokens": 0,
+        "output_tokens": 0,
+    }
+    malformed = 0
+    if not path.exists():
+        return {"events": 0, "event_types": {}, "usage": usage, "malformed": 0}
+    with path.open(encoding="utf-8") as handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            try:
+                item = json.loads(line)
+            except json.JSONDecodeError:
+                malformed += 1
+                continue
+            if not isinstance(item, Mapping):
+                malformed += 1
+                continue
+            event_type = item.get("type")
+            event_types[str(event_type or "unknown")] += 1
+            candidates = [item]
+            if isinstance(item.get("usage"), Mapping):
+                candidates.append(item["usage"])
+            if isinstance(item.get("turn"), Mapping):
+                candidates.append(item["turn"])
+                if isinstance(item["turn"].get("usage"), Mapping):
+                    candidates.append(item["turn"]["usage"])
+            for candidate in candidates:
+                for key in usage:
+                    value = candidate.get(key)
+                    if isinstance(value, int) and not isinstance(value, bool):
+                        usage[key] = max(usage[key], value)
+    return {
+        "events": sum(event_types.values()),
+        "event_types": dict(sorted(event_types.items())),
+        "usage": usage,
+        "malformed": malformed,
+    }
+
+
+def _run_codex_child(
+    *,
+    model: str,
+    task: Mapping[str, Any],
+    prompt_path: pathlib.Path,
+    schema_path: pathlib.Path,
+    attempt_dir: pathlib.Path,
+    orchestration_root: pathlib.Path,
+    timeout_seconds: int = 1800,
+) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    """Launch one explicit, ephemeral, read-only Codex child and wait internally."""
+
+    executable = shutil.which("codex")
+    if executable is None:
+        raise CreditAnalysisError("Codex CLI is unavailable")
+    attempt_dir.mkdir(parents=True, exist_ok=False)
+    raw_output = attempt_dir / "last-message.json"
+    events_path = attempt_dir / "events.jsonl"
+    stderr_path = attempt_dir / "stderr.log"
+    command = [
+        executable,
+        "exec",
+        "--model",
+        model,
+        "--sandbox",
+        "read-only",
+        "--ask-for-approval",
+        "never",
+        "--ephemeral",
+        "--skip-git-repo-check",
+        "--output-schema",
+        str(schema_path),
+        "--color",
+        "never",
+        "--json",
+        "--output-last-message",
+        str(raw_output),
+        "--cd",
+        str(orchestration_root),
+        "-",
+    ]
+    started = time.monotonic()
+    timed_out = False
+    terminated = False
+    exit_code: int | None = None
+    launch_error: str | None = None
+    with prompt_path.open("r", encoding="utf-8") as prompt_handle, events_path.open(
+        "x", encoding="utf-8", newline="\n"
+    ) as events_handle, stderr_path.open("x", encoding="utf-8", newline="\n") as error_handle:
+        try:
+            process = subprocess.Popen(
+                command,
+                cwd=orchestration_root,
+                stdin=prompt_handle,
+                stdout=events_handle,
+                stderr=error_handle,
+                text=True,
+            )
+        except OSError as exc:
+            launch_error = f"could not launch Codex child: {exc}"
+            error_handle.write(launch_error + "\n")
+        else:
+            last_notification = started
+            while True:
+                exit_code = process.poll()
+                if exit_code is not None:
+                    break
+                now = time.monotonic()
+                if now - started >= timeout_seconds:
+                    timed_out = True
+                    process.terminate()
+                    terminated = True
+                    try:
+                        exit_code = process.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        exit_code = process.wait(timeout=10)
+                    break
+                if now - last_notification >= MODEL_PROGRESS_SECONDS:
+                    print(
+                        f"progress: waiting for {task['task_id']} on {model} "
+                        f"({int(now - started)}s)",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    last_notification = now
+                time.sleep(1)
+    duration_ms = int((time.monotonic() - started) * 1000)
+    event_summary = _jsonl_event_summary(events_path)
+    attempt = {
+        "runner": "codex-cli",
+        "model": model,
+        "model_invoked": launch_error is None,
+        "exit_code": exit_code,
+        "timed_out": timed_out,
+        "terminated": terminated,
+        "duration_ms": duration_ms,
+        "prompt_path": str(prompt_path),
+        "schema_path": str(schema_path),
+        "raw_output_path": str(raw_output),
+        "events_path": str(events_path),
+        "stderr_path": str(stderr_path),
+        "event_summary": event_summary,
+        "error": launch_error,
+    }
+    if launch_error is not None:
+        return None, attempt
+    if exit_code != 0:
+        detail = ""
+        if stderr_path.exists():
+            detail = " ".join(stderr_path.read_text(encoding="utf-8").split())[:800]
+        attempt["error"] = (
+            f"Codex child failed for {task['task_id']} with exit {exit_code}"
+            + (f": {detail}" if detail else "")
+        )
+        return None, attempt
+    if not raw_output.is_file() or raw_output.is_symlink():
+        attempt["error"] = f"Codex child produced no result: {task['task_id']}"
+        return None, attempt
+    try:
+        value = json.loads(raw_output.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        attempt["error"] = f"Codex child result is not JSON: {task['task_id']}"
+        attempt["json_error"] = str(exc)
+        return None, attempt
+    if not isinstance(value, dict):
+        attempt["error"] = f"Codex child result is not an object: {task['task_id']}"
+        return None, attempt
+    return value, attempt
+
+
+def _invoke_injected_runner(
+    runner: Any,
+    *,
+    model: str,
+    task: Mapping[str, Any],
+    prompt_path: pathlib.Path,
+    schema_path: pathlib.Path,
+    input_payload: Mapping[str, Any],
+    input_sha256: str,
+    attempt_dir: pathlib.Path,
+) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    """Invoke one in-process fake runner used by existing behavior tests."""
+
+    if not callable(getattr(runner, "run", None)):
+        raise CreditAnalysisError("injected model runner lacks run()")
+    attempt_dir.mkdir(parents=True, exist_ok=False)
+    started = time.monotonic()
+    error: str | None = None
+    try:
+        value = runner.run(
+            model=model,
+            task=dict(task),
+            prompt=prompt_path.read_text(encoding="utf-8"),
+            schema=_read_json(schema_path, "model output schema"),
+            input_payload=dict(input_payload),
+            input_sha256=input_sha256,
+        )
+    except Exception as exc:  # noqa: BLE001 - fake-runner failures exercise resume.
+        value = None
+        error = f"injected model runner failed: {exc}"
+    duration_ms = int((time.monotonic() - started) * 1000)
+    raw_path = attempt_dir / "last-message.json"
+    if isinstance(value, Mapping):
+        _exclusive_json(raw_path, dict(value), "injected runner output")
+    elif error is None:
+        error = "injected model runner returned a non-object"
+    events_path = attempt_dir / "events.jsonl"
+    _exclusive_text(
+        events_path,
+        json.dumps(
+            {
+                "type": "fake.semantic.completed",
+                "model": model,
+                "task_id": task["task_id"],
+            },
+            separators=(",", ":"),
+        )
+        + "\n",
+        "injected runner events",
+    )
+    stderr_path = attempt_dir / "stderr.log"
+    _exclusive_text(
+        stderr_path,
+        (error + "\n") if error is not None else "",
+        "injected runner stderr",
+    )
+    attempt = {
+        "runner": "injected",
+        "model": model,
+        "model_invoked": True,
+        "exit_code": 0,
+        "timed_out": False,
+        "terminated": False,
+        "duration_ms": duration_ms,
+        "prompt_path": str(prompt_path),
+        "schema_path": str(schema_path),
+        "raw_output_path": str(raw_path),
+        "events_path": str(events_path),
+        "stderr_path": str(stderr_path),
+        "event_summary": _jsonl_event_summary(events_path),
+        "error": error,
+    }
+    return (dict(value) if isinstance(value, Mapping) else None), attempt
+
+
+def _task_model(state: Mapping[str, Any], task: Mapping[str, Any]) -> str:
+    """Resolve the explicit model identity for one frozen semantic task."""
+
+    if str(task["phase"]).startswith("spark-"):
+        return str(state["models"]["spark"])
+    if task["phase"] == "synthesis":
+        return str(state["models"]["synthesis"])
+    return str(state["models"]["confirmation"])
+
+
+def _model_counter_key(task: Mapping[str, Any]) -> str:
+    """Map a frozen task to the controller's Spark or GPT-5.6 ledger."""
+
+    return "spark" if str(task["phase"]).startswith("spark-") else "gpt_5_6"
+
+
+def _bind_attempt_record(
+    attempt: Mapping[str, Any],
+    *,
+    state: Mapping[str, Any],
+    task: Mapping[str, Any],
+    input_sha256: str,
+    attempt_number: int,
+) -> dict[str, Any]:
+    """Bind one child attempt to immutable identity and artifact hashes."""
+
+    record = dict(attempt)
+    record.update(
+        {
+            "analysis_id": state["analysis_id"],
+            "task_id": task["task_id"],
+            "phase": task["phase"],
+            "attempt_number": attempt_number,
+            "input_sha256": input_sha256,
+            "outcome": "runner-error" if attempt.get("error") else "result-produced",
+        }
+    )
+    artifact_paths = {
+        "prompt": pathlib.Path(str(record["prompt_path"])),
+        "schema": pathlib.Path(str(record["schema_path"])),
+        "raw_output": pathlib.Path(str(record["raw_output_path"])),
+        "events": pathlib.Path(str(record["events_path"])),
+        "stderr": pathlib.Path(str(record["stderr_path"])),
+    }
+    artifacts: dict[str, dict[str, str] | None] = {}
+    for label, path in artifact_paths.items():
+        if path.is_file() and not path.is_symlink():
+            artifacts[label] = {"path": str(path), "sha256": _file_hash(path)}
+        elif label in {"prompt", "schema", "events", "stderr"}:
+            raise CreditAnalysisError(f"child attempt {label} artifact is missing")
+        else:
+            artifacts[label] = None
+    record["artifacts"] = artifacts
+    return record
+
+
+def _checkpoint_failed_attempt(
+    state: dict[str, Any],
+    task: Mapping[str, Any],
+    attempt: Mapping[str, Any],
+    message: str,
+    *,
+    outcome: str,
+) -> None:
+    """Persist a failed semantic attempt before returning its error to the caller."""
+
+    record = dict(attempt)
+    record["outcome"] = outcome
+    record["error"] = message
+    state["execution"][task["task_id"]]["attempts"].append(record)
+    _save_orchestration_state(state)
+
+
+def _validate_task_result(
+    raw: Mapping[str, Any],
+    *,
+    state: Mapping[str, Any],
+    evidence: Mapping[str, Any],
+    contract: Mapping[str, Any],
+    task: Mapping[str, Any],
+    input_sha256: str,
+    input_variant_ids: list[str],
+) -> dict[str, Any]:
+    if task["phase"].startswith("spark-"):
+        return _validate_spark_result(
+            raw,
+            state=state,
+            task=task,
+            input_sha256=input_sha256,
+            input_variant_ids=input_variant_ids,
+            contract=contract,
+        )
+    if task["phase"] == "surface-confirmation":
+        return _validate_confirmation_result(
+            raw,
+            state=state,
+            task=task,
+            input_sha256=input_sha256,
+            surface_index=_read_surface_index(state, str(task["surface_id"])),
+            contract=contract,
+        )
+    return _validate_synthesis_result(
+        raw,
+        state=state,
+        evidence=evidence,
+        task=task,
+        input_sha256=input_sha256,
+        contract=contract,
+    )
+
+
+def _accept_or_recover_task(
+    *,
+    state: dict[str, Any],
+    evidence: Mapping[str, Any],
+    contract: Mapping[str, Any],
+    task: Mapping[str, Any],
+    input_sha256: str,
+    input_variant_ids: list[str],
+    prompt_path: pathlib.Path,
+    schema_path: pathlib.Path,
+    raw: Mapping[str, Any] | None,
+    attempt: Mapping[str, Any] | None,
+) -> bool:
+    """Accept one immutable result, recovering a crash window without a new call."""
+
+    result_path = pathlib.Path(str(task["artifacts"]["result"]))
+    recovered = raw is None
+    if recovered:
+        if not result_path.is_file() or result_path.is_symlink():
+            return False
+        raw = _read_json(result_path, f"recoverable result {task['task_id']}")
+    validated = _validate_task_result(
+        raw,
+        state=state,
+        evidence=evidence,
+        contract=contract,
+        task=task,
+        input_sha256=input_sha256,
+        input_variant_ids=input_variant_ids,
+    )
+    if recovered:
+        existing = _read_json(result_path, "recoverable result")
+        if existing != validated:
+            raise CreditAnalysisError("recoverable task result is noncanonical")
+    else:
+        _exclusive_json(result_path, validated, "model task result")
+    execution = state["execution"][task["task_id"]]
+    if attempt is not None:
+        accepted_attempt = dict(attempt)
+        accepted_attempt["outcome"] = "accepted"
+        accepted_attempt["error"] = None
+        execution["attempts"].append(accepted_attempt)
+    execution["status"] = "complete"
+    execution["result"] = {
+        "path": str(result_path),
+        "sha256": _file_hash(result_path),
+        "content_hash": _content_hash(validated),
+        "analysis_id": state["analysis_id"],
+        "task_id": task["task_id"],
+        "phase": task["phase"],
+        "model": _task_model(state, task),
+        "input_sha256": input_sha256,
+        "prompt_sha256": _file_hash(prompt_path),
+        "schema_sha256": _file_hash(schema_path),
+        "recovered_without_model_call": recovered,
+    }
+    counter = _model_counter_key(task)
+    state["model_calls"][counter] += 1
+    if recovered:
+        state["model_attempts"][counter] += 1
+    _save_orchestration_state(state)
+    return True
+
+
+def _aggregate_finding_volume(
+    finding: Mapping[str, Any], evidence: Mapping[str, Any]
+) -> dict[str, int]:
+    calls = {str(call["call_id"]): call for call in _all_calls(evidence)}
+    totals = {
+        "input_tokens": 0,
+        "cached_input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_output_tokens": 0,
+        "tool_argument_chars": 0,
+        "tool_result_chars": 0,
+    }
+    for call_id in finding["affected_call_ids"]:
+        call = calls[call_id]
+        tokens = call.get("tokens")
+        if isinstance(tokens, Mapping):
+            for key in (
+                "input_tokens",
+                "cached_input_tokens",
+                "output_tokens",
+                "reasoning_output_tokens",
+            ):
+                value = tokens.get(key)
+                if isinstance(value, int) and not isinstance(value, bool):
+                    totals[key] += value
+        for item in call.get("tool_results", []):
+            if not isinstance(item, Mapping):
+                continue
+            totals["tool_argument_chars"] += int(item.get("argument_chars") or 0)
+            totals["tool_result_chars"] += int(item.get("result_chars") or 0)
+    return totals
+
+
+def _build_orchestration_final(
+    state: Mapping[str, Any],
+    evidence: Mapping[str, Any],
+    synthesis: Mapping[str, Any],
+) -> dict[str, Any]:
+    findings, risks, reviews, contributions = _confirmation_result_inventory(state)
+    canonical_findings: list[dict[str, Any]] = []
+    for group in synthesis["finding_groups"]:
+        source_ids = group["source_finding_ids"]
+        source_records = [findings[item] for item in source_ids]
+        primary = dict(findings[group["primary_source_finding_id"]])
+        savings = findings[group["savings_source_finding_id"]]
+        primary.update(
+            {
+                "id": group["canonical_finding_id"],
+                "title": group["title"],
+                "problem_summary": group["problem_summary"],
+                "producer_owner": group["owner_key"],
+                "proposed_durable_control": group["control_key"],
+                "source_finding_ids": source_ids,
+                "candidate_ids": list(
+                    dict.fromkeys(
+                        candidate
+                        for source in source_records
+                        for candidate in source["candidate_ids"]
+                    )
+                ),
+                "affected_call_ids": list(
+                    dict.fromkeys(
+                        call
+                        for source in source_records
+                        for call in source["affected_call_ids"]
+                    )
+                ),
+                "evidence_refs": list(
+                    dict.fromkeys(
+                        ref
+                        for source in source_records
+                        for ref in source["evidence_refs"]
+                    )
+                ),
+                "contributing_surfaces": group["contributing_surfaces"],
+                "targeted_verification": list(
+                    dict.fromkeys(
+                        check
+                        for source in source_records
+                        for check in source["targeted_verification"]
+                    )
+                ),
+                "helper_categories": list(
+                    dict.fromkeys(
+                        category
+                        for source in source_records
+                        for category in source["helper_categories"]
+                    )
+                ),
+                "observed_avoidable_call_count": len(
+                    {
+                        call
+                        for source in source_records
+                        for call in source["affected_call_ids"]
+                    }
+                )
+                if primary["waste_kind"] == "model-calls"
+                else 0,
+                "recurrence": savings["recurrence"],
+                "one_time_implementation_cost": savings[
+                    "one_time_implementation_cost"
+                ],
+                "savings_assigned_from": group["savings_source_finding_id"],
+            }
+        )
+        primary["volume"] = _aggregate_finding_volume(primary, evidence)
+        canonical_findings.append(primary)
+    risk_order = synthesis["risk_order"]
+    ordered_risks = [risks[risk_id] for risk_id in risk_order]
+    classification_totals = Counter()
+    protocol_overhead = 0
+    for group in synthesis["call_classifications"]:
+        classification_totals[group["classification"]] += len(group["call_ids"])
+        if group["reason_code"] == "protocol-overhead":
+            protocol_overhead += len(group["call_ids"])
+    return {
+        "schema": ORCHESTRATION_FINAL_SCHEMA,
+        "analysis_id": state["analysis_id"],
+        "action": state["action"],
+        "mode": state["mode"],
+        "mutation_authority": False,
+        "source": state["source"],
+        "window": state["window"],
+        "evidence": state["evidence"],
+        "manifest": {
+            "path": state["manifest"]["path"],
+            "sha256": state["manifest"]["sha256"],
+            "surface_order": state["manifest"]["surface_order"],
+            "projected_spark_calls": state["manifest"]["projected_spark_calls"],
+            "projected_gpt_5_6_calls": state["manifest"][
+                "projected_gpt_5_6_calls"
+            ],
+            "candidate_coverage": [
+                {
+                    "surface_id": surface["surface_id"],
+                    "candidate_count": surface["candidate_count"],
+                    "primary_chunks": len(surface["primary_task_ids"]),
+                    "consolidations": len(surface["consolidation_task_ids"]),
+                }
+                for surface in state["manifest"]["surfaces"]
+            ],
+        },
+        "model_calls": {
+            "actual_spark": state["model_attempts"]["spark"],
+            "actual_gpt_5_6": state["model_attempts"]["gpt_5_6"],
+            "accepted_spark": state["model_calls"]["spark"],
+            "accepted_gpt_5_6": state["model_calls"]["gpt_5_6"],
+            "bookkeeping": 0,
+        },
+        "confirmed_findings": canonical_findings,
+        "plausible_risks": ordered_risks,
+        "temporary_control_reviews": reviews,
+        "temporary_control_contributions": contributions,
+        "temporary_control_merges": synthesis["temporary_control_merges"],
+        "call_classifications": synthesis["call_classifications"],
+        "classification_totals": {
+            **{
+                category: classification_totals[category]
+                for category in (
+                    "necessary",
+                    "avoidable_implemented",
+                    "avoidable_unimplemented",
+                    "reviewed_no_confirmed_waste",
+                    "unassessed",
+                )
+            },
+            "protocol_overhead": protocol_overhead,
+        },
+        "producer_groups": synthesis["producer_groups"],
+        "analysis_summary": synthesis["analysis_summary"],
+        "deterministic_totals": evidence["totals"],
+        "pricing": evidence["pricing"],
+        "retained_artifacts": {
+            "state": state["paths"]["state"],
+            "evidence": state["evidence"]["path"],
+            "manifest": state["manifest"]["path"],
+            "orchestration_root": state["paths"]["orchestration_root"],
+        },
+    }
+
+
+def _render_orchestration_report(final: Mapping[str, Any]) -> str:
+    findings = final["confirmed_findings"]
+    outstanding = [
+        finding for finding in findings if finding["implementation_status"] == "unimplemented"
+    ]
+    implemented = len(findings) - len(outstanding)
+    lines = [
+        f"Confirmed: {len(findings)}; outstanding: {len(outstanding)}; already addressed: {implemented}",
+        "",
+        (
+            f"Spark calls: {final['model_calls']['actual_spark']} "
+            f"(projected {final['manifest']['projected_spark_calls']}); "
+            f"GPT-5.6 calls: {final['model_calls']['actual_gpt_5_6']} "
+            f"(projected {final['manifest']['projected_gpt_5_6_calls']}); "
+            "bookkeeping calls: 0."
+        ),
+        "",
+    ]
+    for finding in findings:
+        recurrence = finding["recurrence"]
+        volume = finding["volume"]
+        lines.extend(
+            [
+                f"## {finding['title']}",
+                "",
+                f"Problem: {finding['problem_summary']}",
+                "",
+                (
+                    f"Evidence: {len(finding['affected_call_ids'])} affected calls; "
+                    f"{volume['input_tokens']} input, {volume['cached_input_tokens']} "
+                    f"cached-input, {volume['output_tokens']} output tokens; "
+                    f"{volume['tool_argument_chars']} tool-argument and "
+                    f"{volume['tool_result_chars']} tool-result characters."
+                ),
+                "",
+                f"Fix: {finding['proposed_durable_control']} Owner: {finding['producer_owner']}.",
+                "",
+                "Verification: " + "; ".join(finding["targeted_verification"]),
+                "",
+                (
+                    f"Savings: {finding['observed_avoidable_call_count']} observed calls; "
+                    f"{recurrence['estimated_calls_saved_per_similar_run']} expected calls "
+                    f"per similar run; {finding['one_time_implementation_cost']['estimated_model_calls']} "
+                    f"implementation calls; {finding['complexity']} ongoing complexity."
+                ),
+                "",
+            ]
+        )
+    for risk in final["plausible_risks"]:
+        lines.extend(
+            [
+                f"## Risk: {risk['id']}",
+                "",
+                f"Observed: {risk['description']}",
+                "",
+                "Unknown: " + "; ".join(risk["competing_explanations"]),
+                "",
+                f"Why not confirmed: {risk['missing_fact']}",
+                "",
+                "How to confirm: " + "; ".join(risk["verification_needed"]),
+                "",
+            ]
+        )
+    totals = final["classification_totals"]
+    lines.extend(
+        [
+            "## Call accounting",
+            "",
+            (
+                f"Necessary: {totals['necessary']}; protocol overhead: "
+                f"{totals['protocol_overhead']}; avoidable implemented: "
+                f"{totals['avoidable_implemented']}; avoidable unimplemented: "
+                f"{totals['avoidable_unimplemented']}; reviewed without confirmed waste: "
+                f"{totals['reviewed_no_confirmed_waste']}; unassessed: "
+                f"{totals['unassessed']}."
+            ),
+            "",
+            f"Retained result: {final['retained_artifacts']['state']}",
+            "",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _cleanup_orchestration_transient(state: Mapping[str, Any]) -> None:
+    cleanup = state.get("cleanup")
+    if not isinstance(cleanup, Mapping) or cleanup.get("owner") != "credit-analysis-workflow":
+        raise CreditAnalysisError("orchestration cleanup ownership is invalid")
+    root = pathlib.Path(str(cleanup.get("transient_root"))).resolve()
+    orchestration_root = pathlib.Path(state["paths"]["orchestration_root"]).resolve()
+    if root.parent != orchestration_root or root.name != "transient":
+        raise CreditAnalysisError("orchestration transient root is invalid")
+    if root.is_symlink():
+        raise CreditAnalysisError("orchestration transient root is a link")
+    if root.exists():
+        shutil.rmtree(root)
+    if root.exists():
+        raise CreditAnalysisError("orchestration transient cleanup failed")
+
+
+def _finalize_orchestration(
+    state: dict[str, Any], evidence: Mapping[str, Any]
+) -> None:
+    synthesis_task = state["manifest"]["synthesis_task"]
+    synthesis = _accepted_result(state, synthesis_task["task_id"])
+    final = _build_orchestration_final(state, evidence, synthesis)
+    if state["mode"] == "full-analysis":
+        if state["model_calls"]["gpt_5_6"] != 6:
+            raise CreditAnalysisError("full analysis did not use exactly six GPT-5.6 calls")
+    if state["model_calls"]["spark"] != state["manifest"]["projected_spark_calls"]:
+        raise CreditAnalysisError("actual Spark calls do not match the frozen manifest")
+    final_path = pathlib.Path(state["paths"]["final_result"])
+    _write_or_verify_json(final_path, final, "orchestration final result")
+    report_path = pathlib.Path(state["paths"]["report"])
+    report_sha256 = _write_or_verify_text(
+        report_path,
+        _render_orchestration_report(final),
+        "orchestration report",
+    )
+    state["phase"] = "complete"
+    state["final_result"] = {
+        "path": str(final_path),
+        "sha256": _file_hash(final_path),
+        "content_hash": _content_hash(final),
+        "report_path": str(report_path),
+        "report_sha256": report_sha256,
+    }
+    _cleanup_orchestration_transient(state)
+    _save_orchestration_state(state)
+
+
+def command_execute_orchestration(
+    state_path: pathlib.Path,
+    *,
+    runner: Any | None = None,
+    available_models: set[str] | None = None,
+    task_limit: int | None = None,
+) -> dict[str, Any]:
+    """Run or resume the finite semantic queue without model-mediated polling."""
+
+    state, evidence, contract = _load_orchestration_state(state_path)
+    if state["phase"] == "complete":
+        return _orchestration_public_status(state)
+    catalog = (
+        available_models
+        if available_models is not None
+        else (
+            set(runner.available_models)
+            if runner is not None and hasattr(runner, "available_models")
+            else _codex_model_catalog()
+        )
+    )
+    models = _validate_orchestration_models(contract, catalog)
+    if models != state["models"]:
+        raise CreditAnalysisError("available model identity changed after planning")
+    if task_limit is not None and (
+        not isinstance(task_limit, int) or isinstance(task_limit, bool) or task_limit < 0
+    ):
+        raise CreditAnalysisError("task_limit must be a nonnegative integer")
+    tasks = _task_map(state["manifest"])
+    completed_this_run = 0
+    state["phase"] = "executing"
+    _save_orchestration_state(state)
+    for task_id in state["task_order"]:
+        execution = state["execution"][task_id]
+        if execution["status"] == "complete":
+            continue
+        if task_limit is not None and completed_this_run >= task_limit:
+            break
+        task = tasks[task_id]
+        input_payload, input_sha256, prompt_path, schema_path, input_variant_ids = (
+            _prepare_model_task(state, evidence, contract, task)
+        )
+        if _accept_or_recover_task(
+            state=state,
+            evidence=evidence,
+            contract=contract,
+            task=task,
+            input_sha256=input_sha256,
+            input_variant_ids=input_variant_ids,
+            prompt_path=prompt_path,
+            schema_path=schema_path,
+            raw=None,
+            attempt=None,
+        ):
+            completed_this_run += 1
+            continue
+        if task["phase"] == "surface-confirmation":
+            incomplete_spark = [
+                spark["task_id"]
+                for spark in state["manifest"]["spark_tasks"]
+                if state["execution"][spark["task_id"]]["status"] != "complete"
+            ]
+            if incomplete_spark:
+                raise CreditAnalysisError("confirmation cannot start before complete Spark coverage")
+        model = _task_model(state, task)
+        attempt_number = len(execution["attempts"]) + 1
+        attempt_dir = pathlib.Path(str(task["artifacts"]["attempts"])) / (
+            f"attempt-{attempt_number:03d}"
+        )
+        if runner is None:
+            raw, attempt = _run_codex_child(
+                model=model,
+                task=task,
+                prompt_path=prompt_path,
+                schema_path=schema_path,
+                attempt_dir=attempt_dir,
+                orchestration_root=pathlib.Path(state["paths"]["orchestration_root"]),
+            )
+        else:
+            raw, attempt = _invoke_injected_runner(
+                runner,
+                model=model,
+                task=task,
+                prompt_path=prompt_path,
+                schema_path=schema_path,
+                input_payload=input_payload,
+                input_sha256=input_sha256,
+                attempt_dir=attempt_dir,
+            )
+        attempt = _bind_attempt_record(
+            attempt,
+            state=state,
+            task=task,
+            input_sha256=input_sha256,
+            attempt_number=attempt_number,
+        )
+        if attempt["model_invoked"]:
+            state["model_attempts"][_model_counter_key(task)] += 1
+        if raw is None:
+            message = str(attempt.get("error") or "model task produced no result")
+            _checkpoint_failed_attempt(
+                state,
+                task,
+                attempt,
+                message,
+                outcome="runner-error",
+            )
+            raise CreditAnalysisError(message)
+        try:
+            _accept_or_recover_task(
+                state=state,
+                evidence=evidence,
+                contract=contract,
+                task=task,
+                input_sha256=input_sha256,
+                input_variant_ids=input_variant_ids,
+                prompt_path=prompt_path,
+                schema_path=schema_path,
+                raw=raw,
+                attempt=attempt,
+            )
+        except CreditAnalysisError as exc:
+            _checkpoint_failed_attempt(
+                state,
+                task,
+                attempt,
+                str(exc),
+                outcome="validation-error",
+            )
+            raise
+        completed_this_run += 1
+    if all(
+        state["execution"][task_id]["status"] == "complete"
+        for task_id in state["task_order"]
+    ):
+        _finalize_orchestration(state, evidence)
+    else:
+        _save_orchestration_state(state)
+    return _orchestration_public_status(state)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
+    plan = commands.add_parser("plan")
+    plan.add_argument("--request", required=True, type=pathlib.Path)
+    execute = commands.add_parser("execute")
+    execute.add_argument("--state", required=True, type=pathlib.Path)
+    orchestration_status = commands.add_parser("orchestration-status")
+    orchestration_status.add_argument("--state", required=True, type=pathlib.Path)
     start = commands.add_parser("start")
     start.add_argument("--request", required=True, type=pathlib.Path)
     submit = commands.add_parser("submit")
@@ -6405,7 +10407,15 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        if args.command == "start":
+        if args.command == "plan":
+            output: Any = command_plan_orchestration(
+                args.request.expanduser().resolve(strict=True)
+            )
+        elif args.command == "execute":
+            output = command_execute_orchestration(args.state)
+        elif args.command == "orchestration-status":
+            output = command_orchestration_status(args.state)
+        elif args.command == "start":
             output: Any = command_start(args.request.expanduser().resolve(strict=True))
         elif args.command == "submit":
             output = command_submit(args.state, args.decision)

@@ -44,7 +44,7 @@ CLASSIFIED_SUMMARY_SCHEMA = "ceratops-model-call-classified-summary.v1"
 USAGE_EVIDENCE_SCHEMA = "ceratops-model-call-usage-evidence.v1"
 USAGE_SUMMARY_SCHEMA = "ceratops-model-call-usage-summary.v1"
 PRICING_PROFILE_SCHEMA = "ceratops-model-call-pricing-profile.v1"
-ANALYSIS_EVIDENCE_SCHEMA = "ceratops-credit-analysis-collected-evidence.v1"
+ANALYSIS_EVIDENCE_SCHEMA = "ceratops-credit-analysis-collected-evidence.v2"
 DEFAULT_TOP = 5
 CLASSIFICATION_CATEGORIES = (
     "necessary",
@@ -636,10 +636,11 @@ def model_review_preparation_contract() -> dict[str, Any]:
 def review_path_roots(rows: list[dict[str, Any]]) -> list[tuple[str, str]]:
     """Resolve workspace and Codex roots for meaning-preserving path labels."""
 
-    roots: dict[str, str] = {}
+    codex_roots: list[str] = []
+    workspace_roots: list[str] = []
     codex_root = os.environ.get("CODEX_HOME")
     if codex_root:
-        roots[str(pathlib.Path(codex_root).expanduser())] = "<codex-home>"
+        codex_roots.append(str(pathlib.Path(codex_root).expanduser()))
     for row in rows:
         payload = row.get("payload")
         if not isinstance(payload, dict):
@@ -649,15 +650,30 @@ def review_path_roots(rows: list[dict[str, Any]]) -> list[tuple[str, str]]:
             values.append(payload.get("cwd"))
         elif row.get("type") == "turn_context":
             values.append(payload.get("cwd"))
-            workspace_roots = payload.get("workspace_roots")
-            if isinstance(workspace_roots, list):
-                values.extend(workspace_roots)
+            declared_workspace_roots = payload.get("workspace_roots")
+            if isinstance(declared_workspace_roots, list):
+                values.extend(declared_workspace_roots)
         for value in values:
             if isinstance(value, dict):
                 value = value.get("root") or value.get("path")
-            if isinstance(value, str) and value:
-                roots.setdefault(value, "<workspace>")
-    return sorted(roots.items(), key=lambda item: (-len(item[0]), item[0]))
+            if isinstance(value, str) and value and value not in workspace_roots:
+                workspace_roots.append(value)
+
+    result = [(root, "<codex-home>") for root in codex_roots]
+    name_counts = Counter(
+        pathlib.Path(root.rstrip("\\/")).name.casefold() or "workspace"
+        for root in workspace_roots
+    )
+    seen_names: Counter[str] = Counter()
+    for root in workspace_roots:
+        raw_name = pathlib.Path(root.rstrip("\\/")).name or "workspace"
+        safe_name = re.sub(r"[^A-Za-z0-9._-]+", "-", raw_name).strip("-")
+        safe_name = safe_name or "workspace"
+        key = raw_name.casefold()
+        seen_names[key] += 1
+        suffix = f":{seen_names[key]}" if name_counts[key] > 1 else ""
+        result.append((root, f"<workspace:{safe_name}{suffix}>"))
+    return sorted(result, key=lambda item: (-len(item[0]), item[0].casefold()))
 
 
 def prepare_review_text(value: str, path_roots: list[tuple[str, str]]) -> str:
@@ -1862,6 +1878,14 @@ def build_model_review_evidence(
 
     return {
         "preparation": model_review_preparation_contract(),
+        "canonical_path_references": [
+            {
+                "label": label,
+                "kind": "codex-home" if label == "<codex-home>" else "workspace",
+                "workspace_relative_paths_resolvable": label != "<codex-home>",
+            }
+            for _, label in path_roots
+        ],
         "records": records,
         "global_record_ids": global_record_ids,
         "call_record_ids": {
@@ -2455,27 +2479,17 @@ def _canonical_hash(value: Any) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-def _focused_run_selection(runs: list[dict[str, Any]]) -> dict[str, Any]:
-    """Select highest-call runs until at least eighty percent is covered."""
+def _complete_semantic_coverage(runs: list[dict[str, Any]]) -> dict[str, Any]:
+    """Describe complete selected-window coverage without semantic sampling."""
 
     total_calls = sum(run["model_calls"] for run in runs)
-    ranked = sorted(
-        enumerate(runs),
-        key=lambda item: (-item[1]["model_calls"], item[0]),
-    )
-    selected: list[str] = []
-    covered = 0
-    for _, run in ranked:
-        if total_calls == 0 or covered * 100 >= total_calls * 80:
-            break
-        selected.append(run["turn_id"])
-        covered += run["model_calls"]
     return {
-        "threshold_percent": 80,
-        "run_ids": selected,
-        "covered_calls": covered,
+        "mode": "complete",
+        "threshold_percent": 100,
+        "run_ids": [run["turn_id"] for run in runs],
+        "covered_calls": total_calls,
         "total_calls": total_calls,
-        "covered_percent": percentage(covered, total_calls),
+        "covered_percent": percentage(total_calls, total_calls),
     }
 
 
@@ -2594,7 +2608,7 @@ def collect_session_evidence_from_rows(
             ),
             "model_review_records": len(model_review["records"]),
         },
-        "focused_semantic_context": _focused_run_selection(collected_runs),
+        "semantic_coverage": _complete_semantic_coverage(collected_runs),
         "pricing": usage["pricing"],
         "totals": usage["totals"],
         "telemetry": usage["telemetry"],

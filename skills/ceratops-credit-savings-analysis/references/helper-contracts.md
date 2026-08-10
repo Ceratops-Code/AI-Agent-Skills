@@ -64,14 +64,16 @@ additional deterministic contract gap supported by evidence.
 - Every helper finding must name all applicable category IDs. The result must
   contain exactly one review record for each mandatory category and remediation
   groups that cover every confirmed helper finding exactly once.
+- Contribute temporary-control evidence when temporary deterministic logic
+  should become a maintained helper. Do not duplicate the owning
+  rework-validation review.
 
 ## Completion Gate
 
-Account for every controller-exposed candidate; persist all category reviews,
-cohesive remediation groups, confirmed findings, risks, dismissals, and
-necessary exclusions by writing the compact decision and invoking `submit` in
-the same orchestration tool call. The controller constructs and persists the
-complete surface result.
+Account for every controller-exposed candidate against original evidence and
+persist all category reviews, cohesive remediation groups, confirmed findings,
+risks, dismissals, necessary exclusions, and temporary-control contributions in
+the single controller-owned confirmation result.
 
 ## Output Contract
 

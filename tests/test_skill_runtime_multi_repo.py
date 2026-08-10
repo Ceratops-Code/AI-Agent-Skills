@@ -448,7 +448,7 @@ def credit_analysis_request(
             "task_temp_root": str(task_root),
             "evidence_output": str(evidence),
             "pricing_profile": None,
-            "expected_surface_contract_version": 1,
+            "expected_surface_contract_version": 2,
             "mutation_authority": False,
         },
     )
@@ -516,7 +516,7 @@ def credit_analysis_batch_request(
             "task_temp_root": str(task_root),
             "manifest_output": str(tmp_path / f"batch-manifest-{name}.json"),
             "pricing_profile": None,
-            "expected_surface_contract_version": 1,
+            "expected_surface_contract_version": 2,
             "expected_source_selection_contract_version": 1,
             "mutation_authority": False,
         },
@@ -956,7 +956,12 @@ def test_credit_analysis_workflow_full_analysis_persists_every_finding(
         for record in model_review["records"]
         if record["kind"] == "tool-call" and record["call_id"] == "read-1"
     )
-    assert "<workspace>" in json.dumps(tool_call_record["content"])
+    assert "<workspace:" in json.dumps(tool_call_record["content"])
+    assert any(
+        reference["kind"] == "workspace"
+        and reference["workspace_relative_paths_resolvable"] is True
+        for reference in model_review["canonical_path_references"]
+    )
     assert "private" in json.dumps(tool_call_record["content"])
     tool_result_record = next(
         record
@@ -984,8 +989,12 @@ def test_credit_analysis_workflow_full_analysis_persists_every_finding(
     assert evidence["runs"][0]["calls"][1]["user_message_ids"] == [
         first_message["message_id"]
     ]
-    assert evidence["focused_semantic_context"]["run_ids"] == ["turn-1", "turn-2"]
-    assert evidence["focused_semantic_context"]["covered_percent"] == 83.33
+    assert evidence["semantic_coverage"]["run_ids"] == [
+        "turn-1",
+        "turn-2",
+        "turn-3",
+    ]
+    assert evidence["semantic_coverage"]["covered_percent"] == 100.0
     fingerprint = evidence["evidence_fingerprint"]
     session.rename(tmp_path / "session-collected-once.jsonl")
 
@@ -1520,515 +1529,923 @@ def test_credit_analysis_workflow_full_analysis_persists_every_finding(
     assert first_result is not None and first_result_path is not None
 
 
+def load_credit_analysis_workflow_module() -> Any:
+    """Load the controller so fake model runners can exercise its real state machine."""
+
+    spec = importlib.util.spec_from_file_location(
+        "credit_analysis_workflow_under_test",
+        CREDIT_ANALYSIS_WORKFLOW,
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class FakeCreditModelRunner:
+    """Return complete semantic contracts without making external model calls."""
+
+    available_models = {"gpt-5.3-codex-spark", "gpt-5.6-sol"}
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    @staticmethod
+    def _first_ref(dossier: Mapping[str, Any]) -> str:
+        refs = dossier["original_evidence_refs"]
+        assert refs
+        return str(refs[0])
+
+    @staticmethod
+    def _recurrence(*, volume_only: bool = False) -> dict[str, Any]:
+        return {
+            "calls_saved_per_affected_run": 0.0 if volume_only else 1.0,
+            "additional_recurring_calls_per_affected_run": 0.0,
+            "affected_similar_run_frequency": 0.5,
+            "affected_similar_run_frequency_range": [0.25, 0.75],
+            "estimated_calls_saved_per_similar_run": 0.0 if volume_only else 0.5,
+            "assumptions": ["synthetic recurrence evidence"],
+        }
+
+    @staticmethod
+    def _finding(
+        surface: str,
+        finding_id: str,
+        dossier: Mapping[str, Any],
+        *,
+        volume_only: bool = False,
+    ) -> dict[str, Any]:
+        candidate_id = str(dossier["candidate_id"])
+        call_id = str(dossier["call_identity"]["call_id"])
+        return {
+            "id": finding_id,
+            "title": finding_id.replace(".", " "),
+            "problem_summary": (
+                f"Synthetic {surface} evidence confirms recurring avoidable work."
+            ),
+            "waste_kind": "context-volume" if volume_only else "model-calls",
+            "candidate_ids": [candidate_id],
+            "affected_call_ids": [call_id],
+            "evidence_refs": [FakeCreditModelRunner._first_ref(dossier)],
+            "evidence_narrative": (
+                "The original evidence dossier records the call, tool outcome, and "
+                "input/output volume needed for confirmation."
+            ),
+            "producer_type": "workflow",
+            "producer_owner": f"workflow:{surface}",
+            "proposed_durable_control": f"Prevent the confirmed {surface} recurrence",
+            "implementation_status": "unimplemented",
+            "targeted_verification": [f"verify {surface} no longer repeats the call"],
+            "observed_avoidable_call_count": 0 if volume_only else 1,
+            "recurrence": FakeCreditModelRunner._recurrence(
+                volume_only=volume_only
+            ),
+            "confidence": 0.9,
+            "complexity": "Low",
+            "one_time_implementation_cost": {
+                "estimated_model_calls": 1.0,
+                "description": "one targeted producer update",
+            },
+            "helper_categories": [],
+            "contributing_surfaces": [surface],
+        }
+
+    def _spark(self, task: Mapping[str, Any], packet: Mapping[str, Any], digest: str) -> dict[str, Any]:
+        candidate_ids = list(task["candidate_ids"])
+        variants = list(packet.get("input_variant_ids", []))
+        findings: list[dict[str, Any]] = []
+        risks: list[dict[str, Any]] = []
+        temporary: list[dict[str, Any]] = []
+        assessments: list[dict[str, Any]] = []
+        if task["stage"] == "primary":
+            if candidate_ids and task["surface_id"] in {
+                "context-evidence",
+                "rework-validation",
+                "tool-flow",
+            }:
+                finding_id = f"{task['surface_id']}.spark"
+                findings.append(
+                    {
+                        "id": finding_id,
+                        "title": finding_id.replace(".", " "),
+                        "problem_summary": "Synthetic primary evidence supports review.",
+                        "candidate_ids": [candidate_ids[0]],
+                        "evidence_refs": ["evidence://synthetic/primary"],
+                        "producer_type": "workflow",
+                        "producer_owner": f"workflow:{task['surface_id']}",
+                        "proposed_durable_control": "Confirm the control against original evidence",
+                        "recurrence_likely": True,
+                        "savings_justifies_maintenance": True,
+                        "material_variant_ids": [],
+                    }
+                )
+            if (
+                candidate_ids
+                and task["surface_id"] == "rework-validation"
+                and task["ordinal"] == 1
+            ):
+                temporary.append(
+                    {
+                        "id": "rework-validation.temporary",
+                        "problem_solved": "Synthetic temporary orchestration",
+                        "candidate_ids": candidate_ids[:5],
+                        "observed_temporary_control": "temporary synthetic helper",
+                        "canonical_owner_hint": "workflow:shared",
+                        "evidence_refs": ["evidence://synthetic/temporary"],
+                        "material_variant_ids": [],
+                    }
+                )
+            finding_candidates = {
+                candidate
+                for finding in findings
+                for candidate in finding["candidate_ids"]
+            }
+            for candidate_id in candidate_ids:
+                linked = [findings[0]["id"]] if candidate_id in finding_candidates else []
+                assessments.append(
+                    {
+                        "candidate_ids": [candidate_id],
+                        "disposition": (
+                            "provisional-finding-evidence"
+                            if linked
+                            else "dismissed-candidate"
+                        ),
+                        "reason": "Synthetic evidence was fully reviewed.",
+                        "provisional_finding_ids": linked,
+                        "risk_ids": [],
+                        "evidence_refs": ["evidence://synthetic/primary"],
+                    }
+                )
+        else:
+            for index, variant_id in enumerate(variants, start=1):
+                finding_id = f"{task['surface_id']}.consolidated.{index}"
+                findings.append(
+                    {
+                        "id": finding_id,
+                        "title": "consolidated variant",
+                        "problem_summary": "The material variant remains represented.",
+                        "candidate_ids": candidate_ids,
+                        "evidence_refs": ["evidence://synthetic/consolidated"],
+                        "producer_type": "workflow",
+                        "producer_owner": f"workflow:{task['surface_id']}",
+                        "proposed_durable_control": "Preserve the material variant",
+                        "recurrence_likely": True,
+                        "savings_justifies_maintenance": True,
+                        "material_variant_ids": [variant_id],
+                    }
+                )
+            linked = [finding["id"] for finding in findings]
+            for candidate_id in candidate_ids:
+                assessments.append(
+                    {
+                        "candidate_ids": [candidate_id],
+                        "disposition": (
+                            "provisional-finding-evidence"
+                            if linked
+                            else "dismissed-candidate"
+                        ),
+                        "reason": "Consolidation preserved the candidate and variants.",
+                        "provisional_finding_ids": linked,
+                        "risk_ids": [],
+                        "evidence_refs": ["evidence://synthetic/consolidated"],
+                    }
+                )
+        return {
+            "schema": "ceratops-credit-analysis-spark-result.v2",
+            "analysis_id": task["candidate_ids"][0].split(".", 1)[0]
+            if candidate_ids
+            else str(packet["analysis_id"]),
+            "task_id": task["task_id"],
+            "surface_id": task["surface_id"],
+            "stage": task["stage"],
+            "input_sha256": digest,
+            "candidate_assessments": assessments,
+            "provisional_findings": findings,
+            "plausible_risks": risks,
+            "temporary_control_candidates": temporary,
+            "preserved_variant_ids": variants,
+        }
+
+    def _confirmation(
+        self, task: Mapping[str, Any], packet: Mapping[str, Any], digest: str
+    ) -> dict[str, Any]:
+        surface = str(task["surface_id"])
+        dossiers = list(packet["original_evidence_dossiers"])
+        findings: list[dict[str, Any]] = []
+        if dossiers and surface == "context-evidence":
+            findings.append(
+                self._finding(
+                    surface,
+                    "context-evidence.volume",
+                    dossiers[0],
+                    volume_only=True,
+                )
+            )
+        if dossiers and surface == "tool-flow":
+            findings.append(self._finding(surface, "tool-flow.handoff", dossiers[0]))
+        if dossiers and surface == "rework-validation":
+            findings.append(
+                self._finding(surface, "rework-validation.durable", dossiers[0])
+            )
+        candidate_to_finding = {
+            candidate: finding["id"]
+            for finding in findings
+            for candidate in finding["candidate_ids"]
+        }
+        assessments = []
+        for dossier in dossiers:
+            candidate_id = str(dossier["candidate_id"])
+            finding_id = candidate_to_finding.get(candidate_id)
+            assessments.append(
+                {
+                    "candidate_ids": [candidate_id],
+                    "disposition": (
+                        "confirmed-finding" if finding_id else "dismissed-candidate"
+                    ),
+                    "reason": "Original evidence was checked directly.",
+                    "finding_ids": [finding_id] if finding_id else [],
+                    "risk_ids": [],
+                    "evidence_refs": [self._first_ref(dossier)],
+                }
+            )
+        reviews: list[dict[str, Any]] = []
+        if surface == "rework-validation":
+            dispositions = [
+                "durable-control-missing",
+                "transient-by-design",
+                "permanently-implemented",
+                "run-only-useful",
+                "final-state-unclear",
+            ]
+            for index, disposition in enumerate(dispositions):
+                dossier = dossiers[min(index, len(dossiers) - 1)]
+                durable = disposition == "durable-control-missing"
+                reviews.append(
+                    {
+                        "id": (
+                            "rework-validation.temporary"
+                            if index == 0
+                            else f"temporary-review.{index + 1}"
+                        ),
+                        "problem_solved": f"Synthetic temporary problem {index + 1}",
+                        "affected_call_ids": [
+                            str(dossier["call_identity"]["call_id"])
+                        ],
+                        "observed_temporary_control": (
+                            "shared temporary orchestration"
+                            if durable
+                            else f"temporary control {index + 1}"
+                        ),
+                        "final_canonical_evidence_refs": [
+                            str(
+                                dossier["relationships"]["final_canonical_state"][0][
+                                    "evidence_ref"
+                                ]
+                            )
+                        ],
+                        "disposition": disposition,
+                        "owning_producer": (
+                            "workflow:shared" if durable else f"workflow:temp-{index}"
+                        ),
+                        "recurrence_inputs": {
+                            "likely": durable,
+                            "frequency_range": [0.25, 0.75] if durable else [0.0, 0.1],
+                            "basis": "synthetic recurrence evidence",
+                        },
+                        "savings_inputs": {
+                            "expected_calls_saved": 1.0 if durable else 0.0,
+                            "maintenance_model_calls": 1.0,
+                            "justifies_maintenance": durable,
+                            "basis": "synthetic ROI evidence",
+                        },
+                        "finding_id": "rework-validation.durable" if durable else None,
+                        "no_finding_reason": (
+                            None
+                            if durable
+                            else "The disposition does not justify a permanent defect."
+                        ),
+                    }
+                )
+        contributions: list[dict[str, Any]] = []
+        if surface != "rework-validation" and dossiers:
+            contributions.append(
+                {
+                    "id": f"{surface}.temporary-contribution",
+                    "temporary_control_id": "rework-validation.temporary",
+                    "owner_key": "workflow:shared",
+                    "control_key": "shared temporary orchestration",
+                    "candidate_ids": [str(dossiers[0]["candidate_id"])],
+                    "evidence_refs": [self._first_ref(dossiers[0])],
+                    "contribution": f"{surface} contributes owning evidence",
+                    "material_variant_id": f"{surface}.temporary-variant",
+                }
+            )
+        helper_reviews = []
+        if surface == "helper-contracts":
+            helper_reviews = [
+                {
+                    "category": category,
+                    "status": "not-applicable",
+                    "finding_ids": [],
+                    "reason": "Synthetic evidence found no helper-category defect.",
+                }
+                for category in packet["helper_categories"]
+            ]
+        return {
+            "schema": "ceratops-credit-analysis-confirmation-result.v2",
+            "analysis_id": str(packet["analysis_id"]),
+            "task_id": task["task_id"],
+            "surface_id": surface,
+            "input_sha256": digest,
+            "candidate_assessments": assessments,
+            "confirmed_findings": findings,
+            "plausible_risks": [],
+            "temporary_control_reviews": reviews,
+            "temporary_control_contributions": contributions,
+            "helper_category_reviews": helper_reviews,
+        }
+
+    def _synthesis(
+        self, task: Mapping[str, Any], packet: Mapping[str, Any], digest: str
+    ) -> dict[str, Any]:
+        confirmation_results = list(packet["confirmation_results"])
+        source_findings = [
+            finding
+            for result in confirmation_results
+            for finding in result["confirmed_findings"]
+        ]
+        groups = [
+            {
+                "canonical_finding_id": f"{finding['id']}.canonical",
+                "source_finding_ids": [finding["id"]],
+                "primary_source_finding_id": finding["id"],
+                "title": finding["title"],
+                "problem_summary": finding["problem_summary"],
+                "owner_key": finding["producer_owner"],
+                "control_key": finding["proposed_durable_control"],
+                "contributing_surfaces": finding["contributing_surfaces"],
+                "savings_source_finding_id": finding["id"],
+            }
+            for finding in source_findings
+        ]
+        canonical_by_source = {
+            group["source_finding_ids"][0]: group["canonical_finding_id"]
+            for group in groups
+        }
+        reviews = [
+            review
+            for result in confirmation_results
+            for review in result["temporary_control_reviews"]
+        ]
+        contributions = [
+            contribution
+            for result in confirmation_results
+            for contribution in result["temporary_control_contributions"]
+        ]
+        durable = next(
+            review for review in reviews if review["disposition"] == "durable-control-missing"
+        )
+        merges = [
+            {
+                "merge_id": "temporary-merge.shared",
+                "owner_key": "workflow:shared",
+                "control_key": "shared temporary orchestration",
+                "review_ids": [durable["id"]],
+                "contribution_ids": [item["id"] for item in contributions],
+                "disposition": durable["disposition"],
+                "finding_id": canonical_by_source[str(durable["finding_id"])],
+                "no_finding_reason": None,
+                "contributing_surfaces": [
+                    "rework-validation",
+                    *[
+                        result["surface_id"]
+                        for result in confirmation_results
+                        if result["temporary_control_contributions"]
+                    ],
+                ],
+            }
+        ]
+        for review in reviews:
+            if review is durable:
+                continue
+            merges.append(
+                {
+                    "merge_id": f"temporary-merge.{review['id']}",
+                    "owner_key": review["owning_producer"],
+                    "control_key": review["observed_temporary_control"],
+                    "review_ids": [review["id"]],
+                    "contribution_ids": [],
+                    "disposition": review["disposition"],
+                    "finding_id": None,
+                    "no_finding_reason": review["no_finding_reason"],
+                    "contributing_surfaces": ["rework-validation"],
+                }
+            )
+        source_by_call: dict[str, str] = {}
+        for finding in source_findings:
+            for call_id in finding["affected_call_ids"]:
+                source_by_call.setdefault(
+                    call_id, canonical_by_source[finding["id"]]
+                )
+        classifications = []
+        for call_id in packet["call_inventory"]:
+            finding_id = source_by_call.get(call_id)
+            classifications.append(
+                {
+                    "classification": (
+                        "avoidable_unimplemented"
+                        if finding_id
+                        else "reviewed_no_confirmed_waste"
+                    ),
+                    "call_ids": [call_id],
+                    "primary_finding_id": finding_id,
+                    "reason_code": None,
+                    "reason": (
+                        "A confirmed finding owns this call."
+                        if finding_id
+                        else "Every relevant surface reviewed the call without confirmed waste."
+                    ),
+                }
+            )
+        producer_groups = [
+            {
+                "id": f"producer.{index + 1}",
+                "producer_type": source_findings[index]["producer_type"],
+                "owner": group["owner_key"],
+                "finding_ids": [group["canonical_finding_id"]],
+                "recommended_control": group["control_key"],
+                "targeted_verification": source_findings[index][
+                    "targeted_verification"
+                ],
+            }
+            for index, group in enumerate(groups)
+        ]
+        avoidable = sum(
+            len(item["call_ids"])
+            for item in classifications
+            if item["classification"].startswith("avoidable_")
+        )
+        return {
+            "schema": "ceratops-credit-analysis-orchestration-synthesis.v2",
+            "analysis_id": str(packet["analysis_id"]),
+            "task_id": task["task_id"],
+            "input_sha256": digest,
+            "finding_groups": groups,
+            "risk_order": [],
+            "temporary_control_merges": merges,
+            "call_classifications": classifications,
+            "producer_groups": producer_groups,
+            "analysis_summary": {
+                "confirmed_count": len(groups),
+                "risk_count": 0,
+                "necessary_calls": 0,
+                "protocol_overhead_calls": 0,
+                "reviewed_no_confirmed_waste_calls": len(classifications)
+                - avoidable,
+                "unassessed_calls": 0,
+                "avoidable_calls": avoidable,
+                "meaningful_input_output_findings": [
+                    canonical_by_source["context-evidence.volume"]
+                ],
+            },
+        }
+
+    def run(
+        self,
+        *,
+        model: str,
+        task: Mapping[str, Any],
+        prompt: str,
+        schema: Mapping[str, Any],
+        input_payload: Mapping[str, Any],
+        input_sha256: str,
+    ) -> dict[str, Any]:
+        assert "Do not call tools" in prompt
+        self.calls.append(
+            {
+                "model": model,
+                "task_id": task["task_id"],
+                "phase": task["phase"],
+                "input_sha256": input_sha256,
+                "schema": schema["properties"]["schema"]["const"],
+            }
+        )
+        if task["phase"].startswith("spark-"):
+            return self._spark(task, input_payload, input_sha256)
+        if task["phase"] == "surface-confirmation":
+            return self._confirmation(task, input_payload, input_sha256)
+        return self._synthesis(task, input_payload, input_sha256)
+
+
 def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
     tmp_path: pathlib.Path,
 ) -> None:
-    loaded = runpy.run_path(str(CREDIT_ANALYSIS_WORKFLOW))
-    calls: list[dict[str, Any]] = []
-    for index, (summary, tools) in enumerate(
-        (
-            ("first semantic path", ["exec", "wait"]),
-            ("second semantic path", ["exec", "wait"]),
-            ("second semantic path", ["wait", "exec"]),
-            ("terminal semantic path", ["exec", "wait"]),
-        ),
-        start=1,
-    ):
-        turn_id = "cluster-turn-a" if index <= 2 else "cluster-turn-b"
-        calls.append(
-            {
-                "call_id": f"{turn_id}:{index}",
-                "turn_id": turn_id,
-                "index": index,
-                "semantic_actions": [
-                    {"kind": "analysis", "name": "inspect", "summary": summary}
-                ],
-                "tool_results": [
-                    {
-                        "name": name,
-                        "argument_chars": 10,
-                        "result_chars": 20,
-                        "outcomes": {},
-                    }
-                    for name in tools
-                ],
-                "tokens": {"total_tokens": 200_000 if index == 1 else 100},
-                "user_message_ids": ["user-1"] if index == 1 else [],
-            }
-        )
-    semantic_clusters = loaded["_candidate_clusters"](
-        [call["call_id"] for call in calls],
-        {
-            "runs": [
-                {"turn_id": "cluster-turn-a", "calls": calls[:2]},
-                {"turn_id": "cluster-turn-b", "calls": calls[2:]},
-            ]
-        },
-        {"cluster-turn-a"},
-    )
-    assert len(semantic_clusters) == 1
-    assert semantic_clusters[0]["call_count"] == 4
-    assert semantic_clusters[0]["volume"]["input_tokens"] == 0
-    assert semantic_clusters[0]["volume"]["tool_result_chars"] == 160
-    assert loaded["_budgeted_values"](
-        [{"text": "x" * 100}], text_limit=200, character_budget=10
-    ) == []
-
-    request, session, _ = credit_analysis_request(
+    workflow = load_credit_analysis_workflow_module()
+    request, _, task_root = credit_analysis_request(
         tmp_path,
-        extra_completed_turns=50,
-        extra_calls_per_turn=30,
+        extra_completed_turns=3,
+        extra_calls_per_turn=4,
     )
-    task_root = tmp_path / "analysis-full-analysis"
-    task_root.rmdir()
-    started = run_credit_analysis_workflow("start", "--request", str(request))
-    assert started.returncode == 0, started.stderr
-    assert task_root.is_dir()
-    packet = json.loads(started.stdout)
-    assert packet["schema"] == "ceratops-credit-analysis-pass-packet.v1"
-    assert packet["surface_id"] == "helper-contracts"
-    assert "prompt" in packet["decision_contract"]["producer_types"]
-    assert "tool-choice" in packet["decision_contract"]["producer_types"]
-    assert len(packet["decision_contract"]["producer_types"]) == len(
-        set(packet["decision_contract"]["producer_types"])
+    available = {"gpt-5.3-codex-spark", "gpt-5.6-sol"}
+    plan = workflow.command_plan_orchestration(
+        request,
+        available_models=available,
     )
-    assert packet["protocol_budget"] == {
-        "target_total_model_calls": 8,
-        "preparation_model_calls": 1,
-        "semantic_model_calls": 6,
-        "semantic_call_number": 1,
-        "delivery_model_calls": 1,
-        "bookkeeping_model_calls": 0,
-    }
-    assert len(started.stdout.encode("utf-8")) < 30_000
-    shapes = packet["decision_contract"]["field_shapes"]
-    assert shapes["risk"]["competing_explanations"] == "string list; min 2"
-    assert shapes["risk"]["verification_needed"] == "string list; min 1"
-    assert shapes["exclusion"]["reason_code"] == [
-        "protocol-overhead",
-        "required-freshness",
-        "required-safety",
-        "required-verification",
-        "required-workflow",
-        "ordinary-model-error",
-        "controlled-iteration",
-    ]
-    assert packet["evidence"]["candidate_call_count"] > 30
-    clusters = packet["evidence"]["candidate_clusters"]
-    assert packet["evidence"]["candidate_cluster_count"] == len(clusters)
-    assert len(clusters) * 10 < packet["evidence"]["candidate_call_count"]
-    state_path = pathlib.Path(packet["submit_argv"][4])
-    pending_candidates = json.loads(state_path.read_text(encoding="utf-8"))[
-        "pending"
-    ]["candidate_call_ids"]
-    evidence_path = pathlib.Path(packet["retained_evidence_path"])
-    evidence_text = evidence_path.read_text(encoding="utf-8")
-    evidence = json.loads(evidence_text)
-    partitions = loaded["_candidate_cluster_partition"](
-        pending_candidates,
-        evidence,
-        set(evidence["focused_semantic_context"]["run_ids"]),
-    )
-    cluster_calls = {
-        partition["cluster_id"]: partition["call_ids"] for partition in partitions
-    }
-    clustered_calls: list[str] = []
-    for cluster in clusters:
-        assert "selectors" not in cluster
-        mapped_calls = cluster_calls[cluster["cluster_id"]]
-        assert cluster["call_count"] == len(mapped_calls)
-        assert cluster["representative_summary"]
-        clustered_calls.extend(mapped_calls)
-    assert len(clustered_calls) == len(set(clustered_calls))
-    assert set(clustered_calls) == set(pending_candidates)
-    expanded = loaded["_expand_decision_selectors"](
-        [{"cluster_ids": [clusters[0]["cluster_id"]]}],
-        set(pending_candidates),
-        "test clusters",
-        cluster_calls=cluster_calls,
-    )
-    assert expanded == cluster_calls[clusters[0]["cluster_id"]]
-    assert packet["evidence"]["detailed_call_count"] == len(
-        packet["evidence"]["detailed_calls"]
-    )
-    assert 0 < packet["evidence"]["detailed_call_count"] < packet["evidence"][
-        "candidate_call_count"
-    ]
-    assert {
-        call["call_id"] for call in packet["evidence"]["detailed_calls"]
-    }.issubset(pending_candidates)
-    detailed_message_ids = {
-        message_id
-        for call in packet["evidence"]["detailed_calls"]
-        for message_id in call.get("user_message_ids", [])
-    }
-    assert packet["evidence"]["candidate_user_message_count"] > 16
-    assert len(packet["evidence"]["candidate_user_messages"]) == packet[
-        "evidence"
-    ]["included_user_message_count"]
-    assert packet["evidence"]["included_user_message_count"] < packet[
-        "evidence"
-    ]["candidate_user_message_count"]
-    if detailed_message_ids and packet["evidence"]["candidate_user_messages"]:
-        assert (
-            packet["evidence"]["candidate_user_messages"][0]["message_id"]
-            in detailed_message_ids
-        )
-    assert packet["evidence"]["included_model_review_record_count"] < packet[
-        "evidence"
-    ]["relevant_model_review_record_count"]
-    assert packet["evidence"]["relevant_model_review_record_count"] > 30
-    assert packet["evidence"]["complete_evidence_retained_on_disk"] is True
-    assert packet["evidence"]["included_run_outcome_count"] == len(
-        packet["evidence"]["run_outcomes"]
-    )
-    assert packet["evidence"]["included_run_outcome_count"] <= packet[
-        "evidence"
-    ]["run_outcome_count"]
-    assert packet["evidence"]["run_outcome_purpose"].startswith(
-        "Check later run outcomes"
-    )
-    assert "ACTIVE_TAIL_MUST_NOT_BE_COLLECTED" not in evidence_text
-    assert "active_tail_tool" not in evidence_text
-    assert evidence["collection"]["session_reads"] == 1
-    session.rename(tmp_path / "session-collected-once-end-to-end.jsonl")
+    assert plan["phase"] == "planned"
+    assert plan["projected_spark_calls"] > 0
+    assert plan["projected_gpt_5_6_calls"] == 6
+    assert plan["canonical_state_records"] > 0
+    assert len(json.dumps(plan)) < 30_000
 
-    expected_surfaces = [
+    state_path = pathlib.Path(plan["state_path"])
+    manifest = json.loads(
+        pathlib.Path(plan["manifest_path"]).read_text(encoding="utf-8")
+    )
+    assert manifest["surface_order"] == [
         "helper-contracts",
         "context-evidence",
         "rework-validation",
         "tool-flow",
         "instruction-reasoning",
     ]
-    implemented_finding_id = "e2e-context-evidence"
-    finding_ids: list[str] = []
-    claimed_call_ids: set[str] = set()
-    for semantic_number, surface_id in enumerate(expected_surfaces, start=1):
-        assert len(json.dumps(packet, separators=(",", ":")).encode("utf-8")) < 30_000
-        assert packet["surface_id"] == surface_id
-        assert packet["protocol_budget"]["semantic_call_number"] == semantic_number
-        assert packet["action_reference"]["path"] == f"references/{surface_id}.md"
-        assert packet["action_reference"]["content"]
-        assert packet["evidence"]["candidate_clusters"]
-        assert packet["evidence"]["detailed_calls"]
-        if surface_id != "context-evidence":
-            assert all(
-                cluster["representative_summary"]
-                for cluster in packet["evidence"]["candidate_clusters"]
-            )
-            assert all(
-                isinstance(cluster["representative_call_id"], str)
-                for cluster in packet["evidence"]["candidate_clusters"]
-            )
-        if surface_id == "context-evidence":
-            assert all(
-                "input_tokens" in cluster and "tool_result_chars" not in cluster
-                for cluster in packet["evidence"]["candidate_clusters"]
-            )
-        elif surface_id == "tool-flow":
-            assert all(
-                "tool_result_chars" in cluster and "input_tokens" not in cluster
-                for cluster in packet["evidence"]["candidate_clusters"]
-            )
-        else:
-            assert all(
-                "input_tokens" not in cluster and "tool_result_chars" not in cluster
-                for cluster in packet["evidence"]["candidate_clusters"]
-            )
-        assert all(
-            "model_call_id" in record
-            for record in packet["evidence"]["included_model_review_records"]
-        )
-        pending = json.loads(state_path.read_text(encoding="utf-8"))["pending"]
-        partitions = loaded["_candidate_cluster_partition"](
-            pending["candidate_call_ids"],
-            evidence,
-            set(evidence["focused_semantic_context"]["run_ids"]),
-        )
-        selected_cluster_id = packet["evidence"]["candidate_clusters"][0][
-            "cluster_id"
+    evidence = json.loads(
+        pathlib.Path(plan["evidence_path"]).read_text(encoding="utf-8")
+    )
+    assert evidence["collection"]["session_reads"] == 1
+    assert evidence["semantic_coverage"]["covered_percent"] == 100.0
+    assert "TOOL_RESULT_TAIL_SENTINEL" in json.dumps(evidence)
+    assert any(
+        record.get("content_mode") == "retained-projection"
+        for surface in manifest["surfaces"]
+        for record in json.loads(
+            pathlib.Path(surface["index_path"]).read_text(encoding="utf-8")
+        )["verification_dossiers"]
+        for record in record["evidence_excerpts"]
+    )
+
+    all_candidates: list[str] = []
+    for surface in manifest["surfaces"]:
+        primary_candidates = [
+            candidate
+            for task in manifest["spark_tasks"]
+            if task["surface_id"] == surface["surface_id"]
+            and task["phase"] == "spark-primary"
+            for candidate in task["candidate_ids"]
         ]
-        selected_calls = set(
-            next(
-                partition["call_ids"]
-                for partition in partitions
-                if partition["cluster_id"] == selected_cluster_id
-            )
-        )
-        if surface_id == "context-evidence":
-            assert packet["evidence"]["candidate_call_count"] == evidence["totals"][
-                "model_calls"
-            ]
-            assert packet["evidence"]["input_volume_hotspots"]
-            hotspot_ids = set(packet["evidence"]["input_volume_hotspots"])
-            assert all(
-                cluster.get("representative_summary")
-                for cluster in packet["evidence"]["candidate_clusters"]
-                if cluster["cluster_id"] in hotspot_ids
-            )
-            assert all(
-                isinstance(cluster_id, str)
-                for cluster_id in packet["evidence"]["input_volume_hotspots"]
-            )
-        if surface_id == "tool-flow":
-            assert packet["evidence"]["output_volume_hotspots"]
-            assert set(packet["evidence"]["output_volume_hotspots"]).issubset(
-                {cluster["cluster_id"] for cluster in packet["evidence"]["candidate_clusters"]}
-            )
-        finding_id = f"e2e-{surface_id}"
-        finding_ids.append(finding_id)
-        risks: list[dict[str, Any]] = []
-        exclusions: list[dict[str, Any]] = []
-        if surface_id == "tool-flow":
-            risks.append(
-                {
-                    "id": "e2e-tool-risk",
-                    "description": "synthetic wait timing is ambiguous",
-                    "observed_sequence": (
-                        "The synthetic tool call was followed by a wait."
-                    ),
-                    "competing_explanations": [
-                        "The wait repeated an already complete check.",
-                        "The wait observed a still-running external operation.",
-                    ],
-                    "missing_fact": (
-                        "The exact external completion timestamp was not retained"
-                    ),
-                    "affected_selectors": [
-                        {
-                            "call_ids": [
-                                packet["evidence"]["detailed_calls"][-1]["call_id"]
-                            ]
-                        }
-                    ],
-                    "additional_evidence_selectors": [],
-                    "verification_needed": [
-                        "retain the external completion timestamp"
-                    ],
-                }
-            )
-        if surface_id == "instruction-reasoning":
-            retained_partition = min(
-                (
-                    partition
-                    for partition in partitions
-                    if partition["cluster_id"] != selected_cluster_id
-                    and set(partition["call_ids"]) - claimed_call_ids
-                ),
-                key=lambda partition: len(
-                    set(partition["call_ids"]) - claimed_call_ids
-                ),
-            )
-            retained_calls = set(retained_partition["call_ids"]) - claimed_call_ids
-            excluded_calls = [
-                call_id
-                for call_id in pending["candidate_call_ids"]
-                if call_id not in selected_calls and call_id not in retained_calls
-            ]
-            exclusions = [
-                {
-                    "selectors": [{"call_ids": excluded_calls}],
-                    "reason_code": "required-workflow",
-                    "reason": "Synthetic surface evidence proves required workflow work.",
-                }
-            ]
-        if surface_id != "tool-flow":
-            claimed_call_ids.update(selected_calls)
-        decision_path = pathlib.Path(packet["decision_path"])
-        write_json_file(
-            decision_path,
-            surface_decision_record(
-                packet,
-                finding_id=finding_id,
-                implementation_status=(
-                    "implemented"
-                    if finding_id == implemented_finding_id
-                    else "unimplemented"
-                ),
-                waste_kind=(
-                    "context-volume" if surface_id == "tool-flow" else "model-calls"
-                ),
-                risks=risks,
-                exclusions=exclusions,
-            ),
-        )
-        submitted = run_credit_analysis_workflow(
-            "submit",
-            "--state",
-            str(state_path),
-            "--decision",
-            str(decision_path),
-        )
-        assert submitted.returncode == 0, submitted.stderr
-        assert len(submitted.stdout.encode("utf-8")) < 30_000
-        packet = json.loads(submitted.stdout)
+        assert primary_candidates == surface["candidate_ids"]
+        assert len(primary_candidates) == len(set(primary_candidates))
+        all_candidates.extend(primary_candidates)
+    assert len(all_candidates) == len(set(all_candidates))
 
-    assert packet["surface_id"] == "synthesis"
-    assert packet["internal"] is True
-    assert packet["action_reference"] is None
-    assert packet["protocol_budget"]["semantic_call_number"] == 6
-    assert packet["decision_contract"]["assessment_shape"] == {
-        "cluster_ids": "string list; min 1; each cluster at most once",
-        "classification": ["unassessed"],
-        "reason_code": None,
-        "reason": "nonempty string",
-    }
-    assert "must not invent necessity" in packet["decision_contract"]["rule"]
-    assert "Review every listed input and output hotspot" in packet[
-        "decision_contract"
-    ]["rule"]
-    assert "more than half" in packet["decision_contract"]["rule"]
-    assert [item["id"] for item in packet["accepted_findings"]] == finding_ids
-    remaining_clusters = packet["remaining_calls"]["clusters"]
-    assert packet["remaining_calls"]["call_count"] > 0
-    assert remaining_clusters
-    assert all(cluster.get("representative_summary") for cluster in remaining_clusters)
-    assert all("observable_signature" not in cluster for cluster in remaining_clusters)
-    assert all("volume" not in cluster for cluster in remaining_clusters)
-    assert all(cluster["semantic_actions"] for cluster in remaining_clusters)
-    assert all("uncached_input_tokens" in cluster for cluster in remaining_clusters)
-    assert all("tool_result_chars" in cluster for cluster in remaining_clusters)
-    assert packet["remaining_calls"]["input_volume_hotspots"]
-    assert packet["remaining_calls"]["output_volume_hotspots"]
-    decision_path = pathlib.Path(packet["decision_path"])
-    assert packet["remaining_calls"]["call_count"] * 2 <= evidence["totals"][
-        "model_calls"
+    retained = task_root / "user-retained.txt"
+    retained.write_text("caller-owned", encoding="utf-8", newline="\n")
+    runner = FakeCreditModelRunner()
+    observed_next: list[str] = []
+    while True:
+        status = workflow.command_execute_orchestration(
+            state_path,
+            runner=runner,
+            available_models=available,
+            task_limit=1,
+        )
+        observed_next.append(str(status["next_task"]))
+        if status["complete"]:
+            break
+    assert retained.read_text(encoding="utf-8") == "caller-owned"
+    assert not (task_root / "orchestration" / "transient").exists()
+    assert len(runner.calls) == plan["projected_spark_calls"] + 6
+    assert [call["model"] for call in runner.calls].count(
+        "gpt-5.3-codex-spark"
+    ) == plan["projected_spark_calls"]
+    sol_calls = [
+        call for call in runner.calls if call["model"] == "gpt-5.6-sol"
     ]
-    write_json_file(
-        decision_path,
-        {
-            "schema": "ceratops-credit-analysis-synthesis-decision.v1",
-            "finding_order": list(reversed(finding_ids)),
-            "risk_order": ["e2e-tool-risk"],
-            "remaining_call_assessments": [
-                {
-                    "cluster_ids": [
-                        remaining_clusters[0]["cluster_id"]
-                    ],
-                    "classification": "necessary",
-                    "reason_code": "required-workflow",
-                    "reason": "Synthetic workflow work was required.",
-                }
-            ],
-        },
-    )
-    rejected_unsupported_necessary = run_credit_analysis_workflow(
-        "submit",
-        "--state",
-        str(state_path),
-        "--decision",
-        str(decision_path),
-    )
-    assert rejected_unsupported_necessary.returncode == 2
-    assert "necessary calls must come from accepted surface exclusions" in (
-        rejected_unsupported_necessary.stderr
-    )
-    assert json.loads(state_path.read_text(encoding="utf-8"))["pending"][
-        "surface_id"
-    ] == "synthesis"
-
-    write_json_file(
-        decision_path,
-        {
-            "schema": "ceratops-credit-analysis-synthesis-decision.v1",
-            "finding_order": list(reversed(finding_ids)),
-            "risk_order": ["e2e-tool-risk"],
-            "remaining_call_assessments": [
-                {
-                    "cluster_ids": [
-                        remaining_clusters[0]["cluster_id"]
-                    ],
-                    "classification": "unassessed",
-                    "reason_code": None,
-                    "reason": "Synthetic evidence omits the required outcome purpose.",
-                }
-            ],
-        },
-    )
-    submitted = run_credit_analysis_workflow(
-        "submit",
-        "--state",
-        str(state_path),
-        "--decision",
-        str(decision_path),
-    )
-    assert submitted.returncode == 0, submitted.stderr
-    final_packet = json.loads(submitted.stdout)
-    assert final_packet["schema"] == "ceratops-credit-analysis-final-packet.v1"
-    assert final_packet["complete"] is True
-    assert final_packet["protocol_budget"]["target_total_model_calls"] == 8
-    assert final_packet["protocol_budget"]["semantic_model_calls"] == 6
-    assert final_packet["protocol_budget"]["bookkeeping_model_calls"] == 0
-    report = final_packet["report_markdown"]
-    assert "Confirmed: 5; outstanding: 4; already addressed: 1" in report
-    assert all(finding_id not in report for finding_id in finding_ids)
-    assert all(
-        finding_id.replace("-", " ") in report
-        for finding_id in finding_ids
-        if finding_id != implemented_finding_id
-    )
-    assert implemented_finding_id.replace("-", " ") not in report
-    assert "Evidence: The helper-contracts evidence shows" in report
-    assert "## Input/output token reduction" in report
-    assert "Recommended control:" in report
-    assert "cached-input" in report
-    assert all(call_id not in report for call_id in evidence["call_inventory"])
-    assert "Unassessed:" in final_packet["report_markdown"]
-    assert "Reviewed without confirmed waste:" in final_packet["report_markdown"]
-    assert "Observed: The synthetic tool call was followed by a wait." in report
-    assert (
-        "Unknown: The wait repeated an already complete check.; The wait observed "
-        "a still-running external operation."
-        in report
-    )
-    assert (
-        "Why not confirmed: The exact external completion timestamp was not "
-        "retained; choosing between the competing explanations would be speculation."
-        in report
-    )
-
-    state = json.loads(state_path.read_text(encoding="utf-8"))
-    assert state["finalized"] is True
-    assert [item["surface_id"] for item in state["completed"]] == [
-        *expected_surfaces,
+    assert [call["phase"] for call in sol_calls] == [
+        "surface-confirmation",
+        "surface-confirmation",
+        "surface-confirmation",
+        "surface-confirmation",
+        "surface-confirmation",
         "synthesis",
     ]
-    assert len(list(pathlib.Path(state["paths"]["findings_dir"]).glob("*.json"))) == 6
-    assert not pathlib.Path(state["paths"]["context_dir"]).exists()
-    assert not pathlib.Path(state["paths"]["pending_dir"]).exists()
-    final_result = json.loads(
-        pathlib.Path(final_packet["retained_result_path"]).read_text(encoding="utf-8")
-    )
-    assert [item["id"] for item in final_result["confirmed_findings"]] == list(
-        reversed(finding_ids)
-    )
-    assert final_result["totals"]["unassessed_calls"] == remaining_clusters[0][
-        "call_count"
+    assert [call["task_id"] for call in sol_calls[:-1]] == [
+        f"confirm.{surface}" for surface in manifest["surface_order"]
     ]
-    assert final_result["totals"]["reviewed_no_confirmed_waste_calls"] == (
-        packet["remaining_calls"]["call_count"]
-        - remaining_clusters[0]["call_count"]
+    assert all(
+        call["phase"]
+        in {
+            "spark-primary",
+            "spark-consolidation",
+            "surface-confirmation",
+            "synthesis",
+        }
+        for call in runner.calls
     )
-    assert {
-        item["classification"] for item in final_result["primary_call_mappings"]
-    } <= {
-        "avoidable_unimplemented",
-        "avoidable_implemented",
-        "necessary",
-        "reviewed_no_confirmed_waste",
-        "unassessed",
-    }
+    assert "None" in observed_next
 
-    resumed = run_credit_analysis_workflow(
-        "status", "--state", str(state_path), "--packet"
+    completed_state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert completed_state["model_calls"] == {
+        "spark": plan["projected_spark_calls"],
+        "gpt_5_6": 6,
+    }
+    assert completed_state["model_attempts"] == completed_state["model_calls"]
+    for task_id in completed_state["task_order"]:
+        result = completed_state["execution"][task_id]["result"]
+        result_path = pathlib.Path(result["path"])
+        assert hashlib.sha256(result_path.read_bytes()).hexdigest() == result[
+            "sha256"
+        ]
+        assert result["analysis_id"] == completed_state["analysis_id"]
+        assert result["task_id"] == task_id
+
+    final = json.loads(
+        pathlib.Path(status["final_result_path"]).read_text(encoding="utf-8")
     )
-    assert resumed.returncode == 0, resumed.stderr
-    assert json.loads(resumed.stdout) == final_packet
+    assert len(final["confirmed_findings"]) == 3
+    assert final["analysis_summary"]["meaningful_input_output_findings"] == [
+        "context-evidence.volume.canonical"
+    ]
+    assert final["classification_totals"]["unassessed"] == 0
+    assert final["classification_totals"]["necessary"] == 0
+    dispositions = {
+        review["disposition"] for review in final["temporary_control_reviews"]
+    }
+    assert dispositions == {
+        "transient-by-design",
+        "permanently-implemented",
+        "run-only-useful",
+        "durable-control-missing",
+        "final-state-unclear",
+    }
+    durable = next(
+        review
+        for review in final["temporary_control_reviews"]
+        if review["disposition"] == "durable-control-missing"
+    )
+    assert durable["recurrence_inputs"]["likely"] is True
+    assert durable["savings_inputs"]["justifies_maintenance"] is True
+    assert durable["finding_id"] == "rework-validation.durable"
+    assert all(
+        reference.startswith("evidence://canonical-state/")
+        for review in final["temporary_control_reviews"]
+        for reference in review["final_canonical_evidence_refs"]
+    )
+    assert all(
+        review["finding_id"] is None and review["no_finding_reason"]
+        for review in final["temporary_control_reviews"]
+        if review is not durable
+    )
+    shared_merge = next(
+        merge
+        for merge in final["temporary_control_merges"]
+        if merge["merge_id"] == "temporary-merge.shared"
+    )
+    assert len(shared_merge["contribution_ids"]) == 4
+    assert shared_merge["finding_id"] == "rework-validation.durable.canonical"
+    calls_before_repeat = len(runner.calls)
+    repeated_complete = workflow.command_execute_orchestration(
+        state_path,
+        runner=runner,
+        available_models=available,
+    )
+    assert repeated_complete["complete"] is True
+    assert len(runner.calls) == calls_before_repeat
+    loaded_state, loaded_evidence, _ = workflow._load_orchestration_state(state_path)
+    workflow._finalize_orchestration(loaded_state, loaded_evidence)
+
+    second_root = tmp_path / "second-analysis"
+    second_root.mkdir()
+    second_request, _, _ = credit_analysis_request(second_root)
+    second_plan = workflow.command_plan_orchestration(
+        second_request,
+        available_models=available,
+    )
+    second_manifest = json.loads(
+        pathlib.Path(second_plan["manifest_path"]).read_text(encoding="utf-8")
+    )
+    second_candidates = {
+        candidate
+        for surface in second_manifest["surfaces"]
+        for candidate in surface["candidate_ids"]
+    }
+    assert set(all_candidates).isdisjoint(second_candidates)
 
 
 def test_credit_analysis_workflow_rejects_invalid_and_conflicting_passes(
     tmp_path: pathlib.Path,
 ) -> None:
+    workflow = load_credit_analysis_workflow_module()
+    available = {"gpt-5.3-codex-spark", "gpt-5.6-sol"}
+
+    missing_root = tmp_path / "missing-model"
+    missing_root.mkdir()
+    missing_request, _, missing_task_root = credit_analysis_request(missing_root)
+    with pytest.raises(workflow.CreditAnalysisError, match="required model"):
+        workflow.command_plan_orchestration(
+            missing_request,
+            available_models={"gpt-5.6-sol"},
+        )
+    assert list(missing_task_root.iterdir()) == []
+    assert not (missing_root / "evidence-full-analysis.json").exists()
+
+    invalid_root = tmp_path / "invalid-coverage"
+    invalid_root.mkdir()
+    invalid_request, _, _ = credit_analysis_request(invalid_root)
+    invalid_plan = workflow.command_plan_orchestration(
+        invalid_request,
+        available_models=available,
+    )
+    invalid_manifest = json.loads(
+        pathlib.Path(invalid_plan["manifest_path"]).read_text(encoding="utf-8")
+    )
+    first_primary = next(
+        task
+        for task in invalid_manifest["spark_tasks"]
+        if task["phase"] == "spark-primary" and task["candidate_ids"]
+    )
+    first_primary["candidate_ids"].append(first_primary["candidate_ids"][0])
+    contract = json.loads(CREDIT_ANALYSIS_CONTRACT.read_text(encoding="utf-8"))
+    with pytest.raises(
+        workflow.CreditAnalysisError,
+        match="coverage|duplicated|reordered",
+    ):
+        workflow._validate_frozen_manifest(invalid_manifest, contract)
+    invalid_state = pathlib.Path(invalid_plan["state_path"])
+    canonical_index_path = pathlib.Path(
+        invalid_manifest["canonical_state"]["path"]
+    )
+    changed_canonical_index = json.loads(
+        canonical_index_path.read_text(encoding="utf-8")
+    )
+    changed_canonical_index["record_count"] += 1
+    write_json_file(canonical_index_path, changed_canonical_index)
+    with pytest.raises(
+        workflow.CreditAnalysisError,
+        match="immutable canonical_state artifact changed",
+    ):
+        workflow.command_orchestration_status(invalid_state)
+
+    bad_review = {
+        "id": "temporary.bad-roi",
+        "problem_solved": "temporary synthetic problem",
+        "affected_call_ids": ["call-1"],
+        "observed_temporary_control": "temporary synthetic control",
+        "final_canonical_evidence_refs": ["evidence://calls/call-1"],
+        "disposition": "durable-control-missing",
+        "owning_producer": "workflow:synthetic",
+        "recurrence_inputs": {
+            "likely": False,
+            "frequency_range": [0.0, 0.1],
+            "basis": "synthetic nonrecurrence",
+        },
+        "savings_inputs": {
+            "expected_calls_saved": 0.0,
+            "maintenance_model_calls": 1.0,
+            "justifies_maintenance": False,
+            "basis": "maintenance exceeds savings",
+        },
+        "finding_id": "finding.synthetic",
+        "no_finding_reason": None,
+    }
+    with pytest.raises(
+        workflow.CreditAnalysisError,
+        match="recurrence and ROI gates",
+    ):
+        workflow._validate_temporary_review(
+            bad_review,
+            finding_ids={"finding.synthetic"},
+            contract=contract,
+            label="bad temporary review",
+        )
+
+    retry_root = tmp_path / "failed-attempt-resume"
+    retry_root.mkdir()
+    retry_request, _, _ = credit_analysis_request(retry_root)
+    retry_plan = workflow.command_plan_orchestration(
+        retry_request,
+        available_models=available,
+    )
+
+    class InvalidOnceRunner:
+        available_models = available
+
+        def __init__(self) -> None:
+            self.failed = False
+            self.delegate = FakeCreditModelRunner()
+
+        def run(self, **kwargs: Any) -> dict[str, Any]:
+            if not self.failed:
+                self.failed = True
+                return {"schema": "invalid-once"}
+            return self.delegate.run(**kwargs)
+
+    retry_runner = InvalidOnceRunner()
+    retry_state_path = pathlib.Path(retry_plan["state_path"])
+    with pytest.raises(workflow.CreditAnalysisError, match="Spark result"):
+        workflow.command_execute_orchestration(
+            retry_state_path,
+            runner=retry_runner,
+            available_models=available,
+        )
+    failed_state = json.loads(retry_state_path.read_text(encoding="utf-8"))
+    first_task_id = failed_state["task_order"][0]
+    first_execution = failed_state["execution"][first_task_id]
+    assert first_execution["status"] == "pending"
+    assert first_execution["attempts"][0]["outcome"] == "validation-error"
+    assert first_execution["attempts"][0]["attempt_number"] == 1
+    assert failed_state["model_calls"] == {"spark": 0, "gpt_5_6": 0}
+    assert failed_state["model_attempts"] == {"spark": 1, "gpt_5_6": 0}
+    assert all(
+        artifact is not None and artifact["sha256"]
+        for artifact in first_execution["attempts"][0]["artifacts"].values()
+    )
+    resumed_retry = workflow.command_execute_orchestration(
+        retry_state_path,
+        runner=retry_runner,
+        available_models=available,
+    )
+    assert resumed_retry["complete"] is True
+    resumed_state = json.loads(retry_state_path.read_text(encoding="utf-8"))
+    assert resumed_state["model_calls"] == {
+        "spark": retry_plan["projected_spark_calls"],
+        "gpt_5_6": 6,
+    }
+    assert resumed_state["model_attempts"] == {
+        "spark": retry_plan["projected_spark_calls"] + 1,
+        "gpt_5_6": 6,
+    }
+    assert [
+        attempt["outcome"]
+        for attempt in resumed_state["execution"][first_task_id]["attempts"]
+    ] == ["validation-error", "accepted"]
+
+    missing_review_root = tmp_path / "missing-temporary-review"
+    missing_review_root.mkdir()
+    missing_review_request, _, _ = credit_analysis_request(missing_review_root)
+    missing_review_plan = workflow.command_plan_orchestration(
+        missing_review_request,
+        available_models=available,
+    )
+
+    class MissingTemporaryReviewRunner(FakeCreditModelRunner):
+        def _confirmation(
+            self,
+            task: Mapping[str, Any],
+            packet: Mapping[str, Any],
+            digest: str,
+        ) -> dict[str, Any]:
+            result = super()._confirmation(task, packet, digest)
+            if task["surface_id"] == "rework-validation":
+                result["temporary_control_reviews"] = []
+            return result
+
+    missing_review_state = pathlib.Path(missing_review_plan["state_path"])
+    with pytest.raises(
+        workflow.CreditAnalysisError,
+        match="mandatory temporary-control review",
+    ):
+        workflow.command_execute_orchestration(
+            missing_review_state,
+            runner=MissingTemporaryReviewRunner(),
+            available_models=available,
+        )
+    missing_review_saved = json.loads(
+        missing_review_state.read_text(encoding="utf-8")
+    )
+    assert missing_review_saved["execution"]["confirm.rework-validation"][
+        "attempts"
+    ][0]["outcome"] == "validation-error"
+
+    immutable_root = tmp_path / "immutable-results"
+    immutable_root.mkdir()
+    immutable_request, _, _ = credit_analysis_request(immutable_root)
+    immutable_plan = workflow.command_plan_orchestration(
+        immutable_request,
+        available_models=available,
+    )
+    immutable_runner = FakeCreditModelRunner()
+    immutable_status = workflow.command_execute_orchestration(
+        pathlib.Path(immutable_plan["state_path"]),
+        runner=immutable_runner,
+        available_models=available,
+    )
+    assert immutable_status["complete"] is True
+    immutable_state = json.loads(
+        pathlib.Path(immutable_plan["state_path"]).read_text(encoding="utf-8")
+    )
+    changed_result = pathlib.Path(
+        immutable_state["execution"][immutable_state["task_order"][0]]["result"][
+            "path"
+        ]
+    )
+    changed = json.loads(changed_result.read_text(encoding="utf-8"))
+    changed["task_id"] = "changed-after-acceptance"
+    write_json_file(changed_result, changed)
+    with pytest.raises(workflow.CreditAnalysisError, match="result changed"):
+        workflow.command_orchestration_status(
+            pathlib.Path(immutable_plan["state_path"])
+        )
+
     request, session, _ = credit_analysis_request(tmp_path)
     prepared = run_credit_analysis_workflow("prepare", "--request", str(request))
     assert prepared.returncode == 0, prepared.stderr
@@ -2441,7 +2858,7 @@ def test_credit_analysis_workflow_resolves_current_and_named_threads(
                 "task_temp_root": str(root),
                 "evidence_output": str(tmp_path / f"single-evidence-{name}.json"),
                 "pricing_profile": None,
-                "expected_surface_contract_version": 1,
+                "expected_surface_contract_version": 2,
                 "mutation_authority": False,
             },
         )

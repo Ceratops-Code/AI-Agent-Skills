@@ -27,13 +27,16 @@ required freshness or safety work as waste.
   verification, or workflow gates.
 - Prefer a durable control that reuses an existing bundle, narrows a path,
   section, selector, or query, or records the evidence boundary once.
+- Contribute temporary-control evidence when repeatedly reconstructed evidence
+  should become reusable collected context. Do not duplicate the owning
+  rework-validation review.
 
 ## Completion Gate
 
 Account for every controller-exposed candidate as confirmed, plausible,
-dismissed, or necessary. Write the compact decision and invoke `submit` in the
-same orchestration tool call; the controller constructs and persists the
-complete surface result.
+dismissed, or necessary against original evidence. Persist the complete
+classification and any temporary-control contributions in the single
+controller-owned confirmation result.
 
 ## Output Contract
 

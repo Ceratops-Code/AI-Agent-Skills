@@ -25,12 +25,34 @@ controlled iteration.
 - Prefer producer-side preconditions, validation, atomic publication, or a
   narrower shared check over downstream cleanup or repeated QA.
 
+## Mandatory Temporary-Control Review
+
+For every workaround or implementation used only during the analyzed run:
+
+1. Identify the problem solved and affected call IDs.
+2. Identify the temporary script, command, patch, clarification, context bundle,
+   or manual orchestration.
+3. Inspect the controller-frozen read-only final canonical snapshot and cite its
+   `evidence://canonical-state/` references; use `final-state-unclear` when no
+   canonical owner can be resolved.
+4. Record exactly one disposition: `transient-by-design`,
+   `permanently-implemented`, `run-only-useful`, `durable-control-missing`, or
+   `final-state-unclear`.
+5. Record the owning producer when known, recurrence and savings inputs, and a
+   finding ID or explicit no-finding reason.
+
+A temporary control is not automatically defective. Confirm a finding only
+when useful recurring behavior disappeared after the run, remains absent from
+the canonical owner, recurrence is likely, and expected savings justify
+maintenance. Persist every review in `temporary_control_reviews`.
+
 ## Completion Gate
 
-Account for every controller-exposed candidate and record why controlled
-iteration was necessary when excluded. Write the compact decision and invoke
-`submit` in the same orchestration tool call; the controller constructs and
-persists the complete surface result.
+Account for every controller-exposed candidate, record why controlled iteration
+was necessary when excluded, and persist one complete review for every detected
+temporary control. All five dispositions are valid outcomes. Intentionally
+transient work must not create a finding, and permanent recommendations must
+pass recurrence and ROI gates.
 
 ## Output Contract
 

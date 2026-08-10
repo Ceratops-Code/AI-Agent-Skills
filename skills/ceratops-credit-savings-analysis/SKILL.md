@@ -30,27 +30,46 @@ applies them.
   recency. Exact-name and recent-thread selection use the versioned source
   contract. An incremental closure begins strictly after the previous completed
   closure; active runs and the boundary run are excluded.
-- Run `python scripts/credit-analysis-workflow.py start --request REQUEST`
-  once per selected thread, directly or through controller-owned batch
-  preparation. This collects the session once and returns the first complete
-  semantic-pass packet. Each request must use the controller-owned schema, set
-  `mutation_authority` to `false`, name a caller-selected task temporary root
-  and retained evidence output, and use the current contract versions.
-- Treat the controller's structured contract, state, evidence fingerprint,
-  pending surface, pass ID, context path, and result path as authoritative.
-  Never skip, repeat, reorder, pre-analyze, or append a pass outside the
-  controller.
-- For each pending packet, make the semantic judgment once, write only its
-  compact decision to the exact path, and invoke the packet's `submit` command
-  in the same orchestration tool call. The controller constructs and validates
-  the full result, persists it, advances or finalizes, cleans transient files,
-  and returns the next packet. Do not spend separate model turns on those
-  bookkeeping steps. Resume with `status --packet` without recollecting.
+- For a single-thread full analysis or standalone surface, run
+  `python scripts/credit-analysis-workflow.py plan --request REQUEST` once.
+  Each request must set `mutation_authority` to `false`, name a caller-selected
+  task temporary root and retained evidence output, and use the current contract
+  versions. Planning collects and parses the selected session exactly once,
+  writes complete protected evidence, snapshots referenced final canonical
+  artifacts read-only, freezes finite surface chunks, and reports projected
+  Spark calls before model execution.
+- Run `python scripts/credit-analysis-workflow.py execute --state STATE` to
+  execute or resume the frozen plan. Treat controller state, evidence and
+  manifest hashes, task identities, candidate membership, prompts, results,
+  and attempt telemetry as authoritative. Never skip, repeat, reorder, or add a
+  semantic task outside the manifest.
+- The controller validates `gpt-5.3-codex-spark` and `gpt-5.6-sol` from the
+  local Codex catalog. It launches explicit-model, ephemeral, read-only,
+  approval-free child executions, waits internally, emits non-model progress,
+  and persists controller-owned prompt, schema, evidence, event, and result
+  files. Accepted semantic calls and all attempted calls have separate ledgers;
+  failed attempts remain hashed and resumable instead of being hidden. Child
+  prompts are self-contained and prohibit tools and mutation.
+- For each public surface, deterministically format causally ordered evidence
+  for every candidate call and assign each candidate to exactly one primary
+  Spark chunk. Spark must account for every candidate as provisional-finding
+  evidence, plausible risk, dismissed with reason, or necessary exclusion with
+  evidence. Deterministic code validates identifiers and complete coverage but
+  makes no semantic classification.
+- When primary Spark results cannot fit one confirmation packet, run only the
+  manifest's finite Spark consolidation queue and preserve every candidate ID
+  and material variant. Then run exactly one `gpt-5.6-sol` confirmation per
+  public surface against Spark candidates and original evidence excerpts, and
+  exactly one `gpt-5.6-sol` synthesis. No GPT-5.6 bookkeeping call may occur
+  between semantic phases.
 - Keep session evidence, accepted surface results, the append-only index, and
   the final machine result at their controller-retained paths. Do not echo raw
   session material or caller-local paths unnecessarily.
-- For batches, group similar findings for presentation while preserving each
-  thread's findings and totals.
+- Preserve the existing `prepare-batch`, `advance-batch`, `status-batch`, and
+  `finalize-batch` compatibility interface for recent-thread selection and
+  aggregation. Its child-controller and batch-summary contracts remain
+  lower-level interfaces; group similar findings for presentation while
+  preserving each thread's findings and totals.
 
 ## Common Classification And ROI Rules
 
@@ -93,15 +112,18 @@ applies them.
 
 ### Completion Gate
 
-- A pass is complete only after the controller accepts its exact candidate
-  coverage and immutable result. A zero-finding pass must dismiss or exclude
-  every exposed candidate with a reason.
-- `full-analysis` is complete only after all five public surfaces and internal
-  synthesis are accepted exactly once, every model call has one primary
-  classification, reviewed calls without confirmed waste are kept distinct
-  from explicit `unassessed` calls, every confirmed surface finding remains in
-  the final result, secondary overlaps are retained without double-counting
-  savings, and controller finalization succeeds.
+- A surface is complete only after every primary Spark candidate is covered
+  exactly once, every consolidation preserves its candidates and material
+  variants, and the controller accepts one immutable confirmation result. A
+  zero-finding surface must still dismiss, risk-classify, or exclude every
+  candidate with original evidence.
+- `full-analysis` is complete only after the frozen manifest proves complete,
+  ordered, non-overlapping Spark primary coverage; every Spark task and exactly
+  five surface confirmations plus one synthesis have immutable identity and
+  content hashes; temporary-control contributions are merged once by
+  owner/control; every confirmed finding remains; every model call has one
+  primary classification; overlaps do not double-count savings; and controller
+  finalization succeeds.
 - A standalone action is complete only after the selected surface result is
   accepted and controller finalization succeeds.
 
@@ -142,7 +164,8 @@ applies them.
   implementation through the owning lifecycle after a separate execution
   request.
 - Collection and synthesis are internal controller phases. Do not expose
-  `collect`, `reconcile`, `synthesis`, `apply`, or `modify` as public actions.
+  Spark chunking, consolidation, `collect`, `reconcile`, `synthesis`, `apply`,
+  or `modify` as public actions.
 - Stop blocked when a selected source cannot be resolved, the completed-run
   window is invalid, controller evidence is stale or mismatched, or required
   semantic evidence is unavailable. Do not substitute visible conversation

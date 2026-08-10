@@ -1,16 +1,64 @@
 {
   "schema": "ceratops-credit-analysis-contract.v1",
-  "surface_contract_version": 1,
+  "surface_contract_version": 2,
   "source_selection_contract_version": 1,
   "request_schema": "ceratops-credit-analysis-request.v1",
   "batch_request_schema": "ceratops-credit-analysis-batch-request.v1",
   "batch_manifest_schema": "ceratops-credit-analysis-batch-manifest.v1",
-  "evidence_schema": "ceratops-credit-analysis-evidence.v1",
+  "evidence_schema": "ceratops-credit-analysis-evidence.v2",
+  "canonical_state_schema": "ceratops-credit-analysis-canonical-state.v1",
   "surface_result_schema": "ceratops-credit-analysis-surface-result.v1",
   "synthesis_result_schema": "ceratops-credit-analysis-synthesis-result.v1",
   "final_result_schema": "ceratops-credit-analysis-final-result.v1",
   "single_controller_commands": ["prepare", "advance", "status", "finalize"],
-  "end_to_end_controller_commands": ["start", "submit"],
+  "end_to_end_controller_commands": ["plan", "execute"],
+  "orchestration_state_schema": "ceratops-credit-analysis-orchestration-state.v2",
+  "chunk_manifest_schema": "ceratops-credit-analysis-chunk-manifest.v2",
+  "spark_result_schema": "ceratops-credit-analysis-spark-result.v2",
+  "confirmation_result_schema": "ceratops-credit-analysis-confirmation-result.v2",
+  "orchestration_synthesis_schema": "ceratops-credit-analysis-orchestration-synthesis.v2",
+  "orchestration_final_schema": "ceratops-credit-analysis-orchestration-final.v2",
+  "models": {
+    "spark": "gpt-5.3-codex-spark",
+    "confirmation": "gpt-5.6-sol",
+    "synthesis": "gpt-5.6-sol"
+  },
+  "semantic_call_contract": {
+    "full_analysis_gpt_5_6_calls": 6,
+    "surface_confirmation_calls": 5,
+    "synthesis_calls": 1,
+    "bookkeeping_calls": 0
+  },
+  "chunking": {
+    "target_chars": 50000,
+    "maximum_chars": 70000,
+    "maximum_candidates": 32,
+    "large_payload_inline_chars": 12000,
+    "confirmation_packet_chars": 220000,
+    "synthesis_packet_chars": 220000,
+    "consolidation_fan_in": 4,
+    "maximum_spark_tasks": 512,
+    "maximum_consolidation_depth": 8
+  },
+  "spark_dispositions": [
+    "provisional-finding-evidence",
+    "plausible-risk",
+    "dismissed-candidate",
+    "necessary-exclusion"
+  ],
+  "confirmation_dispositions": [
+    "confirmed-finding",
+    "plausible-risk",
+    "dismissed-candidate",
+    "necessary-exclusion"
+  ],
+  "temporary_control_dispositions": [
+    "transient-by-design",
+    "permanently-implemented",
+    "run-only-useful",
+    "durable-control-missing",
+    "final-state-unclear"
+  ],
   "batch_controller_commands": [
     "prepare-batch",
     "advance-batch",
@@ -104,7 +152,7 @@
     {
       "id": "rework-validation",
       "reference": "references/rework-validation.md",
-      "candidate_selectors": ["failure-retry-repeat"]
+      "candidate_selectors": ["all-calls"]
     },
     {
       "id": "tool-flow",
