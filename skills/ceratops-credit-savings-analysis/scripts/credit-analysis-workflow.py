@@ -9230,6 +9230,12 @@ def _output_schema_for_task(
     def identifier() -> dict[str, Any]:
         return {"type": "string", "pattern": r"^[a-z0-9][a-z0-9._-]*$"}
 
+    def nullable_identifier() -> dict[str, Any]:
+        return {
+            "type": ["string", "null"],
+            "pattern": r"^[a-z0-9][a-z0-9._-]*$",
+        }
+
     def enum_string(values: Sequence[str]) -> dict[str, Any]:
         return {"type": "string", "enum": list(values)}
 
@@ -9417,7 +9423,7 @@ def _output_schema_for_task(
                 "owning_producer": string(),
                 "recurrence_inputs": temporary_recurrence,
                 "savings_inputs": temporary_savings,
-                "finding_id": nullable_string(),
+                "finding_id": nullable_identifier(),
                 "no_finding_reason": nullable_string(),
             }
         )
@@ -9437,7 +9443,7 @@ def _output_schema_for_task(
             {
                 "category": enum_string(contract["helper_categories"]),
                 "status": string(),
-                "finding_ids": strings(),
+                "finding_ids": identifiers(),
                 "reason": string(),
             }
         )
@@ -9474,12 +9480,12 @@ def _output_schema_for_task(
                 "merge_id": identifier(),
                 "owner_key": string(),
                 "control_key": string(),
-                "review_ids": strings(),
-                "contribution_ids": strings(),
+                "review_ids": identifiers(),
+                "contribution_ids": identifiers(),
                 "disposition": enum_string(
                     contract["temporary_control_dispositions"]
                 ),
-                "finding_id": nullable_string(),
+                "finding_id": nullable_identifier(),
                 "no_finding_reason": nullable_string(),
                 "contributing_surfaces": strings(),
             }
@@ -9488,7 +9494,7 @@ def _output_schema_for_task(
             {
                 "classification": enum_string(contract["call_classifications"]),
                 "call_ids": strings(),
-                "primary_finding_id": nullable_string(),
+                "primary_finding_id": nullable_identifier(),
                 "reason_code": nullable_enum(contract["necessary_reason_codes"]),
                 "reason": string(),
             }
@@ -9498,7 +9504,7 @@ def _output_schema_for_task(
                 "id": identifier(),
                 "producer_type": enum_string(contract["producer_types"]),
                 "owner": string(),
-                "finding_ids": strings(),
+                "finding_ids": identifiers(),
                 "recommended_control": string(),
                 "targeted_verification": strings(),
             }
@@ -9522,7 +9528,7 @@ def _output_schema_for_task(
             "task_id": fixed_string(str(task["task_id"])),
             "input_sha256": fixed_string(input_sha256),
             "finding_groups": objects(finding_group),
-            "risk_order": strings(),
+            "risk_order": identifiers(),
             "temporary_control_merges": objects(temporary_merge),
             "call_classifications": objects(call_classification),
             "producer_groups": objects(producer_group),

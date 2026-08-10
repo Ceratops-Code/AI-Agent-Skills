@@ -2372,15 +2372,39 @@ def test_credit_analysis_child_command_places_global_approval_before_exec(
                 assert_strict_objects(node["items"])
 
         assert_strict_objects(schema)
+
+        def assert_identifier_schema(identifier_schema: dict[str, Any]) -> None:
+            pattern = identifier_schema["pattern"]
+            assert workflow.re.fullmatch(pattern, "finding-1") is not None
+            assert workflow.re.fullmatch(pattern, "risk://none") is None
+
         if task["phase"] == "spark-primary":
             assessment_schema = schema["properties"]["candidate_assessments"][
                 "items"
             ]["properties"]
-            identifier_pattern = assessment_schema["risk_ids"]["items"]["pattern"]
-            assert workflow.re.fullmatch(identifier_pattern, "risk://none") is None
+            assert_identifier_schema(assessment_schema["risk_ids"]["items"])
+            assert_identifier_schema(
+                assessment_schema["provisional_finding_ids"]["items"]
+            )
             assert set(assessment_schema["disposition"]["enum"]) == set(
                 contract["spark_dispositions"]
             )
+        elif task["phase"] == "surface-confirmation":
+            review_schema = schema["properties"]["temporary_control_reviews"][
+                "items"
+            ]["properties"]
+            assert_identifier_schema(review_schema["finding_id"])
+            helper_schema = schema["properties"]["helper_category_reviews"][
+                "items"
+            ]["properties"]
+            assert_identifier_schema(helper_schema["finding_ids"]["items"])
+        else:
+            merge_schema = schema["properties"]["temporary_control_merges"][
+                "items"
+            ]["properties"]
+            assert_identifier_schema(merge_schema["finding_id"])
+            assert_identifier_schema(merge_schema["review_ids"]["items"])
+            assert_identifier_schema(schema["properties"]["risk_order"]["items"])
 
 
 def test_credit_analysis_workflow_rejects_invalid_and_conflicting_passes(
