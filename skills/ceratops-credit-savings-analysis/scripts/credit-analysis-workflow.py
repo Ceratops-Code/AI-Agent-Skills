@@ -6959,6 +6959,50 @@ def _formatted_review_record(
     return common
 
 
+def _formatted_user_message(
+    message: Mapping[str, Any],
+    *,
+    surface_id: str,
+    evidence_path: pathlib.Path,
+    inline_limit: int,
+) -> dict[str, Any]:
+    """Format one associated user message without inlining unbounded text."""
+
+    message_id = message.get("message_id")
+    text = message.get("text")
+    if not isinstance(message_id, str) or not isinstance(text, str):
+        raise CreditAnalysisError("candidate user message is invalid")
+    formatted = {
+        key: message.get(key)
+        for key in (
+            "message_id",
+            "timestamp",
+            "turn_id",
+            "first_model_call_index",
+        )
+    }
+    formatted["retained_evidence"] = {
+        "path": str(evidence_path),
+        "reference": f"evidence://user-messages/{message_id}",
+        "complete": True,
+    }
+    if len(text) <= inline_limit:
+        formatted["text_mode"] = "complete-inline"
+        formatted["text"] = text
+        return formatted
+    formatted.update(
+        {
+            "text_mode": "retained-projection",
+            "text_chars": len(text),
+            "text_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+            "head": text[:1400],
+            "tail": text[-1400:],
+            "relevant_segments": _relevant_segments(text, surface_id),
+        }
+    )
+    return formatted
+
+
 def _call_neighbors(calls: Sequence[Mapping[str, Any]], index: int) -> dict[str, Any]:
     return {
         "previous_call_id": str(calls[index - 1]["call_id"]) if index > 0 else None,
@@ -7002,13 +7046,24 @@ def _format_surface_candidates(
         message_ids = call.get("user_message_ids")
         if not isinstance(message_ids, list):
             raise CreditAnalysisError("candidate user-message IDs are invalid")
-        messages = [
+        raw_messages = [
             message
             for message in run.get("user_messages", [])
             if isinstance(message, Mapping) and message.get("message_id") in message_ids
         ]
-        if {str(message.get("message_id")) for message in messages} != set(message_ids):
+        if {str(message.get("message_id")) for message in raw_messages} != set(
+            message_ids
+        ):
             raise CreditAnalysisError("candidate user message is missing")
+        messages = [
+            _formatted_user_message(
+                message,
+                surface_id=surface_id,
+                evidence_path=evidence_path,
+                inline_limit=inline_limit,
+            )
+            for message in raw_messages
+        ]
         raw_record_ids = call.get("model_review_record_ids")
         if not isinstance(raw_record_ids, list) or not all(
             isinstance(record_id, str) for record_id in raw_record_ids
@@ -7115,6 +7170,10 @@ def _format_surface_candidates(
                 },
                 "original_evidence_refs": [
                     f"evidence://calls/{call_id}",
+                    *[
+                        message["retained_evidence"]["reference"]
+                        for message in messages
+                    ],
                     *[
                         record["retained_evidence"]["reference"]
                         for record in formatted_records

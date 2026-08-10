@@ -112,6 +112,7 @@ def credit_analysis_session(
     repository_url: str | None = None,
     extra_completed_turns: int = 0,
     extra_calls_per_turn: int = 1,
+    oversized_user_message_chars: int = 0,
 ) -> None:
     """Create completed synthetic runs and one active tail."""
 
@@ -309,6 +310,12 @@ def credit_analysis_session(
             "Fix the failed read, correct the earlier plan, apply my approval, "
             "and use token=synthetic-user-secret. Explain the cause at "
             f"{path.parent / 'private' / 'input.txt'}"
+            + (
+                " OVERSIZED_USER_EVIDENCE_SENTINEL"
+                + " semantic context" * oversized_user_message_chars
+                if oversized_user_message_chars
+                else ""
+            )
         ),
     )
     add_call(
@@ -424,6 +431,7 @@ def credit_analysis_request(
     action: str = "full-analysis",
     extra_completed_turns: int = 0,
     extra_calls_per_turn: int = 1,
+    oversized_user_message_chars: int = 0,
 ) -> tuple[pathlib.Path, pathlib.Path, pathlib.Path]:
     """Create one request with caller-selected controller and evidence paths."""
 
@@ -432,6 +440,7 @@ def credit_analysis_request(
         session,
         extra_completed_turns=extra_completed_turns,
         extra_calls_per_turn=extra_calls_per_turn,
+        oversized_user_message_chars=oversized_user_message_chars,
     )
     task_root = tmp_path / f"analysis-{action}"
     task_root.mkdir()
@@ -2045,6 +2054,7 @@ def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
         tmp_path,
         extra_completed_turns=3,
         extra_calls_per_turn=4,
+        oversized_user_message_chars=5_000,
     )
     available = {"gpt-5.3-codex-spark", "gpt-5.6-sol"}
     plan = workflow.command_plan_orchestration(
@@ -2074,6 +2084,15 @@ def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
     assert evidence["collection"]["session_reads"] == 1
     assert evidence["semantic_coverage"]["covered_percent"] == 100.0
     assert "TOOL_RESULT_TAIL_SENTINEL" in json.dumps(evidence)
+    assert "OVERSIZED_USER_EVIDENCE_SENTINEL" in json.dumps(evidence)
+    assert any(
+        message.get("text_mode") == "retained-projection"
+        for surface in manifest["surfaces"]
+        for dossier in json.loads(
+            pathlib.Path(surface["index_path"]).read_text(encoding="utf-8")
+        )["verification_dossiers"]
+        for message in dossier["user_messages"]
+    )
     assert any(
         record.get("content_mode") == "retained-projection"
         for surface in manifest["surfaces"]
