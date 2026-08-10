@@ -22,13 +22,15 @@ cost.
 - Prefer the smallest prompt, rule, skill, routing, or same-pass reasoning
   control that directly prevents the observed recurrence without weakening an
   active gate.
+- Contribute temporary-control evidence when a temporary clarification should
+  become durable wording. Do not duplicate the owning rework-validation review.
 
 ## Completion Gate
 
-Account for every exposed model-call candidate and persist all confirmed
-findings, risks, dismissals, and necessary exclusions by writing the compact
-decision and invoking `submit` in the same orchestration tool call. The
-controller constructs and persists the complete surface result.
+Account for every exposed model-call candidate against original evidence and
+persist all confirmed findings, risks, dismissals, necessary exclusions, and
+temporary-control contributions in the single controller-owned confirmation
+result.
 
 ## Output Contract
 

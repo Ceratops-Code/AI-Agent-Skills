@@ -52,8 +52,10 @@ Route approved skill-source mutations through `$ceratops-skill-lifecycle`
    every recorded candidate and assessment. While any supported conclusion
    identifies a concrete improvement, revise and repeat steps 5-6; then submit
    the best candidate and its assessment to the iteration controller.
-8. Report the selected correction, material alternative, regression result,
-   and uncertainty.
+8. In the final proposal, explain exactly why the selected correction is better
+   than the current text and each material alternative, naming the deciding
+   evidence and tradeoffs; include the regression result and remaining
+   uncertainty.
 
 ## Applying an approved change
 
@@ -63,50 +65,64 @@ it does not prove semantic equivalence. The model remains responsible for
 mapping every operative part of the old text, including commands and examples,
 to preserved behavior or an explicitly approved change.
 
-- (D) For every approved rule mutation, create one request that names the
-  affected global scope and every rule source in the complete project scope,
-  each target rules and companion history source, each exact expected-old and
-  replacement text, every approved history append, the verified task-temp root,
-  and whether the request itself is workflow-owned and disposable; then run
-  `python scripts/apply_rules_update.py --request <path>`.
-- (D) The helper must require each expected-old text to occur exactly once,
-  construct and validate every candidate before replacing a target, reuse the
-  rule-graph and history validators, preserve encoding and line endings, cover
-  every changed rule ID in the approved append-only history operations, protect
-  coupled writes with rollback, reopen and revalidate the result, delete only an
-  unchanged explicitly disposable request beneath the verified task-temp root
-  after success, preserve it on failure, and emit only `OK` or one compact
-  actionable error.
+- (D) For every approved rule mutation or history-only ID repair, create one
+  request naming the complete rule stack, any exact validated champion and
+  hash, every approved history append or ID migration, caller-selected
+  validation evidence, the verified task-temp root, and exact request,
+  champion, and evidence ownership; then run `python
+  scripts/apply_rules_update.py --request <path>`.
+- (D) The helper must verify current source and policy hashes and, when a
+  champion is present, its hash, expected-old uniqueness, and mechanical
+  validity through `validate_rule_candidate.py` with fixing disabled; apply
+  approved rule replacement text unchanged and without reformatting; reuse
+  rule-graph and history validation; preserve encoding and line endings; cover
+  every changed current rule ID in history; protect coupled writes with
+  rollback; reopen and revalidate exact bytes; remove only unchanged explicitly
+  disposable artifacts after success; preserve them on failure; and emit only
+  `OK` or one compact actionable error.
+- (D) For an ID migration, the helper must apply approved one-to-one mappings
+  simultaneously to exact rule-ID tokens in every history field,
+  stable-deduplicate `rules` arrays, require approved exact semantic
+  replacements where substitution would change meaning, preserve all other
+  content and entry order, and prove no old ID remains. It may perform a
+  history-only ID repair only when each old ID is absent and each new ID is
+  present in the current rule stack.
 
-Append one decision per approved rule change under the history contract in
-[rule-design.md](rule-design.md).
+Append one decision per approved rule change and apply any approved ID migration
+under the history contract in [rule-design.md](rule-design.md).
 
 ## Iterative optimization
 
 - (D) For every proposal, create one request naming applicable rule sources and
-  histories, applicable rule IDs, exact current target text, original and
-  regression inputs, controller state and evidence paths, mutation authority,
-  expected side effects, the verified task-temp root, the exact iteration
-  artifact directory, and every disposable artifact role; use a null history
-  only for a target source with no companion history and include at least one
-  applicable history-backed source. Run
+  histories, rule IDs, every candidate target and exact expected-old text, each
+  target's declared Markdown configuration and formatter or validator command,
+  original and regression inputs, controller and evidence paths, a
+  caller-selected champion output, mutation authority, side effects, the
+  verified task-temp root, iteration artifacts, and disposable roles; use null
+  history only when none exists and include one history-backed source. Run
   `python scripts/proposal-workflow.py prepare --request REQUEST`. The helper
-  must validate complete current inputs, write compact context evidence,
-  initialize the existing iteration controller, and open iteration 1 without
-  mutating a governed target. The controller must continue to record
-  iterations, retain the champion, and enforce stopping.
-- (D) After writing each pending candidate and assessment, run `python
-  scripts/proposal-workflow.py advance --state STATE --outcome OUTCOME
-  --regressions RESULT`. The helper must use the controller-owned atomic advance
-  operation to submit the exact pending iteration and open the next one only
-  when stopping has not occurred.
+  must verify current source and policy hashes, write compact context evidence,
+  initialize the controller's candidate-validation state, and open iteration 1
+  without mutating a governed target.
+- (D) After writing each pending structured candidate and semantic assessment,
+  run `python scripts/proposal-workflow.py advance --state STATE --outcome
+  OUTCOME --regressions RESULT`. Before hashing or recording, the controller
+  must call the validator's shared implementation. The validator must repair
+  only permitted whitespace in candidate artifacts, validate every complete
+  prospective target and applicable rule stack and history, prove idempotence,
+  atomically replace the candidate only after all targets pass, and write
+  detailed evidence to the pending caller-selected path. Mechanical failure
+  must leave the candidate recoverable and the same iteration pending without
+  recording a semantic rejection; success records the fixed artifact,
+  assessment, outcome, evidence, hashes, and state before opening a successor.
 - (D) Before final output, run `python scripts/proposal-workflow.py finalize
   --state STATE`. The helper must reject incomplete runs, path escapes, links,
   repository or governed targets, undeclared artifacts, and changed owned
-  inputs; preserve user-owned or undeclared inputs; delegate the controller's
-  iteration cleanup; and remove every exact request, original/regression input,
-  context-evidence, state, and iteration artifact recorded as workflow-owned
-  during prepare. Emit only `OK` or one compact actionable error.
+  inputs; copy the exact validated champion to the declared protected output;
+  preserve user-owned or undeclared inputs; delegate controller cleanup; and
+  remove every owned request, original/regression input, context evidence,
+  state, and iteration artifact. Emit only `OK` or one compact actionable
+  error.
 - For each issued iteration, complete steps 5-7. After submission, post one
   compact commentary status; do not repeat iteration logs in the final answer.
 
@@ -115,12 +131,14 @@ Append one decision per approved rule change under the history contract in
 ### Completion Gate
 
 A proposal is complete only when it prevents the current recorded failure,
-leaves the rule graph structurally valid, preserves the append-only decision
-log, and is better than the current state and material alternative.
+leaves the rule graph structurally valid, preserves the decision log under its
+append-and-ID-migration contract, and is better than the current state and
+material alternative.
 Otherwise change the intervention or report the unresolved decision point.
 
 ### Output Contract
 
-Report only the selected exact change, its decision and regression evidence,
-the disposition of every touched overlap or conflict, and unresolved impact;
-do not present a candidate with an unresolved relationship as accepted.
+Report only the selected exact change, why it is better than the current text
+and each material alternative, its regression evidence, the disposition of
+every touched overlap or conflict, and unresolved impact; do not present a
+candidate with an unresolved relationship as accepted.

@@ -52,11 +52,15 @@ SKILL_UPDATE_WORKFLOW = LIFECYCLE_SOURCE / "scripts" / "skill-update-workflow.py
 GOVERNANCE_SOURCE = ROOT / "skills" / "ceratops-governance-lifecycle"
 PROPOSAL_WORKFLOW = GOVERNANCE_SOURCE / "scripts" / "proposal-workflow.py"
 ITERATION_CONTROLLER = GOVERNANCE_SOURCE / "scripts" / "iteration_controller.py"
+RULE_CANDIDATE_VALIDATOR = (
+    GOVERNANCE_SOURCE / "scripts" / "validate_rule_candidate.py"
+)
 DEPLOY_OPERATION = REPOSITORY_LIFECYCLE_SOURCE / "scripts" / "run-deploy-operation.py"
 PROMOTE_REPOSITORY = REPOSITORY_LIFECYCLE_SOURCE / "scripts" / "promote-repository.py"
 MANAGE_PENDING_WORK = REPOSITORY_LIFECYCLE_SOURCE / "scripts" / "manage-pending-work.py"
 SHIP_REPOSITORY = REPOSITORY_LIFECYCLE_SOURCE / "scripts" / "ship-repository.py"
 PR_WORKFLOW_SCRIPTS = REPOSITORY_LIFECYCLE_SOURCE / "scripts"
+PR_WORKFLOW_ENTRYPOINT = PR_WORKFLOW_SCRIPTS / "github_pr_workflow" / "__main__.py"
 MODEL_CALL_LEDGER = ROOT / "skills" / "ceratops-credit-savings-analysis" / "scripts" / "model-call-ledger.py"
 CREDIT_ANALYSIS_WORKFLOW = (
     ROOT
@@ -110,6 +114,8 @@ def credit_analysis_session(
     cwd: pathlib.Path | None = None,
     repository_url: str | None = None,
     extra_completed_turns: int = 0,
+    extra_calls_per_turn: int = 1,
+    oversized_user_message_chars: int = 0,
 ) -> None:
     """Create completed synthetic runs and one active tail."""
 
@@ -307,6 +313,12 @@ def credit_analysis_session(
             "Fix the failed read, correct the earlier plan, apply my approval, "
             "and use token=synthetic-user-secret. Explain the cause at "
             f"{path.parent / 'private' / 'input.txt'}"
+            + (
+                " OVERSIZED_USER_EVIDENCE_SENTINEL"
+                + " semantic context" * oversized_user_message_chars
+                if oversized_user_message_chars
+                else ""
+            )
         ),
     )
     add_call(
@@ -378,14 +390,16 @@ def credit_analysis_session(
             f"{prefix}:00.500Z",
             f"Review synthetic overflow candidate {index + 1}.",
         )
-        add_call(
-            f"{prefix}:01Z",
-            turn_id,
-            name="inspect_candidate",
-            call_id=f"overflow-{index + 1}",
-            arguments={"candidate": index + 1},
-            output={"reviewed": True, "candidate": index + 1},
-        )
+        for call_index in range(extra_calls_per_turn):
+            candidate = index * extra_calls_per_turn + call_index + 1
+            add_call(
+                f"{prefix}:01Z",
+                turn_id,
+                name="inspect_candidate",
+                call_id=f"overflow-{index + 1}-{call_index + 1}",
+                arguments={"candidate": candidate},
+                output={"reviewed": True, "candidate": candidate},
+            )
         add_call(f"{prefix}:02Z", turn_id, final=True)
     active_minute = 3 + extra_completed_turns
     active_prefix = f"2026-08-01T00:{active_minute:02d}"
@@ -419,11 +433,18 @@ def credit_analysis_request(
     *,
     action: str = "full-analysis",
     extra_completed_turns: int = 0,
+    extra_calls_per_turn: int = 1,
+    oversized_user_message_chars: int = 0,
 ) -> tuple[pathlib.Path, pathlib.Path, pathlib.Path]:
     """Create one request with caller-selected controller and evidence paths."""
 
     session = tmp_path / "session.jsonl"
-    credit_analysis_session(session, extra_completed_turns=extra_completed_turns)
+    credit_analysis_session(
+        session,
+        extra_completed_turns=extra_completed_turns,
+        extra_calls_per_turn=extra_calls_per_turn,
+        oversized_user_message_chars=oversized_user_message_chars,
+    )
     task_root = tmp_path / f"analysis-{action}"
     task_root.mkdir()
     evidence = tmp_path / f"evidence-{action}.json"
@@ -439,7 +460,7 @@ def credit_analysis_request(
             "task_temp_root": str(task_root),
             "evidence_output": str(evidence),
             "pricing_profile": None,
-            "expected_surface_contract_version": 1,
+            "expected_surface_contract_version": 2,
             "mutation_authority": False,
         },
     )
@@ -507,7 +528,7 @@ def credit_analysis_batch_request(
             "task_temp_root": str(task_root),
             "manifest_output": str(tmp_path / f"batch-manifest-{name}.json"),
             "pricing_profile": None,
-            "expected_surface_contract_version": 1,
+            "expected_surface_contract_version": 2,
             "expected_source_selection_contract_version": 1,
             "mutation_authority": False,
         },
@@ -642,14 +663,21 @@ def surface_decision_record(
     *,
     finding_id: str | None = None,
     implementation_status: str = "unimplemented",
+    waste_kind: str = "model-calls",
     risks: list[dict[str, Any]] | None = None,
+    exclusions: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Build one compact model judgment for the end-to-end controller."""
 
     findings: list[dict[str, Any]] = []
     if finding_id is not None:
-        cluster_selectors = packet["evidence"]["candidate_clusters"][0][
-            "selectors"
+        selected_cluster = packet["evidence"]["candidate_clusters"][0]
+        cluster_selectors = [
+            {
+                "cluster_ids": [
+                    selected_cluster["cluster_id"]
+                ]
+            }
         ]
         helper_categories = (
             ["noisy-or-incomplete-result-contract"]
@@ -664,12 +692,29 @@ def surface_decision_record(
                     f"The synthetic {packet['surface_id']} episode used an avoidable "
                     "model call because its producer lacked a complete control."
                 ),
-                "waste_kind": "model-calls",
+                "waste_kind": waste_kind,
                 "affected_selectors": cluster_selectors,
                 "additional_evidence_selectors": [],
                 "evidence_narrative": (
-                    f"The {packet['surface_id']} evidence shows a repeated semantic "
-                    "decision after the producer had enough deterministic state to finish."
+                        (
+                            "Aggregate evidence records "
+                            f"{selected_cluster.get('input_tokens', 0)} input, "
+                            f"{selected_cluster.get('cached_input_tokens', 0)} "
+                            "cached-input, "
+                            f"{selected_cluster.get('output_tokens', 0)} output "
+                            "tokens, "
+                            f"{selected_cluster.get('tool_argument_chars', 0)} "
+                            "tool-argument "
+                            "characters, and "
+                            f"{selected_cluster.get('tool_result_chars', 0)} tool-result "
+                            "characters beyond the bounded decision payload."
+                    )
+                    if waste_kind == "context-volume"
+                    else (
+                        f"The {packet['surface_id']} evidence shows a repeated semantic "
+                        "decision after the producer had enough deterministic state "
+                        "to finish."
+                    )
                 ),
                 "producer_type": "script",
                 "producer_owner": f"scripts/{packet['surface_id']}.py",
@@ -699,7 +744,7 @@ def surface_decision_record(
         "schema": "ceratops-credit-analysis-surface-decision.v1",
         "findings": findings,
         "risks": risks or [],
-        "exclusions": [],
+        "exclusions": exclusions or [],
         "dismissal_reason": "No additional candidate confirmed avoidable work.",
     }
 
@@ -722,6 +767,7 @@ def complete_credit_analysis_with_instruction_finding(
             pathlib.Path(status["context_path"]).read_text(encoding="utf-8")
         )
         findings: list[dict[str, Any]] = []
+        exclusions: list[dict[str, Any]] = []
         helper_reviews: list[dict[str, Any]] = []
         if status["pending_surface"] == "helper-contracts":
             helper_reviews = [
@@ -741,11 +787,21 @@ def complete_credit_analysis_with_instruction_finding(
                 owner="synthetic request",
             )
             findings = [finding]
+            exclusions = [
+                {
+                    "call_id": call_id,
+                    "reason_code": "required-workflow",
+                    "reason": "synthetic required workflow calls",
+                }
+                for call_id in context["candidate_call_ids"]
+                if call_id not in finding["affected_call_ids"]
+            ]
         result = surface_result_record(
             status,
             context,
             evidence["evidence_fingerprint"],
             findings=findings,
+            exclusions=exclusions,
             helper_reviews=helper_reviews,
         )
         result_path = pathlib.Path(status["required_result_path"])
@@ -912,7 +968,12 @@ def test_credit_analysis_workflow_full_analysis_persists_every_finding(
         for record in model_review["records"]
         if record["kind"] == "tool-call" and record["call_id"] == "read-1"
     )
-    assert "<workspace>" in json.dumps(tool_call_record["content"])
+    assert "<workspace:" in json.dumps(tool_call_record["content"])
+    assert any(
+        reference["kind"] == "workspace"
+        and reference["workspace_relative_paths_resolvable"] is True
+        for reference in model_review["canonical_path_references"]
+    )
     assert "private" in json.dumps(tool_call_record["content"])
     tool_result_record = next(
         record
@@ -940,8 +1001,12 @@ def test_credit_analysis_workflow_full_analysis_persists_every_finding(
     assert evidence["runs"][0]["calls"][1]["user_message_ids"] == [
         first_message["message_id"]
     ]
-    assert evidence["focused_semantic_context"]["run_ids"] == ["turn-1", "turn-2"]
-    assert evidence["focused_semantic_context"]["covered_percent"] == 83.33
+    assert evidence["semantic_coverage"]["run_ids"] == [
+        "turn-1",
+        "turn-2",
+        "turn-3",
+    ]
+    assert evidence["semantic_coverage"]["covered_percent"] == 100.0
     fingerprint = evidence["evidence_fingerprint"]
     session.rename(tmp_path / "session-collected-once.jsonl")
 
@@ -1106,7 +1171,17 @@ def test_credit_analysis_workflow_full_analysis_persists_every_finding(
                 ],
             }
         else:
-            kwargs = {"findings": [instruction_finding]}
+            kwargs = {
+                "findings": [instruction_finding],
+                "exclusions": [
+                    {
+                        "call_id": call_id,
+                        "reason_code": "required-workflow",
+                        "reason": "required final answers",
+                    }
+                    for call_id in ("turn-2:2", "turn-3:1")
+                ],
+            }
         result = surface_result_record(status, context, fingerprint, **kwargs)
         result_path = pathlib.Path(status["required_result_path"])
         if surface == "helper-contracts":
@@ -1187,6 +1262,7 @@ def test_credit_analysis_workflow_full_analysis_persists_every_finding(
             "necessary",
             "avoidable_implemented",
             "avoidable_unimplemented",
+            "reviewed_no_confirmed_waste",
             "unassessed",
         ],
         "necessary_reason_codes": contract["necessary_reason_codes"],
@@ -1410,6 +1486,7 @@ def test_credit_analysis_workflow_full_analysis_persists_every_finding(
         "total_model_calls": 6,
         "necessary_calls": 3,
         "protocol_overhead_calls": 1,
+        "reviewed_no_confirmed_waste_calls": 0,
         "unassessed_calls": 0,
         "avoidable_calls": 3,
         "avoidable_implemented_calls": 1,
@@ -1464,292 +1541,1335 @@ def test_credit_analysis_workflow_full_analysis_persists_every_finding(
     assert first_result is not None and first_result_path is not None
 
 
+def load_credit_analysis_workflow_module() -> Any:
+    """Load the controller so fake model runners can exercise its real state machine."""
+
+    spec = importlib.util.spec_from_file_location(
+        "credit_analysis_workflow_under_test",
+        CREDIT_ANALYSIS_WORKFLOW,
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class FakeCreditModelRunner:
+    """Return complete semantic contracts without making external model calls."""
+
+    available_models = {"gpt-5.3-codex-spark", "gpt-5.6-sol"}
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    @staticmethod
+    def _first_ref(dossier: Mapping[str, Any]) -> str:
+        refs = dossier["original_evidence_refs"]
+        assert refs
+        return str(refs[0])
+
+    @staticmethod
+    def _recurrence(*, volume_only: bool = False) -> dict[str, Any]:
+        return {
+            "calls_saved_per_affected_run": 0.0 if volume_only else 1.0,
+            "additional_recurring_calls_per_affected_run": 0.0,
+            "affected_similar_run_frequency": 0.5,
+            "affected_similar_run_frequency_range": [0.25, 0.75],
+            "estimated_calls_saved_per_similar_run": 0.0 if volume_only else 0.5,
+            "assumptions": ["synthetic recurrence evidence"],
+        }
+
+    @staticmethod
+    def _finding(
+        surface: str,
+        finding_id: str,
+        dossier: Mapping[str, Any],
+        *,
+        volume_only: bool = False,
+    ) -> dict[str, Any]:
+        candidate_id = str(dossier["candidate_id"])
+        call_id = str(dossier["call_identity"]["call_id"])
+        return {
+            "id": finding_id,
+            "title": finding_id.replace(".", " "),
+            "problem_summary": (
+                f"Synthetic {surface} evidence confirms recurring avoidable work."
+            ),
+            "waste_kind": "context-volume" if volume_only else "model-calls",
+            "candidate_ids": [candidate_id],
+            "affected_call_ids": [call_id],
+            "evidence_refs": [FakeCreditModelRunner._first_ref(dossier)],
+            "evidence_narrative": (
+                "The original evidence dossier records the call, tool outcome, and "
+                "input/output volume needed for confirmation."
+            ),
+            "producer_type": "workflow",
+            "producer_owner": f"workflow:{surface}",
+            "proposed_durable_control": f"Prevent the confirmed {surface} recurrence",
+            "implementation_status": "unimplemented",
+            "targeted_verification": [f"verify {surface} no longer repeats the call"],
+            "observed_avoidable_call_count": 0 if volume_only else 1,
+            "recurrence": FakeCreditModelRunner._recurrence(
+                volume_only=volume_only
+            ),
+            "confidence": 0.9,
+            "complexity": "Low",
+            "one_time_implementation_cost": {
+                "estimated_model_calls": 1.0,
+                "description": "one targeted producer update",
+            },
+            "helper_categories": [],
+            "contributing_surfaces": [surface],
+        }
+
+    def _spark(self, task: Mapping[str, Any], packet: Mapping[str, Any], digest: str) -> dict[str, Any]:
+        candidate_ids = list(task["candidate_ids"])
+        variants = list(packet.get("input_variant_ids", []))
+        findings: list[dict[str, Any]] = []
+        temporary: list[dict[str, Any]] = []
+        assessments: list[dict[str, Any]] = []
+        if task["stage"] == "primary":
+            if candidate_ids and task["surface_id"] in {
+                "context-evidence",
+                "rework-validation",
+                "tool-flow",
+            }:
+                finding_id = f"{task['surface_id']}.spark"
+                findings.append(
+                    {
+                        "id": finding_id,
+                        "title": finding_id.replace(".", " "),
+                        "problem_summary": "Synthetic primary evidence supports review.",
+                        "candidate_ids": [candidate_ids[0]],
+                        "evidence_refs": ["evidence://synthetic/primary"],
+                        "producer_type": "workflow",
+                        "producer_owner": f"workflow:{task['surface_id']}",
+                        "proposed_durable_control": "Confirm the control against original evidence",
+                        "recurrence_likely": True,
+                        "savings_justifies_maintenance": True,
+                        "material_variant_ids": [],
+                    }
+                )
+            if (
+                candidate_ids
+                and task["surface_id"] == "rework-validation"
+                and task["ordinal"] == 1
+            ):
+                temporary.append(
+                    {
+                        "id": "rework-validation.temporary",
+                        "problem_solved": "Synthetic temporary orchestration",
+                        "candidate_ids": [candidate_ids[0]],
+                        "observed_temporary_control": "temporary synthetic helper",
+                        "canonical_owner_hint": "workflow:shared",
+                        "evidence_refs": ["evidence://synthetic/temporary"],
+                        "material_variant_ids": [],
+                    }
+                )
+            finding_candidates = {
+                candidate
+                for finding in findings
+                for candidate in finding["candidate_ids"]
+            }
+            for candidate_id in candidate_ids:
+                nested_findings = [
+                    {key: value for key, value in finding.items() if key != "candidate_ids"}
+                    for finding in findings
+                    if candidate_id in finding["candidate_ids"]
+                ]
+                nested_temporary = [
+                    {key: value for key, value in item.items() if key != "candidate_ids"}
+                    for item in temporary
+                    if candidate_id in item["candidate_ids"]
+                ]
+                assessments.append(
+                    {
+                        "disposition": (
+                            "provisional-finding-evidence"
+                            if candidate_id in finding_candidates
+                            else "dismissed-candidate"
+                        ),
+                        "reason": "Synthetic evidence was fully reviewed.",
+                        "evidence_refs": ["evidence://synthetic/primary"],
+                        "provisional_findings": nested_findings,
+                        "plausible_risks": [],
+                        "temporary_control_candidates": nested_temporary,
+                    }
+                )
+        else:
+            for index, variant_id in enumerate(variants, start=1):
+                finding_id = f"{task['surface_id']}.consolidated.{index}"
+                findings.append(
+                    {
+                        "id": finding_id,
+                        "title": "consolidated variant",
+                        "problem_summary": "The material variant remains represented.",
+                        "candidate_ids": candidate_ids,
+                        "evidence_refs": ["evidence://synthetic/consolidated"],
+                        "producer_type": "workflow",
+                        "producer_owner": f"workflow:{task['surface_id']}",
+                        "proposed_durable_control": "Preserve the material variant",
+                        "recurrence_likely": True,
+                        "savings_justifies_maintenance": True,
+                        "material_variant_ids": [variant_id],
+                    }
+                )
+            assessments.append(
+                {
+                    "candidate_ids": candidate_ids,
+                    "disposition": (
+                        "provisional-finding-evidence"
+                        if findings
+                        else "dismissed-candidate"
+                    ),
+                    "reason": "Consolidation preserved the candidate and variants.",
+                    "evidence_refs": ["evidence://synthetic/consolidated"],
+                    "provisional_findings": [
+                        {
+                            key: value
+                            for key, value in finding.items()
+                            if key != "candidate_ids"
+                        }
+                        for finding in findings
+                    ],
+                    "plausible_risks": [],
+                    "temporary_control_candidates": [],
+                }
+            )
+        return {
+            "schema": "ceratops-credit-analysis-spark-child-result.v4",
+            "analysis_id": task["candidate_ids"][0].split(".", 1)[0]
+            if candidate_ids
+            else str(packet["analysis_id"]),
+            "task_id": task["task_id"],
+            "surface_id": task["surface_id"],
+            "stage": task["stage"],
+            "input_sha256": digest,
+            "candidate_assessments": assessments,
+            "preserved_variant_ids": variants,
+        }
+
+    def _confirmation(
+        self, task: Mapping[str, Any], packet: Mapping[str, Any], digest: str
+    ) -> dict[str, Any]:
+        surface = str(task["surface_id"])
+        dossiers = list(packet["original_evidence_dossiers"])
+        dossier_by_candidate = {
+            str(dossier["candidate_id"]): dossier for dossier in dossiers
+        }
+        evidence_mapping = packet["candidate_evidence_map"]
+        evidence_map = [
+            dict(zip(evidence_mapping["fields"], row, strict=True))
+            for row in evidence_mapping["rows"]
+        ]
+        findings: list[dict[str, Any]] = []
+        if dossiers and surface == "context-evidence":
+            findings.append(
+                self._finding(
+                    surface,
+                    "context-evidence.volume",
+                    dossiers[0],
+                    volume_only=True,
+                )
+            )
+        if dossiers and surface == "tool-flow":
+            findings.append(self._finding(surface, "tool-flow.handoff", dossiers[0]))
+        if dossiers and surface == "rework-validation":
+            findings.append(
+                self._finding(surface, "rework-validation.durable", dossiers[0])
+            )
+        candidate_to_finding = {
+            candidate: finding["id"]
+            for finding in findings
+            for candidate in finding["candidate_ids"]
+        }
+        assessments = []
+        for evidence in evidence_map:
+            candidate_id = str(evidence["candidate_id"])
+            finding_id = candidate_to_finding.get(candidate_id)
+            dossier = dossier_by_candidate.get(candidate_id)
+            nested_findings = [
+                {
+                    key: value
+                    for key, value in finding.items()
+                    if key not in {"candidate_ids", "affected_call_ids"}
+                }
+                for finding in findings
+                if candidate_id in finding["candidate_ids"]
+            ]
+            assessments.append(
+                {
+                    "candidate_ids": [candidate_id],
+                    "disposition": (
+                        "confirmed-finding" if finding_id else "dismissed-candidate"
+                    ),
+                    "reason": "Original evidence was checked directly.",
+                    "evidence_refs": [
+                        self._first_ref(dossier)
+                        if dossier is not None
+                        else str(evidence["original_evidence_ref"])
+                    ],
+                    "confirmed_findings": nested_findings,
+                    "plausible_risks": [],
+                }
+            )
+        reviews: list[dict[str, Any]] = []
+        if surface == "rework-validation":
+            dispositions = [
+                "durable-control-missing",
+                "transient-by-design",
+                "permanently-implemented",
+                "run-only-useful",
+                "final-state-unclear",
+            ]
+            for index, disposition in enumerate(dispositions):
+                dossier = dossiers[min(index, len(dossiers) - 1)]
+                durable = disposition == "durable-control-missing"
+                reviews.append(
+                    {
+                        "id": (
+                            "rework-validation.temporary"
+                            if index == 0
+                            else f"temporary-review.{index + 1}"
+                        ),
+                        "problem_solved": f"Synthetic temporary problem {index + 1}",
+                        "affected_call_ids": [
+                            str(dossier["call_identity"]["call_id"])
+                        ],
+                        "observed_temporary_control": (
+                            "shared temporary orchestration"
+                            if durable
+                            else f"temporary control {index + 1}"
+                        ),
+                        "final_canonical_evidence_refs": [
+                            str(
+                                dossier["relationships"]["final_canonical_state"][0][
+                                    "evidence_ref"
+                                ]
+                            )
+                        ],
+                        "disposition": disposition,
+                        "owning_producer": (
+                            "workflow:shared" if durable else f"workflow:temp-{index}"
+                        ),
+                        "recurrence_inputs": {
+                            "likely": durable,
+                            "frequency_range": [0.25, 0.75] if durable else [0.0, 0.1],
+                            "basis": "synthetic recurrence evidence",
+                        },
+                        "savings_inputs": {
+                            "expected_calls_saved": 1.0 if durable else 0.0,
+                            "maintenance_model_calls": 1.0,
+                            "justifies_maintenance": durable,
+                            "basis": "synthetic ROI evidence",
+                        },
+                        "finding_id": "rework-validation.durable" if durable else None,
+                        "no_finding_reason": (
+                            None
+                            if durable
+                            else "The disposition does not justify a permanent defect."
+                        ),
+                    }
+                )
+        contributions: list[dict[str, Any]] = []
+        if surface != "rework-validation" and evidence_map:
+            first_evidence = evidence_map[0]
+            contributions.append(
+                {
+                    "id": f"{surface}.temporary-contribution",
+                    "temporary_control_id": "rework-validation.temporary",
+                    "owner_key": "workflow:shared",
+                    "control_key": "shared temporary orchestration",
+                    "candidate_ids": [str(first_evidence["candidate_id"])],
+                    "evidence_refs": [
+                        str(first_evidence["original_evidence_ref"])
+                    ],
+                    "contribution": f"{surface} contributes owning evidence",
+                    "material_variant_id": f"{surface}.temporary-variant",
+                }
+            )
+        helper_reviews = []
+        if surface == "helper-contracts":
+            helper_reviews = [
+                {
+                    "category": category,
+                    "status": "not-applicable",
+                    "finding_ids": [],
+                    "reason": "Synthetic evidence found no helper-category defect.",
+                }
+                for category in packet["helper_categories"]
+            ]
+        return {
+            "schema": "ceratops-credit-analysis-confirmation-child-result.v3",
+            "analysis_id": str(packet["analysis_id"]),
+            "task_id": task["task_id"],
+            "surface_id": surface,
+            "input_sha256": digest,
+            "candidate_assessments": assessments,
+            "temporary_control_reviews": reviews,
+            "temporary_control_contributions": contributions,
+            "helper_category_reviews": helper_reviews,
+        }
+
+    def _synthesis(
+        self, task: Mapping[str, Any], packet: Mapping[str, Any], digest: str
+    ) -> dict[str, Any]:
+        confirmation_results = list(packet["confirmation_results"])
+        source_findings = [
+            finding
+            for result in confirmation_results
+            for finding in result["confirmed_findings"]
+        ]
+        groups = [
+            {
+                "canonical_finding_id": f"{finding['id']}.canonical",
+                "source_finding_ids": [finding["id"]],
+                "primary_source_finding_id": finding["id"],
+                "title": finding["title"],
+                "problem_summary": finding["problem_summary"],
+                "owner_key": finding["producer_owner"],
+                "control_key": finding["proposed_durable_control"],
+                "contributing_surfaces": finding["contributing_surfaces"],
+                "savings_source_finding_id": finding["id"],
+            }
+            for finding in source_findings
+        ]
+        canonical_by_source = {
+            group["source_finding_ids"][0]: group["canonical_finding_id"]
+            for group in groups
+        }
+        reviews = [
+            review
+            for result in confirmation_results
+            for review in result["temporary_control_reviews"]
+        ]
+        contributions = [
+            contribution
+            for result in confirmation_results
+            for contribution in result["temporary_control_contributions"]
+        ]
+        durable = next(
+            review for review in reviews if review["disposition"] == "durable-control-missing"
+        )
+        merges = [
+            {
+                "merge_id": "temporary-merge.shared",
+                "owner_key": "workflow:shared",
+                "control_key": "shared temporary orchestration",
+                "review_ids": [durable["id"]],
+                "contribution_ids": [item["id"] for item in contributions],
+                "disposition": durable["disposition"],
+                "finding_id": canonical_by_source[str(durable["finding_id"])],
+                "no_finding_reason": None,
+                "contributing_surfaces": [
+                    "rework-validation",
+                    *[
+                        result["surface_id"]
+                        for result in confirmation_results
+                        if result["temporary_control_contributions"]
+                    ],
+                ],
+            }
+        ]
+        for review in reviews:
+            if review is durable:
+                continue
+            merges.append(
+                {
+                    "merge_id": f"temporary-merge.{review['id']}",
+                    "owner_key": review["owning_producer"],
+                    "control_key": review["observed_temporary_control"],
+                    "review_ids": [review["id"]],
+                    "contribution_ids": [],
+                    "disposition": review["disposition"],
+                    "finding_id": None,
+                    "no_finding_reason": review["no_finding_reason"],
+                    "contributing_surfaces": ["rework-validation"],
+                }
+            )
+        source_by_call: dict[str, str] = {}
+        for finding in source_findings:
+            for call_id in finding["affected_call_ids"]:
+                source_by_call.setdefault(
+                    call_id, canonical_by_source[finding["id"]]
+                )
+        classifications: list[dict[str, Any]] = []
+        for call_id in packet["call_inventory"]:
+            finding_id = source_by_call.get(call_id)
+            classifications.append(
+                {
+                    "classification": (
+                        "avoidable_unimplemented"
+                        if finding_id
+                        else "reviewed_no_confirmed_waste"
+                    ),
+                    "call_ids": [call_id],
+                    "primary_finding_id": finding_id,
+                    "reason_code": None,
+                    "reason": (
+                        "A confirmed finding owns this call."
+                        if finding_id
+                        else "Every relevant surface reviewed the call without confirmed waste."
+                    ),
+                }
+            )
+        producer_groups = [
+            {
+                "id": f"producer.{index + 1}",
+                "producer_type": source_findings[index]["producer_type"],
+                "owner": group["owner_key"],
+                "finding_ids": [group["canonical_finding_id"]],
+                "recommended_control": group["control_key"],
+                "targeted_verification": source_findings[index][
+                    "targeted_verification"
+                ],
+            }
+            for index, group in enumerate(groups)
+        ]
+        avoidable = sum(
+            len(item["call_ids"])
+            for item in classifications
+            if item["classification"].startswith("avoidable_")
+        )
+        return {
+            "schema": "ceratops-credit-analysis-orchestration-synthesis.v2",
+            "analysis_id": str(packet["analysis_id"]),
+            "task_id": task["task_id"],
+            "input_sha256": digest,
+            "finding_groups": groups,
+            "risk_order": [],
+            "temporary_control_merges": merges,
+            "call_classifications": classifications,
+            "producer_groups": producer_groups,
+            "analysis_summary": {
+                "confirmed_count": len(groups),
+                "risk_count": 0,
+                "necessary_calls": 0,
+                "protocol_overhead_calls": 0,
+                "reviewed_no_confirmed_waste_calls": len(classifications)
+                - avoidable,
+                "unassessed_calls": 0,
+                "avoidable_calls": avoidable,
+                "meaningful_input_output_findings": [
+                    canonical_by_source["context-evidence.volume"]
+                ],
+            },
+        }
+
+    def run(
+        self,
+        *,
+        model: str,
+        task: Mapping[str, Any],
+        prompt: str,
+        schema: Mapping[str, Any],
+        input_payload: Mapping[str, Any],
+        input_sha256: str,
+    ) -> dict[str, Any]:
+        assert "Do not call tools" in prompt
+        self.calls.append(
+            {
+                "model": model,
+                "task_id": task["task_id"],
+                "phase": task["phase"],
+                "input_sha256": input_sha256,
+                "schema": schema["properties"]["schema"]["const"],
+            }
+        )
+        if task["phase"].startswith("spark-"):
+            return self._spark(task, input_payload, input_sha256)
+        if task["phase"] == "surface-confirmation":
+            return self._confirmation(task, input_payload, input_sha256)
+        return self._synthesis(task, input_payload, input_sha256)
+
+
 def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
     tmp_path: pathlib.Path,
 ) -> None:
-    loaded = runpy.run_path(str(CREDIT_ANALYSIS_WORKFLOW))
-    calls: list[dict[str, Any]] = []
-    for index, (summary, tools) in enumerate(
-        (
-            ("first semantic path", ["exec", "wait"]),
-            ("second semantic path", ["exec", "wait"]),
-            ("second semantic path", ["wait", "exec"]),
-            ("terminal semantic path", ["exec", "wait"]),
-        ),
-        start=1,
-    ):
-        calls.append(
-            {
-                "call_id": f"cluster-turn:{index}",
-                "turn_id": "cluster-turn",
-                "index": index,
-                "semantic_actions": [
-                    {"kind": "analysis", "name": "inspect", "summary": summary}
-                ],
-                "tool_results": [
-                    {
-                        "name": name,
-                        "argument_chars": 10,
-                        "result_chars": 20,
-                        "outcomes": {},
-                    }
-                    for name in tools
-                ],
-                "tokens": {"total_tokens": 100},
-                "user_message_ids": [],
-            }
-        )
-    semantic_clusters = loaded["_candidate_clusters"](
-        [call["call_id"] for call in calls],
-        {"runs": [{"turn_id": "cluster-turn", "calls": calls}]},
-        set(),
+    workflow = load_credit_analysis_workflow_module()
+    request, _, task_root = credit_analysis_request(
+        tmp_path,
+        extra_completed_turns=3,
+        extra_calls_per_turn=4,
+        oversized_user_message_chars=5_000,
     )
-    assert len(semantic_clusters) == 4
-    assert semantic_clusters[0]["representative"]["semantic_actions"] != (
-        semantic_clusters[1]["representative"]["semantic_actions"]
+    available = {"gpt-5.3-codex-spark", "gpt-5.6-sol"}
+    plan = workflow.command_plan_orchestration(
+        request,
+        available_models=available,
     )
-    assert semantic_clusters[1]["representative"]["tool_sequence"] == [
-        "exec",
-        "wait",
-    ]
-    assert semantic_clusters[2]["representative"]["tool_sequence"] == [
-        "wait",
-        "exec",
-    ]
+    assert plan["phase"] == "planned"
+    assert plan["projected_spark_calls"] > 0
+    assert plan["projected_gpt_5_6_calls"] == 6
+    assert plan["canonical_state_records"] > 0
+    assert len(json.dumps(plan)) < 30_000
 
-    request, session, _ = credit_analysis_request(
-        tmp_path, extra_completed_turns=50
+    state_path = pathlib.Path(plan["state_path"])
+    manifest = json.loads(
+        pathlib.Path(plan["manifest_path"]).read_text(encoding="utf-8")
     )
-    started = run_credit_analysis_workflow("start", "--request", str(request))
-    assert started.returncode == 0, started.stderr
-    packet = json.loads(started.stdout)
-    assert packet["schema"] == "ceratops-credit-analysis-pass-packet.v1"
-    assert packet["surface_id"] == "helper-contracts"
-    assert "prompt" in packet["decision_contract"]["producer_types"]
-    assert "tool-choice" in packet["decision_contract"]["producer_types"]
-    assert len(packet["decision_contract"]["producer_types"]) == len(
-        set(packet["decision_contract"]["producer_types"])
-    )
-    assert packet["protocol_budget"] == {
-        "target_total_model_calls": 8,
-        "preparation_model_calls": 1,
-        "semantic_model_calls": 6,
-        "semantic_call_number": 1,
-        "delivery_model_calls": 1,
-        "bookkeeping_model_calls": 0,
-    }
-    assert len(started.stdout.encode("utf-8")) < 90_000
-    assert packet["evidence"]["candidate_call_count"] > 30
-    clusters = packet["evidence"]["candidate_clusters"]
-    assert packet["evidence"]["candidate_cluster_count"] == len(clusters)
-    state_path = pathlib.Path(packet["submit_argv"][4])
-    pending_candidates = json.loads(state_path.read_text(encoding="utf-8"))[
-        "pending"
-    ]["candidate_call_ids"]
-    clustered_calls: list[str] = []
-    for cluster in clusters:
-        cluster_calls: list[str] = []
-        for selector in cluster["selectors"]:
-            for first, last in selector["ranges"]:
-                cluster_calls.extend(
-                    f"{selector['turn_id']}:{index}"
-                    for index in range(first, last + 1)
-                )
-        assert cluster["call_count"] == len(cluster_calls)
-        assert cluster["representative"]["call_id"] in cluster_calls
-        clustered_calls.extend(cluster_calls)
-    assert len(clustered_calls) == len(set(clustered_calls))
-    assert set(clustered_calls) == set(pending_candidates)
-    assert packet["evidence"]["detailed_call_count"] == len(
-        packet["evidence"]["detailed_calls"]
-    )
-    assert 0 < packet["evidence"]["detailed_call_count"] < packet["evidence"][
-        "candidate_call_count"
-    ]
-    assert {
-        call["call_id"] for call in packet["evidence"]["detailed_calls"]
-    }.issubset(pending_candidates)
-    assert packet["evidence"]["candidate_user_message_count"] > 16
-    assert len(packet["evidence"]["candidate_user_messages"]) == packet[
-        "evidence"
-    ]["candidate_user_message_count"]
-    assert packet["evidence"]["included_model_review_record_count"] < packet[
-        "evidence"
-    ]["relevant_model_review_record_count"]
-    assert packet["evidence"]["relevant_model_review_record_count"] > 30
-    assert packet["evidence"]["complete_evidence_retained_on_disk"] is True
-    assert packet["evidence"]["run_outcome_count"] == len(
-        packet["evidence"]["run_outcomes"]
-    )
-    assert packet["evidence"]["run_outcome_purpose"].startswith(
-        "Check later run outcomes"
-    )
-    outcome_by_turn = {
-        item["turn_id"]: item for item in packet["evidence"]["run_outcomes"]
-    }
-    assert outcome_by_turn["turn-1"]["index"] == 3
-    assert outcome_by_turn["turn-2"]["index"] == 2
-    evidence_path = pathlib.Path(packet["retained_evidence_path"])
-    evidence_text = evidence_path.read_text(encoding="utf-8")
-    assert "ACTIVE_TAIL_MUST_NOT_BE_COLLECTED" not in evidence_text
-    assert "active_tail_tool" not in evidence_text
-    evidence = json.loads(evidence_text)
-    assert evidence["collection"]["session_reads"] == 1
-    session.rename(tmp_path / "session-collected-once-end-to-end.jsonl")
-
-    expected_surfaces = [
+    assert manifest["chunking"]["target_chars"] == 200_000
+    assert manifest["surface_order"] == [
         "helper-contracts",
         "context-evidence",
         "rework-validation",
         "tool-flow",
         "instruction-reasoning",
     ]
-    implemented_finding_id = "e2e-context-evidence"
-    finding_ids: list[str] = []
-    for semantic_number, surface_id in enumerate(expected_surfaces, start=1):
-        assert packet["surface_id"] == surface_id
-        assert packet["protocol_budget"]["semantic_call_number"] == semantic_number
-        assert packet["action_reference"]["path"] == f"references/{surface_id}.md"
-        assert packet["action_reference"]["content"]
-        assert packet["evidence"]["candidate_clusters"]
-        assert packet["evidence"]["detailed_calls"]
-        finding_id = f"e2e-{surface_id}"
-        finding_ids.append(finding_id)
-        risks: list[dict[str, Any]] = []
-        if surface_id == "tool-flow":
-            risks.append(
-                {
-                    "id": "e2e-tool-risk",
-                    "description": "synthetic wait timing is ambiguous",
-                    "observed_sequence": (
-                        "The synthetic tool call was followed by a wait."
-                    ),
-                    "competing_explanations": [
-                        "The wait repeated an already complete check.",
-                        "The wait observed a still-running external operation.",
-                    ],
-                    "missing_fact": (
-                        "The exact external completion timestamp was not retained"
-                    ),
-                    "affected_selectors": [
-                        {
-                            "call_ids": [
-                                packet["evidence"]["detailed_calls"][-1]["call_id"]
-                            ]
-                        }
-                    ],
-                    "additional_evidence_selectors": [],
-                    "verification_needed": [
-                        "retain the external completion timestamp"
-                    ],
-                }
-            )
-        decision_path = pathlib.Path(packet["decision_path"])
-        write_json_file(
-            decision_path,
-            surface_decision_record(
-                packet,
-                finding_id=finding_id,
-                implementation_status=(
-                    "implemented"
-                    if finding_id == implemented_finding_id
-                    else "unimplemented"
-                ),
-                risks=risks,
-            ),
-        )
-        submitted = run_credit_analysis_workflow(
-            "submit",
-            "--state",
-            str(state_path),
-            "--decision",
-            str(decision_path),
-        )
-        assert submitted.returncode == 0, submitted.stderr
-        packet = json.loads(submitted.stdout)
-
-    assert packet["surface_id"] == "synthesis"
-    assert packet["internal"] is True
-    assert packet["action_reference"] is None
-    assert packet["protocol_budget"]["semantic_call_number"] == 6
-    assert [item["id"] for item in packet["accepted_findings"]] == finding_ids
-    decision_path = pathlib.Path(packet["decision_path"])
-    write_json_file(
-        decision_path,
-        {
-            "schema": "ceratops-credit-analysis-synthesis-decision.v1",
-            "finding_order": list(reversed(finding_ids)),
-            "risk_order": ["e2e-tool-risk"],
-        },
+    evidence = json.loads(
+        pathlib.Path(plan["evidence_path"]).read_text(encoding="utf-8")
     )
-    submitted = run_credit_analysis_workflow(
-        "submit",
-        "--state",
-        str(state_path),
-        "--decision",
-        str(decision_path),
+    assert evidence["collection"]["session_reads"] == 1
+    assert evidence["semantic_coverage"]["covered_percent"] == 100.0
+    assert "TOOL_RESULT_TAIL_SENTINEL" in json.dumps(evidence)
+    assert "OVERSIZED_USER_EVIDENCE_SENTINEL" in json.dumps(evidence)
+    assert any(
+        message.get("text_mode") == "retained-projection"
+        and message.get("text_chars", 0) > 12_000
+        and isinstance(message.get("text_sha256"), str)
+        and len(message["relevant_segments"]) <= 2
+        for surface in manifest["surfaces"]
+        for dossier in json.loads(
+            pathlib.Path(surface["index_path"]).read_text(encoding="utf-8")
+        )["verification_dossiers"]
+        for message in dossier["user_messages"]
     )
-    assert submitted.returncode == 0, submitted.stderr
-    final_packet = json.loads(submitted.stdout)
-    assert final_packet["schema"] == "ceratops-credit-analysis-final-packet.v1"
-    assert final_packet["complete"] is True
-    assert final_packet["protocol_budget"]["target_total_model_calls"] == 8
-    assert final_packet["protocol_budget"]["semantic_model_calls"] == 6
-    assert final_packet["protocol_budget"]["bookkeeping_model_calls"] == 0
-    report = final_packet["report_markdown"]
-    assert "Confirmed: 5; outstanding: 4; already addressed: 1" in report
-    assert all(finding_id not in report for finding_id in finding_ids)
-    assert all(
-        finding_id.replace("-", " ") in report
-        for finding_id in finding_ids
-        if finding_id != implemented_finding_id
-    )
-    assert implemented_finding_id.replace("-", " ") not in report
-    assert "Evidence: The helper-contracts evidence shows" in report
-    assert all(call_id not in report for call_id in evidence["call_inventory"])
-    assert "Unassessed:" in final_packet["report_markdown"]
-    assert "Observed: The synthetic tool call was followed by a wait." in report
-    assert (
-        "Unknown: The wait repeated an already complete check.; The wait observed "
-        "a still-running external operation."
-        in report
-    )
-    assert (
-        "Why not confirmed: The exact external completion timestamp was not "
-        "retained; choosing between the competing explanations would be speculation."
-        in report
+    assert any(
+        record.get("content_mode") == "retained-projection"
+        for surface in manifest["surfaces"]
+        for record in json.loads(
+            pathlib.Path(surface["index_path"]).read_text(encoding="utf-8")
+        )["verification_dossiers"]
+        for record in record["evidence_excerpts"]
     )
 
-    state = json.loads(state_path.read_text(encoding="utf-8"))
-    assert state["finalized"] is True
-    assert [item["surface_id"] for item in state["completed"]] == [
-        *expected_surfaces,
+    all_candidates: list[str] = []
+    for surface in manifest["surfaces"]:
+        primary_candidates = [
+            candidate
+            for task in manifest["spark_tasks"]
+            if task["surface_id"] == surface["surface_id"]
+            and task["phase"] == "spark-primary"
+            for candidate in task["candidate_ids"]
+        ]
+        assert primary_candidates == surface["candidate_ids"]
+        assert len(primary_candidates) == len(set(primary_candidates))
+        all_candidates.extend(primary_candidates)
+    assert len(all_candidates) == len(set(all_candidates))
+
+    retained = task_root / "user-retained.txt"
+    retained.write_text("caller-owned", encoding="utf-8", newline="\n")
+    runner = FakeCreditModelRunner()
+    observed_next: list[str] = []
+    while True:
+        status = workflow.command_execute_orchestration(
+            state_path,
+            runner=runner,
+            available_models=available,
+            task_limit=1,
+        )
+        observed_next.append(str(status["next_task"]))
+        if status["complete"]:
+            break
+    assert retained.read_text(encoding="utf-8") == "caller-owned"
+    assert not (task_root / "orchestration" / "transient").exists()
+    assert len(runner.calls) == plan["projected_spark_calls"] + 6
+    assert [call["model"] for call in runner.calls].count(
+        "gpt-5.3-codex-spark"
+    ) == plan["projected_spark_calls"]
+    sol_calls = [
+        call for call in runner.calls if call["model"] == "gpt-5.6-sol"
+    ]
+    assert [call["phase"] for call in sol_calls] == [
+        "surface-confirmation",
+        "surface-confirmation",
+        "surface-confirmation",
+        "surface-confirmation",
+        "surface-confirmation",
         "synthesis",
     ]
-    assert len(list(pathlib.Path(state["paths"]["findings_dir"]).glob("*.json"))) == 6
-    assert not pathlib.Path(state["paths"]["context_dir"]).exists()
-    assert not pathlib.Path(state["paths"]["pending_dir"]).exists()
-    final_result = json.loads(
-        pathlib.Path(final_packet["retained_result_path"]).read_text(encoding="utf-8")
+    assert [call["task_id"] for call in sol_calls[:-1]] == [
+        f"confirm.{surface}" for surface in manifest["surface_order"]
+    ]
+    assert all(
+        call["phase"]
+        in {
+            "spark-primary",
+            "spark-consolidation",
+            "surface-confirmation",
+            "synthesis",
+        }
+        for call in runner.calls
     )
-    assert [item["id"] for item in final_result["confirmed_findings"]] == list(
-        reversed(finding_ids)
-    )
-    assert final_result["totals"]["unassessed_calls"] > 0
-    assert {
-        item["classification"] for item in final_result["primary_call_mappings"]
-    } <= {"avoidable_unimplemented", "avoidable_implemented", "unassessed"}
+    assert "None" in observed_next
 
-    resumed = run_credit_analysis_workflow(
-        "status", "--state", str(state_path), "--packet"
+    completed_state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert completed_state["model_calls"] == {
+        "spark": plan["projected_spark_calls"],
+        "gpt_5_6": 6,
+    }
+    assert completed_state["model_attempts"] == completed_state["model_calls"]
+    for task_id in completed_state["task_order"]:
+        result = completed_state["execution"][task_id]["result"]
+        result_path = pathlib.Path(result["path"])
+        assert hashlib.sha256(result_path.read_bytes()).hexdigest() == result[
+            "sha256"
+        ]
+        assert result["analysis_id"] == completed_state["analysis_id"]
+        assert result["task_id"] == task_id
+
+    final = json.loads(
+        pathlib.Path(status["final_result_path"]).read_text(encoding="utf-8")
     )
-    assert resumed.returncode == 0, resumed.stderr
-    assert json.loads(resumed.stdout) == final_packet
+    assert len(final["confirmed_findings"]) == 3
+    assert final["analysis_summary"]["meaningful_input_output_findings"] == [
+        "context-evidence.volume.canonical"
+    ]
+    assert final["classification_totals"]["unassessed"] == 0
+    assert final["classification_totals"]["necessary"] == 0
+    dispositions = {
+        review["disposition"] for review in final["temporary_control_reviews"]
+    }
+    assert dispositions == {
+        "transient-by-design",
+        "permanently-implemented",
+        "run-only-useful",
+        "durable-control-missing",
+        "final-state-unclear",
+    }
+    durable = next(
+        review
+        for review in final["temporary_control_reviews"]
+        if review["disposition"] == "durable-control-missing"
+    )
+    assert durable["recurrence_inputs"]["likely"] is True
+    assert durable["savings_inputs"]["justifies_maintenance"] is True
+    assert durable["finding_id"] == "rework-validation.durable"
+    assert all(
+        reference.startswith("evidence://canonical-state/")
+        for review in final["temporary_control_reviews"]
+        for reference in review["final_canonical_evidence_refs"]
+    )
+    assert all(
+        review["finding_id"] is None and review["no_finding_reason"]
+        for review in final["temporary_control_reviews"]
+        if review is not durable
+    )
+    shared_merge = next(
+        merge
+        for merge in final["temporary_control_merges"]
+        if merge["merge_id"] == "temporary-merge.shared"
+    )
+    assert len(shared_merge["contribution_ids"]) == 4
+    assert shared_merge["finding_id"] == "rework-validation.durable.canonical"
+    calls_before_repeat = len(runner.calls)
+    repeated_complete = workflow.command_execute_orchestration(
+        state_path,
+        runner=runner,
+        available_models=available,
+    )
+    assert repeated_complete["complete"] is True
+    assert len(runner.calls) == calls_before_repeat
+    loaded_state, loaded_evidence, _ = workflow._load_orchestration_state(state_path)
+    workflow._finalize_orchestration(loaded_state, loaded_evidence)
+
+    second_root = tmp_path / "second-analysis"
+    second_root.mkdir()
+    second_request, _, _ = credit_analysis_request(second_root)
+    second_plan = workflow.command_plan_orchestration(
+        second_request,
+        available_models=available,
+    )
+    second_manifest = json.loads(
+        pathlib.Path(second_plan["manifest_path"]).read_text(encoding="utf-8")
+    )
+    second_candidates = {
+        candidate
+        for surface in second_manifest["surfaces"]
+        for candidate in surface["candidate_ids"]
+    }
+    assert set(all_candidates).isdisjoint(second_candidates)
+
+
+def test_credit_analysis_model_catalog_decodes_cli_as_utf8(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workflow = load_credit_analysis_workflow_module()
+    observed: dict[str, Any] = {}
+
+    def fake_run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        observed.update(kwargs)
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            json.dumps(
+                {
+                    "models": [
+                        {"slug": "gpt-5.3-codex-spark", "display_name": "Spark ✨"},
+                        {"slug": "gpt-5.6-sol", "display_name": "Sol"},
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+            "",
+        )
+
+    monkeypatch.setattr(workflow.shutil, "which", lambda _name: "codex")
+    monkeypatch.setattr(workflow.subprocess, "run", fake_run)
+
+    assert workflow._codex_model_catalog() == {
+        "gpt-5.3-codex-spark",
+        "gpt-5.6-sol",
+    }
+    assert observed["encoding"] == "utf-8"
+    assert observed["text"] is True
+
+
+def test_credit_analysis_child_command_places_global_approval_before_exec(
+    tmp_path: pathlib.Path,
+) -> None:
+    workflow = load_credit_analysis_workflow_module()
+    command = workflow._codex_child_command(
+        executable="codex",
+        model="gpt-5.3-codex-spark",
+        schema_path=tmp_path / "schema.json",
+        raw_output=tmp_path / "result.json",
+        orchestration_root=tmp_path,
+    )
+
+    assert command[:6] == [
+        "codex",
+        "--ask-for-approval",
+        "never",
+        "--config",
+        'model_reasoning_effort="high"',
+        "exec",
+    ]
+    assert command[command.index("--sandbox") + 1] == "read-only"
+    assert "--ephemeral" in command
+
+    state = {"analysis_id": "analysis-1"}
+    contract = json.loads(CREDIT_ANALYSIS_CONTRACT.read_text(encoding="utf-8"))
+    tasks: list[dict[str, Any]] = [
+        {
+            "phase": "spark-primary",
+            "task_id": "spark.helper-contracts.primary.0001",
+            "surface_id": "helper-contracts",
+            "stage": "primary",
+            "candidate_ids": [
+                "analysis-1.hc.000001",
+                "analysis-1.hc.000002",
+            ],
+        },
+        {
+            "phase": "surface-confirmation",
+            "task_id": "confirm.helper-contracts",
+            "surface_id": "helper-contracts",
+            "candidate_ids": [
+                "analysis-1.hc.000001",
+                "analysis-1.hc.000002",
+            ],
+        },
+        {"phase": "synthesis", "task_id": "synthesis", "surface_id": None},
+    ]
+    for task in tasks:
+        schema = workflow._output_schema_for_task(
+            state=state,
+            task=task,
+            input_sha256="0" * 64,
+            contract=contract,
+        )
+        assert all(
+            property_schema.get("type") == "string"
+            for property_schema in schema["properties"].values()
+            if "const" in property_schema
+        )
+
+        def assert_strict_objects(node: Any) -> None:
+            if not isinstance(node, dict):
+                return
+            if node.get("type") == "object":
+                assert node.get("additionalProperties") is False
+                assert set(node.get("required", [])) == set(
+                    node.get("properties", {})
+                )
+            for child in node.get("properties", {}).values():
+                assert_strict_objects(child)
+            if isinstance(node.get("items"), dict):
+                assert_strict_objects(node["items"])
+
+        assert_strict_objects(schema)
+        if task["phase"] != "synthesis":
+            expected_items = 2 if task["phase"] == "spark-primary" else 1
+            assert (
+                schema["properties"]["candidate_assessments"]["minItems"]
+                == expected_items
+            )
+            prose_schema = schema["properties"]["candidate_assessments"]["items"][
+                "properties"
+            ]
+            assert prose_schema["reason"]["minLength"] == 1
+            assert prose_schema["evidence_refs"]["items"]["minLength"] == 1
+
+        def assert_identifier_schema(identifier_schema: dict[str, Any]) -> None:
+            pattern = identifier_schema["pattern"]
+            assert workflow.re.fullmatch(pattern, "finding-1") is not None
+            assert workflow.re.fullmatch(pattern, "risk://none") is None
+
+        if task["phase"] == "spark-primary":
+            assessment_schema = schema["properties"]["candidate_assessments"][
+                "items"
+            ]["properties"]
+            assert set(assessment_schema) == {
+                "disposition",
+                "reason",
+                "evidence_refs",
+                "provisional_findings",
+                "plausible_risks",
+                "temporary_control_candidates",
+            }
+            assert schema["properties"]["candidate_assessments"]["maxItems"] == 2
+            assert set(assessment_schema["disposition"]["enum"]) == set(
+                contract["spark_dispositions"]
+            )
+            finding_schema = assessment_schema["provisional_findings"]["items"][
+                "properties"
+            ]
+            assert "candidate_ids" not in finding_schema
+            assert finding_schema["evidence_refs"]["minItems"] == 1
+        elif task["phase"] == "surface-confirmation":
+            candidate_schema = prose_schema["candidate_ids"]["items"]
+            assert "enum" not in candidate_schema
+            assert (
+                workflow.re.fullmatch(
+                    candidate_schema["pattern"], task["candidate_ids"][0]
+                )
+                is not None
+            )
+            assert (
+                workflow.re.fullmatch(
+                    candidate_schema["pattern"],
+                    "evidence://review/review:000197",
+                )
+                is None
+            )
+            review_schema = schema["properties"]["temporary_control_reviews"][
+                "items"
+            ]["properties"]
+            assert_identifier_schema(review_schema["finding_id"])
+            helper_schema = schema["properties"]["helper_category_reviews"][
+                "items"
+            ]["properties"]
+            assert_identifier_schema(helper_schema["finding_ids"]["items"])
+            assessment_schema = schema["properties"]["candidate_assessments"][
+                "items"
+            ]["properties"]
+            finding_schema = assessment_schema["confirmed_findings"]["items"][
+                "properties"
+            ]
+            assert "candidate_ids" not in finding_schema
+            assert "affected_call_ids" not in finding_schema
+            assert finding_schema["targeted_verification"]["minItems"] == 1
+        else:
+            merge_schema = schema["properties"]["temporary_control_merges"][
+                "items"
+            ]["properties"]
+            assert_identifier_schema(merge_schema["finding_id"])
+            assert_identifier_schema(merge_schema["review_ids"]["items"])
+            assert_identifier_schema(schema["properties"]["risk_order"]["items"])
+            assert schema["properties"]["call_classifications"]["minItems"] == 1
+
+    spark_prompt = workflow._task_prompt(
+        state=state,
+        task=tasks[0],
+        input_payload={"analysis_id": "analysis-1"},
+        input_sha256="0" * 64,
+        input_variant_ids=[],
+        contract=contract,
+    )
+    assert "Semantic ownership is nested and exclusive" in spark_prompt
+    assert "`plausible-risk` assessment" in spark_prompt
+    assert "`necessary-exclusion` assessments have neither" in spark_prompt
+    assert "exactly one candidate_assessments item per input candidate" in spark_prompt
+    assert "controller assigns the" in spark_prompt
+    assert "inherit their assessment's candidate assignment" in spark_prompt
+
+    large_task = {
+        "phase": "surface-confirmation",
+        "task_id": "confirm.helper-contracts",
+        "surface_id": "helper-contracts",
+        "candidate_ids": [
+            f"analysis-1.hc.{ordinal:06d}" for ordinal in range(1, 130)
+        ],
+    }
+    large_schema = workflow._output_schema_for_task(
+        state=state,
+        task=large_task,
+        input_sha256="0" * 64,
+        contract=contract,
+    )
+    large_candidate_schema = large_schema["properties"]["candidate_assessments"][
+        "items"
+    ]["properties"]["candidate_ids"]["items"]
+    assert "enum" not in large_candidate_schema
+    assert (
+        workflow.re.fullmatch(
+            large_candidate_schema["pattern"], "analysis-1.hc.000129"
+        )
+        is not None
+    )
 
 
 def test_credit_analysis_workflow_rejects_invalid_and_conflicting_passes(
     tmp_path: pathlib.Path,
 ) -> None:
+    workflow = load_credit_analysis_workflow_module()
+    available = {"gpt-5.3-codex-spark", "gpt-5.6-sol"}
+
+    missing_root = tmp_path / "missing-model"
+    missing_root.mkdir()
+    missing_request, _, missing_task_root = credit_analysis_request(missing_root)
+    with pytest.raises(workflow.CreditAnalysisError, match="required model"):
+        workflow.command_plan_orchestration(
+            missing_request,
+            available_models={"gpt-5.6-sol"},
+        )
+    assert list(missing_task_root.iterdir()) == []
+    assert not (missing_root / "evidence-full-analysis.json").exists()
+
+    invalid_root = tmp_path / "invalid-coverage"
+    invalid_root.mkdir()
+    invalid_request, _, _ = credit_analysis_request(invalid_root)
+    invalid_plan = workflow.command_plan_orchestration(
+        invalid_request,
+        available_models=available,
+    )
+    invalid_manifest = json.loads(
+        pathlib.Path(invalid_plan["manifest_path"]).read_text(encoding="utf-8")
+    )
+    first_primary = next(
+        task
+        for task in invalid_manifest["spark_tasks"]
+        if task["phase"] == "spark-primary" and task["candidate_ids"]
+    )
+    first_primary["candidate_ids"].append(first_primary["candidate_ids"][0])
+    contract = json.loads(CREDIT_ANALYSIS_CONTRACT.read_text(encoding="utf-8"))
+    with pytest.raises(
+        workflow.CreditAnalysisError,
+        match="coverage|duplicated|reordered",
+    ):
+        workflow._validate_frozen_manifest(invalid_manifest, contract)
+    invalid_state = pathlib.Path(invalid_plan["state_path"])
+    canonical_index_path = pathlib.Path(
+        invalid_manifest["canonical_state"]["path"]
+    )
+    changed_canonical_index = json.loads(
+        canonical_index_path.read_text(encoding="utf-8")
+    )
+    changed_canonical_index["record_count"] += 1
+    write_json_file(canonical_index_path, changed_canonical_index)
+    with pytest.raises(
+        workflow.CreditAnalysisError,
+        match="immutable canonical_state artifact changed",
+    ):
+        workflow.command_orchestration_status(invalid_state)
+
+    bad_review = {
+        "id": "temporary.bad-roi",
+        "problem_solved": "temporary synthetic problem",
+        "affected_call_ids": ["call-1"],
+        "observed_temporary_control": "temporary synthetic control",
+        "final_canonical_evidence_refs": ["evidence://calls/call-1"],
+        "disposition": "durable-control-missing",
+        "owning_producer": "workflow:synthetic",
+        "recurrence_inputs": {
+            "likely": False,
+            "frequency_range": [0.0, 0.1],
+            "basis": "synthetic nonrecurrence",
+        },
+        "savings_inputs": {
+            "expected_calls_saved": 0.0,
+            "maintenance_model_calls": 1.0,
+            "justifies_maintenance": False,
+            "basis": "maintenance exceeds savings",
+        },
+        "finding_id": "finding.synthetic",
+        "no_finding_reason": None,
+    }
+    with pytest.raises(
+        workflow.CreditAnalysisError,
+        match="recurrence and ROI gates",
+    ):
+        workflow._validate_temporary_review(
+            bad_review,
+            finding_ids={"finding.synthetic"},
+            contract=contract,
+            label="bad temporary review",
+        )
+
+    mixed_ownership_root = tmp_path / "mixed-semantic-ownership"
+    mixed_ownership_root.mkdir()
+    mixed_ownership_request, _, _ = credit_analysis_request(mixed_ownership_root)
+    mixed_ownership_plan = workflow.command_plan_orchestration(
+        mixed_ownership_request,
+        available_models=available,
+    )
+
+    class MixedSemanticOwnershipRunner(FakeCreditModelRunner):
+        def _spark(
+            self,
+            task: Mapping[str, Any],
+            packet: Mapping[str, Any],
+            digest: str,
+        ) -> dict[str, Any]:
+            result = super()._spark(task, packet, digest)
+            if task["stage"] == "primary" and result["candidate_assessments"]:
+                risk_id = f"{task['surface_id']}.mixed-link"
+                assessment = result["candidate_assessments"][0]
+                assessment["plausible_risks"].append(
+                    {
+                        "id": risk_id,
+                        "description": "Synthetic risk linked to the wrong disposition.",
+                        "evidence_refs": ["evidence://synthetic/mixed-link"],
+                        "verification_needed": ["inspect the original evidence"],
+                        "material_variant_ids": [],
+                    }
+                )
+                assessment["disposition"] = "necessary-exclusion"
+            return result
+
+    mixed_ownership_state = pathlib.Path(mixed_ownership_plan["state_path"])
+    with pytest.raises(
+        workflow.CreditAnalysisError,
+        match="dismissed or necessary assessment has semantic objects",
+    ):
+        workflow.command_execute_orchestration(
+            mixed_ownership_state,
+            runner=MixedSemanticOwnershipRunner(),
+            available_models=available,
+        )
+    mixed_ownership_saved = json.loads(
+        mixed_ownership_state.read_text(encoding="utf-8")
+    )
+    assert mixed_ownership_saved["model_calls"] == {"spark": 0, "gpt_5_6": 0}
+    assert mixed_ownership_saved["model_attempts"] == {
+        "spark": 1,
+        "gpt_5_6": 0,
+    }
+
+    duplicate_assessment_root = tmp_path / "duplicate-assessment-coverage"
+    duplicate_assessment_root.mkdir()
+    duplicate_request, _, _ = credit_analysis_request(duplicate_assessment_root)
+    duplicate_plan = workflow.command_plan_orchestration(
+        duplicate_request,
+        available_models=available,
+    )
+
+    class DuplicateAssessmentRunner(FakeCreditModelRunner):
+        def _spark(
+            self,
+            task: Mapping[str, Any],
+            packet: Mapping[str, Any],
+            digest: str,
+        ) -> dict[str, Any]:
+            result = super()._spark(task, packet, digest)
+            if task["stage"] == "primary" and result["candidate_assessments"]:
+                result["candidate_assessments"].append(
+                    result["candidate_assessments"][0]
+                )
+            return result
+
+    with pytest.raises(
+        workflow.CreditAnalysisError,
+        match="align one-to-one|coverage is missing, duplicated, or reordered",
+    ):
+        workflow.command_execute_orchestration(
+            pathlib.Path(duplicate_plan["state_path"]),
+            runner=DuplicateAssessmentRunner(),
+            available_models=available,
+        )
+
+    normalized_strings_root = tmp_path / "normalized-descriptive-strings"
+    normalized_strings_root.mkdir()
+    normalized_strings_request, _, _ = credit_analysis_request(
+        normalized_strings_root
+    )
+    normalized_strings_plan = workflow.command_plan_orchestration(
+        normalized_strings_request,
+        available_models=available,
+    )
+
+    class DuplicateDescriptiveStringRunner(FakeCreditModelRunner):
+        def _spark(
+            self,
+            task: Mapping[str, Any],
+            packet: Mapping[str, Any],
+            digest: str,
+        ) -> dict[str, Any]:
+            result = super()._spark(task, packet, digest)
+            assessment = result["candidate_assessments"][0]
+            assessment["evidence_refs"].append(assessment["evidence_refs"][0])
+            return result
+
+    normalized_strings_state_path = pathlib.Path(
+        normalized_strings_plan["state_path"]
+    )
+    normalized_strings_status = workflow.command_execute_orchestration(
+        normalized_strings_state_path,
+        runner=DuplicateDescriptiveStringRunner(),
+        available_models=available,
+    )
+    assert normalized_strings_status["complete"] is True
+    normalized_strings_state = json.loads(
+        normalized_strings_state_path.read_text(encoding="utf-8")
+    )
+    normalized_first_task = normalized_strings_state["task_order"][0]
+    normalized_execution = normalized_strings_state["execution"][
+        normalized_first_task
+    ]
+    raw_duplicate = json.loads(
+        pathlib.Path(normalized_execution["attempts"][0]["raw_output_path"]).read_text(
+            encoding="utf-8"
+        )
+    )
+    accepted_normalized = json.loads(
+        pathlib.Path(normalized_execution["result"]["path"]).read_text(
+            encoding="utf-8"
+        )
+    )
+    assert len(raw_duplicate["candidate_assessments"][0]["evidence_refs"]) == 2
+    assert accepted_normalized["candidate_assessments"][0]["evidence_refs"] == [
+        "evidence://synthetic/primary"
+    ]
+
+    retry_root = tmp_path / "failed-attempt-resume"
+    retry_root.mkdir()
+    retry_request, _, _ = credit_analysis_request(retry_root)
+    retry_plan = workflow.command_plan_orchestration(
+        retry_request,
+        available_models=available,
+    )
+
+    class InvalidOnceRunner:
+        available_models = available
+
+        def __init__(self) -> None:
+            self.failed = False
+            self.delegate = FakeCreditModelRunner()
+
+        def run(self, **kwargs: Any) -> dict[str, Any]:
+            if not self.failed:
+                self.failed = True
+                return {"schema": "invalid-once"}
+            return self.delegate.run(**kwargs)
+
+    retry_runner = InvalidOnceRunner()
+    retry_state_path = pathlib.Path(retry_plan["state_path"])
+    with pytest.raises(workflow.CreditAnalysisError, match="Spark child result"):
+        workflow.command_execute_orchestration(
+            retry_state_path,
+            runner=retry_runner,
+            available_models=available,
+        )
+    failed_state = json.loads(retry_state_path.read_text(encoding="utf-8"))
+    first_task_id = failed_state["task_order"][0]
+    first_execution = failed_state["execution"][first_task_id]
+    assert first_execution["status"] == "pending"
+    assert first_execution["attempts"][0]["outcome"] == "validation-error"
+    assert first_execution["attempts"][0]["attempt_number"] == 1
+    assert failed_state["model_calls"] == {"spark": 0, "gpt_5_6": 0}
+    assert failed_state["model_attempts"] == {"spark": 1, "gpt_5_6": 0}
+    assert all(
+        artifact is not None and artifact["sha256"]
+        for artifact in first_execution["attempts"][0]["artifacts"].values()
+    )
+    resumed_retry = workflow.command_execute_orchestration(
+        retry_state_path,
+        runner=retry_runner,
+        available_models=available,
+    )
+    assert resumed_retry["complete"] is True
+    resumed_state = json.loads(retry_state_path.read_text(encoding="utf-8"))
+    assert resumed_state["model_calls"] == {
+        "spark": retry_plan["projected_spark_calls"],
+        "gpt_5_6": 6,
+    }
+    assert resumed_state["model_attempts"] == {
+        "spark": retry_plan["projected_spark_calls"] + 1,
+        "gpt_5_6": 6,
+    }
+    assert [
+        attempt["outcome"]
+        for attempt in resumed_state["execution"][first_task_id]["attempts"]
+    ] == ["validation-error", "accepted"]
+
+    missing_review_root = tmp_path / "missing-temporary-review"
+    missing_review_root.mkdir()
+    missing_review_request, _, _ = credit_analysis_request(missing_review_root)
+    missing_review_plan = workflow.command_plan_orchestration(
+        missing_review_request,
+        available_models=available,
+    )
+
+    class MissingTemporaryReviewRunner(FakeCreditModelRunner):
+        def _confirmation(
+            self,
+            task: Mapping[str, Any],
+            packet: Mapping[str, Any],
+            digest: str,
+        ) -> dict[str, Any]:
+            result = super()._confirmation(task, packet, digest)
+            if task["surface_id"] == "rework-validation":
+                result["temporary_control_reviews"] = []
+            return result
+
+    missing_review_state = pathlib.Path(missing_review_plan["state_path"])
+    with pytest.raises(
+        workflow.CreditAnalysisError,
+        match="mandatory temporary-control review",
+    ):
+        workflow.command_execute_orchestration(
+            missing_review_state,
+            runner=MissingTemporaryReviewRunner(),
+            available_models=available,
+        )
+    missing_review_saved = json.loads(
+        missing_review_state.read_text(encoding="utf-8")
+    )
+    assert missing_review_saved["execution"]["confirm.rework-validation"][
+        "attempts"
+    ][0]["outcome"] == "validation-error"
+
+    immutable_root = tmp_path / "immutable-results"
+    immutable_root.mkdir()
+    immutable_request, _, _ = credit_analysis_request(immutable_root)
+    immutable_plan = workflow.command_plan_orchestration(
+        immutable_request,
+        available_models=available,
+    )
+    immutable_runner = FakeCreditModelRunner()
+    immutable_status = workflow.command_execute_orchestration(
+        pathlib.Path(immutable_plan["state_path"]),
+        runner=immutable_runner,
+        available_models=available,
+    )
+    assert immutable_status["complete"] is True
+    immutable_state = json.loads(
+        pathlib.Path(immutable_plan["state_path"]).read_text(encoding="utf-8")
+    )
+    changed_result = pathlib.Path(
+        immutable_state["execution"][immutable_state["task_order"][0]]["result"][
+            "path"
+        ]
+    )
+    changed = json.loads(changed_result.read_text(encoding="utf-8"))
+    changed["task_id"] = "changed-after-acceptance"
+    write_json_file(changed_result, changed)
+    with pytest.raises(workflow.CreditAnalysisError, match="result changed"):
+        workflow.command_orchestration_status(
+            pathlib.Path(immutable_plan["state_path"])
+        )
+
     request, session, _ = credit_analysis_request(tmp_path)
     prepared = run_credit_analysis_workflow("prepare", "--request", str(request))
     assert prepared.returncode == 0, prepared.stderr
@@ -2162,7 +3282,7 @@ def test_credit_analysis_workflow_resolves_current_and_named_threads(
                 "task_temp_root": str(root),
                 "evidence_output": str(tmp_path / f"single-evidence-{name}.json"),
                 "pricing_profile": None,
-                "expected_surface_contract_version": 1,
+                "expected_surface_contract_version": 2,
                 "mutation_authority": False,
             },
         )
@@ -2338,10 +3458,15 @@ def test_credit_analysis_batch_selects_recent_threads_and_projects_once(
             selector=selector,
             name=name,
         )
+        if name == "count-overall":
+            task_root = tmp_path / f"batch-{name}"
+            task_root.rmdir()
         prepared = run_credit_analysis_workflow(
             "prepare-batch", "--request", str(request)
         )
         assert prepared.returncode == 0, prepared.stderr
+        if name == "count-overall":
+            assert task_root.is_dir()
         status = json.loads(prepared.stdout)
         manifest = json.loads(
             pathlib.Path(status["manifest_path"]).read_text(encoding="utf-8")
@@ -4002,21 +5127,18 @@ def enable_test_markdown_lint(repo: pathlib.Path) -> pathlib.Path:
     return log
 
 
-def fast_change_patch(
-    repo: pathlib.Path, replacements: dict[str, tuple[str, str]]
-) -> str:
-    """Create a Git patch for exact existing-file replacements, then restore."""
+def fast_change_edits(
+    replacements: dict[str, tuple[str, str]],
+) -> list[dict[str, object]]:
+    """Create one version-2 structured edit list from exact replacements."""
 
-    for relative, (old, new) in replacements.items():
-        path = repo / relative
-        path.write_text(
-            path.read_text(encoding="utf-8").replace(old, new),
-            encoding="utf-8",
-            newline="\n",
-        )
-    patch = run_git(repo, "diff", "--", *replacements).stdout
-    assert run_git(repo, "restore", "--", *replacements).returncode == 0
-    return patch
+    return [
+        {
+            "path": path,
+            "replacements": [{"old": old, "new": new}],
+        }
+        for path, (old, new) in replacements.items()
+    ]
 
 
 def run_fast_change(
@@ -4044,7 +5166,7 @@ def run_fast_change(
 
 def fast_change_request(
     repo: pathlib.Path,
-    patch: str,
+    edits: list[dict[str, object]],
     *,
     selected: list[str],
     classification: str = "rules-only",
@@ -4053,10 +5175,10 @@ def fast_change_request(
     """Return one complete versioned fast-change request."""
 
     return {
-        "version": 1,
+        "version": 2,
         "repo_root": str(repo),
         "release_branch": "release/local",
-        "patch": patch,
+        "edits": edits,
         "selected_skills": selected,
         "removed_skills": [],
         "classification": classification,
@@ -4312,6 +5434,462 @@ def test_skill_update_workflow_preserves_baseline_runs_checks_once_and_finalizes
     assert not evidence_path.exists()
     assert undeclared_input.is_file() and outside_evidence.is_file()
 
+    empty_task_temp_root = task_temp_root.parent / "empty-finalization"
+    empty_task_temp_root.mkdir()
+    empty_request_path = empty_task_temp_root / "request.json"
+    empty_state_path = empty_task_temp_root / "state.json"
+    empty_evidence_path = empty_task_temp_root / "evidence.json"
+    empty_request = json.loads(json.dumps(request))
+    empty_request["task_temp_root"] = str(empty_task_temp_root)
+    empty_request["evidence_output"] = str(empty_evidence_path)
+    empty_request_path.write_text(
+        json.dumps(empty_request) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    prepared_empty = run_skill_update_workflow(
+        "prepare",
+        "--request",
+        str(empty_request_path),
+        "--state",
+        str(empty_state_path),
+    )
+    assert prepared_empty.returncode == 0, prepared_empty.stderr
+    helper.write_text(
+        "VALUE = 2\n# second verified change\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    verified_empty = run_skill_update_workflow(
+        "verify",
+        "--state",
+        str(empty_state_path),
+        "--evidence-output",
+        str(empty_evidence_path),
+    )
+    assert verified_empty.returncode == 0, verified_empty.stderr
+    finalized_empty = run_skill_update_workflow(
+        "finalize",
+        "--state",
+        str(empty_state_path),
+    )
+    assert finalized_empty.returncode == 0, finalized_empty.stderr
+    assert finalized_empty.stdout.strip() == "OK"
+    assert not empty_task_temp_root.exists()
+
+
+def rule_candidate_markdown_policy(
+    repository: pathlib.Path,
+    *,
+    line_length: int,
+    fix_mode: str | None = None,
+) -> dict[str, object]:
+    """Declare an isolated target-specific Markdown command for helper tests."""
+
+    repository.mkdir(parents=True, exist_ok=True)
+    configuration = repository / ".markdownlint.json"
+    configuration.write_text(
+        json.dumps(
+            {
+                "default": False,
+                "MD013": {
+                    "line_length": line_length,
+                    "code_blocks": False,
+                    "tables": False,
+                },
+                "MD047": True,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    tool = repository / "markdown-policy.py"
+    tool.write_text(
+        "import json, pathlib, re, sys\n"
+        "mode, config_name, file_name = sys.argv[1:]\n"
+        "path = pathlib.Path(file_name)\n"
+        "if mode == 'mutate':\n"
+        "    value = path.read_text(encoding='utf-8-sig')\n"
+        "    path.write_text(value.replace('safe', 'unsafe', 1), "
+        "encoding='utf-8', newline='\\n')\n"
+        "    raise SystemExit(0)\n"
+        "config = json.loads(pathlib.Path(config_name).read_text(encoding='utf-8'))\n"
+        "limit = config['MD013']['line_length']\n"
+        "fence = None\n"
+        "html = None\n"
+        "reference = False\n"
+        "for number, line in enumerate(path.read_text(encoding='utf-8-sig').splitlines(), 1):\n"
+        "    stripped = line.strip()\n"
+        "    marker = re.match(r'^(`{3,}|~{3,})', stripped)\n"
+        "    if fence is not None:\n"
+        "        if marker and marker.group(1)[0] == fence[0] and "
+        "len(marker.group(1)) >= fence[1]:\n"
+        "            fence = None\n"
+        "        continue\n"
+        "    if marker:\n"
+        "        fence = (marker.group(1)[0], len(marker.group(1)))\n"
+        "        continue\n"
+        "    if html is not None:\n"
+        "        if f'</{html}>' in stripped.lower():\n"
+        "            html = None\n"
+        "        continue\n"
+        "    html_open = re.match("
+        "r'^<([A-Za-z][A-Za-z0-9:-]*)(?:\\s[^>]*)?>', stripped)\n"
+        "    if html_open:\n"
+        "        opening = html_open.group(0)\n"
+        "        tag = html_open.group(1).lower()\n"
+        "        if not opening.endswith('/>') and "
+        "f'</{tag}>' not in stripped[html_open.end():].lower():\n"
+        "            html = tag\n"
+        "        continue\n"
+        "    definition = bool(re.match(r'^\\s{0,3}\\[[^]]+\\]:', line))\n"
+        "    continuation = reference and bool(re.match(r'^\\s{1,3}\\S', line))\n"
+        "    if definition:\n"
+        "        reference = True\n"
+        "    elif not continuation:\n"
+        "        reference = False\n"
+        "    protected = (definition or continuation or "
+        "line.startswith(('    ', '\\t')) or "
+        "bool(re.match(r'^\\s{0,3}#', line)) or "
+        "(stripped.startswith('|') and stripped.endswith('|')) or "
+        "bool(re.match(r'^\\s*<[^>]+>', line)) or "
+        "bool(re.match(r'^\\s*\\[[^]]+\\]:', line)))\n"
+        "    if not protected and len(line) > limit:\n"
+        "        print(f'{path}:{number}:1 MD013 line too long', file=sys.stderr)\n"
+        "        raise SystemExit(1)\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    validate_command = [
+        sys.executable,
+        str(tool),
+        "validate",
+        "{config}",
+        "{file}",
+    ]
+    fix_command = (
+        None
+        if fix_mode is None
+        else [
+            sys.executable,
+            str(tool),
+            fix_mode,
+            "{config}",
+            "{file}",
+        ]
+    )
+    return {
+        "repository_root": str(repository.resolve()),
+        "configuration": str(configuration.resolve()),
+        "configuration_sha256": hashlib.sha256(
+            configuration.read_bytes()
+        ).hexdigest(),
+        "validate_command": validate_command,
+        "fix_command": fix_command,
+    }
+
+
+def write_rule_candidate(
+    path: pathlib.Path,
+    *,
+    rule_stack: list[pathlib.Path],
+    targets: list[dict[str, object]],
+) -> None:
+    path.write_text(
+        json.dumps(
+            {
+                "schema": "ceratops-rule-candidate.v1",
+                "rule_stack": [str(item.resolve()) for item in rule_stack],
+                "targets": targets,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+
+
+def run_rule_candidate_validator(
+    candidate: pathlib.Path,
+    evidence: pathlib.Path,
+    *extra: str,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            sys.executable,
+            str(RULE_CANDIDATE_VALIDATOR),
+            "--candidate",
+            str(candidate),
+            "--evidence",
+            str(evidence),
+            *extra,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def test_rule_candidate_repairs_multiple_targets_and_is_idempotent(
+    tmp_path: pathlib.Path,
+) -> None:
+    first_repo = tmp_path / "first-repo"
+    second_repo = tmp_path / "second-repo"
+    first_policy = rule_candidate_markdown_policy(first_repo, line_length=48)
+    second_policy = rule_candidate_markdown_policy(second_repo, line_length=68)
+    first = first_repo / "contract.md"
+    second = second_repo / "contract.md"
+    first_text = (
+        "# First\n\n"
+        "Old prose.\n\n"
+        "  - Old nested item.\n\n"
+        "> > - Old quoted item.\n\n"
+        "````text\n"
+        "```\n"
+        "protected code line that is intentionally much longer than the limit\n"
+        "````\n\n"
+        "<div>\n"
+        "Old raw HTML.\n"
+        "</div>\n\n"
+        "[sample]: https://example.test/reference\n"
+        "  \"Old reference title.\"\n"
+    )
+    second_text = "# Second\n\nOld alpha.\n\nOld beta.\n"
+    first.write_text(first_text, encoding="utf-8", newline="\n")
+    second.write_text(second_text, encoding="utf-8", newline="\r\n")
+    candidate = tmp_path / "candidate.json"
+    evidence = tmp_path / "evidence.json"
+    first_replacements = [
+        {
+            "expected_old": "Old prose.",
+            "replacement": (
+                "Safe ordinary prose wraps deterministically while preserving "
+                "every original non-whitespace content character."
+            ),
+        },
+        {
+            "expected_old": "  - Old nested item.",
+            "replacement": (
+                "  - Nested list continuation wrapping preserves its exact "
+                "nesting and marker structure."
+            ),
+        },
+        {
+            "expected_old": "> > - Old quoted item.",
+            "replacement": (
+                "> > - Nested blockquote continuation wrapping preserves "
+                "both quote depths and list nesting."
+            ),
+        },
+        {
+            "expected_old": (
+                "````text\n"
+                "```\n"
+                "protected code line that is intentionally much longer than the limit\n"
+                "````"
+            ),
+            "replacement": (
+                "````text\n"
+                "```\n"
+                "protected code line that is intentionally much longer than the limit\n"
+                "````"
+            ),
+        },
+        {
+            "expected_old": "Old raw HTML.",
+            "replacement": (
+                "Raw HTML content remains byte-for-byte unwrapped even when its "
+                "opening tag is outside this replacement."
+            ),
+        },
+        {
+            "expected_old": '  "Old reference title."',
+            "replacement": (
+                '  "A reference definition continuation remains byte-for-byte '
+                'unwrapped under its surrounding Markdown context."'
+            ),
+        },
+    ]
+    second_replacements = [
+        {
+            "expected_old": "Old alpha.",
+            "replacement": "Alpha stays on one line under its wider configured policy.",
+        },
+        {
+            "expected_old": "Old beta.",
+            "replacement": (
+                "Beta remains independently replaceable and wraps with the "
+                "second target's CRLF convention when it exceeds that policy."
+            ),
+        },
+    ]
+    write_rule_candidate(
+        candidate,
+        rule_stack=[first, second],
+        targets=[
+            {
+                "rules": str(first.resolve()),
+                "history": None,
+                "source_sha256": hashlib.sha256(first.read_bytes()).hexdigest(),
+                "markdown_policy": first_policy,
+                "replacements": first_replacements,
+            },
+            {
+                "rules": str(second.resolve()),
+                "history": None,
+                "source_sha256": hashlib.sha256(second.read_bytes()).hexdigest(),
+                "markdown_policy": second_policy,
+                "replacements": second_replacements,
+            },
+        ],
+    )
+    original_sources = (first.read_bytes(), second.read_bytes())
+    validated = run_rule_candidate_validator(candidate, evidence)
+    assert validated.returncode == 0, validated.stderr
+    assert validated.stdout.strip() == "OK"
+    fixed = json.loads(candidate.read_text(encoding="utf-8"))
+    fixed_first = fixed["targets"][0]["replacements"]
+    fixed_second = fixed["targets"][1]["replacements"]
+    assert "\n" in fixed_first[0]["replacement"]
+    assert "\n    " in fixed_first[1]["replacement"]
+    assert "\n> >   " in fixed_first[2]["replacement"]
+    assert fixed_first[3]["replacement"] == first_replacements[3]["replacement"]
+    assert fixed_first[4]["replacement"] == first_replacements[4]["replacement"]
+    assert fixed_first[5]["replacement"] == first_replacements[5]["replacement"]
+    assert "\n" not in fixed_second[0]["replacement"]
+    assert "\r\n" in fixed_second[1]["replacement"]
+    assert "\n" not in fixed_second[1]["replacement"].replace("\r\n", "")
+    assert (first.read_bytes(), second.read_bytes()) == original_sources
+    detail = json.loads(evidence.read_text(encoding="utf-8"))
+    assert detail["status"] == "passed" and detail["idempotent"] is True
+    first_hash = hashlib.sha256(candidate.read_bytes()).hexdigest()
+    second_evidence = tmp_path / "second-evidence.json"
+    repeated = run_rule_candidate_validator(candidate, second_evidence)
+    assert repeated.returncode == 0, repeated.stderr
+    assert hashlib.sha256(candidate.read_bytes()).hexdigest() == first_hash
+    assert json.loads(second_evidence.read_text(encoding="utf-8"))["changed"] is False
+
+
+def test_rule_candidate_failures_are_atomic_and_actionable(
+    tmp_path: pathlib.Path,
+) -> None:
+    safe_repo = tmp_path / "safe-repo"
+    blocked_repo = tmp_path / "blocked-repo"
+    safe_policy = rule_candidate_markdown_policy(safe_repo, line_length=44)
+    blocked_policy = rule_candidate_markdown_policy(blocked_repo, line_length=32)
+    safe = safe_repo / "contract.md"
+    blocked = blocked_repo / "contract.md"
+    safe.write_text("Old safe.\n", encoding="utf-8", newline="\n")
+    blocked.write_text("Old blocked.\n", encoding="utf-8", newline="\n")
+    candidate = tmp_path / "atomic-candidate.json"
+    evidence = tmp_path / "atomic-evidence.json"
+    token = "https://example.test/" + "x" * 70
+    write_rule_candidate(
+        candidate,
+        rule_stack=[safe, blocked],
+        targets=[
+            {
+                "rules": str(safe.resolve()),
+                "history": None,
+                "source_sha256": hashlib.sha256(safe.read_bytes()).hexdigest(),
+                "markdown_policy": safe_policy,
+                "replacements": [
+                    {
+                        "expected_old": "Old safe.",
+                        "replacement": (
+                            "Safe prose would wrap if every target completed "
+                            "mechanical validation."
+                        ),
+                    }
+                ],
+            },
+            {
+                "rules": str(blocked.resolve()),
+                "history": None,
+                "source_sha256": hashlib.sha256(blocked.read_bytes()).hexdigest(),
+                "markdown_policy": blocked_policy,
+                "replacements": [
+                    {"expected_old": "Old blocked.", "replacement": token}
+                ],
+            },
+        ],
+    )
+    before = candidate.read_bytes()
+    failed = run_rule_candidate_validator(candidate, evidence)
+    assert failed.returncode == 1
+    assert str(blocked.resolve()) in failed.stderr
+    assert "replacement=0" in failed.stderr
+    assert "MD013" in failed.stderr
+    assert "indivisible token" in failed.stderr
+    assert candidate.read_bytes() == before
+    assert json.loads(evidence.read_text(encoding="utf-8"))["status"] == "failed"
+
+    mutating_policy = rule_candidate_markdown_policy(
+        safe_repo,
+        line_length=80,
+        fix_mode="mutate",
+    )
+    write_rule_candidate(
+        candidate,
+        rule_stack=[safe],
+        targets=[
+            {
+                "rules": str(safe.resolve()),
+                "history": None,
+                "source_sha256": hashlib.sha256(safe.read_bytes()).hexdigest(),
+                "markdown_policy": mutating_policy,
+                "replacements": [
+                    {"expected_old": "Old safe.", "replacement": "safe value"}
+                ],
+            }
+        ],
+    )
+    before_mutation = candidate.read_bytes()
+    mutated = run_rule_candidate_validator(candidate, tmp_path / "mutation.json")
+    assert mutated.returncode == 1
+    assert "non-whitespace" in mutated.stderr
+    assert candidate.read_bytes() == before_mutation
+
+
+def test_rule_candidate_rejects_stale_and_duplicate_expected_old(
+    tmp_path: pathlib.Path,
+) -> None:
+    repository = tmp_path / "repo"
+    policy = rule_candidate_markdown_policy(repository, line_length=80)
+    target = repository / "contract.md"
+    target.write_text("Old value.\n", encoding="utf-8", newline="\n")
+    candidate = tmp_path / "candidate.json"
+    target_entry: dict[str, object] = {
+        "rules": str(target.resolve()),
+        "history": None,
+        "source_sha256": hashlib.sha256(target.read_bytes()).hexdigest(),
+        "markdown_policy": policy,
+        "replacements": [
+            {"expected_old": "Old value.", "replacement": "New value."},
+            {"expected_old": "Old value.", "replacement": "Other value."},
+        ],
+    }
+    write_rule_candidate(
+        candidate,
+        rule_stack=[target],
+        targets=[target_entry],
+    )
+    duplicate = run_rule_candidate_validator(candidate, tmp_path / "duplicate.json")
+    assert duplicate.returncode == 1
+    assert "duplicates expected_old" in duplicate.stderr
+
+    target_entry["replacements"] = [
+        {"expected_old": "Old value.", "replacement": "New value."}
+    ]
+    write_rule_candidate(candidate, rule_stack=[target], targets=[target_entry])
+    target.write_text("Changed value.\n", encoding="utf-8", newline="\n")
+    stale = run_rule_candidate_validator(candidate, tmp_path / "stale.json")
+    assert stale.returncode == 1
+    assert "source-hash" in stale.stderr and "source is stale" in stale.stderr
+
 
 def test_proposal_workflow_validates_context_and_owns_iteration_transition(
     tmp_path: pathlib.Path,
@@ -4326,6 +5904,7 @@ def test_proposal_workflow_validates_context_and_owns_iteration_transition(
     request_path = task_temp_root / "proposal-request.json"
     state = task_temp_root / "proposal-state.json"
     evidence = task_temp_root / "proposal-context.json"
+    champion_output = task_temp_root / "validated-champion.json"
     iterations = task_temp_root / "iterations"
     undeclared_input = task_temp_root / "user-owned.md"
     original.write_text("Observed failure\n", encoding="utf-8", newline="\n")
@@ -4335,6 +5914,10 @@ def test_proposal_workflow_validates_context_and_owns_iteration_transition(
         "# Contract\n\nCurrent exact target.\n",
         encoding="utf-8",
         newline="\n",
+    )
+    markdown_policy = rule_candidate_markdown_policy(
+        target_dir,
+        line_length=48,
     )
     current_text = (
         "- [SKILLS-GOV-01] Before proposing or editing a repository control surface,\n"
@@ -4349,15 +5932,19 @@ def test_proposal_workflow_validates_context_and_owns_iteration_transition(
         "history": str(ROOT / "AGENTS.history.json"),
         "rule_ids": ["SKILLS-GOV-01"],
         "expected_text": [current_text],
+        "candidate_target": False,
+        "markdown_policy": None,
     }
     target_source: dict[str, object] = {
         "rules": str(target),
         "history": None,
         "rule_ids": [],
         "expected_text": ["Current exact target."],
+        "candidate_target": True,
+        "markdown_policy": markdown_policy,
     }
     request: dict[str, object] = {
-        "schema": "ceratops-governance-proposal-request.v2",
+        "schema": "ceratops-governance-proposal-request.v3",
         "task_temp_root": str(task_temp_root),
         "iteration_artifacts": str(iterations),
         "disposable_artifacts": [
@@ -4372,6 +5959,7 @@ def test_proposal_workflow_validates_context_and_owns_iteration_transition(
         "original": str(original),
         "regressions": str(regressions),
         "evidence_output": str(evidence),
+        "champion_output": str(champion_output),
         "max_iterations": 1,
         "mutation_authorized": False,
         "expected_side_effects": [
@@ -4401,9 +5989,12 @@ def test_proposal_workflow_validates_context_and_owns_iteration_transition(
     pending = json.loads(prepared.stdout)
     assert pending["iteration"] == 1
     context = json.loads(evidence.read_text(encoding="utf-8"))
-    assert context["schema"] == "ceratops-governance-proposal-context.v2"
+    assert context["schema"] == "ceratops-governance-proposal-context.v3"
     assert context["history_lookup"]["unknown"] == []
     assert context["sources"][1]["history"] is None
+    assert context["candidate_validation"]["targets"][0]["rules"] == str(
+        target.resolve()
+    )
     incomplete = subprocess.run(
         [
             sys.executable,
@@ -4423,13 +6014,50 @@ def test_proposal_workflow_validates_context_and_owns_iteration_transition(
         for path in (request_path, original, regressions, evidence, state)
     )
     assert iterations.is_dir() and undeclared_input.is_file()
-    pathlib.Path(pending["candidate"]).write_text(
-        "Exact candidate\n",
+    candidate_path = pathlib.Path(pending["candidate"])
+    candidate_value = json.loads(candidate_path.read_text(encoding="utf-8"))
+    candidate_value["targets"][0]["replacements"][0]["replacement"] = (
+        "https://example.test/" + "x" * 80
+    )
+    candidate_path.write_text(
+        json.dumps(candidate_value, indent=2) + "\n",
         encoding="utf-8",
         newline="\n",
     )
     pathlib.Path(pending["assessment"]).write_text(
         "Regression assessment\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    candidate_before_failure = candidate_path.read_bytes()
+    mechanical_failure = subprocess.run(
+        [
+            sys.executable,
+            str(PROPOSAL_WORKFLOW),
+            "advance",
+            "--state",
+            str(state),
+            "--outcome",
+            "improved",
+            "--regressions",
+            "passed",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert mechanical_failure.returncode == 2
+    assert "indivisible token" in mechanical_failure.stderr
+    failed_state = json.loads(state.read_text(encoding="utf-8"))
+    assert failed_state["records"] == []
+    assert failed_state["pending"]["iteration"] == 1
+    assert candidate_path.read_bytes() == candidate_before_failure
+    candidate_value["targets"][0]["replacements"][0]["replacement"] = (
+        "Validated candidate prose is safely wrapped before the controller "
+        "records its exact post-validation hash."
+    )
+    candidate_path.write_text(
+        json.dumps(candidate_value, indent=2) + "\n",
         encoding="utf-8",
         newline="\n",
     )
@@ -4453,6 +6081,15 @@ def test_proposal_workflow_validates_context_and_owns_iteration_transition(
     status = json.loads(advanced.stdout)
     assert status["complete"] is True
     assert status["pending"] is None
+    completed_state = json.loads(state.read_text(encoding="utf-8"))
+    record = completed_state["records"][0]
+    assert record["candidate_sha256"] == hashlib.sha256(
+        candidate_path.read_bytes()
+    ).hexdigest()
+    fixed_candidate = json.loads(candidate_path.read_text(encoding="utf-8"))
+    assert "\n" in fixed_candidate["targets"][0]["replacements"][0]["replacement"]
+    assert pathlib.Path(record["validation_evidence"]).is_file()
+    champion_bytes = candidate_path.read_bytes()
     completed_state_text = state.read_text(encoding="utf-8")
     escaped_state = json.loads(completed_state_text)
     outside_evidence = tmp_path / "outside-evidence.json"
@@ -4502,6 +6139,11 @@ def test_proposal_workflow_validates_context_and_owns_iteration_transition(
     )
     assert finalized.returncode == 0, finalized.stderr
     assert finalized.stdout.strip() == "OK"
+    assert champion_output.is_file()
+    assert champion_output.read_bytes() == champion_bytes
+    assert hashlib.sha256(champion_output.read_bytes()).hexdigest() == record[
+        "candidate_sha256"
+    ]
     assert not state.exists()
     assert not iterations.exists()
     assert not request_path.exists()
@@ -4517,11 +6159,13 @@ def test_proposal_workflow_validates_context_and_owns_iteration_transition(
     invalid_regressions.write_text("Boundary\n", encoding="utf-8", newline="\n")
     invalid_state = invalid_run / "state.json"
     invalid_evidence = invalid_run / "context.json"
+    invalid_champion = invalid_run / "champion.json"
     invalid_iterations = invalid_run / "iterations"
     invalid_request["state"] = str(invalid_state)
     invalid_request["original"] = str(invalid_original)
     invalid_request["regressions"] = str(invalid_regressions)
     invalid_request["evidence_output"] = str(invalid_evidence)
+    invalid_request["champion_output"] = str(invalid_champion)
     invalid_request["iteration_artifacts"] = str(invalid_iterations)
     invalid_request["sources"] = [
         {
@@ -4556,11 +6200,39 @@ def test_proposal_workflow_validates_context_and_owns_iteration_transition(
     assert invalid_original.is_file() and invalid_regressions.is_file()
 
 
-def test_iteration_controller_preserves_legacy_commands(
+def test_iteration_controller_direct_commands_record_validated_candidate(
     tmp_path: pathlib.Path,
 ) -> None:
-    original = tmp_path / "legacy-original.md"
-    state = tmp_path / "legacy-state.json"
+    original = tmp_path / "original.md"
+    state = tmp_path / "state.json"
+    repository = tmp_path / "repository"
+    policy = rule_candidate_markdown_policy(repository, line_length=44)
+    target = repository / "AGENTS.md"
+    target.write_text("Old target.\n", encoding="utf-8", newline="\n")
+    validation_context = tmp_path / "validation-context.json"
+    validation_context.write_text(
+        json.dumps(
+            {
+                "schema": "ceratops-rule-candidate-context.v1",
+                "rule_stack": [str(target.resolve())],
+                "targets": [
+                    {
+                        "rules": str(target.resolve()),
+                        "history": None,
+                        "source_sha256": hashlib.sha256(
+                            target.read_bytes()
+                        ).hexdigest(),
+                        "markdown_policy": policy,
+                        "expected_old": ["Old target."],
+                    }
+                ],
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
     original.write_text("Original\n", encoding="utf-8", newline="\n")
     initialized = subprocess.run(
         [
@@ -4571,6 +6243,8 @@ def test_iteration_controller_preserves_legacy_commands(
             str(state),
             "--original",
             str(original),
+            "--validation-context",
+            str(validation_context),
             "--max-iterations",
             "1",
         ],
@@ -4588,8 +6262,16 @@ def test_iteration_controller_preserves_legacy_commands(
     )
     assert opened.returncode == 0, opened.stderr
     pending = json.loads(opened.stdout)
-    pathlib.Path(pending["candidate"]).write_text(
-        "Candidate\n", encoding="utf-8", newline="\n"
+    candidate_path = pathlib.Path(pending["candidate"])
+    candidate_value = json.loads(candidate_path.read_text(encoding="utf-8"))
+    candidate_value["targets"][0]["replacements"][0]["replacement"] = (
+        "Controller submit automatically wraps and validates this candidate "
+        "before hashing it."
+    )
+    candidate_path.write_text(
+        json.dumps(candidate_value, indent=2) + "\n",
+        encoding="utf-8",
+        newline="\n",
     )
     pathlib.Path(pending["assessment"]).write_text(
         "Assessment\n", encoding="utf-8", newline="\n"
@@ -4616,6 +6298,13 @@ def test_iteration_controller_preserves_legacy_commands(
     )
     assert submitted.returncode == 0, submitted.stderr
     assert json.loads(submitted.stdout)["complete"] is True
+    recorded_state = json.loads(state.read_text(encoding="utf-8"))
+    assert recorded_state["records"][0]["candidate_sha256"] == hashlib.sha256(
+        candidate_path.read_bytes()
+    ).hexdigest()
+    assert pathlib.Path(
+        recorded_state["records"][0]["validation_evidence"]
+    ).is_file()
     status = subprocess.run(
         [sys.executable, str(ITERATION_CONTROLLER), "status", "--state", str(state)],
         capture_output=True,
@@ -4638,7 +6327,7 @@ def test_iteration_controller_preserves_legacy_commands(
     )
     assert finalized.returncode == 0, finalized.stderr
     assert finalized.stdout.strip() == "OK"
-    assert original.is_file() and not state.exists()
+    assert original.is_file() and validation_context.is_file() and not state.exists()
 
 
 def test_fast_change_commits_cohesive_rules_only_multi_skill_scope(
@@ -4651,11 +6340,16 @@ def test_fast_change_commits_cohesive_rules_only_multi_skill_scope(
         "skills/alpha-tool/references/change.md": ("# Change", "# Updated"),
         "skills/beta-tool/SKILL.md": ("description: Test", "description: Updated"),
     }
+    edits = fast_change_edits(paths)
+    edits[0]["replacements"] = [
+        {"old": "description: Test", "new": "description: Intermediate"},
+        {"old": "description: Intermediate", "new": "description: Updated"},
+    ]
     result = run_fast_change(
         repo,
         fast_change_request(
             repo,
-            fast_change_patch(repo, paths),
+            edits,
             selected=["alpha-tool", "beta-tool"],
         ),
     )
@@ -4678,14 +6372,14 @@ def test_fast_change_commits_cohesive_rules_only_multi_skill_scope(
         repo,
         fast_change_request(
             repo,
-            fast_change_patch(
-                repo,
-                {"skills/alpha-tool/notes.txt": ("Notes", "Updated notes")},
+            fast_change_edits(
+                {"skills/alpha-tool/notes.txt": ("Notes\n", "Updated notes")},
             ),
             selected=["alpha-tool"],
         ),
     )
     assert plain_text.returncode == 0, plain_text.stderr
+    assert (repo / "skills" / "alpha-tool" / "notes.txt").read_bytes() == b"Updated notes"
     assert lint_log.read_text(encoding="utf-8").splitlines() == ["run"]
 
     head_before_failure = run_git(repo, "rev-parse", "HEAD").stdout.strip()
@@ -4694,8 +6388,7 @@ def test_fast_change_commits_cohesive_rules_only_multi_skill_scope(
         repo,
         fast_change_request(
             repo,
-            fast_change_patch(
-                repo,
+            fast_change_edits(
                 {
                     "skills/alpha-tool/SKILL.md": (
                         "description: Updated skill.",
@@ -4737,13 +6430,12 @@ def test_fast_change_helper_tests_and_compensates_failures(
     )
     assert run_git(repo, "add", "tests/test_helper.py").returncode == 0
     assert run_git(repo, "commit", "-m", "add helper test").returncode == 0
-    patch = fast_change_patch(
-        repo,
+    edits = fast_change_edits(
         {"skills/alpha-tool/scripts/tool.py": ("VALUE = 1", "VALUE = 2")},
     )
     request = fast_change_request(
         repo,
-        patch,
+        edits,
         selected=["alpha-tool"],
         classification="helper",
         tests=["tests/test_helper.py::test_value"],
@@ -4755,13 +6447,12 @@ def test_fast_change_helper_tests_and_compensates_failures(
         repo / "skills" / "alpha-tool" / "scripts" / "tool.py"
     ).read_text(encoding="utf-8")
 
-    failing_patch = fast_change_patch(
-        repo,
+    failing_edits = fast_change_edits(
         {"skills/alpha-tool/scripts/tool.py": ("VALUE = 2", "VALUE = 3")},
     )
     failing_request = fast_change_request(
         repo,
-        failing_patch,
+        failing_edits,
         selected=["alpha-tool"],
         classification="helper",
         tests=["tests/test_helper.py::test_value"],
@@ -4777,8 +6468,7 @@ def test_fast_change_helper_tests_and_compensates_failures(
         repo,
         fast_change_request(
             repo,
-            fast_change_patch(
-                repo,
+            fast_change_edits(
                 {"skills/alpha-tool/SKILL.md": ("description: Test", "description: Failed")},
             ),
             selected=["alpha-tool"],
@@ -4802,8 +6492,7 @@ def test_fast_change_commit_failure_restores_source_and_runtime(
     original_head = run_git(repo, "rev-parse", "HEAD").stdout.strip()
     request = fast_change_request(
         repo,
-        fast_change_patch(
-            repo,
+        fast_change_edits(
             {"skills/alpha-tool/SKILL.md": ("description: Test", "description: Updated")},
         ),
         selected=["alpha-tool"],
@@ -4827,13 +6516,12 @@ def test_fast_change_rejects_complete_ineligible_or_dirty_scope_before_mutation(
     tmp_path: pathlib.Path,
 ) -> None:
     repo = prepare_fast_change_repo(tmp_path)
-    patch = fast_change_patch(
-        repo,
+    edits = fast_change_edits(
         {"skills/alpha-tool/SKILL.md": ("description: Test", "description: Updated")},
     )
     noncanonical_request = fast_change_request(
         repo,
-        patch,
+        edits,
         selected=["alpha-tool"],
     )
     noncanonical_request["release_branch"] = "release/task"
@@ -4847,7 +6535,7 @@ def test_fast_change_rejects_complete_ineligible_or_dirty_scope_before_mutation(
     assert run_git(repo, "status", "--porcelain").stdout == ""
     assert not (repo.parent / "install.log").exists()
 
-    request = fast_change_request(repo, patch, selected=["beta-tool"])
+    request = fast_change_request(repo, edits, selected=["beta-tool"])
 
     mismatch = run_fast_change(repo, request)
 
@@ -4861,10 +6549,61 @@ def test_fast_change_rejects_complete_ineligible_or_dirty_scope_before_mutation(
     assert run_git(repo, "status", "--porcelain").stdout == ""
     assert not (repo.parent / "install.log").exists()
 
+    raw_request = fast_change_request(repo, edits, selected=["alpha-tool"])
+    raw_request["version"] = 1
+    raw_request["patch"] = "@@ malformed caller hunk"
+    del raw_request["edits"]
+    raw = run_fast_change(repo, raw_request)
+
+    assert raw.returncode == 2
+    assert json.loads(raw.stderr)["reason"] == (
+        "request fields are invalid: missing edits; unknown patch"
+    )
+    assert run_git(repo, "status", "--porcelain").stdout == ""
+
+    ambiguous = run_fast_change(
+        repo,
+        fast_change_request(
+            repo,
+            [
+                {
+                    "path": "skills/alpha-tool/SKILL.md",
+                    "replacements": [{"old": "---", "new": "***"}],
+                }
+            ],
+            selected=["alpha-tool"],
+        ),
+    )
+
+    assert ambiguous.returncode == 2
+    assert "must occur exactly once" in json.loads(ambiguous.stderr)["reason"]
+    assert "found 2" in json.loads(ambiguous.stderr)["reason"]
+    assert run_git(repo, "status", "--porcelain").stdout == ""
+
+    missing = run_fast_change(
+        repo,
+        fast_change_request(
+            repo,
+            [
+                {
+                    "path": "skills/alpha-tool/SKILL.md",
+                    "replacements": [
+                        {"old": "not present", "new": "replacement"}
+                    ],
+                }
+            ],
+            selected=["alpha-tool"],
+        ),
+    )
+
+    assert missing.returncode == 2
+    assert "found 0" in json.loads(missing.stderr)["reason"]
+    assert run_git(repo, "status", "--porcelain").stdout == ""
+
     (repo / "dirty.txt").write_text("dirty\n", encoding="utf-8", newline="\n")
     dirty = run_fast_change(
         repo,
-        fast_change_request(repo, patch, selected=["alpha-tool"]),
+        fast_change_request(repo, edits, selected=["alpha-tool"]),
     )
     assert dirty.returncode == 2
     assert "must be clean" in json.loads(dirty.stderr)["reason"]
@@ -5465,6 +7204,7 @@ def test_unresolved_required_conversation_blocks_before_shared_merge(
 
 
 def test_merge_cli_emits_compact_critical_json(
+    tmp_path: pathlib.Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -5487,6 +7227,26 @@ def test_merge_cli_emits_compact_critical_json(
     assert json.loads(output)["status"] == "critical"
     assert '": "' not in output
     assert '", "' not in output
+
+    direct = subprocess.run(
+        [sys.executable, str(PR_WORKFLOW_ENTRYPOINT), "--help"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert direct.returncode == 0, direct.stderr
+    assert "GitHub PR workflows" in direct.stdout
+
+    module = subprocess.run(
+        [sys.executable, "-m", "github_pr_workflow", "--help"],
+        cwd=PR_WORKFLOW_SCRIPTS,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert module.returncode == 0, module.stderr
+    assert "GitHub PR workflows" in module.stdout
 
 
 def test_integrated_ship_delegates_admin_semantics_to_merge_owner(
@@ -7977,6 +9737,252 @@ def test_compatibility_materializer_supports_repositories_without_skills(
         "workflow": "preserved",
     }
 
+    def empty_repository(name: str) -> pathlib.Path:
+        target = tmp_path / name
+        target.mkdir()
+        (target / ".git").write_text("gitdir: test\n", encoding="utf-8", newline="\n")
+        (target / "README.md").write_text(
+            f"# {name}\n\n## Skills\n\n| Skill | Purpose |\n| --- | --- |\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        return target
+
+    pnpm_repo = empty_repository("pnpm-compatible")
+    (pnpm_repo / "package.json").write_text(
+        json.dumps(
+            {
+                "packageManager": "pnpm@10.33.4",
+                "scripts": {"build": "tsc --noEmit"},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    (pnpm_repo / "pnpm-lock.yaml").write_text(
+        "lockfileVersion: '9.0'\n", encoding="utf-8", newline="\n"
+    )
+    (pnpm_repo / "requirements-dev.txt").write_text(
+        "pytest==9.1.1\n", encoding="utf-8", newline="\n"
+    )
+    (pnpm_repo / "pyproject.toml").write_text(
+        '[tool.mypy]\npython_version = "3.12"\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    pnpm_result = run_compatibility_engine(
+        engine_scripts,
+        "materialize",
+        "--target-repo-root",
+        str(pnpm_repo),
+        "--runtime-source-id",
+        "example/pnpm-compatible",
+    )
+    assert pnpm_result.returncode == 0, pnpm_result.stdout
+    assert json.loads(pnpm_result.stdout)["repository_validation"]["checks"] == [
+        "pnpm-build",
+        "pytest",
+        "mypy",
+    ]
+    pnpm_workflow = (
+        pnpm_repo / ".github" / "workflows" / "validate.yml"
+    ).read_text(encoding="utf-8")
+    assert "actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903" in pnpm_workflow
+    assert "corepack prepare pnpm@10.33.4 --activate" in pnpm_workflow
+    assert "pnpm install --frozen-lockfile" in pnpm_workflow
+    assert "python -m pip install -r requirements-dev.txt" in pnpm_workflow
+    assert "python -m pip install mypy==2.3.0" in pnpm_workflow
+    assert 'python-version: "3.12"' in pnpm_workflow
+
+    uv_repo = empty_repository("uv-compatible")
+    (uv_repo / "uv.lock").write_text("version = 1\n", encoding="utf-8", newline="\n")
+    (uv_repo / "pyproject.toml").write_text(
+        '[project]\nname = "uv-compatible"\nversion = "1.0.0"\n'
+        'requires-python = ">=3.13"\n'
+        '[project.optional-dependencies]\ndev = ["pytest", "ruff", "mypy"]\n'
+        "[tool.pytest.ini_options]\n"
+        "[tool.ruff]\n"
+        '[tool.mypy]\npython_version = "3.12"\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    uv_result = run_compatibility_engine(
+        engine_scripts,
+        "materialize",
+        "--target-repo-root",
+        str(uv_repo),
+        "--runtime-source-id",
+        "example/uv-compatible",
+    )
+    assert uv_result.returncode == 0, uv_result.stdout
+    assert json.loads(uv_result.stdout)["repository_validation"]["checks"] == [
+        "pytest",
+        "ruff",
+        "mypy",
+    ]
+    uv_workflow = (uv_repo / ".github" / "workflows" / "validate.yml").read_text(
+        encoding="utf-8"
+    )
+    assert "astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9" in uv_workflow
+    assert 'python-version-file: "pyproject.toml"' in uv_workflow
+    assert 'python-version: "3.12"' not in uv_workflow
+    assert "uv sync --extra dev --frozen" in uv_workflow
+    assert "uv run --no-sync python scripts/validate-repository.py" in uv_workflow
+
+    powershell_repo = empty_repository("powershell-compatible")
+    for relative in (
+        "scripts/Test-CodexSourceReadiness.ps1",
+        "scripts/Test-CodexRuntimeHealth.ps1",
+        "tests/Run-PowerShellQuality.ps1",
+        "tests/Run-SmokeTests.ps1",
+    ):
+        path = powershell_repo / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("exit 0\n", encoding="utf-8", newline="\n")
+    powershell_result = run_compatibility_engine(
+        engine_scripts,
+        "materialize",
+        "--target-repo-root",
+        str(powershell_repo),
+        "--runtime-source-id",
+        "example/powershell-compatible",
+    )
+    assert powershell_result.returncode == 0, powershell_result.stdout
+    assert json.loads(powershell_result.stdout)["repository_validation"]["checks"] == [
+        "powershell-source-readiness",
+        "powershell-runtime-health",
+        "powershell-lint",
+        "powershell-smoke",
+    ]
+    powershell_workflow = (
+        powershell_repo / ".github" / "workflows" / "validate.yml"
+    ).read_text(encoding="utf-8")
+    assert "runs-on: windows-latest" in powershell_workflow
+    assert "Install-Module PSScriptAnalyzer" in powershell_workflow
+
+    unittest_repo = empty_repository("unittest-compatible")
+    (unittest_repo / "deploy").mkdir()
+    (unittest_repo / "deploy" / "validate-automations.py").write_text(
+        "print('OK')\n", encoding="utf-8", newline="\n"
+    )
+    (unittest_repo / "tests").mkdir()
+    (unittest_repo / "tests" / "test_example.py").write_text(
+        "import unittest\n", encoding="utf-8", newline="\n"
+    )
+    unittest_result = run_compatibility_engine(
+        engine_scripts,
+        "materialize",
+        "--target-repo-root",
+        str(unittest_repo),
+        "--runtime-source-id",
+        "example/unittest-compatible",
+    )
+    assert unittest_result.returncode == 0, unittest_result.stdout
+    assert json.loads(unittest_result.stdout)["repository_validation"]["checks"] == [
+        "automation-source-validation",
+        "unittest",
+    ]
+
+    docs_repo = empty_repository("docs-compatible")
+    (docs_repo / "README.md").write_text(
+        "python -m ruff check --select E9,F63,F7,F82 scripts/run_form.py "
+        "skills/claims-catalog-invoice/scripts tests/test_claims_tracker.py\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    (docs_repo / "requirements.txt").write_text(
+        "python-docx==1.2.0\n", encoding="utf-8", newline="\n"
+    )
+    (docs_repo / "scripts").mkdir()
+    (docs_repo / "scripts" / "run_form.py").write_text(
+        "print('OK')\n", encoding="utf-8", newline="\n"
+    )
+    (docs_repo / "skills" / "claims-catalog-invoice" / "scripts").mkdir(
+        parents=True
+    )
+    (docs_repo / "skills" / "claims-catalog-invoice" / "scripts" / "claim.py").write_text(
+        "CLAIM = True\n", encoding="utf-8", newline="\n"
+    )
+    (docs_repo / "tests").mkdir()
+    (docs_repo / "tests" / "test_claims_tracker.py").write_text(
+        "import unittest\n", encoding="utf-8", newline="\n"
+    )
+    docs_result = run_compatibility_engine(
+        engine_scripts,
+        "materialize",
+        "--target-repo-root",
+        str(docs_repo),
+        "--runtime-source-id",
+        "example/docs-compatible",
+    )
+    assert docs_result.returncode == 0, docs_result.stdout
+    assert json.loads(docs_result.stdout)["repository_validation"]["checks"] == [
+        "unittest",
+        "ruff-critical",
+    ]
+    docs_workflow = (
+        docs_repo / ".github" / "workflows" / "validate.yml"
+    ).read_text(encoding="utf-8")
+    assert "ruff==0.16.1" in docs_workflow
+
+    authoritative_repo = empty_repository("authoritative-compatible")
+    (authoritative_repo / "scripts").mkdir()
+    (authoritative_repo / "scripts" / "validate_repository.py").write_text(
+        "import argparse\n"
+        "import pathlib\n"
+        "parser = argparse.ArgumentParser()\n"
+        "parser.add_argument('--temp-root')\n"
+        "parser.add_argument('--evidence-file', type=pathlib.Path, required=True)\n"
+        "args = parser.parse_args()\n"
+        "if not pathlib.Path(args.temp_root).is_dir():\n"
+        "    args.evidence_file.write_text('temp root missing\\n', encoding='utf-8')\n"
+        "    raise SystemExit(2)\n"
+        "args.evidence_file.write_text('inner diagnostic\\n', encoding='utf-8')\n"
+        "raise SystemExit(1)\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    (authoritative_repo / "pyproject.toml").write_text(
+        '[tool.mypy]\npython_version = "3.12"\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    authoritative_result = run_compatibility_engine(
+        engine_scripts,
+        "materialize",
+        "--target-repo-root",
+        str(authoritative_repo),
+        "--runtime-source-id",
+        "example/authoritative-compatible",
+    )
+    assert authoritative_result.returncode == 0, authoritative_result.stdout
+    assert json.loads(authoritative_result.stdout)["repository_validation"]["checks"] == [
+        "hasbaratops-validator"
+    ]
+    authoritative_validator = (
+        authoritative_repo / "scripts" / "validate-repository.py"
+    ).read_text(encoding="utf-8")
+    assert "{temp}/hasbaratops" in authoritative_validator
+    assert max(len(line) for line in authoritative_validator.splitlines()) <= 100
+    authoritative_evidence = tmp_path / "authoritative-validation.log"
+    authoritative_validation = subprocess.run(
+        [
+            sys.executable,
+            str(authoritative_repo / "scripts" / "validate-repository.py"),
+            "--evidence-file",
+            str(authoritative_evidence),
+        ],
+        cwd=authoritative_repo,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert authoritative_validation.returncode == 1
+    retained_evidence = authoritative_evidence.read_text(encoding="utf-8")
+    assert "child_evidence: hasbaratops-validation.log" in retained_evidence
+    assert "inner diagnostic" in retained_evidence
+
 
 def test_compatibility_materializer_preserves_existing_validator_and_ci(
     tmp_path: pathlib.Path,
@@ -8095,8 +10101,8 @@ def test_compatibility_materializer_rolls_back_every_target_write_on_blocker(
     )
     workflow_template.write_text(
         workflow_template.read_text(encoding="utf-8").replace(
-            "python scripts/validate-repository.py",
-            "python scripts/not-the-repository-validator.py",
+            "__VALIDATOR_PYTHON__ scripts/validate-repository.py",
+            "__VALIDATOR_PYTHON__ scripts/not-the-repository-validator.py",
         ),
         encoding="utf-8",
         newline="\n",

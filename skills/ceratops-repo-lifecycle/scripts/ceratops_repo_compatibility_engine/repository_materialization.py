@@ -13,9 +13,11 @@ import argparse
 import json
 import os
 import pathlib
+import pprint
 import re
 import shutil
 import subprocess
+import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass
 
@@ -46,6 +48,9 @@ GITHUB_REMOTE_RE = re.compile(
     r"(?:github\.com[:/])(?P<owner>[^/]+)/(?P<repo>[^/]+?)(?:\.git)?$",
     re.IGNORECASE,
 )
+SETUP_PYTHON = "actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0"
+SETUP_NODE = "actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0"
+SETUP_UV = "astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0"
 
 
 class IndentedSafeDumper(yaml.SafeDumper):
@@ -132,28 +137,100 @@ def _safe_catalog_path(value: object, label: str) -> pathlib.PurePosixPath:
     return path
 
 
-def _package_scripts(repo_root: pathlib.Path) -> set[str]:
+def _package_manifest(repo_root: pathlib.Path) -> dict[str, object]:
     path = repo_root / "package.json"
     if not path.is_file() or path.is_symlink():
-        return set()
-    payload = load_mapping(path)
+        return {}
+    return load_mapping(path)
+
+
+def _package_scripts(payload: Mapping[str, object]) -> set[str]:
     scripts = payload.get("scripts", {})
     if not isinstance(scripts, Mapping):
         raise RuntimeError("package.json scripts must be an object")
     return {str(name) for name in scripts}
 
 
+def _package_manager(repo_root: pathlib.Path, payload: Mapping[str, object]) -> tuple[str | None, str | None]:
+    """Resolve the declared or lockfile-owned JavaScript package manager."""
+
+    declaration = payload.get("packageManager")
+    declared_name: str | None = None
+    declared_version: str | None = None
+    if declaration is not None:
+        if not isinstance(declaration, str) or "@" not in declaration:
+            raise RuntimeError("packageManager must declare a name and version")
+        declared_name, declared_version = declaration.split("@", 1)
+        if declared_name not in {"npm", "pnpm"} or not declared_version:
+            raise RuntimeError(f"unsupported packageManager declaration: {declaration}")
+    lock_managers = [
+        name
+        for name, filename in (("npm", "package-lock.json"), ("pnpm", "pnpm-lock.yaml"))
+        if (repo_root / filename).is_file()
+    ]
+    if len(lock_managers) > 1:
+        raise RuntimeError("multiple JavaScript package-manager lockfiles are unsupported")
+    lock_manager = lock_managers[0] if lock_managers else None
+    if declared_name and lock_manager and declared_name != lock_manager:
+        raise RuntimeError("packageManager conflicts with the repository lockfile")
+    return declared_name or lock_manager or ("npm" if payload else None), declared_version
+
+
+def _pyproject(repo_root: pathlib.Path) -> dict[str, object]:
+    path = repo_root / "pyproject.toml"
+    if not path.is_file() or path.is_symlink():
+        return {}
+    value = tomllib.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(value, dict):
+        raise RuntimeError("pyproject.toml root must be an object")
+    return value
+
+
+def _declared_python_dependencies(repo_root: pathlib.Path) -> str:
+    """Return only install declarations, excluding tool configuration tables."""
+
+    declared: list[str] = []
+    for name in ("requirements-dev.txt", "requirements.txt"):
+        path = repo_root / name
+        if path.is_file() and not path.is_symlink():
+            declared.append(path.read_text(encoding="utf-8"))
+    pyproject = _pyproject(repo_root)
+    project = pyproject.get("project", {})
+    if isinstance(project, Mapping):
+        dependencies = project.get("dependencies", [])
+        if isinstance(dependencies, list):
+            declared.extend(str(value) for value in dependencies)
+        optional = project.get("optional-dependencies", {})
+        if isinstance(optional, Mapping):
+            for values in optional.values():
+                if isinstance(values, list):
+                    declared.extend(str(value) for value in values)
+    groups = pyproject.get("dependency-groups", {})
+    if isinstance(groups, Mapping):
+        for values in groups.values():
+            if isinstance(values, list):
+                declared.extend(str(value) for value in values)
+    return "\n".join(declared).lower()
+
+
 def _catalog_condition_matches(
     repo_root: pathlib.Path,
     condition: Mapping[str, object],
     package_scripts: set[str],
+    package_manager: str | None,
 ) -> bool:
     kind = condition.get("kind")
-    if kind == "package-script" and set(condition) == {"kind", "value"}:
+    if kind == "package-script" and set(condition) in (
+        {"kind", "value"},
+        {"kind", "manager", "value"},
+    ):
         value = condition["value"]
         if not isinstance(value, str) or not value:
             raise RuntimeError("catalog package-script value must be text")
-        return value in package_scripts
+        manager = condition.get("manager")
+        if manager is not None and manager not in {"npm", "pnpm"}:
+            raise RuntimeError("catalog package-script manager is unsupported")
+        return value in package_scripts and (manager is None or manager == package_manager)
     if kind == "path-any" and set(condition) == {"kind", "value"}:
         patterns = condition["value"]
         if (
@@ -190,16 +267,19 @@ def catalog_checks(repo_root: pathlib.Path) -> list[dict[str, object]]:
     entries = catalog.get("checks")
     if not isinstance(entries, list):
         raise RuntimeError("repository-validation catalog checks must be a list")
-    scripts = _package_scripts(repo_root)
+    package = _package_manifest(repo_root)
+    scripts = _package_scripts(package)
+    package_manager, _ = _package_manager(repo_root, package)
     selected: list[dict[str, object]] = []
     seen: set[str] = set()
     for raw in entries:
-        if not isinstance(raw, Mapping) or set(raw) != {
-            "id",
-            "when",
-            "command",
-            "cwd",
-        }:
+        required_fields = {"id", "when", "command", "cwd"}
+        optional_fields = {"exclusive", "python_packages", "unless"}
+        if (
+            not isinstance(raw, Mapping)
+            or not required_fields.issubset(raw)
+            or not set(raw).issubset(required_fields | optional_fields)
+        ):
             raise RuntimeError("repository-validation catalog entry is invalid")
         check_id = raw["id"]
         conditions = raw["when"]
@@ -219,20 +299,48 @@ def catalog_checks(repo_root: pathlib.Path) -> list[dict[str, object]]:
         ):
             raise RuntimeError(f"catalog check {check_id} has invalid command")
         cwd = _safe_catalog_path(raw["cwd"], f"catalog check {check_id} cwd")
+        unless = raw.get("unless", [])
+        if not isinstance(unless, list) or not all(
+            isinstance(condition, Mapping) for condition in unless
+        ):
+            raise RuntimeError(f"catalog check {check_id} unless must be a condition list")
+        exclusive = raw.get("exclusive", False)
+        if not isinstance(exclusive, bool):
+            raise RuntimeError(f"catalog check {check_id} exclusive must be boolean")
+        python_packages = raw.get("python_packages", [])
+        if (
+            not isinstance(python_packages, list)
+            or not all(isinstance(value, str) and value for value in python_packages)
+        ):
+            raise RuntimeError(f"catalog check {check_id} python_packages must be text")
         seen.add(check_id)
         if any(
-            _catalog_condition_matches(repo_root, condition, scripts)
+            _catalog_condition_matches(repo_root, condition, scripts, package_manager)
             for condition in conditions
+        ) and not any(
+            _catalog_condition_matches(repo_root, condition, scripts, package_manager)
+            for condition in unless
         ):
             selected.append(
-                {"id": check_id, "command": list(command), "cwd": cwd.as_posix()}
+                {
+                    "id": check_id,
+                    "command": list(command),
+                    "cwd": cwd.as_posix(),
+                    "exclusive": exclusive,
+                    "python_packages": list(python_packages),
+                }
             )
-    return selected
+    exclusive_checks = [check for check in selected if check["exclusive"]]
+    if len(exclusive_checks) > 1:
+        raise RuntimeError("multiple exclusive repository validators matched")
+    return exclusive_checks or selected
 
 
-def _validation_setup_step(
+def _validation_workflow(
     repo_root: pathlib.Path, checks: list[dict[str, object]]
-) -> str:
+) -> tuple[str, str, str]:
+    """Render generated CI while delegating project Python ranges to setup-python."""
+
     commands: list[str] = []
     for check in checks:
         command = check["command"]
@@ -242,28 +350,134 @@ def _validation_setup_step(
             if not isinstance(value, str):
                 raise RuntimeError("catalog check command values must be text")
             commands.append(value)
-    setup: list[str] = []
-    if "{python}" in commands:
+    pyproject = _pyproject(repo_root)
+    project = pyproject.get("project", {})
+    requires_python = (
+        project.get("requires-python") if isinstance(project, Mapping) else None
+    )
+    if requires_python is not None and (
+        not isinstance(requires_python, str) or not requires_python.strip()
+    ):
+        raise RuntimeError("project.requires-python must be nonempty text")
+    python_selector = (
+        'python-version-file: "pyproject.toml"'
+        if requires_python is not None
+        else 'python-version: "3.12"'
+    )
+    setup: list[str] = [
+        "      - name: Set up Python",
+        f"        uses: {SETUP_PYTHON}",
+        "        with:",
+        f"          {python_selector}",
+    ]
+    validation_python = "python"
+    dependency_sources = _declared_python_dependencies(repo_root)
+    python_setup: list[str] = []
+    if (repo_root / "uv.lock").is_file() and "{python}" in commands:
+        setup.extend(
+            [
+                "      - name: Set up uv",
+                f"        uses: {SETUP_UV}",
+            ]
+        )
+        optional = project.get("optional-dependencies", {}) if isinstance(project, Mapping) else {}
+        groups = pyproject.get("dependency-groups", {})
+        if isinstance(optional, Mapping) and "dev" in optional:
+            python_setup.append("uv sync --extra dev --frozen")
+        elif isinstance(groups, Mapping) and "dev" in groups:
+            python_setup.append("uv sync --group dev --frozen")
+        else:
+            python_setup.append("uv sync --frozen")
+        validation_python = "uv run --no-sync python"
+    elif "{python}" in commands:
         if (repo_root / "requirements-dev.txt").is_file():
-            setup.append("python -m pip install -r requirements-dev.txt")
+            python_setup.append("python -m pip install -r requirements-dev.txt")
         elif (repo_root / "requirements.txt").is_file():
-            setup.append("python -m pip install -r requirements.txt")
+            python_setup.append("python -m pip install -r requirements.txt")
+        elif (repo_root / "pyproject.toml").is_file():
+            optional = project.get("optional-dependencies", {}) if isinstance(project, Mapping) else {}
+            if isinstance(optional, Mapping) and "dev" in optional:
+                python_setup.append('python -m pip install -e ".[dev]"')
+            elif isinstance(project, Mapping) and project:
+                python_setup.append('python -m pip install -e "."')
+    fallback_candidates: list[str] = []
+    for check in checks:
+        packages = check.get("python_packages", [])
+        if isinstance(packages, list):
+            fallback_candidates.extend(
+                package for package in packages if isinstance(package, str)
+            )
+    fallback_packages = sorted(
+        {
+            package
+            for package in fallback_candidates
+            if re.split(r"[<>=!~]", package, maxsplit=1)[0].lower()
+            not in dependency_sources
+        }
+    )
+    if fallback_packages:
+        installer = "uv pip install" if validation_python.startswith("uv ") else "python -m pip install"
+        python_setup.append(f"{installer} {' '.join(fallback_packages)}")
+    if python_setup:
+        setup.extend(
+            [
+                "      - name: Install Python validation dependencies",
+                "        run: |",
+                *(f"          {command}" for command in python_setup),
+            ]
+        )
+    package = _package_manifest(repo_root)
+    manager, manager_version = _package_manager(repo_root, package)
+    if "{npm}" in commands and "{pnpm}" in commands:
+        raise RuntimeError("one validation workflow cannot mix npm and pnpm checks")
     if "{npm}" in commands:
+        if manager != "npm":
+            raise RuntimeError("npm validation checks require npm repository ownership")
         if not (repo_root / "package-lock.json").is_file():
             raise RuntimeError(
                 "npm validation checks require package-lock.json for "
                 "deterministic npm ci setup"
             )
-        setup.append("npm ci")
-    if not setup:
-        return ""
-    lines = [
-        "      - name: Install validation dependencies",
-        "        run: |",
-        *(f"          {command}" for command in setup),
-        "",
-    ]
-    return "\n".join(lines)
+        setup.extend(
+            [
+                "      - name: Set up Node.js",
+                f"        uses: {SETUP_NODE}",
+                "        with:",
+                '          node-version: "20"',
+                "      - name: Install npm validation dependencies",
+                "        run: npm ci",
+            ]
+        )
+    if "{pnpm}" in commands:
+        if manager != "pnpm" or not manager_version:
+            raise RuntimeError("pnpm validation checks require packageManager pnpm@<version>")
+        if not (repo_root / "pnpm-lock.yaml").is_file():
+            raise RuntimeError("pnpm validation checks require pnpm-lock.yaml")
+        setup.extend(
+            [
+                "      - name: Set up Node.js",
+                f"        uses: {SETUP_NODE}",
+                "        with:",
+                '          node-version: "20"',
+                "      - name: Install pnpm validation dependencies",
+                "        run: |",
+                "          corepack enable",
+                f"          corepack prepare pnpm@{manager_version} --activate",
+                "          pnpm install --frozen-lockfile",
+            ]
+        )
+    if any(check["id"] == "powershell-lint" for check in checks):
+        setup.extend(
+            [
+                "      - name: Install PSScriptAnalyzer",
+                "        shell: pwsh",
+                "        run: |",
+                "          Set-PSRepository PSGallery -InstallationPolicy Trusted",
+                "          Install-Module PSScriptAnalyzer -Scope CurrentUser -RequiredVersion 1.25.0 -Force -ErrorAction Stop",
+            ]
+        )
+    runner = "windows-latest" if "{pwsh}" in commands else "ubuntu-latest"
+    return runner, "\n".join(setup), validation_python
 
 
 def validation_surfaces(
@@ -290,16 +504,21 @@ def validation_surfaces(
         marker = "__CHECK_DEFINITIONS__"
         if template.count(marker) != 1:
             raise RuntimeError("repository validator template marker is invalid")
-        validator_text = template.replace(marker, repr(checks))
+        validator_text = template.replace(
+            marker,
+            pprint.pformat(checks, sort_dicts=False, width=72),
+        )
     workflow_text = None
     if not workflow.is_file():
         template = WORKFLOW_TEMPLATE.read_text(encoding="utf-8")
-        marker = "      # __SETUP_STEP__"
-        if template.count(marker) != 1:
-            raise RuntimeError("CI validation template marker is invalid")
-        workflow_text = template.replace(
-            marker,
-            _validation_setup_step(repo_root, checks),
+        markers = ("__RUNNER__", "      # __SETUP_STEPS__", "__VALIDATOR_PYTHON__")
+        if any(template.count(marker) != 1 for marker in markers):
+            raise RuntimeError("CI validation template markers are invalid")
+        runner, setup, validation_python = _validation_workflow(repo_root, checks)
+        workflow_text = (
+            template.replace("__RUNNER__", runner)
+            .replace("      # __SETUP_STEPS__", setup)
+            .replace("__VALIDATOR_PYTHON__", validation_python)
         )
     return validator_text, workflow_text, [str(check["id"]) for check in checks]
 

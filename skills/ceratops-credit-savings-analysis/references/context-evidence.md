@@ -12,6 +12,8 @@ required freshness or safety work as waste.
   collection, and evidence loaded beyond the current decision. Use recorded
   result-size and token evidence to identify files, command results, or evidence
   bundles materially larger than the decision required.
+- Inspect the largest aggregate input-token and uncached-input clusters even
+  when the likely control saves no model calls.
 - Treat chronology, call relationships, fingerprints, and recorded sizes as
   deterministic evidence. Decide semantically whether context was fresh,
   sufficient, required, or excessive; the collector does not make that judgment.
@@ -25,13 +27,16 @@ required freshness or safety work as waste.
   verification, or workflow gates.
 - Prefer a durable control that reuses an existing bundle, narrows a path,
   section, selector, or query, or records the evidence boundary once.
+- Contribute temporary-control evidence when repeatedly reconstructed evidence
+  should become reusable collected context. Do not duplicate the owning
+  rework-validation review.
 
 ## Completion Gate
 
 Account for every controller-exposed candidate as confirmed, plausible,
-dismissed, or necessary. Write the compact decision and invoke `submit` in the
-same orchestration tool call; the controller constructs and persists the
-complete surface result.
+dismissed, or necessary against original evidence. Persist the complete
+classification and any temporary-control contributions in the single
+controller-owned confirmation result.
 
 ## Output Contract
 

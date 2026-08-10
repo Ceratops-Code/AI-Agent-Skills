@@ -2,9 +2,9 @@
 
 ## Goal
 
-Run the fixed controller queue with one shared evidence bundle, one focused
-model pass per public surface, and one internal synthesis pass. Preserve every
-confirmed finding and present every outstanding finding.
+Run one complete two-tier controller plan with shared evidence, Spark discovery
+over every candidate chunk, one GPT-5.6 confirmation per public surface, and
+one internal GPT-5.6 synthesis. Preserve and present every confirmed finding.
 
 ## Inputs And Constraints
 
@@ -29,44 +29,47 @@ confirmed finding and present every outstanding finding.
 
 ## Workflow
 
-1. In one preparation model call, run controller `start` once. It collects the
-   session once and returns the first bounded pass packet containing the direct
-   action reference, a complete compact observable-call cluster inventory,
-   bounded representative detail, the decision contract, and exact paths. Every
-   candidate appears in exactly one cluster; deterministic code groups only
-   observable attributes, while the model judges necessity and avoidability.
-2. For each of the five public surfaces, use exactly one model call. Analyze only
-   that packet, write the compact surface decision, and run `submit` inside the
-   same orchestration tool call. Do not use model turns to assemble the full
-   result, calculate coverage, create evidence references, validate, persist,
-   advance, or load the next packet; the controller performs all of them.
-3. Use exactly one internal synthesis model call. Rank every accepted finding
-   and risk once, write that compact ordering decision, and run `submit` in the
-   same orchestration tool call. The controller derives primary and secondary
-   mappings, evidence-backed necessary classifications, the unassessed
-   remainder, totals, finalization, cleanup, and the complete rendered report.
-4. Deliver that rendered report in one final model call. A full single-thread
-   analysis therefore uses eight calls total: one preparation, five public
-   surfaces, one synthesis/finalization, and one delivery. Exactly six calls are
-   semantic and no call is reserved for model-mediated bookkeeping.
+1. Run controller `plan` once. It resolves, collects, and parses the selected
+   session once; retains complete protected evidence; formats every candidate
+   for all five surfaces in fixed order; snapshots referenced final canonical
+   artifacts read-only with protected content and immutable hashes; partitions
+   adjacent candidates into finite model-sized chunks; freezes primary and
+   consolidation manifests; and reports projected Spark calls before model
+   execution. Stop on malformed, empty, or clearly runaway planning.
+2. Run controller `execute`. It processes the finite ordered resumable Spark
+   queue with `gpt-5.3-codex-spark`. Every primary result must account for every
+   chunk candidate exactly once, and every consolidation must preserve all
+   candidate IDs and material variants. The controller persists identity and
+   content hashes and validates complete Spark coverage before GPT-5.6 begins.
+3. In fixed surface order, the controller runs exactly one `gpt-5.6-sol`
+   confirmation per surface. Each self-contained packet includes every Spark
+   candidate and original evidence excerpts or explicit retained-payload
+   projections. Never suppress or silently truncate a candidate to fit.
+4. The controller runs exactly one `gpt-5.6-sol` synthesis. It merges duplicate
+   owner/control findings and temporary-control contributions once, preserves
+   contributing surfaces, assigns savings once, classifies every call, and
+   retains every confirmed finding. A full analysis therefore uses exactly six
+   GPT-5.6 semantic calls; Spark calls are additional and manifest-derived.
 
-On interruption, resume with `status --packet`; never recollect prepared
-evidence. The lower-level `prepare`, `advance`, `status`, and `finalize` commands
-remain available for validated direct callers, but are not the ordinary
-model-facing workflow.
+Every child Codex execution uses an explicit model, a read-only sandbox, no
+approvals, ephemeral state, a self-contained no-tools prompt, and
+controller-owned schema, event, and result files. The controller waits
+internally and emits periodic non-model progress. On interruption, rerun
+`execute`; never recollect prepared evidence or overwrite an accepted result.
 
-For a batch, run `prepare-batch` once to freeze the selection and prepare one
-controller per thread. Complete each child through `advance-batch` and resume
-with `status-batch`. After all children finish, run one internal `batch-summary`
-pass that assigns every finding to one summary group, then advance and finalize.
-Never recollect a prepared session or create a temporary discovery script.
+For a batch, use the existing `prepare-batch`, `advance-batch`, `status-batch`,
+and `finalize-batch` compatibility interface. It freezes selection and each
+lower-level child controller once, preserves the existing batch manifest and
+summary contracts, and does not expose Spark chunking or synthesis as public
+actions. Never create a temporary discovery script.
 
 ## Completion Gate
 
-Complete only when the final packet reports `complete: true` and retained evidence
-contains every accepted pass, finding, risk, dismissal, exclusion, primary and
-secondary mapping, unassessed call, category and surface total, producer group,
-and ROI input.
+Complete only when orchestration status reports `complete: true` and retained
+evidence contains the frozen chunk manifest, every hashed Spark and GPT-5.6
+result, finding, risk, dismissal, exclusion, temporary-control review and
+merge, reviewed-no-confirmed-waste and unassessed call, producer group, and ROI
+input.
 For a batch, every selected child must also be finalized and indexed exactly
 once before batch finalization succeeds.
 
@@ -77,16 +80,19 @@ evidence. Follow the parent plain-language `Problem` and `Fix` format. Include
 expected calls saved per affected and similar run, implementation cost, and
 ongoing complexity. Report confirmed input/output-volume waste even when it
 saves zero model calls, but exclude it from call-savings arithmetic.
+For every such finding, report its aggregate input, cached-input, output,
+tool-argument, and tool-result evidence; state when none was confirmed.
 
 Put Minimal findings first. Within Minimal and then all remaining findings,
 sort by expected calls saved per similar run descending, using finding ID only
 as the deterministic tie-breaker. Do not use producer, helper category, or
 internal controller identity as a presentation group.
 
-Explain plausible risks under the parent contract. Also report necessary and
-protocol-overhead totals; outstanding avoidable calls versus total calls;
-unassessed calls separately; priced cost only when available; and the retained
-analysis-result path. Never suppress an outstanding finding.
+Explain plausible risks under the parent contract. Also report necessary,
+protocol-overhead, reviewed-no-confirmed-waste, and unassessed totals;
+outstanding avoidable calls versus total calls; priced cost only when
+available; and the retained analysis-result path. Never suppress an
+outstanding finding.
 
 For a batch, group similar findings across threads under plain-language problem
 titles, apply the same ordering, identify affected threads, report per-thread

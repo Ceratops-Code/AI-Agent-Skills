@@ -4,11 +4,12 @@
 ``prepare`` validates a closed request against exact current rule text and the
 existing structured history lookup, writes detailed context evidence, records
 exact task-temp cleanup ownership, and opens iteration one through
-``iteration_controller.py``. ``advance`` delegates the controller's atomic
-submit-and-open operation. After a completed run, ``finalize`` preflights every
-recorded disposable artifact, delegates controller cleanup, and removes the
-remaining owned request, inputs, and evidence. User-owned or undeclared inputs
-are preserved. This helper never edits a governed rule source or makes semantic
+``iteration_controller.py``. ``advance`` delegates the controller's validated
+atomic submit-and-open operation. After a completed run, ``finalize`` preserves
+the exact champion at the declared protected output, preflights every recorded
+disposable artifact, delegates controller cleanup, and removes the remaining
+owned request, inputs, and evidence. User-owned or undeclared inputs are
+preserved. This helper never edits a governed source or makes semantic
 judgments, and stdout contains only the pending/status payload needed for the
 next decision or ``OK``.
 """
@@ -25,9 +26,12 @@ import sys
 import tempfile
 from collections.abc import Mapping, Sequence
 
-REQUEST_SCHEMA = "ceratops-governance-proposal-request.v2"
-CONTEXT_SCHEMA = "ceratops-governance-proposal-context.v2"
-CLEANUP_SCHEMA = "ceratops-governance-proposal-cleanup.v1"
+from validate_rule_candidate import CONTEXT_SCHEMA as CANDIDATE_CONTEXT_SCHEMA
+from validate_rule_candidate import resolve_markdown_policy
+
+REQUEST_SCHEMA = "ceratops-governance-proposal-request.v3"
+CONTEXT_SCHEMA = "ceratops-governance-proposal-context.v3"
+CLEANUP_SCHEMA = "ceratops-governance-proposal-cleanup.v2"
 REQUEST_FIELDS = {
     "schema",
     "task_temp_root",
@@ -37,6 +41,7 @@ REQUEST_FIELDS = {
     "original",
     "regressions",
     "evidence_output",
+    "champion_output",
     "max_iterations",
     "mutation_authorized",
     "expected_side_effects",
@@ -47,6 +52,8 @@ SOURCE_FIELDS = {
     "history",
     "rule_ids",
     "expected_text",
+    "candidate_target",
+    "markdown_policy",
 }
 CLEANUP_FIELDS = {
     "schema",
@@ -54,6 +61,7 @@ CLEANUP_FIELDS = {
     "owned_artifacts",
     "protected_artifacts",
     "governed_sources",
+    "champion_output",
 }
 OWNED_ARTIFACT_FIELDS = {"role", "path", "sha256"}
 DISPOSABLE_ROLES = {
@@ -323,6 +331,28 @@ def _write_json_atomic(path: pathlib.Path, value: Mapping[str, object]) -> None:
             os.unlink(temp_name)
 
 
+def _write_bytes_atomic(path: pathlib.Path, value: bytes) -> None:
+    """Publish one exact protected output without exposing a partial file."""
+
+    descriptor, temp_name = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        dir=path.parent,
+    )
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(value)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_name, path)
+    except OSError as exc:
+        raise ProposalWorkflowError(
+            f"could not write champion output: {exc}"
+        ) from exc
+    finally:
+        if os.path.exists(temp_name):
+            os.unlink(temp_name)
+
+
 def _validated_request(path: pathlib.Path) -> dict[str, object]:
     request_path = _input_path(str(path), "request")
     request = _read_json(request_path, "request")
@@ -332,11 +362,14 @@ def _validated_request(path: pathlib.Path) -> dict[str, object]:
     task_temp_root = _verified_task_temp_root(request["task_temp_root"])
     state_value = request["state"]
     evidence_value = request["evidence_output"]
+    champion_value = request["champion_output"]
     iterations_value = request["iteration_artifacts"]
     if not isinstance(state_value, str) or not state_value:
         raise ProposalWorkflowError("state must be nonempty text")
     if not isinstance(evidence_value, str) or not evidence_value:
         raise ProposalWorkflowError("evidence_output must be nonempty text")
+    if not isinstance(champion_value, str) or not champion_value:
+        raise ProposalWorkflowError("champion_output must be nonempty text")
     if not isinstance(iterations_value, str) or not iterations_value:
         raise ProposalWorkflowError("iteration_artifacts must be nonempty text")
     state = _task_file(
@@ -351,14 +384,20 @@ def _validated_request(path: pathlib.Path) -> dict[str, object]:
         "evidence output",
         must_exist=False,
     )
+    champion = _task_file(
+        pathlib.Path(champion_value),
+        task_temp_root,
+        "champion output",
+        must_exist=False,
+    )
     iterations = _task_directory(
         pathlib.Path(iterations_value),
         task_temp_root,
         "iteration artifacts",
         may_exist=False,
     )
-    if state.exists() or evidence.exists():
-        existing = state if state.exists() else evidence
+    if state.exists() or evidence.exists() or champion.exists():
+        existing = state if state.exists() else evidence if evidence.exists() else champion
         raise ProposalWorkflowError(f"refusing to overwrite workflow output: {existing}")
     if iterations != _absolute(state.parent / "iterations"):
         raise ProposalWorkflowError(
@@ -410,7 +449,7 @@ def _validated_request(path: pathlib.Path) -> dict[str, object]:
     if not isinstance(mutation_authorized, bool):
         raise ProposalWorkflowError("mutation_authorized must be boolean")
     side_effects = _strings(request["expected_side_effects"], "expected_side_effects")
-    collisions = [request_path, state, evidence, iterations, original]
+    collisions = [request_path, state, evidence, champion, iterations, original]
     if regressions is not None:
         collisions.append(regressions)
     if len(collisions) != len(set(collisions)):
@@ -454,15 +493,45 @@ def _validated_request(path: pathlib.Path) -> dict[str, object]:
             raw["expected_text"],
             f"source {index} expected_text",
         )
+        candidate_target = raw["candidate_target"]
+        if not isinstance(candidate_target, bool):
+            raise ProposalWorkflowError(
+                f"source {index} candidate_target must be boolean"
+            )
+        policy_value = raw["markdown_policy"]
+        if candidate_target:
+            try:
+                markdown_policy = resolve_markdown_policy(
+                    policy_value,
+                    label=f"source {index} markdown_policy",
+                )
+            except ValueError as exc:
+                raise ProposalWorkflowError(str(exc)) from exc
+        elif policy_value is not None:
+            raise ProposalWorkflowError(
+                f"source {index} non-target markdown_policy must be null"
+            )
+        else:
+            markdown_policy = None
         try:
-            current = rules.read_text(encoding="utf-8")
+            current_bytes = rules.read_bytes()
+            current = current_bytes.decode("utf-8-sig")
         except (OSError, UnicodeError) as exc:
             raise ProposalWorkflowError(
                 f"source {index} rules are unreadable: {exc}"
             ) from exc
         text_records: list[dict[str, object]] = []
+        resolved_expected: list[str] = []
+        without_crlf = current.replace("\r\n", "")
+        newline = (
+            "\r\n"
+            if "\r\n" in current and "\n" not in without_crlf
+            else "\r" if "\r" in without_crlf and "\n" not in without_crlf else "\n"
+        )
         for text_index, text in enumerate(expected_text):
-            count = current.count(text)
+            normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+            resolved = normalized.replace("\n", newline)
+            count = current.count(resolved)
             if count != 1:
                 raise ProposalWorkflowError(
                     f"source {index} expected_text[{text_index}] must occur "
@@ -470,23 +539,29 @@ def _validated_request(path: pathlib.Path) -> dict[str, object]:
                 )
             text_records.append(
                 {
-                    "sha256": _hash_text(text),
-                    "characters": len(text),
+                    "sha256": _hash_text(resolved),
+                    "characters": len(resolved),
                 }
             )
+            resolved_expected.append(resolved)
         sources.append(
             {
                 "rules": str(rules),
                 "history": str(history) if history is not None else None,
                 "rule_ids": rule_ids,
-                "expected_text": expected_text,
+                "expected_text": resolved_expected,
                 "text_records": text_records,
+                "candidate_target": candidate_target,
+                "markdown_policy": markdown_policy,
+                "source_sha256": hashlib.sha256(current_bytes).hexdigest(),
             }
         )
     if history_backed == 0:
         raise ProposalWorkflowError(
             "at least one applicable source must include structured history"
         )
+    if not any(source["candidate_target"] for source in sources):
+        raise ProposalWorkflowError("at least one source must be a candidate target")
     all_inputs = {original}
     all_inputs.update(pathlib.Path(str(source["rules"])) for source in sources)
     all_inputs.update(
@@ -496,7 +571,7 @@ def _validated_request(path: pathlib.Path) -> dict[str, object]:
     )
     if regressions is not None:
         all_inputs.add(regressions)
-    if state in all_inputs or evidence in all_inputs:
+    if state in all_inputs or evidence in all_inputs or champion in all_inputs:
         raise ProposalWorkflowError("outputs must not overwrite proposal inputs")
     for source in sources:
         source_paths = [pathlib.Path(str(source["rules"]))]
@@ -511,7 +586,7 @@ def _validated_request(path: pathlib.Path) -> dict[str, object]:
                 "task_temp_root must not contain a governed source"
             )
         rules_parent = pathlib.Path(str(source["rules"])).parent
-        for output in (state, evidence):
+        for output in (state, evidence, champion):
             try:
                 output.relative_to(rules_parent)
             except ValueError:
@@ -522,6 +597,7 @@ def _validated_request(path: pathlib.Path) -> dict[str, object]:
     return {
         "state": state,
         "evidence": evidence,
+        "champion": champion,
         "request": request_path,
         "task_temp_root": task_temp_root,
         "iterations": iterations,
@@ -564,6 +640,21 @@ def command_prepare(request_path: pathlib.Path) -> str:
         )
     disposable = request["disposable_artifacts"]
     assert isinstance(disposable, set)
+    candidate_validation = {
+        "schema": CANDIDATE_CONTEXT_SCHEMA,
+        "rule_stack": [str(source["rules"]) for source in sources],
+        "targets": [
+            {
+                "rules": source["rules"],
+                "history": source["history"],
+                "source_sha256": source["source_sha256"],
+                "markdown_policy": source["markdown_policy"],
+                "expected_old": source["expected_text"],
+            }
+            for source in sources
+            if source["candidate_target"]
+        ],
+    }
     evidence = {
         "schema": CONTEXT_SCHEMA,
         "request_schema": REQUEST_SCHEMA,
@@ -576,12 +667,17 @@ def command_prepare(request_path: pathlib.Path) -> str:
                 "history": source["history"],
                 "rule_ids": source["rule_ids"],
                 "expected_text": source["text_records"],
+                "candidate_target": source["candidate_target"],
+                "source_sha256": source["source_sha256"],
+                "markdown_policy": source["markdown_policy"],
             }
             for source in sources
         ],
         "history_lookup": lookup,
+        "candidate_validation": candidate_validation,
     }
     evidence_path = request["evidence"]
+    champion_path = request["champion"]
     state_path = request["state"]
     original = request["original"]
     regressions = request["regressions"]
@@ -589,6 +685,7 @@ def command_prepare(request_path: pathlib.Path) -> str:
     task_temp_root = request["task_temp_root"]
     iterations_path = request["iterations"]
     assert isinstance(evidence_path, pathlib.Path)
+    assert isinstance(champion_path, pathlib.Path)
     assert isinstance(state_path, pathlib.Path)
     assert isinstance(original, pathlib.Path)
     assert isinstance(owned_request_path, pathlib.Path)
@@ -604,15 +701,24 @@ def command_prepare(request_path: pathlib.Path) -> str:
         str(original),
         "--max-iterations",
         str(request["max_iterations"]),
-        "--open-first",
+        "--validation-context",
+        str(evidence_path),
     ]
     if regressions is not None:
         arguments.extend(("--regressions", str(regressions)))
     try:
-        payload = _run_helper("iteration_controller.py", arguments)
+        initialized = _run_helper("iteration_controller.py", arguments)
     except ProposalWorkflowError:
         evidence_path.unlink(missing_ok=True)
         raise
+    if initialized != "OK":
+        raise ProposalWorkflowError(
+            "iteration_controller.py returned invalid initialization"
+        )
+    payload = _run_helper(
+        "iteration_controller.py",
+        ["next", "--state", str(state_path)],
+    )
     try:
         parsed = json.loads(payload)
     except json.JSONDecodeError as exc:
@@ -621,7 +727,7 @@ def command_prepare(request_path: pathlib.Path) -> str:
         ) from exc
     if not isinstance(parsed, Mapping):
         raise ProposalWorkflowError("iteration controller pending payload is invalid")
-    for field in ("candidate", "assessment"):
+    for field in ("candidate", "assessment", "validation_evidence"):
         raw_pending = parsed.get(field)
         if not isinstance(raw_pending, str) or not raw_pending:
             raise ProposalWorkflowError(
@@ -665,6 +771,7 @@ def command_prepare(request_path: pathlib.Path) -> str:
             )
         elif role in {"request", "original", "regressions"}:
             protected_artifacts.append(str(artifact_path))
+    protected_artifacts.append(str(champion_path))
     governed_sources: list[str] = []
     for source in sources:
         assert isinstance(source, Mapping)
@@ -677,6 +784,7 @@ def command_prepare(request_path: pathlib.Path) -> str:
         "owned_artifacts": owned_artifacts,
         "protected_artifacts": protected_artifacts,
         "governed_sources": governed_sources,
+        "champion_output": str(champion_path),
     }
     _write_json_atomic(state_path, controller_state)
     return json.dumps(parsed, separators=(",", ":"))
@@ -724,6 +832,15 @@ def _validated_cleanup(
     if raw.get("schema") != CLEANUP_SCHEMA:
         raise ProposalWorkflowError(f"proposal cleanup schema must be {CLEANUP_SCHEMA}")
     task_temp_root = _verified_task_temp_root(raw["task_temp_root"])
+    champion_value = raw["champion_output"]
+    if not isinstance(champion_value, str) or not champion_value:
+        raise ProposalWorkflowError("champion_output must be a nonempty path")
+    champion_output = _task_file(
+        pathlib.Path(champion_value),
+        task_temp_root,
+        "champion output",
+        must_exist=False,
+    )
     artifacts = raw["owned_artifacts"]
     if (
         not isinstance(artifacts, Sequence)
@@ -801,6 +918,8 @@ def _validated_cleanup(
         raise ProposalWorkflowError("protected_artifacts must be unique")
     if len(governed_paths) != len(set(governed_paths)):
         raise ProposalWorkflowError("governed_sources must be unique")
+    if champion_output not in protected_paths:
+        raise ProposalWorkflowError("champion_output must be protected")
     if paths.intersection(protected_paths) or paths.intersection(governed_paths):
         raise ProposalWorkflowError("owned cleanup path overlaps a protected path")
     for governed_path in governed_paths:
@@ -814,6 +933,7 @@ def _validated_cleanup(
         "owned_artifacts": owned,
         "protected_artifacts": protected_paths,
         "governed_sources": governed_paths,
+        "champion_output": champion_output,
     }
 
 
@@ -830,7 +950,7 @@ def _preflight_iteration_artifacts(
     for record in records:
         if not isinstance(record, Mapping):
             raise ProposalWorkflowError("controller record must be an object")
-        for field in ("candidate", "assessment"):
+        for field in ("candidate", "assessment", "validation_evidence"):
             raw_path = record.get(field)
             expected_hash = record.get(f"{field}_sha256")
             if not isinstance(raw_path, str) or not raw_path:
@@ -882,6 +1002,20 @@ def command_finalize(state: pathlib.Path) -> str:
     )
     assert isinstance(iterations, pathlib.Path)
     _preflight_iteration_artifacts(controller_state, iterations)
+    champion = controller_state.get("champion")
+    if not isinstance(champion, Mapping):
+        raise ProposalWorkflowError("completed proposal lacks a champion")
+    champion_path_value = champion.get("candidate")
+    champion_hash = champion.get("candidate_sha256")
+    if not isinstance(champion_path_value, str) or not _valid_sha256(champion_hash):
+        raise ProposalWorkflowError("controller champion record is invalid")
+    champion_path = _absolute(pathlib.Path(champion_path_value))
+    if champion_path.parent != iterations or not champion_path.is_file():
+        raise ProposalWorkflowError("controller champion artifact is unavailable")
+    if _file_hash(champion_path) != champion_hash:
+        raise ProposalWorkflowError("controller champion changed after submission")
+    champion_output = cleanup["champion_output"]
+    assert isinstance(champion_output, pathlib.Path)
     for artifact in artifacts:
         role = artifact["role"]
         path = artifact["path"]
@@ -893,6 +1027,11 @@ def command_finalize(state: pathlib.Path) -> str:
             raise ProposalWorkflowError(f"owned {role} is not a regular file: {path}")
         if _file_hash(path) != artifact["sha256"]:
             raise ProposalWorkflowError(f"owned {role} changed after prepare")
+    if champion_output.exists():
+        if not champion_output.is_file() or _file_hash(champion_output) != champion_hash:
+            raise ProposalWorkflowError("champion_output already contains other content")
+    else:
+        _write_bytes_atomic(champion_output, champion_path.read_bytes())
     for artifact in artifacts:
         if artifact["role"] in {"state", "iterations"}:
             continue

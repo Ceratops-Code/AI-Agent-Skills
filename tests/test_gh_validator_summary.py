@@ -28,6 +28,7 @@ from github_contract_engine import (
 from github_contract_engine.collect_observed_states import (  # noqa: E402
     _artifact_state,
     _fetch_all,
+    _registry_confirmed_artifact_types,
     state_producer,
 )
 from github_contract_engine.collectors import registries  # noqa: E402
@@ -653,7 +654,11 @@ class GHContractStateEngineTests(unittest.TestCase):
                 "package.json",
             ],
             "texts": {
-                ".github/workflows/publish.yml": "uses: docker/build-push-action@sha\n",
+                ".github/workflows/publish.yml": (
+                    "uses: docker/build-push-action@sha\n"
+                    "with:\n"
+                    "  push: true\n"
+                ),
                 "Dockerfile": "FROM node:24\n",
                 "package.json": json.dumps(
                     {"name": "private-app", "version": "1.0.0", "private": True}
@@ -920,49 +925,292 @@ class GHContractStateEngineTests(unittest.TestCase):
         self.assertIn("python", types["language_or_iac"])
 
     def test_classifier_requires_publish_evidence(self):
-        local: dict[str, Any] = {
-            "files": ["pyproject.toml"],
-            "texts": {
-                "pyproject.toml": '[project]\nname = "demo"\nversion = "1.0.0"\n',
+        cases: list[dict[str, Any]] = [
+            {
+                "name": "docker_oci",
+                "artifact_type": "docker_oci_image",
+                "files": ["Dockerfile"],
+                "texts": {"Dockerfile": "FROM alpine:3.22\n"},
+                "workflow": "run: docker push example.invalid/demo:1.0.0\n",
             },
-        }
-        manifest_only = classify_repository(
-            {}, local, [], self.contracts["artifact"]["artifact_type_system"]
-        )
-        self.assertEqual(manifest_only["artifact_surface"], ["no_artifact"])
+            {
+                "name": "pypi",
+                "artifact_type": "pypi_python_package",
+                "files": ["pyproject.toml"],
+                "texts": {
+                    "pyproject.toml": (
+                        '[project]\nname = "demo"\nversion = "1.0.0"\n'
+                    )
+                },
+                "workflow": "uses: pypa/gh-action-pypi-publish@release/v1\n",
+            },
+            {
+                "name": "npm",
+                "artifact_type": "npm_package",
+                "files": ["package.json"],
+                "texts": {
+                    "package.json": json.dumps(
+                        {"name": "demo", "version": "1.0.0", "license": "MIT"}
+                    )
+                },
+                "workflow": "run: npm publish\n",
+            },
+            {
+                "name": "github_packages_npm",
+                "candidate_type": "npm_package",
+                "artifact_type": "github_packages_npm",
+                "files": ["package.json"],
+                "texts": {
+                    "package.json": json.dumps(
+                        {"name": "demo", "version": "1.0.0", "license": "MIT"}
+                    )
+                },
+                "workflow": (
+                    "registry-url: https://npm.pkg.github.com\n"
+                    "run: npm publish\n"
+                ),
+            },
+            {
+                "name": "maven",
+                "artifact_type": "maven_package",
+                "files": ["pom.xml"],
+                "texts": {"pom.xml": "<project><artifactId>demo</artifactId></project>"},
+                "workflow": "run: ./mvnw deploy\n",
+            },
+            {
+                "name": "gradle",
+                "artifact_type": "gradle_maven_package",
+                "files": ["build.gradle.kts"],
+                "texts": {"build.gradle.kts": 'plugins { id("maven-publish") }\n'},
+                "workflow": "run: ./gradlew publish\n",
+            },
+            {
+                "name": "nuget",
+                "artifact_type": "nuget_package",
+                "files": ["Demo.csproj"],
+                "texts": {"Demo.csproj": "<PackageId>Demo</PackageId>\n"},
+                "workflow": "run: dotnet nuget push Demo.1.0.0.nupkg\n",
+            },
+            {
+                "name": "crates",
+                "artifact_type": "crates_package",
+                "files": ["Cargo.toml"],
+                "texts": {"Cargo.toml": '[package]\nname = "demo"\n'},
+                "workflow": "run: cargo publish\n",
+            },
+            {
+                "name": "rubygems",
+                "artifact_type": "rubygems_package",
+                "files": ["demo.gemspec"],
+                "texts": {"demo.gemspec": "Gem::Specification.new do |spec|\nend\n"},
+                "workflow": "run: gem push demo-1.0.0.gem\n",
+            },
+            {
+                "name": "powershell_gallery",
+                "artifact_type": "powershell_gallery_module",
+                "files": ["Demo.psd1"],
+                "texts": {
+                    "Demo.psd1": "@{ RootModule = 'Demo.psm1'; ModuleVersion = '1.0.0' }\n"
+                },
+                "workflow": "run: Publish-Module -Path Demo\n",
+            },
+            {
+                "name": "helm",
+                "artifact_type": "helm_chart",
+                "files": ["Chart.yaml"],
+                "texts": {"Chart.yaml": "name: demo\nversion: 1.0.0\n"},
+                "workflow": "run: helm push demo-1.0.0.tgz oci://example.invalid\n",
+            },
+            {
+                "name": "terraform",
+                "artifact_type": "terraform_module",
+                "files": ["main.tf"],
+                "texts": {"main.tf": 'variable "name" {}\n'},
+                "workflow": None,
+            },
+            {
+                "name": "installer",
+                "artifact_type": "installer_or_cli_binary",
+                "files": [".goreleaser.yml"],
+                "texts": {".goreleaser.yml": "project_name: demo\n"},
+                "workflow": "run: goreleaser release\n",
+            },
+            {
+                "name": "binary_archive",
+                "artifact_type": "generic_binary_archive",
+                "files": ["dist/demo.zip"],
+                "texts": {},
+                "workflow": "run: gh release upload v1.0.0 dist/demo.zip\n",
+            },
+            {
+                "name": "static_docs",
+                "artifact_type": "static_docs_site",
+                "files": ["mkdocs.yml"],
+                "texts": {"mkdocs.yml": "site_name: Demo\n"},
+                "workflow": "uses: actions/deploy-pages@v4\n",
+            },
+        ]
+        manifest_results: dict[str, dict[str, Any]] = {}
+        for case in cases:
+            with self.subTest(case=case["name"], evidence="manifest_only"):
+                local: dict[str, Any] = {
+                    "files": list(case["files"]),
+                    "texts": dict(case["texts"]),
+                }
+                manifest_only = classify_repository(
+                    {}, local, [], self.contracts["artifact"]["artifact_type_system"]
+                )
+                manifest_results[case["name"]] = manifest_only
+                self.assertIn(
+                    case.get("candidate_type", case["artifact_type"]),
+                    manifest_only["artifact_candidates"],
+                )
+                self.assertEqual(manifest_only["artifact_surface"], ["no_artifact"])
 
-        local["files"].append(".github/workflows/publish.yml")
-        local["texts"][".github/workflows/publish.yml"] = (
-            "uses: pypa/gh-action-pypi-publish@release/v1\n"
-        )
-        workflow_backed = classify_repository(
-            {}, local, [], self.contracts["artifact"]["artifact_type_system"]
-        )
-        self.assertEqual(workflow_backed["artifact_surface"], ["pypi_python_package"])
+            with self.subTest(case=case["name"], evidence="confirmed"):
+                local = {
+                    "files": list(case["files"]),
+                    "texts": dict(case["texts"]),
+                }
+                declared: list[str] = []
+                if case["workflow"]:
+                    local["files"].append(".github/workflows/publish.yml")
+                    local["texts"][".github/workflows/publish.yml"] = case["workflow"]
+                else:
+                    declared.append(case["artifact_type"])
+                confirmed = classify_repository(
+                    {},
+                    local,
+                    [],
+                    self.contracts["artifact"]["artifact_type_system"],
+                    declared_artifact_types=declared,
+                )
+                self.assertIn(case["artifact_type"], confirmed["artifact_surface"])
 
-        local["files"].remove(".github/workflows/publish.yml")
-        local["texts"].pop(".github/workflows/publish.yml")
-        contract_backed = classify_repository(
+        release_backed = classify_repository(
             {},
-            local,
+            {"files": [], "texts": {}},
             [],
             self.contracts["artifact"]["artifact_type_system"],
-            declared_artifact_types=["pypi_python_package"],
+            release_assets_count=1,
         )
-        self.assertEqual(contract_backed["artifact_surface"], ["pypi_python_package"])
+        self.assertEqual(release_backed["artifact_candidates"], [])
+        self.assertEqual(release_backed["artifact_surface"], ["github_release_binary"])
 
-        npm_local = {
-            "files": ["package.json"],
-            "texts": {
-                "package.json": json.dumps(
-                    {"name": "demo", "version": "1.0.0", "license": "MIT"}
-                )
+        weak_workflows = [
+            {
+                "name": "docker_login",
+                "files": ["Dockerfile", ".github/workflows/publish.yml"],
+                "texts": {
+                    "Dockerfile": "FROM alpine:3.22\n",
+                    ".github/workflows/publish.yml": (
+                        "uses: docker/login-action@v3\n"
+                    ),
+                },
+                "candidate": "docker_oci_image",
             },
-        }
-        npm_types = classify_repository(
-            {}, npm_local, [], self.contracts["artifact"]["artifact_type_system"]
+            {
+                "name": "docker_build_without_push",
+                "files": ["Dockerfile", ".github/workflows/publish.yml"],
+                "texts": {
+                    "Dockerfile": "FROM alpine:3.22\n",
+                    ".github/workflows/publish.yml": (
+                        "uses: docker/build-push-action@v6\n"
+                    ),
+                },
+                "candidate": "docker_oci_image",
+            },
+            {
+                "name": "pages_upload_without_deploy",
+                "files": ["mkdocs.yml", ".github/workflows/publish.yml"],
+                "texts": {
+                    "mkdocs.yml": "site_name: Demo\n",
+                    ".github/workflows/publish.yml": (
+                        "uses: actions/upload-pages-artifact@v3\n"
+                    ),
+                },
+                "candidate": "static_docs_site",
+            },
+        ]
+        for weak_case in weak_workflows:
+            with self.subTest(weak_workflow=weak_case["name"]):
+                weak = classify_repository(
+                    {},
+                    {"files": weak_case["files"], "texts": weak_case["texts"]},
+                    [],
+                    self.contracts["artifact"]["artifact_type_system"],
+                )
+                self.assertEqual(
+                    weak["artifact_candidates"], [weak_case["candidate"]]
+                )
+                self.assertEqual(weak["artifact_surface"], ["no_artifact"])
+
+        registry_confirmed = _registry_confirmed_artifact_types(
+            ["npm_package"],
+            {
+                "npm": {
+                    "packages": {
+                        "demo": {
+                            "ok": True,
+                            "artifact_types": ["npm_package"],
+                        }
+                    },
+                    "all_resolved": True,
+                }
+            },
         )
-        self.assertEqual(npm_types["artifact_surface"], ["npm_package"])
+        self.assertEqual(registry_confirmed, ["npm_package"])
+
+        def fake_maven(name: str) -> dict[str, Any]:
+            return {"ok": True, "coordinate": name}
+
+        with mock.patch.dict(
+            registries.FETCHERS,
+            {
+                "maven_package": ("maven", fake_maven),
+                "gradle_maven_package": ("maven", fake_maven),
+            },
+            clear=True,
+        ):
+            typed_registry = registries.collect_registries(
+                {
+                    "artifact_contracts": [
+                        {
+                            "artifact_type": "maven_package",
+                            "package_or_image_name": "example:demo",
+                        }
+                    ]
+                },
+                {},
+                ["maven_package", "gradle_maven_package"],
+                [{"assertions": [{"path": "/artifact/live_metadata/all_resolved"}]}],
+            )
+            self.assertEqual(
+                typed_registry["maven"]["packages"]["example:demo"][
+                    "artifact_types"
+                ],
+                ["maven_package"],
+            )
+            self.assertEqual(
+                _registry_confirmed_artifact_types(
+                    ["maven_package", "gradle_maven_package"], typed_registry
+                ),
+                ["maven_package"],
+            )
+
+        candidate_only_artifact = _artifact_state(
+            {},
+            {
+                "types": manifest_results["npm"],
+                "stale": {"releases": {"inventory": []}},
+            },
+            {"workflows": {"publish_detected": False}},
+            {},
+        )
+        self.assertEqual(candidate_only_artifact["types"], ["no_artifact"])
+        self.assertEqual(candidate_only_artifact["external_count"], 0)
+        self.assertEqual(candidate_only_artifact["contracts"], [])
+        self.assertEqual(candidate_only_artifact["contract_count"], 0)
 
     def test_aggregate_live_metadata_activates_registry_collectors(self):
         rules = [{"assertions": [{"path": "/artifact/live_metadata/all_resolved"}]}]

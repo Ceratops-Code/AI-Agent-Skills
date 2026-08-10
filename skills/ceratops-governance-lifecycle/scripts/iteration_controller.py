@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-"""Persist and validate proposal-iteration state.
+"""Persist, validate, and record proposal-iteration state.
 
 The controller makes no model calls and makes no semantic quality judgment. It
-owns numbering, source hashes, pending submissions, artifact records, and stop
-conditions so the agent cannot legitimately claim unrecorded work. State is
-written atomically and existing state is never overwritten by `init`.
-`finalize` removes only a completed run's verified controller artifacts and
-state while preserving its original and regression inputs.
+owns numbering, source hashes, pending submissions, validator orchestration,
+artifact records, and stop conditions so the agent cannot legitimately claim
+unrecorded work. Every submit invokes the shared candidate validator before any
+candidate hash or record is accepted. Mechanical failure leaves the same
+iteration pending. State is written atomically and existing state is never
+overwritten by `init`. `finalize` removes only a completed run's verified
+controller artifacts and state while preserving its inputs.
 """
 
 from __future__ import annotations
@@ -21,8 +23,13 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from validate_rule_candidate import (
+    RuleCandidateValidationError,
+    build_candidate_template,
+    validate_rule_candidate,
+)
 
-VERSION = 1
+VERSION = 2
 NO_IMPROVEMENT_LIMIT = 3
 
 
@@ -70,8 +77,8 @@ def save_state(path: Path, state: dict[str, Any]) -> None:
 
 
 def verify_sources(state: dict[str, Any]) -> None:
-    """Reject iteration when original or regression inputs changed."""
-    for key in ("original", "regressions"):
+    """Reject iteration when any immutable controller input changed."""
+    for key in ("original", "regressions", "validation_context"):
         source = state.get(key)
         if source and file_hash(Path(source["path"])) != source["sha256"]:
             raise ValueError(f"{key} changed after initialization")
@@ -93,27 +100,35 @@ def public_status(state: dict[str, Any]) -> dict[str, Any]:
 def open_iteration(
     state_path: Path, state: dict[str, Any]
 ) -> dict[str, Any]:
-    """Create one pending iteration in state and return its public payload."""
+    """Create one pending iteration and its structured candidate template."""
     iteration = state["next_iteration"]
     token = secrets.token_hex(12)
     artifact_dir = state_path.parent / "iterations"
     artifact_dir.mkdir(parents=True, exist_ok=True)
+    candidate = (artifact_dir / f"{iteration:03d}-candidate.json").resolve()
+    assessment = (artifact_dir / f"{iteration:03d}-assessment.md").resolve()
+    validation_evidence = (
+        artifact_dir / f"{iteration:03d}-validation.json"
+    ).resolve()
+    for path in (candidate, assessment, validation_evidence):
+        if path.exists():
+            raise ValueError(f"refusing to overwrite iteration artifact: {path}")
+    context = state["validation_context"]["value"]
+    template = build_candidate_template(context)
+    save_state(candidate, template)
     pending = {
         "iteration": iteration,
         "token": token,
-        "candidate": str(
-            (artifact_dir / f"{iteration:03d}-candidate.md").resolve()
-        ),
-        "assessment": str(
-            (artifact_dir / f"{iteration:03d}-assessment.md").resolve()
-        ),
+        "candidate": str(candidate),
+        "assessment": str(assessment),
+        "validation_evidence": str(validation_evidence),
     }
     state["pending"] = pending
     return pending
 
 
 def command_init(args: argparse.Namespace) -> None:
-    """Create immutable run state and optionally open iteration one."""
+    """Create immutable run state; ``next`` owns every iteration opening."""
     state_path = args.state.resolve()
     if state_path.exists():
         raise ValueError(f"refusing to overwrite existing state: {state_path}")
@@ -122,6 +137,15 @@ def command_init(args: argparse.Namespace) -> None:
     regressions = args.regressions.resolve() if args.regressions else None
     if regressions:
         read_nonempty(regressions, "regressions")
+    validation_context = args.validation_context.resolve()
+    context_text = read_nonempty(validation_context, "validation_context")
+    raw_context = json.loads(context_text)
+    if not isinstance(raw_context, dict):
+        raise ValueError("validation_context must be a JSON object")
+    context_value = raw_context.get("candidate_validation", raw_context)
+    if not isinstance(context_value, dict):
+        raise ValueError("validation_context candidate_validation must be an object")
+    build_candidate_template(context_value)
     state = {
         "version": VERSION,
         "original": {"path": str(original), "sha256": file_hash(original)},
@@ -130,6 +154,11 @@ def command_init(args: argparse.Namespace) -> None:
             if regressions
             else None
         ),
+        "validation_context": {
+            "path": str(validation_context),
+            "sha256": file_hash(validation_context),
+            "value": context_value,
+        },
         "max_iterations": args.max_iterations,
         "patience": NO_IMPROVEMENT_LIMIT,
         "next_iteration": 1,
@@ -140,12 +169,8 @@ def command_init(args: argparse.Namespace) -> None:
         "complete": False,
         "stop_reason": None,
     }
-    pending = open_iteration(state_path, state) if args.open_first else None
     save_state(state_path, state)
-    if pending:
-        print(json.dumps(pending, separators=(",", ":")))
-    else:
-        print("OK")
+    print("OK")
 
 
 def command_next(args: argparse.Namespace) -> None:
@@ -180,8 +205,18 @@ def record_iteration(
         raise ValueError("iteration or token does not match pending state")
     candidate = Path(pending["candidate"])
     assessment = Path(pending["assessment"])
+    validation_evidence = Path(pending["validation_evidence"])
     read_nonempty(candidate, "candidate")
     read_nonempty(assessment, "assessment")
+    try:
+        validate_rule_candidate(
+            candidate,
+            validation_evidence,
+            expected_context=state["validation_context"]["value"],
+            fix=True,
+        )
+    except RuleCandidateValidationError as error:
+        raise ValueError(str(error)) from error
     if outcome == "improved" and regressions != "passed":
         raise ValueError("an improved candidate must pass regressions")
     record = {
@@ -192,6 +227,8 @@ def record_iteration(
         "candidate_sha256": file_hash(candidate),
         "assessment": str(assessment),
         "assessment_sha256": file_hash(assessment),
+        "validation_evidence": str(validation_evidence),
+        "validation_evidence_sha256": file_hash(validation_evidence),
     }
     state["records"].append(record)
     if outcome == "improved":
@@ -285,7 +322,7 @@ def finalization_targets(
             or iteration < 1
         ):
             raise ValueError("state record has invalid iteration")
-        for field in ("candidate", "assessment"):
+        for field in ("candidate", "assessment", "validation_evidence"):
             raw_path = record.get(field)
             expected_hash = record.get(f"{field}_sha256")
             if not isinstance(raw_path, str) or not raw_path:
@@ -299,9 +336,13 @@ def finalization_targets(
                 )
             ):
                 raise ValueError(f"state record has invalid {field} hash")
-            expected_path = (
-                artifact_dir / f"{iteration:03d}-{field}.md"
-            ).resolve()
+            suffix = ".md" if field == "assessment" else ".json"
+            artifact_name = (
+                f"{iteration:03d}-validation{suffix}"
+                if field == "validation_evidence"
+                else f"{iteration:03d}-{field}{suffix}"
+            )
+            expected_path = (artifact_dir / artifact_name).resolve()
             if Path(raw_path).resolve() != expected_path:
                 raise ValueError(
                     f"recorded {field} path is outside controller ownership"
@@ -364,12 +405,8 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--state", type=Path, required=True)
     init.add_argument("--original", type=Path, required=True)
     init.add_argument("--regressions", type=Path)
+    init.add_argument("--validation-context", type=Path, required=True)
     init.add_argument("--max-iterations", type=positive_int, default=200)
-    init.add_argument(
-        "--open-first",
-        action="store_true",
-        help="open iteration one and emit its pending payload",
-    )
     init.set_defaults(handler=command_init)
 
     next_iteration = commands.add_parser("next", help="open one iteration")

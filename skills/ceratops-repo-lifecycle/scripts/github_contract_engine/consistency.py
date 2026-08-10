@@ -11,7 +11,9 @@ from typing import Any
 from .collect_observed_states import PRODUCER_REGISTRY, state_producer
 from .collectors.local_repository import (
     ARTIFACT_DETECTOR_KEYS,
+    ARTIFACT_DETECTOR_SURFACES,
     ARTIFACT_DETECTOR_WHEN,
+    ARTIFACT_PUBLICATION_EVIDENCE_KEYS,
     COLLECTION_KEYS as LOCAL_COLLECTION_KEYS,
 )
 from .collectors.repository import (
@@ -203,40 +205,102 @@ def _validate_artifact_detectors(
     type_system = contract.get("artifact_type_system")
     if type_system is None:
         return errors
-    detectors = type_system.get("detectors") if isinstance(type_system, dict) else None
-    if not isinstance(detectors, list):
-        return [f"{rel(path)}: artifact detectors must be an array"]
-    predicate_keys = ARTIFACT_DETECTOR_KEYS - {"artifact_type", "confidence"}
-    for detector in detectors:
-        if not isinstance(detector, dict):
-            errors.append(f"{rel(path)}: artifact detector must be an object")
-            continue
-        artifact_type = detector.get("artifact_type")
-        unknown = set(detector) - ARTIFACT_DETECTOR_KEYS
-        errors.extend(
-            f"{rel(path)}: {artifact_type} uses unsupported detector key {key}"
-            for key in sorted(unknown)
+    if not isinstance(type_system, dict):
+        return [f"{rel(path)}: artifact_type_system must be an object"]
+    expected_fields = {
+        "local_buildable_candidates": "artifact_candidates",
+        "confirmed_external_artifacts": "artifact_surface",
+    }
+    if type_system.get("classification_fields") != expected_fields:
+        errors.append(
+            f"{rel(path)}: artifact classification_fields must declare the closed "
+            "candidate and confirmed-external surfaces"
         )
-        if not isinstance(artifact_type, str) or not artifact_type:
-            errors.append(f"{rel(path)}: artifact detector has no artifact_type")
-        if not set(detector) & predicate_keys:
-            errors.append(f"{rel(path)}: {artifact_type} detector has no predicate")
-        condition = detector.get("when")
-        if condition is not None and condition not in ARTIFACT_DETECTOR_WHEN:
-            errors.append(
-                f"{rel(path)}: {artifact_type} uses unsupported detector condition {condition!r}"
+    if "detectors" in type_system:
+        errors.append(
+            f"{rel(path)}: ambiguous artifact detectors surface is not supported"
+        )
+    predicate_keys = ARTIFACT_DETECTOR_KEYS - {"artifact_type", "confidence"}
+    detectors_by_surface: dict[str, list[dict[str, Any]]] = {}
+    for surface in ARTIFACT_DETECTOR_SURFACES:
+        raw_detectors = type_system.get(surface)
+        if not isinstance(raw_detectors, list) or not raw_detectors:
+            errors.append(f"{rel(path)}: artifact {surface} must be a non-empty array")
+            detectors_by_surface[surface] = []
+            continue
+        detectors_by_surface[surface] = []
+        for detector in raw_detectors:
+            if not isinstance(detector, dict):
+                errors.append(f"{rel(path)}: {surface} detector must be an object")
+                continue
+            detectors_by_surface[surface].append(detector)
+            artifact_type = detector.get("artifact_type")
+            unknown = set(detector) - ARTIFACT_DETECTOR_KEYS
+            errors.extend(
+                f"{rel(path)}: {artifact_type} uses unsupported detector key {key}"
+                for key in sorted(unknown)
             )
+            if not isinstance(artifact_type, str) or not artifact_type:
+                errors.append(f"{rel(path)}: {surface} detector has no artifact_type")
+            elif artifact_type == "no_artifact":
+                errors.append(
+                    f"{rel(path)}: no_artifact must be derived from an empty "
+                    "confirmed external surface"
+                )
+            if not set(detector) & predicate_keys:
+                errors.append(
+                    f"{rel(path)}: {artifact_type} {surface} detector has no predicate"
+                )
+            publication_keys = set(detector) & ARTIFACT_PUBLICATION_EVIDENCE_KEYS
+            if surface == "candidate_detectors" and publication_keys:
+                errors.append(
+                    f"{rel(path)}: {artifact_type} candidate detector uses external "
+                    "publication evidence"
+                )
+            if surface == "external_publish_detectors" and not publication_keys:
+                errors.append(
+                    f"{rel(path)}: {artifact_type} external detector has no strong "
+                    "publication evidence"
+                )
+            condition = detector.get("when")
+            if condition is not None and condition not in ARTIFACT_DETECTOR_WHEN:
+                errors.append(
+                    f"{rel(path)}: {artifact_type} uses unsupported detector "
+                    f"condition {condition!r}"
+                )
+    all_detectors = [
+        detector
+        for surface in ARTIFACT_DETECTOR_SURFACES
+        for detector in detectors_by_surface[surface]
+    ]
+    declared_types = {
+        str(artifact_type)
+        for category in type_system.get("categories", [])
+        if isinstance(category, dict)
+        for artifact_type in category.get("artifact_types", [])
+        if artifact_type
+    }
+    detector_types = {
+        str(detector.get("artifact_type"))
+        for detector in all_detectors
+        if detector.get("artifact_type")
+    }
+    errors.extend(
+        f"{rel(path)}: artifact detector type is not declared: {item}"
+        for item in sorted(detector_types - declared_types)
+    )
+    errors.extend(
+        f"{rel(path)}: artifact type has no candidate or external detector: {item}"
+        for item in sorted(declared_types - {"no_artifact"} - detector_types)
+    )
+    if "no_artifact" not in declared_types:
+        errors.append(f"{rel(path)}: artifact types must declare no_artifact")
     registry_types = set(
         contract.get("fetch_bundles", {})
         .get("registry_metadata_bundle", {})
         .get("endpoints_by_type", {})
     )
     implemented_registry_types = set(FETCHERS)
-    detector_types = {
-        str(detector.get("artifact_type"))
-        for detector in detectors
-        if isinstance(detector, dict) and detector.get("artifact_type")
-    }
     errors.extend(
         f"{rel(path)}: registry type has no collector implementation: {item}"
         for item in sorted(registry_types - implemented_registry_types)

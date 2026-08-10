@@ -39,6 +39,11 @@ skills/ceratops-repo-lifecycle/references/templates/
   skill-sections-template.json
 skills/ceratops-skill-lifecycle/references/templates/
   ceratops-logo-500.png
+hooks/
+  bounded-source-search.py
+  preserve-eol-for-apply-patch-tool.py
+  windows-shell-sanity.py
+  README.md
 ```
 
 Source `SKILL.md` files are portable, delta-only skill definitions. Runtime
@@ -61,8 +66,9 @@ to copy into other repositories, not live configuration.
 Each Ceratops skill declares the runtime-local icon path
 `./assets/ceratops-logo-500.png`; every source copy matches the canonical
 `skills/ceratops-skill-lifecycle/references/templates/ceratops-logo-500.png`.
-Reusable helper logic lives in skill-local lifecycle scripts under
-`skills/*/scripts/`, not in an installed Python package.
+Reusable skill-runtime helper logic lives in skill-local lifecycle scripts
+under `skills/*/scripts/`, not in an installed Python package. User-global
+operational hooks that are not owned by one managed skill live under `hooks/`.
 Contract sources live inside their owning lifecycle skill.
 `skills/ceratops-repo-lifecycle/references/` owns GitHub org, GitHub repo,
 repo-code, PR readiness, artifact, release, code-comment, and CodeQL disposition
@@ -87,6 +93,9 @@ without repository deduplication.
 
 | Script | Caller And Timing |
 | --- | --- |
+| `hooks/bounded-source-search.py` | Runs bounded two-phase ripgrep searches and replaces oversized successful ripgrep hook output with a compact per-file projection. |
+| `hooks/preserve-eol-for-apply-patch-tool.py` | Preserves each updated text file's existing encoding and uniform line-ending convention around `apply_patch`. |
+| `hooks/windows-shell-sanity.py` | Repository-owned source for the user-global Windows PowerShell preflight; rewrites exact command defects, annotates ordinary failures, and blocks unreliable or policy-prohibited forms. |
 | `scripts/install-skills-bootstrap.py` | Self-contained first-install bootstrap; stages and validates one complete selected batch under the install root and never calls lifecycle runtime code. |
 | `scripts/validate-repository.py` | Sole full local-and-CI validation owner; captures child output, writes first-failure evidence to a caller-selected file, and removes stale evidence after the next successful run. |
 | `skills/ceratops-repo-lifecycle/references/templates/install-skills-bootstrap-template.py` | Authoritative standard-library-only bootstrap copied into compatible skill repositories as `scripts/install-skills-bootstrap.py`. |
@@ -96,14 +105,15 @@ without repository deduplication.
 | `skills/ceratops-repo-lifecycle/references/templates/skill-sections-template.json` | Repository-neutral template for materializing a target repository's live `skills/skill-sections.json`; never a live manifest. |
 | `skills/ceratops-skill-lifecycle/scripts/runtime/install-managed-skills.py` | Classifies explicit, promotion-relative, or all-managed affected sets; owns direct-manifest inventory; and invokes one runtime transaction without source validation. |
 | `skills/ceratops-skill-lifecycle/scripts/runtime/managed_runtime_builder.py` | Stages, activates, rolls back, recovers, and cleans one locked selected-skill runtime transaction. |
-| `skills/ceratops-skill-lifecycle/scripts/skill-update-workflow.py` | Prepares and verifies declared cohesive skill updates, preserves unrelated dirty state, records exact task-temp ownership, and finalizes owned request, state, and evidence files after completed caller use. |
-| `skills/ceratops-credit-savings-analysis/scripts/model-call-ledger.py` | Resolves current, named, indexed, and project-identified sessions and collects one prepared traversal per analysis, preserving formatted model-visible messages, tool and process telemetry, fingerprints, usage, selected-semantic, closure, and classification CLI modes. |
-| `skills/ceratops-credit-savings-analysis/scripts/credit-analysis-workflow.py` | Owns fixed credit-analysis queues, model-ready pass packets, compact-decision expansion, immutable persistence, append-only indexing, resume state, end-to-end finalization and rendering, per-thread batch manifests, ROI arithmetic, and scoped cleanup. |
+| `skills/ceratops-skill-lifecycle/scripts/skill-update-workflow.py` | Prepares and verifies declared cohesive skill updates, preserves unrelated dirty state, records exact task-temp ownership, finalizes owned request, state, and evidence files, and removes the verified task-temp root only when empty after completed caller use. |
+| `skills/ceratops-credit-savings-analysis/scripts/model-call-ledger.py` | Resolves current, named, indexed, and project-identified sessions and collects one complete prepared traversal per analysis, preserving formatted messages, canonical workspace references, tool and process telemetry, fingerprints, usage, closure, and classification CLI modes. |
+| `skills/ceratops-credit-savings-analysis/scripts/credit-analysis-workflow.py` | Owns complete surface evidence, protected final-state snapshots, finite Spark chunk and consolidation manifests, explicit child-model execution, GPT-5.6 confirmation and synthesis, immutable persistence, resume state, batch contracts, ROI arithmetic, rendering, and scoped cleanup. |
 | `skills/ceratops-credit-savings-analysis-old/scripts/model-call-ledger.py` | Preserves the pre-redesign fingerprint, usage, selected-semantic, closure, and classification evidence workflow. |
 | `skills/ceratops-task-lifecycle/scripts/closure_snapshot.py` | Emits one compact snapshot for explicitly named closure targets and optionally removes exact task-created files validated inside the task temp root. |
-| `skills/ceratops-governance-lifecycle/scripts/apply_rules_update.py` | Applies one approved coupled rules/history request with stale-text checks, shared validation, rollback, and successful cleanup of an explicitly disposable request. |
-| `skills/ceratops-governance-lifecycle/scripts/proposal-workflow.py` | Validates exact proposal inputs and structured history, records task-temp ownership, delegates controller prepare and advance, and finalizes every declared disposable proposal artifact. |
-| `skills/ceratops-governance-lifecycle/scripts/iteration_controller.py` | Atomically records proposal iterations, opens successors, enforces stopping, retains the champion, and safely finalizes owned artifacts. |
+| `skills/ceratops-governance-lifecycle/scripts/apply_rules_update.py` | Applies approved rule text with coupled history appends or exact ID migrations, supports validated history-only identity repairs, rolls back coupled writes, and cleans only explicitly disposable artifacts after success. |
+| `skills/ceratops-governance-lifecycle/scripts/validate_rule_candidate.py` | Safely repairs candidate-only Markdown whitespace, validates complete prospective targets through declared policies and shared rule/history checks, proves idempotence, and writes caller-selected evidence. |
+| `skills/ceratops-governance-lifecycle/scripts/proposal-workflow.py` | Validates exact proposal inputs, histories, target policies, and hashes; records task-temp ownership; delegates validated controller transitions; and preserves the exact champion while finalizing owned artifacts. |
+| `skills/ceratops-governance-lifecycle/scripts/iteration_controller.py` | Opens structured candidates, invokes mechanical validation before recording, retains the exact validated champion, enforces stopping, and safely finalizes owned artifacts. |
 | `skills/ceratops-governance-lifecycle/scripts/rule_graph.py` | Parses canonical AGENTS rules and rejects structural syntax or rule-local explicit-user override escape clauses. |
 | `skills/ceratops-repo-lifecycle/scripts/github_contract_engine/` | Package CLI for compact local audit snapshots, contract evaluation, shared GitHub API access, sanitized evidence, and evidence-gated CodeQL disposition. |
 | `skills/ceratops-repo-lifecycle/scripts/github_pr_workflow/` | Package CLI for individual PR operations, one-call retry-safe review replies and resolutions, decision-complete gate blockers, exact-commit checkpointed shipping, four-proof obsolete-prepared-checkpoint cleanup before automatic resume, scoped pending-work checks, concurrent gates, integrated admin merge, reusable-branch restoration, and terminal cleanup. |
@@ -112,7 +122,7 @@ without repository deduplication.
 | `skills/ceratops-repo-lifecycle/scripts/run-deploy-operation.py` | Uses the shared validator for `deploy/deploy.yml`, executes ordered argv steps without a shell, and returns any optional declarative agent handoff. |
 | `skills/ceratops-repo-lifecycle/scripts/ship-repository.py` | Orchestrates scoped pre-push checking, guarded GitHub shipping, main synchronization, deployment, and resumable selected-source cleanup while preserving decision-complete blockers from delegated phases. |
 | `skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py` | Skill-lifecycle-owned source, metadata, runtime-input, contract, and portability validator used only by explicit skill workflows. |
-| `skills/ceratops-skill-lifecycle/scripts/fast-change.py` | Classifies and owns one eligible direct-release patch through declared Markdown lint, exact helper tests, targeted installation, commit, and failure compensation. |
+| `skills/ceratops-skill-lifecycle/scripts/fast-change.py` | Classifies exact structured replacements, generates their diff, and owns the eligible direct-release change through declared Markdown lint, exact helper tests, targeted installation, commit, and failure compensation. |
 
 Lifecycle helpers suppress successful subcommand output and print only compact
 JSON on success. This repo keeps scripts only where they add reusable safety
@@ -123,9 +133,9 @@ coherent change stays within declared files under existing selected skills,
 preserves helper boundaries, and has sufficient targeted checks. It may cover
 multiple files and skills. The repository lifecycle helper prepares
 `release/local`; one `fast-change.py` request then classifies the complete
-scope before mutation and owns patching, repository-declared Markdown lint,
-exact helper tests when required, targeted installation, staging, commit, and
-compensation.
+scope before mutation and owns exact-match validation, diff generation,
+application, repository-declared Markdown lint, exact helper tests when
+required, targeted installation, staging, commit, and compensation.
 
 Promotion and deployment are separate repository actions. `promote` assembles
 the selected branches into `release/local` without deployment;
@@ -468,5 +478,5 @@ Releases use `vMAJOR.MINOR.PATCH` tags. See `CHANGELOG.md` for release notes.
 
 ## Artifact Publishing
 
-This repository publishes skill source files only. It does not publish Docker
-images, PyPI packages, npm packages, or other runtime artifacts.
+This repository publishes source files only. It does not publish Docker images,
+PyPI packages, npm packages, or other runtime artifacts.

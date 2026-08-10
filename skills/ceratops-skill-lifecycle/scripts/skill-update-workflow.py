@@ -10,7 +10,8 @@ rolled back. Prepare records exact cleanup ownership beneath the verified task
 temp root, verify retains detailed evidence, and finalize is the caller's
 explicit signal that successful verification and requested deployment/use are
 complete. Finalize removes only recorded workflow-owned request, state, and
-evidence files. Stdout is only ``OK`` and failures are one compact stderr line.
+evidence files, then removes the verified task-temp root only when empty.
+Stdout is only ``OK`` and failures are one compact stderr line.
 """
 
 from __future__ import annotations
@@ -1175,7 +1176,18 @@ def command_finalize(state_path: pathlib.Path) -> None:
         path = artifact["path"]
         assert isinstance(path, pathlib.Path)
         path.unlink(missing_ok=True)
+    task_temp_root = cleanup["task_temp_root"]
+    assert isinstance(task_temp_root, pathlib.Path)
+    remove_task_temp_root = set(task_temp_root.iterdir()) == {resolved_state}
     resolved_state.unlink()
+    if remove_task_temp_root:
+        try:
+            task_temp_root.rmdir()
+        except OSError:
+            # Preserve retryable verified state if an empty-root removal fails
+            # after its preflight, such as when a concurrent file appears.
+            _write_json_atomic(resolved_state, raw, "state output")
+            raise
 
 
 def build_parser() -> argparse.ArgumentParser:

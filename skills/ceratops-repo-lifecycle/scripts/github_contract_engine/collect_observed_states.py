@@ -11,6 +11,7 @@ from .collectors import (
     collect_registries,
     collect_repository,
 )
+from .collectors.registries import FETCHERS
 from .compare_states import condition_matches
 from .github_api import ApiResult, run_gh_api, substitute
 
@@ -237,6 +238,32 @@ def _artifact_state(
     }
 
 
+def _registry_confirmed_artifact_types(
+    candidate_types: list[str], registries: dict[str, Any]
+) -> list[str]:
+    """Return candidate types whose own tagged registry identities all resolved."""
+
+    confirmed: set[str] = set()
+    for artifact_type in candidate_types:
+        fetcher = FETCHERS.get(artifact_type)
+        if fetcher is None:
+            continue
+        registry = registries.get(fetcher[0], {})
+        packages = registry.get("packages", {})
+        owned: list[dict[str, Any]] = []
+        if isinstance(packages, dict):
+            owned = [
+                metadata
+                for metadata in packages.values()
+                if isinstance(metadata, dict)
+                and isinstance(metadata.get("artifact_types"), list)
+                and artifact_type in metadata["artifact_types"]
+            ]
+        if owned and all(metadata.get("ok") for metadata in owned):
+            confirmed.add(artifact_type)
+    return sorted(confirmed)
+
+
 def collect_observed_states(desired_state: dict[str, Any]) -> dict[str, Any]:
     """Collect selected external and local facts once, then compose one JSON state."""
 
@@ -273,12 +300,24 @@ def collect_observed_states(desired_state: dict[str, Any]) -> dict[str, Any]:
         if parameters.get("org_login")
         else {}
     )
-    artifact_types = repository.get("types", {}).get("artifact_surface", [])
+    repository_types = repository.get("types", {})
+    initially_confirmed = set(repository_types.get("artifact_surface", [])) - {
+        "no_artifact"
+    }
+    artifact_candidates = list(repository_types.get("artifact_candidates", []))
+    registry_lookup_types = sorted(initially_confirmed | set(artifact_candidates))
     registries = (
-        collect_registries(parameters, local, artifact_types, rules, repository)
-        if artifact_types
+        collect_registries(
+            parameters, local, registry_lookup_types, rules, repository
+        )
+        if registry_lookup_types
         else {}
     )
+    confirmed_artifacts = initially_confirmed | set(
+        _registry_confirmed_artifact_types(artifact_candidates, registries)
+    )
+    artifact_types = sorted(confirmed_artifacts or {"no_artifact"})
+    repository_types["artifact_surface"] = artifact_types
     artifact = _artifact_state(parameters, repository, local, registries)
     api = _api_state(desired_state, fetched)
     observed_states = {

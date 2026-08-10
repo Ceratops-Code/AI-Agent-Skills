@@ -8,14 +8,14 @@ permissions:
 jobs:
   validate-repository:
     name: validate-repository
-    runs-on: ubuntu-latest
+    runs-on: __RUNNER__
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      # __SETUP_STEP__
+      # __SETUP_STEPS__
       - name: Validate repository
         run: >-
-          python scripts/validate-repository.py
+          __VALIDATOR_PYTHON__ scripts/validate-repository.py
           --evidence-file ${{ runner.temp }}/repository-validation.log
 
       - name: Upload validation evidence

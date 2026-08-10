@@ -267,20 +267,47 @@
     "artifactTypeSystem": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["categories", "detectors", "resolution_rules"],
+      "required": [
+        "categories",
+        "classification_fields",
+        "candidate_detectors",
+        "external_publish_detectors",
+        "resolution_rules"
+      ],
       "properties": {
         "categories": {
           "type": "array",
           "items": { "$ref": "#/$defs/artifactCategory" }
         },
-        "detectors": {
+        "classification_fields": {
+          "$ref": "#/$defs/artifactClassificationFields"
+        },
+        "candidate_detectors": {
           "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/artifactDetector" }
+        },
+        "external_publish_detectors": {
+          "type": "array",
+          "minItems": 1,
           "items": { "$ref": "#/$defs/artifactDetector" }
         },
         "resolution_rules": {
           "type": "array",
           "items": { "$ref": "#/$defs/resolutionRule" }
         }
+      }
+    },
+    "artifactClassificationFields": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "local_buildable_candidates",
+        "confirmed_external_artifacts"
+      ],
+      "properties": {
+        "local_buildable_candidates": { "const": "artifact_candidates" },
+        "confirmed_external_artifacts": { "const": "artifact_surface" }
       }
     },
     "artifactCategory": {
@@ -302,11 +329,12 @@
         "when_any_path_matches": { "type": "array", "items": { "type": "string" } },
         "and_when_any_path_matches": { "type": "array", "items": { "type": "string" } },
         "and_when_matching_path_contains_any": { "type": "array", "items": { "type": "string" } },
+        "and_when_matching_path_contains_all": { "type": "array", "items": { "type": "string" } },
         "when_workflow_contains_any": { "type": "array", "items": { "type": "string" } },
         "and_when_workflow_contains_any": { "type": "array", "items": { "type": "string" } },
+        "and_when_workflow_contains_all": { "type": "array", "items": { "type": "string" } },
         "when_release_assets_count_gt": { "type": "number" },
-        "when": { "type": "string" },
-        "except_when_root_manifest_is_private_without_publish_surface": { "type": "boolean" }
+        "when": { "type": "string" }
       }
     },
     "resolutionRule": {

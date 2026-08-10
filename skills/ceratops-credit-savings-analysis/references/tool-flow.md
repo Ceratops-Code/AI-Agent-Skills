@@ -10,6 +10,8 @@ Detect avoidable tool, command, wait, and model-mediated transitions.
   selection, retries without diagnosis, unnecessary polling or waits, noisy
   or oversized command and tool output, missing deterministic orchestration,
   and avoidable model-mediated transitions.
+- Inspect the largest aggregate output-token and tool-result clusters even when
+  the likely control saves no model calls.
 - For an output-volume candidate, compare recorded argument and result sizes
   with the next decision's required payload. Record the excessive result, the
   bounded output that was needed, and the exact filter, quiet mode, projection,
@@ -24,13 +26,16 @@ Detect avoidable tool, command, wait, and model-mediated transitions.
 - Prefer an existing purpose-built tool, bounded batched command, deterministic
   orchestrator, compact result contract, or diagnosis-gated retry when it
   directly prevents the observed calls.
+- Contribute temporary-control evidence when temporary manual orchestration
+  should become an executable workflow. Do not duplicate the owning
+  rework-validation review.
 
 ## Completion Gate
 
-Account for every controller-exposed candidate, including protocol-only
-exclusions. Write the compact decision and invoke `submit` in the same
-orchestration tool call; the controller constructs and persists the complete
-surface result.
+Account for every controller-exposed candidate against original evidence,
+including protocol-only exclusions. Persist the complete classification and any
+temporary-control contributions in the single controller-owned confirmation
+result.
 
 ## Output Contract
 

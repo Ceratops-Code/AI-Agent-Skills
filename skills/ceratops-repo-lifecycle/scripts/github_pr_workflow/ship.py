@@ -740,6 +740,19 @@ def _transient_readiness(finding: readiness.Finding) -> bool:
         # protect against checks that attach after PR creation.
         return isinstance(finding.actual, list) and bool(finding.actual)
     if (
+        finding.check == "pr.status_checks"
+        and finding.level == ERROR
+        and finding.message
+        in {
+            "Status-check entry has unknown state.",
+            "Status-check entry has no terminal or pending state.",
+        }
+    ):
+        # GitHub can expose incomplete rollup snapshots while check state
+        # propagates. Keep them inside the existing bounded CI wait, with one
+        # immediate confirmation before normal polling begins.
+        return True
+    if (
         finding.check == "pr.review_decision"
         and finding.level == ERROR
         and finding.actual == "REVIEW_REQUIRED"
@@ -911,6 +924,7 @@ def wait_for_ci_gate(
     """
 
     deadline = time.monotonic() + wait_seconds
+    confirming_transient_error = False
     while True:
         summary, findings = readiness.validate_readiness(
             pr,
@@ -928,11 +942,21 @@ def wait_for_ci_gate(
             and finding.actual == "REVIEW_REQUIRED"
             for finding in findings
         )
+        transient_errors = [
+            finding
+            for finding in findings
+            if finding.level == ERROR and _transient_readiness(finding)
+        ]
         terminal = [
             finding
             for finding in findings
             if finding.level == ERROR and not _transient_readiness(finding)
         ]
+        if not terminal and transient_errors and not confirming_transient_error:
+            confirming_transient_error = True
+            continue
+        if not transient_errors:
+            confirming_transient_error = False
         if terminal:
             selected_repository = repository or _repository_name(repo_root, None)
             raise _ci_blocker(
@@ -955,6 +979,15 @@ def wait_for_ci_gate(
                 ),
             }
         if time.monotonic() >= deadline:
+            if transient_errors:
+                selected_repository = repository or _repository_name(repo_root, None)
+                raise _ci_blocker(
+                    pr,
+                    selected_repository,
+                    repo_root,
+                    summary,
+                    transient_errors,
+                )
             checks = sorted({finding.check for finding in pending})
             message = (
                 f"PR readiness timed out with pending checks: {', '.join(checks)}"

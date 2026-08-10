@@ -1,27 +1,30 @@
 #!/usr/bin/env python3
-"""Apply one approved, mechanically validated rules/history transaction.
+"""Apply one approved rule update or exact history-ID repair.
 
 The UTF-8 JSON request has the closed top-level fields ``version``,
-``task_temp_root``, ``request_disposable``, ``rule_stack``,
-``rule_replacements``, and ``history_operations``.
+``task_temp_root``, ownership flags, ``rule_stack``, the exact validated
+candidate path and hash, caller-selected validation evidence, and
+``history_operations``.
 ``rule_stack`` lists the global source first and every source in one complete
-project scope after it. Paths are resolved from the caller's working directory.
-Each replacement names its rules source, companion history source, exact
-expected-old text, and exact replacement text. History operations support only
-an approved ``append`` entry.
+project scope after it, with hashes in ``rule_stack_sha256``. A validated
+candidate owns rule replacement text when rules change; it is null for a
+history-only ID repair. History operations support approved ``append`` entries
+and simultaneous one-to-one ``rename`` migrations.
 
 This helper owns stale-text detection, structural validation, change coverage,
 rollback-protected writes, and successful-request cleanup. It deletes the exact
-unchanged request only when the request declares workflow ownership beneath a
+unchanged artifacts only when the request declares workflow ownership beneath a
 verified task-temp root and the transaction, reopen, and validation all pass.
-Every failure preserves the request for diagnosis. It does not establish
-semantic equivalence; the calling governance workflow must account for every
-operative old-text clause.
+Every failure preserves them for diagnosis. It invokes the shared candidate
+validator in check-only mode, applies the approved replacement text unchanged,
+and never reformats it. Semantic equivalence remains the calling workflow's
+responsibility.
 """
 
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import json
 import os
@@ -38,31 +41,42 @@ from rule_graph import (
     HISTORY_ENTRY_KEYS,
     HISTORY_VERSION,
     ParsedRuleSource,
+    RULE_ID_PATTERN,
     RuleRecord,
-    instruction_scope_map,
     load_history_source,
     parse_history_text,
-    parse_rule_text,
-    validate_rule_stack,
+)
+from validate_rule_candidate import (
+    RuleCandidateValidationError,
+    TextSource,
+    read_source,
+    validate_rule_candidate,
+    validate_stack_texts,
 )
 
-REQUEST_VERSION = 2
-UTF8_BOM = b"\xef\xbb\xbf"
+REQUEST_VERSION = 4
 ROOT_FIELDS = {
     "version",
     "task_temp_root",
     "request_disposable",
     "rule_stack",
-    "rule_replacements",
+    "rule_stack_sha256",
+    "validated_candidate",
+    "validated_candidate_sha256",
+    "candidate_disposable",
+    "validation_evidence",
+    "validation_evidence_disposable",
     "history_operations",
 }
-REPLACEMENT_FIELDS = {
-    "rules",
+APPEND_OPERATION_FIELDS = {"history", "operation", "entry"}
+RENAME_OPERATION_FIELDS = {
     "history",
-    "expected_old",
-    "replacement",
+    "operation",
+    "renames",
+    "semantic_replacements",
 }
-HISTORY_OPERATION_FIELDS = {"history", "operation", "entry"}
+RENAME_FIELDS = {"old", "new"}
+SEMANTIC_REPLACEMENT_FIELDS = {"expected_old", "replacement"}
 
 
 class ApplicationError(ValueError):
@@ -76,22 +90,6 @@ class CompactParser(argparse.ArgumentParser):
         raise ApplicationError(message)
 
 
-@dataclass(frozen=True)
-class TextSource:
-    """Original bytes plus the encoding and newline state that must survive."""
-
-    path: Path
-    raw: bytes
-    text: str
-    has_bom: bool
-    newline: str
-    trailing_newline: bool
-
-    def encode(self, text: str) -> bytes:
-        encoded = text.encode("utf-8")
-        return UTF8_BOM + encoded if self.has_bom else encoded
-
-
 @dataclass
 class PreparedUpdate:
     """Fully validated candidates and evidence needed for commit/reopen checks."""
@@ -103,6 +101,14 @@ class PreparedUpdate:
     expected_history_entries: dict[Path, list[dict[str, object]]]
     task_temp_root: Path
     request_disposable: bool
+    candidate_path: Path | None
+    candidate_sha256: str | None
+    candidate_disposable: bool
+    validation_evidence: Path
+    validation_evidence_sha256: str
+    validation_evidence_disposable: bool
+    policy_hashes: dict[Path, str]
+    rule_stack_sha256: dict[Path, str]
 
 
 def require_fields(value: object, fields: set[str], label: str) -> dict[str, Any]:
@@ -185,29 +191,35 @@ def verified_task_temp_root(value: object) -> Path:
     return resolved
 
 
-def workflow_request(path: Path, task_temp_root: Path) -> Path:
-    """Validate the exact disposable request without deriving its name."""
+def workflow_artifact(path: Path, task_temp_root: Path, label: str) -> Path:
+    """Validate one exact disposable artifact without deriving its name."""
 
     lexical = absolute_path(path)
     try:
         relative = lexical.relative_to(task_temp_root)
     except ValueError as error:
-        raise ApplicationError("disposable request escapes task_temp_root") from error
+        raise ApplicationError(f"disposable {label} escapes task_temp_root") from error
     if not relative.parts:
-        raise ApplicationError("disposable request must be beneath task_temp_root")
+        raise ApplicationError(f"disposable {label} must be beneath task_temp_root")
     current = task_temp_root
     for part in relative.parts:
         current = current / part
         if is_link(current):
             raise ApplicationError(
-                f"disposable request uses a symlink or junction: {current}"
+                f"disposable {label} uses a symlink or junction: {current}"
             )
     if not lexical.is_file():
-        raise ApplicationError(f"disposable request is not a regular file: {lexical}")
-    if inside_git_worktree(lexical.parent, "disposable request"):
-        raise ApplicationError("disposable request must not be a repository file")
+        raise ApplicationError(
+            f"disposable {label} is not a regular file: {lexical}"
+        )
+    if inside_git_worktree(lexical.parent, f"disposable {label}"):
+        raise ApplicationError(
+            f"disposable {label} must not be a repository file"
+        )
     if lexical.resolve(strict=True).parent != lexical.parent.resolve(strict=True):
-        raise ApplicationError("disposable request resolves outside its directory")
+        raise ApplicationError(
+            f"disposable {label} resolves outside its directory"
+        )
     return lexical
 
 
@@ -221,44 +233,34 @@ def file_hash(path: Path) -> str:
     return digest.hexdigest()
 
 
-def newline_styles(text: str) -> set[str]:
-    """Return every concrete line-ending form present in text."""
-    without_crlf = text.replace("\r\n", "")
-    styles: set[str] = set()
-    if "\r\n" in text:
-        styles.add("\r\n")
-    if "\n" in without_crlf:
-        styles.add("\n")
-    if "\r" in without_crlf:
-        styles.add("\r")
-    return styles
+def require_sha256(value: object, label: str) -> str:
+    """Return one lowercase SHA-256 value or reject it."""
+
+    if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value):
+        raise ApplicationError(f"{label} is invalid")
+    return value
 
 
-def read_source(path: Path, label: str) -> TextSource:
-    """Read one UTF-8 source without normalizing bytes or line endings."""
-    if not path.is_file():
-        raise ApplicationError(f"{label} does not exist: {path}")
-    raw = path.read_bytes()
-    has_bom = raw.startswith(UTF8_BOM)
-    payload = raw[len(UTF8_BOM) :] if has_bom else raw
-    try:
-        text = payload.decode("utf-8")
-    except UnicodeDecodeError as error:
-        raise ApplicationError(f"{label} is not UTF-8: {path}") from error
-    if not text.strip():
-        raise ApplicationError(f"{label} is empty: {path}")
-    styles = newline_styles(text)
-    if len(styles) > 1:
-        raise ApplicationError(f"{label} has mixed line endings: {path}")
-    newline = next(iter(styles), "\n")
-    return TextSource(
-        path=path,
-        raw=raw,
-        text=text,
-        has_bom=has_bom,
-        newline=newline,
-        trailing_newline=text.endswith(newline),
-    )
+def rule_stack_hashes(
+    value: object,
+    stack_paths: list[Path],
+) -> dict[Path, str]:
+    """Validate exact current hashes for every declared rule source."""
+
+    if not isinstance(value, dict):
+        raise ApplicationError("rule_stack_sha256 must be an object")
+    hashes: dict[Path, str] = {}
+    for raw_path, raw_hash in value.items():
+        path = require_path(raw_path, "rule_stack_sha256 key")
+        if path in hashes:
+            raise ApplicationError("rule_stack_sha256 paths must be unique")
+        hashes[path] = require_sha256(raw_hash, f"rule_stack_sha256[{raw_path}]")
+    if set(hashes) != set(stack_paths):
+        raise ApplicationError("rule_stack_sha256 must cover rule_stack exactly")
+    for path, expected in hashes.items():
+        if not path.is_file() or file_hash(path) != expected:
+            raise ApplicationError(f"rule_stack_sha256 is stale: {path}")
+    return hashes
 
 
 def finding_text(prefix: str, finding: dict[str, object]) -> str:
@@ -270,49 +272,6 @@ def finding_text(prefix: str, finding: dict[str, object]) -> str:
     line = finding.get("line")
     location = f" {source}:{line}" if source and line else ""
     return f"{prefix}: {code}{rule}{target}{location}"
-
-
-def review_key(review: dict[str, object]) -> str:
-    """Ignore line drift while retaining semantic-review identity."""
-    stable = {key: value for key, value in review.items() if key != "line"}
-    return json.dumps(stable, separators=(",", ":"), sort_keys=True)
-
-
-def validate_stack_texts(
-    stack_paths: list[Path],
-    texts: dict[Path, str],
-    *,
-    label: str,
-    allow_findings: bool = False,
-) -> tuple[list[ParsedRuleSource], dict[str, Any], set[str]]:
-    """Run shared validators over one global-plus-project instruction unit."""
-    parsed = [
-        parse_rule_text(texts[path], str(path))
-        for path in stack_paths
-    ]
-    for source in parsed:
-        if source.findings and not allow_findings:
-            raise ApplicationError(finding_text(label, source.findings[0]))
-    validation = validate_rule_stack(
-        parsed,
-        scope_by_source=instruction_scope_map(
-            parsed,
-            global_source=str(stack_paths[0]),
-        ),
-    )
-    findings = cast(list[dict[str, object]], validation["findings"])
-    if findings and not allow_findings:
-        raise ApplicationError(finding_text(label, findings[0]))
-    reviews = [
-        *(
-            review
-            for source in parsed
-            for review in source.semantic_reviews
-        ),
-        *cast(list[dict[str, object]], validation["semantic_reviews"]),
-    ]
-    review_keys = {review_key(review) for review in reviews}
-    return parsed, validation, review_keys
 
 
 def record_signature(record: RuleRecord) -> tuple[object, ...]:
@@ -340,62 +299,6 @@ def changed_rule_ids(
     }
 
 
-def exact_occurrences(text: str, needle: str) -> list[int]:
-    """Return overlapping exact-match starts so ambiguity cannot hide."""
-    return [
-        match.start()
-        for match in re.finditer(f"(?={re.escape(needle)})", text)
-    ]
-
-
-def apply_replacements(
-    source: TextSource, replacements: list[dict[str, Any]]
-) -> str:
-    """Construct one non-overlapping exact replacement candidate in memory."""
-    spans: list[tuple[int, int, str]] = []
-    for index, replacement in enumerate(replacements):
-        expected = replacement["expected_old"]
-        new_text = replacement["replacement"]
-        if not isinstance(expected, str) or not expected:
-            raise ApplicationError(
-                f"rule_replacements[{index}].expected_old must be non-empty text"
-            )
-        if not isinstance(new_text, str):
-            raise ApplicationError(
-                f"rule_replacements[{index}].replacement must be text"
-            )
-        matches = exact_occurrences(source.text, expected)
-        if len(matches) != 1:
-            raise ApplicationError(
-                f"expected_old occurrence count is {len(matches)} in {source.path}"
-            )
-        start = matches[0]
-        spans.append((start, start + len(expected), new_text))
-    spans.sort(key=lambda item: item[0])
-    for previous, current in zip(spans, spans[1:], strict=False):
-        if current[0] < previous[1]:
-            raise ApplicationError(
-                f"rule replacements overlap in {source.path}"
-            )
-    parts: list[str] = []
-    cursor = 0
-    for start, end, new_value in spans:
-        parts.extend((source.text[cursor:start], new_value))
-        cursor = end
-    parts.append(source.text[cursor:])
-    candidate = "".join(parts)
-    styles = newline_styles(candidate)
-    if styles and styles != {source.newline}:
-        raise ApplicationError(
-            f"replacement changes line-ending convention in {source.path}"
-        )
-    if candidate.endswith(source.newline) != source.trailing_newline:
-        raise ApplicationError(
-            f"replacement changes trailing newline state in {source.path}"
-        )
-    return candidate
-
-
 def render_history(
     source: TextSource, entries: list[dict[str, object]]
 ) -> str:
@@ -410,6 +313,144 @@ def render_history(
     if source.newline != "\n":
         text = text.replace("\n", source.newline)
     return text
+
+
+def parse_rename_mapping(value: object, label: str) -> dict[str, str]:
+    """Validate one simultaneous, one-to-one rule-ID mapping."""
+
+    if not isinstance(value, list) or not value:
+        raise ApplicationError(f"{label} must be a non-empty list")
+    mapping: dict[str, str] = {}
+    targets: set[str] = set()
+    for index, raw in enumerate(value):
+        item = require_fields(raw, RENAME_FIELDS, f"{label}[{index}]")
+        old = item["old"]
+        new = item["new"]
+        if not isinstance(old, str) or not re.fullmatch(RULE_ID_PATTERN, old):
+            raise ApplicationError(f"{label}[{index}].old is invalid")
+        if not isinstance(new, str) or not re.fullmatch(RULE_ID_PATTERN, new):
+            raise ApplicationError(f"{label}[{index}].new is invalid")
+        if old == new:
+            raise ApplicationError(f"{label}[{index}] does not rename an ID")
+        if old in mapping:
+            raise ApplicationError(f"{label} old IDs must be unique")
+        if new in targets:
+            raise ApplicationError(f"{label} new IDs must be unique")
+        mapping[old] = new
+        targets.add(new)
+    overlap = sorted(set(mapping).intersection(targets))
+    if overlap:
+        raise ApplicationError(
+            f"{label} must not cascade through ID {overlap[0]}"
+        )
+    return mapping
+
+
+def parse_semantic_replacements(
+    value: object,
+    label: str,
+) -> dict[str, str]:
+    """Validate exact whole-field replacements used to preserve meaning."""
+
+    if not isinstance(value, list):
+        raise ApplicationError(f"{label} must be a list")
+    replacements: dict[str, str] = {}
+    for index, raw in enumerate(value):
+        item = require_fields(
+            raw,
+            SEMANTIC_REPLACEMENT_FIELDS,
+            f"{label}[{index}]",
+        )
+        expected_old = item["expected_old"]
+        replacement = item["replacement"]
+        if not isinstance(expected_old, str) or not expected_old:
+            raise ApplicationError(f"{label}[{index}].expected_old must be text")
+        if not isinstance(replacement, str) or not replacement:
+            raise ApplicationError(f"{label}[{index}].replacement must be text")
+        if expected_old == replacement:
+            raise ApplicationError(f"{label}[{index}] does not change text")
+        if expected_old in replacements:
+            raise ApplicationError(f"{label} expected_old values must be unique")
+        replacements[expected_old] = replacement
+    return replacements
+
+
+def rule_id_token_pattern(rule_ids: set[str]) -> re.Pattern[str]:
+    """Match exact rule-ID tokens without cascading adjacent identifiers."""
+
+    alternatives = "|".join(
+        re.escape(rule_id) for rule_id in sorted(rule_ids, key=len, reverse=True)
+    )
+    return re.compile(rf"(?<![A-Z0-9-])(?:{alternatives})(?![A-Z0-9-])")
+
+
+def migrate_history_entries(
+    entries: list[dict[str, object]],
+    mapping: dict[str, str],
+    semantic_replacements: dict[str, str],
+    *,
+    label: str,
+) -> list[dict[str, object]]:
+    """Apply one exact, simultaneous ID migration to complete history entries."""
+
+    migrated = copy.deepcopy(entries)
+    old_pattern = rule_id_token_pattern(set(mapping))
+    new_pattern = rule_id_token_pattern(set(mapping.values()))
+    text_fields = HISTORY_ENTRY_KEYS[1:]
+    field_values = [
+        cast(str, entry[field])
+        for entry in migrated
+        for field in text_fields
+    ]
+    for expected_old in semantic_replacements:
+        matches = sum(value == expected_old for value in field_values)
+        if matches != 1:
+            raise ApplicationError(
+                f"{label} semantic expected_old match count is {matches}, expected 1"
+            )
+    for value in field_values:
+        if (
+            old_pattern.search(value)
+            and new_pattern.search(value)
+            and value not in semantic_replacements
+        ):
+            raise ApplicationError(
+                f"{label} requires an exact semantic replacement for mixed old/new IDs"
+            )
+
+    seen = {old: 0 for old in mapping}
+    for entry in migrated:
+        raw_rules = cast(list[str], entry["rules"])
+        mapped_rules: list[str] = []
+        for rule_id in raw_rules:
+            if rule_id in mapping:
+                seen[rule_id] += 1
+            mapped = mapping.get(rule_id, rule_id)
+            if mapped not in mapped_rules:
+                mapped_rules.append(mapped)
+        entry["rules"] = mapped_rules
+        for field in text_fields:
+            original = cast(str, entry[field])
+            for match in old_pattern.finditer(original):
+                seen[match.group(0)] += 1
+            semantic = semantic_replacements.get(original, original)
+            entry[field] = old_pattern.sub(
+                lambda match: mapping[match.group(0)],
+                semantic,
+            )
+
+    missing = sorted(rule_id for rule_id, count in seen.items() if count == 0)
+    if missing:
+        raise ApplicationError(
+            f"{label} old ID does not occur in history: {missing[0]}"
+        )
+    for entry in migrated:
+        if any(rule_id in mapping for rule_id in cast(list[str], entry["rules"])):
+            raise ApplicationError(f"{label} left an old ID in rules")
+        for field in text_fields:
+            if old_pattern.search(cast(str, entry[field])):
+                raise ApplicationError(f"{label} left an old ID in {field}")
+    return migrated
 
 
 def load_request(path: Path) -> dict[str, Any]:
@@ -440,7 +481,22 @@ def prepare(request: dict[str, Any]) -> PreparedUpdate:
     ]
     if len(stack_paths) != len(set(stack_paths)):
         raise ApplicationError("rule_stack paths must be unique")
-
+    expected_stack_hashes = rule_stack_hashes(
+        request["rule_stack_sha256"],
+        stack_paths,
+    )
+    validation_evidence = require_path(
+        request["validation_evidence"],
+        "validation_evidence",
+    )
+    if not validation_evidence.parent.is_dir():
+        raise ApplicationError("validation_evidence directory does not exist")
+    candidate_disposable = request["candidate_disposable"]
+    evidence_disposable = request["validation_evidence_disposable"]
+    if not isinstance(candidate_disposable, bool):
+        raise ApplicationError("candidate_disposable must be boolean")
+    if not isinstance(evidence_disposable, bool):
+        raise ApplicationError("validation_evidence_disposable must be boolean")
     rule_sources = {
         path: read_source(path, "rules source") for path in stack_paths
     }
@@ -452,52 +508,127 @@ def prepare(request: dict[str, Any]) -> PreparedUpdate:
         # from an invalid baseline only when it resolves every finding.
         allow_findings=True,
     )
-
-    replacement_values = request["rule_replacements"]
-    if not isinstance(replacement_values, list) or not replacement_values:
-        raise ApplicationError("rule_replacements must be a non-empty list")
-    replacements_by_rules: dict[Path, list[dict[str, Any]]] = {}
+    candidate_path: Path | None = None
+    expected_candidate_hash: str | None = None
     history_by_rules: dict[Path, Path] = {}
-    for index, value in enumerate(replacement_values):
-        replacement = require_fields(
-            value, REPLACEMENT_FIELDS, f"rule_replacements[{index}]"
-        )
-        rules = require_path(
-            replacement["rules"], f"rule_replacements[{index}].rules"
-        )
-        history = require_path(
-            replacement["history"], f"rule_replacements[{index}].history"
-        )
-        if rules not in rule_sources:
-            raise ApplicationError(
-                f"rules target is not in rule_stack: {rules}"
-            )
-        companion = rules.with_name("AGENTS.history.json").resolve()
-        if history != companion:
-            raise ApplicationError(
-                f"history is not the companion source for {rules}"
-            )
-        prior_history = history_by_rules.setdefault(rules, history)
-        if prior_history != history:
-            raise ApplicationError(f"rules target has multiple histories: {rules}")
-        replacements_by_rules.setdefault(rules, []).append(replacement)
-
+    policy_hashes: dict[Path, str] = {}
     candidate_rule_texts = {
         path: source.text for path, source in rule_sources.items()
     }
-    for rules, replacements in replacements_by_rules.items():
-        candidate_rule_texts[rules] = apply_replacements(
-            rule_sources[rules], replacements
+    candidate_value = request["validated_candidate"]
+    if candidate_value is None:
+        if request["validated_candidate_sha256"] is not None:
+            raise ApplicationError(
+                "validated_candidate_sha256 must be null without a candidate"
+            )
+        if candidate_disposable:
+            raise ApplicationError(
+                "candidate_disposable must be false without a candidate"
+            )
+        if validation_evidence.exists():
+            raise ApplicationError(
+                "refusing to overwrite history-only validation evidence"
+            )
+        candidate_parsed = baseline_parsed
+    else:
+        candidate_path = require_path(candidate_value, "validated_candidate")
+        expected_candidate_hash = require_sha256(
+            request["validated_candidate_sha256"],
+            "validated_candidate_sha256",
         )
-    candidate_parsed, _, candidate_reviews = validate_stack_texts(
-        stack_paths,
-        candidate_rule_texts,
-        label="invalid candidate rule stack",
-    )
-    new_reviews = candidate_reviews - baseline_reviews
-    if new_reviews:
-        review = json.loads(sorted(new_reviews)[0])
-        raise ApplicationError(finding_text("new semantic review", review))
+        if not candidate_path.is_file():
+            raise ApplicationError(
+                f"validated_candidate does not exist: {candidate_path}"
+            )
+        if file_hash(candidate_path) != expected_candidate_hash:
+            raise ApplicationError("validated_candidate_sha256 is stale")
+        if validation_evidence == candidate_path:
+            raise ApplicationError("validation_evidence must differ from candidate")
+        if candidate_disposable:
+            workflow_artifact(candidate_path, task_temp_root, "candidate")
+        try:
+            validation = validate_rule_candidate(
+                candidate_path,
+                validation_evidence,
+                fix=False,
+            )
+        except RuleCandidateValidationError as error:
+            raise ApplicationError(str(error)) from error
+        if validation.candidate_sha256 != expected_candidate_hash:
+            raise ApplicationError(
+                "validated candidate changed during check-only validation"
+            )
+        candidate_stack = validation.candidate["rule_stack"]
+        if [
+            require_path(value, "candidate rule_stack")
+            for value in candidate_stack
+        ] != stack_paths:
+            raise ApplicationError("candidate rule_stack differs from request rule_stack")
+        targets = validation.candidate["targets"]
+        if not isinstance(targets, list) or not targets:
+            raise ApplicationError("validated candidate has no targets")
+        for index, target in enumerate(targets):
+            if not isinstance(target, dict):
+                raise ApplicationError(
+                    f"candidate target {index} must be an object"
+                )
+            rules = require_path(
+                target["rules"],
+                f"candidate target {index}.rules",
+            )
+            if target["history"] is None:
+                raise ApplicationError(
+                    f"candidate target lacks companion history: {rules}"
+                )
+            history = require_path(
+                target["history"],
+                f"candidate target {index}.history",
+            )
+            if rules not in rule_sources:
+                raise ApplicationError(
+                    f"rules target is not in rule_stack: {rules}"
+                )
+            companion = rules.with_name("AGENTS.history.json").resolve()
+            if history != companion:
+                raise ApplicationError(
+                    f"history is not the companion source for {rules}"
+                )
+            prior_history = history_by_rules.setdefault(rules, history)
+            if prior_history != history:
+                raise ApplicationError(
+                    f"rules target has multiple histories: {rules}"
+                )
+            policy = target["markdown_policy"]
+            if not isinstance(policy, dict):
+                raise ApplicationError(
+                    f"candidate target {index} policy is invalid"
+                )
+            configuration = require_path(
+                policy["configuration"],
+                f"candidate target {index}.markdown_policy.configuration",
+            )
+            configuration_hash = require_sha256(
+                policy["configuration_sha256"],
+                f"candidate target {index} policy hash",
+            )
+            prior_policy = policy_hashes.setdefault(
+                configuration,
+                configuration_hash,
+            )
+            if prior_policy != configuration_hash:
+                raise ApplicationError(
+                    f"candidate has conflicting policy hashes: {configuration}"
+                )
+        candidate_rule_texts.update(validation.prospective_texts)
+        candidate_parsed, _, candidate_reviews = validate_stack_texts(
+            stack_paths,
+            candidate_rule_texts,
+            label="invalid candidate rule stack",
+        )
+        new_reviews = candidate_reviews - baseline_reviews
+        if new_reviews:
+            review = json.loads(sorted(new_reviews)[0])
+            raise ApplicationError(finding_text("new semantic review", review))
 
     baseline_by_path = {
         Path(source.source): source for source in baseline_parsed
@@ -517,68 +648,187 @@ def prepare(request: dict[str, Any]) -> PreparedUpdate:
     operation_values = request["history_operations"]
     if not isinstance(operation_values, list) or not operation_values:
         raise ApplicationError("history_operations must be a non-empty list")
-    operations_by_history: dict[Path, list[dict[str, object]]] = {}
+    append_by_history: dict[Path, list[dict[str, object]]] = {}
+    rename_by_history: dict[
+        Path,
+        tuple[dict[str, str], dict[str, str]],
+    ] = {}
+    rules_by_history = {
+        rules.with_name("AGENTS.history.json").resolve(): rules
+        for rules in stack_paths
+    }
     for index, value in enumerate(operation_values):
-        operation = require_fields(
-            value,
-            HISTORY_OPERATION_FIELDS,
-            f"history_operations[{index}]",
-        )
+        if not isinstance(value, dict):
+            raise ApplicationError(f"history_operations[{index}] must be an object")
+        operation_name = value.get("operation")
+        if operation_name == "append":
+            operation = require_fields(
+                value,
+                APPEND_OPERATION_FIELDS,
+                f"history_operations[{index}]",
+            )
+        elif operation_name == "rename":
+            operation = require_fields(
+                value,
+                RENAME_OPERATION_FIELDS,
+                f"history_operations[{index}]",
+            )
+        else:
+            raise ApplicationError(
+                f"history_operations[{index}].operation must be append or rename"
+            )
         history = require_path(
             operation["history"], f"history_operations[{index}].history"
         )
-        if history not in changed_by_history:
+        if history not in rules_by_history:
+            raise ApplicationError(
+                f"history is not companion to a rule_stack source: {history}"
+            )
+        if candidate_path is not None and history not in changed_by_history:
             raise ApplicationError(
                 f"history operation has no changed rules source: {history}"
             )
-        if operation["operation"] != "append":
-            raise ApplicationError(
-                f"history_operations[{index}].operation must be append"
+        if operation_name == "append":
+            if candidate_path is None:
+                raise ApplicationError(
+                    "history-only ID repair cannot append a decision"
+                )
+            entry = require_fields(
+                operation["entry"],
+                set(HISTORY_ENTRY_KEYS),
+                f"history_operations[{index}].entry",
             )
-        entry = require_fields(
-            operation["entry"],
-            set(HISTORY_ENTRY_KEYS),
-            f"history_operations[{index}].entry",
-        )
-        operations_by_history.setdefault(history, []).append(
-            cast(dict[str, object], entry)
-        )
+            append_by_history.setdefault(history, []).append(
+                cast(dict[str, object], entry)
+            )
+        else:
+            if history in rename_by_history:
+                raise ApplicationError(
+                    f"history has multiple rename operations: {history}"
+                )
+            mapping = parse_rename_mapping(
+                operation["renames"],
+                f"history_operations[{index}].renames",
+            )
+            replacements = parse_semantic_replacements(
+                operation["semantic_replacements"],
+                f"history_operations[{index}].semantic_replacements",
+            )
+            rename_by_history[history] = (mapping, replacements)
+
+    if candidate_path is None and not rename_by_history:
+        raise ApplicationError("history-only request requires an ID migration")
 
     originals: dict[Path, TextSource] = {
-        rules: rule_sources[rules] for rules in replacements_by_rules
+        rules: rule_sources[rules] for rules in history_by_rules
     }
     candidates = {
         rules: rule_sources[rules].encode(candidate_rule_texts[rules])
-        for rules in replacements_by_rules
+        for rules in history_by_rules
     }
     expected_history_entries: dict[Path, list[dict[str, object]]] = {}
-    for history, changed in changed_by_history.items():
-        appends = operations_by_history.get(history)
-        if not appends:
+    governed_histories = set(changed_by_history).union(rename_by_history)
+    for history in sorted(governed_histories, key=lambda path: str(path).lower()):
+        changed = changed_by_history.get(history, set())
+        appends = append_by_history.get(history, [])
+        if candidate_path is not None and not appends:
             raise ApplicationError(
                 f"changed rules lack approved history append: {history}"
             )
         source = read_source(history, "history source")
         originals[history] = source
         existing = load_history_source(history)
-        candidate_entries = [*existing, *appends]
+        candidate_entries = copy.deepcopy([*existing, *appends])
+        rename = rename_by_history.get(history)
+        renamed_old: set[str] = set()
+        if rename is not None:
+            mapping, semantic_replacements = rename
+            rules = rules_by_history[history]
+            current_ids = {
+                record.rule_id for record in candidate_by_path[rules].records
+            }
+            baseline_ids = {
+                record.rule_id for record in baseline_by_path[rules].records
+            }
+            for old, new in mapping.items():
+                if old in current_ids:
+                    raise ApplicationError(
+                        f"renamed old ID remains in current rules: {old}"
+                    )
+                if new not in current_ids:
+                    raise ApplicationError(
+                        f"renamed new ID is absent from current rules: {new}"
+                    )
+                if candidate_path is not None:
+                    if old not in baseline_ids or {old, new} - changed:
+                        raise ApplicationError(
+                            f"rename does not match changed rule IDs: {old}->{new}"
+                        )
+            candidate_entries = migrate_history_entries(
+                candidate_entries,
+                mapping,
+                semantic_replacements,
+                label=str(history),
+            )
+            renamed_old = set(mapping)
         candidate_text = render_history(source, candidate_entries)
         validated_entries = parse_history_text(candidate_text)
-        if validated_entries[: len(existing)] != existing:
+        if rename is None and validated_entries[: len(existing)] != existing:
             raise ApplicationError(f"history prefix changed: {history}")
+        if len(validated_entries) != len(existing) + len(appends):
+            raise ApplicationError(f"history entry count changed: {history}")
         covered: set[str] = set()
         wildcard = False
-        for entry in appends:
+        for entry in validated_entries[len(existing) :]:
             recorded_rules = cast(list[str], entry["rules"])
             wildcard = wildcard or recorded_rules == ["*"]
             covered.update(recorded_rules)
-        missing = sorted(changed - covered) if not wildcard else []
+        required_coverage = changed - renamed_old
+        missing = sorted(required_coverage - covered) if not wildcard else []
         if missing:
             raise ApplicationError(
                 f"history does not cover changed rule IDs {missing}: {history}"
             )
         candidates[history] = source.encode(candidate_text)
         expected_history_entries[history] = validated_entries
+
+    if candidate_path is None:
+        evidence = {
+            "schema": "ceratops-rule-history-migration-evidence.v1",
+            "rule_stack_sha256": {
+                str(path): digest
+                for path, digest in expected_stack_hashes.items()
+            },
+            "histories": [
+                {
+                    "history": str(history),
+                    "before_sha256": hashlib.sha256(
+                        originals[history].raw
+                    ).hexdigest(),
+                    "after_sha256": hashlib.sha256(candidates[history]).hexdigest(),
+                    "renames": [
+                        {"old": old, "new": new}
+                        for old, new in rename_by_history[history][0].items()
+                    ],
+                }
+                for history in sorted(
+                    rename_by_history,
+                    key=lambda path: str(path).lower(),
+                )
+            ],
+        }
+        validation_evidence.write_text(
+            json.dumps(evidence, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+    if evidence_disposable:
+        workflow_artifact(
+            validation_evidence,
+            task_temp_root,
+            "validation evidence",
+        )
+    validation_evidence_sha256 = file_hash(validation_evidence)
 
     for governed_path in {*stack_paths, *originals}:
         try:
@@ -595,6 +845,14 @@ def prepare(request: dict[str, Any]) -> PreparedUpdate:
         expected_history_entries=expected_history_entries,
         task_temp_root=task_temp_root,
         request_disposable=request_disposable,
+        candidate_path=candidate_path,
+        candidate_sha256=expected_candidate_hash,
+        candidate_disposable=candidate_disposable,
+        validation_evidence=validation_evidence,
+        validation_evidence_sha256=validation_evidence_sha256,
+        validation_evidence_disposable=evidence_disposable,
+        policy_hashes=policy_hashes,
+        rule_stack_sha256=expected_stack_hashes,
     )
 
 
@@ -635,11 +893,36 @@ def rollback(
     return failures
 
 
+def verify_application_inputs(update: PreparedUpdate) -> None:
+    """Recheck the exact approved artifact and declared Markdown policies."""
+
+    if update.candidate_path is not None:
+        if file_hash(update.candidate_path) != update.candidate_sha256:
+            raise ApplicationError("validated candidate changed before application")
+    for configuration, expected_hash in update.policy_hashes.items():
+        if file_hash(configuration) != expected_hash:
+            raise ApplicationError(
+                f"Markdown policy changed before application: {configuration}"
+            )
+
+
+def verify_rule_stack_inputs(update: PreparedUpdate) -> None:
+    """Reject rule-source drift before any transaction write."""
+
+    for path, expected_hash in update.rule_stack_sha256.items():
+        if file_hash(path) != expected_hash:
+            raise ApplicationError(f"rule source changed before application: {path}")
+
+
 def revalidate(update: PreparedUpdate) -> None:
     """Reopen committed targets and repeat shared validation and byte checks."""
     for path, expected in update.candidates.items():
         if path.read_bytes() != expected:
             raise ApplicationError(f"post-write bytes differ: {path}")
+    verify_application_inputs(update)
+    for path, expected_hash in update.rule_stack_sha256.items():
+        if path not in update.candidates and file_hash(path) != expected_hash:
+            raise ApplicationError(f"unchanged rule source drifted: {path}")
     reopened_rules = {
         path: read_source(path, "rules source").text
         for path in update.stack_paths
@@ -663,13 +946,17 @@ def commit(update: PreparedUpdate) -> None:
     staged: dict[Path, Path] = {}
     applied: list[Path] = []
     try:
+        verify_application_inputs(update)
+        verify_rule_stack_inputs(update)
         for path in targets:
             backups[path] = staged_copy(path, update.originals[path].raw, ".bak")
             staged[path] = staged_copy(path, update.candidates[path], ".new")
         for path in targets:
+            verify_application_inputs(update)
             if path.read_bytes() != update.originals[path].raw:
                 raise ApplicationError(f"source changed before commit: {path}")
         for path in targets:
+            verify_application_inputs(update)
             if path.read_bytes() != update.originals[path].raw:
                 raise ApplicationError(f"source changed during commit: {path}")
             applied.append(path)
@@ -708,13 +995,54 @@ def main() -> int:
         request_sha256 = file_hash(request_path)
         update = prepare(load_request(request_path))
         if update.request_disposable:
-            request_path = workflow_request(request_path, update.task_temp_root)
+            request_path = workflow_artifact(
+                request_path,
+                update.task_temp_root,
+                "request",
+            )
+        protected_inputs = {update.validation_evidence}
+        if update.candidate_path is not None:
+            protected_inputs.add(update.candidate_path)
+        if request_path in protected_inputs:
+            raise ApplicationError("request, candidate, and evidence paths must differ")
         commit(update)
+        cleanup: list[tuple[Path, str, str]] = []
+        if update.candidate_disposable and update.candidate_path is not None:
+            candidate = workflow_artifact(
+                update.candidate_path,
+                update.task_temp_root,
+                "candidate",
+            )
+            if update.candidate_sha256 is None:
+                raise ApplicationError("candidate hash is missing")
+            cleanup.append((candidate, update.candidate_sha256, "candidate"))
+        if update.validation_evidence_disposable:
+            evidence = workflow_artifact(
+                update.validation_evidence,
+                update.task_temp_root,
+                "validation evidence",
+            )
+            cleanup.append(
+                (
+                    evidence,
+                    update.validation_evidence_sha256,
+                    "validation evidence",
+                )
+            )
         if update.request_disposable:
-            request_path = workflow_request(request_path, update.task_temp_root)
-            if file_hash(request_path) != request_sha256:
-                raise ApplicationError("disposable request changed during transaction")
-            request_path.unlink()
+            request_path = workflow_artifact(
+                request_path,
+                update.task_temp_root,
+                "request",
+            )
+            cleanup.append((request_path, request_sha256, "request"))
+        for path, expected_hash, label in cleanup:
+            if file_hash(path) != expected_hash:
+                raise ApplicationError(
+                    f"disposable {label} changed during transaction"
+                )
+        for path, _, _ in cleanup:
+            path.unlink()
         print("OK")
         return 0
     except (

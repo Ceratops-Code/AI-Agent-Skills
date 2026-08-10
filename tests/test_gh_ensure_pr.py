@@ -1030,6 +1030,88 @@ class ShipTests(unittest.TestCase):
 
         self.assertTrue(ship._transient_readiness(findings[0]))
 
+        opaque = ship.readiness.Finding(
+            level="ERROR",
+            check="pr.status_checks",
+            message="Status-check entry has unknown state.",
+            actual="CI",
+        )
+        passing = ship.readiness.Finding(
+            level="PASS",
+            check="pr.status_checks",
+            message="All visible status checks are passing.",
+            actual=["CI"],
+        )
+        summary = {"head_oid": self.commit, "number": 17}
+        self.assertTrue(ship._transient_readiness(opaque))
+        with mock.patch.object(
+            ship.readiness,
+            "validate_readiness",
+            side_effect=[(summary, [opaque]), (summary, [passing])],
+        ) as validate:
+            result = ship.wait_for_ci_gate(
+                "17",
+                pathlib.Path.cwd(),
+                self.commit,
+                wait_seconds=0,
+                interval_seconds=0,
+            )
+
+        self.assertEqual(result["pending"], 0)
+        self.assertEqual(validate.call_count, 2)
+
+        persistent = ship.ShipBlocked("persistent opaque state", {})
+        with (
+            mock.patch.object(
+                ship.readiness,
+                "validate_readiness",
+                side_effect=[(summary, [opaque]), (summary, [opaque])],
+            ) as validate,
+            mock.patch.object(ship, "_ci_blocker", return_value=persistent),
+            self.assertRaisesRegex(ship.ShipBlocked, "persistent opaque state"),
+        ):
+            ship.wait_for_ci_gate(
+                "17",
+                pathlib.Path.cwd(),
+                self.commit,
+                repository="owner/repo",
+                wait_seconds=0,
+                interval_seconds=0,
+            )
+
+        self.assertEqual(validate.call_count, 2)
+
+        failed = ship.readiness.Finding(
+            level="ERROR",
+            check="pr.status_checks",
+            message="One or more status checks are failing.",
+            actual=["CI"],
+        )
+        surfaced = ship.ShipBlocked("surfaced check failure", {})
+        with (
+            mock.patch.object(
+                ship.readiness,
+                "validate_readiness",
+                side_effect=[
+                    (summary, [opaque]),
+                    (summary, [opaque]),
+                    (summary, [failed]),
+                ],
+            ) as validate,
+            mock.patch.object(ship, "_ci_blocker", return_value=surfaced),
+            self.assertRaisesRegex(ship.ShipBlocked, "surfaced check failure"),
+        ):
+            ship.wait_for_ci_gate(
+                "17",
+                pathlib.Path.cwd(),
+                self.commit,
+                repository="owner/repo",
+                wait_seconds=30,
+                interval_seconds=0,
+            )
+
+        self.assertEqual(validate.call_count, 3)
+
     def test_admin_review_bypass_is_not_treated_as_pending(self) -> None:
         bypassed = ship.readiness.Finding(
             level="WARN",

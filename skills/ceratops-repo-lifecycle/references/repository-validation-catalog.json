@@ -2,9 +2,67 @@
   "version": 1,
   "checks": [
     {
-      "id": "markdown-lint",
+      "id": "hasbaratops-validator",
       "when": [
-        {"kind": "package-script", "value": "lint:markdown"}
+        {
+          "kind": "file-contains",
+          "path": "scripts/validate_repository.py",
+          "value": "--temp-root"
+        }
+      ],
+      "command": [
+        "{python}",
+        "scripts/validate_repository.py",
+        "--temp-root",
+        "{temp}/hasbaratops",
+        "--evidence-file",
+        "{temp}/hasbaratops-validation.log"
+      ],
+      "cwd": ".",
+      "exclusive": true
+    },
+    {
+      "id": "pdf-form-tools-validator",
+      "when": [
+        {
+          "kind": "file-contains",
+          "path": "scripts/validate_repository.py",
+          "value": "--build-dir"
+        }
+      ],
+      "command": [
+        "{python}",
+        "scripts/validate_repository.py",
+        "--build-dir",
+        "{temp}/pdf-build",
+        "--evidence-file",
+        "{temp}/pdf-validation.log"
+      ],
+      "cwd": ".",
+      "exclusive": true
+    },
+    {
+      "id": "pixeltops-validator",
+      "when": [
+        {
+          "kind": "file-contains",
+          "path": "scripts/validate_repository.py",
+          "value": "def repository_checks"
+        }
+      ],
+      "command": [
+        "{python}",
+        "scripts/validate_repository.py",
+        "--evidence-file",
+        "{temp}/pixeltops-validation.jsonl"
+      ],
+      "cwd": ".",
+      "exclusive": true
+    },
+    {
+      "id": "npm-markdown-lint",
+      "when": [
+        {"kind": "package-script", "manager": "npm", "value": "lint:markdown"}
       ],
       "command": ["{npm}", "run", "lint:markdown"],
       "cwd": "."
@@ -12,7 +70,7 @@
     {
       "id": "npm-lint",
       "when": [
-        {"kind": "package-script", "value": "lint"}
+        {"kind": "package-script", "manager": "npm", "value": "lint"}
       ],
       "command": ["{npm}", "run", "lint"],
       "cwd": "."
@@ -20,7 +78,7 @@
     {
       "id": "npm-test",
       "when": [
-        {"kind": "package-script", "value": "test"}
+        {"kind": "package-script", "manager": "npm", "value": "test"}
       ],
       "command": ["{npm}", "test"],
       "cwd": "."
@@ -28,58 +86,175 @@
     {
       "id": "npm-build",
       "when": [
-        {"kind": "package-script", "value": "build"}
+        {"kind": "package-script", "manager": "npm", "value": "build"}
       ],
       "command": ["{npm}", "run", "build"],
       "cwd": "."
     },
     {
+      "id": "pnpm-markdown-lint",
+      "when": [
+        {"kind": "package-script", "manager": "pnpm", "value": "lint:markdown"}
+      ],
+      "command": ["{pnpm}", "run", "lint:markdown"],
+      "cwd": "."
+    },
+    {
+      "id": "pnpm-lint",
+      "when": [
+        {"kind": "package-script", "manager": "pnpm", "value": "lint"}
+      ],
+      "command": ["{pnpm}", "run", "lint"],
+      "cwd": "."
+    },
+    {
+      "id": "pnpm-test",
+      "when": [
+        {"kind": "package-script", "manager": "pnpm", "value": "test"}
+      ],
+      "command": ["{pnpm}", "test"],
+      "cwd": "."
+    },
+    {
+      "id": "pnpm-build",
+      "when": [
+        {"kind": "package-script", "manager": "pnpm", "value": "build"}
+      ],
+      "command": ["{pnpm}", "run", "build"],
+      "cwd": "."
+    },
+    {
+      "id": "pnpm-typecheck",
+      "when": [
+        {"kind": "package-script", "manager": "pnpm", "value": "typecheck"}
+      ],
+      "unless": [
+        {"kind": "package-script", "manager": "pnpm", "value": "build"}
+      ],
+      "command": ["{pnpm}", "run", "typecheck"],
+      "cwd": "."
+    },
+    {
+      "id": "automation-source-validation",
+      "when": [
+        {"kind": "path-any", "value": ["deploy/validate-automations.py"]}
+      ],
+      "command": ["{python}", "deploy/validate-automations.py"],
+      "cwd": "."
+    },
+    {
       "id": "pytest",
       "when": [
-        {
-          "kind": "path-any",
-          "value": ["pytest.ini", "conftest.py", "tests/test_*.py"]
-        }
+        {"kind": "path-any", "value": ["pytest.ini", "conftest.py"]},
+        {"kind": "file-contains", "path": "pyproject.toml", "value": "[tool.pytest"},
+        {"kind": "file-contains", "path": "requirements-dev.txt", "value": "pytest"},
+        {"kind": "file-contains", "path": "requirements.txt", "value": "pytest"}
       ],
       "command": ["{python}", "-m", "pytest", "-q"],
+      "cwd": ".",
+      "python_packages": ["pytest==9.1.1"]
+    },
+    {
+      "id": "unittest",
+      "when": [
+        {"kind": "path-any", "value": ["tests/test_*.py"]}
+      ],
+      "unless": [
+        {"kind": "path-any", "value": ["pytest.ini", "conftest.py"]},
+        {"kind": "file-contains", "path": "pyproject.toml", "value": "[tool.pytest"},
+        {"kind": "file-contains", "path": "requirements-dev.txt", "value": "pytest"},
+        {"kind": "file-contains", "path": "requirements.txt", "value": "pytest"}
+      ],
+      "command": ["{python}", "-m", "unittest", "discover", "-s", "tests", "-p", "test_*.py"],
       "cwd": "."
+    },
+    {
+      "id": "ruff-critical",
+      "when": [
+        {
+          "kind": "file-contains",
+          "path": "README.md",
+          "value": "python -m ruff check --select E9,F63,F7,F82 scripts/run_form.py skills/claims-catalog-invoice/scripts tests/test_claims_tracker.py"
+        }
+      ],
+      "command": [
+        "{python}",
+        "-m",
+        "ruff",
+        "check",
+        "--select",
+        "E9,F63,F7,F82",
+        "scripts/run_form.py",
+        "skills/claims-catalog-invoice/scripts",
+        "tests/test_claims_tracker.py"
+      ],
+      "cwd": ".",
+      "python_packages": ["ruff==0.16.1"]
     },
     {
       "id": "ruff",
       "when": [
         {"kind": "path-any", "value": ["ruff.toml", ".ruff.toml"]},
-        {
-          "kind": "file-contains",
-          "path": "pyproject.toml",
-          "value": "[tool.ruff"
-        }
+        {"kind": "file-contains", "path": "pyproject.toml", "value": "[tool.ruff"},
+        {"kind": "file-contains", "path": "requirements-dev.txt", "value": "ruff"},
+        {"kind": "file-contains", "path": "requirements.txt", "value": "ruff"}
       ],
       "command": ["{python}", "-m", "ruff", "check", "."],
-      "cwd": "."
+      "cwd": ".",
+      "python_packages": ["ruff==0.16.1"]
     },
     {
       "id": "mypy",
       "when": [
         {"kind": "path-any", "value": ["mypy.ini", ".mypy.ini"]},
-        {
-          "kind": "file-contains",
-          "path": "pyproject.toml",
-          "value": "[tool.mypy]"
-        }
+        {"kind": "file-contains", "path": "pyproject.toml", "value": "[tool.mypy]"},
+        {"kind": "file-contains", "path": "requirements-dev.txt", "value": "mypy"},
+        {"kind": "file-contains", "path": "requirements.txt", "value": "mypy"}
       ],
       "command": ["{python}", "-m", "mypy"],
+      "cwd": ".",
+      "python_packages": ["mypy==2.3.0"]
+    },
+    {
+      "id": "powershell-source-readiness",
+      "when": [
+        {"kind": "path-any", "value": ["scripts/Test-CodexSourceReadiness.ps1"]}
+      ],
+      "command": ["{pwsh}", "-NoProfile", "-File", "scripts/Test-CodexSourceReadiness.ps1", "-PolicyOnly", "-FailOnIssue"],
+      "cwd": "."
+    },
+    {
+      "id": "powershell-runtime-health",
+      "when": [
+        {"kind": "path-any", "value": ["scripts/Test-CodexRuntimeHealth.ps1"]}
+      ],
+      "command": ["{pwsh}", "-NoProfile", "-File", "scripts/Test-CodexRuntimeHealth.ps1", "-Component", "Launcher", "-SourceRoot", ".", "-SourceOnly", "-FailOnIssue"],
+      "cwd": "."
+    },
+    {
+      "id": "powershell-lint",
+      "when": [
+        {"kind": "path-any", "value": ["tests/Run-PowerShellQuality.ps1"]}
+      ],
+      "command": ["{pwsh}", "-NoProfile", "-File", "tests/Run-PowerShellQuality.ps1", "-Mode", "Lint"],
+      "cwd": "."
+    },
+    {
+      "id": "powershell-smoke",
+      "when": [
+        {"kind": "path-any", "value": ["tests/Run-SmokeTests.ps1"]}
+      ],
+      "command": ["{pwsh}", "-NoProfile", "-File", "tests/Run-SmokeTests.ps1"],
       "cwd": "."
     },
     {
       "id": "yaml-lint",
       "when": [
-        {
-          "kind": "path-any",
-          "value": [".yamllint", ".yamllint.yml", ".yamllint.yaml"]
-        }
+        {"kind": "path-any", "value": [".yamllint", ".yamllint.yml", ".yamllint.yaml"]}
       ],
       "command": ["{python}", "-m", "yamllint", "."],
-      "cwd": "."
+      "cwd": ".",
+      "python_packages": ["yamllint==1.37.1"]
     },
     {
       "id": "go-test",
