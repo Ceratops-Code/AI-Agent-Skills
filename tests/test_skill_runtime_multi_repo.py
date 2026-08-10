@@ -9793,11 +9793,13 @@ def test_compatibility_materializer_supports_repositories_without_skills(
     assert "pnpm install --frozen-lockfile" in pnpm_workflow
     assert "python -m pip install -r requirements-dev.txt" in pnpm_workflow
     assert "python -m pip install mypy==2.3.0" in pnpm_workflow
+    assert 'python-version: "3.12"' in pnpm_workflow
 
     uv_repo = empty_repository("uv-compatible")
     (uv_repo / "uv.lock").write_text("version = 1\n", encoding="utf-8", newline="\n")
     (uv_repo / "pyproject.toml").write_text(
         '[project]\nname = "uv-compatible"\nversion = "1.0.0"\n'
+        'requires-python = ">=3.13"\n'
         '[project.optional-dependencies]\ndev = ["pytest", "ruff", "mypy"]\n'
         "[tool.pytest.ini_options]\n"
         "[tool.ruff]\n"
@@ -9823,6 +9825,8 @@ def test_compatibility_materializer_supports_repositories_without_skills(
         encoding="utf-8"
     )
     assert "astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9" in uv_workflow
+    assert 'python-version-file: "pyproject.toml"' in uv_workflow
+    assert 'python-version: "3.12"' not in uv_workflow
     assert "uv sync --extra dev --frozen" in uv_workflow
     assert "uv run --no-sync python scripts/validate-repository.py" in uv_workflow
 

@@ -180,7 +180,7 @@ def collect_registries(
     rules: list[dict[str, Any]],
     repository: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Fetch only selected, identified registry surfaces; never mutate them."""
+    """Fetch selected identities once and retain each artifact type that owns them."""
 
     identities = _manifest_identities(local)
     explicit_registries: dict[tuple[str, str], str] = {}
@@ -220,8 +220,16 @@ def collect_registries(
                     "dockerhub",
                 }:
                     continue
-            state[registry][name] = fetcher(name)
+            metadata = state[registry].get(name)
+            if metadata is None:
+                metadata = {**fetcher(name), "artifact_types": []}
+                state[registry][name] = metadata
+            owners = metadata["artifact_types"]
+            if artifact_type not in owners:
+                owners.append(artifact_type)
     for registry, values in state.items():
+        for metadata in values.values():
+            metadata["artifact_types"].sort()
         state[registry] = {
             "packages": values,
             "identity_count": len(values),

@@ -1149,12 +1149,54 @@ class GHContractStateEngineTests(unittest.TestCase):
             ["npm_package"],
             {
                 "npm": {
-                    "packages": {"demo": {"ok": True}},
+                    "packages": {
+                        "demo": {
+                            "ok": True,
+                            "artifact_types": ["npm_package"],
+                        }
+                    },
                     "all_resolved": True,
                 }
             },
         )
         self.assertEqual(registry_confirmed, ["npm_package"])
+
+        def fake_maven(name: str) -> dict[str, Any]:
+            return {"ok": True, "coordinate": name}
+
+        with mock.patch.dict(
+            registries.FETCHERS,
+            {
+                "maven_package": ("maven", fake_maven),
+                "gradle_maven_package": ("maven", fake_maven),
+            },
+            clear=True,
+        ):
+            typed_registry = registries.collect_registries(
+                {
+                    "artifact_contracts": [
+                        {
+                            "artifact_type": "maven_package",
+                            "package_or_image_name": "example:demo",
+                        }
+                    ]
+                },
+                {},
+                ["maven_package", "gradle_maven_package"],
+                [{"assertions": [{"path": "/artifact/live_metadata/all_resolved"}]}],
+            )
+            self.assertEqual(
+                typed_registry["maven"]["packages"]["example:demo"][
+                    "artifact_types"
+                ],
+                ["maven_package"],
+            )
+            self.assertEqual(
+                _registry_confirmed_artifact_types(
+                    ["maven_package", "gradle_maven_package"], typed_registry
+                ),
+                ["maven_package"],
+            )
 
         candidate_only_artifact = _artifact_state(
             {},

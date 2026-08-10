@@ -120,7 +120,7 @@ A typical user-level `hooks.json` registration is:
         "hooks": [
           {
             "type": "command",
-            "command": "python \"$env:CODEX_HOME\\tools\\windows-shell-sanity.py\" --hook"
+            "command": "python \"$env:CODEX_HOME\\hooks\\windows-shell-sanity.py\" --hook"
           }
         ]
       }

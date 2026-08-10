@@ -339,7 +339,7 @@ def catalog_checks(repo_root: pathlib.Path) -> list[dict[str, object]]:
 def _validation_workflow(
     repo_root: pathlib.Path, checks: list[dict[str, object]]
 ) -> tuple[str, str, str]:
-    """Render the runner, setup steps, and Python command for generated CI."""
+    """Render generated CI while delegating project Python ranges to setup-python."""
 
     commands: list[str] = []
     for check in checks:
@@ -350,11 +350,25 @@ def _validation_workflow(
             if not isinstance(value, str):
                 raise RuntimeError("catalog check command values must be text")
             commands.append(value)
+    pyproject = _pyproject(repo_root)
+    project = pyproject.get("project", {})
+    requires_python = (
+        project.get("requires-python") if isinstance(project, Mapping) else None
+    )
+    if requires_python is not None and (
+        not isinstance(requires_python, str) or not requires_python.strip()
+    ):
+        raise RuntimeError("project.requires-python must be nonempty text")
+    python_selector = (
+        'python-version-file: "pyproject.toml"'
+        if requires_python is not None
+        else 'python-version: "3.12"'
+    )
     setup: list[str] = [
         "      - name: Set up Python",
         f"        uses: {SETUP_PYTHON}",
         "        with:",
-        '          python-version: "3.12"',
+        f"          {python_selector}",
     ]
     validation_python = "python"
     dependency_sources = _declared_python_dependencies(repo_root)
@@ -366,8 +380,6 @@ def _validation_workflow(
                 f"        uses: {SETUP_UV}",
             ]
         )
-        pyproject = _pyproject(repo_root)
-        project = pyproject.get("project", {})
         optional = project.get("optional-dependencies", {}) if isinstance(project, Mapping) else {}
         groups = pyproject.get("dependency-groups", {})
         if isinstance(optional, Mapping) and "dev" in optional:
@@ -383,8 +395,6 @@ def _validation_workflow(
         elif (repo_root / "requirements.txt").is_file():
             python_setup.append("python -m pip install -r requirements.txt")
         elif (repo_root / "pyproject.toml").is_file():
-            pyproject = _pyproject(repo_root)
-            project = pyproject.get("project", {})
             optional = project.get("optional-dependencies", {}) if isinstance(project, Mapping) else {}
             if isinstance(optional, Mapping) and "dev" in optional:
                 python_setup.append('python -m pip install -e ".[dev]"')

@@ -241,7 +241,7 @@ def _artifact_state(
 def _registry_confirmed_artifact_types(
     candidate_types: list[str], registries: dict[str, Any]
 ) -> list[str]:
-    """Return candidate types whose exact registry identities resolved."""
+    """Return candidate types whose own tagged registry identities all resolved."""
 
     confirmed: set[str] = set()
     for artifact_type in candidate_types:
@@ -249,7 +249,17 @@ def _registry_confirmed_artifact_types(
         if fetcher is None:
             continue
         registry = registries.get(fetcher[0], {})
-        if registry.get("packages") and registry.get("all_resolved") is True:
+        packages = registry.get("packages", {})
+        owned: list[dict[str, Any]] = []
+        if isinstance(packages, dict):
+            owned = [
+                metadata
+                for metadata in packages.values()
+                if isinstance(metadata, dict)
+                and isinstance(metadata.get("artifact_types"), list)
+                and artifact_type in metadata["artifact_types"]
+            ]
+        if owned and all(metadata.get("ok") for metadata in owned):
             confirmed.add(artifact_type)
     return sorted(confirmed)
 
