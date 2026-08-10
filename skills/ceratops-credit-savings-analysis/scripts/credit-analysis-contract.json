@@ -30,7 +30,7 @@
     "bookkeeping_calls": 0
   },
   "chunking": {
-    "target_chars": 260000,
+    "target_chars": 200000,
     "maximum_chars": 330000,
     "maximum_candidates": 64,
     "large_payload_inline_chars": 12000,

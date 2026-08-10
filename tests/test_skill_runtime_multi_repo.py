@@ -2108,6 +2108,7 @@ def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
     manifest = json.loads(
         pathlib.Path(plan["manifest_path"]).read_text(encoding="utf-8")
     )
+    assert manifest["chunking"]["target_chars"] == 200_000
     assert manifest["surface_order"] == [
         "helper-contracts",
         "context-evidence",
