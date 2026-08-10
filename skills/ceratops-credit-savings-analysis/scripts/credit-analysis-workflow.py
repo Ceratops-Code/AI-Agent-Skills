@@ -9214,15 +9214,18 @@ def _output_schema_for_task(
     def array_of_objects() -> dict[str, Any]:
         return {"type": "array", "items": {"type": "object"}}
 
+    def fixed_string(value: str) -> dict[str, Any]:
+        return {"type": "string", "const": value}
+
     if task["phase"].startswith("spark-"):
         required = sorted(SPARK_RESULT_FIELDS)
         properties: dict[str, Any] = {
-            "schema": {"const": SPARK_RESULT_SCHEMA},
-            "analysis_id": {"const": state["analysis_id"]},
-            "task_id": {"const": task["task_id"]},
-            "surface_id": {"const": task["surface_id"]},
-            "stage": {"const": task["stage"]},
-            "input_sha256": {"const": input_sha256},
+            "schema": fixed_string(SPARK_RESULT_SCHEMA),
+            "analysis_id": fixed_string(str(state["analysis_id"])),
+            "task_id": fixed_string(str(task["task_id"])),
+            "surface_id": fixed_string(str(task["surface_id"])),
+            "stage": fixed_string(str(task["stage"])),
+            "input_sha256": fixed_string(input_sha256),
             "candidate_assessments": array_of_objects(),
             "provisional_findings": array_of_objects(),
             "plausible_risks": array_of_objects(),
@@ -9232,11 +9235,11 @@ def _output_schema_for_task(
     elif task["phase"] == "surface-confirmation":
         required = sorted(CONFIRMATION_RESULT_FIELDS)
         properties = {
-            "schema": {"const": CONFIRMATION_RESULT_SCHEMA},
-            "analysis_id": {"const": state["analysis_id"]},
-            "task_id": {"const": task["task_id"]},
-            "surface_id": {"const": task["surface_id"]},
-            "input_sha256": {"const": input_sha256},
+            "schema": fixed_string(CONFIRMATION_RESULT_SCHEMA),
+            "analysis_id": fixed_string(str(state["analysis_id"])),
+            "task_id": fixed_string(str(task["task_id"])),
+            "surface_id": fixed_string(str(task["surface_id"])),
+            "input_sha256": fixed_string(input_sha256),
             "candidate_assessments": array_of_objects(),
             "confirmed_findings": array_of_objects(),
             "plausible_risks": array_of_objects(),
@@ -9247,10 +9250,10 @@ def _output_schema_for_task(
     else:
         required = sorted(SYNTHESIS_RESULT_FIELDS)
         properties = {
-            "schema": {"const": ORCHESTRATION_SYNTHESIS_SCHEMA},
-            "analysis_id": {"const": state["analysis_id"]},
-            "task_id": {"const": task["task_id"]},
-            "input_sha256": {"const": input_sha256},
+            "schema": fixed_string(ORCHESTRATION_SYNTHESIS_SCHEMA),
+            "analysis_id": fixed_string(str(state["analysis_id"])),
+            "task_id": fixed_string(str(task["task_id"])),
+            "input_sha256": fixed_string(input_sha256),
             "finding_groups": array_of_objects(),
             "risk_order": {"type": "array", "items": {"type": "string"}},
             "temporary_control_merges": array_of_objects(),

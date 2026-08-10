@@ -2322,6 +2322,33 @@ def test_credit_analysis_child_command_places_global_approval_before_exec(
     assert command[command.index("--sandbox") + 1] == "read-only"
     assert "--ephemeral" in command
 
+    state = {"analysis_id": "analysis-1"}
+    tasks = [
+        {
+            "phase": "spark-primary",
+            "task_id": "spark.helper-contracts.primary.0001",
+            "surface_id": "helper-contracts",
+            "stage": "primary",
+        },
+        {
+            "phase": "surface-confirmation",
+            "task_id": "confirm.helper-contracts",
+            "surface_id": "helper-contracts",
+        },
+        {"phase": "synthesis", "task_id": "synthesis", "surface_id": None},
+    ]
+    for task in tasks:
+        schema = workflow._output_schema_for_task(
+            state=state,
+            task=task,
+            input_sha256="0" * 64,
+        )
+        assert all(
+            property_schema.get("type") == "string"
+            for property_schema in schema["properties"].values()
+            if "const" in property_schema
+        )
+
 
 def test_credit_analysis_workflow_rejects_invalid_and_conflicting_passes(
     tmp_path: pathlib.Path,
