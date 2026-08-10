@@ -9765,6 +9765,40 @@ def _jsonl_event_summary(path: pathlib.Path) -> dict[str, Any]:
     }
 
 
+def _codex_child_command(
+    *,
+    executable: str,
+    model: str,
+    schema_path: pathlib.Path,
+    raw_output: pathlib.Path,
+    orchestration_root: pathlib.Path,
+) -> list[str]:
+    """Build the current CLI command with global approval policy before `exec`."""
+
+    return [
+        executable,
+        "--ask-for-approval",
+        "never",
+        "exec",
+        "--model",
+        model,
+        "--sandbox",
+        "read-only",
+        "--ephemeral",
+        "--skip-git-repo-check",
+        "--output-schema",
+        str(schema_path),
+        "--color",
+        "never",
+        "--json",
+        "--output-last-message",
+        str(raw_output),
+        "--cd",
+        str(orchestration_root),
+        "-",
+    ]
+
+
 def _run_codex_child(
     *,
     model: str,
@@ -9784,28 +9818,13 @@ def _run_codex_child(
     raw_output = attempt_dir / "last-message.json"
     events_path = attempt_dir / "events.jsonl"
     stderr_path = attempt_dir / "stderr.log"
-    command = [
-        executable,
-        "exec",
-        "--model",
-        model,
-        "--sandbox",
-        "read-only",
-        "--ask-for-approval",
-        "never",
-        "--ephemeral",
-        "--skip-git-repo-check",
-        "--output-schema",
-        str(schema_path),
-        "--color",
-        "never",
-        "--json",
-        "--output-last-message",
-        str(raw_output),
-        "--cd",
-        str(orchestration_root),
-        "-",
-    ]
+    command = _codex_child_command(
+        executable=executable,
+        model=model,
+        schema_path=schema_path,
+        raw_output=raw_output,
+        orchestration_root=orchestration_root,
+    )
     started = time.monotonic()
     timed_out = False
     terminated = False

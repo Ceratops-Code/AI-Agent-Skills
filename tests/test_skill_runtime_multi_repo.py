@@ -2306,6 +2306,23 @@ def test_credit_analysis_model_catalog_decodes_cli_as_utf8(
     assert observed["text"] is True
 
 
+def test_credit_analysis_child_command_places_global_approval_before_exec(
+    tmp_path: pathlib.Path,
+) -> None:
+    workflow = load_credit_analysis_workflow_module()
+    command = workflow._codex_child_command(
+        executable="codex",
+        model="gpt-5.3-codex-spark",
+        schema_path=tmp_path / "schema.json",
+        raw_output=tmp_path / "result.json",
+        orchestration_root=tmp_path,
+    )
+
+    assert command[:4] == ["codex", "--ask-for-approval", "never", "exec"]
+    assert command[command.index("--sandbox") + 1] == "read-only"
+    assert "--ephemeral" in command
+
+
 def test_credit_analysis_workflow_rejects_invalid_and_conflicting_passes(
     tmp_path: pathlib.Path,
 ) -> None:
