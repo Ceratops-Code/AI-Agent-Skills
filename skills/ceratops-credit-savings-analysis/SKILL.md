@@ -62,12 +62,13 @@ applies them.
   Deterministic code validates identifiers and complete coverage but makes no
   semantic classification. No selected call is omitted from Luna or truncated
   from retained evidence to make a packet fit.
-- Run exactly one `gpt-5.6-sol` confirmation per public surface against original
+- Run the finite shared Luna consolidation queue once before projecting results
+  to surfaces, preserving every candidate-surface pair and material variant. Run
+  exactly one `gpt-5.6-sol` confirmation per public surface against original
   evidence for all Luna findings and risks, every observably high-signal episode
-  even when Luna dismissed it, and a deterministic audit sample of ordinary
-  dismissals. If this material exceeds one surface packet, use only the finite
-  Luna consolidation queue and preserve every selected candidate ID and material
-  variant. Run exactly one `gpt-5.6-sol` synthesis and no GPT-5.6 bookkeeping
+  even when Luna dismissed it through deterministic first/last representatives
+  per episode and signal reason, and a deterministic audit sample of ordinary
+  dismissals. Run exactly one `gpt-5.6-sol` synthesis and no GPT-5.6 bookkeeping
   calls. Stop before model execution when the shared plan is empty, malformed,
   or exceeds the contract's semantic-call cap; never truncate source coverage.
 - Keep session evidence, accepted surface results, the append-only index, and

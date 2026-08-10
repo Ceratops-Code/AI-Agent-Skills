@@ -7539,6 +7539,97 @@ def _verification_dossier(record: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _confirmation_evidence_episodes(
+    dossiers: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Deduplicate selected Sol evidence by causal episode without omitting calls."""
+
+    episodes: list[dict[str, Any]] = []
+    current: list[Mapping[str, Any]] = []
+
+    def flush() -> None:
+        if not current:
+            return
+        messages: dict[str, Mapping[str, Any]] = {}
+        evidence_records: dict[str, Mapping[str, Any]] = {}
+        canonical: dict[str, Mapping[str, Any]] = {}
+        calls: list[dict[str, Any]] = []
+        for dossier in current:
+            for message in dossier["user_messages"]:
+                evidence_ref = str(message["evidence_ref"])
+                messages.setdefault(evidence_ref, message)
+            for record in dossier["evidence_excerpts"]:
+                evidence_ref = str(record["evidence_ref"])
+                evidence_records.setdefault(evidence_ref, record)
+            relationships = dossier["relationships"]
+            final_refs: list[str] = []
+            for record in relationships["final_canonical_state"]:
+                evidence_ref = str(record["evidence_ref"])
+                canonical.setdefault(evidence_ref, record)
+                final_refs.append(evidence_ref)
+            calls.append(
+                {
+                    key: value
+                    for key, value in dossier.items()
+                    if key
+                    not in {
+                        "user_messages",
+                        "evidence_excerpts",
+                        "process_and_run_telemetry",
+                        "relationships",
+                    }
+                }
+                | {
+                    "user_message_refs": [
+                        str(message["evidence_ref"])
+                        for message in dossier["user_messages"]
+                    ],
+                    "evidence_excerpt_refs": [
+                        str(record["evidence_ref"])
+                        for record in dossier["evidence_excerpts"]
+                    ],
+                    "relationships": {
+                        "final_canonical_state_refs": final_refs,
+                        "correction_reversion_and_final_outcome_evidence": (
+                            relationships[
+                                "correction_reversion_and_final_outcome_evidence"
+                            ]
+                        ),
+                    },
+                }
+            )
+        episodes.append(
+            {
+                "turn_id": str(current[0]["call_identity"]["turn_id"]),
+                "candidate_ids": [str(item["candidate_id"]) for item in current],
+                "user_messages": list(messages.values()),
+                "assistant_and_tool_evidence": list(evidence_records.values()),
+                "process_and_run_telemetry": current[0][
+                    "process_and_run_telemetry"
+                ],
+                "final_canonical_state": list(canonical.values()),
+                "calls": calls,
+            }
+        )
+
+    for dossier in dossiers:
+        turn_id = str(dossier["call_identity"]["turn_id"])
+        if current and str(current[-1]["call_identity"]["turn_id"]) != turn_id:
+            flush()
+            current = []
+        current.append(dossier)
+    flush()
+    observed = [
+        candidate_id
+        for episode in episodes
+        for candidate_id in episode["candidate_ids"]
+    ]
+    expected = [str(dossier["candidate_id"]) for dossier in dossiers]
+    if observed != expected:
+        raise CreditAnalysisError("confirmation episode evidence reordered candidates")
+    return episodes
+
+
 def _confirmation_evidence_map(
     dossiers: Sequence[Mapping[str, Any]],
 ) -> dict[str, Any]:
@@ -7615,6 +7706,31 @@ def _semantic_candidate_ids(
                         if isinstance(candidate, str)
                     )
     return [candidate for candidate in candidate_order if candidate in selected]
+
+
+def _confirmation_high_signal_candidate_ids(
+    records: Sequence[Mapping[str, Any]],
+) -> list[str]:
+    """Select causal boundary representatives for each observed signal reason."""
+
+    boundaries: dict[tuple[str, str], list[str]] = {}
+    candidate_order = [str(record["candidate_id"]) for record in records]
+    for record in records:
+        candidate_id = str(record["candidate_id"])
+        turn_id = str(record["call_identity"]["turn_id"])
+        reasons = record["observable_high_signal"]["reasons"]
+        for reason in reasons:
+            key = (turn_id, str(reason))
+            if key not in boundaries:
+                boundaries[key] = [candidate_id, candidate_id]
+            else:
+                boundaries[key][1] = candidate_id
+    selected = {
+        candidate_id
+        for first_and_last in boundaries.values()
+        for candidate_id in first_and_last
+    }
+    return [candidate_id for candidate_id in candidate_order if candidate_id in selected]
 
 
 def _confirmation_selection(
@@ -7758,23 +7874,101 @@ def _episode_fragments(
 
     if _json_chars(episode) < maximum_chars:
         return [dict(episode)]
-    base = {key: value for key, value in episode.items() if key not in {
-        "candidate_ids",
-        "applicable_surfaces",
-        "high_signal_candidate_ids",
-        "calls",
-    }}
+
+    canonical_by_ref = {
+        str(record["evidence_ref"]): record
+        for record in episode["final_canonical_state"]
+    }
+
+    def fragment_payload(
+        calls: Sequence[Mapping[str, Any]],
+        *,
+        fragment_index: int,
+        fragment_count: int,
+    ) -> dict[str, Any]:
+        """Carry only shared context referenced by this adjacent call fragment."""
+
+        base = {
+            key: value
+            for key, value in episode.items()
+            if key
+            not in {
+                "candidate_ids",
+                "applicable_surfaces",
+                "high_signal_candidate_ids",
+                "user_messages",
+                "final_canonical_state",
+                "calls",
+            }
+        }
+        message_ids = {
+            str(message_id)
+            for call in calls
+            for message_id in call["user_message_ids"]
+        }
+        canonical_refs = list(
+            dict.fromkeys(
+                str(reference)
+                for call in calls
+                for reference in call["relationships"][
+                    "final_canonical_state_refs"
+                ]
+            )
+        )
+        if not set(canonical_refs) <= set(canonical_by_ref):
+            raise CreditAnalysisError(
+                "episode fragment references missing canonical-state evidence"
+            )
+        return {
+            **base,
+            "episode_fragment": fragment_index,
+            "episode_fragment_count": fragment_count,
+            "candidate_ids": [str(call["candidate_id"]) for call in calls],
+            "applicable_surfaces": list(
+                dict.fromkeys(
+                    surface
+                    for call in calls
+                    for surface in call["applicable_surfaces"]
+                )
+            ),
+            "high_signal_candidate_ids": [
+                str(call["candidate_id"])
+                for call in calls
+                if call["observable_high_signal"]["selected"]
+            ],
+            "user_messages": [
+                message
+                for message in episode["user_messages"]
+                if str(message["message_id"]) in message_ids
+            ],
+            "final_canonical_state": [
+                canonical_by_ref[reference] for reference in canonical_refs
+            ],
+            "calls": [dict(call) for call in calls],
+        }
+
     groups: list[list[dict[str, Any]]] = []
     current: list[dict[str, Any]] = []
     for raw_call in episode["calls"]:
         call = dict(raw_call)
         proposed = [*current, call]
-        if current and _json_chars({**base, "calls": proposed}) >= maximum_chars:
+        proposed_payload = fragment_payload(
+            proposed,
+            fragment_index=1,
+            fragment_count=1,
+        )
+        if current and _json_chars(proposed_payload) >= maximum_chars:
             groups.append(current)
             current = [call]
         else:
             current = proposed
-        if _json_chars({**base, "calls": current}) >= maximum_chars:
+        if _json_chars(
+            fragment_payload(
+                current,
+                fragment_index=1,
+                fragment_count=1,
+            )
+        ) >= maximum_chars:
             raise CreditAnalysisError(
                 f"single candidate exceeds the Luna chunk maximum: {call['candidate_id']}"
             )
@@ -7782,32 +7976,52 @@ def _episode_fragments(
         groups.append(current)
     fragments: list[dict[str, Any]] = []
     for index, calls in enumerate(groups, start=1):
-        fragments.append(
-            {
-                **base,
-                "episode_fragment": index,
-                "episode_fragment_count": len(groups),
-                "candidate_ids": [str(call["candidate_id"]) for call in calls],
-                "applicable_surfaces": list(
-                    dict.fromkeys(
-                        surface
-                        for call in calls
-                        for surface in call["applicable_surfaces"]
-                    )
-                ),
-                "high_signal_candidate_ids": [
-                    str(call["candidate_id"])
-                    for call in calls
-                    if call["observable_high_signal"]["selected"]
-                ],
-                "calls": calls,
-            }
+        fragment = fragment_payload(
+            calls,
+            fragment_index=index,
+            fragment_count=len(groups),
         )
+        if _json_chars(fragment) >= maximum_chars:
+            raise CreditAnalysisError("finalized episode fragment is oversized")
+        fragments.append(fragment)
     return fragments
 
 
+def _shared_primary_payload(
+    *,
+    analysis_id: str,
+    evidence_path: pathlib.Path,
+    ordinal: int,
+    episodes: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Build the exact primary packet used for both sizing and persistence."""
+
+    calls = [call for episode in episodes for call in episode["calls"]]
+    candidate_ids = [str(call["candidate_id"]) for call in calls]
+    candidate_pairs = [
+        [str(call["candidate_id"]), str(surface_id)]
+        for call in calls
+        for surface_id in call["applicable_surfaces"]
+    ]
+    return {
+        "schema": FORMATTED_EVIDENCE_SCHEMA,
+        "analysis_id": analysis_id,
+        "chunk_ordinal": ordinal,
+        "retained_evidence_path": str(evidence_path),
+        "candidate_ids": candidate_ids,
+        "candidate_pairs": candidate_pairs,
+        "candidate_count": len(candidate_ids),
+        "candidate_surface_pair_count": len(candidate_pairs),
+        "episodes": list(episodes),
+    }
+
+
 def _chunk_episodes(
-    episodes: list[dict[str, Any]], contract: Mapping[str, Any]
+    episodes: list[dict[str, Any]],
+    contract: Mapping[str, Any],
+    *,
+    analysis_id: str | None = None,
+    evidence_path: pathlib.Path | None = None,
 ) -> list[list[dict[str, Any]]]:
     chunking = contract["chunking"]
     target = int(chunking["target_chars"])
@@ -7815,10 +8029,12 @@ def _chunk_episodes(
     maximum_candidates = int(chunking["maximum_candidates"])
     if not (0 < target <= maximum) or maximum_candidates < 1:
         raise CreditAnalysisError("chunking contract is malformed")
+    if (analysis_id is None) != (evidence_path is None):
+        raise CreditAnalysisError("shared chunk sizing context is incomplete")
     fragments = [
         fragment
         for episode in episodes
-        for fragment in _episode_fragments(episode, maximum)
+        for fragment in _episode_fragments(episode, target)
     ]
     chunks: list[list[dict[str, Any]]] = []
     current: list[dict[str, Any]] = []
@@ -7826,9 +8042,21 @@ def _chunk_episodes(
     for episode in fragments:
         episode_candidates = len(episode["candidate_ids"])
         proposed = [*current, episode]
+        proposed_chars = (
+            _json_chars(
+                _shared_primary_payload(
+                    analysis_id=str(analysis_id),
+                    evidence_path=evidence_path,
+                    ordinal=len(chunks) + 1,
+                    episodes=proposed,
+                )
+            )
+            if analysis_id is not None and evidence_path is not None
+            else _json_chars(proposed)
+        )
         if current and (
             current_candidates + episode_candidates > maximum_candidates
-            or _json_chars(proposed) >= target
+            or proposed_chars >= target
         ):
             chunks.append(current)
             current = [episode]
@@ -7836,6 +8064,20 @@ def _chunk_episodes(
         else:
             current = proposed
             current_candidates += episode_candidates
+        current_chars = (
+            _json_chars(
+                _shared_primary_payload(
+                    analysis_id=str(analysis_id),
+                    evidence_path=evidence_path,
+                    ordinal=len(chunks) + 1,
+                    episodes=current,
+                )
+            )
+            if analysis_id is not None and evidence_path is not None
+            else _json_chars(current)
+        )
+        if current_chars >= maximum:
+            raise CreditAnalysisError("single shared episode fragment is oversized")
     if current:
         chunks.append(current)
     if not chunks and episodes:
@@ -7864,38 +8106,36 @@ def _plan_shared_primary_tasks(
 ) -> tuple[list[dict[str, Any]], dict[str, str]]:
     """Freeze one shared causal-episode stream for all public surfaces."""
 
-    chunks = _chunk_episodes(_build_causal_episodes(records), contract)
-    shared_dir = orchestration_root / "shared-evidence"
-    shared_dir.mkdir(parents=True, exist_ok=False)
+    chunks = _chunk_episodes(
+        _build_causal_episodes(records),
+        contract,
+        analysis_id=analysis_id,
+        evidence_path=evidence_path,
+    )
     tasks: list[dict[str, Any]] = []
+    planned_payloads: list[tuple[pathlib.Path, dict[str, Any]]] = []
     membership: dict[str, str] = {}
     for ordinal, episodes in enumerate(chunks, start=1):
         task_id = f"luna.shared.primary.{ordinal:04d}"
-        calls = [call for episode in episodes for call in episode["calls"]]
-        candidate_ids = [str(call["candidate_id"]) for call in calls]
-        candidate_pairs = [
-            [str(call["candidate_id"]), str(surface_id)]
-            for call in calls
-            for surface_id in call["applicable_surfaces"]
-        ]
+        payload = _shared_primary_payload(
+            analysis_id=analysis_id,
+            evidence_path=evidence_path,
+            ordinal=ordinal,
+            episodes=episodes,
+        )
+        candidate_ids = payload["candidate_ids"]
+        candidate_pairs = payload["candidate_pairs"]
         if any(candidate_id in membership for candidate_id in candidate_ids):
             raise CreditAnalysisError("candidate belongs to multiple shared chunks")
         membership.update({candidate_id: task_id for candidate_id in candidate_ids})
-        chunk_path = shared_dir / f"primary-{ordinal:04d}.json"
-        payload = {
-            "schema": FORMATTED_EVIDENCE_SCHEMA,
-            "analysis_id": analysis_id,
-            "chunk_ordinal": ordinal,
-            "retained_evidence_path": str(evidence_path),
-            "candidate_ids": candidate_ids,
-            "candidate_pairs": candidate_pairs,
-            "candidate_count": len(candidate_ids),
-            "candidate_surface_pair_count": len(candidate_pairs),
-            "episodes": episodes,
-        }
         if _json_chars(payload) >= int(contract["chunking"]["maximum_chars"]):
             raise CreditAnalysisError(f"planned Luna chunk is oversized: {task_id}")
-        _exclusive_json(chunk_path, payload, "shared Luna evidence")
+        chunk_path = (
+            orchestration_root
+            / "shared-evidence"
+            / f"primary-{ordinal:04d}.json"
+        )
+        planned_payloads.append((chunk_path, payload))
         artifacts = _task_artifact_paths(orchestration_root, task_id)
         artifacts["input"] = str(chunk_path)
         tasks.append(
@@ -7909,14 +8149,74 @@ def _plan_shared_primary_tasks(
                 "dependencies": [],
                 "candidate_ids": candidate_ids,
                 "candidate_pairs": candidate_pairs,
-                "input_sha256": _file_hash(chunk_path),
+                "input_sha256": _content_hash(payload),
                 "artifacts": artifacts,
             }
         )
     expected = [str(record["candidate_id"]) for record in records]
     if list(membership) != expected:
         raise CreditAnalysisError("shared chunks do not preserve candidate order")
+    shared_dir = orchestration_root / "shared-evidence"
+    shared_dir.mkdir(parents=True, exist_ok=False)
+    for chunk_path, payload in planned_payloads:
+        _exclusive_json(chunk_path, payload, "shared Luna evidence")
     return tasks, membership
+
+
+def _plan_shared_consolidation_tasks(
+    *,
+    primary_tasks: Sequence[Mapping[str, Any]],
+    orchestration_root: pathlib.Path,
+    contract: Mapping[str, Any],
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Reduce the shared candidate-surface stream once for all confirmations."""
+
+    fan_in = int(contract["chunking"]["consolidation_fan_in"])
+    maximum_depth = int(contract["chunking"]["maximum_consolidation_depth"])
+    if fan_in < 2 or maximum_depth < 1:
+        raise CreditAnalysisError("consolidation contract is malformed")
+    consolidation: list[dict[str, Any]] = []
+    current = [dict(task) for task in primary_tasks]
+    depth = 0
+    while len(current) > 1:
+        depth += 1
+        if depth > maximum_depth:
+            raise CreditAnalysisError("shared Luna consolidation exceeds maximum depth")
+        next_level: list[dict[str, Any]] = []
+        for group_number, start in enumerate(
+            range(0, len(current), fan_in),
+            start=1,
+        ):
+            dependencies = current[start : start + fan_in]
+            if len(dependencies) == 1:
+                next_level.append(dependencies[0])
+                continue
+            task_id = f"luna.shared.consolidate.{depth:02d}.{group_number:04d}"
+            task = {
+                "task_id": task_id,
+                "phase": "luna-consolidation",
+                "stage": "consolidation",
+                "surface_id": None,
+                "ordinal": group_number,
+                "depth": depth,
+                "dependencies": [item["task_id"] for item in dependencies],
+                "candidate_ids": [
+                    candidate_id
+                    for dependency in dependencies
+                    for candidate_id in dependency["candidate_ids"]
+                ],
+                "candidate_pairs": [
+                    pair
+                    for dependency in dependencies
+                    for pair in dependency["candidate_pairs"]
+                ],
+                "input_sha256": None,
+                "artifacts": _task_artifact_paths(orchestration_root, task_id),
+            }
+            consolidation.append(task)
+            next_level.append(task)
+        current = next_level
+    return consolidation, [str(item["task_id"]) for item in current]
 
 
 def _plan_surface_tasks(
@@ -7926,10 +8226,12 @@ def _plan_surface_tasks(
     records: list[dict[str, Any]],
     primary_tasks: Sequence[Mapping[str, Any]],
     shared_membership: Mapping[str, str],
+    shared_consolidation_tasks: Sequence[Mapping[str, Any]],
+    final_luna_task_ids: Sequence[str],
     orchestration_root: pathlib.Path,
     contract: Mapping[str, Any],
-) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any]]:
-    """Freeze one surface's Luna reduction and Sol confirmation over shared chunks."""
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Freeze one surface's evidence index and Sol confirmation."""
 
     all_candidate_ids = [str(record["candidate_id"]) for record in records]
     selected = set(all_candidate_ids)
@@ -7959,53 +8261,38 @@ def _plan_surface_tasks(
 
     dossiers = [_verification_dossier(record) for record in records]
     evidence_map = _confirmation_evidence_map(dossiers)
-    minimum_confirmation_chars = _json_chars(evidence_map) + len(all_candidate_ids) * 30
+    high_signal_candidate_ids = _confirmation_high_signal_candidate_ids(records)
+    baseline_selection = _confirmation_selection(
+        results=[],
+        surface_index={
+            "candidate_ids": all_candidate_ids,
+            "high_signal_candidate_ids": high_signal_candidate_ids,
+        },
+        contract=contract,
+    )
+    baseline_selected = set(baseline_selection["selected_candidate_ids"])
+    baseline_dossiers = [
+        dossier
+        for dossier in dossiers
+        if dossier["candidate_id"] in baseline_selected
+    ]
+    baseline_confirmation_chars = _json_chars(
+        {
+            "candidate_ids": baseline_selection["selected_candidate_ids"],
+            "confirmation_selection": baseline_selection,
+            "candidate_evidence_map": _confirmation_evidence_map(
+                baseline_dossiers
+            ),
+            "original_evidence_episodes": _confirmation_evidence_episodes(
+                baseline_dossiers
+            ),
+        }
+    )
     confirmation_limit = int(contract["chunking"]["confirmation_packet_chars"])
-    if minimum_confirmation_chars >= confirmation_limit:
+    if baseline_confirmation_chars >= confirmation_limit:
         raise CreditAnalysisError(
             f"surface plan is clearly runaway before model execution: {surface_id}"
         )
-    fan_in = int(contract["chunking"]["consolidation_fan_in"])
-    maximum_depth = int(contract["chunking"]["maximum_consolidation_depth"])
-    if fan_in < 2 or maximum_depth < 1:
-        raise CreditAnalysisError("consolidation contract is malformed")
-    consolidation: list[dict[str, Any]] = []
-    current = primary
-    depth = 0
-    while len(current) > 1:
-        depth += 1
-        if depth > maximum_depth:
-            raise CreditAnalysisError("Luna consolidation plan exceeds maximum depth")
-        next_level: list[dict[str, Any]] = []
-        for group_number, start in enumerate(range(0, len(current), fan_in), start=1):
-            dependencies = current[start : start + fan_in]
-            if len(dependencies) == 1:
-                next_level.append(dependencies[0])
-                continue
-            task_id = (
-                f"luna.{surface_id}.consolidate.{depth:02d}.{group_number:04d}"
-            )
-            candidate_ids = [
-                candidate_id
-                for dependency in dependencies
-                for candidate_id in dependency["candidate_ids"]
-            ]
-            task = {
-                "task_id": task_id,
-                "phase": "luna-consolidation",
-                "stage": "consolidation",
-                "surface_id": surface_id,
-                "ordinal": group_number,
-                "depth": depth,
-                "dependencies": [item["task_id"] for item in dependencies],
-                "candidate_ids": candidate_ids,
-                "input_sha256": None,
-                "artifacts": _task_artifact_paths(orchestration_root, task_id),
-            }
-            consolidation.append(task)
-            next_level.append(task)
-        current = next_level
-    final_units = [item["task_id"] for item in current]
     confirmation_task_id = f"confirm.{surface_id}"
     confirmation = {
         "task_id": confirmation_task_id,
@@ -8014,7 +8301,7 @@ def _plan_surface_tasks(
         "surface_id": surface_id,
         "ordinal": 1,
         "depth": 0,
-        "dependencies": final_units,
+        "dependencies": list(final_luna_task_ids),
         "candidate_ids": all_candidate_ids,
         "input_sha256": None,
         "artifacts": _task_artifact_paths(orchestration_root, confirmation_task_id),
@@ -8026,16 +8313,19 @@ def _plan_surface_tasks(
         "candidate_count": len(all_candidate_ids),
         "candidate_ids": all_candidate_ids,
         "call_ids": [str(record["call_identity"]["call_id"]) for record in records],
-        "high_signal_candidate_ids": [
-            str(record["candidate_id"])
-            for record in records
-            if record["observable_high_signal"]["selected"]
-        ],
+        "observed_high_signal_candidate_count": sum(
+            1 for record in records if record["observable_high_signal"]["selected"]
+        ),
+        "high_signal_candidate_ids": high_signal_candidate_ids,
+        "baseline_confirmation_candidate_count": len(baseline_selected),
+        "baseline_confirmation_chars": baseline_confirmation_chars,
         "primary_membership": candidate_membership,
         "primary_task_ids": [task["task_id"] for task in primary],
-        "consolidation_task_ids": [task["task_id"] for task in consolidation],
+        "consolidation_task_ids": [
+            task["task_id"] for task in shared_consolidation_tasks
+        ],
         "confirmation_task_id": confirmation_task_id,
-        "final_luna_task_ids": final_units,
+        "final_luna_task_ids": list(final_luna_task_ids),
         "verification_dossiers": dossiers,
         "candidate_evidence_map": evidence_map,
     }
@@ -8047,14 +8337,23 @@ def _plan_surface_tasks(
         "candidate_ids": all_candidate_ids,
         "call_ids": surface_index["call_ids"],
         "high_signal_candidate_ids": surface_index["high_signal_candidate_ids"],
+        "observed_high_signal_candidate_count": surface_index[
+            "observed_high_signal_candidate_count"
+        ],
+        "baseline_confirmation_candidate_count": surface_index[
+            "baseline_confirmation_candidate_count"
+        ],
+        "baseline_confirmation_chars": surface_index[
+            "baseline_confirmation_chars"
+        ],
         "primary_task_ids": surface_index["primary_task_ids"],
         "consolidation_task_ids": surface_index["consolidation_task_ids"],
-        "final_luna_task_ids": final_units,
+        "final_luna_task_ids": list(final_luna_task_ids),
         "confirmation_task_id": confirmation_task_id,
         "index_path": str(index_path),
         "index_sha256": _file_hash(index_path),
     }
-    return consolidation, confirmation, surface_summary
+    return confirmation, surface_summary
 
 
 def _validate_frozen_manifest(manifest: Mapping[str, Any], contract: Mapping[str, Any]) -> None:
@@ -8157,6 +8456,63 @@ def _validate_frozen_manifest(manifest: Mapping[str, Any], contract: Mapping[str
         raise CreditAnalysisError("shared primary coverage is incomplete or duplicated")
     if observed_membership != membership or observed_primary_ids != primary_task_ids:
         raise CreditAnalysisError("shared primary membership is invalid")
+    consolidation_tasks = [
+        task for task in luna_tasks if task.get("phase") == "luna-consolidation"
+    ]
+    if any(
+        task.get("phase") not in {"luna-primary", "luna-consolidation"}
+        for task in luna_tasks
+    ):
+        raise CreditAnalysisError("Luna task phase is invalid")
+    consolidation_ids = manifest.get("shared_consolidation_task_ids")
+    final_luna_ids = manifest.get("final_shared_luna_task_ids")
+    if (
+        not isinstance(consolidation_ids, list)
+        or consolidation_ids
+        != [str(task["task_id"]) for task in consolidation_tasks]
+        or not isinstance(final_luna_ids, list)
+        or not final_luna_ids
+    ):
+        raise CreditAnalysisError("shared Luna consolidation manifest is invalid")
+    for task in consolidation_tasks:
+        candidates = task.get("candidate_ids")
+        pairs = task.get("candidate_pairs")
+        dependencies = task.get("dependencies")
+        if (
+            task.get("surface_id") is not None
+            or not isinstance(candidates, list)
+            or len(candidates) != len(set(candidates))
+            or not set(candidates) <= set(shared_ids)
+            or not isinstance(pairs, list)
+            or not pairs
+            or len(pairs) != len({tuple(pair) for pair in pairs})
+            or not all(
+                isinstance(pair, list)
+                and len(pair) == 2
+                and pair[0] in candidates
+                and pair[1] in surface_order
+                for pair in pairs
+            )
+            or not isinstance(dependencies, list)
+            or len(dependencies) < 2
+            or not all(
+                isinstance(dependency, str) and dependency in task_by_id
+                for dependency in dependencies
+            )
+        ):
+            raise CreditAnalysisError("shared Luna consolidation task is invalid")
+        dependency_candidates = [
+            candidate
+            for dependency in dependencies
+            for candidate in task_by_id[str(dependency)]["candidate_ids"]
+        ]
+        dependency_pairs = [
+            pair
+            for dependency in dependencies
+            for pair in task_by_id[str(dependency)]["candidate_pairs"]
+        ]
+        if dependency_candidates != candidates or dependency_pairs != pairs:
+            raise CreditAnalysisError("shared Luna consolidation coverage changed")
     for surface in surfaces:
         surface_id = str(surface["surface_id"])
         expected = surface.get("candidate_ids")
@@ -8165,6 +8521,30 @@ def _validate_frozen_manifest(manifest: Mapping[str, Any], contract: Mapping[str
             raise CreditAnalysisError(
                 "candidate-surface coverage is incomplete, duplicated, or reordered"
             )
+        high_signal = surface.get("high_signal_candidate_ids")
+        observed_high_signal_count = surface.get(
+            "observed_high_signal_candidate_count"
+        )
+        baseline_count = surface.get("baseline_confirmation_candidate_count")
+        baseline_chars = surface.get("baseline_confirmation_chars")
+        if (
+            not isinstance(high_signal, list)
+            or not all(candidate_id in expected for candidate_id in high_signal)
+            or [candidate_id for candidate_id in expected if candidate_id in high_signal]
+            != high_signal
+            or not isinstance(observed_high_signal_count, int)
+            or isinstance(observed_high_signal_count, bool)
+            or observed_high_signal_count < len(high_signal)
+            or not isinstance(baseline_count, int)
+            or isinstance(baseline_count, bool)
+            or baseline_count < len(high_signal)
+            or not isinstance(baseline_chars, int)
+            or isinstance(baseline_chars, bool)
+            or baseline_chars < 1
+            or baseline_chars
+            >= int(contract["chunking"]["confirmation_packet_chars"])
+        ):
+            raise CreditAnalysisError("surface confirmation projection is invalid")
     ordered_ids = [str(task["task_id"]) for task in luna_tasks]
     position = {task_id: index for index, task_id in enumerate(ordered_ids)}
     for task in luna_tasks:
@@ -8174,6 +8554,15 @@ def _validate_frozen_manifest(manifest: Mapping[str, Any], contract: Mapping[str
         for dependency in dependencies:
             if dependency not in position or position[dependency] >= position[str(task["task_id"])]:
                 raise CreditAnalysisError("Luna dependency order is malformed")
+    if any(task_id not in position for task_id in final_luna_ids):
+        raise CreditAnalysisError("final shared Luna task is invalid")
+    if any(
+        confirmation.get("dependencies") != final_luna_ids
+        for confirmation in confirmations
+    ):
+        raise CreditAnalysisError("confirmation does not use final shared Luna tasks")
+    if any(surface.get("final_luna_task_ids") != final_luna_ids for surface in surfaces):
+        raise CreditAnalysisError("surface final Luna tasks are inconsistent")
     projected = manifest.get("projected_luna_calls")
     if projected != len(luna_tasks):
         raise CreditAnalysisError("projected Luna call count is invalid")
@@ -8229,6 +8618,9 @@ def _orchestration_public_status(state: Mapping[str, Any]) -> dict[str, Any]:
         "projected_sol_calls": manifest["projected_sol_calls"],
         "projected_semantic_calls": manifest["projected_semantic_calls"],
         "shared_primary_chunks": len(manifest["shared_primary_task_ids"]),
+        "shared_luna_consolidations": len(
+            manifest["shared_consolidation_task_ids"]
+        ),
         "shared_candidate_count": manifest["shared_candidate_count"],
         "canonical_state_records": manifest["canonical_state"]["record_count"],
         "actual_luna_calls": state["model_attempts"]["luna"],
@@ -8250,7 +8642,6 @@ def _orchestration_public_status(state: Mapping[str, Any]) -> dict[str, Any]:
                 "surface_id": item["surface_id"],
                 "candidate_count": item["candidate_count"],
                 "primary_chunks": len(item["primary_task_ids"]),
-                "luna_consolidations": len(item["consolidation_task_ids"]),
             }
             for item in manifest["surfaces"]
         ],
@@ -8389,23 +8780,31 @@ def command_plan_orchestration(
         orchestration_root=orchestration_root,
         contract=contract,
     )
-    luna_tasks = list(primary_tasks)
+    shared_consolidation_tasks, final_luna_task_ids = (
+        _plan_shared_consolidation_tasks(
+            primary_tasks=primary_tasks,
+            orchestration_root=orchestration_root,
+            contract=contract,
+        )
+    )
+    luna_tasks = [*primary_tasks, *shared_consolidation_tasks]
     for surface_id in surface_order:
         surface_records = [
             record
             for record in formatted
             if surface_id in record["applicable_surfaces"]
         ]
-        planned_luna, confirmation, surface = _plan_surface_tasks(
+        confirmation, surface = _plan_surface_tasks(
             analysis_id=analysis_id,
             surface_id=surface_id,
             records=surface_records,
             primary_tasks=primary_tasks,
             shared_membership=shared_membership,
+            shared_consolidation_tasks=shared_consolidation_tasks,
+            final_luna_task_ids=final_luna_task_ids,
             orchestration_root=orchestration_root,
             contract=contract,
         )
-        luna_tasks.extend(planned_luna)
         confirmation_tasks.append(confirmation)
         surfaces.append(surface)
     maximum_luna_tasks = int(contract["chunking"]["maximum_luna_tasks"])
@@ -8457,6 +8856,10 @@ def command_plan_orchestration(
         "shared_candidate_ids": [record["candidate_id"] for record in formatted],
         "shared_primary_task_ids": [task["task_id"] for task in primary_tasks],
         "shared_primary_membership": shared_membership,
+        "shared_consolidation_task_ids": [
+            task["task_id"] for task in shared_consolidation_tasks
+        ],
+        "final_shared_luna_task_ids": final_luna_task_ids,
         "surfaces": surfaces,
         "luna_tasks": luna_tasks,
         "confirmation_tasks": confirmation_tasks,
@@ -8884,6 +9287,9 @@ LUNA_CHILD_ASSESSMENT_FIELDS = (LUNA_ASSESSMENT_FIELDS - {"surface_id"}) | {
 LUNA_PRIMARY_CHILD_ASSESSMENT_FIELDS = (
     LUNA_CHILD_ASSESSMENT_FIELDS - {"candidate_ids"}
 ) | {"candidate_id", "surface_id"}
+LUNA_SHARED_CONSOLIDATION_CHILD_ASSESSMENT_FIELDS = (
+    LUNA_CHILD_ASSESSMENT_FIELDS | {"surface_id"}
+)
 LUNA_CHILD_FINDING_FIELDS = LUNA_FINDING_FIELDS - {"candidate_ids", "surface_id"}
 LUNA_CHILD_RISK_FIELDS = LUNA_RISK_FIELDS - {"candidate_ids", "surface_id"}
 LUNA_CHILD_TEMPORARY_FIELDS = LUNA_TEMPORARY_FIELDS - {
@@ -9164,6 +9570,78 @@ def _validate_luna_result(
     temporary_ids: set[str] = set()
     used_material_variants: list[str] = []
     primary = task["phase"] == "luna-primary"
+    consolidation = task["phase"] == "luna-consolidation"
+    shared_consolidation = (
+        consolidation and task["surface_id"] is None
+    )
+    input_variant_ownership: dict[str, dict[str, Any]] = {}
+    if consolidation:
+        input_payload = _read_json(
+            pathlib.Path(str(task["artifacts"]["input"])),
+            "Luna consolidation input",
+        )
+        ownership_rows = input_payload.get("material_variant_ownership")
+        if not isinstance(ownership_rows, list):
+            raise CreditAnalysisError(
+                "Luna consolidation material ownership is missing"
+            )
+        observed_ownership_ids: list[str] = []
+        for row in ownership_rows:
+            if not isinstance(row, Mapping) or set(row) != {
+                "variant_id",
+                "surface_id",
+                "candidate_ids",
+            }:
+                raise CreditAnalysisError(
+                    "Luna consolidation material ownership is invalid"
+                )
+            variant_id = str(row["variant_id"])
+            surface_id = str(row["surface_id"])
+            candidate_ids = row["candidate_ids"]
+            if (
+                variant_id in input_variant_ownership
+                or surface_id not in state["manifest"]["surface_order"]
+                or not isinstance(candidate_ids, list)
+                or not candidate_ids
+                or not all(
+                    isinstance(candidate_id, str)
+                    and candidate_id in allowed_candidates
+                    for candidate_id in candidate_ids
+                )
+            ):
+                raise CreditAnalysisError(
+                    "Luna consolidation material ownership is invalid"
+                )
+            observed_ownership_ids.append(variant_id)
+            input_variant_ownership[variant_id] = {
+                "surface_id": surface_id,
+                "candidate_ids": list(candidate_ids),
+            }
+        if observed_ownership_ids != input_variant_ids:
+            raise CreditAnalysisError(
+                "Luna consolidation material ownership order changed"
+            )
+
+    def validate_material_ownership(
+        variants: Sequence[str],
+        candidates: Sequence[str],
+        surface_id: str,
+    ) -> None:
+        if not consolidation:
+            return
+        if not variants:
+            raise CreditAnalysisError(
+                "Luna consolidation invented a variant-free semantic object"
+            )
+        expected = {
+            "surface_id": surface_id,
+            "candidate_ids": list(candidates),
+        }
+        for variant_id in variants:
+            if input_variant_ownership.get(variant_id) != expected:
+                raise CreditAnalysisError(
+                    "Luna consolidation changed material variant ownership"
+                )
     if primary and len(assessments) != len(task["candidate_pairs"]):
         raise CreditAnalysisError(
             "primary Luna assessments must align with candidate-surface order"
@@ -9174,7 +9652,11 @@ def _validate_luna_result(
             (
                 LUNA_PRIMARY_CHILD_ASSESSMENT_FIELDS
                 if primary
-                else LUNA_CHILD_ASSESSMENT_FIELDS
+                else (
+                    LUNA_SHARED_CONSOLIDATION_CHILD_ASSESSMENT_FIELDS
+                    if shared_consolidation
+                    else LUNA_CHILD_ASSESSMENT_FIELDS
+                )
             ),
             f"Luna assessment {index}",
         )
@@ -9194,7 +9676,11 @@ def _validate_luna_result(
                 assessment.get("candidate_ids"),
                 f"Luna assessment {index} candidates",
             )
-            surface_id = str(task["surface_id"])
+            surface_id = (
+                str(assessment.get("surface_id"))
+                if shared_consolidation
+                else str(task["surface_id"])
+            )
         if not set(candidates) <= allowed_candidates:
             raise CreditAnalysisError("Luna assessment references an unknown candidate")
         if surface_id not in state["manifest"]["surface_order"]:
@@ -9251,6 +9737,7 @@ def _validate_luna_result(
                 "Luna finding material variants",
                 empty=True,
             )
+            validate_material_ownership(variants, candidates, surface_id)
             used_material_variants.extend(variants)
             if not isinstance(
                 child_finding.get("recurrence_likely"), bool
@@ -9289,6 +9776,7 @@ def _validate_luna_result(
                 "Luna risk variants",
                 empty=True,
             )
+            validate_material_ownership(variants, candidates, surface_id)
             used_material_variants.extend(variants)
             risks.append(
                 {
@@ -9317,6 +9805,7 @@ def _validate_luna_result(
                 "temporary material variants",
                 empty=True,
             )
+            validate_material_ownership(variants, candidates, surface_id)
             used_material_variants.extend(variants)
             temporary.append(
                 {
@@ -9348,6 +9837,36 @@ def _validate_luna_result(
         if observed_pairs != task["candidate_pairs"]:
             raise CreditAnalysisError(
                 "Luna candidate-surface coverage is missing, duplicated, or reordered"
+            )
+    elif shared_consolidation:
+        observed_pairs = [
+            [candidate_id, assessment["surface_id"]]
+            for assessment in normalized_assessments
+            for candidate_id in assessment["candidate_ids"]
+        ]
+        expected_pairs = task["candidate_pairs"]
+        surface_order = state["manifest"]["surface_order"]
+        observed_surface_order = list(
+            dict.fromkeys(surface_id for _, surface_id in observed_pairs)
+        )
+        expected_surface_order = [
+            surface_id
+            for surface_id in surface_order
+            if any(pair[1] == surface_id for pair in expected_pairs)
+        ]
+        per_surface_order_changed = any(
+            [candidate for candidate, item_surface in observed_pairs if item_surface == surface_id]
+            != [candidate for candidate, item_surface in expected_pairs if item_surface == surface_id]
+            for surface_id in expected_surface_order
+        )
+        if (
+            len(observed_pairs) != len(set(map(tuple, observed_pairs)))
+            or set(map(tuple, observed_pairs)) != set(map(tuple, expected_pairs))
+            or observed_surface_order != expected_surface_order
+            or per_surface_order_changed
+        ):
+            raise CreditAnalysisError(
+                "shared Luna consolidation coverage is missing, duplicated, or reordered"
             )
     elif _expanded_assessment_candidates(normalized_assessments) != task["candidate_ids"]:
         raise CreditAnalysisError(
@@ -9897,12 +10416,42 @@ def _accepted_result(
     return _read_json(pathlib.Path(str(result["path"])), f"result {task_id}")
 
 
-def _luna_material_variant_inventory(result: Mapping[str, Any]) -> list[str]:
-    if result.get("stage") == "primary":
-        return _luna_variant_ids(result)
-    return _result_strings(
-        result.get("preserved_variant_ids"), "consolidated variants", empty=True
-    )
+def _luna_material_variant_ownership(
+    result: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    """Retain each material variant's exact surface and candidate assignment."""
+
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    primary = result.get("stage") == "primary"
+    for kind, key in (
+        ("finding", "provisional_findings"),
+        ("risk", "plausible_risks"),
+        ("temporary", "temporary_control_candidates"),
+    ):
+        for item in result[key]:
+            variants = (
+                [_variant_id(kind, item)]
+                if primary
+                else _result_strings(
+                    item.get("material_variant_ids"),
+                    "consolidated material variants",
+                )
+            )
+            for variant_id in variants:
+                if variant_id in seen:
+                    raise CreditAnalysisError(
+                        "Luna material variant has duplicate ownership"
+                    )
+                seen.add(variant_id)
+                rows.append(
+                    {
+                        "variant_id": variant_id,
+                        "surface_id": str(item["surface_id"]),
+                        "candidate_ids": list(item["candidate_ids"]),
+                    }
+                )
+    return rows
 
 
 def _read_surface_index(
@@ -10061,15 +10610,25 @@ def _materialize_task_input(
             _surface_luna_projection(result, str(task["surface_id"]))
             for result in raw_dependencies
         ]
-        if task["phase"] in {"luna-consolidation", "surface-confirmation"}
+        if task["phase"] == "surface-confirmation"
+        or (
+            task["phase"] == "luna-consolidation"
+            and task["surface_id"] is not None
+        )
         else raw_dependencies
     )
     input_variant_ids: list[str] = []
     if task["phase"] == "luna-consolidation":
+        material_variant_ownership: list[dict[str, Any]] = []
         for result in dependencies:
-            for variant in _luna_material_variant_inventory(result):
-                if variant not in input_variant_ids:
-                    input_variant_ids.append(variant)
+            for ownership in _luna_material_variant_ownership(result):
+                variant_id = str(ownership["variant_id"])
+                if variant_id in input_variant_ids:
+                    raise CreditAnalysisError(
+                        "Luna consolidation dependency repeats a material variant"
+                    )
+                input_variant_ids.append(variant_id)
+                material_variant_ownership.append(ownership)
         payload = {
             "schema": MODEL_TASK_SCHEMA,
             "analysis_id": state["analysis_id"],
@@ -10077,7 +10636,9 @@ def _materialize_task_input(
             "phase": task["phase"],
             "surface_id": task["surface_id"],
             "candidate_ids": task["candidate_ids"],
+            "candidate_pairs": task.get("candidate_pairs", []),
             "input_variant_ids": input_variant_ids,
+            "material_variant_ownership": material_variant_ownership,
             "dependency_results": dependencies,
         }
     elif task["phase"] == "surface-confirmation":
@@ -10107,7 +10668,7 @@ def _materialize_task_input(
                 for result in dependencies
             ],
             "candidate_evidence_map": _confirmation_evidence_map(dossiers),
-            "original_evidence_dossiers": dossiers,
+            "original_evidence_episodes": _confirmation_evidence_episodes(dossiers),
             "temporary_control_dispositions": contract[
                 "temporary_control_dispositions"
             ],
@@ -10327,6 +10888,16 @@ def _output_schema_for_task(
             },
         }
     )
+    shared_consolidation_assessment = closed_object(
+        {
+            "surface_id": enum_string(
+                state.get("manifest", {}).get(
+                    "surface_order", contract["surface_order"]
+                )
+            ),
+            **assessment_properties,
+        }
+    )
 
     if task["phase"].startswith("luna-"):
         required = sorted(LUNA_CHILD_RESULT_FIELDS)
@@ -10336,7 +10907,7 @@ def _output_schema_for_task(
             "task_id": fixed_string(str(task["task_id"])),
             "surface_id": (
                 {"type": "null", "const": None}
-                if task["phase"] == "luna-primary"
+                if task["surface_id"] is None
                 else fixed_string(str(task["surface_id"]))
             ),
             "stage": fixed_string(str(task["stage"])),
@@ -10344,7 +10915,11 @@ def _output_schema_for_task(
             "candidate_assessments": objects(
                 primary_assessment
                 if task["phase"] == "luna-primary"
-                else assessment,
+                else (
+                    shared_consolidation_assessment
+                    if task["surface_id"] is None
+                    else assessment
+                ),
                 exact_items=(
                     len(task["candidate_pairs"])
                     if task["phase"] == "luna-primary"
@@ -10644,18 +11219,34 @@ nested in the assessment whose candidate and surface assignment they inherit.
 {surface_contracts}
 """
     elif task["phase"] == "luna-consolidation":
-        instructions = f"""Luna consolidation for `{task['surface_id']}`.
+        shared = task["surface_id"] is None
+        consolidation_scope = (
+            "the shared candidate-surface stream"
+            if shared
+            else f"surface `{task['surface_id']}`"
+        )
+        consolidation_partition = (
+            "Cover input candidate_pairs exactly once. Emit surfaces in fixed "
+            "contract order and preserve candidate order within each surface. "
+            "Group adjacent candidates within a surface, and copy surface_id from "
+            "the input."
+            if shared
+            else assessment_partition_contract
+        )
+        instructions = f"""Luna consolidation for {consolidation_scope}.
 
-Consolidate without suppressing evidence. Account for every candidate in the exact
-input order and preserve every input material variant ID. Each preserved variant ID
+Consolidate without suppressing evidence. Account for every candidate-surface pair
+exactly once and preserve every input material variant ID. Each preserved variant ID
 must occur exactly once across the material_variant_ids of output findings, risks,
 or temporary-control candidates, and the top-level preserved_variant_ids must equal
 this ordered list: {json.dumps(input_variant_ids)}. Do not invent a new semantic
-disposition merely to shorten the packet.
-Group adjacent candidates into one assessment when disposition and reason match; cite
-the ordered union of their evidence refs and preserve exact order.
+disposition merely to shorten the packet. The assessment that owns each semantic
+object must exactly match that variant's surface_id and candidate_ids in
+material_variant_ownership; never broaden or reassign a variant.
+Group adjacent candidates only when surface, disposition, and reason match; cite the
+ordered union of their evidence refs and preserve exact order.
 {luna_ownership_contract} Every finding, risk, and temporary-control object must contain
-at least one evidence reference. {assessment_partition_contract}
+at least one evidence reference. {consolidation_partition}
 """
     elif task["phase"] == "surface-confirmation":
         surface = str(task["surface_id"])
@@ -11673,6 +12264,9 @@ def _build_orchestration_final(
             "shared_primary_chunks": len(
                 state["manifest"]["shared_primary_task_ids"]
             ),
+            "shared_luna_consolidations": len(
+                state["manifest"]["shared_consolidation_task_ids"]
+            ),
             "shared_candidate_count": state["manifest"]["shared_candidate_count"],
             "candidate_surface_pair_count": luna_coverage[
                 "candidate_surface_pair_count"
@@ -11683,7 +12277,6 @@ def _build_orchestration_final(
                     "surface_id": surface["surface_id"],
                     "candidate_count": surface["candidate_count"],
                     "primary_chunks": len(surface["primary_task_ids"]),
-                    "consolidations": len(surface["consolidation_task_ids"]),
                 }
                 for surface in state["manifest"]["surfaces"]
             ],

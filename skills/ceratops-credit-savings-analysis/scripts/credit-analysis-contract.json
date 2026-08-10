@@ -41,7 +41,7 @@
     "maximum_luna_tasks": 90,
     "maximum_semantic_tasks": 96,
     "maximum_consolidation_depth": 4,
-    "confirmation_audit_fraction": 0.1,
+    "confirmation_audit_fraction": 0.05,
     "confirmation_audit_minimum": 8
   },
   "luna_dispositions": [

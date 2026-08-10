@@ -42,14 +42,15 @@ every confirmed finding.
 2. Run controller `execute`. It never recollects the session. It processes the
    finite ordered resumable shared queue with `gpt-5.6-luna` at maximum effort.
    Every primary result accounts once for every applicable candidate-surface
-   pair. The controller persists identity and content hashes and validates 100%
-   Luna coverage before Sol begins.
+   pair. One shared Luna consolidation queue then preserves every pair and
+   material variant before results are projected to surfaces. The controller
+   persists identity and content hashes and validates 100% Luna coverage before
+   Sol begins.
 3. In fixed surface order, run exactly one `gpt-5.6-sol` confirmation at maximum
    effort. Each packet verifies Luna findings and risks, every observably
-   high-signal episode even if Luna dismissed it, and a deterministic audit
-   sample of ordinary dismissals against original evidence. A finite Luna
-   consolidation may reduce over-limit material only while preserving every
-   selected candidate ID and material variant.
+   high-signal episode even if Luna dismissed it through deterministic first/last
+   representatives per episode and signal reason, and a deterministic audit
+   sample of ordinary dismissals against original evidence.
 4. Run exactly one `gpt-5.6-sol` synthesis at maximum effort. It merges duplicate
    owner/control findings and temporary-control contributions once, preserves
    contributing surfaces, assigns savings once, classifies every call, and
