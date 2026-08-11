@@ -1199,7 +1199,7 @@ def wait_for_ci_gate(
                     },
                 },
             )
-        sleep_seconds = max(0, interval_seconds)
+        sleep_seconds: float = max(0.0, float(interval_seconds))
         if short_uncertainties:
             assert uncertainty_started is not None
             remaining_grace = max(
@@ -1627,11 +1627,12 @@ def _address_review_replies(
 ) -> dict[str, Any] | None:
     """Address, checkpoint, and consume one exact review-reply request."""
 
-    supplied = getattr(args, "review_replies_request", None)
+    supplied: pathlib.Path | None = getattr(args, "review_replies_request", None)
     raw_record = state.get("review_replies")
     if raw_record is None and supplied is None:
         return None
     if raw_record is None:
+        assert supplied is not None
         if _phase_at_least(state, "gates_passed"):
             raise ShipError("Review replies cannot be introduced after gates passed.")
         request_path, task_temp_root = _review_request_scope(

@@ -3309,7 +3309,7 @@ def test_credit_analysis_workflow_rejects_invalid_and_conflicting_passes(
             contribution = confirmation["temporary_control_contributions"][0]
             canonical_id = f"{finding['id']}.canonical"
             affected_calls = set(finding["affected_call_ids"])
-            classifications = [
+            classifications: list[dict[str, Any]] = [
                 {
                     "classification": (
                         "avoidable_unimplemented"
@@ -3325,10 +3325,12 @@ def test_credit_analysis_workflow_rejects_invalid_and_conflicting_passes(
                 }
                 for call_id in packet["call_inventory"]
             ]
-            avoidable = sum(
-                len(item["call_ids"])
-                for item in classifications
-                if item["classification"].startswith("avoidable_")
+            avoidable = len(
+                [
+                    item
+                    for item in classifications
+                    if str(item["classification"]).startswith("avoidable_")
+                ]
             )
             return {
                 "schema": "ceratops-credit-analysis-orchestration-synthesis.v3",
