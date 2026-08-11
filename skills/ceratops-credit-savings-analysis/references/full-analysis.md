@@ -71,9 +71,9 @@ synthesis as public actions. Never create a temporary discovery script.
 
 Complete only when orchestration status reports `complete: true` and retained
 evidence contains the frozen shared manifest, every hashed Luna and Sol result,
-finding, risk, dismissal, exclusion, temporary-control review and
-merge, reviewed-no-confirmed-waste and unassessed call, producer group, and ROI
-input.
+every Luna candidate adjudication, confirmed finding, plausible risk,
+temporary-control review and merge, call classification, producer group, and
+ROI input.
 For a batch, every selected child must also be finalized and indexed exactly
 once before batch finalization succeeds.
 
