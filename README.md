@@ -453,7 +453,12 @@ by each maintenance workflow.
 The runtime builder composes each runtime skill's shared block from
 `skills/skill-sections.json` and `skills/sections/`, and each generated
 runtime `SKILL.md` block includes section-source comments so the origin of every
-shared section stays visible in the installed skill copy. Full validation
+shared section stays visible in the installed skill copy. Runtime payload
+strings preserve their repository-relative installed paths; an exact
+`{"source": "...", "target": "..."}` entry maps one shared source file to
+an installed-skill-relative target. Single-skill executable sources belong to
+that skill, while multi-skill executable sources belong under
+`skills/sections/scripts`. Full validation
 always checks manifest identity and profile, source skill structure,
 shared-section assignments and rendering, payload portability, Codex metadata
 and relative icon existence, the README Skills table, cross-skill references,

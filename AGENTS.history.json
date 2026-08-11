@@ -258,6 +258,16 @@
       "decision": "Move reusable repository-compatibility template ownership from skill lifecycle to repository lifecycle.",
       "reason": "Repository compatibility is a repository lifecycle action, so its materializer inputs and health verification require one owner.",
       "regression": "Keep the live manifest under skills/skill-sections.json, shared sources under skills/sections/, and the reusable template distinct from live configuration."
+    },
+    {
+      "rules": [
+        "SKILLS-MAINT-01",
+        "SKILLS-DELIVERY-01",
+        "SKILLS-DELIVERY-02"
+      ],
+      "decision": "Separate repository-maintenance executables from skill deliverables, assign multi-skill shared sources to skills/sections/scripts, and require repository reuse through deployed interfaces or an independently owned implementation.",
+      "reason": "The prior maintenance rule conflated installed skill helpers with repository-maintenance scripts and allowed an installed skill folder to become a maintenance fallback.",
+      "regression": "Preserve source-checkout maintenance execution, installed-skill portability, manifest-backed shared sources, and independent ownership for any separate repository implementation."
     }
   ]
 }

@@ -79,7 +79,7 @@ CREDIT_ANALYSIS_CONTRACT = (
 CLOSURE_SNAPSHOT = ROOT / "skills" / "ceratops-task-lifecycle" / "scripts" / "closure_snapshot.py"
 RUNTIME_MANIFEST = ".runtime-manifest.json"
 RUNTIME_MANIFEST_SCHEMA = "ceratops-runtime-skill.v3"
-INSTALLER_VERSION = 10
+INSTALLER_VERSION = 11
 
 
 def run_credit_analysis_workflow(
@@ -4838,6 +4838,88 @@ def run_skill_update_workflow(*arguments: str) -> subprocess.CompletedProcess[st
         text=True,
         check=False,
     )
+
+
+def test_skill_update_workflow_accepts_new_shared_section_source(
+    tmp_path: pathlib.Path,
+) -> None:
+    worktree, _scope, task_temp_root = prepare_skill_update_workflow_worktree(
+        tmp_path
+    )
+    shared_source = (
+        worktree / "skills" / "sections" / "scripts" / "shared-helper.py"
+    )
+    shared_source.parent.mkdir(parents=True)
+    request_path = task_temp_root / "request.json"
+    state_path = task_temp_root / "state.json"
+    evidence_path = task_temp_root / "evidence.json"
+    request = {
+        "schema": "ceratops-skill-update-request.v2",
+        "repo_root": str(worktree),
+        "task_temp_root": str(task_temp_root),
+        "evidence_output": str(evidence_path),
+        "disposable_artifacts": ["request", "state", "evidence"],
+        "selected_skills": ["alpha-tool"],
+        "allowed_paths": [
+            "skills/alpha-tool/scripts/tool.py",
+            "skills/sections/scripts/shared-helper.py",
+        ],
+        "change_groups": [
+            {
+                "name": "shared-helper",
+                "paths": [
+                    "skills/alpha-tool/scripts/tool.py",
+                    "skills/sections/scripts/shared-helper.py",
+                ],
+            }
+        ],
+        "checks": [
+            {
+                "kind": "search",
+                "pattern": "SHARED_PAYLOAD",
+                "paths": ["skills/sections/scripts/shared-helper.py"],
+                "expected_matches": 1,
+            }
+        ],
+    }
+    request_path.write_text(
+        json.dumps(request) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+
+    prepared = run_skill_update_workflow(
+        "prepare",
+        "--request",
+        str(request_path),
+        "--state",
+        str(state_path),
+    )
+    assert prepared.returncode == 0, prepared.stderr
+    shared_source.write_text(
+        "SHARED_PAYLOAD = True\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    verified = run_skill_update_workflow(
+        "verify",
+        "--state",
+        str(state_path),
+        "--evidence-output",
+        str(evidence_path),
+    )
+    assert verified.returncode == 0, verified.stderr
+    evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+    assert evidence["changed_paths"] == [
+        "skills/sections/scripts/shared-helper.py"
+    ]
+    finalized = run_skill_update_workflow(
+        "finalize",
+        "--state",
+        str(state_path),
+    )
+    assert finalized.returncode == 0, finalized.stderr
+    assert not task_temp_root.exists()
 
 
 def test_skill_update_workflow_preserves_baseline_runs_checks_once_and_finalizes(
@@ -11019,7 +11101,14 @@ def test_full_validation_scans_manifest_runtime_inputs_only(tmp_path: pathlib.Pa
 
     manifest_path = repo / "skills" / "skill-sections.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    manifest["runtime_payloads"] = {"alpha-tool": ["runtime-note.md"]}
+    manifest["runtime_payloads"] = {
+        "alpha-tool": [
+            {
+                "source": "runtime-note.md",
+                "target": "references/runtime-note.md",
+            }
+        ]
+    }
     manifest_path.write_text(
         json.dumps(manifest, indent=2) + "\n",
         encoding="utf-8",
@@ -11472,11 +11561,16 @@ def test_base_revision_resolves_payload_global_and_ambiguous_changes(
         "example/payload",
         ["alpha-tool", "beta-tool"],
     )
-    payload = payload_repo / "payload-alpha.txt"
+    payload = payload_repo / "skills" / "sections" / "scripts" / "payload-alpha.py"
+    payload.parent.mkdir()
     payload.write_text("one\n", encoding="utf-8", newline="\n")
     manifest_path = payload_repo / "skills" / "skill-sections.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    manifest["runtime_payloads"] = {"alpha-tool": ["payload-alpha.txt"]}
+    mapped_payload = {
+        "source": "skills/sections/scripts/payload-alpha.py",
+        "target": "scripts/payload-alpha.py",
+    }
+    manifest["runtime_payloads"] = {"alpha-tool": [mapped_payload]}
     manifest_path.write_text(
         json.dumps(manifest, indent=2) + "\n",
         encoding="utf-8",
@@ -11491,7 +11585,14 @@ def test_base_revision_resolves_payload_global_and_ambiguous_changes(
     payload.write_text("two\n", encoding="utf-8", newline="\n")
     with pytest.raises(installer["DecisionRequired"], match="clean checkout"):
         installer["affected_from_base"](payload_repo, payload_base)
-    assert run_git(payload_repo, "add", "payload-alpha.txt").returncode == 0
+    assert (
+        run_git(
+            payload_repo,
+            "add",
+            "skills/sections/scripts/payload-alpha.py",
+        ).returncode
+        == 0
+    )
     assert run_git(payload_repo, "commit", "-m", "payload").returncode == 0
 
     payload_affected = installer["affected_from_base"](
@@ -11502,7 +11603,7 @@ def test_base_revision_resolves_payload_global_and_ambiguous_changes(
     assert payload_affected.all_managed is False
     wildcard_base = run_git(payload_repo, "rev-parse", "HEAD").stdout.strip()
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    manifest["runtime_payloads"] = {"*": ["payload-alpha.txt"]}
+    manifest["runtime_payloads"] = {"*": [mapped_payload]}
     manifest_path.write_text(
         json.dumps(manifest, indent=2) + "\n",
         encoding="utf-8",
@@ -12065,7 +12166,29 @@ def test_runtime_manifest_uses_schema_without_installer_version(
 ) -> None:
     repo = tmp_path / "compatible"
     install_root = tmp_path / "installed"
-    create_compatible_repo(repo, "example/compatible", ["alpha-tool"])
+    create_compatible_repo(
+        repo,
+        "example/compatible",
+        ["alpha-tool", "beta-tool"],
+    )
+    shared = repo / "skills" / "sections" / "scripts" / "shared.py"
+    shared.parent.mkdir()
+    shared.write_text("VALUE = 1\n", encoding="utf-8", newline="\n")
+    manifest_path = repo / "skills" / "skill-sections.json"
+    manifest_source = json.loads(manifest_path.read_text(encoding="utf-8"))
+    mapped_payload = {
+        "source": "skills/sections/scripts/shared.py",
+        "target": "scripts/shared.py",
+    }
+    manifest_source["runtime_payloads"] = {
+        "alpha-tool": [mapped_payload],
+        "beta-tool": [mapped_payload],
+    }
+    manifest_path.write_text(
+        json.dumps(manifest_source, indent=2) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
 
     result = run_builder(repo, install_root, "--skill", "alpha-tool")
 
@@ -12077,7 +12200,41 @@ def test_runtime_manifest_uses_schema_without_installer_version(
     assert manifest["source_path"] == "skills/alpha-tool"
     assert manifest["source_repository_root"] == str(repo.resolve())
     assert manifest["validation_profile"] == "ceratops-compatible"
+    assert manifest["payload_patterns"] == [mapped_payload]
     assert "installer_version" not in manifest
+    assert (install_root / "alpha-tool" / "scripts" / "shared.py").read_text(
+        encoding="utf-8"
+    ) == "VALUE = 1\n"
+    assert not (
+        install_root
+        / "alpha-tool"
+        / "skills"
+        / "sections"
+        / "scripts"
+        / "shared.py"
+    ).exists()
+
+    bootstrap_root = tmp_path / "bootstrap-installed"
+    bootstrap = subprocess.run(
+        [
+            sys.executable,
+            str(repo / "scripts" / "install-skills-bootstrap.py"),
+            "--repo-root",
+            str(repo),
+            "--install-root",
+            str(bootstrap_root),
+            "--skill",
+            "alpha-tool",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={**os.environ, "CODEX_HOME": str(tmp_path / "empty-codex-home")},
+    )
+    assert bootstrap.returncode == 0, bootstrap.stderr
+    assert (
+        bootstrap_root / "alpha-tool" / "scripts" / "shared.py"
+    ).is_file()
 
 
 def test_full_install_does_not_run_source_validation(tmp_path: pathlib.Path) -> None:

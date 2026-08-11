@@ -43,11 +43,11 @@
   commands, `python -m <module>` entrypoints, or scripts copied into the
   installed skill folder; do not locate shared helpers by absolute paths or by
   the repo's parent directory.
-- When a workflow needs a shared repo-maintenance script, run `scripts/<name>`
-  from the active source checkout root when available, otherwise from the
-  installed skill folder; when a helper is skill-local, run it from that skill
-  folder or the corresponding source skill folder; stop as blocked if neither
-  declared location contains it.
+- Run repository-maintenance executables only from `scripts/` in an active
+  source checkout. Run skill deliverable helpers from the installed skill
+  folder; source maintenance may use the owning skill or declared
+  shared-section source. Stop as blocked when the required declared location
+  is unavailable.
 - When editing an existing text file, preserve its current line-ending
   convention unless intentional normalization is part of the task.
 - Follow this skill's output contract when present; otherwise report only the

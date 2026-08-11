@@ -74,11 +74,16 @@ Project-specific rules for this skills repository.
   installed console commands, `python -m <module>` entrypoints, or scripts in
   the installed skill folder; do not locate shared helpers by absolute paths or
   by the repo's parent directory.
-- [SKILLS-MAINT-01] When a workflow needs a shared repo-maintenance script, run
-  `scripts/<name>` from the active source checkout root when available, or the
-  installed skill folder; when a helper is skill-local, run it from that skill
-  folder or the corresponding source skill folder; stop as blocked if neither
-  declared location contains it.
+- [SKILLS-MAINT-01] Run repository-maintenance executables only from
+  `scripts/` in the active source checkout; installed skill folders are not
+  maintenance fallbacks.
+- [SKILLS-DELIVERY-01] Keep single-skill executable deliverables in their
+  owning skill; keep executable deliverables shared by multiple skills under
+  `skills/sections/scripts` and map each installed target through
+  `skills/skill-sections.json`.
+- [SKILLS-DELIVERY-02] When repository maintenance needs deliverable behavior,
+  invoke its deployed interface or maintain an independent repository
+  implementation with separate ownership and tests.
 - [SKILLS-STYLE-01] Prefer concise, principle-based, machine-oriented wording;
   avoid example lists unless needed to disambiguate behavior.
 - [SKILLS-VERIFY-01] After instruction edits, verify the changed diff or

@@ -624,10 +624,17 @@ def _validated_request(
         if matches:
             owners.update(matches)
         existing_ancillary = target.is_file() and _is_tracked(repo_root, value)
-        if not matches and not existing_ancillary:
+        shared_source = pure.is_relative_to(
+            pathlib.PurePosixPath("skills/sections")
+        )
+        new_shared_source = (
+            shared_source and not target.exists() and target.parent.is_dir()
+        )
+        if not matches and not existing_ancillary and not new_shared_source:
             raise UpdateExecutionError(
-                "allowed path must be selected-skill source or an existing "
-                f"tracked ancillary file: {value}"
+                "allowed path must be selected-skill source, an existing "
+                "tracked ancillary file, or a new shared-section source: "
+                + value
             )
         if target.is_symlink() or (target.exists() and not target.is_file()):
             raise UpdateExecutionError(f"allowed path must be a regular file target: {value}")
@@ -881,6 +888,9 @@ def _validated_state(path: pathlib.Path) -> dict[str, object]:
         root = repo_root / "skills" / skill
         if root.is_symlink() or not (root / "SKILL.md").is_file():
             raise UpdateExecutionError(f"selected skill source changed after prepare: {skill}")
+    baseline_targets_value = raw["baseline_targets"]
+    if not isinstance(baseline_targets_value, Mapping):
+        raise UpdateExecutionError("state target baseline is invalid")
     owners: set[str] = set()
     for value in allowed:
         pure = _safe_relative(value, "state allowed path")
@@ -891,7 +901,14 @@ def _validated_state(path: pathlib.Path) -> dict[str, object]:
             if pure.is_relative_to(pathlib.PurePosixPath("skills") / skill)
         ]
         owners.update(matches)
-        if not matches and not _is_tracked(repo_root, value):
+        snapshot = baseline_targets_value.get(value)
+        content = snapshot.get("content") if isinstance(snapshot, Mapping) else None
+        new_shared_source = (
+            pure.is_relative_to(pathlib.PurePosixPath("skills/sections"))
+            and isinstance(content, Mapping)
+            and content.get("kind") == "missing"
+        )
+        if not matches and not _is_tracked(repo_root, value) and not new_shared_source:
             raise UpdateExecutionError(
                 f"state ancillary path is not tracked: {value}"
             )
