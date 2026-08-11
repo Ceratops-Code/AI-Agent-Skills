@@ -11,10 +11,14 @@ merged source branches and worktrees.
 
 ### Script Bundle
 
-- (D) Complete repository ship:
+- (D) From the installed `ceratops-repo-lifecycle` skill root, run complete
+  repository ship before manual readiness or implementation inspection:
   `python scripts/ship-repository.py --repo-root PATH --repo OWNER/REPO
   --head-branch release/local --base-branch main --remote-name origin
   --reusable-head`.
+  `--repo-root` identifies the target repository; never search that target for
+  this helper. The helper owns preflight; after a terminal blocker, inspect
+  only the exact blocker-named surface.
 - The helper derives the canonical pending-work scope from `--head-branch`.
   When a retained scope exists, the wrapper reuses its recorded exact target
   commit; a caller-supplied `--commit` must match it. An absent scope is a
