@@ -10864,7 +10864,7 @@ def test_pending_work_finalization_persists_partial_cleanup_progress(
     assert run_git(repo, "show-ref", "--verify", "refs/heads/selected-b").returncode != 0
 
     ownership_target = worktree_root / "ownership-target"
-    ownership_target.mkdir()
+    ownership_target.mkdir(parents=True)
     ownership_commands: list[list[str]] = []
     removed_targets: list[pathlib.Path] = []
     take_ownership_and_remove = loaded["_take_ownership_and_remove"]

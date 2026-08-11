@@ -1060,15 +1060,17 @@ class ShipTests(unittest.TestCase):
         self.assertEqual(result["pending"], 0)
         self.assertEqual(validate.call_count, 2)
 
-        persistent = ship.ShipBlocked("persistent opaque state", {})
         with (
             mock.patch.object(
                 ship.readiness,
                 "validate_readiness",
                 side_effect=[(summary, [opaque]), (summary, [opaque])],
             ) as validate,
-            mock.patch.object(ship, "_ci_blocker", return_value=persistent),
-            self.assertRaisesRegex(ship.ShipBlocked, "persistent opaque state"),
+            mock.patch.object(ship, "_check_uncertainty_detail", return_value={}),
+            self.assertRaisesRegex(
+                ship.ShipBlocked,
+                "status-check state remained unclassifiable after 0 seconds",
+            ) as blocked,
         ):
             ship.wait_for_ci_gate(
                 "17",
@@ -1080,6 +1082,8 @@ class ShipTests(unittest.TestCase):
             )
 
         self.assertEqual(validate.call_count, 2)
+        self.assertEqual(blocked.exception.payload["blocker"]["kind"], "ci_ambiguous")
+        self.assertEqual(blocked.exception.payload["blocker"]["grace_seconds"], 0)
 
         failed = ship.readiness.Finding(
             level="ERROR",
