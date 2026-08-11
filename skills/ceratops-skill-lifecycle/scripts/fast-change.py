@@ -942,7 +942,7 @@ def main(argv: list[str] | None = None) -> int:
     """Classify before mutation, then run the complete fast-change workflow."""
 
     args = build_parser().parse_args(argv)
-    request_path = args.request.expanduser().resolve()
+    request_path = pathlib.Path(os.path.abspath(args.request.expanduser()))
     try:
         spec = classify_request(request_path)
     except (DecisionRequired, OSError, ValueError) as exc:

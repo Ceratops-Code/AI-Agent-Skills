@@ -620,8 +620,20 @@ def status_rollup_findings(
             )
             return
 
+    visible = set(failed) | set(pending) | set(passed)
+    missing_required = [
+        check for check in (required_checks or []) if check not in visible
+    ]
     if failed:
         add(findings, "ERROR", "pr.status_checks", "One or more status checks are failing.", actual=failed)
+    elif missing_required:
+        add(
+            findings,
+            "WARN",
+            "pr.status_checks",
+            REQUIRED_STATUS_CHECKS_MISSING_MESSAGE,
+            actual=missing_required,
+        )
     elif pending:
         add(findings, "WARN", "pr.status_checks", "Status checks are still pending.", actual=pending)
     else:
@@ -654,7 +666,9 @@ def pr_readiness(selector: str | None, cwd: pathlib.Path, *, allow_admin_review_
 
     review_decision = pr_data.get("reviewDecision")
     raw_rollup = pr_data.get("statusCheckRollup")
-    needs_branch_policy = review_decision in {None, ""} or raw_rollup == []
+    needs_branch_policy = review_decision in {None, ""} or isinstance(
+        raw_rollup, list
+    )
     branch_policy: dict[str, Any] | None = None
     if needs_branch_policy:
         base_branch = pr_data.get("baseRefName")
@@ -675,7 +689,7 @@ def pr_readiness(selector: str | None, cwd: pathlib.Path, *, allow_admin_review_
         add(findings, "ERROR", "pr.review_decision", "PR has a blocking review decision.", actual=review_decision, expected="APPROVED")
 
     required_checks = None
-    if raw_rollup == []:
+    if isinstance(raw_rollup, list):
         assert branch_policy is not None
         policy_checks = branch_policy["required_status_checks"]
         assert isinstance(policy_checks, list)

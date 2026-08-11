@@ -2199,9 +2199,13 @@ class GHContractStateEngineTests(unittest.TestCase):
             mock.patch.object(pr_validator, "gh_pr_view", return_value=pr_data),
             mock.patch.object(
                 pr_validator,
-                "required_approving_review_count",
-                return_value=1,
-            ) as required_reviews,
+                "branch_rule_policy",
+                return_value={
+                    "required_approving_review_count": 1,
+                    "required_review_thread_resolution": False,
+                    "required_status_checks": [],
+                },
+            ) as branch_policy,
         ):
             _, findings = pr_validator.pr_readiness(
                 "17",
@@ -2216,7 +2220,7 @@ class GHContractStateEngineTests(unittest.TestCase):
         )
         self.assertEqual(review.level, "WARN")
         self.assertEqual(review.actual, "REVIEW_REQUIRED")
-        required_reviews.assert_called_once_with("main", pathlib.Path.cwd())
+        branch_policy.assert_called_once_with("main", pathlib.Path.cwd())
 
     def test_pr_rule_graphql_paginates_exact_ref_and_aggregates_policies(self):
         cwd = pathlib.Path.cwd()

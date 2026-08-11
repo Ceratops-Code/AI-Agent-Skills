@@ -7142,7 +7142,25 @@ def test_fast_change_commits_cohesive_rules_only_multi_skill_scope(
     detail = json.loads(failed_lint.stderr)["detail"]
     assert detail["phase"] == "markdown_lint"
     assert detail["compensation"] == ["source_restored"]
-    assert len(list(canonical_requests.rglob("request.json"))) == 1
+    preserved_requests = list(canonical_requests.rglob("request.json"))
+    assert len(preserved_requests) == 1
+
+    if os.name != "nt":
+        symlink_task = canonical_requests / "symlink-request"
+        symlink_task.mkdir()
+        symlink_request = symlink_task / "request.json"
+        symlink_request.symlink_to(preserved_requests[0])
+        rejected_symlink = subprocess.run(
+            [sys.executable, str(FAST_CHANGE), "--request", str(symlink_request)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert rejected_symlink.returncode == 2
+        assert json.loads(rejected_symlink.stderr)["reason"] == (
+            "request must be a regular file"
+        )
+        assert symlink_request.is_symlink() and preserved_requests[0].is_file()
 
     outside_request = repo.parent / "outside-fast-change-request.json"
     outside_request.write_text(
@@ -7934,7 +7952,22 @@ def test_admin_bypass_accepts_only_review_required_readiness(
     assert status_finding.message == readiness.REQUIRED_STATUS_CHECKS_MISSING_MESSAGE
     assert status_finding.actual == ["classic-ci", "ruleset-ci"]
 
+    pr_data["statusCheckRollup"] = [
+        {
+            "name": "classic-ci",
+            "status": "COMPLETED",
+            "conclusion": "SUCCESS",
+        }
+    ]
+    _, findings = readiness.pr_readiness("24", tmp_path)
+    status_finding = next(
+        finding for finding in findings if finding.check == "pr.status_checks"
+    )
+    assert status_finding.message == readiness.REQUIRED_STATUS_CHECKS_MISSING_MESSAGE
+    assert status_finding.actual == ["ruleset-ci"]
+
     no_ci_policy = {**policy, "required_status_checks": []}
+    pr_data["statusCheckRollup"] = []
     monkeypatch.setattr(
         readiness,
         "branch_rule_policy",
