@@ -9478,11 +9478,12 @@ def _validate_holistic_luna_result(
         if not set(referenced) <= allowed_candidates:
             raise CreditAnalysisError(f"{label} references another Luna packet")
         refs = _holistic_result_refs(candidate.get("evidence_refs"), f"{label} evidence")
-        allowed_refs = {
+        packet_refs = {
             ref
-            for candidate_key in referenced
+            for candidate_key in task["candidate_ids"]
             for ref in record_index[candidate_key]["evidence_refs"]
         }
+        allowed_refs = set(packet_refs)
         allowed_refs.update(
             ref
             for record in compact["canonical_state"]
@@ -9492,7 +9493,21 @@ def _validate_holistic_luna_result(
             item["evidence_ref"] for item in compact["analysis_generated_activity"]
         )
         if not set(refs) <= allowed_refs:
-            raise CreditAnalysisError(f"{label} cites evidence outside its original calls")
+            raise CreditAnalysisError(f"{label} cites evidence outside its Luna packet")
+        # A causal hypothesis may cite an adjacent call from the same frozen
+        # packet. Expand its mapping deterministically so Sol receives the
+        # cited original record instead of only Luna's summary.
+        referenced_set = set(referenced)
+        referenced_set.update(
+            candidate_key
+            for candidate_key in task["candidate_ids"]
+            if set(record_index[candidate_key]["evidence_refs"]) & set(refs)
+        )
+        referenced = [
+            candidate_key
+            for candidate_key in task["candidate_ids"]
+            if candidate_key in referenced_set
+        ]
         for text_key in ("title", "hypothesis", "producer_owner_hint"):
             if not isinstance(candidate.get(text_key), str) or not candidate[text_key].strip():
                 raise CreditAnalysisError(f"{label} {text_key} is empty")
@@ -9741,7 +9756,8 @@ observed temporary control for mandatory Sol review even when it appears
 intentional or harmless. Do not enumerate routine dismissals,
 do not classify every action or call-surface pair, do not calculate savings, and
 do not make final findings. Every emitted candidate must cite supplied candidate
-IDs and original evidence references. Keep shared producer/control episodes
+IDs and packet-local original evidence references, including the candidate ID
+for each adjacent record whose evidence it cites. Keep shared producer/control episodes
 together and keep analysis-overhead work separate from producer work. Aim for
 about 2,500 output tokens; concise hypotheses are sufficient and genuine
 candidates must not be silently dropped.
@@ -9755,14 +9771,23 @@ merge overlapping findings once by owning producer/control, and preserve every
 confirmed finding. Perform the mandatory temporary-control review for every
 temporary-control candidate, using exactly one allowed disposition; transient
 work is not automatically defective, and a permanent recommendation requires
-likely recurrence plus positive maintenance-adjusted savings.
+likely recurrence plus positive maintenance-adjusted savings. Review a
+temporary control recognized during adjudication even if Luna gave it another
+candidate kind. Only `durable-control-missing` with the recurrence and savings
+gate satisfied may link to a finding; every other disposition needs an explicit
+no-finding reason.
 
-Classify every source call exactly once in compact source-order groups. Keep
-analysis-overhead groups and findings separate from producer groups and savings.
+Classify every source call exactly once in compact groups; group order and
+contiguity are transport-only and the controller canonicalizes source order.
+Copy each call's supplied workstream instead of inferring it. Keep
+analysis-overhead findings separate from producer findings and savings.
 Use `necessary` only for a specific active gate with a supplied reason code;
 never use it as a catch-all. Use `reviewed_no_confirmed_waste` for inspected calls
 without confirmed waste. `unassessed` is only for a decision-blocking evidence
-gap and must stay within the supplied cap. Do not perform broad rediscovery that
+gap and must stay within the supplied cap. Let explicit avoidable call
+classifications govern model-call finding membership and observed counts; an
+unimplemented finding may include already-implemented calls when at least one
+affected call remains unimplemented. Do not perform broad rediscovery that
 duplicates Luna, but use the supplied high-signal audit evidence to catch a
 material miss. Aim for about 5,000 output tokens while retaining all confirmed
 findings and required reviews.
@@ -9825,11 +9850,12 @@ def _validate_holistic_finding(
     expected_order = [call_id for call_id in call_order if call_id in set(calls)]
     if calls != expected_order:
         raise CreditAnalysisError(f"{label} calls are reordered")
-    workstream = finding.get("workstream")
-    if workstream not in {"producer", "analysis-overhead"} or any(
-        workstreams[call_id] != workstream for call_id in calls
-    ):
+    if finding.get("workstream") not in {"producer", "analysis-overhead"}:
+        raise CreditAnalysisError(f"{label} workstream is invalid")
+    observed_workstreams = {workstreams[call_id] for call_id in calls}
+    if len(observed_workstreams) != 1:
         raise CreditAnalysisError(f"{label} mixes producer and analysis work")
+    workstream = next(iter(observed_workstreams))
     refs = _holistic_result_refs(finding.get("evidence_refs"), f"{label} evidence")
     if finding.get("producer_type") not in contract["producer_types"]:
         raise CreditAnalysisError(f"{label} producer type is invalid")
@@ -9841,8 +9867,6 @@ def _validate_holistic_finding(
     observed = finding.get("observed_avoidable_call_count")
     if not isinstance(observed, int) or isinstance(observed, bool) or observed < 0:
         raise CreditAnalysisError(f"{label} observed call count is invalid")
-    if finding["waste_kind"] == "model-calls" and observed != len(calls):
-        raise CreditAnalysisError(f"{label} observed calls do not match evidence")
     if finding["waste_kind"] == "context-volume" and observed != 0:
         raise CreditAnalysisError(f"{label} volume-only finding saves model calls")
     recurrence = _validate_recurrence_inputs(finding.get("recurrence"), f"{label} recurrence")
@@ -9885,11 +9909,148 @@ def _validate_holistic_finding(
         **finding,
         "affected_call_ids": calls,
         "evidence_refs": refs,
+        "workstream": workstream,
         "targeted_verification": verification,
         "recurrence": recurrence,
         "helper_categories": categories,
         "contributing_surfaces": surfaces,
     }
+
+
+def _holistic_call_classifications(
+    value: Any,
+    *,
+    contract: Mapping[str, Any],
+    call_order: Sequence[str],
+    workstreams: Mapping[str, str],
+) -> tuple[list[dict[str, Any]], dict[str, str], int]:
+    """Validate model judgments and normalize their grouping to source order.
+
+    Group boundaries are only a compact transport detail. The semantic fields
+    remain model-owned while deterministic code splits or rejoins adjacent
+    calls so every frozen call appears exactly once in causal order.
+    """
+
+    by_call: dict[str, dict[str, Any]] = {}
+    for index, group in enumerate(
+        _result_objects(value, "call classifications"), start=1
+    ):
+        label = f"call classification group {index}"
+        _closed_result(
+            group,
+            {
+                "call_ids",
+                "classification",
+                "reason_code",
+                "rationale",
+                "evidence_refs",
+                "workstream",
+            },
+            label,
+        )
+        calls = _result_deduped_strings(group.get("call_ids"), f"{label} calls")
+        unknown = set(calls) - set(call_order)
+        if unknown:
+            raise CreditAnalysisError(f"{label} references an unknown call")
+        classification = str(group.get("classification"))
+        if classification not in contract["call_classifications"]:
+            raise CreditAnalysisError(f"{label} classification is invalid")
+        reason = group.get("reason_code")
+        if classification == "necessary":
+            if reason not in contract["necessary_reason_codes"]:
+                raise CreditAnalysisError(f"{label} necessary reason is invalid")
+        elif reason is not None:
+            raise CreditAnalysisError(f"{label} non-necessary reason must be null")
+        if group.get("workstream") not in {"producer", "analysis-overhead"}:
+            raise CreditAnalysisError(f"{label} workstream is invalid")
+        observed_workstreams = {workstreams[call_id] for call_id in calls}
+        if len(observed_workstreams) != 1:
+            raise CreditAnalysisError(f"{label} mixes producer and analysis work")
+        workstream = next(iter(observed_workstreams))
+        refs = _holistic_result_refs(group.get("evidence_refs"), f"{label} evidence")
+        if not isinstance(group.get("rationale"), str) or not group["rationale"].strip():
+            raise CreditAnalysisError(f"{label} rationale is empty")
+        detail = {
+            "classification": classification,
+            "reason_code": reason,
+            "rationale": group["rationale"],
+            "evidence_refs": refs,
+            "workstream": workstream,
+        }
+        for call_id in calls:
+            if call_id in by_call:
+                raise CreditAnalysisError(
+                    f"call classification is duplicated: {call_id}"
+                )
+            by_call[call_id] = detail
+    if set(by_call) != set(call_order):
+        raise CreditAnalysisError("call classifications are missing or cross-analysis")
+
+    normalized: list[dict[str, Any]] = []
+    for call_id in call_order:
+        detail = by_call[call_id]
+        if normalized and all(
+            normalized[-1][key] == detail[key]
+            for key in (
+                "classification",
+                "reason_code",
+                "rationale",
+                "evidence_refs",
+                "workstream",
+            )
+        ):
+            normalized[-1]["call_ids"].append(call_id)
+        else:
+            normalized.append({"call_ids": [call_id], **detail})
+    classification_by_call = {
+        call_id: str(detail["classification"]) for call_id, detail in by_call.items()
+    }
+    unassessed = sum(
+        classification == "unassessed"
+        for classification in classification_by_call.values()
+    )
+    return normalized, classification_by_call, unassessed
+
+
+def _holistic_reconcile_findings(
+    findings: Sequence[dict[str, Any]],
+    classification_by_call: Mapping[str, str],
+) -> list[dict[str, Any]]:
+    """Resolve finding membership from Sol's explicit per-call judgments."""
+
+    avoidable = {"avoidable_implemented", "avoidable_unimplemented"}
+    normalized: list[dict[str, Any]] = []
+    for finding in findings:
+        if finding["waste_kind"] != "model-calls":
+            normalized.append(finding)
+            continue
+        calls = [
+            call_id
+            for call_id in finding["affected_call_ids"]
+            if classification_by_call[call_id] in avoidable
+        ]
+        if not calls:
+            raise CreditAnalysisError("model-call finding has no avoidable call evidence")
+        if finding["observed_avoidable_call_count"] != len(calls):
+            raise CreditAnalysisError("finding count conflicts with explicit call accounting")
+        classifications = {classification_by_call[call_id] for call_id in calls}
+        if finding["implementation_status"] == "implemented":
+            if classifications != {"avoidable_implemented"}:
+                raise CreditAnalysisError(
+                    "implemented finding conflicts with explicit call accounting"
+                )
+        elif "avoidable_unimplemented" not in classifications:
+            raise CreditAnalysisError(
+                "unimplemented finding has no unimplemented avoidable call"
+            )
+        normalized.append(
+            {
+                **finding,
+                "affected_call_ids": calls,
+                "observed_avoidable_call_count": len(calls),
+            }
+        )
+    return normalized
 
 
 def _validate_holistic_sol_result(
@@ -9942,9 +10103,38 @@ def _validate_holistic_sol_result(
             start=1,
         )
     ]
+    classifications, classification_by_call, unassessed = (
+        _holistic_call_classifications(
+            raw.get("call_classifications"),
+            contract=contract,
+            call_order=call_order,
+            workstreams=workstreams,
+        )
+    )
+    maximum_unassessed = math.floor(
+        len(call_order) * float(contract["coverage"]["maximum_unassessed_fraction"])
+    )
+    if unassessed > maximum_unassessed:
+        raise CreditAnalysisError(
+            f"unassessed calls exceed the contract limit: {unassessed} > {maximum_unassessed}"
+        )
+    findings = _holistic_reconcile_findings(findings, classification_by_call)
     finding_by_id = {finding["id"]: finding for finding in findings}
     if len(finding_by_id) != len(findings):
         raise CreditAnalysisError("confirmed finding ID is duplicated")
+    avoidable_calls = {
+        call_id
+        for call_id, classification in classification_by_call.items()
+        if classification in {"avoidable_implemented", "avoidable_unimplemented"}
+    }
+    finding_calls = {
+        call_id
+        for finding in findings
+        if finding["waste_kind"] == "model-calls"
+        for call_id in finding["affected_call_ids"]
+    }
+    if avoidable_calls != finding_calls:
+        raise CreditAnalysisError("avoidable call classifications do not match findings")
     risks: list[dict[str, Any]] = []
     for index, risk in enumerate(_result_objects(raw.get("plausible_risks"), "plausible risks"), start=1):
         label = f"plausible risk {index}"
@@ -9967,11 +10157,12 @@ def _validate_holistic_sol_result(
         calls = _result_deduped_strings(risk.get("affected_call_ids"), f"{label} calls")
         if calls != [call_id for call_id in call_order if call_id in set(calls)]:
             raise CreditAnalysisError(f"{label} calls are missing or reordered")
-        workstream = risk.get("workstream")
-        if workstream not in {"producer", "analysis-overhead"} or any(
-            workstreams.get(call_id) != workstream for call_id in calls
-        ):
+        if risk.get("workstream") not in {"producer", "analysis-overhead"}:
+            raise CreditAnalysisError(f"{label} workstream is invalid")
+        observed_workstreams = {workstreams.get(call_id) for call_id in calls}
+        if None in observed_workstreams or len(observed_workstreams) != 1:
             raise CreditAnalysisError(f"{label} mixes producer and analysis work")
+        workstream = next(iter(observed_workstreams))
         surfaces = _holistic_surface_ids(
             risk.get("contributing_surfaces"),
             f"{label} surfaces",
@@ -9981,6 +10172,7 @@ def _validate_holistic_sol_result(
             **risk,
             "affected_call_ids": calls,
             "evidence_refs": _holistic_result_refs(risk.get("evidence_refs"), f"{label} evidence"),
+            "workstream": workstream,
             "contributing_surfaces": surfaces,
             "competing_explanations": _result_deduped_strings(
                 risk.get("competing_explanations"), f"{label} explanations"
@@ -9998,8 +10190,6 @@ def _validate_holistic_sol_result(
         raise CreditAnalysisError("plausible risk ID is duplicated")
     decisions = _result_objects(raw.get("candidate_decisions"), "candidate decisions")
     observed_candidate_ids: list[str] = []
-    referenced_findings: set[str] = set()
-    referenced_risks: set[str] = set()
     for index, decision in enumerate(decisions, start=1):
         label = f"candidate decision {index}"
         _closed_result(
@@ -10024,16 +10214,21 @@ def _validate_holistic_sol_result(
             raise CreditAnalysisError(f"{label} risk outcome is inconsistent")
         if disposition == "dismissed-candidate" and (finding_ids or risk_ids):
             raise CreditAnalysisError(f"{label} dismissed outcome has an outcome ID")
-        referenced_findings.update(finding_ids)
-        referenced_risks.update(risk_ids)
-        _holistic_result_refs(decision.get("evidence_refs"), f"{label} evidence")
+        decision["finding_ids"] = finding_ids
+        decision["risk_ids"] = risk_ids
+        decision["evidence_refs"] = _holistic_result_refs(
+            decision.get("evidence_refs"), f"{label} evidence"
+        )
         if not isinstance(decision.get("reason"), str) or not decision["reason"].strip():
             raise CreditAnalysisError(f"{label} reason is empty")
     if observed_candidate_ids != list(luna_candidate_ids) or len(observed_candidate_ids) != len(set(observed_candidate_ids)):
         raise CreditAnalysisError("Sol did not adjudicate every Luna candidate exactly once")
-    if referenced_findings != set(finding_by_id) or referenced_risks != set(risk_by_id):
-        raise CreditAnalysisError("Sol outcome is not linked to a Luna candidate")
     luna_results = _holistic_luna_results(state, state["manifest"])
+    all_luna_candidate_ids = [
+        candidate["id"]
+        for result in luna_results
+        for candidate in result["candidates"]
+    ]
     temporary_candidate_ids = [
         candidate["id"]
         for result in luna_results
@@ -10070,8 +10265,8 @@ def _validate_holistic_sol_result(
         sources = _result_deduped_strings(
             review.get("source_luna_candidate_ids"), f"{label} Luna candidates"
         )
-        if not set(sources) <= set(temporary_candidate_ids):
-            raise CreditAnalysisError(f"{label} references a non-temporary candidate")
+        if not set(sources) <= set(all_luna_candidate_ids):
+            raise CreditAnalysisError(f"{label} references an unknown Luna candidate")
         reviewed_temporary.extend(sources)
         calls = _result_deduped_strings(review.get("affected_call_ids"), f"{label} calls")
         if calls != [call_id for call_id in call_order if call_id in set(calls)]:
@@ -10107,6 +10302,18 @@ def _validate_holistic_sol_result(
             raise CreditAnalysisError(f"{label} savings gate is invalid")
         finding_id = review.get("finding_id")
         no_finding = review.get("no_finding_reason")
+        nonfinding_dispositions = {
+            "transient-by-design",
+            "permanently-implemented",
+            "run-only-useful",
+        }
+        if disposition in nonfinding_dispositions:
+            finding_id = None
+            if not isinstance(no_finding, str) or not no_finding.strip():
+                no_finding = (
+                    f"The {disposition} disposition does not represent a missing "
+                    "durable control."
+                )
         if finding_id is not None:
             if (
                 not isinstance(finding_id, str)
@@ -10120,8 +10327,6 @@ def _validate_holistic_sol_result(
                 raise CreditAnalysisError(f"{label} permanent recommendation fails ROI gating")
         elif not isinstance(no_finding, str) or not no_finding.strip():
             raise CreditAnalysisError(f"{label} needs an explicit no-finding reason")
-        if disposition in {"transient-by-design", "permanently-implemented", "run-only-useful"} and finding_id is not None:
-            raise CreditAnalysisError(f"{label} transient or implemented work became a defect")
         surfaces = _holistic_surface_ids(
             review.get("contributing_surfaces"),
             f"{label} surfaces",
@@ -10131,15 +10336,56 @@ def _validate_holistic_sol_result(
             **review,
             "source_luna_candidate_ids": sources,
             "affected_call_ids": calls,
+            "finding_id": finding_id,
+            "no_finding_reason": no_finding,
             "contributing_surfaces": surfaces,
         }
         review_by_id[review_id] = normalized_review
-    if reviewed_temporary != temporary_candidate_ids or len(reviewed_temporary) != len(set(reviewed_temporary)):
+    expected_review_order = [
+        candidate_id
+        for candidate_id in all_luna_candidate_ids
+        if candidate_id in set(reviewed_temporary)
+    ]
+    if (
+        reviewed_temporary != expected_review_order
+        or len(reviewed_temporary) != len(set(reviewed_temporary))
+        or not set(temporary_candidate_ids) <= set(reviewed_temporary)
+    ):
         raise CreditAnalysisError("temporary-control review coverage is missing or duplicated")
-    merges = _result_objects(raw.get("temporary_control_merges"), "temporary-control merges")
+    nonfinding_temporary_sources = {
+        candidate_id
+        for review in review_by_id.values()
+        if review["finding_id"] is None
+        for candidate_id in review["source_luna_candidate_ids"]
+    }
+    for decision in decisions:
+        if (
+            decision["luna_candidate_id"] in nonfinding_temporary_sources
+            and decision["disposition"] == "confirmed-finding"
+        ):
+            decision["disposition"] = "dismissed-candidate"
+            decision["finding_ids"] = []
+            decision["risk_ids"] = []
+            decision["reason"] = (
+                "The mandatory temporary-control disposition records no missing "
+                "durable control."
+            )
+    referenced_findings = {
+        finding_id for decision in decisions for finding_id in decision["finding_ids"]
+    }
+    referenced_risks = {
+        risk_id for decision in decisions for risk_id in decision["risk_ids"]
+    }
+    if referenced_findings != set(finding_by_id) or referenced_risks != set(risk_by_id):
+        raise CreditAnalysisError("Sol outcome is not linked to a Luna candidate")
+
+    raw_merges = _result_objects(
+        raw.get("temporary_control_merges"), "temporary-control merges"
+    )
+    merges: list[dict[str, Any]] = []
     merged_reviews: set[str] = set()
     merge_keys: set[tuple[str, str]] = set()
-    for index, merge in enumerate(merges, start=1):
+    for index, merge in enumerate(raw_merges, start=1):
         label = f"temporary-control merge {index}"
         _closed_result(
             merge,
@@ -10154,20 +10400,44 @@ def _validate_holistic_sol_result(
             raise CreditAnalysisError("temporary-control owner/control is merged twice")
         merge_keys.add(merge_key)
         review_ids = _result_deduped_strings(merge.get("review_ids"), f"{label} reviews")
-        if not set(review_ids) <= set(review_by_id) or set(review_ids) & merged_reviews:
+        if not set(review_ids) <= set(review_by_id):
             raise CreditAnalysisError(f"{label} review ownership is invalid")
-        merged_reviews.update(review_ids)
-        finding_id = merge.get("finding_id")
-        if finding_id not in finding_by_id or any(
-            review_by_id[review_id]["finding_id"] != finding_id for review_id in review_ids
-        ):
-            raise CreditAnalysisError(f"{label} finding ownership is invalid")
-        surfaces = _holistic_surface_ids(
+        eligible_review_ids = [
+            review_id
+            for review_id in review_ids
+            if review_by_id[review_id]["finding_id"] is not None
+        ]
+        _holistic_surface_ids(
             merge.get("contributing_surfaces"),
             f"{label} surfaces",
             surface_order,
         )
-        merge["contributing_surfaces"] = surfaces
+        if not eligible_review_ids:
+            continue
+        if set(eligible_review_ids) & merged_reviews:
+            raise CreditAnalysisError(f"{label} review ownership is invalid")
+        finding_id = merge.get("finding_id")
+        if finding_id not in finding_by_id or any(
+            review_by_id[review_id]["finding_id"] != finding_id
+            for review_id in eligible_review_ids
+        ):
+            raise CreditAnalysisError(f"{label} finding ownership is invalid")
+        merged_reviews.update(eligible_review_ids)
+        surfaces = [
+            surface
+            for surface in surface_order
+            if any(
+                surface in review_by_id[review_id]["contributing_surfaces"]
+                for review_id in eligible_review_ids
+            )
+        ]
+        merges.append(
+            {
+                **merge,
+                "review_ids": eligible_review_ids,
+                "contributing_surfaces": surfaces,
+            }
+        )
     required_merged = {review_id for review_id, review in review_by_id.items() if review["finding_id"] is not None}
     if merged_reviews != required_merged:
         raise CreditAnalysisError("temporary-control confirmed findings were not merged once")
@@ -10181,74 +10451,6 @@ def _validate_holistic_sol_result(
         _holistic_result_refs(review.get("evidence_refs"), "helper category evidence", empty=True)
         if not isinstance(review.get("reason"), str) or not review["reason"].strip():
             raise CreditAnalysisError("helper category review reason is empty")
-    classifications = _result_objects(raw.get("call_classifications"), "call classifications")
-    flattened: list[str] = []
-    classification_by_call: dict[str, str] = {}
-    unassessed = 0
-    for index, group in enumerate(classifications, start=1):
-        label = f"call classification group {index}"
-        _closed_result(
-            group,
-            {"call_ids", "classification", "reason_code", "rationale", "evidence_refs", "workstream"},
-            label,
-        )
-        calls = _result_deduped_strings(group.get("call_ids"), f"{label} calls")
-        flattened.extend(calls)
-        classification = str(group.get("classification"))
-        if classification not in contract["call_classifications"]:
-            raise CreditAnalysisError(f"{label} classification is invalid")
-        reason = group.get("reason_code")
-        if classification == "necessary":
-            if reason not in contract["necessary_reason_codes"]:
-                raise CreditAnalysisError(f"{label} necessary reason is invalid")
-        elif reason is not None:
-            raise CreditAnalysisError(f"{label} non-necessary reason must be null")
-        workstream = group.get("workstream")
-        if workstream not in {"producer", "analysis-overhead"} or any(
-            workstreams.get(call_id) != workstream for call_id in calls
-        ):
-            raise CreditAnalysisError(f"{label} mixes producer and analysis work")
-        _holistic_result_refs(group.get("evidence_refs"), f"{label} evidence")
-        if not isinstance(group.get("rationale"), str) or not group["rationale"].strip():
-            raise CreditAnalysisError(f"{label} rationale is empty")
-        if classification == "unassessed":
-            unassessed += len(calls)
-        for call_id in calls:
-            classification_by_call[call_id] = classification
-    if flattened != call_order or len(flattened) != len(set(flattened)):
-        raise CreditAnalysisError("call classifications are missing, duplicated, or reordered")
-    maximum_unassessed = math.floor(
-        len(call_order) * float(contract["coverage"]["maximum_unassessed_fraction"])
-    )
-    if unassessed > maximum_unassessed:
-        raise CreditAnalysisError(
-            f"unassessed calls exceed the contract limit: {unassessed} > {maximum_unassessed}"
-        )
-    avoidable_classifications = {"avoidable_implemented", "avoidable_unimplemented"}
-    avoidable_calls = {
-        call_id
-        for call_id, classification in classification_by_call.items()
-        if classification in avoidable_classifications
-    }
-    finding_calls = {
-        call_id
-        for finding in findings
-        if finding["waste_kind"] == "model-calls"
-        for call_id in finding["affected_call_ids"]
-    }
-    if avoidable_calls != finding_calls:
-        raise CreditAnalysisError("avoidable call classifications do not match findings")
-    for finding in findings:
-        expected_classification = (
-            "avoidable_implemented"
-            if finding["implementation_status"] == "implemented"
-            else "avoidable_unimplemented"
-        )
-        if finding["waste_kind"] == "model-calls" and any(
-            classification_by_call[call_id] != expected_classification
-            for call_id in finding["affected_call_ids"]
-        ):
-            raise CreditAnalysisError("finding implementation status conflicts with call accounting")
     summaries = _result_objects(raw.get("surface_summaries"), "surface summaries")
     if [summary.get("surface_id") for summary in summaries] != surface_order:
         raise CreditAnalysisError("surface summaries are missing or reordered")
@@ -10320,6 +10522,31 @@ def _holistic_role(task: Mapping[str, Any]) -> str:
     return "luna" if task["phase"] == "luna-discovery" else "sol"
 
 
+def _holistic_sync_child_lineage(state: dict[str, Any]) -> None:
+    """Rebuild exact child-attempt lineage from the durable attempt ledger."""
+
+    lineage: list[dict[str, Any]] = []
+    for task_id in state["task_order"]:
+        for attempt in state["execution"][task_id]["attempts"]:
+            if attempt.get("model_invoked") is not True:
+                continue
+            child_ids = attempt.get("event_summary", {}).get(
+                "child_session_ids", []
+            )
+            lineage.append(
+                {
+                    "analysis_id": state["analysis_id"],
+                    "task_id": task_id,
+                    "attempt_number": attempt["attempt_number"],
+                    "ephemeral": True,
+                    "child_session_ids": (
+                        child_ids if isinstance(child_ids, list) else []
+                    ),
+                }
+            )
+    state["child_lineage"] = lineage
+
+
 def _holistic_accept_result(
     *,
     state: dict[str, Any],
@@ -10345,16 +10572,7 @@ def _holistic_accept_result(
         accepted_attempt["outcome"] = "accepted"
         accepted_attempt["error"] = None
         execution["attempts"].append(accepted_attempt)
-        child_ids = attempt.get("event_summary", {}).get("child_session_ids", [])
-        state["child_lineage"].append(
-            {
-                "analysis_id": state["analysis_id"],
-                "task_id": task["task_id"],
-                "attempt_number": attempt["attempt_number"],
-                "ephemeral": True,
-                "child_session_ids": child_ids if isinstance(child_ids, list) else [],
-            }
-        )
+    _holistic_sync_child_lineage(state)
     execution["status"] = "complete"
     execution["result"] = {
         "path": str(result_path),
@@ -10371,8 +10589,6 @@ def _holistic_accept_result(
         "recovered_without_model_call": recovered,
     }
     state["model_calls"][role] += 1
-    if recovered:
-        state["model_attempts"][role] += 1
     _holistic_save_state(state)
 
 
@@ -10388,7 +10604,9 @@ def _holistic_recoverable_raw(
     artifact = latest.get("artifacts", {}).get("raw_output")
     if not isinstance(artifact, Mapping):
         return None
-    return _read_json(pathlib.Path(str(artifact["path"])), "recoverable holistic output")
+    return _read_json(
+        pathlib.Path(str(artifact["path"])), "recoverable holistic output"
+    )
 
 
 def _holistic_final(
@@ -10425,9 +10643,11 @@ def _holistic_final(
         "window": state["window"],
         "lineage": {
             **state["lineage"],
-            "excluded_own_descendant_task_ids": [
-                child["task_id"] for child in state["child_lineage"]
-            ],
+            "excluded_own_descendant_task_ids": list(
+                dict.fromkeys(
+                    child["task_id"] for child in state["child_lineage"]
+                )
+            ),
             "created_child_tasks": state["child_lineage"],
         },
         "evidence": state["evidence"],
@@ -10790,6 +11010,7 @@ def command_execute_orchestration(
         if model_raw is None:
             failed = {**attempt, "outcome": "runner-error"}
             execution["attempts"].append(failed)
+            _holistic_sync_child_lineage(state)
             _holistic_save_state(state)
             raise CreditAnalysisError(str(attempt.get("error") or "model task produced no result"))
         try:
@@ -10805,6 +11026,7 @@ def command_execute_orchestration(
         except CreditAnalysisError as exc:
             failed = {**attempt, "outcome": "validation-error", "error": str(exc)}
             execution["attempts"].append(failed)
+            _holistic_sync_child_lineage(state)
             _holistic_save_state(state)
             raise
         _holistic_accept_result(

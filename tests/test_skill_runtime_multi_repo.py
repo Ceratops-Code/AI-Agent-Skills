@@ -2234,6 +2234,240 @@ def test_credit_analysis_workflow_end_to_end_uses_two_semantic_calls(
     assert final_path.read_bytes() == final_before
 
 
+def test_credit_analysis_recovers_packet_local_luna_evidence_without_a_retry(
+    tmp_path: pathlib.Path,
+) -> None:
+    workflow = load_credit_analysis_workflow_module()
+    request, _, _ = credit_analysis_request(
+        tmp_path,
+        extra_completed_turns=2,
+        extra_calls_per_turn=5,
+    )
+    plan = workflow.command_plan_orchestration(
+        request,
+        available_models=holistic_model_catalog(),
+    )
+    state_path = pathlib.Path(plan["state_path"])
+    state, evidence, contract, compact = workflow._holistic_read_state(state_path)
+    task = workflow._holistic_task_map(state["manifest"])["luna.discovery.0001"]
+    payload, input_sha, prompt_path, schema_path, _ = (
+        workflow._holistic_prepare_task(
+            state,
+            evidence,
+            contract,
+            compact,
+            task,
+        )
+    )
+
+    class PacketLocalEvidenceRunner(FakeCreditModelRunner):
+        def _luna(
+            self,
+            task: Mapping[str, Any],
+            packet: Mapping[str, Any],
+            digest: str,
+        ) -> dict[str, Any]:
+            result = super()._luna(task, packet, digest)
+            records = self._records(packet)
+            assert result["candidates"] and len(records) > 1
+            result["candidates"][0]["evidence_refs"].append(
+                records[1]["evidence_refs"][0]
+            )
+            return result
+
+    runner = PacketLocalEvidenceRunner()
+    attempt_dir = pathlib.Path(task["artifacts"]["attempts"]) / "attempt-001"
+    _, attempt = workflow._invoke_injected_runner(
+        runner,
+        model="gpt-5.6-luna",
+        task={**task, "reasoning_effort": "medium"},
+        prompt_path=prompt_path,
+        schema_path=schema_path,
+        input_payload=payload,
+        input_sha256=input_sha,
+        attempt_dir=attempt_dir,
+    )
+    attempt = workflow._bind_attempt_record(
+        {**attempt, "reasoning_effort": "medium"},
+        state=state,
+        task=task,
+        input_sha256=input_sha,
+        attempt_number=1,
+    )
+    state["execution"][task["task_id"]]["attempts"].append(
+        {
+            **attempt,
+            "outcome": "validation-error",
+            "error": "simulated older packet-local evidence rejection",
+        }
+    )
+    state["model_attempts"]["luna"] = 1
+    workflow._holistic_sync_child_lineage(state)
+    workflow._holistic_save_state(state)
+
+    calls_before_resume = len(runner.calls)
+    resumed = workflow.command_execute_orchestration(
+        state_path,
+        runner=runner,
+        available_models=runner.available_models,
+        task_limit=1,
+    )
+    assert resumed["next_task"] == "sol.adjudication"
+    assert len(runner.calls) == calls_before_resume
+    recovered_state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert recovered_state["model_attempts"] == {"luna": 1, "sol": 0}
+    assert recovered_state["model_calls"] == {"luna": 1, "sol": 0}
+    assert len(recovered_state["child_lineage"]) == 1
+    result_record = recovered_state["execution"][task["task_id"]]["result"]
+    assert result_record["recovered_without_model_call"] is True
+    result = json.loads(
+        pathlib.Path(result_record["path"]).read_text(encoding="utf-8")
+    )
+    assert len(result["candidates"][0]["candidate_ids"]) == 2
+
+
+def test_credit_analysis_normalizes_sol_transport_without_changing_judgments(
+    tmp_path: pathlib.Path,
+) -> None:
+    workflow = load_credit_analysis_workflow_module()
+    request, _, _ = credit_analysis_request(
+        tmp_path,
+        extra_completed_turns=3,
+        extra_calls_per_turn=4,
+    )
+    plan = workflow.command_plan_orchestration(
+        request,
+        available_models=holistic_model_catalog(),
+    )
+
+    class TransportVariationRunner(FakeCreditModelRunner):
+        def _sol(
+            self,
+            task: Mapping[str, Any],
+            packet: Mapping[str, Any],
+            digest: str,
+        ) -> dict[str, Any]:
+            result = super()._sol(task, packet, digest)
+            call_order = [row[1] for row in packet["call_inventory"]["rows"]]
+            finding = next(
+                item
+                for item in result["confirmed_findings"]
+                if item["waste_kind"] == "model-calls"
+                and len(item["affected_call_ids"]) > 1
+            )
+            nonavoidable_call = next(
+                call_id
+                for group in result["call_classifications"]
+                if not group["classification"].startswith("avoidable_")
+                for call_id in group["call_ids"]
+            )
+            finding_calls = set(finding["affected_call_ids"])
+            finding_calls.add(nonavoidable_call)
+            finding["affected_call_ids"] = [
+                call_id for call_id in call_order if call_id in finding_calls
+            ]
+            finding["workstream"] = "analysis-overhead"
+
+            implemented_call = next(
+                call_id
+                for call_id in finding["affected_call_ids"]
+                if call_id != nonavoidable_call
+            )
+            split_groups: list[dict[str, Any]] = []
+            for group in result["call_classifications"]:
+                if implemented_call not in group["call_ids"]:
+                    split_groups.append(group)
+                    continue
+                remaining = [
+                    call_id
+                    for call_id in group["call_ids"]
+                    if call_id != implemented_call
+                ]
+                if remaining:
+                    split_groups.append({**group, "call_ids": remaining})
+                split_groups.append(
+                    {
+                        **group,
+                        "call_ids": [implemented_call],
+                        "classification": "avoidable_implemented",
+                    }
+                )
+            split_groups[0]["workstream"] = "analysis-overhead"
+            result["call_classifications"] = list(reversed(split_groups))
+
+            review = next(
+                item
+                for item in result["temporary_control_reviews"]
+                if item["disposition"] == "permanently-implemented"
+            )
+            review["finding_id"] = finding["id"]
+            review["no_finding_reason"] = None
+            source_id = review["source_luna_candidate_ids"][0]
+            decision = next(
+                item
+                for item in result["candidate_decisions"]
+                if item["luna_candidate_id"] == source_id
+            )
+            decision["disposition"] = "confirmed-finding"
+            decision["finding_ids"] = [finding["id"]]
+            decision["risk_ids"] = []
+            result["temporary_control_merges"].append(
+                {
+                    "control_key": "implemented-control-is-not-a-gap",
+                    "owning_producer": review["owning_producer"],
+                    "review_ids": [review["id"]],
+                    "contributing_surfaces": review["contributing_surfaces"],
+                    "finding_id": finding["id"],
+                }
+            )
+            return result
+
+    runner = TransportVariationRunner()
+    completed = workflow.command_execute_orchestration(
+        pathlib.Path(plan["state_path"]),
+        runner=runner,
+        available_models=runner.available_models,
+    )
+    assert completed["complete"] is True
+    assert len(runner.calls) == 2
+    final = json.loads(
+        pathlib.Path(completed["final_result_path"]).read_text(encoding="utf-8")
+    )
+    flattened = [
+        call_id
+        for group in final["call_classifications"]
+        for call_id in group["call_ids"]
+    ]
+    manifest = json.loads(
+        pathlib.Path(final["manifest"]["path"]).read_text(encoding="utf-8")
+    )
+    assert flattened == manifest["call_ids"]
+    assert all(
+        finding["observed_avoidable_call_count"]
+        == len(finding["affected_call_ids"])
+        for finding in final["confirmed_findings"]
+        if finding["waste_kind"] == "model-calls"
+    )
+    normalized_review = next(
+        item
+        for item in final["temporary_control_reviews"]
+        if item["disposition"] == "permanently-implemented"
+    )
+    assert normalized_review["finding_id"] is None
+    assert normalized_review["no_finding_reason"]
+    normalized_decision = next(
+        item
+        for item in final["candidate_decisions"]
+        if item["luna_candidate_id"]
+        == normalized_review["source_luna_candidate_ids"][0]
+    )
+    assert normalized_decision["disposition"] == "dismissed-candidate"
+    assert all(
+        merge["control_key"] != "implemented-control-is-not-a-gap"
+        for merge in final["temporary_control_merges"]
+    )
+
+
 def test_credit_analysis_model_catalog_decodes_cli_as_utf8(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
