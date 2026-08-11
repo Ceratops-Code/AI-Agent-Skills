@@ -4,11 +4,13 @@ import importlib.util
 import io
 import json
 import pathlib
+import shutil
 import subprocess
 import sys
+import tempfile
 import unittest
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, ClassVar
 from unittest import mock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -22,8 +24,17 @@ SPEC.loader.exec_module(SANITY)
 
 class WindowsShellSanityTests(unittest.TestCase):
     @staticmethod
-    def hook_result(command: str) -> dict[str, Any] | None:
-        event = {"tool_name": "Bash", "tool_input": {"command": command}}
+    def hook_result(
+        command: str,
+        *,
+        cwd: str | None = None,
+        tool_input_fields: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        tool_input = dict(tool_input_fields or {})
+        tool_input["command"] = command
+        event: dict[str, Any] = {"tool_name": "Bash", "tool_input": tool_input}
+        if cwd is not None:
+            event["cwd"] = cwd
         stdout = io.StringIO()
         with mock.patch.object(sys, "stdin", io.StringIO(json.dumps(event))):
             with contextlib.redirect_stdout(stdout):
@@ -229,6 +240,333 @@ class WindowsShellSanityTests(unittest.TestCase):
         payload = json.loads(stderr.getvalue())
         self.assertEqual(returncode, 127)
         self.assertEqual(payload["findings"][0]["kind"], "powershell_not_found")
+
+
+class ProjectPythonRedirectionTests(unittest.TestCase):
+    """Exercise project identity and executable-only Python substitution."""
+
+    PROJECT_LABELS: ClassVar[dict[str, str]] = {
+        "Docs-and-Claims": "Docs-and-Claims",
+        "pdf-form-tools": "pdf-form-tools",
+        "PixelTops-Skills": "PixelTops",
+    }
+    temporary_directory: ClassVar[tempfile.TemporaryDirectory[str]]
+    temporary_root: ClassVar[pathlib.Path]
+    canonical_python: ClassVar[str]
+    project_paths: ClassVar[dict[str, dict[str, pathlib.Path]]]
+    out_of_scope_repository: ClassVar[pathlib.Path]
+
+    @classmethod
+    def setUpClass(cls):
+        if shutil.which("powershell") is None:
+            raise unittest.SkipTest("Windows PowerShell is required for AST tests")
+        if shutil.which("git") is None:
+            raise unittest.SkipTest("Git is required for common-directory tests")
+
+        cls.temporary_directory = tempfile.TemporaryDirectory(
+            prefix="codex-python-redirection-"
+        )
+        cls.addClassCleanup(cls.temporary_directory.cleanup)
+        cls.temporary_root = pathlib.Path(cls.temporary_directory.name)
+        cls.canonical_python = r"C:\Program Files\PC Python's\python.exe"
+        cls.project_paths = {}
+
+        for repository_name in cls.PROJECT_LABELS:
+            repository = cls.temporary_root / "repositories" / repository_name
+            repository.parent.mkdir(parents=True, exist_ok=True)
+            cls.run_git("init", "--quiet", str(repository))
+            cls.run_git("-C", str(repository), "config", "user.name", "Codex Test")
+            cls.run_git(
+                "-C",
+                str(repository),
+                "config",
+                "user.email",
+                "codex-test@example.invalid",
+            )
+            (repository / "README.md").write_text("fixture\n", encoding="utf-8")
+            cls.run_git("-C", str(repository), "add", "README.md")
+            cls.run_git(
+                "-C",
+                str(repository),
+                "-c",
+                "commit.gpgSign=false",
+                "commit",
+                "--quiet",
+                "-m",
+                "fixture",
+            )
+
+            worktree = (
+                cls.temporary_root
+                / "linked-worktrees"
+                / repository_name
+                / "feature-checkout"
+            )
+            worktree.parent.mkdir(parents=True, exist_ok=True)
+            cls.run_git(
+                "-C",
+                str(repository),
+                "worktree",
+                "add",
+                "--quiet",
+                "--detach",
+                str(worktree),
+                "HEAD",
+            )
+            main_nested = repository / "nested" / "deeper"
+            worktree_nested = worktree / "nested" / "deeper"
+            main_nested.mkdir(parents=True)
+            worktree_nested.mkdir(parents=True)
+            cls.project_paths[repository_name] = {
+                "main": repository,
+                "main_nested": main_nested,
+                "worktree": worktree,
+                "worktree_nested": worktree_nested,
+            }
+
+        cls.out_of_scope_repository = (
+            cls.temporary_root / "repositories" / "Unrelated-Project"
+        )
+        cls.run_git("init", "--quiet", str(cls.out_of_scope_repository))
+
+    @staticmethod
+    def run_git(*args: str) -> None:
+        subprocess.run(
+            ["git", *args],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+
+    def redirected_hook_result(
+        self,
+        command: str,
+        cwd: pathlib.Path,
+        *,
+        tool_input_fields: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        with mock.patch.dict(
+            SANITY.os.environ,
+            {SANITY.PROJECT_PYTHON_ENV: self.canonical_python},
+            clear=False,
+        ):
+            with mock.patch.object(
+                SANITY,
+                "canonical_pc_python",
+                return_value=self.canonical_python,
+            ):
+                return WindowsShellSanityTests.hook_result(
+                    command,
+                    cwd=str(cwd),
+                    tool_input_fields=tool_input_fields,
+                )
+
+    @staticmethod
+    def rewritten_command(payload: dict[str, Any]) -> str:
+        return WindowsShellSanityTests.rewritten_command(payload)
+
+    def test_each_project_main_nested_and_linked_worktree_resolves_by_common_dir(
+        self,
+    ):
+        for repository_name, paths in self.project_paths.items():
+            for location_name, cwd in paths.items():
+                with self.subTest(
+                    repository=repository_name,
+                    location=location_name,
+                ):
+                    payload = self.redirected_hook_result("python task.py", cwd)
+                    self.assertIsNotNone(payload)
+                    assert payload is not None
+                    output = payload["hookSpecificOutput"]
+                    self.assertEqual(output["permissionDecision"], "allow")
+                    self.assertIn(
+                        self.PROJECT_LABELS[repository_name],
+                        output["additionalContext"],
+                    )
+                    self.assertEqual(
+                        self.rewritten_command(payload),
+                        f"& {SANITY.powershell_quote(self.canonical_python)} task.py",
+                    )
+
+    def test_every_supported_launcher_form_preserves_arguments(self):
+        cwd = self.project_paths["Docs-and-Claims"]["main"]
+        quoted = SANITY.powershell_quote(self.canonical_python)
+        cases = (
+            ("python script.py --flag value", f"& {quoted} script.py --flag value"),
+            ("python.exe -m package", f"& {quoted} -m package"),
+            ("py script.py", f"& {quoted} script.py"),
+            ("py.exe -3.14 script.py", f"& {quoted} -3.14 script.py"),
+            (
+                r"C:\CodexRuntime\python.exe script.py",
+                f"& {quoted} script.py",
+            ),
+            (
+                r"& 'C:\Codex Runtime\python.exe' script.py",
+                f"& {quoted} script.py",
+            ),
+            (
+                r'& "C:\Codex Runtime\python.exe" script.py',
+                f"& {quoted} script.py",
+            ),
+        )
+        for command, expected in cases:
+            with self.subTest(command=command):
+                payload = self.redirected_hook_result(command, cwd)
+                self.assertIsNotNone(payload)
+                assert payload is not None
+                self.assertEqual(self.rewritten_command(payload), expected)
+
+    def test_multiple_invocations_rewrite_only_executable_extents(self):
+        cwd = self.project_paths["pdf-form-tools"]["main"]
+        quoted = SANITY.powershell_quote(self.canonical_python)
+        command = (
+            "Write-Output '😀 python.exe C:\\data\\py.exe'; "
+            "python 'script named python.py'; py.exe two.py | "
+            '& "C:\\Codex Runtime\\python.exe" three.py # py ignored'
+        )
+
+        payload = self.redirected_hook_result(command, cwd)
+
+        self.assertIsNotNone(payload)
+        assert payload is not None
+        self.assertEqual(
+            self.rewritten_command(payload),
+            "Write-Output '😀 python.exe C:\\data\\py.exe'; "
+            f"& {quoted} 'script named python.py'; & {quoted} two.py | "
+            f"& {quoted} three.py # py ignored",
+        )
+
+    def test_python_looking_data_does_not_require_environment_or_rewrite(self):
+        cwd = self.project_paths["PixelTops-Skills"]["main"]
+        command = "Write-Output 'python.exe C:\\data\\py.exe' # python ignored"
+
+        with mock.patch.dict(
+            SANITY.os.environ,
+            {SANITY.PROJECT_PYTHON_ENV: ""},
+            clear=False,
+        ):
+            payload = WindowsShellSanityTests.hook_result(command, cwd=str(cwd))
+
+        self.assertIsNone(payload)
+
+    def test_existing_utf8_rewrite_composes_with_python_substitution(self):
+        cwd = self.project_paths["Docs-and-Claims"]["main"]
+        command = "@'\nprint('é')\n'@ | python -"
+
+        payload = self.redirected_hook_result(command, cwd)
+
+        self.assertIsNotNone(payload)
+        assert payload is not None
+        quoted = SANITY.powershell_quote(self.canonical_python)
+        self.assertEqual(
+            self.rewritten_command(payload),
+            f"@'\nprint('é')\n'@ | & {quoted} -X utf8 -",
+        )
+
+    def test_successful_rewrite_preserves_other_tool_input_fields_and_context(self):
+        cwd = self.project_paths["PixelTops-Skills"]["main"]
+        fields = {"yield_time_ms": 12000, "max_output_tokens": 321}
+
+        payload = self.redirected_hook_result(
+            "py task.py",
+            cwd,
+            tool_input_fields=fields,
+        )
+
+        self.assertIsNotNone(payload)
+        assert payload is not None
+        output = payload["hookSpecificOutput"]
+        self.assertEqual(output["permissionDecision"], "allow")
+        self.assertEqual(
+            output["additionalContext"],
+            "PixelTops: the project's canonical PC Python was substituted for "
+            "every Python invocation.",
+        )
+        updated = output["updatedInput"]
+        self.assertEqual(updated["yield_time_ms"], fields["yield_time_ms"])
+        self.assertEqual(
+            updated["max_output_tokens"], fields["max_output_tokens"]
+        )
+
+    def test_rewritten_wrapper_is_not_wrapped_again(self):
+        cwd = self.project_paths["Docs-and-Claims"]["main"]
+        with mock.patch.dict(
+            SANITY.os.environ,
+            {SANITY.PROJECT_PYTHON_ENV: self.canonical_python},
+            clear=False,
+        ):
+            with mock.patch.object(
+                SANITY,
+                "canonical_pc_python",
+                return_value=self.canonical_python,
+            ):
+                first = WindowsShellSanityTests.hook_result(
+                    "python task.py",
+                    cwd=str(cwd),
+                )
+                self.assertIsNotNone(first)
+                assert first is not None
+                wrapper = first["hookSpecificOutput"]["updatedInput"]["command"]
+                second = WindowsShellSanityTests.hook_result(
+                    wrapper,
+                    cwd=str(cwd),
+                )
+
+        self.assertIsNone(second)
+
+    def test_missing_environment_variable_denies_before_execution(self):
+        cwd = self.project_paths["Docs-and-Claims"]["main"]
+        with mock.patch.dict(
+            SANITY.os.environ,
+            {SANITY.PROJECT_PYTHON_ENV: ""},
+            clear=False,
+        ):
+            payload = WindowsShellSanityTests.hook_result(
+                "python task.py",
+                cwd=str(cwd),
+            )
+
+        self.assertIsNotNone(payload)
+        assert payload is not None
+        output = payload["hookSpecificOutput"]
+        self.assertEqual(output["permissionDecision"], "deny")
+        self.assertIn("CODEX_PC_PYTHON is not configured", output["permissionDecisionReason"])
+        self.assertIn("restart Codex", output["permissionDecisionReason"])
+
+    def test_invalid_environment_variable_denies_before_execution(self):
+        cwd = self.project_paths["pdf-form-tools"]["worktree"]
+        missing = self.temporary_root / "missing-python.exe"
+        with mock.patch.dict(
+            SANITY.os.environ,
+            {SANITY.PROJECT_PYTHON_ENV: str(missing)},
+            clear=False,
+        ):
+            payload = WindowsShellSanityTests.hook_result(
+                "py.exe task.py",
+                cwd=str(cwd),
+            )
+
+        self.assertIsNotNone(payload)
+        assert payload is not None
+        output = payload["hookSpecificOutput"]
+        self.assertEqual(output["permissionDecision"], "deny")
+        self.assertIn("CODEX_PC_PYTHON is invalid", output["permissionDecisionReason"])
+        self.assertNotIn("updatedInput", output)
+
+    def test_out_of_scope_repository_preserves_python_command_byte_for_byte(self):
+        command = "python task.py --flag value"
+        with mock.patch.dict(
+            SANITY.os.environ,
+            {SANITY.PROJECT_PYTHON_ENV: ""},
+            clear=False,
+        ):
+            payload = WindowsShellSanityTests.hook_result(
+                command,
+                cwd=str(self.out_of_scope_repository),
+            )
+
+        self.assertIsNone(payload)
 
 
 if __name__ == "__main__":

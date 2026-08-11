@@ -51,6 +51,16 @@ errors. It applies exact rewrites before execution, adds targeted guidance only
 after ordinary failures, and blocks only findings that can produce an
 unreliable result or violate the active structured-command policy.
 
+For `Docs-and-Claims`, `pdf-form-tools`, and `PixelTops-Skills`, hook mode also
+resolves the event `cwd` through Git's common directory and replaces each
+statically resolved `python`, `python.exe`, `py`, `py.exe`, or absolute
+`python.exe` command element with the safely quoted `CODEX_PC_PYTHON` value.
+This covers repository roots, nested paths, and linked worktrees without using
+the checkout's literal path as project identity. PowerShell's command AST keeps
+launcher-looking strings, comments, paths, and data unchanged. A missing,
+nonexistent, or module-incompatible interpreter denies the command before
+execution with restart guidance.
+
 ## Ownership And Runtime Boundary
 
 This directory owns user-global operational hooks that are not part of one
@@ -137,6 +147,9 @@ Hook outcomes are:
 - `permissionDecision: "deny"`: stop before dispatch and return the blocking
   reason.
 
+Successful project Python substitution also includes one `additionalContext`
+message naming the project and retains every non-command `tool_input` field.
+
 The encoded helper invocation is recognized and allowed without recursion.
 
 ## Direct Execution
@@ -184,6 +197,7 @@ Windows shell sanity hints:
 - It does not suppress native stdout or stderr.
 - It does not create temporary command files.
 - It does not install itself or edit hook configuration.
+- It does not discover interpreters or mutate `CODEX_PC_PYTHON` at hook runtime.
 
 ## Tests
 

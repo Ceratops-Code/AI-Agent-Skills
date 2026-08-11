@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""Fast-forward selected task branches into reusable ``release/local``.
+"""Promote selected task branches into reusable ``release/local``.
 
 When release has advanced, the helper may rebase a clean, unpublished,
 linear-history source in its existing worktree. Failed attempts restore and
 verify the exact source snapshot before blocking. Repository-specific
 validation or installation runs only through a named operation from
-``deploy/deploy.yml`` when explicitly selected.
+``deploy/deploy.yml`` when explicitly selected. Composed shipping suppresses
+that promotion-time operation and delegates the exact promoted head to the
+sibling ship helper, which owns post-merge deployment and cleanup.
 """
 
 from __future__ import annotations
@@ -29,12 +31,21 @@ from github_pr_workflow.command import (
 SCRIPT_ROOT = pathlib.Path(__file__).resolve().parent
 PENDING_MANAGER = SCRIPT_ROOT / "manage-pending-work.py"
 DEPLOY_RUNNER = SCRIPT_ROOT / "run-deploy-operation.py"
+SHIP_REPOSITORY = SCRIPT_ROOT / "ship-repository.py"
 RELEASE_BRANCH = "release/local"
 MANAGED_SKILLS_MANIFEST = pathlib.Path("skills/skill-sections.json")
 
 
 class PromotionError(RuntimeError):
     """Raised when a local promotion invariant is not satisfied."""
+
+    def __init__(
+        self,
+        message: str,
+        payload: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.payload = payload
 
 
 @dataclass(frozen=True)
@@ -453,6 +464,68 @@ def _has_managed_skills(repo_root: pathlib.Path) -> bool:
     return bool(manifest["skills"])
 
 
+def _ship_after_promotion(
+    args: argparse.Namespace,
+    repo_root: pathlib.Path,
+    *,
+    target_commit: str,
+    pending_work_scope: object,
+) -> dict[str, object]:
+    """Delegate one exact promoted release to the terminal ship owner.
+
+    ``ship-repository.py`` intentionally derives the canonical scope from the
+    head branch. The recorded scope remains an explicit local handoff invariant
+    while ``--commit`` binds that derived scope to the promoted head.
+    """
+
+    if not isinstance(pending_work_scope, str) or not pending_work_scope:
+        raise PromotionError("Scope recording lacks its pending-work scope.")
+    scope = pathlib.Path(pending_work_scope)
+    if not scope.is_absolute() or not scope.resolve(strict=True).is_file():
+        raise PromotionError("Recorded pending-work scope is unavailable for shipping.")
+    command = [
+        sys.executable,
+        str(SHIP_REPOSITORY),
+        "--repo-root",
+        str(repo_root),
+        "--head-branch",
+        args.release_branch,
+        "--base-branch",
+        args.main_branch,
+        "--remote-name",
+        args.remote_name,
+        "--commit",
+        target_commit,
+        "--reusable-head",
+        "--deploy-contract",
+        str(args.deploy_contract),
+        "--deploy-operation",
+        "deploy",
+    ]
+    ship_code, shipped = _run_json(command, repo_root)
+    status = shipped.get("status")
+    if ship_code == 0:
+        if (
+            status not in {"shipped", "already_shipped"}
+            or shipped.get("commit") != target_commit
+            or not isinstance(shipped.get("synchronized_head"), str)
+            or not isinstance(shipped.get("deployment"), dict)
+            or "finalization" not in shipped
+        ):
+            raise PromotionError("Shipping returned an incomplete terminal result.")
+        return shipped
+    if ship_code == 2:
+        if status != "pending_work" or not isinstance(shipped.get("findings"), list):
+            raise PromotionError("Shipping returned an incomplete pending-work blocker.")
+        return shipped
+    if ship_code == 1:
+        message = shipped.get("message")
+        if status not in {"blocked", "error"} or not isinstance(message, str):
+            raise PromotionError("Shipping returned an incomplete blocker.")
+        raise PromotionError(message, shipped)
+    raise PromotionError(f"Shipping returned unsupported exit code: {ship_code}")
+
+
 def promote(args: argparse.Namespace) -> dict[str, object]:
     """Prepare a release branch, record selected work, and optionally deploy."""
 
@@ -462,10 +535,16 @@ def promote(args: argparse.Namespace) -> dict[str, object]:
     if not repo_root.is_dir():
         raise PromotionError("Repository root is not a directory.")
     branches = list(dict.fromkeys(args.source_branch or []))
+    ship_after_promotion = bool(getattr(args, "ship_after_promotion", False))
     if len(branches) != len(args.source_branch or []):
         raise PromotionError("Source branches must be unique.")
     if args.prepare_release_only:
-        if branches or args.run_operation is not None or args.no_run_operation:
+        if (
+            branches
+            or args.run_operation is not None
+            or args.no_run_operation
+            or ship_after_promotion
+        ):
             raise PromotionError(
                 "Prepare-only cannot select source branches or deployment."
             )
@@ -481,7 +560,18 @@ def promote(args: argparse.Namespace) -> dict[str, object]:
     else:
         if not branches:
             raise PromotionError("Promotion requires at least one source branch.")
-        if args.run_operation is None and not args.no_run_operation:
+        if (
+            ship_after_promotion
+            and (args.run_operation is not None or args.no_run_operation)
+        ):
+            raise PromotionError(
+                "Ship-after-promotion is mutually exclusive with operation flags."
+            )
+        if (
+            args.run_operation is None
+            and not args.no_run_operation
+            and not ship_after_promotion
+        ):
             raise PromotionError("Promotion requires an explicit deployment choice.")
         if args.release_branch in branches or args.main_branch in branches:
             raise PromotionError("Source branches cannot be release or main.")
@@ -605,6 +695,14 @@ def promote(args: argparse.Namespace) -> dict[str, object]:
             handoff = declared_handoff
 
     _clean(repo_root, "before reporting ready state")
+    pending_work_scope = record["pending_work_scope"]
+    if ship_after_promotion:
+        return _ship_after_promotion(
+            args,
+            repo_root,
+            target_commit=target_commit,
+            pending_work_scope=pending_work_scope,
+        )
     result: dict[str, object] = {
         "status": "ready",
         "release_branch": args.release_branch,
@@ -612,7 +710,7 @@ def promote(args: argparse.Namespace) -> dict[str, object]:
         "release_start": release_start,
         "merged_branches": merged,
         "rebased_branches": rebased,
-        "pending_work_scope": record["pending_work_scope"],
+        "pending_work_scope": pending_work_scope,
         "operation": operation,
     }
     if managed_skills is not None:
@@ -648,6 +746,13 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Promote without running a deployment operation.",
     )
+    operation.add_argument(
+        "--ship-after-promotion",
+        action="store_true",
+        help=(
+            "Promote, then invoke terminal shipping with deployment only after merge."
+        ),
+    )
     parser.add_argument(
         "--deploy-contract",
         type=pathlib.Path,
@@ -669,13 +774,12 @@ def main(argv: list[str] | None = None) -> int:
         ValueError,
         subprocess.SubprocessError,
     ) as exc:
-        print(
-            json.dumps(
-                {"status": "error", "message": str(exc)},
-                separators=(",", ":"),
-            ),
-            file=sys.stderr,
+        payload = (
+            exc.payload
+            if isinstance(exc, PromotionError) and exc.payload is not None
+            else {"status": "error", "message": str(exc)}
         )
+        print(json.dumps(payload, separators=(",", ":")), file=sys.stderr)
         return 1
     print(json.dumps(result, separators=(",", ":")))
     return 2 if result.get("status") == "pending_work" else 0

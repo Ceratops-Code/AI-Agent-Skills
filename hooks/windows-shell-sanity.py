@@ -15,6 +15,8 @@ import base64
 import binascii
 import hashlib
 import json
+import ntpath
+import os
 import pathlib
 import re
 import subprocess
@@ -24,6 +26,52 @@ from typing import Sequence
 
 ANNOTATE = "annotate-on-failure"
 BLOCK = "block"
+
+PROJECT_PYTHON_ENV = "CODEX_PC_PYTHON"
+TARGET_PROJECTS_BY_REPOSITORY = {
+    "docs-and-claims": "Docs-and-Claims",
+    "pdf-form-tools": "pdf-form-tools",
+    "pixeltops-skills": "PixelTops",
+}
+PYTHON_EXECUTABLE_NAMES = frozenset({"python", "python.exe", "py", "py.exe"})
+PYTHON_COMMAND_HINT_RE = re.compile(r"(?:python|py)(?:\.exe)?", re.IGNORECASE)
+POWERSHELL_COMMAND_AST = r"""
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$encodedSource = [Console]::In.ReadToEnd()
+$source = [System.Text.Encoding]::UTF8.GetString(
+    [System.Convert]::FromBase64String($encodedSource)
+)
+$tokens = $null
+$parseErrors = $null
+$ast = [System.Management.Automation.Language.Parser]::ParseInput(
+    $source,
+    [ref]$tokens,
+    [ref]$parseErrors
+)
+$commands = @(
+    $ast.FindAll(
+        {
+            param($node)
+            $node -is [System.Management.Automation.Language.CommandAst]
+        },
+        $true
+    ) | ForEach-Object {
+        $name = $_.GetCommandName()
+        if ($null -ne $name -and $_.CommandElements.Count -gt 0) {
+            $element = $_.CommandElements[0]
+            [pscustomobject]@{
+                name = $name
+                start = $element.Extent.StartOffset
+                end = $element.Extent.EndOffset
+                text = $element.Extent.Text
+                invocation = $_.InvocationOperator.ToString()
+            }
+        }
+    }
+)
+ConvertTo-Json -InputObject $commands -Compress
+""".strip()
 
 BASH_HEREDOC_RE = re.compile(r"<<\s*['\"]?[A-Za-z_][A-Za-z0-9_'-]*")
 POWERSHELL_INLINE_PYTHON_RE = re.compile(
@@ -111,6 +159,21 @@ class Analysis:
     command: str
     rewrites: tuple[str, ...]
     findings: tuple[dict[str, str], ...]
+
+
+@dataclass(frozen=True)
+class ExecutableInvocation:
+    """One statically resolved PowerShell command element."""
+
+    name: str
+    start: int
+    end: int
+    text: str
+    invocation_operator: str
+
+
+class PythonRedirectionError(RuntimeError):
+    """Block a target-project command when redirection cannot be proven safe."""
 
 
 def finding(kind: str, disposition: str, message: str) -> dict[str, str]:
@@ -353,10 +416,13 @@ def lint_command(command: str) -> list[dict[str, str]]:
     return findings
 
 
-def analyze_command(command: str) -> Analysis:
+def analyze_command(
+    command: str,
+    additional_rewrites: Sequence[Rewrite] = (),
+) -> Analysis:
     """Rewrite once, prove idempotence, and classify the executable command."""
 
-    rewrites = plan_rewrites(command)
+    rewrites = [*plan_rewrites(command), *additional_rewrites]
     rewritten = apply_rewrites(command, rewrites)
     residual_rewrites = plan_rewrites(rewritten)
     findings = lint_command(rewritten)
@@ -420,13 +486,289 @@ def powershell_quote(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
-def wrapped_command(command: str) -> str:
+def target_project_for_cwd(cwd: object) -> str | None:
+    """Resolve a target project from Git's common directory for ``cwd``.
+
+    The common directory is stable across the main checkout, nested paths, and
+    linked worktrees; a worktree's literal checkout path is not an identity.
+    Resolution failure is treated as out of scope so non-repository commands
+    retain the pre-existing hook behavior.
+    """
+
+    if not isinstance(cwd, str) or not cwd:
+        return None
+    try:
+        completed = subprocess.run(
+            [
+                "git",
+                "-C",
+                cwd,
+                "rev-parse",
+                "--path-format=absolute",
+                "--git-common-dir",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if completed.returncode:
+        return None
+    value = completed.stdout.strip()
+    if not value:
+        return None
+    common_directory = pathlib.Path(value)
+    if not common_directory.is_absolute():
+        common_directory = pathlib.Path(cwd) / common_directory
+    try:
+        common_directory = common_directory.resolve()
+    except OSError:
+        common_directory = common_directory.absolute()
+    if common_directory.name.casefold() != ".git":
+        return None
+    return TARGET_PROJECTS_BY_REPOSITORY.get(
+        common_directory.parent.name.casefold()
+    )
+
+
+def _utf16_offset_to_index(value: str, offset: int) -> int:
+    """Translate a .NET UTF-16 source offset to a Python string index."""
+
+    if offset < 0:
+        raise PythonRedirectionError("PowerShell returned an invalid command extent.")
+    units = 0
+    for index, character in enumerate(value):
+        if units == offset:
+            return index
+        units += 2 if ord(character) > 0xFFFF else 1
+        if units > offset:
+            break
+    if units == offset:
+        return len(value)
+    raise PythonRedirectionError("PowerShell returned an invalid command extent.")
+
+
+def _extent_indices(
+    command: str,
+    start: int,
+    end: int,
+    extent_text: str,
+) -> tuple[int, int]:
+    """Validate and normalize PowerShell AST offsets against exact source text."""
+
+    try:
+        utf16_start = _utf16_offset_to_index(command, start)
+        utf16_end = _utf16_offset_to_index(command, end)
+    except PythonRedirectionError:
+        utf16_start = utf16_end = -1
+    if command[utf16_start:utf16_end] == extent_text:
+        return utf16_start, utf16_end
+    if 0 <= start <= end <= len(command) and command[start:end] == extent_text:
+        return start, end
+    raise PythonRedirectionError(
+        "PowerShell command parsing returned an inconsistent executable extent."
+    )
+
+
+def executable_invocations(command: str) -> list[ExecutableInvocation]:
+    """Return statically resolved executable positions from PowerShell's AST.
+
+    The parser receives the command as base64 on standard input and never
+    evaluates it. This keeps quoted data, comments, paths, and here-strings out
+    of the executable set while retaining exact source offsets.
+    """
+
+    if not PYTHON_COMMAND_HINT_RE.search(command):
+        return []
+    encoded_parser = base64.b64encode(
+        POWERSHELL_COMMAND_AST.encode("utf-16le")
+    ).decode("ascii")
+    encoded_command = base64.b64encode(command.encode("utf-8")).decode("ascii")
+    try:
+        completed = subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-EncodedCommand",
+                encoded_parser,
+            ],
+            input=encoded_command,
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise PythonRedirectionError(
+            "Python redirection could not invoke the PowerShell parser; "
+            "verify PowerShell is available and retry."
+        ) from exc
+    if completed.returncode:
+        raise PythonRedirectionError(
+            "Python redirection could not parse the PowerShell command; "
+            "retry with a valid PowerShell command."
+        )
+    try:
+        decoded = json.loads(completed.stdout.lstrip("\ufeff").strip() or "[]")
+    except json.JSONDecodeError as exc:
+        raise PythonRedirectionError(
+            "Python redirection received invalid output from the PowerShell parser."
+        ) from exc
+    records = [decoded] if isinstance(decoded, dict) else decoded
+    if not isinstance(records, list):
+        raise PythonRedirectionError(
+            "Python redirection received invalid output from the PowerShell parser."
+        )
+
+    invocations: list[ExecutableInvocation] = []
+    for record in records:
+        if not isinstance(record, dict):
+            raise PythonRedirectionError(
+                "Python redirection received invalid executable metadata."
+            )
+        name = record.get("name")
+        start = record.get("start")
+        end = record.get("end")
+        extent_text = record.get("text")
+        invocation_operator = record.get("invocation")
+        if (
+            not isinstance(name, str)
+            or not isinstance(start, int)
+            or isinstance(start, bool)
+            or not isinstance(end, int)
+            or isinstance(end, bool)
+            or not isinstance(extent_text, str)
+            or not isinstance(invocation_operator, str)
+        ):
+            raise PythonRedirectionError(
+                "Python redirection received invalid executable metadata."
+            )
+        python_start, python_end = _extent_indices(
+            command,
+            start,
+            end,
+            extent_text,
+        )
+        invocations.append(
+            ExecutableInvocation(
+                name=name,
+                start=python_start,
+                end=python_end,
+                text=extent_text,
+                invocation_operator=invocation_operator,
+            )
+        )
+    return invocations
+
+
+def python_executable_invocations(command: str) -> list[ExecutableInvocation]:
+    """Return every statically resolved supported Python launcher invocation."""
+
+    return [
+        invocation
+        for invocation in executable_invocations(command)
+        if ntpath.basename(invocation.name).casefold() in PYTHON_EXECUTABLE_NAMES
+    ]
+
+
+def canonical_pc_python() -> str:
+    """Validate and return the configured project-level PC Python interpreter."""
+
+    value = os.environ.get(PROJECT_PYTHON_ENV)
+    if not value:
+        raise PythonRedirectionError(
+            "CODEX_PC_PYTHON is not configured. Set the user environment variable "
+            "to the PC Python that imports cv2 and pdf_form_tools, restart Codex, "
+            "and retry."
+        )
+    interpreter = pathlib.Path(value)
+    if not interpreter.is_absolute() or not interpreter.is_file():
+        raise PythonRedirectionError(
+            "CODEX_PC_PYTHON is invalid. Set the user environment variable to an "
+            "absolute existing PC Python executable that imports cv2 and "
+            "pdf_form_tools, restart Codex, and retry."
+        )
+    try:
+        completed = subprocess.run(
+            [value, "-I", "-c", "import cv2; import pdf_form_tools"],
+            cwd=str(interpreter.parent),
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise PythonRedirectionError(
+            "CODEX_PC_PYTHON could not be validated. Fix the user environment "
+            "variable, restart Codex, and retry."
+        ) from exc
+    if completed.returncode:
+        raise PythonRedirectionError(
+            "CODEX_PC_PYTHON is invalid because it cannot import cv2 and "
+            "pdf_form_tools. Fix the user environment variable, restart Codex, "
+            "and retry."
+        )
+    return value
+
+
+def _same_windows_path(left: str, right: str) -> bool:
+    if not ntpath.isabs(left) or not ntpath.isabs(right):
+        return False
+    return ntpath.normcase(ntpath.normpath(left)) == ntpath.normcase(
+        ntpath.normpath(right)
+    )
+
+
+def plan_python_redirects(
+    command: str,
+    invocations: Sequence[ExecutableInvocation],
+    interpreter: str,
+) -> list[Rewrite]:
+    """Plan exact executable-only substitutions for one target-project command."""
+
+    quoted_interpreter = powershell_quote(interpreter)
+    rewrites: list[Rewrite] = []
+    for invocation in invocations:
+        explicit_operator = invocation.invocation_operator.casefold() != "unknown"
+        if (
+            explicit_operator
+            and _same_windows_path(invocation.name, interpreter)
+            and command[invocation.start : invocation.end] == quoted_interpreter
+        ):
+            continue
+        replacement = (
+            quoted_interpreter
+            if explicit_operator
+            else f"& {quoted_interpreter}"
+        )
+        rewrites.append(
+            Rewrite(
+                "project_python_redirect",
+                invocation.start,
+                invocation.end,
+                replacement,
+            )
+        )
+    return rewrites
+
+
+def wrapped_command(command: str, interpreter: str | None = None) -> str:
     """Encode a command so the hook rewrite cannot execute its syntax."""
 
     encoded = base64.b64encode(command.encode("utf-8")).decode("ascii")
     script = str(pathlib.Path(__file__).resolve())
+    wrapper_python = interpreter or sys.executable
     return (
-        f"& {powershell_quote(sys.executable)} {powershell_quote(script)} "
+        f"& {powershell_quote(wrapper_python)} {powershell_quote(script)} "
         f"--encoded-command {powershell_quote(encoded)}"
     )
 
@@ -435,20 +777,30 @@ def is_wrapped_command(command: str) -> bool:
     """Prevent the rewritten helper invocation from recursively triggering itself."""
 
     script = str(pathlib.Path(__file__).resolve())
-    prefix = (
-        f"& {powershell_quote(sys.executable)} {powershell_quote(script)} "
-        "--encoded-command "
-    )
-    if not command.startswith(prefix):
-        return False
-    encoded = command[len(prefix) :]
-    if len(encoded) < 3 or not encoded.startswith("'") or not encoded.endswith("'"):
-        return False
-    try:
-        base64.b64decode(encoded[1:-1], validate=True)
-    except binascii.Error:
-        return False
-    return True
+    interpreters = [sys.executable]
+    configured = os.environ.get(PROJECT_PYTHON_ENV)
+    if configured and configured not in interpreters:
+        interpreters.append(configured)
+    for interpreter in interpreters:
+        prefix = (
+            f"& {powershell_quote(interpreter)} {powershell_quote(script)} "
+            "--encoded-command "
+        )
+        if not command.startswith(prefix):
+            continue
+        encoded = command[len(prefix) :]
+        if (
+            len(encoded) < 3
+            or not encoded.startswith("'")
+            or not encoded.endswith("'")
+        ):
+            continue
+        try:
+            base64.b64decode(encoded[1:-1], validate=True)
+        except binascii.Error:
+            continue
+        return True
+    return False
 
 
 def _blocking(findings: Sequence[dict[str, str]]) -> list[dict[str, str]]:
@@ -487,7 +839,68 @@ def run_hook() -> int:
     if is_wrapped_command(command):
         return 0
 
-    analysis = analyze_command(command)
+    project = target_project_for_cwd(event.get("cwd"))
+    pc_python: str | None = None
+    python_rewrites: list[Rewrite] = []
+    if project is not None:
+        try:
+            invocations = python_executable_invocations(command)
+            if invocations:
+                pc_python = canonical_pc_python()
+                python_rewrites = plan_python_redirects(
+                    command,
+                    invocations,
+                    pc_python,
+                )
+        except PythonRedirectionError as exc:
+            print(
+                json.dumps(
+                    hook_payload(
+                        "deny",
+                        permissionDecisionReason=str(exc),
+                    ),
+                    sort_keys=True,
+                )
+            )
+            return 0
+
+    analysis = analyze_command(command, python_rewrites)
+    python_redirected = bool(python_rewrites)
+    if python_redirected:
+        assert pc_python is not None
+        try:
+            residual_invocations = python_executable_invocations(analysis.command)
+            residual_redirects = plan_python_redirects(
+                analysis.command,
+                residual_invocations,
+                pc_python,
+            )
+        except PythonRedirectionError as exc:
+            print(
+                json.dumps(
+                    hook_payload(
+                        "deny",
+                        permissionDecisionReason=str(exc),
+                    ),
+                    sort_keys=True,
+                )
+            )
+            return 0
+        if residual_redirects:
+            print(
+                json.dumps(
+                    hook_payload(
+                        "deny",
+                        permissionDecisionReason=(
+                            "Project Python redirection did not converge in one pass; "
+                            "no command was executed."
+                        ),
+                    ),
+                    sort_keys=True,
+                )
+            )
+            return 0
+
     blockers = _blocking(analysis.findings)
     if blockers:
         reason = " ".join(item["message"] for item in blockers)
@@ -505,10 +918,20 @@ def run_hook() -> int:
         or should_route_through_helper(analysis.command)
     ):
         updated_input = dict(tool_input)
-        updated_input["command"] = wrapped_command(analysis.command)
+        updated_input["command"] = wrapped_command(
+            analysis.command,
+            pc_python if python_redirected else None,
+        )
+        fields: dict[str, object] = {"updatedInput": updated_input}
+        if python_redirected:
+            assert project is not None
+            fields["additionalContext"] = (
+                f"{project}: the project's canonical PC Python was substituted "
+                "for every Python invocation."
+            )
         print(
             json.dumps(
-                hook_payload("allow", updatedInput=updated_input),
+                hook_payload("allow", **fields),
                 sort_keys=True,
             )
         )
