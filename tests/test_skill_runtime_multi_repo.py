@@ -4947,9 +4947,11 @@ def test_skill_update_workflow_preserves_baseline_runs_checks_once_and_finalizes
     check_script = scope / "check-once.py"
     check_script.write_text(
         "import pathlib\n"
+        "import sys\n"
         "path = pathlib.Path(__file__).with_name('check.log')\n"
         "prior = path.read_text(encoding='utf-8') if path.exists() else ''\n"
-        "path.write_text(prior + 'run\\n', encoding='utf-8')\n",
+        "path.write_text(prior + 'run\\n', encoding='utf-8')\n"
+        "sys.stdout.buffer.write('מלא\\n'.encode('utf-8'))\n",
         encoding="utf-8",
         newline="\n",
     )
@@ -5092,6 +5094,7 @@ def test_skill_update_workflow_preserves_baseline_runs_checks_once_and_finalizes
         "pytest",
     ]
     assert evidence["checks"][0]["actual_matches"] == 0
+    assert evidence["checks"][1]["stdout"] == "מלא\n"
     assert check_log.read_text(encoding="utf-8").splitlines() == ["run"]
     assert baseline.read_text(encoding="utf-8") == "keep me\n"
 
