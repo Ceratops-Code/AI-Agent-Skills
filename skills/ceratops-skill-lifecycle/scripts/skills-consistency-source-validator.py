@@ -312,11 +312,12 @@ def check_runtime_payloads(
             if isinstance(value, str):
                 source, target = value, None
             elif isinstance(value, Mapping) and set(value) == {"source", "target"}:
-                source = value.get("source")
-                target = value.get("target")
-                if not isinstance(source, str) or not isinstance(target, str):
+                raw_source = value.get("source")
+                raw_target = value.get("target")
+                if not isinstance(raw_source, str) or not isinstance(raw_target, str):
                     errors.append(f"{label} source and target must be strings")
                     continue
+                source, target = raw_source, raw_target
             else:
                 errors.append(f"{label} must be a path or source-target mapping")
                 continue
@@ -384,7 +385,7 @@ def check_runtime_payloads(
             continue
         consumers = skill_names if key == "*" else {key}
         for value in values:
-            source = (
+            candidate_source = (
                 value
                 if isinstance(value, str)
                 else value.get("source")
@@ -392,11 +393,11 @@ def check_runtime_payloads(
                 else None
             )
             if (
-                isinstance(source, str)
-                and pathlib.PurePosixPath(source).suffix.lower()
+                isinstance(candidate_source, str)
+                and pathlib.PurePosixPath(candidate_source).suffix.lower()
                 in executable_suffixes
             ):
-                source_consumers.setdefault(source, set()).update(consumers)
+                source_consumers.setdefault(candidate_source, set()).update(consumers)
     for source in sorted(selected_executable_sources):
         consumers = source_consumers[source]
         normalized_source = source.replace("\\", "/")
