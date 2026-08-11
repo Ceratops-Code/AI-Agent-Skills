@@ -9065,6 +9065,19 @@ def _holistic_result_refs(value: Any, label: str, *, empty: bool = False) -> lis
     return refs
 
 
+def _holistic_surface_ids(
+    value: Any,
+    label: str,
+    surface_order: Sequence[str],
+) -> list[str]:
+    """Validate a surface set and normalize it to the frozen public order."""
+
+    surfaces = _result_deduped_strings(value, label)
+    if not set(surfaces) <= set(surface_order):
+        raise CreditAnalysisError(f"{label} contains an unknown surface")
+    return [surface for surface in surface_order if surface in set(surfaces)]
+
+
 def _holistic_luna_schema(
     *,
     state: Mapping[str, Any],
@@ -9456,9 +9469,11 @@ def _validate_holistic_luna_result(
         seen_ids.add(candidate_id)
         if candidate.get("kind") not in contract["luna_candidate_kinds"]:
             raise CreditAnalysisError(f"{label} kind is invalid")
-        surface_ids = _result_deduped_strings(candidate.get("surface_ids"), f"{label} surfaces")
-        if surface_ids != [surface for surface in state["manifest"]["surface_order"] if surface in surface_ids]:
-            raise CreditAnalysisError(f"{label} surfaces are missing or reordered")
+        surface_ids = _holistic_surface_ids(
+            candidate.get("surface_ids"),
+            f"{label} surfaces",
+            state["manifest"]["surface_order"],
+        )
         referenced = _result_deduped_strings(candidate.get("candidate_ids"), f"{label} calls")
         if not set(referenced) <= allowed_candidates:
             raise CreditAnalysisError(f"{label} references another Luna packet")
@@ -9861,11 +9876,11 @@ def _validate_holistic_finding(
     )
     if not set(categories) <= set(contract["helper_categories"]):
         raise CreditAnalysisError(f"{label} helper category is invalid")
-    surfaces = _result_deduped_strings(
-        finding.get("contributing_surfaces"), f"{label} surfaces"
+    surfaces = _holistic_surface_ids(
+        finding.get("contributing_surfaces"),
+        f"{label} surfaces",
+        surface_order,
     )
-    if surfaces != [surface for surface in surface_order if surface in set(surfaces)]:
-        raise CreditAnalysisError(f"{label} surfaces are missing or reordered")
     return {
         **finding,
         "affected_call_ids": calls,
@@ -9957,9 +9972,11 @@ def _validate_holistic_sol_result(
             workstreams.get(call_id) != workstream for call_id in calls
         ):
             raise CreditAnalysisError(f"{label} mixes producer and analysis work")
-        surfaces = _result_deduped_strings(risk.get("contributing_surfaces"), f"{label} surfaces")
-        if surfaces != [surface for surface in surface_order if surface in set(surfaces)]:
-            raise CreditAnalysisError(f"{label} surfaces are invalid")
+        surfaces = _holistic_surface_ids(
+            risk.get("contributing_surfaces"),
+            f"{label} surfaces",
+            surface_order,
+        )
         normalized = {
             **risk,
             "affected_call_ids": calls,
@@ -10105,9 +10122,11 @@ def _validate_holistic_sol_result(
             raise CreditAnalysisError(f"{label} needs an explicit no-finding reason")
         if disposition in {"transient-by-design", "permanently-implemented", "run-only-useful"} and finding_id is not None:
             raise CreditAnalysisError(f"{label} transient or implemented work became a defect")
-        surfaces = _result_deduped_strings(review.get("contributing_surfaces"), f"{label} surfaces")
-        if surfaces != [surface for surface in surface_order if surface in set(surfaces)]:
-            raise CreditAnalysisError(f"{label} surfaces are invalid")
+        surfaces = _holistic_surface_ids(
+            review.get("contributing_surfaces"),
+            f"{label} surfaces",
+            surface_order,
+        )
         normalized_review = {
             **review,
             "source_luna_candidate_ids": sources,
@@ -10143,9 +10162,12 @@ def _validate_holistic_sol_result(
             review_by_id[review_id]["finding_id"] != finding_id for review_id in review_ids
         ):
             raise CreditAnalysisError(f"{label} finding ownership is invalid")
-        surfaces = _result_deduped_strings(merge.get("contributing_surfaces"), f"{label} surfaces")
-        if surfaces != [surface for surface in surface_order if surface in set(surfaces)]:
-            raise CreditAnalysisError(f"{label} surfaces are invalid")
+        surfaces = _holistic_surface_ids(
+            merge.get("contributing_surfaces"),
+            f"{label} surfaces",
+            surface_order,
+        )
+        merge["contributing_surfaces"] = surfaces
     required_merged = {review_id for review_id, review in review_by_id.items() if review["finding_id"] is not None}
     if merged_reviews != required_merged:
         raise CreditAnalysisError("temporary-control confirmed findings were not merged once")

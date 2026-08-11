@@ -1610,7 +1610,7 @@ class FakeCreditModelRunner:
                         "The compact causal record supports focused final "
                         "adjudication without a per-action dismissal."
                     ),
-                    "surface_ids": surfaces,
+                    "surface_ids": list(reversed(surfaces)),
                     "candidate_ids": [str(record["candidate_id"])],
                     "evidence_refs": [str(record["evidence_refs"][0])],
                     "producer_owner_hint": "workflow:synthetic",
@@ -2128,6 +2128,21 @@ def test_credit_analysis_workflow_end_to_end_uses_two_semantic_calls(
     assert [(call["model"], call["reasoning_effort"]) for call in runner.calls] == [
         ("gpt-5.6-luna", "medium")
     ]
+    after_luna_state = json.loads(state_path.read_text(encoding="utf-8"))
+    accepted_luna = json.loads(
+        pathlib.Path(
+            after_luna_state["execution"]["luna.discovery.0001"]["result"]["path"]
+        ).read_text(encoding="utf-8")
+    )
+    assert all(
+        candidate["surface_ids"]
+        == [
+            surface
+            for surface in manifest["surface_order"]
+            if surface in set(candidate["surface_ids"])
+        ]
+        for candidate in accepted_luna["candidates"]
+    )
     completed = workflow.command_execute_orchestration(
         state_path,
         runner=runner,
