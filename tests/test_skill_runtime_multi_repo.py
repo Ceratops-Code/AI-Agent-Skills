@@ -6202,6 +6202,60 @@ def test_skill_update_workflow_preserves_baseline_runs_checks_once_and_finalizes
     assert finalized_empty.stdout.strip() == "OK"
     assert not empty_task_temp_root.exists()
 
+    removed_task_temp_root = task_temp_root.parent / "removed-worktree-finalization"
+    removed_task_temp_root.mkdir()
+    removed_request_path = removed_task_temp_root / "request.json"
+    removed_state_path = removed_task_temp_root / "state.json"
+    removed_evidence_path = removed_task_temp_root / "evidence.json"
+    removed_request = json.loads(json.dumps(request))
+    removed_request["task_temp_root"] = str(removed_task_temp_root)
+    removed_request["evidence_output"] = str(removed_evidence_path)
+    removed_request["checks"] = [
+        {
+            "kind": "search",
+            "pattern": "FORBIDDEN",
+            "paths": ["skills/alpha-tool/scripts/tool.py"],
+            "expected_matches": 0,
+        }
+    ]
+    removed_request_path.write_text(
+        json.dumps(removed_request) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    prepared = run_skill_update_workflow(
+        "prepare",
+        "--request",
+        str(removed_request_path),
+        "--state",
+        str(removed_state_path),
+    )
+    assert prepared.returncode == 0, prepared.stderr
+    helper.write_text(
+        "VALUE = 2\n# third verified change\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    verified = run_skill_update_workflow(
+        "verify",
+        "--state",
+        str(removed_state_path),
+        "--evidence-output",
+        str(removed_evidence_path),
+    )
+    assert verified.returncode == 0, verified.stderr
+
+    source = scope / task_temp_root.parent.name
+    removed = run_git(source, "worktree", "remove", "--force", str(worktree))
+    assert removed.returncode == 0, removed.stderr
+    finalized = run_skill_update_workflow(
+        "finalize", "--state", str(removed_state_path)
+    )
+
+    assert finalized.returncode == 0, finalized.stderr
+    assert finalized.stdout.strip() == "OK"
+    assert not removed_task_temp_root.exists()
+
 
 def rule_candidate_markdown_policy(
     repository: pathlib.Path,
