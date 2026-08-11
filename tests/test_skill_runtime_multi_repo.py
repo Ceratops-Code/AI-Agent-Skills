@@ -5135,106 +5135,16 @@ def test_skill_update_workflow_preserves_baseline_runs_checks_once_and_finalizes
     assert not removed_task_temp_root.exists()
 
 
-def rule_candidate_markdown_policy(
+def target_repository_markdown_policy(
     repository: pathlib.Path,
-    *,
-    line_length: int,
-    fix_mode: str | None = None,
 ) -> dict[str, object]:
-    """Declare an isolated target-specific Markdown command for helper tests."""
+    """Build a decoy target policy that the governance skill must reject."""
 
-    repository.mkdir(parents=True, exist_ok=True)
     configuration = repository / ".markdownlint.json"
     configuration.write_text(
-        json.dumps(
-            {
-                "default": False,
-                "MD013": {
-                    "line_length": line_length,
-                    "code_blocks": False,
-                    "tables": False,
-                },
-                "MD047": True,
-            }
-        )
-        + "\n",
+        json.dumps({"default": False}) + "\n",
         encoding="utf-8",
         newline="\n",
-    )
-    tool = repository / "markdown-policy.py"
-    tool.write_text(
-        "import json, pathlib, re, sys\n"
-        "mode, config_name, file_name = sys.argv[1:]\n"
-        "path = pathlib.Path(file_name)\n"
-        "if mode == 'mutate':\n"
-        "    value = path.read_text(encoding='utf-8-sig')\n"
-        "    path.write_text(value.replace('safe', 'unsafe', 1), "
-        "encoding='utf-8', newline='\\n')\n"
-        "    raise SystemExit(0)\n"
-        "config = json.loads(pathlib.Path(config_name).read_text(encoding='utf-8'))\n"
-        "limit = config['MD013']['line_length']\n"
-        "fence = None\n"
-        "html = None\n"
-        "reference = False\n"
-        "for number, line in enumerate(path.read_text(encoding='utf-8-sig').splitlines(), 1):\n"
-        "    stripped = line.strip()\n"
-        "    marker = re.match(r'^(`{3,}|~{3,})', stripped)\n"
-        "    if fence is not None:\n"
-        "        if marker and marker.group(1)[0] == fence[0] and "
-        "len(marker.group(1)) >= fence[1]:\n"
-        "            fence = None\n"
-        "        continue\n"
-        "    if marker:\n"
-        "        fence = (marker.group(1)[0], len(marker.group(1)))\n"
-        "        continue\n"
-        "    if html is not None:\n"
-        "        if f'</{html}>' in stripped.lower():\n"
-        "            html = None\n"
-        "        continue\n"
-        "    html_open = re.match("
-        "r'^<([A-Za-z][A-Za-z0-9:-]*)(?:\\s[^>]*)?>', stripped)\n"
-        "    if html_open:\n"
-        "        opening = html_open.group(0)\n"
-        "        tag = html_open.group(1).lower()\n"
-        "        if not opening.endswith('/>') and "
-        "f'</{tag}>' not in stripped[html_open.end():].lower():\n"
-        "            html = tag\n"
-        "        continue\n"
-        "    definition = bool(re.match(r'^\\s{0,3}\\[[^]]+\\]:', line))\n"
-        "    continuation = reference and bool(re.match(r'^\\s{1,3}\\S', line))\n"
-        "    if definition:\n"
-        "        reference = True\n"
-        "    elif not continuation:\n"
-        "        reference = False\n"
-        "    protected = (definition or continuation or "
-        "line.startswith(('    ', '\\t')) or "
-        "bool(re.match(r'^\\s{0,3}#', line)) or "
-        "(stripped.startswith('|') and stripped.endswith('|')) or "
-        "bool(re.match(r'^\\s*<[^>]+>', line)) or "
-        "bool(re.match(r'^\\s*\\[[^]]+\\]:', line)))\n"
-        "    if not protected and len(line) > limit:\n"
-        "        print(f'{path}:{number}:1 MD013 line too long', file=sys.stderr)\n"
-        "        raise SystemExit(1)\n",
-        encoding="utf-8",
-        newline="\n",
-    )
-    validate_command = [
-        sys.executable,
-        str(tool),
-        "validate",
-        "{config}",
-        "{file}",
-    ]
-    fix_command = (
-        None
-        if fix_mode is None
-        else [
-            sys.executable,
-            str(tool),
-            fix_mode,
-            "{config}",
-            "{file}",
-        ]
     )
     return {
         "repository_root": str(repository.resolve()),
@@ -5242,8 +5152,8 @@ def rule_candidate_markdown_policy(
         "configuration_sha256": hashlib.sha256(
             configuration.read_bytes()
         ).hexdigest(),
-        "validate_command": validate_command,
-        "fix_command": fix_command,
+        "validate_command": [sys.executable, "-c", "pass", "{file}"],
+        "fix_command": None,
     }
 
 
@@ -5295,22 +5205,20 @@ def test_rule_candidate_repairs_multiple_targets_and_is_idempotent(
 ) -> None:
     first_repo = tmp_path / "first-repo"
     second_repo = tmp_path / "second-repo"
-    first_policy = rule_candidate_markdown_policy(first_repo, line_length=48)
-    second_policy = rule_candidate_markdown_policy(second_repo, line_length=68)
+    first_repo.mkdir()
+    second_repo.mkdir()
     first = first_repo / "contract.md"
     second = second_repo / "contract.md"
     first_text = (
         "# First\n\n"
         "Old prose.\n\n"
-        "  - Old nested item.\n\n"
+        "- Old nested item.\n\n"
         "> > - Old quoted item.\n\n"
         "````text\n"
         "```\n"
         "protected code line that is intentionally much longer than the limit\n"
         "````\n\n"
-        "<div>\n"
-        "Old raw HTML.\n"
-        "</div>\n\n"
+        "A [sample link][sample].\n\n"
         "[sample]: https://example.test/reference\n"
         "  \"Old reference title.\"\n"
     )
@@ -5328,9 +5236,9 @@ def test_rule_candidate_repairs_multiple_targets_and_is_idempotent(
             ),
         },
         {
-            "expected_old": "  - Old nested item.",
+            "expected_old": "- Old nested item.",
             "replacement": (
-                "  - Nested list continuation wrapping preserves its exact "
+                "- Nested list continuation wrapping preserves its exact "
                 "nesting and marker structure."
             ),
         },
@@ -5353,13 +5261,6 @@ def test_rule_candidate_repairs_multiple_targets_and_is_idempotent(
                 "```\n"
                 "protected code line that is intentionally much longer than the limit\n"
                 "````"
-            ),
-        },
-        {
-            "expected_old": "Old raw HTML.",
-            "replacement": (
-                "Raw HTML content remains byte-for-byte unwrapped even when its "
-                "opening tag is outside this replacement."
             ),
         },
         {
@@ -5391,14 +5292,14 @@ def test_rule_candidate_repairs_multiple_targets_and_is_idempotent(
                 "rules": str(first.resolve()),
                 "history": None,
                 "source_sha256": hashlib.sha256(first.read_bytes()).hexdigest(),
-                "markdown_policy": first_policy,
+                "markdown_policy": None,
                 "replacements": first_replacements,
             },
             {
                 "rules": str(second.resolve()),
                 "history": None,
                 "source_sha256": hashlib.sha256(second.read_bytes()).hexdigest(),
-                "markdown_policy": second_policy,
+                "markdown_policy": None,
                 "replacements": second_replacements,
             },
         ],
@@ -5411,11 +5312,10 @@ def test_rule_candidate_repairs_multiple_targets_and_is_idempotent(
     fixed_first = fixed["targets"][0]["replacements"]
     fixed_second = fixed["targets"][1]["replacements"]
     assert "\n" in fixed_first[0]["replacement"]
-    assert "\n    " in fixed_first[1]["replacement"]
+    assert "\n  " in fixed_first[1]["replacement"]
     assert "\n> >   " in fixed_first[2]["replacement"]
     assert fixed_first[3]["replacement"] == first_replacements[3]["replacement"]
     assert fixed_first[4]["replacement"] == first_replacements[4]["replacement"]
-    assert fixed_first[5]["replacement"] == first_replacements[5]["replacement"]
     assert "\n" not in fixed_second[0]["replacement"]
     assert "\r\n" in fixed_second[1]["replacement"]
     assert "\n" not in fixed_second[1]["replacement"].replace("\r\n", "")
@@ -5435,8 +5335,8 @@ def test_rule_candidate_failures_are_atomic_and_actionable(
 ) -> None:
     safe_repo = tmp_path / "safe-repo"
     blocked_repo = tmp_path / "blocked-repo"
-    safe_policy = rule_candidate_markdown_policy(safe_repo, line_length=44)
-    blocked_policy = rule_candidate_markdown_policy(blocked_repo, line_length=32)
+    safe_repo.mkdir()
+    blocked_repo.mkdir()
     safe = safe_repo / "contract.md"
     blocked = blocked_repo / "contract.md"
     safe.write_text("Old safe.\n", encoding="utf-8", newline="\n")
@@ -5452,7 +5352,7 @@ def test_rule_candidate_failures_are_atomic_and_actionable(
                 "rules": str(safe.resolve()),
                 "history": None,
                 "source_sha256": hashlib.sha256(safe.read_bytes()).hexdigest(),
-                "markdown_policy": safe_policy,
+                "markdown_policy": None,
                 "replacements": [
                     {
                         "expected_old": "Old safe.",
@@ -5467,7 +5367,7 @@ def test_rule_candidate_failures_are_atomic_and_actionable(
                 "rules": str(blocked.resolve()),
                 "history": None,
                 "source_sha256": hashlib.sha256(blocked.read_bytes()).hexdigest(),
-                "markdown_policy": blocked_policy,
+                "markdown_policy": None,
                 "replacements": [
                     {"expected_old": "Old blocked.", "replacement": token}
                 ],
@@ -5479,16 +5379,12 @@ def test_rule_candidate_failures_are_atomic_and_actionable(
     assert failed.returncode == 1
     assert str(blocked.resolve()) in failed.stderr
     assert "replacement=0" in failed.stderr
-    assert "MD013" in failed.stderr
+    assert "configured limit 80" in failed.stderr
     assert "indivisible token" in failed.stderr
     assert candidate.read_bytes() == before
     assert json.loads(evidence.read_text(encoding="utf-8"))["status"] == "failed"
 
-    mutating_policy = rule_candidate_markdown_policy(
-        safe_repo,
-        line_length=80,
-        fix_mode="mutate",
-    )
+    target_policy = target_repository_markdown_policy(safe_repo)
     write_rule_candidate(
         candidate,
         rule_stack=[safe],
@@ -5497,7 +5393,7 @@ def test_rule_candidate_failures_are_atomic_and_actionable(
                 "rules": str(safe.resolve()),
                 "history": None,
                 "source_sha256": hashlib.sha256(safe.read_bytes()).hexdigest(),
-                "markdown_policy": mutating_policy,
+                "markdown_policy": target_policy,
                 "replacements": [
                     {"expected_old": "Old safe.", "replacement": "safe value"}
                 ],
@@ -5507,7 +5403,7 @@ def test_rule_candidate_failures_are_atomic_and_actionable(
     before_mutation = candidate.read_bytes()
     mutated = run_rule_candidate_validator(candidate, tmp_path / "mutation.json")
     assert mutated.returncode == 1
-    assert "non-whitespace" in mutated.stderr
+    assert "skill-owned policy" in mutated.stderr
     assert candidate.read_bytes() == before_mutation
 
 
@@ -5515,7 +5411,7 @@ def test_rule_candidate_rejects_stale_and_duplicate_expected_old(
     tmp_path: pathlib.Path,
 ) -> None:
     repository = tmp_path / "repo"
-    policy = rule_candidate_markdown_policy(repository, line_length=80)
+    repository.mkdir()
     target = repository / "contract.md"
     target.write_text("Old value.\n", encoding="utf-8", newline="\n")
     candidate = tmp_path / "candidate.json"
@@ -5523,7 +5419,7 @@ def test_rule_candidate_rejects_stale_and_duplicate_expected_old(
         "rules": str(target.resolve()),
         "history": None,
         "source_sha256": hashlib.sha256(target.read_bytes()).hexdigest(),
-        "markdown_policy": policy,
+        "markdown_policy": None,
         "replacements": [
             {"expected_old": "Old value.", "replacement": "New value."},
             {"expected_old": "Old value.", "replacement": "Other value."},
@@ -5572,10 +5468,7 @@ def test_proposal_workflow_validates_context_and_owns_iteration_transition(
         encoding="utf-8",
         newline="\n",
     )
-    markdown_policy = rule_candidate_markdown_policy(
-        target_dir,
-        line_length=48,
-    )
+    target_repository_markdown_policy(target_dir)
     current_text = (
         "- [SKILLS-GOV-01] Before proposing or editing a repository control surface,\n"
         "  including `AGENTS.md`, `automation.toml`, `SKILL.md`, skill manifests, shared\n"
@@ -5598,7 +5491,7 @@ def test_proposal_workflow_validates_context_and_owns_iteration_transition(
         "rule_ids": [],
         "expected_text": ["Current exact target."],
         "candidate_target": True,
-        "markdown_policy": markdown_policy,
+        "markdown_policy": None,
     }
     request: dict[str, object] = {
         "schema": "ceratops-governance-proposal-request.v3",
@@ -5651,6 +5544,14 @@ def test_proposal_workflow_validates_context_and_owns_iteration_transition(
     assert context["sources"][1]["history"] is None
     assert context["candidate_validation"]["targets"][0]["rules"] == str(
         target.resolve()
+    )
+    policy = context["candidate_validation"]["targets"][0]["markdown_policy"]
+    assert pathlib.Path(policy["configuration"]) == (
+        ROOT
+        / "skills"
+        / "ceratops-governance-lifecycle"
+        / "references"
+        / ".markdownlint.json"
     )
     incomplete = subprocess.run(
         [
@@ -5863,7 +5764,7 @@ def test_iteration_controller_direct_commands_record_validated_candidate(
     original = tmp_path / "original.md"
     state = tmp_path / "state.json"
     repository = tmp_path / "repository"
-    policy = rule_candidate_markdown_policy(repository, line_length=44)
+    repository.mkdir()
     target = repository / "AGENTS.md"
     target.write_text("Old target.\n", encoding="utf-8", newline="\n")
     validation_context = tmp_path / "validation-context.json"
@@ -5879,7 +5780,7 @@ def test_iteration_controller_direct_commands_record_validated_candidate(
                         "source_sha256": hashlib.sha256(
                             target.read_bytes()
                         ).hexdigest(),
-                        "markdown_policy": policy,
+                        "markdown_policy": None,
                         "expected_old": ["Old target."],
                     }
                 ],

@@ -3,8 +3,8 @@
 
 The reusable :func:`validate_rule_candidate` implementation operates on an
 in-memory prospective document for every declared target. It may update only
-candidate replacement text, never governed sources. Repository-declared
-Markdown commands run without a shell against isolated temporary copies; their
+candidate replacement text, never governed sources. The skill-owned Markdown
+policy and command run without a shell against isolated temporary copies; their
 output is accepted only when every change stays inside a replacement and
 preserves protected Markdown, structure, and all non-whitespace characters.
 
@@ -22,6 +22,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -59,15 +60,16 @@ CONTEXT_TARGET_FIELDS = {
     "expected_old",
 }
 REPLACEMENT_FIELDS = {"expected_old", "replacement"}
-POLICY_REQUEST_FIELDS = {
+POLICY_FIELDS = {
     "repository_root",
     "configuration",
+    "configuration_sha256",
     "validate_command",
     "fix_command",
 }
-POLICY_FIELDS = {*POLICY_REQUEST_FIELDS, "configuration_sha256"}
-COMMAND_PLACEHOLDERS = {"{file}", "{config}"}
 MAX_COMMAND_OUTPUT = 16_000
+SKILL_ROOT = Path(__file__).resolve().parents[1]
+SKILL_MARKDOWN_CONFIGURATION = SKILL_ROOT / "references" / ".markdownlint.json"
 
 FENCE = re.compile(r"^\s{0,3}(`{3,}|~{3,})")
 HEADING = re.compile(r"^\s{0,3}#{1,6}(?:\s|$)")
@@ -229,31 +231,38 @@ def read_source(path: Path, label: str) -> TextSource:
     )
 
 
-def _command(value: object, label: str, *, nullable: bool) -> list[str] | None:
-    if value is None and nullable:
-        return None
-    if (
-        not isinstance(value, Sequence)
-        or isinstance(value, (str, bytes))
-        or not value
-        or not all(isinstance(item, str) and item for item in value)
-    ):
+def _markdownlint_executable() -> str:
+    """Resolve the policy engine without borrowing target-repository tooling."""
+
+    command = "markdownlint.cmd" if os.name == "nt" else "markdownlint"
+    executable = shutil.which(command) or shutil.which("markdownlint")
+    if executable is None:
         raise RuleCandidateValidationError(
-            f"{label} must be a non-empty string list"
+            "skill Markdown validator is unavailable: install markdownlint-cli"
         )
-    command = list(value)
-    if sum(item.count("{file}") for item in command) != 1:
+    return executable
+
+
+def _skill_markdown_policy() -> dict[str, Any]:
+    """Build the immutable policy carried by this source or installed skill."""
+
+    configuration = SKILL_MARKDOWN_CONFIGURATION.resolve()
+    if not configuration.is_file():
         raise RuleCandidateValidationError(
-            f"{label} must contain one {{file}} placeholder"
+            f"skill Markdown configuration does not exist: {configuration}"
         )
-    for item in command:
-        placeholders = set(re.findall(r"\{[^}]+\}", item))
-        unknown = sorted(placeholders - COMMAND_PLACEHOLDERS)
-        if unknown:
-            raise RuleCandidateValidationError(
-                f"{label} has unknown placeholder {unknown[0]}"
-            )
-    return command
+    return {
+        "repository_root": str(SKILL_ROOT),
+        "configuration": str(configuration),
+        "configuration_sha256": file_hash(configuration),
+        "validate_command": [
+            _markdownlint_executable(),
+            "--config",
+            "{config}",
+            "{file}",
+        ],
+        "fix_command": None,
+    }
 
 
 def resolve_markdown_policy(
@@ -261,61 +270,20 @@ def resolve_markdown_policy(
     *,
     label: str = "markdown_policy",
 ) -> dict[str, Any]:
-    """Resolve and hash one target-declared Markdown policy."""
+    """Resolve the skill policy and reject target-repository policy injection."""
 
-    if not isinstance(value, dict):
-        raise RuleCandidateValidationError(f"{label} must be an object")
-    actual = set(value)
-    if actual == POLICY_REQUEST_FIELDS:
-        includes_hash = False
-    elif actual == POLICY_FIELDS:
-        includes_hash = True
-    else:
-        missing = sorted(POLICY_REQUEST_FIELDS - actual)
-        extra = sorted(actual - POLICY_FIELDS)
+    policy = _skill_markdown_policy()
+    if value is None:
+        return policy
+    if (
+        not isinstance(value, dict)
+        or set(value) != POLICY_FIELDS
+        or value != policy
+    ):
         raise RuleCandidateValidationError(
-            f"{label} fields invalid; missing={missing} extra={extra}"
+            f"{label} must be null or the exact current skill-owned policy"
         )
-    repository_root = _absolute_path(
-        value["repository_root"], f"{label}.repository_root"
-    )
-    if not repository_root.is_dir():
-        raise RuleCandidateValidationError(
-            f"{label}.repository_root is not a directory: {repository_root}"
-        )
-    configuration = _absolute_path(
-        value["configuration"], f"{label}.configuration"
-    )
-    try:
-        configuration.relative_to(repository_root)
-    except ValueError as exc:
-        raise RuleCandidateValidationError(
-            f"{label}.configuration escapes repository_root"
-        ) from exc
-    if not configuration.is_file():
-        raise RuleCandidateValidationError(
-            f"{label}.configuration does not exist: {configuration}"
-        )
-    config_hash = file_hash(configuration)
-    if includes_hash and value["configuration_sha256"] != config_hash:
-        raise RuleCandidateValidationError(
-            f"{label}.configuration_sha256 is stale for {configuration}"
-        )
-    return {
-        "repository_root": str(repository_root),
-        "configuration": str(configuration),
-        "configuration_sha256": config_hash,
-        "validate_command": _command(
-            value["validate_command"],
-            f"{label}.validate_command",
-            nullable=False,
-        ),
-        "fix_command": _command(
-            value["fix_command"],
-            f"{label}.fix_command",
-            nullable=True,
-        ),
-    }
+    return policy
 
 
 def build_candidate_template(context: Mapping[str, object]) -> dict[str, Any]:
@@ -363,7 +331,10 @@ def build_candidate_template(context: Mapping[str, object]) -> dict[str, Any]:
                 "rules": target["rules"],
                 "history": target["history"],
                 "source_sha256": target["source_sha256"],
-                "markdown_policy": target["markdown_policy"],
+                "markdown_policy": resolve_markdown_policy(
+                    target["markdown_policy"],
+                    label=f"validation context target {index} markdown_policy",
+                ),
                 "replacements": [
                     {"expected_old": item, "replacement": None}
                     for item in expected
@@ -1070,9 +1041,10 @@ def _validator_failure(
     policy: Mapping[str, object],
 ) -> RuleCandidateValidationError:
     output = f"{detail.get('stdout', '')}\n{detail.get('stderr', '')}".strip()
-    match = re.search(r"(?::|\s)(\d+)(?::\d+)?\s+((?:MD\d+|[A-Za-z][\w-]+))", output)
-    line = int(match.group(1)) if match else 1
-    rule = match.group(2) if match else "markdown-validation"
+    line_match = re.search(r"(?::|\s)(\d+)(?::\d+)?\s", output)
+    rule_match = re.search(r"\b(MD\d+)\b", output)
+    line = int(line_match.group(1)) if line_match else 1
+    rule = rule_match.group(1) if rule_match else "markdown-validation"
     lines = text.splitlines()
     line_text = lines[line - 1] if 0 < line <= len(lines) else ""
     settings = _markdown_settings(policy)
@@ -1113,14 +1085,6 @@ def _validate_target(
         )
     policy = resolve_markdown_policy(target["markdown_policy"])
     target["markdown_policy"] = policy
-    repository_root = Path(cast(str, policy["repository_root"]))
-    try:
-        rules.relative_to(repository_root)
-    except ValueError as exc:
-        raise RuleCandidateValidationError(
-            f"target={rules} replacement=policy rule=repository-root could not "
-            "be fixed safely: target is outside the declared repository"
-        ) from exc
     replacements = target["replacements"]
     assert isinstance(replacements, list)
     fixed_replacements = [dict(item) for item in replacements]
