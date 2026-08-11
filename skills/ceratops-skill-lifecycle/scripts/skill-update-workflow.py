@@ -334,6 +334,48 @@ def _verified_task_temp_root(
     return resolved
 
 
+def _finalize_primary_root(cleanup: object) -> pathlib.Path:
+    """Recover the live primary checkout after a task worktree was removed.
+
+    Finalization uses this checkout only to revalidate the recorded task-temp
+    boundary. The path is derived from the required sibling ``tmp/<repo>``
+    layout and must resolve to the primary checkout of that Git repository.
+    """
+
+    if not isinstance(cleanup, Mapping):
+        raise UpdateExecutionError("state cleanup must be an object")
+    value = cleanup.get("task_temp_root")
+    if not isinstance(value, str) or not value:
+        raise UpdateExecutionError("state task_temp_root is invalid")
+    raw = pathlib.Path(value).expanduser()
+    if not raw.is_absolute():
+        raise UpdateExecutionError("state task_temp_root must be absolute")
+    task_temp_root = _absolute(raw)
+    _reject_link_chain(task_temp_root, "task_temp_root")
+    repository_temp_root = task_temp_root.parent
+    temp_root = repository_temp_root.parent
+    if temp_root.name != "tmp":
+        raise UpdateExecutionError("state task_temp_root lacks the required tmp layout")
+    primary_candidate = temp_root.parent / repository_temp_root.name
+    _reject_link_chain(primary_candidate, "derived primary checkout")
+    if not primary_candidate.is_dir():
+        raise UpdateExecutionError("derived primary checkout is unavailable")
+    primary_root = primary_candidate.resolve(strict=True)
+    if _git(primary_root, "rev-parse", "--is-inside-work-tree").strip() != "true":
+        raise UpdateExecutionError("derived primary checkout is not a Git worktree")
+    top = pathlib.Path(
+        _git(primary_root, "rev-parse", "--show-toplevel").strip()
+    ).resolve(strict=True)
+    git_dir = _git_path(primary_root, _git(primary_root, "rev-parse", "--git-dir"))
+    common_dir = _git_path(
+        primary_root,
+        _git(primary_root, "rev-parse", "--git-common-dir"),
+    )
+    if top != primary_root or git_dir != common_dir or common_dir.parent != primary_root:
+        raise UpdateExecutionError("derived checkout is not the repository primary")
+    return primary_root
+
+
 def _verify_task_worktree(repo_root: pathlib.Path) -> tuple[str, str]:
     if _git(repo_root, "rev-parse", "--is-inside-work-tree").strip() != "true":
         raise UpdateExecutionError("repo_root is not a Git worktree")
@@ -1145,7 +1187,17 @@ def command_finalize(state_path: pathlib.Path) -> None:
     repo_value = raw["repo_root"]
     if not isinstance(repo_value, str) or not repo_value:
         raise UpdateExecutionError("state repo_root is invalid")
-    repo_root = pathlib.Path(repo_value).resolve(strict=True)
+    repo_path = pathlib.Path(repo_value).expanduser()
+    if not repo_path.is_absolute():
+        raise UpdateExecutionError("state repo_root must be absolute")
+    lexical_repo = _absolute(repo_path)
+    _reject_link_chain(lexical_repo, "state repo_root")
+    if lexical_repo.exists():
+        if not lexical_repo.is_dir():
+            raise UpdateExecutionError("state repo_root must be a directory")
+        repo_root = lexical_repo.resolve(strict=True)
+    else:
+        repo_root = _finalize_primary_root(raw["cleanup"])
     cleanup = _validated_cleanup(
         raw["cleanup"],
         state_path=resolved_state,
