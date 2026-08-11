@@ -70,10 +70,11 @@ additional deterministic contract gap supported by evidence.
 
 ## Completion Gate
 
-Account for every controller-exposed candidate against original evidence and
-persist all category reviews, cohesive remediation groups, confirmed findings,
-risks, dismissals, necessary exclusions, and temporary-control contributions in
-the single controller-owned confirmation result.
+Review every helper-relevant causal episode supplied to the shared discovery,
+retain one review for each mandatory category, and persist every Sol-confirmed
+finding, plausible risk, cohesive remediation group, and temporary-control
+contribution. Do not require a dismissal record for every call and lens
+combination.
 
 ## Output Contract
 

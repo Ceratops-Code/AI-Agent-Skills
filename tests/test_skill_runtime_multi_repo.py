@@ -460,7 +460,7 @@ def credit_analysis_request(
             "task_temp_root": str(task_root),
             "evidence_output": str(evidence),
             "pricing_profile": None,
-            "expected_surface_contract_version": 3,
+            "expected_surface_contract_version": 4,
             "mutation_authority": False,
         },
     )
@@ -528,7 +528,7 @@ def credit_analysis_batch_request(
             "task_temp_root": str(task_root),
             "manifest_output": str(tmp_path / f"batch-manifest-{name}.json"),
             "pricing_profile": None,
-            "expected_surface_contract_version": 3,
+            "expected_surface_contract_version": 4,
             "expected_source_selection_contract_version": 1,
             "mutation_authority": False,
         },
@@ -1542,7 +1542,7 @@ def test_credit_analysis_workflow_full_analysis_persists_every_finding(
 
 
 def load_credit_analysis_workflow_module() -> Any:
-    """Load the controller so fake model runners can exercise its real state machine."""
+    """Load the controller so fake runners exercise the real state machine."""
 
     spec = importlib.util.spec_from_file_location(
         "credit_analysis_workflow_under_test",
@@ -1554,63 +1554,208 @@ def load_credit_analysis_workflow_module() -> Any:
     return module
 
 
+def holistic_model_catalog(context_tokens: int = 258_000) -> dict[str, dict[str, Any]]:
+    """Return deterministic local-catalog data for injected model runs."""
+
+    return {
+        "gpt-5.6-luna": {
+            "reasoning_efforts": {"low", "medium", "high", "max"},
+            "effective_context_tokens": context_tokens,
+        },
+        "gpt-5.6-sol": {
+            "reasoning_efforts": {"low", "medium", "high", "max"},
+            "effective_context_tokens": context_tokens,
+        },
+    }
+
+
 class FakeCreditModelRunner:
-    """Return complete semantic contracts without making external model calls."""
+    """Return sparse Luna discovery and one complete Sol adjudication."""
 
-    available_models = {"gpt-5.6-luna", "gpt-5.6-sol"}
+    available_models = holistic_model_catalog()
 
-    def __init__(self) -> None:
+    def __init__(self, *, temporary_controls: bool = True) -> None:
         self.calls: list[dict[str, Any]] = []
+        self.temporary_controls = temporary_controls
 
     @staticmethod
-    def _first_ref(dossier: Mapping[str, Any]) -> str:
-        refs = dossier["original_evidence_refs"]
-        assert refs
-        return str(refs[0])
+    def _records(packet: Mapping[str, Any]) -> list[dict[str, Any]]:
+        return [
+            dict(call)
+            for episode in packet["episodes"]
+            for call in episode["calls"]
+        ]
 
-    @staticmethod
-    def _recurrence(*, volume_only: bool = False) -> dict[str, Any]:
+    def _luna(
+        self,
+        task: Mapping[str, Any],
+        packet: Mapping[str, Any],
+        digest: str,
+    ) -> dict[str, Any]:
+        records = self._records(packet)
+        candidates: list[dict[str, Any]] = []
+
+        def add(
+            suffix: str,
+            kind: str,
+            record: Mapping[str, Any],
+            surfaces: list[str],
+        ) -> None:
+            candidates.append(
+                {
+                    "id": f"luna.{int(task['ordinal']):04d}.{suffix}",
+                    "kind": kind,
+                    "title": suffix.replace("-", " "),
+                    "hypothesis": (
+                        "The compact causal record supports focused final "
+                        "adjudication without a per-action dismissal."
+                    ),
+                    "surface_ids": surfaces,
+                    "candidate_ids": [str(record["candidate_id"])],
+                    "evidence_refs": [str(record["evidence_refs"][0])],
+                    "producer_owner_hint": "workflow:synthetic",
+                }
+            )
+
+        surfaces = list(packet["surface_order"])
+        if records:
+            add("model-waste", "provisional-finding", records[0], surfaces)
+        if len(records) > 1:
+            add("volume-waste", "provisional-finding", records[1], surfaces)
+        if len(records) > 2:
+            add("uncertain-wait", "plausible-risk", records[2], surfaces)
+        if self.temporary_controls and len(records) > 8:
+            dispositions = [
+                ("temporary.transient", records[3], ["rework-validation"]),
+                (
+                    "temporary.implemented",
+                    records[4],
+                    ["helper-contracts", "rework-validation"],
+                ),
+                ("temporary.run-only", records[5], ["rework-validation"]),
+                (
+                    "temporary.durable-a",
+                    records[6],
+                    ["helper-contracts", "rework-validation"],
+                ),
+                (
+                    "temporary.durable-b",
+                    records[7],
+                    ["rework-validation", "tool-flow"],
+                ),
+                ("temporary.unclear", records[8], ["rework-validation"]),
+            ]
+            allowed = set(surfaces)
+            for suffix, record, requested_surfaces in dispositions:
+                selected = [
+                    surface
+                    for surface in surfaces
+                    if surface in requested_surfaces and surface in allowed
+                ]
+                if selected:
+                    add(suffix, "temporary-control", record, selected)
         return {
-            "calls_saved_per_affected_run": 0.0 if volume_only else 1.0,
-            "additional_recurring_calls_per_affected_run": 0.0,
-            "affected_similar_run_frequency": 0.5,
-            "affected_similar_run_frequency_range": [0.25, 0.75],
-            "estimated_calls_saved_per_similar_run": 0.0 if volume_only else 0.5,
-            "assumptions": ["synthetic recurrence evidence"],
+            "schema": "ceratops-credit-analysis-luna-result.v4",
+            "analysis_id": packet["analysis_id"],
+            "task_id": task["task_id"],
+            "input_sha256": digest,
+            "coverage": {
+                "candidate_count": len(task["candidate_ids"]),
+                "candidate_ids_sha256": task["candidate_ids_sha256"],
+                "first_candidate_id": task["candidate_ids"][0],
+                "last_candidate_id": task["candidate_ids"][-1],
+            },
+            "candidates": candidates,
         }
 
     @staticmethod
+    def _recurrence(call_count: int, *, volume_only: bool) -> dict[str, Any]:
+        return {
+            "calls_saved_per_affected_run": (
+                0.0 if volume_only else float(call_count)
+            ),
+            "additional_recurring_calls_per_affected_run": 0.0,
+            "affected_similar_run_frequency": 0.5,
+            "affected_similar_run_frequency_range": [0.25, 0.75],
+            "estimated_calls_saved_per_similar_run": (
+                0.0 if volume_only else float(call_count) * 0.5
+            ),
+            "assumptions": ["synthetic recurrence evidence"],
+        }
+
+    @classmethod
     def _finding(
-        surface: str,
+        cls,
         finding_id: str,
-        dossier: Mapping[str, Any],
+        candidate: Mapping[str, Any],
+        inventory: Mapping[str, Mapping[str, Any]],
         *,
         volume_only: bool = False,
+        candidate_ids: list[str] | None = None,
+        candidates_by_id: Mapping[str, Mapping[str, Any]] | None = None,
     ) -> dict[str, Any]:
-        candidate_id = str(dossier["candidate_id"])
-        call_id = str(dossier["call_identity"]["call_id"])
+        source_candidates = candidate_ids or [str(candidate["id"])]
+        candidate_records = [
+            (candidates_by_id or {str(candidate["id"]): candidate})[item]
+            for item in source_candidates
+        ]
+        call_ids = list(
+            dict.fromkeys(
+                inventory[candidate_id]["call_id"]
+                for item in candidate_records
+                for candidate_id in item["candidate_ids"]
+            )
+        )
+        workstream = inventory[candidate_records[0]["candidate_ids"][0]][
+            "workstream"
+        ]
+        surfaces = list(
+            dict.fromkeys(
+                surface
+                for item in candidate_records
+                for surface in item["surface_ids"]
+            )
+        )
+        fixed_surface_order = [
+            "helper-contracts",
+            "context-evidence",
+            "rework-validation",
+            "tool-flow",
+            "instruction-reasoning",
+        ]
+        surfaces = [surface for surface in fixed_surface_order if surface in surfaces]
         return {
             "id": finding_id,
-            "title": finding_id.replace(".", " "),
+            "title": finding_id.replace("-", " "),
             "problem_summary": (
-                f"Synthetic {surface} evidence confirms recurring avoidable work."
+                "Synthetic original evidence confirms recurring avoidable work "
+                "owned by the workflow."
             ),
             "waste_kind": "context-volume" if volume_only else "model-calls",
-            "candidate_ids": [candidate_id],
-            "affected_call_ids": [call_id],
-            "evidence_refs": [FakeCreditModelRunner._first_ref(dossier)],
+            "affected_call_ids": call_ids,
+            "evidence_refs": [
+                str(candidate_records[0]["evidence_refs"][0])
+            ],
             "evidence_narrative": (
-                "The original evidence dossier records the call, tool outcome, and "
-                "input/output volume needed for confirmation."
+                "The causal record includes the user request, observable action, "
+                "result, telemetry, and final outcome."
             ),
             "producer_type": "workflow",
-            "producer_owner": f"workflow:{surface}",
-            "proposed_durable_control": f"Prevent the confirmed {surface} recurrence",
+            "producer_owner": "workflow:synthetic",
+            "workstream": workstream,
+            "proposed_durable_control": (
+                "Make the deterministic workflow complete to its final boundary."
+            ),
             "implementation_status": "unimplemented",
-            "targeted_verification": [f"verify {surface} no longer repeats the call"],
-            "observed_avoidable_call_count": 0 if volume_only else 1,
-            "recurrence": FakeCreditModelRunner._recurrence(
-                volume_only=volume_only
+            "targeted_verification": [
+                "verify the workflow prevents the repeated causal episode"
+            ],
+            "observed_avoidable_call_count": (
+                0 if volume_only else len(call_ids)
+            ),
+            "recurrence": cls._recurrence(
+                len(call_ids),
+                volume_only=volume_only,
             ),
             "confidence": 0.9,
             "complexity": "Low",
@@ -1619,584 +1764,266 @@ class FakeCreditModelRunner:
                 "description": "one targeted producer update",
             },
             "helper_categories": [],
-            "contributing_surfaces": [surface],
+            "contributing_surfaces": surfaces,
         }
 
-    def _luna(self, task: Mapping[str, Any], packet: Mapping[str, Any], digest: str) -> dict[str, Any]:
-        candidate_ids = list(task["candidate_ids"])
-        variants = list(packet.get("input_variant_ids", []))
-        findings: list[dict[str, Any]] = []
-        temporary: list[dict[str, Any]] = []
-        assessments: list[dict[str, Any]] = []
-        if task["stage"] == "primary":
-            material_surfaces: set[str] = set()
-            for candidate_id, surface_id in task["candidate_pairs"]:
-                nested_findings: list[dict[str, Any]] = []
-                nested_temporary: list[dict[str, Any]] = []
-                if surface_id in {
-                    "context-evidence",
-                    "rework-validation",
-                    "tool-flow",
-                } and surface_id not in material_surfaces:
-                    material_surfaces.add(surface_id)
-                    finding_id = (
-                        f"{surface_id}.luna.{int(task['ordinal']):04d}"
-                    )
-                    nested_findings.append(
-                        {
-                            "id": finding_id,
-                            "title": finding_id.replace(".", " "),
-                            "problem_summary": (
-                                "Synthetic primary evidence supports review."
-                            ),
-                            "evidence_refs": ["evidence://synthetic/primary"],
-                            "producer_type": "workflow",
-                            "producer_owner": f"workflow:{surface_id}",
-                            "proposed_durable_control": (
-                                "Confirm the control against original evidence"
-                            ),
-                            "recurrence_likely": True,
-                            "savings_justifies_maintenance": True,
-                            "material_variant_ids": [],
-                        }
-                    )
-                if (
-                    surface_id == "rework-validation"
-                    and task["ordinal"] == 1
-                    and not temporary
-                ):
-                    nested_temporary.append(
-                        {
-                            "id": "rework-validation.temporary",
-                            "problem_solved": "Synthetic temporary orchestration",
-                            "observed_temporary_control": (
-                                "temporary synthetic helper"
-                            ),
-                            "canonical_owner_hint": "workflow:shared",
-                            "evidence_refs": ["evidence://synthetic/temporary"],
-                            "material_variant_ids": [],
-                        }
-                    )
-                    temporary.extend(nested_temporary)
-                assessments.append(
-                    {
-                        "candidate_id": candidate_id,
-                        "surface_id": surface_id,
-                        "disposition": (
-                            "provisional-finding-evidence"
-                            if nested_findings
-                            else "dismissed-candidate"
-                        ),
-                        "reason": "Synthetic evidence was fully reviewed.",
-                        "evidence_refs": ["evidence://synthetic/primary"],
-                        "provisional_findings": nested_findings,
-                        "plausible_risks": [],
-                        "temporary_control_candidates": nested_temporary,
-                    }
-                )
-        else:
-            if task["surface_id"] is None:
-                surface_candidates: dict[str, list[str]] = {}
-                for candidate_id, surface_id in task["candidate_pairs"]:
-                    surface_candidates.setdefault(surface_id, []).append(candidate_id)
-                variants_by_owner: dict[tuple[str, tuple[str, ...]], list[str]] = {}
-                for ownership in packet["material_variant_ownership"]:
-                    key = (
-                        str(ownership["surface_id"]),
-                        tuple(ownership["candidate_ids"]),
-                    )
-                    variants_by_owner.setdefault(key, []).append(
-                        str(ownership["variant_id"])
-                    )
-                for surface_id, owned_candidates in surface_candidates.items():
-                    for candidate_id in owned_candidates:
-                        owned_variants = variants_by_owner.get(
-                            (surface_id, (candidate_id,)), []
-                        )
-                        finding_variants = [
-                            item
-                            for item in owned_variants
-                            if item.startswith("variant.finding.")
-                        ]
-                        risk_variants = [
-                            item
-                            for item in owned_variants
-                            if item.startswith("variant.risk.")
-                        ]
-                        temporary_variants = [
-                            item
-                            for item in owned_variants
-                            if item.startswith("variant.temporary.")
-                        ]
-                        suffix = candidate_id.rsplit(".", maxsplit=1)[-1]
-                        nested_findings = (
-                            [
-                                {
-                                    "id": (
-                                        f"{surface_id}.consolidated.{suffix}.finding"
-                                    ),
-                                    "title": "consolidated finding variants",
-                                    "problem_summary": (
-                                        "Every finding variant remains represented."
-                                    ),
-                                    "evidence_refs": [
-                                        "evidence://synthetic/consolidated"
-                                    ],
-                                    "producer_type": "workflow",
-                                    "producer_owner": f"workflow:{surface_id}",
-                                    "proposed_durable_control": (
-                                        "Preserve every finding variant"
-                                    ),
-                                    "recurrence_likely": True,
-                                    "savings_justifies_maintenance": True,
-                                    "material_variant_ids": finding_variants,
-                                }
-                            ]
-                            if finding_variants
-                            else []
-                        )
-                        nested_risks = (
-                            [
-                                {
-                                    "id": f"{surface_id}.consolidated.{suffix}.risk",
-                                    "description": "Preserved plausible risk",
-                                    "evidence_refs": [
-                                        "evidence://synthetic/consolidated"
-                                    ],
-                                    "verification_needed": [
-                                        "Verify the preserved risk"
-                                    ],
-                                    "material_variant_ids": risk_variants,
-                                }
-                            ]
-                            if risk_variants
-                            else []
-                        )
-                        nested_temporary = (
-                            [
-                                {
-                                    "id": (
-                                        f"{surface_id}.consolidated.{suffix}.temporary"
-                                    ),
-                                    "problem_solved": (
-                                        "Synthetic temporary orchestration"
-                                    ),
-                                    "observed_temporary_control": (
-                                        "temporary synthetic helper"
-                                    ),
-                                    "canonical_owner_hint": "workflow:shared",
-                                    "evidence_refs": [
-                                        "evidence://synthetic/consolidated"
-                                    ],
-                                    "material_variant_ids": temporary_variants,
-                                }
-                            ]
-                            if temporary_variants
-                            else []
-                        )
-                        assessments.append(
-                            {
-                                "candidate_ids": [candidate_id],
-                                "surface_id": surface_id,
-                                "disposition": (
-                                    "provisional-finding-evidence"
-                                    if nested_findings
-                                    else (
-                                        "plausible-risk"
-                                        if nested_risks
-                                        else "dismissed-candidate"
-                                    )
-                                ),
-                                "reason": (
-                                    "Shared consolidation preserved candidates "
-                                    "and exact variant ownership."
-                                ),
-                                "evidence_refs": [
-                                    "evidence://synthetic/consolidated"
-                                ],
-                                "provisional_findings": nested_findings,
-                                "plausible_risks": nested_risks,
-                                "temporary_control_candidates": nested_temporary,
-                            }
-                        )
-            else:
-                for index, variant_id in enumerate(variants, start=1):
-                    finding_id = f"{task['surface_id']}.consolidated.{index}"
-                    findings.append(
-                        {
-                            "id": finding_id,
-                            "title": "consolidated variant",
-                            "problem_summary": (
-                                "The material variant remains represented."
-                            ),
-                            "candidate_ids": candidate_ids,
-                            "evidence_refs": [
-                                "evidence://synthetic/consolidated"
-                            ],
-                            "producer_type": "workflow",
-                            "producer_owner": f"workflow:{task['surface_id']}",
-                            "proposed_durable_control": (
-                                "Preserve the material variant"
-                            ),
-                            "recurrence_likely": True,
-                            "savings_justifies_maintenance": True,
-                            "material_variant_ids": [variant_id],
-                        }
-                    )
-                assessments.append(
-                    {
-                        "candidate_ids": candidate_ids,
-                        "disposition": (
-                            "provisional-finding-evidence"
-                            if findings
-                            else "dismissed-candidate"
-                        ),
-                        "reason": (
-                            "Consolidation preserved the candidate and variants."
-                        ),
-                        "evidence_refs": ["evidence://synthetic/consolidated"],
-                        "provisional_findings": [
-                            {
-                                key: value
-                                for key, value in finding.items()
-                                if key != "candidate_ids"
-                            }
-                            for finding in findings
-                        ],
-                        "plausible_risks": [],
-                        "temporary_control_candidates": [],
-                    }
-                )
-        return {
-            "schema": "ceratops-credit-analysis-luna-child-result.v5",
-            "analysis_id": str(packet["analysis_id"]),
-            "task_id": task["task_id"],
-            "surface_id": task["surface_id"],
-            "stage": task["stage"],
-            "input_sha256": digest,
-            "candidate_assessments": assessments,
-            "preserved_variant_ids": variants,
-        }
-
-    def _confirmation(
-        self, task: Mapping[str, Any], packet: Mapping[str, Any], digest: str
+    def _sol(
+        self,
+        task: Mapping[str, Any],
+        packet: Mapping[str, Any],
+        digest: str,
     ) -> dict[str, Any]:
-        surface = str(task["surface_id"])
-        dossiers = []
-        for episode in packet["original_evidence_episodes"]:
-            canonical_by_ref = {
-                record["evidence_ref"]: record
-                for record in episode["final_canonical_state"]
-            }
-            for call in episode["calls"]:
-                relationships = dict(call["relationships"])
-                relationships["final_canonical_state"] = [
-                    canonical_by_ref[reference]
-                    for reference in relationships[
-                        "final_canonical_state_refs"
-                    ]
-                ]
-                dossiers.append({**call, "relationships": relationships})
-        dossier_by_candidate = {
-            str(dossier["candidate_id"]): dossier for dossier in dossiers
-        }
-        evidence_mapping = packet["candidate_evidence_map"]
-        evidence_map = [
-            dict(zip(evidence_mapping["fields"], row, strict=True))
-            for row in evidence_mapping["rows"]
+        candidates = [
+            dict(candidate)
+            for result in packet["luna_results"]
+            for candidate in result["candidates"]
         ]
+        candidates_by_id = {str(item["id"]): item for item in candidates}
+        fields = packet["call_inventory"]["fields"]
+        inventory = {
+            str(row[0]): dict(zip(fields, row, strict=True))
+            for row in packet["call_inventory"]["rows"]
+        }
         findings: list[dict[str, Any]] = []
-        if dossiers and surface == "context-evidence":
+        risks: list[dict[str, Any]] = []
+        reviews: list[dict[str, Any]] = []
+        decisions: list[dict[str, Any]] = []
+        durable_candidates = [
+            str(item["id"])
+            for item in candidates
+            if str(item["id"]).endswith(("durable-a", "durable-b"))
+        ]
+        if durable_candidates:
+            first_durable = candidates_by_id[durable_candidates[0]]
             findings.append(
                 self._finding(
-                    surface,
-                    "context-evidence.volume",
-                    dossiers[0],
-                    volume_only=True,
+                    "temporary-control-gap",
+                    first_durable,
+                    inventory,
+                    candidate_ids=durable_candidates,
+                    candidates_by_id=candidates_by_id,
                 )
             )
-        if dossiers and surface == "tool-flow":
-            findings.append(self._finding(surface, "tool-flow.handoff", dossiers[0]))
-        if dossiers and surface == "rework-validation":
-            findings.append(
-                self._finding(surface, "rework-validation.durable", dossiers[0])
-            )
-        candidate_to_finding = {
-            candidate: finding["id"]
-            for finding in findings
-            for candidate in finding["candidate_ids"]
-        }
-        assessments = []
-        for evidence in evidence_map:
-            candidate_id = str(evidence["candidate_id"])
-            finding_id = candidate_to_finding.get(candidate_id)
-            dossier = dossier_by_candidate.get(candidate_id)
-            nested_findings = [
-                {
-                    key: value
-                    for key, value in finding.items()
-                    if key not in {"candidate_ids", "affected_call_ids"}
-                }
-                for finding in findings
-                if candidate_id in finding["candidate_ids"]
-            ]
-            assessments.append(
-                {
-                    "candidate_ids": [candidate_id],
-                    "disposition": (
-                        "confirmed-finding" if finding_id else "dismissed-candidate"
-                    ),
-                    "reason": "Original evidence was checked directly.",
-                    "evidence_refs": [
-                        self._first_ref(dossier)
-                        if dossier is not None
-                        else str(evidence["original_evidence_ref"])
-                    ],
-                    "confirmed_findings": nested_findings,
-                    "plausible_risks": [],
-                }
-            )
-        reviews: list[dict[str, Any]] = []
-        if surface == "rework-validation":
-            dispositions = [
-                "durable-control-missing",
-                "transient-by-design",
-                "permanently-implemented",
-                "run-only-useful",
-                "final-state-unclear",
-            ]
-            for index, disposition in enumerate(dispositions):
-                dossier = dossiers[min(index, len(dossiers) - 1)]
-                durable = disposition == "durable-control-missing"
-                reviews.append(
+        for index, candidate in enumerate(candidates, start=1):
+            candidate_id = str(candidate["id"])
+            evidence_refs = [str(candidate["evidence_refs"][0])]
+            finding_ids: list[str] = []
+            risk_ids: list[str] = []
+            if candidate["kind"] == "provisional-finding":
+                finding_id = (
+                    f"finding-volume-{index}"
+                    if candidate_id.endswith("volume-waste")
+                    else f"finding-model-{index}"
+                )
+                findings.append(
+                    self._finding(
+                        finding_id,
+                        candidate,
+                        inventory,
+                        volume_only=candidate_id.endswith("volume-waste"),
+                    )
+                )
+                finding_ids = [finding_id]
+                disposition = "confirmed-finding"
+            elif candidate["kind"] == "plausible-risk":
+                candidate_key = str(candidate["candidate_ids"][0])
+                risk_id = f"risk-{index}"
+                risks.append(
                     {
-                        "id": (
-                            "rework-validation.temporary"
-                            if index == 0
-                            else f"temporary-review.{index + 1}"
+                        "id": risk_id,
+                        "description": (
+                            "The wait may have continued after completion became visible."
                         ),
-                        "problem_solved": f"Synthetic temporary problem {index + 1}",
-                        "affected_call_ids": [
-                            str(dossier["call_identity"]["call_id"])
+                        "affected_call_ids": [inventory[candidate_key]["call_id"]],
+                        "evidence_refs": evidence_refs,
+                        "workstream": inventory[candidate_key]["workstream"],
+                        "contributing_surfaces": list(candidate["surface_ids"]),
+                        "competing_explanations": [
+                            "completion was already visible",
+                            "completion had not propagated",
                         ],
-                        "observed_temporary_control": (
-                            "shared temporary orchestration"
-                            if durable
-                            else f"temporary control {index + 1}"
-                        ),
-                        "final_canonical_evidence_refs": [
-                            str(
-                                dossier["relationships"]["final_canonical_state"][0][
-                                    "evidence_ref"
-                                ]
-                            )
+                        "missing_fact": "the exact visibility timestamp is absent",
+                        "verification_needed": [
+                            "record completion visibility before waiting"
                         ],
-                        "disposition": disposition,
-                        "owning_producer": (
-                            "workflow:shared" if durable else f"workflow:temp-{index}"
-                        ),
-                        "recurrence_inputs": {
-                            "likely": durable,
-                            "frequency_range": [0.25, 0.75] if durable else [0.0, 0.1],
-                            "basis": "synthetic recurrence evidence",
-                        },
-                        "savings_inputs": {
-                            "expected_calls_saved": 1.0 if durable else 0.0,
-                            "maintenance_model_calls": 1.0,
-                            "justifies_maintenance": durable,
-                            "basis": "synthetic ROI evidence",
-                        },
-                        "finding_id": "rework-validation.durable" if durable else None,
-                        "no_finding_reason": (
-                            None
-                            if durable
-                            else "The disposition does not justify a permanent defect."
-                        ),
                     }
                 )
-        contributions: list[dict[str, Any]] = []
-        if surface != "rework-validation" and evidence_map:
-            first_evidence = evidence_map[0]
-            contributions.append(
+                risk_ids = [risk_id]
+                disposition = "plausible-risk"
+            elif candidate_id in durable_candidates:
+                finding_ids = ["temporary-control-gap"]
+                disposition = "confirmed-finding"
+            else:
+                disposition = "dismissed-candidate"
+            decisions.append(
                 {
-                    "id": f"{surface}.temporary-contribution",
-                    "temporary_control_id": "rework-validation.temporary",
-                    "owner_key": "workflow:shared",
-                    "control_key": "shared temporary orchestration",
-                    "candidate_ids": [str(first_evidence["candidate_id"])],
-                    "evidence_refs": [
-                        str(first_evidence["original_evidence_ref"])
-                    ],
-                    "contribution": f"{surface} contributes owning evidence",
-                    "material_variant_id": f"{surface}.temporary-variant",
+                    "luna_candidate_id": candidate_id,
+                    "disposition": disposition,
+                    "reason": "Original evidence was checked in the final pass.",
+                    "evidence_refs": evidence_refs,
+                    "finding_ids": finding_ids,
+                    "risk_ids": risk_ids,
                 }
             )
-        helper_reviews = []
-        if surface == "helper-contracts":
-            helper_reviews = [
+            if candidate["kind"] != "temporary-control":
+                continue
+            suffix = candidate_id.rsplit(".", 1)[-1]
+            disposition_by_suffix = {
+                "transient": "transient-by-design",
+                "implemented": "permanently-implemented",
+                "run-only": "run-only-useful",
+                "durable-a": "durable-control-missing",
+                "durable-b": "durable-control-missing",
+                "unclear": "final-state-unclear",
+            }
+            temporary_disposition = disposition_by_suffix[suffix]
+            durable = temporary_disposition == "durable-control-missing"
+            candidate_key = str(candidate["candidate_ids"][0])
+            reviews.append(
+                {
+                    "id": f"review.{candidate_id}",
+                    "source_luna_candidate_ids": [candidate_id],
+                    "problem_solved": "Synthetic temporary orchestration",
+                    "affected_call_ids": [inventory[candidate_key]["call_id"]],
+                    "observed_temporary_control": (
+                        "A run-only deterministic orchestration step"
+                    ),
+                    "final_canonical_evidence_refs": [
+                        "evidence://canonical-state/synthetic"
+                    ],
+                    "disposition": temporary_disposition,
+                    "owning_producer": (
+                        "workflow:shared"
+                        if durable
+                        else f"workflow:{temporary_disposition}"
+                    ),
+                    "recurrence_inputs": {
+                        "likely": durable,
+                        "frequency_range": [0.5, 1.0] if durable else [0.0, 0.1],
+                        "basis": "synthetic recurrence evidence",
+                    },
+                    "savings_inputs": {
+                        "expected_calls_saved": 2.0 if durable else 0.0,
+                        "maintenance_model_calls": 0.25 if durable else 0.0,
+                        "justifies_maintenance": durable,
+                        "basis": "synthetic maintenance-adjusted savings",
+                    },
+                    "finding_id": "temporary-control-gap" if durable else None,
+                    "no_finding_reason": (
+                        None
+                        if durable
+                        else "The selected disposition does not justify a defect."
+                    ),
+                    "contributing_surfaces": list(candidate["surface_ids"]),
+                }
+            )
+        durable_reviews = [
+            review["id"]
+            for review in reviews
+            if review["disposition"] == "durable-control-missing"
+        ]
+        merges = (
+            [
+                {
+                    "control_key": "shared-temporary-orchestration",
+                    "owning_producer": "workflow:shared",
+                    "review_ids": durable_reviews,
+                    "contributing_surfaces": [
+                        surface
+                        for surface in packet["surface_order"]
+                        if any(
+                            surface in review["contributing_surfaces"]
+                            for review in reviews
+                            if review["id"] in durable_reviews
+                        )
+                    ],
+                    "finding_id": "temporary-control-gap",
+                }
+            ]
+            if durable_reviews
+            else []
+        )
+        avoidable_calls = {
+            call_id
+            for finding in findings
+            if finding["waste_kind"] == "model-calls"
+            for call_id in finding["affected_call_ids"]
+        }
+        groups: list[dict[str, Any]] = []
+        for row in packet["call_inventory"]["rows"]:
+            item = dict(zip(fields, row, strict=True))
+            classification = (
+                "avoidable_unimplemented"
+                if item["call_id"] in avoidable_calls
+                else "reviewed_no_confirmed_waste"
+            )
+            signature = (classification, item["workstream"])
+            if groups and (
+                groups[-1]["classification"],
+                groups[-1]["workstream"],
+            ) == signature:
+                groups[-1]["call_ids"].append(item["call_id"])
+            else:
+                groups.append(
+                    {
+                        "call_ids": [item["call_id"]],
+                        "classification": classification,
+                        "reason_code": None,
+                        "rationale": (
+                            "The final pass checked this source-order call group."
+                        ),
+                        "evidence_refs": [item["primary_evidence_ref"]],
+                        "workstream": item["workstream"],
+                    }
+                )
+        surface_summaries = []
+        for surface in packet["surface_order"]:
+            surface_summaries.append(
+                {
+                    "surface_id": surface,
+                    "finding_ids": [
+                        finding["id"]
+                        for finding in findings
+                        if surface in finding["contributing_surfaces"]
+                    ],
+                    "risk_ids": [
+                        risk["id"]
+                        for risk in risks
+                        if surface in risk["contributing_surfaces"]
+                    ],
+                    "temporary_control_review_ids": [
+                        review["id"]
+                        for review in reviews
+                        if surface in review["contributing_surfaces"]
+                    ],
+                    "summary": f"The {surface} lens was checked in this Sol pass.",
+                }
+            )
+        return {
+            "schema": "ceratops-credit-analysis-adjudication-result.v1",
+            "analysis_id": packet["analysis_id"],
+            "task_id": task["task_id"],
+            "input_sha256": digest,
+            "surface_summaries": surface_summaries,
+            "candidate_decisions": decisions,
+            "confirmed_findings": findings,
+            "plausible_risks": risks,
+            "temporary_control_reviews": reviews,
+            "temporary_control_merges": merges,
+            "helper_category_reviews": [
                 {
                     "category": category,
-                    "status": "not-applicable",
-                    "finding_ids": [],
-                    "reason": "Synthetic evidence found no helper-category defect.",
+                    "applies": False,
+                    "evidence_refs": [],
+                    "reason": "Synthetic evidence found no category-specific gap.",
                 }
                 for category in packet["helper_categories"]
-            ]
-        return {
-            "schema": "ceratops-credit-analysis-confirmation-child-result.v4",
-            "analysis_id": str(packet["analysis_id"]),
-            "task_id": task["task_id"],
-            "surface_id": surface,
-            "input_sha256": digest,
-            "candidate_assessments": assessments,
-            "temporary_control_reviews": reviews,
-            "temporary_control_contributions": contributions,
-            "helper_category_reviews": helper_reviews,
-        }
-
-    def _synthesis(
-        self, task: Mapping[str, Any], packet: Mapping[str, Any], digest: str
-    ) -> dict[str, Any]:
-        confirmation_results = list(packet["confirmation_results"])
-        source_findings = [
-            finding
-            for result in confirmation_results
-            for finding in result["confirmed_findings"]
-        ]
-        groups = [
-            {
-                "canonical_finding_id": f"{finding['id']}.canonical",
-                "source_finding_ids": [finding["id"]],
-                "primary_source_finding_id": finding["id"],
-                "title": finding["title"],
-                "problem_summary": finding["problem_summary"],
-                "owner_key": finding["producer_owner"],
-                "control_key": finding["proposed_durable_control"],
-                "contributing_surfaces": finding["contributing_surfaces"],
-                "savings_source_finding_id": finding["id"],
-            }
-            for finding in source_findings
-        ]
-        canonical_by_source = {
-            group["source_finding_ids"][0]: group["canonical_finding_id"]
-            for group in groups
-        }
-        reviews = [
-            review
-            for result in confirmation_results
-            for review in result["temporary_control_reviews"]
-        ]
-        contributions = [
-            contribution
-            for result in confirmation_results
-            for contribution in result["temporary_control_contributions"]
-        ]
-        durable = next(
-            review for review in reviews if review["disposition"] == "durable-control-missing"
-        )
-        merges = [
-            {
-                "merge_id": "temporary-merge.shared",
-                "owner_key": "workflow:shared",
-                "control_key": "shared temporary orchestration",
-                "review_ids": [durable["id"]],
-                "contribution_ids": [item["id"] for item in contributions],
-                "disposition": durable["disposition"],
-                "finding_id": canonical_by_source[str(durable["finding_id"])],
-                "no_finding_reason": None,
-                "contributing_surfaces": [
-                    "rework-validation",
-                    *[
-                        result["surface_id"]
-                        for result in confirmation_results
-                        if result["temporary_control_contributions"]
-                    ],
-                ],
-            }
-        ]
-        for review in reviews:
-            if review is durable:
-                continue
-            merges.append(
-                {
-                    "merge_id": f"temporary-merge.{review['id']}",
-                    "owner_key": review["owning_producer"],
-                    "control_key": review["observed_temporary_control"],
-                    "review_ids": [review["id"]],
-                    "contribution_ids": [],
-                    "disposition": review["disposition"],
-                    "finding_id": None,
-                    "no_finding_reason": review["no_finding_reason"],
-                    "contributing_surfaces": ["rework-validation"],
-                }
-            )
-        source_by_call: dict[str, str] = {}
-        for finding in source_findings:
-            for call_id in finding["affected_call_ids"]:
-                source_by_call.setdefault(
-                    call_id, canonical_by_source[finding["id"]]
-                )
-        classifications: list[dict[str, Any]] = []
-        for call_id in packet["call_inventory"]:
-            finding_id = source_by_call.get(call_id)
-            classifications.append(
-                {
-                    "classification": (
-                        "avoidable_unimplemented"
-                        if finding_id
-                        else "reviewed_no_confirmed_waste"
-                    ),
-                    "call_ids": [call_id],
-                    "primary_finding_id": finding_id,
-                    "reason_code": None,
-                    "reason": (
-                        "A confirmed finding owns this call."
-                        if finding_id
-                        else "Every relevant surface reviewed the call without confirmed waste."
-                    ),
-                }
-            )
-        producer_groups = [
-            {
-                "id": f"producer.{index + 1}",
-                "producer_type": source_findings[index]["producer_type"],
-                "owner": group["owner_key"],
-                "finding_ids": [group["canonical_finding_id"]],
-                "recommended_control": group["control_key"],
-                "targeted_verification": source_findings[index][
-                    "targeted_verification"
-                ],
-            }
-            for index, group in enumerate(groups)
-        ]
-        avoidable = sum(
-            len(item["call_ids"])
-            for item in classifications
-            if item["classification"].startswith("avoidable_")
-        )
-        return {
-            "schema": "ceratops-credit-analysis-orchestration-synthesis.v3",
-            "analysis_id": str(packet["analysis_id"]),
-            "task_id": task["task_id"],
-            "input_sha256": digest,
-            "finding_groups": groups,
-            "risk_order": [],
-            "temporary_control_merges": merges,
-            "call_classifications": classifications,
-            "producer_groups": producer_groups,
-            "analysis_summary": {
-                "confirmed_count": len(groups),
-                "risk_count": 0,
-                "necessary_calls": 0,
-                "protocol_overhead_calls": 0,
-                "reviewed_no_confirmed_waste_calls": len(classifications)
-                - avoidable,
-                "unassessed_calls": 0,
-                "avoidable_calls": avoidable,
-                "meaningful_input_output_findings": [
-                    canonical_by_source["context-evidence.volume"]
-                ],
-            },
+            ],
+            "call_classifications": groups,
+            "analysis_summary": (
+                "Sparse Luna candidates were adjudicated once against original "
+                "evidence with complete grouped call accounting."
+            ),
         }
 
     def run(
@@ -2209,1550 +2036,579 @@ class FakeCreditModelRunner:
         input_payload: Mapping[str, Any],
         input_sha256: str,
     ) -> dict[str, Any]:
-        assert "Do not call tools" in prompt
         self.calls.append(
             {
                 "model": model,
-                "task_id": task["task_id"],
                 "phase": task["phase"],
+                "reasoning_effort": task["reasoning_effort"],
                 "input_sha256": input_sha256,
-                "schema": schema["properties"]["schema"]["const"],
+                "input_payload": input_payload,
+                "prompt": prompt,
+                "schema": schema,
             }
         )
-        if task["phase"].startswith("luna-"):
+        if task["phase"] == "luna-discovery":
             return self._luna(task, input_payload, input_sha256)
-        if task["phase"] == "surface-confirmation":
-            return self._confirmation(task, input_payload, input_sha256)
-        return self._synthesis(task, input_payload, input_sha256)
+        return self._sol(task, input_payload, input_sha256)
 
 
-def test_credit_analysis_workflow_end_to_end_uses_six_semantic_packets(
+def test_credit_analysis_workflow_end_to_end_uses_two_semantic_calls(
     tmp_path: pathlib.Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     workflow = load_credit_analysis_workflow_module()
-    constrained_contract = workflow._load_contract()
-    constrained_contract["chunking"]["maximum_candidates"] = 4
-    constrained_contract["chunking"]["consolidation_fan_in"] = 2
-    monkeypatch.setattr(
-        workflow,
-        "_load_contract",
-        lambda: json.loads(json.dumps(constrained_contract)),
-    )
     request, _, task_root = credit_analysis_request(
         tmp_path,
         extra_completed_turns=3,
         extra_calls_per_turn=4,
         oversized_user_message_chars=5_000,
     )
-    available = {"gpt-5.6-luna", "gpt-5.6-sol"}
     plan = workflow.command_plan_orchestration(
         request,
-        available_models=available,
+        available_models=holistic_model_catalog(),
     )
     assert plan["phase"] == "planned"
-    assert plan["projected_luna_calls"] > 0
-    assert plan["projected_sol_calls"] == 6
-    assert plan["projected_semantic_calls"] <= 96
-    assert plan["shared_luna_consolidations"] > 0
-    assert all("luna_consolidations" not in surface for surface in plan["surfaces"])
-    assert plan["canonical_state_records"] > 0
-    assert len(json.dumps(plan)) < 30_000
+    assert plan["projected_luna_calls"] == 1
+    assert plan["projected_sol_calls"] == 1
+    assert plan["projected_semantic_calls"] == 2
+    assert plan["shared_candidate_count"] > 8
+    assert len(json.dumps(plan)) < 20_000
 
     state_path = pathlib.Path(plan["state_path"])
     manifest = json.loads(
         pathlib.Path(plan["manifest_path"]).read_text(encoding="utf-8")
     )
-    assert manifest["chunking"]["target_chars"] == 480_000
-    assert manifest["chunking"]["confirmation_audit_fraction"] == 0.05
-    assert manifest["surface_order"] == [
-        "helper-contracts",
-        "context-evidence",
-        "rework-validation",
-        "tool-flow",
-        "instruction-reasoning",
-    ]
     evidence = json.loads(
         pathlib.Path(plan["evidence_path"]).read_text(encoding="utf-8")
     )
+    compact = json.loads(
+        pathlib.Path(manifest["compact_evidence"]["path"]).read_text(
+            encoding="utf-8"
+        )
+    )
     assert evidence["collection"]["session_reads"] == 1
-    assert evidence["analysis_lineage"] == manifest["source_freeze"]
-    assert manifest["source_freeze"]["controller_analysis_id"] == manifest[
-        "analysis_id"
-    ]
-    assert manifest["source_freeze"]["source_is_analysis_child"] is False
-    assert manifest["source_freeze"]["execution_recollects_session"] is False
-    assert evidence["semantic_coverage"]["covered_percent"] == 100.0
+    assert evidence["analysis_lineage"]["source_selection_uses_prompt_markers"] is False
     assert "TOOL_RESULT_TAIL_SENTINEL" in json.dumps(evidence)
     assert "OVERSIZED_USER_EVIDENCE_SENTINEL" in json.dumps(evidence)
     assert any(
-        message.get("text_mode") == "retained-projection"
-        and message.get("text_chars", 0) > 12_000
-        and isinstance(message.get("text_sha256"), str)
-        and len(message["relevant_segments"]) <= 2
-        for surface in manifest["surfaces"]
-        for dossier in json.loads(
-            pathlib.Path(surface["index_path"]).read_text(encoding="utf-8")
-        )["verification_dossiers"]
-        for message in dossier["user_messages"]
+        message["text"]["mode"] == "retained-projection"
+        and message["text"]["chars"] > 12_000
+        and message["text"]["sha256"]
+        for record in compact["records"]
+        for message in record["user_messages"]
     )
-    assert any(
-        record.get("content_mode") == "retained-projection"
-        for surface in manifest["surfaces"]
-        for record in json.loads(
-            pathlib.Path(surface["index_path"]).read_text(encoding="utf-8")
-        )["verification_dossiers"]
-        for record in record["evidence_excerpts"]
-    )
-
-    all_candidates = list(manifest["shared_candidate_ids"])
-    primary_tasks = [
-        task
+    assert all("candidate_pairs" not in task for task in manifest["luna_tasks"])
+    assert "shared_consolidation_task_ids" not in manifest
+    flattened = [
+        candidate_id
         for task in manifest["luna_tasks"]
-        if task["phase"] == "luna-primary"
+        for candidate_id in task["candidate_ids"]
     ]
-    consolidation_tasks = [
-        task
-        for task in manifest["luna_tasks"]
-        if task["phase"] == "luna-consolidation"
-    ]
-    assert len(primary_tasks) > 1
-    assert consolidation_tasks
-    assert all(task["surface_id"] is None for task in consolidation_tasks)
-    assert manifest["shared_consolidation_task_ids"] == [
-        task["task_id"] for task in consolidation_tasks
-    ]
-    assert manifest["final_shared_luna_task_ids"]
-    assert all(
-        task["dependencies"] == manifest["final_shared_luna_task_ids"]
-        for task in manifest["confirmation_tasks"]
-    )
-    assert plan["projected_luna_calls"] == len(primary_tasks) + len(
-        consolidation_tasks
-    )
-    assert [candidate for task in primary_tasks for candidate in task["candidate_ids"]] == all_candidates
-    assert len(all_candidates) == len(set(all_candidates))
-    assert set(manifest["shared_primary_membership"]) == set(all_candidates)
-    assert set(manifest["shared_primary_membership"].values()) == {
-        task["task_id"] for task in primary_tasks
-    }
-    for surface in manifest["surfaces"]:
-        primary_candidates = [
-            candidate
-            for task in primary_tasks
-            for candidate, surface_id in task["candidate_pairs"]
-            if surface_id == surface["surface_id"]
-        ]
-        assert primary_candidates == surface["candidate_ids"]
-        assert len(primary_candidates) == len(set(primary_candidates))
-    assert len(primary_tasks) < sum(
-        len(surface["primary_task_ids"]) for surface in manifest["surfaces"]
-    )
-    formatted_records: list[dict[str, Any]] = []
-    for task in primary_tasks:
-        payload = json.loads(
-            pathlib.Path(task["artifacts"]["input"]).read_text(encoding="utf-8")
-        )
-        assert workflow._json_chars(payload) < manifest["chunking"]["maximum_chars"]
-        for episode in payload["episodes"]:
-            formatted_records.extend(episode["calls"])
-            expected_refs = list(
-                dict.fromkeys(
-                    reference
-                    for call in episode["calls"]
-                    for reference in call["relationships"][
-                        "final_canonical_state_refs"
-                    ]
-                )
-            )
-            assert [
-                record["evidence_ref"]
-                for record in episode["final_canonical_state"]
-            ] == expected_refs
-    for surface in manifest["surfaces"]:
-        surface_records = [
-            record
-            for record in formatted_records
-            if surface["surface_id"] in record["applicable_surfaces"]
-        ]
-        assert surface["high_signal_candidate_ids"] == (
-            workflow._confirmation_high_signal_candidate_ids(surface_records)
-        )
-        assert surface["observed_high_signal_candidate_count"] == sum(
-            1
-            for record in surface_records
-            if record["observable_high_signal"]["selected"]
-        )
-        assert surface["baseline_confirmation_candidate_count"] >= len(
-            surface["high_signal_candidate_ids"]
-        )
-        assert (
-            surface["baseline_confirmation_chars"]
-            < manifest["chunking"]["confirmation_packet_chars"]
-        )
+    assert flattened == manifest["candidate_ids"]
+    assert len(flattened) == len(set(flattened))
 
-    fragment_probe = json.loads(
-        json.dumps(
-            next(
-                episode
-                for task in primary_tasks
-                for episode in json.loads(
-                    pathlib.Path(task["artifacts"]["input"]).read_text(
-                        encoding="utf-8"
-                    )
-                )["episodes"]
-                if len(episode["calls"]) >= 2
-            )
-        )
-    )
-    fragment_probe["calls"] = fragment_probe["calls"][:2]
-    fragment_probe["final_canonical_state"] = []
-    for ordinal, call in enumerate(fragment_probe["calls"], start=1):
-        evidence_ref = f"evidence://canonical-state/fragment-{ordinal}"
-        call["relationships"]["final_canonical_state_refs"] = [evidence_ref]
-        fragment_probe["final_canonical_state"].append(
-            {
-                "evidence_ref": evidence_ref,
-                "retained_payload": str(ordinal) * 100_000,
-            }
-        )
-    fragments = workflow._episode_fragments(
-        fragment_probe,
-        workflow._json_chars(fragment_probe) * 3 // 4,
-    )
-    assert len(fragments) == 2
-    assert [
-        [record["evidence_ref"] for record in fragment["final_canonical_state"]]
-        for fragment in fragments
-    ] == [
-        ["evidence://canonical-state/fragment-1"],
-        ["evidence://canonical-state/fragment-2"],
-    ]
-
-    def reject_recollection(*args: Any, **kwargs: Any) -> None:
-        raise AssertionError("execute attempted to recollect the source session")
-
-    original_collector = workflow._collect_orchestration_evidence
-    monkeypatch.setattr(
-        workflow,
-        "_collect_orchestration_evidence",
-        reject_recollection,
-    )
-
-    retained = task_root / "user-retained.txt"
-    retained.write_text("caller-owned", encoding="utf-8", newline="\n")
     runner = FakeCreditModelRunner()
-    observed_next: list[str] = []
-    while True:
-        status = workflow.command_execute_orchestration(
-            state_path,
-            runner=runner,
-            available_models=available,
-            task_limit=1,
-        )
-        observed_next.append(str(status["next_task"]))
-        if status["complete"]:
-            break
-    assert retained.read_text(encoding="utf-8") == "caller-owned"
-    assert not (task_root / "orchestration" / "transient").exists()
-    assert len(runner.calls) == plan["projected_luna_calls"] + 6
-    assert [call["model"] for call in runner.calls].count(
-        "gpt-5.6-luna"
-    ) == plan["projected_luna_calls"]
-    sol_calls = [
-        call for call in runner.calls if call["model"] == "gpt-5.6-sol"
+    untouched = task_root / "caller-owned-retained.txt"
+    untouched.write_text("retain\n", encoding="utf-8", newline="\n")
+    paused = workflow.command_execute_orchestration(
+        state_path,
+        runner=runner,
+        available_models=runner.available_models,
+        task_limit=0,
+    )
+    assert paused["completed_tasks"] == 0
+    assert runner.calls == []
+    after_luna = workflow.command_execute_orchestration(
+        state_path,
+        runner=runner,
+        available_models=runner.available_models,
+        task_limit=1,
+    )
+    assert after_luna["completed_tasks"] == 1
+    assert after_luna["next_task"] == "sol.adjudication"
+    assert [(call["model"], call["reasoning_effort"]) for call in runner.calls] == [
+        ("gpt-5.6-luna", "medium")
     ]
-    assert [call["phase"] for call in sol_calls] == [
-        "surface-confirmation",
-        "surface-confirmation",
-        "surface-confirmation",
-        "surface-confirmation",
-        "surface-confirmation",
-        "synthesis",
+    completed = workflow.command_execute_orchestration(
+        state_path,
+        runner=runner,
+        available_models=runner.available_models,
+    )
+    assert completed["complete"] is True
+    assert [(call["model"], call["reasoning_effort"]) for call in runner.calls] == [
+        ("gpt-5.6-luna", "medium"),
+        ("gpt-5.6-sol", "max"),
     ]
-    assert [call["task_id"] for call in sol_calls[:-1]] == [
-        f"confirm.{surface}" for surface in manifest["surface_order"]
+    assert [call["phase"] for call in runner.calls] == [
+        "luna-discovery",
+        "sol-adjudication",
     ]
     assert all(
-        call["phase"]
-        in {
-            "luna-primary",
-            "luna-consolidation",
-            "surface-confirmation",
-            "synthesis",
-        }
+        "Do not use tools" in call["prompt"]
+        and "CERATOPS_CREDIT_ANALYSIS_CHILD" not in call["prompt"]
         for call in runner.calls
     )
-    assert "None" in observed_next
-
-    completed_state = json.loads(state_path.read_text(encoding="utf-8"))
-    assert completed_state["model_calls"] == {
-        "luna": plan["projected_luna_calls"],
-        "sol": 6,
+    final_path = pathlib.Path(completed["final_result_path"])
+    final_before = final_path.read_bytes()
+    final = json.loads(final_before)
+    assert final["model_calls"] == {
+        "actual_luna": 1,
+        "actual_sol": 1,
+        "accepted_luna": 1,
+        "accepted_sol": 1,
+        "bookkeeping": 0,
     }
-    assert completed_state["model_attempts"] == completed_state["model_calls"]
-    for task_id in completed_state["task_order"]:
-        result = completed_state["execution"][task_id]["result"]
-        result_path = pathlib.Path(result["path"])
-        assert hashlib.sha256(result_path.read_bytes()).hexdigest() == result[
-            "sha256"
-        ]
-        assert result["analysis_id"] == completed_state["analysis_id"]
-        assert result["task_id"] == task_id
-
-    synthesis_input = json.loads(
-        pathlib.Path(
-            completed_state["manifest"]["synthesis_task"]["artifacts"]["input"]
-        ).read_text(encoding="utf-8")
-    )
-    coverage = synthesis_input["luna_coverage_inventory"]
-    expected_pairs = [
-        pair for task in primary_tasks for pair in task["candidate_pairs"]
-    ]
-    assert [[row[0], row[1]] for row in coverage["rows"]] == expected_pairs
-    assert coverage["candidate_surface_pair_count"] == len(expected_pairs)
-    for confirmation_task in manifest["confirmation_tasks"]:
-        packet = json.loads(
-            pathlib.Path(confirmation_task["artifacts"]["input"]).read_text(
-                encoding="utf-8"
-            )
-        )
-        selection = packet["confirmation_selection"]
-        assert packet["candidate_ids"] == selection["selected_candidate_ids"]
-        assert set(selection["material_candidate_ids"]) <= set(
-            packet["candidate_ids"]
-        )
-        assert set(selection["high_signal_candidate_ids"]) <= set(
-            packet["candidate_ids"]
-        )
-        assert [
-            candidate_id
-            for episode in packet["original_evidence_episodes"]
-            for candidate_id in episode["candidate_ids"]
-        ] == packet["candidate_ids"]
-        assert all(
-            episode["user_messages"]
-            and episode["assistant_and_tool_evidence"]
-            and isinstance(episode["final_canonical_state"], list)
-            for episode in packet["original_evidence_episodes"]
-        )
-
-    final = json.loads(
-        pathlib.Path(status["final_result_path"]).read_text(encoding="utf-8")
-    )
-    assert final["manifest"]["shared_luna_consolidations"] == len(
-        consolidation_tasks
-    )
-    assert all(
-        "consolidations" not in surface
-        for surface in final["manifest"]["candidate_coverage"]
-    )
-    assert len(final["confirmed_findings"]) == 3
-    assert final["analysis_summary"]["meaningful_input_output_findings"] == [
-        "context-evidence.volume.canonical"
-    ]
+    assert final["manifest"]["unclassified_calls"] == 0
     assert final["classification_totals"]["unassessed"] == 0
-    assert final["classification_totals"]["necessary"] == 0
-    dispositions = {
+    assert sum(
+        final["classification_totals"][key]
+        for key in (
+            "necessary",
+            "avoidable_implemented",
+            "avoidable_unimplemented",
+            "reviewed_no_confirmed_waste",
+            "unassessed",
+        )
+    ) == final["manifest"]["shared_candidate_count"]
+    assert {
         review["disposition"] for review in final["temporary_control_reviews"]
-    }
-    assert dispositions == {
+    } == {
         "transient-by-design",
         "permanently-implemented",
         "run-only-useful",
         "durable-control-missing",
         "final-state-unclear",
     }
-    durable = next(
-        review
-        for review in final["temporary_control_reviews"]
-        if review["disposition"] == "durable-control-missing"
-    )
-    assert durable["recurrence_inputs"]["likely"] is True
-    assert durable["savings_inputs"]["justifies_maintenance"] is True
-    assert durable["finding_id"] == "rework-validation.durable"
+    assert len(final["temporary_control_merges"]) == 1
+    assert len(final["temporary_control_merges"][0]["review_ids"]) == 2
     assert all(
-        reference.startswith("evidence://canonical-state/")
+        review["finding_id"] is None
         for review in final["temporary_control_reviews"]
-        for reference in review["final_canonical_evidence_refs"]
+        if review["disposition"]
+        in {"transient-by-design", "permanently-implemented", "run-only-useful"}
     )
     assert all(
-        review["finding_id"] is None and review["no_finding_reason"]
+        review["recurrence_inputs"]["likely"]
+        and review["savings_inputs"]["justifies_maintenance"]
         for review in final["temporary_control_reviews"]
-        if review is not durable
+        if review["finding_id"] is not None
     )
-    shared_merge = next(
-        merge
-        for merge in final["temporary_control_merges"]
-        if merge["merge_id"] == "temporary-merge.shared"
-    )
-    assert len(shared_merge["contribution_ids"]) == 4
-    assert shared_merge["finding_id"] == "rework-validation.durable.canonical"
-    calls_before_repeat = len(runner.calls)
-    repeated_complete = workflow.command_execute_orchestration(
+    volume_findings = [
+        finding
+        for finding in final["confirmed_findings"]
+        if finding["waste_kind"] == "context-volume"
+    ]
+    assert volume_findings
+    assert volume_findings[0]["volume"]["input_tokens"] > 0
+    assert volume_findings[0]["volume"]["output_tokens"] > 0
+    assert len(final["candidate_decisions"]) == final["luna_discovery"][
+        "candidate_count"
+    ]
+    assert untouched.is_file()
+    assert not pathlib.Path(
+        json.loads(state_path.read_text(encoding="utf-8"))["paths"]["transient"]
+    ).exists()
+
+    call_count = len(runner.calls)
+    repeated = workflow.command_execute_orchestration(
         state_path,
         runner=runner,
-        available_models=available,
+        available_models=runner.available_models,
     )
-    assert repeated_complete["complete"] is True
-    assert len(runner.calls) == calls_before_repeat
-    loaded_state, loaded_evidence, _ = workflow._load_orchestration_state(state_path)
-    workflow._finalize_orchestration(loaded_state, loaded_evidence)
-    monkeypatch.setattr(
-        workflow,
-        "_collect_orchestration_evidence",
-        original_collector,
-    )
-
-    second_root = tmp_path / "second-analysis"
-    second_root.mkdir()
-    second_request, _, _ = credit_analysis_request(second_root)
-    second_plan = workflow.command_plan_orchestration(
-        second_request,
-        available_models=available,
-    )
-    second_manifest = json.loads(
-        pathlib.Path(second_plan["manifest_path"]).read_text(encoding="utf-8")
-    )
-    second_candidates = {
-        candidate
-        for surface in second_manifest["surfaces"]
-        for candidate in surface["candidate_ids"]
-    }
-    assert set(all_candidates).isdisjoint(second_candidates)
+    assert repeated["complete"] is True
+    assert len(runner.calls) == call_count
+    assert final_path.read_bytes() == final_before
 
 
 def test_credit_analysis_model_catalog_decodes_cli_as_utf8(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     workflow = load_credit_analysis_workflow_module()
-    observed: dict[str, Any] = {}
+    monkeypatch.setattr(workflow.shutil, "which", lambda _: "codex")
 
-    def fake_run(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
-        observed.update(kwargs)
-        return subprocess.CompletedProcess(
-            command,
-            0,
-            json.dumps(
+    def fake_run(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        assert kwargs["encoding"] == "utf-8"
+        payload = {
+            "models": [
                 {
-                    "models": [
-                        {
-                            "slug": "gpt-5.6-luna",
-                            "display_name": "Luna",
-                            "supported_reasoning_levels": [{"effort": "max"}],
-                            "context_window": 272_000,
-                            "effective_context_window_percent": 95,
-                        },
-                        {
-                            "slug": "gpt-5.6-sol",
-                            "display_name": "Sol",
-                            "supported_reasoning_levels": [{"effort": "max"}],
-                            "context_window": 272_000,
-                            "effective_context_window_percent": 95,
-                        },
-                    ]
+                    "slug": "gpt-5.6-luna",
+                    "supported_reasoning_levels": [
+                        {"effort": "low"},
+                        {"effort": "medium"},
+                        {"effort": "max"},
+                    ],
+                    "context_window": 272000,
+                    "effective_context_window_percent": 95,
                 },
-                ensure_ascii=False,
-            ),
-            "",
-        )
+                {
+                    "slug": "gpt-5.6-sol",
+                    "supported_reasoning_levels": [{"effort": "max"}],
+                    "context_window": 272000,
+                    "effective_context_window_percent": 95,
+                },
+            ]
+        }
+        return subprocess.CompletedProcess(args[0], 0, json.dumps(payload), "")
 
-    monkeypatch.setattr(workflow.shutil, "which", lambda _name: "codex")
     monkeypatch.setattr(workflow.subprocess, "run", fake_run)
-
-    assert workflow._codex_model_catalog() == {
-        "gpt-5.6-luna": {
-            "reasoning_efforts": {"max"},
-            "effective_context_tokens": 258_400,
-        },
-        "gpt-5.6-sol": {
-            "reasoning_efforts": {"max"},
-            "effective_context_tokens": 258_400,
-        },
-    }
-    assert observed["encoding"] == "utf-8"
-    assert observed["text"] is True
+    catalog = workflow._codex_model_catalog()
+    assert catalog["gpt-5.6-luna"]["effective_context_tokens"] == 258400
+    specs = workflow._holistic_model_specs(workflow._load_contract(), catalog)
+    assert specs["luna"]["reasoning_effort"] == "medium"
+    assert specs["sol"]["reasoning_effort"] == "max"
+    assert specs["luna"]["evidence_token_budget"] > 200_000
 
 
 def test_credit_analysis_child_command_places_global_approval_before_exec(
-    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     workflow = load_credit_analysis_workflow_module()
     command = workflow._codex_child_command(
         executable="codex",
         model="gpt-5.6-luna",
-        schema_path=tmp_path / "schema.json",
-        raw_output=tmp_path / "result.json",
-        orchestration_root=tmp_path,
+        reasoning_effort="medium",
+        schema_path=pathlib.Path("schema.json"),
+        raw_output=pathlib.Path("result.json"),
+        orchestration_root=pathlib.Path("."),
     )
-
-    assert command[:6] == [
-        "codex",
-        "--ask-for-approval",
-        "never",
-        "--config",
-        'model_reasoning_effort="max"',
-        "exec",
-    ]
-    assert command[command.index("--sandbox") + 1] == "read-only"
+    assert command.index("--ask-for-approval") < command.index("exec")
+    assert 'model_reasoning_effort="medium"' in command
     assert "--ephemeral" in command
+    assert "--sandbox" in command
+    assert command[command.index("--sandbox") + 1] == "read-only"
 
-    state = {
-        "analysis_id": "analysis-1",
-        "manifest": {
-            "surface_order": [
-                "helper-contracts",
-                "context-evidence",
-                "rework-validation",
-                "tool-flow",
-                "instruction-reasoning",
-            ]
-        },
-    }
-    contract = json.loads(CREDIT_ANALYSIS_CONTRACT.read_text(encoding="utf-8"))
-    tasks: list[dict[str, Any]] = [
-        {
-            "phase": "luna-primary",
-            "task_id": "luna.shared.primary.0001",
-            "surface_id": None,
-            "stage": "primary",
-            "candidate_ids": [
-                "analysis-1.c.000001",
-                "analysis-1.c.000002",
-            ],
-            "candidate_pairs": [
-                ["analysis-1.c.000001", "helper-contracts"],
-                ["analysis-1.c.000002", "context-evidence"],
-            ],
-        },
-        {
-            "phase": "surface-confirmation",
-            "task_id": "confirm.helper-contracts",
-            "surface_id": "helper-contracts",
-            "candidate_ids": [
-                "analysis-1.c.000001",
-                "analysis-1.c.000002",
-            ],
-        },
-        {
-            "phase": "luna-consolidation",
-            "task_id": "luna.shared.consolidate.01.0001",
-            "surface_id": None,
-            "stage": "consolidation",
-            "candidate_ids": [
-                "analysis-1.c.000001",
-                "analysis-1.c.000002",
-            ],
-            "candidate_pairs": [
-                ["analysis-1.c.000001", "helper-contracts"],
-                ["analysis-1.c.000002", "context-evidence"],
-            ],
-        },
-        {"phase": "synthesis", "task_id": "synthesis", "surface_id": None},
-    ]
-    for task in tasks:
-        schema = workflow._output_schema_for_task(
-            state=state,
-            task=task,
-            input_sha256="0" * 64,
-            contract=contract,
+    calls: list[list[str]] = []
+
+    class FakeProcess:
+        pid = 424242
+        returncode = None
+
+        def poll(self) -> None:
+            return None
+
+        def wait(self, timeout: int) -> int:
+            self.returncode = 1
+            return 1
+
+        def kill(self) -> None:
+            self.returncode = 1
+
+        def terminate(self) -> None:
+            self.returncode = 1
+
+    process = FakeProcess()
+    if os.name == "nt":
+        def fake_taskkill(
+            argv: list[str], **kwargs: Any
+        ) -> subprocess.CompletedProcess[str]:
+            calls.append(list(argv))
+            return subprocess.CompletedProcess(argv, 0, "", "")
+
+        monkeypatch.setattr(
+            workflow.subprocess,
+            "run",
+            fake_taskkill,
         )
-        for property_schema in schema["properties"].values():
-            if "const" not in property_schema:
-                continue
-            assert property_schema.get("type") == (
-                "null" if property_schema["const"] is None else "string"
-            )
-
-        def assert_strict_objects(node: Any) -> None:
-            if not isinstance(node, dict):
-                return
-            if node.get("type") == "object":
-                assert node.get("additionalProperties") is False
-                assert set(node.get("required", [])) == set(
-                    node.get("properties", {})
-                )
-            for child in node.get("properties", {}).values():
-                assert_strict_objects(child)
-            if isinstance(node.get("items"), dict):
-                assert_strict_objects(node["items"])
-
-        assert_strict_objects(schema)
-        if task["phase"] != "synthesis":
-            expected_items = 2 if task["phase"] == "luna-primary" else 1
-            assert (
-                schema["properties"]["candidate_assessments"]["minItems"]
-                == expected_items
-            )
-            prose_schema = schema["properties"]["candidate_assessments"]["items"][
-                "properties"
-            ]
-            assert prose_schema["reason"]["minLength"] == 1
-            assert prose_schema["evidence_refs"]["items"]["minLength"] == 1
-
-        def assert_identifier_schema(identifier_schema: dict[str, Any]) -> None:
-            pattern = identifier_schema["pattern"]
-            assert workflow.re.fullmatch(pattern, "finding-1") is not None
-            assert workflow.re.fullmatch(pattern, "risk://none") is None
-
-        if task["phase"] == "luna-primary":
-            assessment_schema = schema["properties"]["candidate_assessments"][
-                "items"
-            ]["properties"]
-            assert set(assessment_schema) == {
-                "candidate_id",
-                "surface_id",
-                "disposition",
-                "reason",
-                "evidence_refs",
-                "provisional_findings",
-                "plausible_risks",
-                "temporary_control_candidates",
-            }
-            assert schema["properties"]["candidate_assessments"]["maxItems"] == 2
-            assert set(assessment_schema["disposition"]["enum"]) == set(
-                contract["luna_dispositions"]
-            )
-            finding_schema = assessment_schema["provisional_findings"]["items"][
-                "properties"
-            ]
-            assert "candidate_ids" not in finding_schema
-            assert finding_schema["evidence_refs"]["minItems"] == 1
-        elif task["phase"] == "luna-consolidation":
-            assessment_schema = schema["properties"]["candidate_assessments"][
-                "items"
-            ]["properties"]
-            assert set(assessment_schema) == {
-                "candidate_ids",
-                "surface_id",
-                "disposition",
-                "reason",
-                "evidence_refs",
-                "provisional_findings",
-                "plausible_risks",
-                "temporary_control_candidates",
-            }
-            assert schema["properties"]["surface_id"] == {
-                "type": "null",
-                "const": None,
-            }
-        elif task["phase"] == "surface-confirmation":
-            candidate_schema = prose_schema["candidate_ids"]["items"]
-            assert "enum" not in candidate_schema
-            assert (
-                workflow.re.fullmatch(
-                    candidate_schema["pattern"], task["candidate_ids"][0]
-                )
-                is not None
-            )
-            assert (
-                workflow.re.fullmatch(
-                    candidate_schema["pattern"],
-                    "evidence://review/review:000197",
-                )
-                is None
-            )
-            review_schema = schema["properties"]["temporary_control_reviews"][
-                "items"
-            ]["properties"]
-            assert_identifier_schema(review_schema["finding_id"])
-            helper_schema = schema["properties"]["helper_category_reviews"][
-                "items"
-            ]["properties"]
-            assert_identifier_schema(helper_schema["finding_ids"]["items"])
-            assessment_schema = schema["properties"]["candidate_assessments"][
-                "items"
-            ]["properties"]
-            finding_schema = assessment_schema["confirmed_findings"]["items"][
-                "properties"
-            ]
-            assert "candidate_ids" not in finding_schema
-            assert "affected_call_ids" not in finding_schema
-            assert finding_schema["targeted_verification"]["minItems"] == 1
-        else:
-            merge_schema = schema["properties"]["temporary_control_merges"][
-                "items"
-            ]["properties"]
-            assert_identifier_schema(merge_schema["finding_id"])
-            assert_identifier_schema(merge_schema["review_ids"]["items"])
-            assert_identifier_schema(schema["properties"]["risk_order"]["items"])
-            assert schema["properties"]["call_classifications"]["minItems"] == 1
-
-    luna_prompt = workflow._task_prompt(
-        state=state,
-        task=tasks[0],
-        input_payload={"analysis_id": "analysis-1"},
-        input_sha256="0" * 64,
-        input_variant_ids=[],
-        contract=contract,
-    )
-    assert "Semantic ownership is nested and exclusive" in luna_prompt
-    assert "`plausible-risk` assessment" in luna_prompt
-    assert "`necessary-exclusion` assessments have neither" in luna_prompt
-    assert "one candidate_assessments item" in luna_prompt
-    assert "candidate_id and surface_id" in luna_prompt
-    assert "inherit their assessment's candidate assignment" in luna_prompt
-
-    consolidation_prompt = workflow._task_prompt(
-        state=state,
-        task=tasks[2],
-        input_payload={"analysis_id": "analysis-1"},
-        input_sha256="0" * 64,
-        input_variant_ids=[],
-        contract=contract,
-    )
-    assert "shared candidate-surface stream" in consolidation_prompt
-    assert "Emit surfaces in fixed contract order" in consolidation_prompt
-
-    large_task = {
-        "phase": "surface-confirmation",
-        "task_id": "confirm.helper-contracts",
-        "surface_id": "helper-contracts",
-        "candidate_ids": [
-            f"analysis-1.c.{ordinal:06d}" for ordinal in range(1, 130)
-        ],
-    }
-    large_schema = workflow._output_schema_for_task(
-        state=state,
-        task=large_task,
-        input_sha256="0" * 64,
-        contract=contract,
-    )
-    large_candidate_schema = large_schema["properties"]["candidate_assessments"][
-        "items"
-    ]["properties"]["candidate_ids"]["items"]
-    assert "enum" not in large_candidate_schema
-    assert (
-        workflow.re.fullmatch(
-            large_candidate_schema["pattern"], "analysis-1.c.000129"
+        assert workflow._terminate_process_tree(process) == 1
+        assert calls == [
+            ["taskkill", "/PID", "424242", "/T", "/F"]
+        ]
+    else:
+        signals: list[tuple[int, int]] = []
+        monkeypatch.setattr(
+            workflow.os,
+            "killpg",
+            lambda pid, sent_signal: signals.append((pid, sent_signal)),
         )
-        is not None
-    )
+        assert workflow._terminate_process_tree(process) == 1
+        assert signals == [(424242, workflow.signal.SIGTERM)]
 
 
 def test_credit_analysis_workflow_rejects_invalid_and_conflicting_passes(
     tmp_path: pathlib.Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     workflow = load_credit_analysis_workflow_module()
-    available = {"gpt-5.6-luna", "gpt-5.6-sol"}
+    request, _, _ = credit_analysis_request(
+        tmp_path,
+        extra_completed_turns=2,
+        extra_calls_per_turn=5,
+    )
+    plan = workflow.command_plan_orchestration(
+        request,
+        available_models=holistic_model_catalog(),
+    )
+    state_path = pathlib.Path(plan["state_path"])
 
-    missing_root = tmp_path / "missing-model"
-    missing_root.mkdir()
-    missing_request, _, missing_task_root = credit_analysis_request(missing_root)
-    with pytest.raises(workflow.CreditAnalysisError, match="required model"):
-        workflow.command_plan_orchestration(
-            missing_request,
-            available_models={"gpt-5.6-sol"},
+    class BadCoverageRunner(FakeCreditModelRunner):
+        def _luna(
+            self,
+            task: Mapping[str, Any],
+            packet: Mapping[str, Any],
+            digest: str,
+        ) -> dict[str, Any]:
+            result = super()._luna(task, packet, digest)
+            result["coverage"]["candidate_count"] -= 1
+            return result
+
+    bad_luna = BadCoverageRunner()
+    with pytest.raises(
+        workflow.CreditAnalysisError,
+        match="coverage attestation",
+    ):
+        workflow.command_execute_orchestration(
+            state_path,
+            runner=bad_luna,
+            available_models=bad_luna.available_models,
+            task_limit=1,
         )
-    assert list(missing_task_root.iterdir()) == []
-    assert not (missing_root / "evidence-full-analysis.json").exists()
+    failed_state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert failed_state["model_attempts"] == {"luna": 1, "sol": 0}
+    assert failed_state["model_calls"] == {"luna": 0, "sol": 0}
+    assert failed_state["execution"]["luna.discovery.0001"]["attempts"][0][
+        "outcome"
+    ] == "validation-error"
 
-    child_root = tmp_path / "analysis-child-source"
-    child_root.mkdir()
-    child_request, child_session, child_task_root = credit_analysis_request(
-        child_root
+    good = FakeCreditModelRunner()
+    resumed = workflow.command_execute_orchestration(
+        state_path,
+        runner=good,
+        available_models=good.available_models,
+        task_limit=1,
     )
-    child_rows = [
-        json.loads(line)
-        for line in child_session.read_text(encoding="utf-8").splitlines()
-    ]
-    first_user = next(
-        row
-        for row in child_rows
-        if row.get("payload", {}).get("role") == "user"
+    assert resumed["next_task"] == "sol.adjudication"
+    resumed_state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert resumed_state["model_attempts"]["luna"] == 2
+    assert resumed_state["model_calls"]["luna"] == 1
+
+    class ExcessiveUnassessedRunner(FakeCreditModelRunner):
+        def _sol(
+            self,
+            task: Mapping[str, Any],
+            packet: Mapping[str, Any],
+            digest: str,
+        ) -> dict[str, Any]:
+            result = super()._sol(task, packet, digest)
+            for group in result["call_classifications"]:
+                group["classification"] = "unassessed"
+                group["reason_code"] = None
+                group["rationale"] = "A synthetic decision-blocking gap remains."
+            return result
+
+    bad_sol = ExcessiveUnassessedRunner()
+    with pytest.raises(
+        workflow.CreditAnalysisError,
+        match="unassessed calls exceed",
+    ):
+        workflow.command_execute_orchestration(
+            state_path,
+            runner=bad_sol,
+            available_models=bad_sol.available_models,
+        )
+    failed_sol_state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert failed_sol_state["model_attempts"]["sol"] == 1
+    assert failed_sol_state["model_calls"]["sol"] == 0
+
+    completed = workflow.command_execute_orchestration(
+        state_path,
+        runner=good,
+        available_models=good.available_models,
     )
-    first_user["payload"]["content"][0]["text"] = (
-        "CERATOPS_CREDIT_ANALYSIS_CHILD v1\ncontroller_analysis_id=child"
+    assert completed["complete"] is True
+    final = json.loads(
+        pathlib.Path(completed["final_result_path"]).read_text(encoding="utf-8")
     )
-    child_session.write_text(
-        "".join(json.dumps(row) + "\n" for row in child_rows),
+    assert final["classification_totals"]["unassessed"] == 0
+    assert final["manifest"]["unclassified_calls"] == 0
+
+    compact = json.loads(
+        pathlib.Path(
+            json.loads(state_path.read_text(encoding="utf-8"))["manifest"][
+                "compact_evidence"
+            ]["path"]
+        ).read_text(encoding="utf-8")
+    )
+    episodes = workflow._holistic_episodes(compact)
+    one_packet_chars = workflow._json_chars(
+        workflow._holistic_luna_payload(
+            analysis_id=compact["analysis_id"],
+            task_id="luna.discovery.0001",
+            ordinal=1,
+            episodes=episodes,
+            bundle=compact,
+        )
+    )
+    packets = workflow._holistic_partition(
+        analysis_id=compact["analysis_id"],
+        episodes=episodes,
+        bundle=compact,
+        budget_chars=max(8_000, one_packet_chars // 2),
+        maximum_packets=4,
+    )
+    assert 2 <= len(packets) <= 4
+    assert [
+        candidate_id
+        for packet in packets
+        for episode in packet
+        for candidate_id in episode["candidate_ids"]
+    ] == compact["candidate_ids"]
+    with pytest.raises(
+        workflow.CreditAnalysisError,
+        match="clearly runaway",
+    ):
+        workflow._holistic_partition(
+            analysis_id=compact["analysis_id"],
+            episodes=episodes,
+            bundle=compact,
+            budget_chars=max(8_000, one_packet_chars // 2),
+            maximum_packets=1,
+        )
+
+    manifest_path = pathlib.Path(plan["manifest_path"])
+    manifest_bytes = manifest_path.read_bytes()
+    manifest_value = json.loads(manifest_bytes)
+    manifest_value["candidate_ids"] = list(reversed(manifest_value["candidate_ids"]))
+    manifest_path.write_text(
+        json.dumps(manifest_value),
         encoding="utf-8",
         newline="\n",
     )
     with pytest.raises(
         workflow.CreditAnalysisError,
-        match="selected source is a credit-analysis child session",
+        match="immutable artifact changed",
     ):
-        workflow.command_plan_orchestration(
-            child_request,
-            available_models=available,
-        )
-    assert list(child_task_root.iterdir()) == []
+        workflow.command_orchestration_status(state_path)
+    manifest_path.write_bytes(manifest_bytes)
 
-    invalid_root = tmp_path / "invalid-coverage"
-    invalid_root.mkdir()
-    invalid_request, _, _ = credit_analysis_request(invalid_root)
-    invalid_plan = workflow.command_plan_orchestration(
-        invalid_request,
-        available_models=available,
-    )
-    invalid_manifest = json.loads(
-        pathlib.Path(invalid_plan["manifest_path"]).read_text(encoding="utf-8")
-    )
-    first_primary = next(
-        task
-        for task in invalid_manifest["luna_tasks"]
-        if task["phase"] == "luna-primary" and task["candidate_ids"]
-    )
-    first_primary["candidate_ids"].append(first_primary["candidate_ids"][0])
-    contract = json.loads(CREDIT_ANALYSIS_CONTRACT.read_text(encoding="utf-8"))
-    with pytest.raises(
-        workflow.CreditAnalysisError,
-        match="coverage|duplicated|reordered",
-    ):
-        workflow._validate_frozen_manifest(invalid_manifest, contract)
-    invalid_state = pathlib.Path(invalid_plan["state_path"])
-    canonical_index_path = pathlib.Path(
-        invalid_manifest["canonical_state"]["path"]
-    )
-    changed_canonical_index = json.loads(
-        canonical_index_path.read_text(encoding="utf-8")
-    )
-    changed_canonical_index["record_count"] += 1
-    write_json_file(canonical_index_path, changed_canonical_index)
-    with pytest.raises(
-        workflow.CreditAnalysisError,
-        match="immutable canonical_state artifact changed",
-    ):
-        workflow.command_orchestration_status(invalid_state)
 
-    bad_review = {
-        "id": "temporary.bad-roi",
-        "problem_solved": "temporary synthetic problem",
-        "affected_call_ids": ["call-1"],
-        "observed_temporary_control": "temporary synthetic control",
-        "final_canonical_evidence_refs": ["evidence://calls/call-1"],
-        "disposition": "durable-control-missing",
-        "owning_producer": "workflow:synthetic",
-        "recurrence_inputs": {
-            "likely": False,
-            "frequency_range": [0.0, 0.1],
-            "basis": "synthetic nonrecurrence",
-        },
-        "savings_inputs": {
-            "expected_calls_saved": 0.0,
-            "maintenance_model_calls": 1.0,
-            "justifies_maintenance": False,
-            "basis": "maintenance exceeds savings",
-        },
-        "finding_id": "finding.synthetic",
-        "no_finding_reason": None,
-    }
-    with pytest.raises(
-        workflow.CreditAnalysisError,
-        match="recurrence and ROI gates",
-    ):
-        workflow._validate_temporary_review(
-            bad_review,
-            finding_ids={"finding.synthetic"},
-            contract=contract,
-            label="bad temporary review",
-        )
-
-    mixed_ownership_root = tmp_path / "mixed-semantic-ownership"
-    mixed_ownership_root.mkdir()
-    mixed_ownership_request, _, _ = credit_analysis_request(mixed_ownership_root)
-    mixed_ownership_plan = workflow.command_plan_orchestration(
-        mixed_ownership_request,
-        available_models=available,
-    )
-
-    class MixedSemanticOwnershipRunner(FakeCreditModelRunner):
-        def _luna(
-            self,
-            task: Mapping[str, Any],
-            packet: Mapping[str, Any],
-            digest: str,
-        ) -> dict[str, Any]:
-            result = super()._luna(task, packet, digest)
-            if task["stage"] == "primary" and result["candidate_assessments"]:
-                risk_id = f"{task['surface_id']}.mixed-link"
-                assessment = result["candidate_assessments"][0]
-                assessment["plausible_risks"].append(
-                    {
-                        "id": risk_id,
-                        "description": "Synthetic risk linked to the wrong disposition.",
-                        "evidence_refs": ["evidence://synthetic/mixed-link"],
-                        "verification_needed": ["inspect the original evidence"],
-                        "material_variant_ids": [],
-                    }
-                )
-                assessment["disposition"] = "necessary-exclusion"
-            return result
-
-    mixed_ownership_state = pathlib.Path(mixed_ownership_plan["state_path"])
-    with pytest.raises(
-        workflow.CreditAnalysisError,
-        match="dismissed or necessary assessment has semantic objects",
-    ):
-        workflow.command_execute_orchestration(
-            mixed_ownership_state,
-            runner=MixedSemanticOwnershipRunner(),
-            available_models=available,
-        )
-    mixed_ownership_saved = json.loads(
-        mixed_ownership_state.read_text(encoding="utf-8")
-    )
-    assert mixed_ownership_saved["model_calls"] == {"luna": 0, "sol": 0}
-    assert mixed_ownership_saved["model_attempts"] == {
-        "luna": 1,
-        "sol": 0,
-    }
-
-    duplicate_assessment_root = tmp_path / "duplicate-assessment-coverage"
-    duplicate_assessment_root.mkdir()
-    duplicate_request, _, _ = credit_analysis_request(duplicate_assessment_root)
-    duplicate_plan = workflow.command_plan_orchestration(
-        duplicate_request,
-        available_models=available,
-    )
-
-    class DuplicateAssessmentRunner(FakeCreditModelRunner):
-        def _luna(
-            self,
-            task: Mapping[str, Any],
-            packet: Mapping[str, Any],
-            digest: str,
-        ) -> dict[str, Any]:
-            result = super()._luna(task, packet, digest)
-            if task["stage"] == "primary" and result["candidate_assessments"]:
-                result["candidate_assessments"].append(
-                    result["candidate_assessments"][0]
-                )
-            return result
-
-    with pytest.raises(
-        workflow.CreditAnalysisError,
-        match=(
-            "align with candidate-surface order|coverage is missing, duplicated, "
-            "or reordered"
-        ),
-    ):
-        workflow.command_execute_orchestration(
-            pathlib.Path(duplicate_plan["state_path"]),
-            runner=DuplicateAssessmentRunner(),
-            available_models=available,
-        )
-
-    ownership_root = tmp_path / "changed-material-ownership"
-    ownership_root.mkdir()
-    ownership_request, _, _ = credit_analysis_request(
-        ownership_root,
-        extra_completed_turns=3,
-        extra_calls_per_turn=4,
-    )
-    constrained_contract = workflow._load_contract()
-    constrained_contract["chunking"]["maximum_candidates"] = 4
-    constrained_contract["chunking"]["consolidation_fan_in"] = 2
-
-    class ChangedMaterialOwnershipRunner(FakeCreditModelRunner):
-        def _luna(
-            self,
-            task: Mapping[str, Any],
-            packet: Mapping[str, Any],
-            digest: str,
-        ) -> dict[str, Any]:
-            result = super()._luna(task, packet, digest)
-            if task["phase"] == "luna-consolidation":
-                source = next(
-                    assessment
-                    for assessment in result["candidate_assessments"]
-                    if assessment["provisional_findings"]
-                )
-                target = next(
-                    assessment
-                    for assessment in result["candidate_assessments"]
-                    if assessment["surface_id"] == source["surface_id"]
-                    and not assessment["provisional_findings"]
-                    and not assessment["plausible_risks"]
-                )
-                target["provisional_findings"] = source["provisional_findings"]
-                target["disposition"] = "provisional-finding-evidence"
-                source["provisional_findings"] = []
-                source["disposition"] = "dismissed-candidate"
-            return result
-
-    with monkeypatch.context() as scoped:
-        scoped.setattr(
-            workflow,
-            "_load_contract",
-            lambda: json.loads(json.dumps(constrained_contract)),
-        )
-        ownership_plan = workflow.command_plan_orchestration(
-            ownership_request,
-            available_models=available,
-        )
-        with pytest.raises(
-            workflow.CreditAnalysisError,
-            match="changed material variant ownership",
-        ):
-            workflow.command_execute_orchestration(
-                pathlib.Path(ownership_plan["state_path"]),
-                runner=ChangedMaterialOwnershipRunner(),
-                available_models=available,
-            )
-
-    normalized_strings_root = tmp_path / "normalized-descriptive-strings"
-    normalized_strings_root.mkdir()
-    normalized_strings_request, _, _ = credit_analysis_request(
-        normalized_strings_root
-    )
-    normalized_strings_plan = workflow.command_plan_orchestration(
-        normalized_strings_request,
-        available_models=available,
-    )
-
-    class DuplicateDescriptiveStringRunner(FakeCreditModelRunner):
-        def _luna(
-            self,
-            task: Mapping[str, Any],
-            packet: Mapping[str, Any],
-            digest: str,
-        ) -> dict[str, Any]:
-            result = super()._luna(task, packet, digest)
-            assessment = result["candidate_assessments"][0]
-            assessment["evidence_refs"].append(assessment["evidence_refs"][0])
-            return result
-
-    normalized_strings_state_path = pathlib.Path(
-        normalized_strings_plan["state_path"]
-    )
-    normalized_strings_status = workflow.command_execute_orchestration(
-        normalized_strings_state_path,
-        runner=DuplicateDescriptiveStringRunner(),
-        available_models=available,
-    )
-    assert normalized_strings_status["complete"] is True
-    normalized_strings_state = json.loads(
-        normalized_strings_state_path.read_text(encoding="utf-8")
-    )
-    normalized_first_task = normalized_strings_state["task_order"][0]
-    normalized_execution = normalized_strings_state["execution"][
-        normalized_first_task
+def _attach_prior_analysis_state(
+    session: pathlib.Path,
+    state_path: pathlib.Path,
+) -> None:
+    rows = [
+        json.loads(line)
+        for line in session.read_text(encoding="utf-8").splitlines()
     ]
-    raw_duplicate = json.loads(
-        pathlib.Path(normalized_execution["attempts"][0]["raw_output_path"]).read_text(
-            encoding="utf-8"
-        )
-    )
-    accepted_normalized = json.loads(
-        pathlib.Path(normalized_execution["result"]["path"]).read_text(
-            encoding="utf-8"
-        )
-    )
-    assert len(raw_duplicate["candidate_assessments"][0]["evidence_refs"]) == 2
-    assert accepted_normalized["candidate_assessments"][0]["evidence_refs"] == [
-        "evidence://synthetic/primary"
-    ]
-
-    contribution_root = tmp_path / "standalone-helper-contribution"
-    contribution_root.mkdir()
-    contribution_request, _, _ = credit_analysis_request(
-        contribution_root,
-        action="helper-contracts",
-    )
-    contribution_plan = workflow.command_plan_orchestration(
-        contribution_request,
-        available_models=available,
-    )
-
-    class StandaloneContributionRunner(FakeCreditModelRunner):
-        def _confirmation(
-            self,
-            task: Mapping[str, Any],
-            packet: Mapping[str, Any],
-            digest: str,
-        ) -> dict[str, Any]:
-            result = super()._confirmation(task, packet, digest)
-            candidate = result["candidate_assessments"][0]["candidate_ids"][0]
-            dossier = next(
-                call
-                for episode in packet["original_evidence_episodes"]
-                for call in episode["calls"]
-                if call["candidate_id"] == candidate
-            )
-            category = str(packet["helper_categories"][0])
-            finding = self._finding(
-                "helper-contracts",
-                "helper-contracts.cleanup-owner",
-                dossier,
-            )
-            finding["helper_categories"] = [category]
-            child = {
-                key: value
-                for key, value in finding.items()
-                if key not in {"candidate_ids", "affected_call_ids"}
-            }
-            result["candidate_assessments"][0].update(
-                {
-                    "disposition": "confirmed-finding",
-                    "confirmed_findings": [child],
-                }
-            )
-            result["helper_category_reviews"][0].update(
-                {
-                    "status": "applies",
-                    "finding_ids": [finding["id"]],
-                }
-            )
-            return result
-
-        def _synthesis(
-            self,
-            task: Mapping[str, Any],
-            packet: Mapping[str, Any],
-            digest: str,
-        ) -> dict[str, Any]:
-            confirmation = packet["confirmation_results"][0]
-            finding = confirmation["confirmed_findings"][0]
-            contribution = confirmation["temporary_control_contributions"][0]
-            canonical_id = f"{finding['id']}.canonical"
-            affected_calls = set(finding["affected_call_ids"])
-            classifications: list[dict[str, Any]] = [
-                {
-                    "classification": (
-                        "avoidable_unimplemented"
-                        if call_id in affected_calls
-                        else "reviewed_no_confirmed_waste"
-                    ),
-                    "call_ids": [call_id],
-                    "primary_finding_id": (
-                        canonical_id if call_id in affected_calls else None
-                    ),
-                    "reason_code": None,
-                    "reason": "The selected helper surface reviewed this call.",
-                }
-                for call_id in packet["call_inventory"]
-            ]
-            avoidable = len(
-                [
-                    item
-                    for item in classifications
-                    if str(item["classification"]).startswith("avoidable_")
-                ]
-            )
-            return {
-                "schema": "ceratops-credit-analysis-orchestration-synthesis.v3",
-                "analysis_id": str(packet["analysis_id"]),
-                "task_id": task["task_id"],
-                "input_sha256": digest,
-                "finding_groups": [
-                    {
-                        "canonical_finding_id": canonical_id,
-                        "source_finding_ids": [finding["id"]],
-                        "primary_source_finding_id": finding["id"],
-                        "title": finding["title"],
-                        "problem_summary": finding["problem_summary"],
-                        "owner_key": finding["producer_owner"],
-                        "control_key": finding["proposed_durable_control"],
-                        "contributing_surfaces": ["helper-contracts"],
-                        "savings_source_finding_id": finding["id"],
-                    }
-                ],
-                "risk_order": [],
-                "temporary_control_merges": [
-                    {
-                        "merge_id": "temporary-merge.helper-cleanup",
-                        "owner_key": contribution["owner_key"],
-                        "control_key": contribution["control_key"],
-                        "review_ids": [],
-                        "contribution_ids": [contribution["id"]],
-                        "disposition": "durable-control-missing",
-                        "finding_id": canonical_id,
-                        "no_finding_reason": None,
-                        "contributing_surfaces": ["helper-contracts"],
-                    }
-                ],
-                "call_classifications": classifications,
-                "producer_groups": [
-                    {
-                        "id": "producer.helper-cleanup",
-                        "producer_type": finding["producer_type"],
-                        "owner": finding["producer_owner"],
-                        "finding_ids": [canonical_id],
-                        "recommended_control": finding[
-                            "proposed_durable_control"
-                        ],
-                        "targeted_verification": finding[
-                            "targeted_verification"
-                        ],
-                    }
-                ],
-                "analysis_summary": {
-                    "confirmed_count": 1,
-                    "risk_count": 0,
-                    "necessary_calls": 0,
-                    "protocol_overhead_calls": 0,
-                    "reviewed_no_confirmed_waste_calls": (
-                        len(classifications) - avoidable
-                    ),
-                    "unassessed_calls": 0,
-                    "avoidable_calls": avoidable,
-                    "meaningful_input_output_findings": [],
-                },
-            }
-
-    contribution_state = pathlib.Path(contribution_plan["state_path"])
-    contribution_status = workflow.command_execute_orchestration(
-        contribution_state,
-        runner=StandaloneContributionRunner(),
-        available_models=available,
-    )
-    assert contribution_status["complete"] is True
-    contribution_saved = json.loads(
-        contribution_state.read_text(encoding="utf-8")
-    )
-    contribution_final = json.loads(
-        pathlib.Path(contribution_saved["final_result"]["path"]).read_text(
-            encoding="utf-8"
-        )
-    )
-    assert contribution_final["temporary_control_merges"][0]["finding_id"] == (
-        "helper-contracts.cleanup-owner.canonical"
-    )
-
-    revalidation_root = tmp_path / "revalidate-failed-output"
-    revalidation_root.mkdir()
-    revalidation_request, _, _ = credit_analysis_request(revalidation_root)
-    revalidation_plan = workflow.command_plan_orchestration(
-        revalidation_request,
-        available_models=available,
-    )
-    revalidation_state = pathlib.Path(revalidation_plan["state_path"])
-    revalidation_runner = FakeCreditModelRunner()
-    original_validator = workflow._validate_task_result
-    rejected_once = False
-
-    def reject_once(*args: Any, **kwargs: Any) -> dict[str, Any]:
-        nonlocal rejected_once
-        if not rejected_once:
-            rejected_once = True
-            raise workflow.CreditAnalysisError("synthetic stale validator")
-        return original_validator(*args, **kwargs)
-
-    with monkeypatch.context() as scoped:
-        scoped.setattr(workflow, "_validate_task_result", reject_once)
-        with pytest.raises(
-            workflow.CreditAnalysisError,
-            match="synthetic stale validator",
+    attached = 0
+    quoted_marker = False
+    for row in rows:
+        payload = row.get("payload", {})
+        if (
+            payload.get("type") == "function_call_output"
+            and payload.get("call_id") in {"read-1", "read-2"}
         ):
-            workflow.command_execute_orchestration(
-                revalidation_state,
-                runner=revalidation_runner,
-                available_models=available,
-                task_limit=1,
+            output = json.loads(payload["output"])
+            output["state_path"] = str(state_path)
+            payload["output"] = json.dumps(output)
+            attached += 1
+        if (
+            not quoted_marker
+            and payload.get("type") == "message"
+            and payload.get("role") == "user"
+        ):
+            payload["content"][0]["text"] += (
+                " Quoted diagnostic text: CERATOPS_CREDIT_ANALYSIS_CHILD v1."
             )
-    invoked_before_recovery = len(revalidation_runner.calls)
-    workflow.command_execute_orchestration(
-        revalidation_state,
-        runner=revalidation_runner,
-        available_models=available,
-        task_limit=1,
-    )
-    assert len(revalidation_runner.calls) == invoked_before_recovery
-    revalidated_state = json.loads(revalidation_state.read_text(encoding="utf-8"))
-    revalidated_task = revalidated_state["task_order"][0]
-    assert revalidated_state["execution"][revalidated_task]["status"] == "complete"
-    assert revalidated_state["execution"][revalidated_task]["attempts"][-1][
-        "outcome"
-    ] == "validation-error"
-    assert revalidated_state["execution"][revalidated_task]["result"][
-        "recovered_without_model_call"
-    ] is True
-    assert revalidated_state["model_attempts"] == {"luna": 1, "sol": 0}
-    assert revalidated_state["model_calls"] == {"luna": 1, "sol": 0}
-
-    retry_root = tmp_path / "failed-attempt-resume"
-    retry_root.mkdir()
-    retry_request, _, _ = credit_analysis_request(retry_root)
-    retry_plan = workflow.command_plan_orchestration(
-        retry_request,
-        available_models=available,
+            quoted_marker = True
+    assert attached == 2 and quoted_marker
+    session.write_text(
+        "".join(json.dumps(row) + "\n" for row in rows),
+        encoding="utf-8",
+        newline="\n",
     )
 
-    class InvalidOnceRunner:
-        available_models = available
 
-        def __init__(self) -> None:
-            self.failed = False
-            self.delegate = FakeCreditModelRunner()
+def test_credit_analysis_lineage_allows_later_meta_analysis_without_recursion(
+    tmp_path: pathlib.Path,
+) -> None:
+    workflow = load_credit_analysis_workflow_module()
+    a_root = tmp_path / "a"
+    b_root = tmp_path / "b"
+    a_root.mkdir()
+    b_root.mkdir()
+    request_a, _, _ = credit_analysis_request(
+        a_root,
+        extra_completed_turns=1,
+        extra_calls_per_turn=2,
+    )
+    runner_a = FakeCreditModelRunner(temporary_controls=False)
+    plan_a = workflow.command_plan_orchestration(
+        request_a,
+        available_models=runner_a.available_models,
+    )
+    complete_a = workflow.command_execute_orchestration(
+        pathlib.Path(plan_a["state_path"]),
+        runner=runner_a,
+        available_models=runner_a.available_models,
+    )
+    assert complete_a["complete"] is True
 
-        def run(self, **kwargs: Any) -> dict[str, Any]:
-            if not self.failed:
-                self.failed = True
-                return {"schema": "invalid-once"}
-            return self.delegate.run(**kwargs)
-
-    retry_runner = InvalidOnceRunner()
-    retry_state_path = pathlib.Path(retry_plan["state_path"])
-    with pytest.raises(workflow.CreditAnalysisError, match="Luna child result"):
-        workflow.command_execute_orchestration(
-            retry_state_path,
-            runner=retry_runner,
-            available_models=available,
+    request_b, session_b, _ = credit_analysis_request(
+        b_root,
+        extra_completed_turns=1,
+        extra_calls_per_turn=2,
+    )
+    _attach_prior_analysis_state(session_b, pathlib.Path(plan_a["state_path"]))
+    runner_b = FakeCreditModelRunner(temporary_controls=False)
+    plan_b = workflow.command_plan_orchestration(
+        request_b,
+        available_models=runner_b.available_models,
+    )
+    evidence_b = json.loads(
+        pathlib.Path(plan_b["evidence_path"]).read_text(encoding="utf-8")
+    )
+    assert evidence_b["analysis_lineage"]["included_prior_analysis_ids"] == [
+        plan_a["analysis_id"]
+    ]
+    assert evidence_b["analysis_lineage"]["source_selection_uses_prompt_markers"] is False
+    assert evidence_b["analysis_generated_activity"][0]["analysis_id"] == plan_a[
+        "analysis_id"
+    ]
+    assert any(
+        attempt["prompt"] is not None
+        and attempt["event_summary"]["usage"] is not None
+        for task in evidence_b["analysis_generated_activity"][0]["tasks"]
+        for attempt in task["attempts"]
+    )
+    manifest_b = json.loads(
+        pathlib.Path(plan_b["manifest_path"]).read_text(encoding="utf-8")
+    )
+    compact_b = json.loads(
+        pathlib.Path(manifest_b["compact_evidence"]["path"]).read_text(
+            encoding="utf-8"
         )
-    failed_state = json.loads(retry_state_path.read_text(encoding="utf-8"))
-    first_task_id = failed_state["task_order"][0]
-    first_execution = failed_state["execution"][first_task_id]
-    assert first_execution["status"] == "pending"
-    assert first_execution["attempts"][0]["outcome"] == "validation-error"
-    assert first_execution["attempts"][0]["attempt_number"] == 1
-    assert failed_state["model_calls"] == {"luna": 0, "sol": 0}
-    assert failed_state["model_attempts"] == {"luna": 1, "sol": 0}
+    )
+    analysis_records = [
+        record
+        for record in compact_b["records"]
+        if record["workstream"] == "analysis-overhead"
+    ]
+    assert len(analysis_records) >= 2
     assert all(
-        artifact is not None and artifact["sha256"]
-        for artifact in first_execution["attempts"][0]["artifacts"].values()
-    )
-    resumed_retry = workflow.command_execute_orchestration(
-        retry_state_path,
-        runner=retry_runner,
-        available_models=available,
-    )
-    assert resumed_retry["complete"] is True
-    resumed_state = json.loads(retry_state_path.read_text(encoding="utf-8"))
-    assert resumed_state["model_calls"] == {
-        "luna": retry_plan["projected_luna_calls"],
-        "sol": 6,
-    }
-    assert resumed_state["model_attempts"] == {
-        "luna": retry_plan["projected_luna_calls"] + 1,
-        "sol": 6,
-    }
-    assert [
-        attempt["outcome"]
-        for attempt in resumed_state["execution"][first_task_id]["attempts"]
-    ] == ["validation-error", "accepted"]
-
-    missing_review_root = tmp_path / "missing-temporary-review"
-    missing_review_root.mkdir()
-    missing_review_request, _, _ = credit_analysis_request(missing_review_root)
-    missing_review_plan = workflow.command_plan_orchestration(
-        missing_review_request,
-        available_models=available,
+        record["candidate_id"] in manifest_b["candidate_ids"]
+        for record in analysis_records
     )
 
-    class MissingTemporaryReviewRunner(FakeCreditModelRunner):
-        def _confirmation(
-            self,
-            task: Mapping[str, Any],
-            packet: Mapping[str, Any],
-            digest: str,
-        ) -> dict[str, Any]:
-            result = super()._confirmation(task, packet, digest)
-            if task["surface_id"] == "rework-validation":
-                result["temporary_control_reviews"] = []
-            return result
-
-    missing_review_state = pathlib.Path(missing_review_plan["state_path"])
-    with pytest.raises(
-        workflow.CreditAnalysisError,
-        match="mandatory temporary-control review",
-    ):
-        workflow.command_execute_orchestration(
-            missing_review_state,
-            runner=MissingTemporaryReviewRunner(),
-            available_models=available,
-        )
-    missing_review_saved = json.loads(
-        missing_review_state.read_text(encoding="utf-8")
+    complete_b = workflow.command_execute_orchestration(
+        pathlib.Path(plan_b["state_path"]),
+        runner=runner_b,
+        available_models=runner_b.available_models,
     )
-    assert missing_review_saved["execution"]["confirm.rework-validation"][
-        "attempts"
-    ][0]["outcome"] == "validation-error"
-
-    immutable_root = tmp_path / "immutable-results"
-    immutable_root.mkdir()
-    immutable_request, _, _ = credit_analysis_request(immutable_root)
-    immutable_plan = workflow.command_plan_orchestration(
-        immutable_request,
-        available_models=available,
+    final_b = json.loads(
+        pathlib.Path(complete_b["final_result_path"]).read_text(encoding="utf-8")
     )
-    immutable_runner = FakeCreditModelRunner()
-    immutable_status = workflow.command_execute_orchestration(
-        pathlib.Path(immutable_plan["state_path"]),
-        runner=immutable_runner,
-        available_models=available,
-    )
-    assert immutable_status["complete"] is True
-    immutable_state = json.loads(
-        pathlib.Path(immutable_plan["state_path"]).read_text(encoding="utf-8")
-    )
-    changed_result = pathlib.Path(
-        immutable_state["execution"][immutable_state["task_order"][0]]["result"][
-            "path"
-        ]
-    )
-    changed = json.loads(changed_result.read_text(encoding="utf-8"))
-    changed["task_id"] = "changed-after-acceptance"
-    write_json_file(changed_result, changed)
-    with pytest.raises(workflow.CreditAnalysisError, match="result changed"):
-        workflow.command_orchestration_status(
-            pathlib.Path(immutable_plan["state_path"])
-        )
-
-    request, session, _ = credit_analysis_request(tmp_path)
-    prepared = run_credit_analysis_workflow("prepare", "--request", str(request))
-    assert prepared.returncode == 0, prepared.stderr
-    status = json.loads(prepared.stdout)
-    state_path = pathlib.Path(status["state_path"])
-    evidence = json.loads(pathlib.Path(status["evidence_path"]).read_text(encoding="utf-8"))
-    context = json.loads(pathlib.Path(status["context_path"]).read_text(encoding="utf-8"))
-    result_path = pathlib.Path(status["required_result_path"])
-    categories = json.loads(CREDIT_ANALYSIS_CONTRACT.read_text(encoding="utf-8"))[
-        "helper_categories"
+    assert final_b["lineage"]["included_prior_analysis_ids"] == [
+        plan_a["analysis_id"]
     ]
-    reviews = [
-        {
-            "category": category,
-            "status": "not-applicable",
-            "finding_ids": [],
-            "reason": "no helper defect confirmed",
-        }
-        for category in categories
+    assert all(
+        child["analysis_id"] == plan_b["analysis_id"]
+        for child in final_b["lineage"]["created_child_tasks"]
+    )
+    assert final_b["lineage"]["excluded_own_descendant_task_ids"] == [
+        child["task_id"] for child in final_b["lineage"]["created_child_tasks"]
     ]
-    valid = surface_result_record(
-        status,
-        context,
-        evidence["evidence_fingerprint"],
-        helper_reviews=reviews,
-    )
-    invalid_values = [
-        {},
-        {**valid, "surface_id": "context-evidence"},
-        {**valid, "pass_id": "stale.pass"},
-        {**valid, "evidence_fingerprint": "0" * 64},
-        {**valid, "reviewed_candidate_call_ids": valid["reviewed_candidate_call_ids"][:-1]},
-        {
-            **valid,
-            "dismissed_candidates": valid["dismissed_candidates"][:-1],
-        },
-        {
-            **valid,
-            "plausible_risks": [
-                {
-                    "id": "incomplete-risk",
-                    "description": "risk detail is incomplete",
-                    "affected_call_ids": [context["candidate_call_ids"][0]],
-                    "evidence_refs": [
-                        f"evidence://calls/{context['candidate_call_ids'][0]}"
-                    ],
-                    "verification_needed": ["inspect the missing evidence"],
-                }
-            ],
-        },
+    analysis_totals = final_b["workstream_classification_totals"][
+        "analysis-overhead"
     ]
-    for invalid in invalid_values:
-        write_json_file(result_path, invalid)
-        rejected = run_credit_analysis_workflow(
-            "advance",
-            "--state",
-            str(state_path),
-            "--result",
-            str(result_path),
-        )
-        assert rejected.returncode == 2
-        current = json.loads(
-            run_credit_analysis_workflow("status", "--state", str(state_path)).stdout
-        )
-        assert current["pass_id"] == status["pass_id"]
-        assert not pathlib.Path(json.loads(state_path.read_text(encoding="utf-8"))["paths"]["index"]).exists()
-
-    write_json_file(result_path, valid)
-    accepted = run_credit_analysis_workflow(
-        "advance",
-        "--state",
-        str(state_path),
-        "--result",
-        str(result_path),
-    )
-    assert accepted.returncode == 0, accepted.stderr
-    next_status = json.loads(accepted.stdout)
-    assert next_status["pending_surface"] == "context-evidence"
-    repeated = run_credit_analysis_workflow(
-        "advance",
-        "--state",
-        str(state_path),
-        "--result",
-        str(result_path),
-    )
-    assert repeated.returncode == 0, repeated.stderr
-    assert json.loads(repeated.stdout) == next_status
-    conflict_path = tmp_path / "conflict.json"
-    write_json_file(conflict_path, {**valid, "evidence_references": []})
-    conflict = run_credit_analysis_workflow(
-        "advance",
-        "--state",
-        str(state_path),
-        "--result",
-        str(conflict_path),
-    )
-    assert conflict.returncode == 2
-    assert "conflicting resubmission" in conflict.stderr
-
-    next_context = json.loads(
-        pathlib.Path(next_status["context_path"]).read_text(encoding="utf-8")
-    )
-    valid_context_result = surface_result_record(
-        next_status,
-        next_context,
-        evidence["evidence_fingerprint"],
-    )
-    reordered = {**valid_context_result, "surface_id": "helper-contracts"}
-    write_json_file(pathlib.Path(next_status["required_result_path"]), reordered)
-    rejected_repeat = run_credit_analysis_workflow(
-        "advance",
-        "--state",
-        str(state_path),
-        "--result",
-        next_status["required_result_path"],
-    )
-    assert rejected_repeat.returncode == 2
-    assert "surface_id" in rejected_repeat.stderr
-
-    context_result_path = pathlib.Path(next_status["required_result_path"])
-    write_json_file(context_result_path, valid_context_result)
-    orphaned_immutable = (
-        pathlib.Path(json.loads(state_path.read_text(encoding="utf-8"))["paths"]["findings_dir"])
-        / "002-context-evidence.json"
-    )
-    write_json_file(orphaned_immutable, valid_context_result)
-    orphan_hash = hashlib.sha256(orphaned_immutable.read_bytes()).hexdigest()
-    index_path = pathlib.Path(
-        json.loads(state_path.read_text(encoding="utf-8"))["paths"]["index"]
-    )
-    with index_path.open("a", encoding="utf-8", newline="\n") as handle:
-        handle.write(
-            json.dumps(
-                {
-                    "schema": "ceratops-credit-analysis-index-record.v1",
-                    "ordinal": 2,
-                    "surface_id": "context-evidence",
-                    "pass_id": next_status["pass_id"],
-                    "path": str(orphaned_immutable.resolve()),
-                    "sha256": orphan_hash,
-                    "content_hash": orphan_hash,
-                },
-                sort_keys=True,
-                separators=(",", ":"),
-            )
-            + "\n"
-        )
-    recovered = run_credit_analysis_workflow("status", "--state", str(state_path))
-    assert recovered.returncode == 0, recovered.stderr
-    assert json.loads(recovered.stdout)["pending_surface"] == "rework-validation"
-
-    state = json.loads(state_path.read_text(encoding="utf-8"))
-    accepted_path = pathlib.Path(state["completed"][0]["path"])
-    original = accepted_path.read_text(encoding="utf-8")
-    accepted_path.write_text(original.replace("helper-contracts", "tool-flow", 1), encoding="utf-8")
-    integrity = run_credit_analysis_workflow("status", "--state", str(state_path))
-    assert integrity.returncode == 2
-    assert "hash mismatch" in integrity.stderr
-    accepted_path.write_text(original, encoding="utf-8", newline="\n")
-    session.rename(tmp_path / "session-not-reread.jsonl")
-    resumed = run_credit_analysis_workflow("status", "--state", str(state_path))
-    assert resumed.returncode == 0, resumed.stderr
+    assert sum(analysis_totals.values()) == len(analysis_records)
 
 
 def test_credit_analysis_workflow_standalone_zero_findings_is_isolated(
@@ -3950,13 +2806,35 @@ def test_credit_analysis_workflow_each_surface_is_independently_callable(
     action: str,
 ) -> None:
     request, _, _ = credit_analysis_request(tmp_path, action=action)
-    prepared = run_credit_analysis_workflow("prepare", "--request", str(request))
-    assert prepared.returncode == 0, prepared.stderr
-    status = json.loads(prepared.stdout)
-    assert status["pending_surface"] == action
-    state = json.loads(pathlib.Path(status["state_path"]).read_text(encoding="utf-8"))
-    assert state["mode"] == "standalone"
-    assert state["queue"] == [action]
+    workflow = load_credit_analysis_workflow_module()
+    runner = FakeCreditModelRunner(temporary_controls=False)
+    plan = workflow.command_plan_orchestration(
+        request,
+        available_models=runner.available_models,
+    )
+    manifest = json.loads(
+        pathlib.Path(plan["manifest_path"]).read_text(encoding="utf-8")
+    )
+    assert manifest["surface_order"] == [action]
+    assert plan["projected_semantic_calls"] == 2
+    complete = workflow.command_execute_orchestration(
+        pathlib.Path(plan["state_path"]),
+        runner=runner,
+        available_models=runner.available_models,
+    )
+    assert complete["complete"] is True
+    assert [call["phase"] for call in runner.calls] == [
+        "luna-discovery",
+        "sol-adjudication",
+    ]
+    assert "supplied fixed lenses" in runner.calls[0]["prompt"]
+    assert "every supplied surface section" in runner.calls[1]["prompt"]
+    final = json.loads(
+        pathlib.Path(complete["final_result_path"]).read_text(encoding="utf-8")
+    )
+    assert [item["surface_id"] for item in final["surface_summaries"]] == [
+        action
+    ]
 
 
 def test_credit_analysis_workflow_resolves_current_and_named_threads(
@@ -4003,7 +2881,7 @@ def test_credit_analysis_workflow_resolves_current_and_named_threads(
                 "task_temp_root": str(root),
                 "evidence_output": str(tmp_path / f"single-evidence-{name}.json"),
                 "pricing_profile": None,
-                "expected_surface_contract_version": 3,
+                "expected_surface_contract_version": 4,
                 "mutation_authority": False,
             },
         )

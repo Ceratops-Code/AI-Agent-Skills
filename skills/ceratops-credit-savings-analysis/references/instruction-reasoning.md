@@ -27,10 +27,10 @@ cost.
 
 ## Completion Gate
 
-Account for every exposed model-call candidate against original evidence and
-persist all confirmed findings, risks, dismissals, necessary exclusions, and
-temporary-control contributions in the single controller-owned confirmation
-result.
+Review all instruction-reasoning signals supplied through the complete causal
+stream and persist every Sol-confirmed finding, plausible risk, and
+temporary-control contribution. Final grouped call accounting must cover every
+source call without per-surface dismissal records.
 
 ## Output Contract
 

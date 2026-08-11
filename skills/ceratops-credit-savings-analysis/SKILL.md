@@ -32,45 +32,46 @@ applies them.
   closure; active runs and the boundary run are excluded.
 - For a single-thread full analysis or standalone surface, run
   `python scripts/credit-analysis-workflow.py plan --request REQUEST` once.
-  Each request must set `mutation_authority` to `false`, name a caller-selected
-  task temporary root and retained evidence output, and use the current contract
-  versions. Planning collects and parses the selected session exactly once;
-  records an immutable collection cutoff and source lineage; rejects
-  controller-generated analysis-child sessions through a stable marker; retains
-  complete protected evidence;
-  snapshots referenced final canonical artifacts read-only; builds causally
-  adjacent episodes once; maps every candidate to its applicable surfaces;
-  freezes finite shared chunks; and reports projected Luna and Sol calls before
-  model execution.
+  Require mutation authority `false`, current contract versions, and
+  caller-selected task-root and retained-evidence paths.
+  Planning collects and parses the selected session exactly once, freezes its
+  cutoff before child execution, and assigns exact controller lineage. Analysis
+  A excludes only its own recorded descendants. A later analysis B may inspect
+  A's retained prompts, model calls, latency, failures, token usage, and
+  orchestration while excluding only B's descendants. Keep analysis-generated
+  work separate from producer work and savings attribution.
+- Planning retains complete protected evidence and read-only canonical snapshots,
+  builds one compact causal episode stream for every selected call, budgets each
+  model packet from the effective local model context, splits that shared stream
+  only when required, and reports projected Luna and Sol calls before execution.
 - Run `python scripts/credit-analysis-workflow.py execute --state STATE` to
   execute or resume the frozen plan. Treat controller state, evidence and
   manifest hashes, task identities, candidate membership, prompts, results,
   and attempt telemetry as authoritative. Execution never recollects the
   session. Never skip, repeat, reorder, or add a semantic task outside the
   manifest.
-- The controller validates `gpt-5.6-luna` and `gpt-5.6-sol` with maximum
-  reasoning effort from the local Codex catalog. It launches explicit-model,
-  ephemeral, read-only, approval-free child executions, waits internally,
-  emits non-model progress, and persists controller-owned prompt, schema,
-  evidence, event, and result files. Accepted semantic calls and all attempted
-  calls have separate ledgers; failed attempts remain hashed and resumable.
-  Child prompts are self-contained and prohibit tools and mutation.
-- Every selected call belongs to exactly one shared Luna primary chunk. A Luna
-  call receives one causally ordered episode packet and accounts for every
-  applicable candidate-surface pair as provisional-finding evidence, plausible
-  risk, dismissed with reason, or necessary exclusion with evidence.
-  Deterministic code validates identifiers and complete coverage but makes no
-  semantic classification. No selected call is omitted from Luna or truncated
-  from retained evidence to make a packet fit.
-- Run the finite shared Luna consolidation queue once before projecting results
-  to surfaces, preserving every candidate-surface pair and material variant. Run
-  exactly one `gpt-5.6-sol` confirmation per public surface against original
-  evidence for all Luna findings and risks, every observably high-signal episode
-  even when Luna dismissed it through deterministic first/last representatives
-  per episode and signal reason, and a deterministic audit sample of ordinary
-  dismissals. Run exactly one `gpt-5.6-sol` synthesis and no GPT-5.6 bookkeeping
-  calls. Stop before model execution when the shared plan is empty, malformed,
-  or exceeds the contract's semantic-call cap; never truncate source coverage.
+- The controller validates `gpt-5.6-luna` at medium effort and
+  `gpt-5.6-sol` at maximum effort from the local Codex catalog. It launches
+  explicit-model, ephemeral, read-only, approval-free children, waits internally,
+  emits non-model progress, and owns every prompt, schema, evidence, event, and
+  result file. Accepted calls and attempts have immutable hashes and resumable
+  ledgers. Child prompts prohibit tools and mutation, and interruption or timeout
+  terminates the complete child process tree.
+- Every selected call appears exactly once in one ordered compact causal packet.
+  Luna receives 100% of those packets and performs high-recall discovery across
+  the five fixed surfaces, returning only plausible findings, risks, and
+  temporary controls with candidate and evidence references. It does not emit a
+  candidate-by-surface dismissal matrix or final savings. Complete oversized
+  payloads remain on disk with length, hash, outcome, and bounded useful excerpts
+  in model evidence; no selected call is silently omitted or truncated away.
+- A normal full analysis runs one Luna discovery and one Sol adjudication. If
+  the dynamically budgeted Luna packet cannot fit, partition the causal episodes
+  once into the minimum ordered shared packets, with at most four Luna calls and
+  no per-surface chunking or consolidation. Run exactly one Sol pass that verifies
+  every Luna candidate against original evidence, merges overlaps and temporary
+  controls, applies recurrence and ROI rules, classifies every source call in
+  grouped form, and produces the final synthesis. Run no model bookkeeping calls;
+  stop before execution when the finite plan is malformed or exceeds the cap.
 - Keep session evidence, accepted surface results, the append-only index, and
   the final machine result at their controller-retained paths. Do not echo raw
   session material or caller-local paths unnecessarily.
@@ -121,18 +122,17 @@ applies them.
 
 ### Completion Gate
 
-- A surface is complete only after Luna covers every applicable
-  candidate-surface pair exactly once and the controller accepts one immutable
-  Sol confirmation covering every selected material, high-signal, and audited
-  candidate against original evidence. A zero-finding surface must still retain
-  Luna's dismissal, risk, or exclusion for every applicable candidate.
+- A surface is complete only when Luna has received every applicable causal
+  episode, Sol has adjudicated every surfaced candidate against original
+  evidence, and all confirmed findings and plausible risks for that lens remain
+  in the final result. Do not require a semantic dismissal record for every
+  call-surface pair.
 - `full-analysis` is complete only after the frozen manifest proves complete,
-  ordered, non-overlapping shared primary coverage; every Luna task and exactly
-  five Sol confirmations plus one Sol synthesis have immutable identity and
-  content hashes; temporary-control contributions are merged once by
-  owner/control; every confirmed finding remains; every model call has one
-  primary classification; overlaps do not double-count savings; and controller
-  finalization succeeds.
+  ordered, non-overlapping call coverage; every Luna task and the single Sol task
+  have immutable identity and content hashes; temporary-control contributions
+  are merged once by owner/control; every confirmed finding remains; every source
+  call has one primary grouped classification; unassessed calls stay within the
+  contract limit; overlaps do not double-count savings; and finalization succeeds.
 - A standalone action is complete only after the selected surface result is
   accepted and controller finalization succeeds.
 

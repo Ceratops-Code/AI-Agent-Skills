@@ -33,10 +33,10 @@ required freshness or safety work as waste.
 
 ## Completion Gate
 
-Account for every controller-exposed candidate as confirmed, plausible,
-dismissed, or necessary against original evidence. Persist the complete
-classification and any temporary-control contributions in the single
-controller-owned confirmation result.
+Review all context-evidence signals supplied through the complete causal stream
+and persist every Sol-confirmed finding, plausible risk, and temporary-control
+contribution. Final grouped call accounting must cover every source call without
+requiring a separate semantic disposition for every call and lens combination.
 
 ## Output Contract
 
