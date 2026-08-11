@@ -9688,12 +9688,6 @@ def _holistic_prepare_task(
         if digest != task["input_sha256"]:
             raise CreditAnalysisError("Luna input changed")
         luna_candidate_ids: list[str] = []
-        schema = _holistic_luna_schema(
-            state=state,
-            task=task,
-            input_sha256=digest,
-            contract=contract,
-        )
     else:
         payload, luna_candidate_ids = _holistic_sol_input(
             state=state,
@@ -9703,24 +9697,56 @@ def _holistic_prepare_task(
             task=task,
         )
         digest = _write_or_verify_task_input(input_path, payload)
-        schema = _holistic_sol_schema(
+    schema_path = pathlib.Path(str(task["artifacts"]["schema"]))
+    prompt_path = pathlib.Path(str(task["artifacts"]["prompt"]))
+    existing_contract = schema_path.exists() or prompt_path.exists()
+    if existing_contract:
+        if (
+            not schema_path.is_file()
+            or schema_path.is_symlink()
+            or not prompt_path.is_file()
+            or prompt_path.is_symlink()
+        ):
+            raise CreditAnalysisError("frozen model prompt/schema pair is incomplete")
+        schema = _read_json(schema_path, "frozen holistic output schema")
+        properties = schema.get("properties")
+        input_identity = (
+            properties.get("input_sha256")
+            if isinstance(properties, Mapping)
+            else None
+        )
+        if (
+            not isinstance(input_identity, Mapping)
+            or input_identity.get("const") != digest
+            or f"The input identity is {digest}."
+            not in prompt_path.read_text(encoding="utf-8")
+        ):
+            raise CreditAnalysisError("frozen model prompt/schema identity changed")
+    else:
+        if task["phase"] == "luna-discovery":
+            schema = _holistic_luna_schema(
+                state=state,
+                task=task,
+                input_sha256=digest,
+                contract=contract,
+            )
+        else:
+            schema = _holistic_sol_schema(
+                state=state,
+                task=task,
+                input_sha256=digest,
+                contract=contract,
+                luna_candidate_ids=luna_candidate_ids,
+            )
+        _write_or_verify_json(schema_path, schema, "holistic output schema")
+        prompt = _holistic_prompt(
             state=state,
             task=task,
+            input_payload=payload,
             input_sha256=digest,
-            contract=contract,
             luna_candidate_ids=luna_candidate_ids,
         )
-    schema_path = pathlib.Path(str(task["artifacts"]["schema"]))
-    _write_or_verify_json(schema_path, schema, "holistic output schema")
-    prompt_path = pathlib.Path(str(task["artifacts"]["prompt"]))
-    prompt = _holistic_prompt(
-        state=state,
-        task=task,
-        input_payload=payload,
-        input_sha256=digest,
-        luna_candidate_ids=luna_candidate_ids,
-    )
-    _write_or_verify_text(prompt_path, prompt, "holistic model prompt")
+        _write_or_verify_text(prompt_path, prompt, "holistic model prompt")
     return payload, digest, prompt_path, schema_path, luna_candidate_ids
 
 

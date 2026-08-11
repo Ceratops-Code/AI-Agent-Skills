@@ -2236,6 +2236,7 @@ def test_credit_analysis_workflow_end_to_end_uses_two_semantic_calls(
 
 def test_credit_analysis_recovers_packet_local_luna_evidence_without_a_retry(
     tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     workflow = load_credit_analysis_workflow_module()
     request, _, _ = credit_analysis_request(
@@ -2304,6 +2305,11 @@ def test_credit_analysis_recovers_packet_local_luna_evidence_without_a_retry(
     state["model_attempts"]["luna"] = 1
     workflow._holistic_sync_child_lineage(state)
     workflow._holistic_save_state(state)
+    monkeypatch.setattr(
+        workflow,
+        "_holistic_prompt",
+        lambda **_: pytest.fail("resume regenerated a frozen model prompt"),
+    )
 
     calls_before_resume = len(runner.calls)
     resumed = workflow.command_execute_orchestration(
