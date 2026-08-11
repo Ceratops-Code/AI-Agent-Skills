@@ -42,6 +42,10 @@ query(
         requiresApprovingReviews
         requiredApprovingReviewCount
         requiresConversationResolution
+        requiresStatusChecks
+        requiredStatusChecks {
+          context
+        }
       }
       rules(first: 100, after: $cursor) {
         nodes {
@@ -51,6 +55,11 @@ query(
             ... on PullRequestParameters {
               requiredApprovingReviewCount
               requiredReviewThreadResolution
+            }
+            ... on RequiredStatusChecksParameters {
+              requiredStatusChecks {
+                context
+              }
             }
           }
         }
@@ -82,6 +91,21 @@ KNOWN_CHECK_STATUSES = PENDING_CHECK_STATUSES | {"COMPLETED"}
 PENDING_CONTEXT_STATES = frozenset({"PENDING", "EXPECTED"})
 FAILING_CONTEXT_STATES = frozenset({"FAILURE", "ERROR"})
 KNOWN_CONTEXT_STATES = PENDING_CONTEXT_STATES | FAILING_CONTEXT_STATES | {"SUCCESS"}
+NO_STATUS_CHECKS_MESSAGE = "No status checks are attached to this PR."
+REQUIRED_STATUS_CHECKS_MISSING_MESSAGE = (
+    "Required status checks are not attached to this PR."
+)
+UNKNOWN_STATUS_CHECK_MESSAGE = "Status-check entry has unknown state."
+INCOMPLETE_STATUS_CHECK_MESSAGE = (
+    "Status-check entry has no terminal or pending state."
+)
+SHORT_STATUS_CHECK_UNCERTAINTY_MESSAGES = frozenset(
+    {
+        REQUIRED_STATUS_CHECKS_MISSING_MESSAGE,
+        UNKNOWN_STATUS_CHECK_MESSAGE,
+        INCOMPLETE_STATUS_CHECK_MESSAGE,
+    }
+)
 
 
 class CommandError(RuntimeError):
@@ -200,7 +224,7 @@ def gh_graphql(
     return result.data
 
 
-def normalized_rule_parameters(
+def normalized_pull_request_parameters(
     count: object,
     thread_resolution: object,
     *,
@@ -222,6 +246,32 @@ def normalized_rule_parameters(
     }
 
 
+def normalized_required_status_checks(
+    raw_checks: object,
+    *,
+    source: str,
+) -> list[str]:
+    """Validate required-check contexts from one applicable branch rule."""
+
+    if raw_checks is None:
+        raw_checks = []
+    if not isinstance(raw_checks, list):
+        raise CommandError(f"GitHub {source} required checks are invalid")
+    contexts: list[str] = []
+    for index, raw_check in enumerate(raw_checks):
+        if not isinstance(raw_check, dict):
+            raise CommandError(
+                f"GitHub {source} required check {index} is invalid"
+            )
+        context = raw_check.get("context")
+        if not isinstance(context, str) or not context:
+            raise CommandError(
+                f"GitHub {source} required check {index} omitted its context"
+            )
+        contexts.append(context)
+    return sorted(set(contexts))
+
+
 def classic_rule_parameters(raw_rule: object) -> dict[str, Any] | None:
     """Normalize classic branch protection when the exact ref has one."""
 
@@ -239,40 +289,66 @@ def classic_rule_parameters(raw_rule: object) -> dict[str, Any] | None:
         count = 0
     if isinstance(count, int) and not isinstance(count, bool):
         count = max(count, int(requires_approvals))
-    return normalized_rule_parameters(
+    parameters = normalized_pull_request_parameters(
         count,
         raw_rule.get("requiresConversationResolution"),
         source="classic branch protection",
     )
+    requires_checks = raw_rule.get("requiresStatusChecks")
+    if not isinstance(requires_checks, bool):
+        raise CommandError(
+            "GitHub classic branch protection omitted status-check policy"
+        )
+    required_checks = normalized_required_status_checks(
+        raw_rule.get("requiredStatusChecks"),
+        source="classic branch protection",
+    )
+    if requires_checks and not required_checks:
+        raise CommandError(
+            "GitHub classic branch protection requires checks but names none"
+        )
+    parameters["required_status_checks"] = (
+        required_checks if requires_checks else []
+    )
+    return parameters
 
 
 def ruleset_rule_parameters(raw_rule: object) -> dict[str, Any] | None:
-    """Normalize an applicable ruleset rule, ignoring non-PR rule types."""
+    """Normalize one applicable PR or required-status-check ruleset rule."""
 
     if not isinstance(raw_rule, dict):
         raise CommandError("GitHub applicable branch rule is invalid")
     rule_type = raw_rule.get("type")
     if not isinstance(rule_type, str):
         raise CommandError("GitHub applicable branch rule omitted its type")
-    if rule_type != "PULL_REQUEST":
+    if rule_type not in {"PULL_REQUEST", "REQUIRED_STATUS_CHECKS"}:
         return None
     parameters = raw_rule.get("parameters")
-    if (
-        not isinstance(parameters, dict)
-        or parameters.get("__typename") != "PullRequestParameters"
-    ):
-        raise CommandError("GitHub pull-request rule has invalid parameters")
-    return normalized_rule_parameters(
-        parameters.get("requiredApprovingReviewCount"),
-        parameters.get("requiredReviewThreadResolution"),
-        source="pull-request rule",
+    if not isinstance(parameters, dict):
+        raise CommandError("GitHub applicable branch rule has invalid parameters")
+    if rule_type == "PULL_REQUEST":
+        if parameters.get("__typename") != "PullRequestParameters":
+            raise CommandError("GitHub pull-request rule has invalid parameters")
+        return normalized_pull_request_parameters(
+            parameters.get("requiredApprovingReviewCount"),
+            parameters.get("requiredReviewThreadResolution"),
+            source="pull-request rule",
+        )
+    if parameters.get("__typename") != "RequiredStatusChecksParameters":
+        raise CommandError("GitHub required-status-check rule has invalid parameters")
+    required_checks = normalized_required_status_checks(
+        parameters.get("requiredStatusChecks"),
+        source="required-status-check rule",
     )
+    if not required_checks:
+        raise CommandError("GitHub required-status-check rule names no checks")
+    return {"required_status_checks": required_checks}
 
 
-def pull_request_rule_parameters(
+def applicable_branch_rule_parameters(
     base_branch: str, cwd: pathlib.Path
 ) -> list[dict[str, Any]]:
-    """Return all active PR rules applied to the exact base ref."""
+    """Return active PR and status-check rules applied to the exact base ref."""
 
     if not base_branch:
         raise CommandError("GitHub base branch is empty")
@@ -349,16 +425,43 @@ def pull_request_rule_parameters(
     return parameters_list
 
 
+def branch_rule_policy(base_branch: str, cwd: pathlib.Path) -> dict[str, Any]:
+    """Aggregate the applied review and required-status-check policy."""
+
+    required_count = 0
+    thread_resolution = False
+    required_checks: set[str] = set()
+    for parameters in applicable_branch_rule_parameters(base_branch, cwd):
+        count = parameters.get("required_approving_review_count")
+        if count is not None:
+            if not isinstance(count, int) or isinstance(count, bool) or count < 0:
+                raise CommandError(
+                    "GitHub pull-request rule has an invalid review count"
+                )
+            required_count = max(required_count, count)
+        thread_resolution = thread_resolution or (
+            parameters.get("required_review_thread_resolution") is True
+        )
+        checks = parameters.get("required_status_checks")
+        if checks is not None:
+            if not isinstance(checks, list) or any(
+                not isinstance(check, str) or not check for check in checks
+            ):
+                raise CommandError(
+                    "GitHub branch rule has invalid required status checks"
+                )
+            required_checks.update(checks)
+    return {
+        "required_approving_review_count": required_count,
+        "required_review_thread_resolution": thread_resolution,
+        "required_status_checks": sorted(required_checks),
+    }
+
+
 def required_approving_review_count(base_branch: str, cwd: pathlib.Path) -> int:
     """Return the strongest pull-request approval rule applied to the branch."""
 
-    required_count = 0
-    for parameters in pull_request_rule_parameters(base_branch, cwd):
-        count = parameters.get("required_approving_review_count")
-        if not isinstance(count, int) or isinstance(count, bool) or count < 0:
-            raise CommandError("GitHub pull-request rule has an invalid review count")
-        required_count = max(required_count, count)
-    return required_count
+    return int(branch_rule_policy(base_branch, cwd)["required_approving_review_count"])
 
 
 def review_thread_resolution_required(
@@ -366,9 +469,8 @@ def review_thread_resolution_required(
 ) -> bool:
     """Return whether an applied branch rule requires every thread resolved."""
 
-    return any(
-        parameters.get("required_review_thread_resolution") is True
-        for parameters in pull_request_rule_parameters(base_branch, cwd)
+    return bool(
+        branch_rule_policy(base_branch, cwd)["required_review_thread_resolution"]
     )
 
 
@@ -414,7 +516,12 @@ def add(
     findings.append(Finding(level=level, check=check, message=message, actual=actual, expected=expected))
 
 
-def status_rollup_findings(pr_data: dict[str, Any], findings: list[Finding]) -> None:
+def status_rollup_findings(
+    pr_data: dict[str, Any],
+    findings: list[Finding],
+    *,
+    required_checks: list[str] | None = None,
+) -> None:
     """Classify the visible status checks attached to the PR."""
 
     raw_rollup = pr_data.get("statusCheckRollup")
@@ -422,7 +529,21 @@ def status_rollup_findings(pr_data: dict[str, Any], findings: list[Finding]) -> 
         add(findings, "ERROR", "pr.status_checks", "Could not parse status-check rollup.", actual=type(raw_rollup).__name__)
         return
     if not raw_rollup:
-        add(findings, "WARN", "pr.status_checks", "No status checks are attached to this PR.")
+        if required_checks:
+            add(
+                findings,
+                "WARN",
+                "pr.status_checks",
+                REQUIRED_STATUS_CHECKS_MISSING_MESSAGE,
+                actual=required_checks,
+            )
+        else:
+            add(
+                findings,
+                "WARN",
+                "pr.status_checks",
+                NO_STATUS_CHECKS_MESSAGE,
+            )
         return
 
     failed: list[str] = []
@@ -442,6 +563,13 @@ def status_rollup_findings(pr_data: dict[str, Any], findings: list[Finding]) -> 
         conclusion = item.get("conclusion")
         status = item.get("status")
         state = item.get("state")
+        state_evidence = {
+            "index": index,
+            "name": name,
+            "conclusion": conclusion,
+            "status": status,
+            "state": state,
+        }
         fields = {
             "conclusion": conclusion,
             "status": status,
@@ -460,7 +588,7 @@ def status_rollup_findings(pr_data: dict[str, Any], findings: list[Finding]) -> 
             )
             return
         if (
-            conclusion is not None
+            conclusion not in (None, "")
             and conclusion
             not in PASSING_CHECK_CONCLUSIONS | FAILING_CHECK_CONCLUSIONS
         ) or (status is not None and status not in KNOWN_CHECK_STATUSES) or (
@@ -470,8 +598,8 @@ def status_rollup_findings(pr_data: dict[str, Any], findings: list[Finding]) -> 
                 findings,
                 "ERROR",
                 "pr.status_checks",
-                "Status-check entry has unknown state.",
-                actual=name,
+                UNKNOWN_STATUS_CHECK_MESSAGE,
+                actual=state_evidence,
             )
             return
         # GitHub treats SUCCESS, SKIPPED, and NEUTRAL as successful required
@@ -487,13 +615,25 @@ def status_rollup_findings(pr_data: dict[str, Any], findings: list[Finding]) -> 
                 findings,
                 "ERROR",
                 "pr.status_checks",
-                "Status-check entry has no terminal or pending state.",
-                actual=name,
+                INCOMPLETE_STATUS_CHECK_MESSAGE,
+                actual=state_evidence,
             )
             return
 
+    visible = set(failed) | set(pending) | set(passed)
+    missing_required = [
+        check for check in (required_checks or []) if check not in visible
+    ]
     if failed:
         add(findings, "ERROR", "pr.status_checks", "One or more status checks are failing.", actual=failed)
+    elif missing_required:
+        add(
+            findings,
+            "WARN",
+            "pr.status_checks",
+            REQUIRED_STATUS_CHECKS_MISSING_MESSAGE,
+            actual=missing_required,
+        )
     elif pending:
         add(findings, "WARN", "pr.status_checks", "Status checks are still pending.", actual=pending)
     else:
@@ -525,11 +665,19 @@ def pr_readiness(selector: str | None, cwd: pathlib.Path, *, allow_admin_review_
         add(findings, "WARN", "pr.mergeable", "PR mergeability needs a live re-check.", actual=mergeable)
 
     review_decision = pr_data.get("reviewDecision")
-    if review_decision in {None, ""}:
+    raw_rollup = pr_data.get("statusCheckRollup")
+    needs_branch_policy = review_decision in {None, ""} or isinstance(
+        raw_rollup, list
+    )
+    branch_policy: dict[str, Any] | None = None
+    if needs_branch_policy:
         base_branch = pr_data.get("baseRefName")
         if not isinstance(base_branch, str) or not base_branch:
             raise CommandError("PR readiness did not return a base branch")
-        if required_approving_review_count(base_branch, cwd) > 0:
+        branch_policy = branch_rule_policy(base_branch, cwd)
+    if review_decision in {None, ""}:
+        assert branch_policy is not None
+        if branch_policy["required_approving_review_count"] > 0:
             review_decision = "REVIEW_REQUIRED"
     if review_decision in {"APPROVED", None, ""}:
         add(findings, "PASS", "pr.review_decision", "No blocking review decision is present.", actual=review_decision)
@@ -540,7 +688,17 @@ def pr_readiness(selector: str | None, cwd: pathlib.Path, *, allow_admin_review_
     else:
         add(findings, "ERROR", "pr.review_decision", "PR has a blocking review decision.", actual=review_decision, expected="APPROVED")
 
-    status_rollup_findings(pr_data, findings)
+    required_checks = None
+    if isinstance(raw_rollup, list):
+        assert branch_policy is not None
+        policy_checks = branch_policy["required_status_checks"]
+        assert isinstance(policy_checks, list)
+        required_checks = policy_checks
+    status_rollup_findings(
+        pr_data,
+        findings,
+        required_checks=required_checks,
+    )
 
     if pr_data.get("autoMergeRequest"):
         add(findings, "PASS", "pr.auto_merge_request", "Auto-merge is already configured.", actual=True)

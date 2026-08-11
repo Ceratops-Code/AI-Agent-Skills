@@ -34,34 +34,43 @@ applies them.
   `python scripts/credit-analysis-workflow.py plan --request REQUEST` once.
   Each request must set `mutation_authority` to `false`, name a caller-selected
   task temporary root and retained evidence output, and use the current contract
-  versions. Planning collects and parses the selected session exactly once,
-  writes complete protected evidence, snapshots referenced final canonical
-  artifacts read-only, freezes finite surface chunks, and reports projected
-  Spark calls before model execution.
+  versions. Planning collects and parses the selected session exactly once;
+  records an immutable collection cutoff and source lineage; rejects
+  controller-generated analysis-child sessions through a stable marker; retains
+  complete protected evidence;
+  snapshots referenced final canonical artifacts read-only; builds causally
+  adjacent episodes once; maps every candidate to its applicable surfaces;
+  freezes finite shared chunks; and reports projected Luna and Sol calls before
+  model execution.
 - Run `python scripts/credit-analysis-workflow.py execute --state STATE` to
   execute or resume the frozen plan. Treat controller state, evidence and
   manifest hashes, task identities, candidate membership, prompts, results,
-  and attempt telemetry as authoritative. Never skip, repeat, reorder, or add a
-  semantic task outside the manifest.
-- The controller validates `gpt-5.3-codex-spark` and `gpt-5.6-sol` from the
-  local Codex catalog. It launches explicit-model, ephemeral, read-only,
-  approval-free child executions, waits internally, emits non-model progress,
-  and persists controller-owned prompt, schema, evidence, event, and result
-  files. Accepted semantic calls and all attempted calls have separate ledgers;
-  failed attempts remain hashed and resumable instead of being hidden. Child
-  prompts are self-contained and prohibit tools and mutation.
-- For each public surface, deterministically format causally ordered evidence
-  for every candidate call and assign each candidate to exactly one primary
-  Spark chunk. Spark must account for every candidate as provisional-finding
-  evidence, plausible risk, dismissed with reason, or necessary exclusion with
-  evidence. Deterministic code validates identifiers and complete coverage but
-  makes no semantic classification.
-- When primary Spark results cannot fit one confirmation packet, run only the
-  manifest's finite Spark consolidation queue and preserve every candidate ID
-  and material variant. Then run exactly one `gpt-5.6-sol` confirmation per
-  public surface against Spark candidates and original evidence excerpts, and
-  exactly one `gpt-5.6-sol` synthesis. No GPT-5.6 bookkeeping call may occur
-  between semantic phases.
+  and attempt telemetry as authoritative. Execution never recollects the
+  session. Never skip, repeat, reorder, or add a semantic task outside the
+  manifest.
+- The controller validates `gpt-5.6-luna` and `gpt-5.6-sol` with maximum
+  reasoning effort from the local Codex catalog. It launches explicit-model,
+  ephemeral, read-only, approval-free child executions, waits internally,
+  emits non-model progress, and persists controller-owned prompt, schema,
+  evidence, event, and result files. Accepted semantic calls and all attempted
+  calls have separate ledgers; failed attempts remain hashed and resumable.
+  Child prompts are self-contained and prohibit tools and mutation.
+- Every selected call belongs to exactly one shared Luna primary chunk. A Luna
+  call receives one causally ordered episode packet and accounts for every
+  applicable candidate-surface pair as provisional-finding evidence, plausible
+  risk, dismissed with reason, or necessary exclusion with evidence.
+  Deterministic code validates identifiers and complete coverage but makes no
+  semantic classification. No selected call is omitted from Luna or truncated
+  from retained evidence to make a packet fit.
+- Run the finite shared Luna consolidation queue once before projecting results
+  to surfaces, preserving every candidate-surface pair and material variant. Run
+  exactly one `gpt-5.6-sol` confirmation per public surface against original
+  evidence for all Luna findings and risks, every observably high-signal episode
+  even when Luna dismissed it through deterministic first/last representatives
+  per episode and signal reason, and a deterministic audit sample of ordinary
+  dismissals. Run exactly one `gpt-5.6-sol` synthesis and no GPT-5.6 bookkeeping
+  calls. Stop before model execution when the shared plan is empty, malformed,
+  or exceeds the contract's semantic-call cap; never truncate source coverage.
 - Keep session evidence, accepted surface results, the append-only index, and
   the final machine result at their controller-retained paths. Do not echo raw
   session material or caller-local paths unnecessarily.
@@ -112,14 +121,14 @@ applies them.
 
 ### Completion Gate
 
-- A surface is complete only after every primary Spark candidate is covered
-  exactly once, every consolidation preserves its candidates and material
-  variants, and the controller accepts one immutable confirmation result. A
-  zero-finding surface must still dismiss, risk-classify, or exclude every
-  candidate with original evidence.
+- A surface is complete only after Luna covers every applicable
+  candidate-surface pair exactly once and the controller accepts one immutable
+  Sol confirmation covering every selected material, high-signal, and audited
+  candidate against original evidence. A zero-finding surface must still retain
+  Luna's dismissal, risk, or exclusion for every applicable candidate.
 - `full-analysis` is complete only after the frozen manifest proves complete,
-  ordered, non-overlapping Spark primary coverage; every Spark task and exactly
-  five surface confirmations plus one synthesis have immutable identity and
+  ordered, non-overlapping shared primary coverage; every Luna task and exactly
+  five Sol confirmations plus one Sol synthesis have immutable identity and
   content hashes; temporary-control contributions are merged once by
   owner/control; every confirmed finding remains; every model call has one
   primary classification; overlaps do not double-count savings; and controller
@@ -163,9 +172,9 @@ applies them.
   repository, automation, workflow, or tool configuration. Route any later
   implementation through the owning lifecycle after a separate execution
   request.
-- Collection and synthesis are internal controller phases. Do not expose
-  Spark chunking, consolidation, `collect`, `reconcile`, `synthesis`, `apply`,
-  or `modify` as public actions.
+- Collection and synthesis are internal controller phases. Do not expose Luna
+  chunking, consolidation, `collect`, `reconcile`, `synthesis`, `apply`, or
+  `modify` as public actions.
 - Stop blocked when a selected source cannot be resolved, the completed-run
   window is invalid, controller evidence is stale or mismatched, or required
   semantic evidence is unavailable. Do not substitute visible conversation

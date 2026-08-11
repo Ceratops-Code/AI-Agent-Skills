@@ -25,7 +25,8 @@ Infer these inputs from the exact approved change before asking.
   lifecycle: `python scripts/promote-repository.py --repo-root PATH
   --main-branch main --release-branch release/local --remote-name origin
   --prepare-release-only`.
-- (D) Write one version-2 JSON request and run `python
+- (D) Write one version-2 JSON request directly under
+  `<repo-parent>/tmp/<repo-name>/<task>/` and run `python
   scripts/fast-change.py --request <request>` from the skill lifecycle bundle.
   The request contains `version`, `repo_root`, `release_branch`, `edits`,
   `selected_skills`, `removed_skills`, `classification`, `tests`, and
@@ -67,10 +68,11 @@ Infer these inputs from the exact approved change before asking.
    Markdown. Rules-only requests run no other validation or tests; helper
    requests then run only the declared pytest nodes.
 5. The helper invokes the installer once for the exact selected skills, stages
-   only edit paths, and commits once.
+   only edit paths, commits once, then removes the exact request and its empty
+   task-temp directory.
 6. On apply, lint, test, install, staging, or commit failure, the helper
-   reverses only its generated diff. If runtime activation completed before a later
-   failure, it reinstalls the restored selected snapshot.
+   reverses only its generated diff, preserves the request, and, if runtime
+   activation completed, reinstalls the restored selected snapshot.
 7. If classification returns `decision_required`, preserve the request as the
    `update` change specification and report the exact reason, files, skills,
    and required checks.

@@ -2,9 +2,10 @@
 
 ## Goal
 
-Run one complete two-tier controller plan with shared evidence, Spark discovery
-over every candidate chunk, one GPT-5.6 confirmation per public surface, and
-one internal GPT-5.6 synthesis. Preserve and present every confirmed finding.
+Run one complete two-tier controller plan. Analyze shared causal episodes once
+with Luna across every applicable surface, confirm material and audited evidence
+with one Sol pass per surface, and run one Sol synthesis. Preserve and present
+every confirmed finding.
 
 ## Inputs And Constraints
 
@@ -30,26 +31,31 @@ one internal GPT-5.6 synthesis. Preserve and present every confirmed finding.
 ## Workflow
 
 1. Run controller `plan` once. It resolves, collects, and parses the selected
-   session once; retains complete protected evidence; formats every candidate
-   for all five surfaces in fixed order; snapshots referenced final canonical
-   artifacts read-only with protected content and immutable hashes; partitions
-   adjacent candidates into finite model-sized chunks; freezes primary and
-   consolidation manifests; and reports projected Spark calls before model
-   execution. Stop on malformed, empty, or clearly runaway planning.
-2. Run controller `execute`. It processes the finite ordered resumable Spark
-   queue with `gpt-5.3-codex-spark`. Every primary result must account for every
-   chunk candidate exactly once, and every consolidation must preserve all
-   candidate IDs and material variants. The controller persists identity and
-   content hashes and validates complete Spark coverage before GPT-5.6 begins.
-3. In fixed surface order, the controller runs exactly one `gpt-5.6-sol`
-   confirmation per surface. Each self-contained packet includes every Spark
-   candidate and original evidence excerpts or explicit retained-payload
-   projections. Never suppress or silently truncate a candidate to fit.
-4. The controller runs exactly one `gpt-5.6-sol` synthesis. It merges duplicate
+   session once; freezes its collection cutoff and source lineage before any
+   child execution; excludes controller-generated analysis-child sessions by
+   stable marker;
+   retains complete protected evidence; snapshots referenced final canonical
+   artifacts read-only; builds causally adjacent episodes once; maps candidates
+   to all five surfaces in fixed order; partitions the shared episode stream
+   into finite chunks; and reports projected Luna and Sol calls. Stop on an
+   empty, malformed, or over-cap plan without truncating source coverage.
+2. Run controller `execute`. It never recollects the session. It processes the
+   finite ordered resumable shared queue with `gpt-5.6-luna` at maximum effort.
+   Every primary result accounts once for every applicable candidate-surface
+   pair. One shared Luna consolidation queue then preserves every pair and
+   material variant before results are projected to surfaces. The controller
+   persists identity and content hashes and validates 100% Luna coverage before
+   Sol begins.
+3. In fixed surface order, run exactly one `gpt-5.6-sol` confirmation at maximum
+   effort. Each packet verifies Luna findings and risks, every observably
+   high-signal episode even if Luna dismissed it through deterministic first/last
+   representatives per episode and signal reason, and a deterministic audit
+   sample of ordinary dismissals against original evidence.
+4. Run exactly one `gpt-5.6-sol` synthesis at maximum effort. It merges duplicate
    owner/control findings and temporary-control contributions once, preserves
    contributing surfaces, assigns savings once, classifies every call, and
-   retains every confirmed finding. A full analysis therefore uses exactly six
-   GPT-5.6 semantic calls; Spark calls are additional and manifest-derived.
+   retains every confirmed finding. A full analysis uses five Sol confirmations
+   plus one Sol synthesis; Luna calls are additional and manifest-derived.
 
 Every child Codex execution uses an explicit model, a read-only sandbox, no
 approvals, ephemeral state, a self-contained no-tools prompt, and
@@ -60,14 +66,14 @@ internally and emits periodic non-model progress. On interruption, rerun
 For a batch, use the existing `prepare-batch`, `advance-batch`, `status-batch`,
 and `finalize-batch` compatibility interface. It freezes selection and each
 lower-level child controller once, preserves the existing batch manifest and
-summary contracts, and does not expose Spark chunking or synthesis as public
-actions. Never create a temporary discovery script.
+summary contracts, and does not expose Luna chunking, consolidation, or
+synthesis as public actions. Never create a temporary discovery script.
 
 ## Completion Gate
 
 Complete only when orchestration status reports `complete: true` and retained
-evidence contains the frozen chunk manifest, every hashed Spark and GPT-5.6
-result, finding, risk, dismissal, exclusion, temporary-control review and
+evidence contains the frozen shared manifest, every hashed Luna and Sol result,
+finding, risk, dismissal, exclusion, temporary-control review and
 merge, reviewed-no-confirmed-waste and unassessed call, producer group, and ROI
 input.
 For a batch, every selected child must also be finalized and indexed exactly

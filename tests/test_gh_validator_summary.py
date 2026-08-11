@@ -2199,9 +2199,13 @@ class GHContractStateEngineTests(unittest.TestCase):
             mock.patch.object(pr_validator, "gh_pr_view", return_value=pr_data),
             mock.patch.object(
                 pr_validator,
-                "required_approving_review_count",
-                return_value=1,
-            ) as required_reviews,
+                "branch_rule_policy",
+                return_value={
+                    "required_approving_review_count": 1,
+                    "required_review_thread_resolution": False,
+                    "required_status_checks": [],
+                },
+            ) as branch_policy,
         ):
             _, findings = pr_validator.pr_readiness(
                 "17",
@@ -2216,7 +2220,7 @@ class GHContractStateEngineTests(unittest.TestCase):
         )
         self.assertEqual(review.level, "WARN")
         self.assertEqual(review.actual, "REVIEW_REQUIRED")
-        required_reviews.assert_called_once_with("main", pathlib.Path.cwd())
+        branch_policy.assert_called_once_with("main", pathlib.Path.cwd())
 
     def test_pr_rule_graphql_paginates_exact_ref_and_aggregates_policies(self):
         cwd = pathlib.Path.cwd()
@@ -2224,6 +2228,8 @@ class GHContractStateEngineTests(unittest.TestCase):
             "requiresApprovingReviews": True,
             "requiredApprovingReviewCount": 1,
             "requiresConversationResolution": False,
+            "requiresStatusChecks": False,
+            "requiredStatusChecks": [],
         }
         page_one = {
             "data": {
@@ -2236,7 +2242,10 @@ class GHContractStateEngineTests(unittest.TestCase):
                                 {
                                     "type": "REQUIRED_STATUS_CHECKS",
                                     "parameters": {
-                                        "__typename": "RequiredStatusChecksParameters"
+                                        "__typename": "RequiredStatusChecksParameters",
+                                        "requiredStatusChecks": [
+                                            {"context": "validate-repository"}
+                                        ],
                                     },
                                 },
                                 {
@@ -2308,7 +2317,7 @@ class GHContractStateEngineTests(unittest.TestCase):
                 ],
             ) as graphql,
         ):
-            parameters = pr_validator.pull_request_rule_parameters(
+            parameters = pr_validator.applicable_branch_rule_parameters(
                 "release/1.x", cwd
             )
 
@@ -2318,6 +2327,10 @@ class GHContractStateEngineTests(unittest.TestCase):
                 {
                     "required_approving_review_count": 1,
                     "required_review_thread_resolution": False,
+                    "required_status_checks": [],
+                },
+                {
+                    "required_status_checks": ["validate-repository"],
                 },
                 {
                     "required_approving_review_count": 2,
@@ -2345,7 +2358,7 @@ class GHContractStateEngineTests(unittest.TestCase):
         self.assertEqual(graphql.call_args_list[1].args[1]["cursor"], "cursor-1")
         with mock.patch.object(
             pr_validator,
-            "pull_request_rule_parameters",
+            "applicable_branch_rule_parameters",
             return_value=parameters,
         ):
             self.assertEqual(
@@ -2394,12 +2407,12 @@ class GHContractStateEngineTests(unittest.TestCase):
                 ),
             ),
         ):
-            parameters = pr_validator.pull_request_rule_parameters("main", cwd)
+            parameters = pr_validator.applicable_branch_rule_parameters("main", cwd)
 
         self.assertEqual(parameters, [])
         with mock.patch.object(
             pr_validator,
-            "pull_request_rule_parameters",
+            "applicable_branch_rule_parameters",
             return_value=parameters,
         ):
             self.assertEqual(
@@ -2429,7 +2442,7 @@ class GHContractStateEngineTests(unittest.TestCase):
             ),
             self.assertRaisesRegex(pr_validator.CommandError, "forbidden"),
         ):
-            pr_validator.pull_request_rule_parameters(
+            pr_validator.applicable_branch_rule_parameters(
                 "main", pathlib.Path.cwd()
             )
 
@@ -2471,7 +2484,7 @@ class GHContractStateEngineTests(unittest.TestCase):
                 pr_validator.CommandError, "pagination did not advance"
             ),
         ):
-            pr_validator.pull_request_rule_parameters(
+            pr_validator.applicable_branch_rule_parameters(
                 "main", pathlib.Path.cwd()
             )
 

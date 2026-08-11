@@ -17,7 +17,7 @@ import pathlib
 import re
 import sys
 import time
-from typing import Any
+from typing import Any, Mapping
 
 from github_contract_engine.github_api import run_gh_api, run_json_command
 from github_contract_engine.levels import ERROR, WARN
@@ -27,6 +27,7 @@ from .command import CommandError, require_output, require_success, run_command
 
 PHASES = ("prepared", "pr_ready", "gates_passed", "merged", "synchronized")
 FULL_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 ACTION_LINK_RE = re.compile(
     r"/actions/runs/(?P<run>\d+)(?:/job/(?P<job>\d+))?"
 )
@@ -38,6 +39,7 @@ FAILING_CHECK_STATES = {
     "STARTUP_FAILURE",
     "TIMED_OUT",
 }
+CHECK_UNCERTAINTY_GRACE_SECONDS = 60
 
 
 class ShipError(RuntimeError):
@@ -735,22 +737,14 @@ def _transient_readiness(finding: readiness.Finding) -> bool:
     if finding.check == "pr.mergeable" and finding.level == WARN:
         return True
     if finding.check == "pr.status_checks" and finding.level == WARN:
-        # Only concrete pending checks consume the CI wait. An empty rollup is
-        # advisory; the parallel review window and final gate re-read still
-        # protect against checks that attach after PR creation.
+        # Concrete pending checks consume the configured CI wait. Required
+        # checks awaiting attachment use the shorter uncertainty grace below.
         return isinstance(finding.actual, list) and bool(finding.actual)
     if (
         finding.check == "pr.status_checks"
         and finding.level == ERROR
-        and finding.message
-        in {
-            "Status-check entry has unknown state.",
-            "Status-check entry has no terminal or pending state.",
-        }
+        and finding.message in readiness.SHORT_STATUS_CHECK_UNCERTAINTY_MESSAGES
     ):
-        # GitHub can expose incomplete rollup snapshots while check state
-        # propagates. Keep them inside the existing bounded CI wait, with one
-        # immediate confirmation before normal polling begins.
         return True
     if (
         finding.check == "pr.review_decision"
@@ -759,6 +753,15 @@ def _transient_readiness(finding: readiness.Finding) -> bool:
     ):
         return True
     return False
+
+
+def _short_check_uncertainty(finding: readiness.Finding) -> bool:
+    """Return whether one check finding uses the fixed diagnostic grace."""
+
+    return (
+        finding.check == "pr.status_checks"
+        and finding.message in readiness.SHORT_STATUS_CHECK_UNCERTAINTY_MESSAGES
+    )
 
 
 def _compact_failed_log(value: str, *, limit: int = 2_000) -> str | None:
@@ -771,13 +774,12 @@ def _compact_failed_log(value: str, *, limit: int = 2_000) -> str | None:
     return excerpt if len(excerpt) <= limit else excerpt[-limit:]
 
 
-def _failed_check_detail(
+def _read_pr_checks(
     pr: str,
     repository: str,
     repo_root: pathlib.Path,
-    fallback_names: list[str],
-) -> dict[str, Any]:
-    """Read the first failing check and its compact failed-log context."""
+) -> tuple[list[dict[str, Any]], str | None]:
+    """Return normalized PR checks plus one compact query diagnostic."""
 
     result = run_json_command(
         [
@@ -793,7 +795,32 @@ def _failed_check_detail(
         "gh pr checks",
         cwd=repo_root,
     )
-    raw_checks = result.data if result.ok and isinstance(result.data, list) else []
+    if not result.ok:
+        return [], result.message or "could not read PR checks"
+    if not isinstance(result.data, list):
+        return [], "gh pr checks returned an invalid response"
+    checks = [check for check in result.data if isinstance(check, dict)]
+    diagnostic = (
+        None
+        if len(checks) == len(result.data)
+        else "gh pr checks returned one or more invalid entries"
+    )
+    return checks, diagnostic
+
+
+def _failed_check_detail(
+    pr: str,
+    repository: str,
+    repo_root: pathlib.Path,
+    fallback_names: list[str],
+) -> dict[str, Any]:
+    """Read the first failing check and its compact failed-log context."""
+
+    raw_checks, checks_diagnostic = _read_pr_checks(
+        pr,
+        repository,
+        repo_root,
+    )
     failing = [
         check
         for check in raw_checks
@@ -836,12 +863,149 @@ def _failed_check_detail(
             if isinstance(check.get("name"), str)
         ]
         or fallback_names,
-        "diagnostic": (
-            None
-            if result.ok
-            else (result.message or "could not read PR checks")
-        ),
+        "diagnostic": checks_diagnostic,
     }
+
+
+def _check_uncertainty_detail(
+    pr: str,
+    repository: str,
+    repo_root: pathlib.Path,
+    finding: readiness.Finding,
+    expected_head: str,
+) -> dict[str, Any]:
+    """Collect bounded evidence for one persistent status-check uncertainty."""
+
+    raw_checks, checks_diagnostic = _read_pr_checks(
+        pr,
+        repository,
+        repo_root,
+    )
+    checks = [
+        {
+            "name": check.get("name"),
+            "state": check.get("state"),
+            "bucket": check.get("bucket"),
+            "workflow": check.get("workflow"),
+            "url": check.get("link"),
+        }
+        for check in raw_checks[:50]
+    ]
+    target_names: list[str] = []
+    if isinstance(finding.actual, dict):
+        name = finding.actual.get("name")
+        if isinstance(name, str) and name:
+            target_names.append(name)
+    elif isinstance(finding.actual, list):
+        target_names.extend(
+            name for name in finding.actual if isinstance(name, str) and name
+        )
+    selected = next(
+        (
+            check
+            for check in raw_checks
+            if check.get("name") in target_names
+            and isinstance(check.get("link"), str)
+        ),
+        None,
+    )
+    if selected is None:
+        selected = next(
+            (
+                check
+                for check in raw_checks
+                if isinstance(check.get("link"), str)
+            ),
+            {},
+        )
+    link = selected.get("link")
+    match = ACTION_LINK_RE.search(link) if isinstance(link, str) else None
+    run_id = match.group("run") if match else None
+    action_run: dict[str, Any] | None = None
+    action_diagnostic: str | None = None
+    if run_id is not None:
+        action_result = run_json_command(
+            [
+                "gh",
+                "run",
+                "view",
+                run_id,
+                "--repo",
+                repository,
+                "--json",
+                "status,conclusion,headSha,url,name,workflowName",
+            ],
+            "gh run view",
+            cwd=repo_root,
+        )
+        if action_result.ok and isinstance(action_result.data, dict):
+            action_run = {
+                "run_id": run_id,
+                "status": action_result.data.get("status"),
+                "conclusion": action_result.data.get("conclusion"),
+                "head_sha": action_result.data.get("headSha"),
+                "head_matches": action_result.data.get("headSha") == expected_head,
+                "url": action_result.data.get("url"),
+                "name": action_result.data.get("name"),
+                "workflow": action_result.data.get("workflowName"),
+            }
+        else:
+            action_diagnostic = (
+                action_result.message or "could not read linked Actions run"
+            )
+    return {
+        "finding": {
+            "message": finding.message,
+            "actual": finding.actual,
+        },
+        "normalized_checks": checks,
+        "normalized_checks_truncated": len(raw_checks) > len(checks),
+        "checks_diagnostic": checks_diagnostic,
+        "action_run": action_run,
+        "action_run_diagnostic": action_diagnostic,
+    }
+
+
+def _check_uncertainty_blocker(
+    pr: str,
+    repository: str,
+    repo_root: pathlib.Path,
+    summary: dict[str, Any],
+    finding: readiness.Finding,
+    expected_head: str,
+    grace_seconds: int,
+) -> ShipBlocked:
+    """Build a decision-complete blocker after the short uncertainty grace."""
+
+    missing = finding.message == readiness.REQUIRED_STATUS_CHECKS_MISSING_MESSAGE
+    kind = "checks_missing" if missing else "ci_ambiguous"
+    reason = (
+        "required status checks did not attach"
+        if missing
+        else "status-check state remained unclassifiable"
+    )
+    message = f"PR readiness blocked: {reason} after {grace_seconds} seconds."
+    return ShipBlocked(
+        message,
+        {
+            "phase": "gates",
+            "blocker": {
+                "kind": kind,
+                "repository": repository,
+                "pr": summary.get("number"),
+                "url": summary.get("url"),
+                "head_oid": summary.get("head_oid"),
+                "grace_seconds": grace_seconds,
+                "diagnostic": _check_uncertainty_detail(
+                    pr,
+                    repository,
+                    repo_root,
+                    finding,
+                    expected_head,
+                ),
+            },
+        },
+    )
 
 
 def _ci_blocker(
@@ -924,7 +1088,8 @@ def wait_for_ci_gate(
     """
 
     deadline = time.monotonic() + wait_seconds
-    confirming_transient_error = False
+    uncertainty_started: float | None = None
+    confirming_uncertainty = False
     while True:
         summary, findings = readiness.validate_readiness(
             pr,
@@ -952,11 +1117,18 @@ def wait_for_ci_gate(
             for finding in findings
             if finding.level == ERROR and not _transient_readiness(finding)
         ]
-        if not terminal and transient_errors and not confirming_transient_error:
-            confirming_transient_error = True
+        short_uncertainties = [
+            finding for finding in findings if _short_check_uncertainty(finding)
+        ]
+        now = time.monotonic()
+        if short_uncertainties and uncertainty_started is None:
+            uncertainty_started = now
+        if not terminal and short_uncertainties and not confirming_uncertainty:
+            confirming_uncertainty = True
             continue
-        if not transient_errors:
-            confirming_transient_error = False
+        if not short_uncertainties:
+            confirming_uncertainty = False
+            uncertainty_started = None
         if terminal:
             selected_repository = repository or _repository_name(repo_root, None)
             raise _ci_blocker(
@@ -966,6 +1138,27 @@ def wait_for_ci_gate(
                 summary,
                 terminal,
             )
+        if short_uncertainties:
+            assert uncertainty_started is not None
+            uncertainty_deadline = min(
+                deadline,
+                uncertainty_started + CHECK_UNCERTAINTY_GRACE_SECONDS,
+            )
+            if now >= uncertainty_deadline:
+                selected_repository = repository or _repository_name(repo_root, None)
+                grace_seconds = max(
+                    0,
+                    min(CHECK_UNCERTAINTY_GRACE_SECONDS, wait_seconds),
+                )
+                raise _check_uncertainty_blocker(
+                    pr,
+                    selected_repository,
+                    repo_root,
+                    summary,
+                    short_uncertainties[0],
+                    expected_head,
+                    grace_seconds,
+                )
         pending = [finding for finding in findings if _transient_readiness(finding)]
         if not pending:
             return {
@@ -978,7 +1171,7 @@ def wait_for_ci_gate(
                     review_authorization_required
                 ),
             }
-        if time.monotonic() >= deadline:
+        if now >= deadline:
             if transient_errors:
                 selected_repository = repository or _repository_name(repo_root, None)
                 raise _ci_blocker(
@@ -1006,7 +1199,19 @@ def wait_for_ci_gate(
                     },
                 },
             )
-        time.sleep(max(0, interval_seconds))
+        sleep_seconds: float = max(0.0, float(interval_seconds))
+        if short_uncertainties:
+            assert uncertainty_started is not None
+            remaining_grace = max(
+                0,
+                min(
+                    deadline,
+                    uncertainty_started + CHECK_UNCERTAINTY_GRACE_SECONDS,
+                )
+                - now,
+            )
+            sleep_seconds = min(sleep_seconds, remaining_grace)
+        time.sleep(sleep_seconds)
 
 
 def _review_thread_ids(
@@ -1290,6 +1495,206 @@ def restore_reusable_branch(
     return {"branch": branch, "status": "aligned", "head": synchronized_head}
 
 
+REVIEW_HANDOFF_FIELDS = {
+    "status",
+    "path",
+    "task_temp_root",
+    "sha256",
+    "repository",
+    "pr",
+    "head_oid",
+    "reply_count",
+    "posted",
+    "resolved",
+    "already_addressed",
+    "cleanup",
+}
+
+
+def _review_request_scope(
+    request_path: pathlib.Path,
+    repo_root: pathlib.Path,
+    *,
+    require_file: bool,
+) -> tuple[pathlib.Path, pathlib.Path]:
+    """Bind one review request to the repository's direct task-temp owner."""
+
+    expanded = request_path.expanduser()
+    if expanded.is_symlink() or expanded.parent.is_symlink():
+        raise ShipError("Review replies request must be a regular task-temp file.")
+    try:
+        resolved = expanded.resolve(strict=require_file)
+    except OSError as exc:
+        raise ShipError(f"Review replies request is unavailable: {exc}") from exc
+    canonical_path = repo_root.parent / "tmp" / repo_root.name
+    if canonical_path.is_symlink():
+        raise ShipError("Canonical review-request root must not be a link.")
+    canonical_root = canonical_path.resolve()
+    task_temp_root = resolved.parent
+    if task_temp_root.parent != canonical_root:
+        raise ShipError(
+            "Review replies request must be directly under "
+            "<repo-parent>/tmp/<repo-name>/<task>/."
+        )
+    if require_file and not resolved.is_file():
+        raise ShipError("Review replies request must be a regular file.")
+    return resolved, task_temp_root
+
+
+def _review_handoff_record(
+    raw: object,
+    *,
+    repo_root: pathlib.Path,
+    repository: str,
+    pr: str,
+    commit: str,
+) -> dict[str, Any]:
+    """Validate one persisted successful review-reply handoff."""
+
+    if not isinstance(raw, dict) or set(raw) != REVIEW_HANDOFF_FIELDS:
+        raise ShipError("Review-reply checkpoint is invalid.")
+    if (
+        raw.get("status") != "addressed"
+        or raw.get("repository") != repository
+        or str(raw.get("pr")) != pr
+        or raw.get("head_oid") != commit
+        or not isinstance(raw.get("sha256"), str)
+        or SHA256_RE.fullmatch(str(raw.get("sha256"))) is None
+        or any(
+            not isinstance(raw.get(field), int)
+            or isinstance(raw.get(field), bool)
+            or int(raw[field]) < 0
+            for field in ("reply_count", "posted", "resolved", "already_addressed")
+        )
+    ):
+        raise ShipError("Review-reply checkpoint identity is invalid.")
+    path, task_temp_root = _review_request_scope(
+        pathlib.Path(str(raw.get("path"))),
+        repo_root,
+        require_file=False,
+    )
+    if str(path) != raw.get("path") or str(task_temp_root) != raw.get(
+        "task_temp_root"
+    ):
+        raise ShipError("Review-reply checkpoint path changed.")
+    cleanup = raw.get("cleanup")
+    if cleanup not in {"pending", "removed", "retained_nonempty"}:
+        raise ShipError("Review-reply cleanup checkpoint is invalid.")
+    return dict(raw)
+
+
+def _consume_review_request(
+    record: Mapping[str, Any],
+    repo_root: pathlib.Path,
+) -> str:
+    """Remove one checkpointed request and only its empty direct task root."""
+
+    path, task_temp_root = _review_request_scope(
+        pathlib.Path(str(record["path"])),
+        repo_root,
+        require_file=False,
+    )
+    if path.exists():
+        if path.is_symlink() or not path.is_file():
+            raise ShipError("Checkpointed review replies request changed type.")
+        if hashlib.sha256(path.read_bytes()).hexdigest() != record["sha256"]:
+            raise ShipError("Checkpointed review replies request changed content.")
+        path.unlink()
+    if path.exists():
+        raise ShipError("Review replies request cleanup did not remove the file.")
+    if not task_temp_root.exists():
+        return "removed"
+    if task_temp_root.is_symlink() or not task_temp_root.is_dir():
+        raise ShipError("Review replies task-temp root changed type.")
+    try:
+        task_temp_root.rmdir()
+        return "removed"
+    except OSError as exc:
+        if any(task_temp_root.iterdir()):
+            return "retained_nonempty"
+        raise ShipError("Empty review replies task-temp root could not be removed.") from exc
+
+
+def _address_review_replies(
+    args: argparse.Namespace,
+    *,
+    state: dict[str, Any],
+    checkpoint_path: pathlib.Path,
+    repo_root: pathlib.Path,
+    repository: str,
+    pr: str,
+    commit: str,
+) -> dict[str, Any] | None:
+    """Address, checkpoint, and consume one exact review-reply request."""
+
+    supplied: pathlib.Path | None = getattr(args, "review_replies_request", None)
+    raw_record = state.get("review_replies")
+    if raw_record is None and supplied is None:
+        return None
+    if raw_record is None:
+        assert supplied is not None
+        if _phase_at_least(state, "gates_passed"):
+            raise ShipError("Review replies cannot be introduced after gates passed.")
+        request_path, task_temp_root = _review_request_scope(
+            pathlib.Path(supplied),
+            repo_root,
+            require_file=True,
+        )
+        digest = hashlib.sha256(request_path.read_bytes()).hexdigest()
+        addressed = codex_review.address_request(request_path, cwd=repo_root)
+        if (
+            addressed.get("status") != "addressed"
+            or addressed.get("repo") != repository
+            or str(addressed.get("pr")) != pr
+            or addressed.get("head_oid") != commit
+        ):
+            raise ShipError("Review-reply handoff returned mismatched identity.")
+        raw_record = {
+            "status": "addressed",
+            "path": str(request_path),
+            "task_temp_root": str(task_temp_root),
+            "sha256": digest,
+            "repository": repository,
+            "pr": pr,
+            "head_oid": commit,
+            "reply_count": int(addressed.get("reply_count") or 0),
+            "posted": int(addressed.get("posted") or 0),
+            "resolved": int(addressed.get("resolved") or 0),
+            "already_addressed": int(addressed.get("already_addressed") or 0),
+            "cleanup": "pending",
+        }
+        state["review_replies"] = raw_record
+        _write_checkpoint(checkpoint_path, state)
+    record = _review_handoff_record(
+        raw_record,
+        repo_root=repo_root,
+        repository=repository,
+        pr=pr,
+        commit=commit,
+    )
+    if supplied is not None:
+        supplied_path, _ = _review_request_scope(
+            pathlib.Path(supplied),
+            repo_root,
+            require_file=False,
+        )
+        if str(supplied_path) != record["path"]:
+            raise ShipError("Supplied review replies request differs from checkpoint.")
+    cleanup = _consume_review_request(record, repo_root)
+    if record["cleanup"] != cleanup:
+        record["cleanup"] = cleanup
+        state["review_replies"] = record
+        _write_checkpoint(checkpoint_path, state)
+    return {
+        "status": record["status"],
+        "reply_count": record["reply_count"],
+        "posted": record["posted"],
+        "resolved": record["resolved"],
+        "already_addressed": record["already_addressed"],
+        "cleanup": cleanup,
+    }
+
+
 def ship(args: argparse.Namespace) -> dict[str, Any]:
     """Advance one exact commit through PR publication, gates, merge, and sync."""
 
@@ -1368,6 +1773,19 @@ def ship(args: argparse.Namespace) -> dict[str, Any]:
             changes.append("merged_reconciled")
         elif live.get("state") != "OPEN":
             raise ShipError(f"Live PR state is {live.get('state')!r}, not OPEN.")
+
+    had_review_handoff = state.get("review_replies") is not None
+    review_replies = _address_review_replies(
+        args,
+        state=state,
+        checkpoint_path=checkpoint_path,
+        repo_root=repo_root,
+        repository=repository,
+        pr=pr,
+        commit=commit,
+    )
+    if review_replies is not None and not had_review_handoff:
+        changes.append("review_replies_addressed")
 
     if not _phase_at_least(state, "merged"):
         gate_result: dict[str, Any]
@@ -1491,6 +1909,7 @@ def ship(args: argparse.Namespace) -> dict[str, Any]:
         "merge_commit": state.get("merge_commit"),
         "synchronized_head": state.get("synchronized_head"),
         "removed_checkpoints": removed_checkpoints,
+        "review_replies": review_replies,
         "changes": changes,
     }
 
@@ -1533,6 +1952,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--ci-wait-seconds", type=int, default=900)
     parser.add_argument("--review-wait-seconds", type=int, default=260)
+    parser.add_argument("--review-replies-request", type=pathlib.Path)
     parser.add_argument("--interval-seconds", type=int, default=10)
     return parser
 
