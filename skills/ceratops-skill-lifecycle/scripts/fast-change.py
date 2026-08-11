@@ -6,7 +6,8 @@ existing behavior tests, and commit. The helper resolves each replacement
 against the indexed UTF-8 source, generates and validates the unified diff,
 then owns diff-to-commit orchestration and touches only declared paths.
 Markdown edits run repository-declared lint; broad source and runtime
-validation remain outside this helper.
+validation remain outside this helper. A successful run consumes its exact
+canonical task-temp request; failures preserve it for deterministic retry.
 """
 
 from __future__ import annotations
@@ -85,6 +86,8 @@ class EditSpec:
 class ChangeSpec:
     """Validated request plus the helper-generated patch and edit paths."""
 
+    request_path: pathlib.Path
+    task_temp_root: pathlib.Path
     repo_root: pathlib.Path
     release_branch: str
     patch: str
@@ -181,8 +184,17 @@ def _git(
 
 
 def _request(path: pathlib.Path) -> Mapping[str, object]:
+    expanded = path.expanduser()
+    if expanded.is_symlink():
+        raise DecisionRequired("request must be a regular file")
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
+        resolved = expanded.resolve(strict=True)
+    except OSError as exc:
+        raise DecisionRequired(f"request is unreadable: {exc}") from exc
+    if not resolved.is_file():
+        raise DecisionRequired("request must be a regular file")
+    try:
+        value = json.loads(resolved.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise DecisionRequired(f"request is unreadable: {exc}") from exc
     if not isinstance(value, Mapping):
@@ -201,6 +213,33 @@ def _request(path: pathlib.Path) -> Mapping[str, object]:
     if value.get("version") != REQUEST_VERSION:
         raise DecisionRequired(f"request version must be {REQUEST_VERSION}")
     return value
+
+
+def _request_scope(
+    path: pathlib.Path,
+    repo_root: pathlib.Path,
+) -> tuple[pathlib.Path, pathlib.Path]:
+    """Bind one regular request to the repository's direct task-temp owner."""
+
+    expanded = path.expanduser()
+    if expanded.is_symlink():
+        raise DecisionRequired("request must be a regular file")
+    try:
+        resolved = expanded.resolve(strict=True)
+    except OSError as exc:
+        raise DecisionRequired(f"request is unreadable: {exc}") from exc
+    task_temp_root = resolved.parent
+    canonical_root = (repo_root.parent / "tmp" / repo_root.name).resolve()
+    if (
+        not resolved.is_file()
+        or task_temp_root.is_symlink()
+        or task_temp_root.parent != canonical_root
+    ):
+        raise DecisionRequired(
+            "request must be a regular file directly under "
+            "<repo-parent>/tmp/<repo-name>/<task>/"
+        )
+    return resolved, task_temp_root
 
 
 def _string_list(value: object, label: str) -> tuple[str, ...]:
@@ -494,6 +533,7 @@ def classify_request(path: pathlib.Path) -> ChangeSpec:
     repo_root = pathlib.Path(repo_value).expanduser().resolve(strict=True)
     if not repo_root.is_dir():
         raise DecisionRequired("repo_root must be a directory")
+    request_path, task_temp_root = _request_scope(path, repo_root)
     if (
         _git(repo_root, "rev-parse", "--is-inside-work-tree").strip()
         != "true"
@@ -604,6 +644,8 @@ def classify_request(path: pathlib.Path) -> ChangeSpec:
     _runtime_installer(repo_root)
     run_markdown_lint = _declares_markdown_lint(repo_root, paths)
     return ChangeSpec(
+        request_path=request_path,
+        task_temp_root=task_temp_root,
         repo_root=repo_root,
         release_branch=release_branch,
         patch=patch,
@@ -619,6 +661,33 @@ def classify_request(path: pathlib.Path) -> ChangeSpec:
         ),
         paths=paths,
     )
+
+
+def _cleanup_successful_request(spec: ChangeSpec) -> dict[str, str]:
+    """Consume the exact request and remove only its empty direct task root."""
+
+    if (
+        spec.request_path.is_symlink()
+        or not spec.request_path.is_file()
+        or spec.request_path.parent != spec.task_temp_root
+    ):
+        raise FastChangeError("validated request changed before cleanup")
+    spec.request_path.unlink()
+    if spec.request_path.exists():
+        raise FastChangeError("successful request cleanup did not remove the request")
+    task_status = "retained_nonempty"
+    try:
+        spec.task_temp_root.rmdir()
+        task_status = "removed"
+    except OSError as exc:
+        if (
+            not spec.task_temp_root.is_dir()
+            or not any(spec.task_temp_root.iterdir())
+        ):
+            raise FastChangeError(
+                "successful request cleanup could not remove its empty task root"
+            ) from exc
+    return {"request": "removed", "task_temp_root": task_status}
 
 
 def _installer_command(spec: ChangeSpec) -> list[str]:
@@ -908,7 +977,22 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 1
-    print(json.dumps(result, separators=(",", ":")))
+    try:
+        cleanup = _cleanup_successful_request(spec)
+    except (FastChangeError, OSError, ValueError) as exc:
+        print(
+            json.dumps(
+                {
+                    "status": "cleanup_blocked",
+                    "commit": result.get("commit"),
+                    "detail": str(exc),
+                },
+                separators=(",", ":"),
+            ),
+            file=sys.stderr,
+        )
+        return 1
+    print(json.dumps({**result, "request_cleanup": cleanup}, separators=(",", ":")))
     return 0
 
 

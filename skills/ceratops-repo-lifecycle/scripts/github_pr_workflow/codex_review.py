@@ -492,14 +492,18 @@ mutation($threadId: ID!) {
     return {"id": thread_id, "is_resolved": True}
 
 
-def address(args: argparse.Namespace) -> int:
-    """Post prepared replies and resolve exact threads in one retry-safe call."""
+def address_request(
+    request_path: pathlib.Path,
+    *,
+    cwd: pathlib.Path | None = None,
+) -> dict[str, Any]:
+    """Post prepared replies and resolve exact threads without CLI output."""
 
-    request = _address_request(args.request)
+    request = _address_request(request_path)
     repo = str(request["repo"])
     owner, name = repo.split("/", 1)
     pr = int(request["pr"])
-    current = fetch_pr(owner, name, pr, cwd=args.cwd)
+    current = fetch_pr(owner, name, pr, cwd=cwd)
     if current.get("headRefOid") != request["head_oid"]:
         raise CommandError(
             f"PR head {current.get('headRefOid')!r} does not match prepared head "
@@ -539,9 +543,13 @@ def address(args: argparse.Namespace) -> int:
             )
         prepared.append((reply, matching_reply, resolved))
 
+    posted = 0
+    resolved_now = 0
+    already_addressed = 0
     for reply, matching_reply, resolved in prepared:
         thread_id = str(reply["thread_id"])
         if resolved:
+            already_addressed += 1
             continue
         if not matching_reply:
             comment_id = reply["top_comment_database_id"]
@@ -550,14 +558,32 @@ def address(args: argparse.Namespace) -> int:
                 "POST",
                 f"/repos/{repo}/pulls/{pr}/comments/{comment_id}/replies",
                 {"body": reply["reply"]},
-                cwd=args.cwd,
+                cwd=cwd,
             )
             if not result.ok:
                 raise CommandError(
                     f"review reply failed for {thread_id}: "
                     f"{result.message or result.status or 'unknown GitHub error'}"
                 )
-        _resolve_review_thread(thread_id, cwd=args.cwd)
+            posted += 1
+        _resolve_review_thread(thread_id, cwd=cwd)
+        resolved_now += 1
+    return {
+        "status": "addressed",
+        "repo": repo,
+        "pr": pr,
+        "head_oid": request["head_oid"],
+        "reply_count": len(prepared),
+        "posted": posted,
+        "resolved": resolved_now,
+        "already_addressed": already_addressed,
+    }
+
+
+def address(args: argparse.Namespace) -> int:
+    """Run the prepared-reply library operation and preserve the CLI contract."""
+
+    address_request(args.request, cwd=args.cwd)
     print("OK")
     return 0
 

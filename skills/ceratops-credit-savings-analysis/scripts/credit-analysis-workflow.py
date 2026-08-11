@@ -11464,6 +11464,14 @@ def _validate_synthesis_result(
     assigned_contributions: list[str] = []
     review_by_id = {item["id"]: item for item in reviews}
     contribution_by_id = {item["id"]: item for item in contributions}
+    contribution_findings = {
+        contribution_id: {
+            source_to_canonical[source_id]
+            for source_id, finding in findings.items()
+            if set(contribution["candidate_ids"]) & set(finding["candidate_ids"])
+        }
+        for contribution_id, contribution in contribution_by_id.items()
+    }
     contribution_surfaces: dict[str, str] = {}
     for confirmation_task in state["manifest"]["confirmation_tasks"]:
         confirmation = _accepted_result(state, confirmation_task["task_id"])
@@ -11531,11 +11539,19 @@ def _validate_synthesis_result(
         if disposition == "durable-control-missing":
             if finding_id not in canonical_ids or no_finding is not None:
                 raise CreditAnalysisError("durable temporary merge must link one finding")
-            expected_findings = {
-                source_to_canonical[review_by_id[item]["finding_id"]]
-                for item in merge_reviews
-                if review_by_id[item]["finding_id"] is not None
-            }
+            expected_findings = (
+                {
+                    source_to_canonical[review_by_id[item]["finding_id"]]
+                    for item in merge_reviews
+                    if review_by_id[item]["finding_id"] is not None
+                }
+                if merge_reviews
+                else {
+                    linked_finding
+                    for item in merge_contributions
+                    for linked_finding in contribution_findings[item]
+                }
+            )
             if expected_findings != {finding_id}:
                 raise CreditAnalysisError("temporary merge assigned savings to another finding")
         else:
@@ -12019,6 +12035,32 @@ def _checkpoint_failed_attempt(
     _save_orchestration_state(state)
 
 
+def _recoverable_validation_output(
+    state: Mapping[str, Any],
+    task: Mapping[str, Any],
+    input_sha256: str,
+) -> Mapping[str, Any] | None:
+    """Return the latest immutable validation-error output for revalidation."""
+
+    attempts = state["execution"][task["task_id"]]["attempts"]
+    if not attempts:
+        return None
+    latest = attempts[-1]
+    if (
+        latest.get("outcome") != "validation-error"
+        or latest.get("input_sha256") != input_sha256
+    ):
+        return None
+    artifact = latest["artifacts"]["raw_output"]
+    if not isinstance(artifact, Mapping):
+        return None
+    raw = _read_json(
+        pathlib.Path(str(artifact["path"])),
+        f"recoverable validation output {task['task_id']}",
+    )
+    return raw if isinstance(raw, Mapping) else None
+
+
 def _validate_task_result(
     raw: Mapping[str, Any],
     *,
@@ -12074,6 +12116,7 @@ def _accept_or_recover_task(
     schema_path: pathlib.Path,
     raw: Mapping[str, Any] | None,
     attempt: Mapping[str, Any] | None,
+    reused_failed_attempt: bool = False,
 ) -> bool:
     """Accept one immutable result, recovering a crash window without a new call."""
 
@@ -12116,7 +12159,7 @@ def _accept_or_recover_task(
         "input_sha256": input_sha256,
         "prompt_sha256": _file_hash(prompt_path),
         "schema_sha256": _file_hash(schema_path),
-        "recovered_without_model_call": recovered,
+        "recovered_without_model_call": recovered or reused_failed_attempt,
     }
     counter = _model_counter_key(task)
     state["model_calls"][counter] += 1
@@ -12507,6 +12550,31 @@ def command_execute_orchestration(
         ):
             completed_this_run += 1
             continue
+        recoverable_raw = _recoverable_validation_output(
+            state,
+            task,
+            input_sha256,
+        )
+        if recoverable_raw is not None:
+            try:
+                recovered = _accept_or_recover_task(
+                    state=state,
+                    evidence=evidence,
+                    contract=contract,
+                    task=task,
+                    input_sha256=input_sha256,
+                    input_variant_ids=input_variant_ids,
+                    prompt_path=prompt_path,
+                    schema_path=schema_path,
+                    raw=recoverable_raw,
+                    attempt=None,
+                    reused_failed_attempt=True,
+                )
+            except CreditAnalysisError:
+                recovered = False
+            if recovered:
+                completed_this_run += 1
+                continue
         if task["phase"] == "surface-confirmation":
             incomplete_luna = [
                 luna["task_id"]

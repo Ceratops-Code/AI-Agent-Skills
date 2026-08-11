@@ -287,6 +287,9 @@ def _ship_command(
         command.extend(("--title", args.title))
     if args.body:
         command.extend(("--body", args.body))
+    review_request = getattr(args, "review_replies_request", None)
+    if review_request is not None:
+        command.extend(("--review-replies-request", str(review_request)))
     if args.delete_branch:
         command.append("--delete-branch")
     if args.reusable_head:
@@ -618,6 +621,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--deploy-operation", default="deploy")
     parser.add_argument("--ci-wait-seconds", type=int, default=900)
     parser.add_argument("--review-wait-seconds", type=int, default=260)
+    parser.add_argument("--review-replies-request", type=pathlib.Path)
     parser.add_argument("--interval-seconds", type=int, default=10)
     return parser
 

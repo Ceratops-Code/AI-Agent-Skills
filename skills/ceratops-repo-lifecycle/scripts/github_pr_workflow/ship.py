@@ -17,7 +17,7 @@ import pathlib
 import re
 import sys
 import time
-from typing import Any
+from typing import Any, Mapping
 
 from github_contract_engine.github_api import run_gh_api, run_json_command
 from github_contract_engine.levels import ERROR, WARN
@@ -27,6 +27,7 @@ from .command import CommandError, require_output, require_success, run_command
 
 PHASES = ("prepared", "pr_ready", "gates_passed", "merged", "synchronized")
 FULL_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 ACTION_LINK_RE = re.compile(
     r"/actions/runs/(?P<run>\d+)(?:/job/(?P<job>\d+))?"
 )
@@ -1494,6 +1495,205 @@ def restore_reusable_branch(
     return {"branch": branch, "status": "aligned", "head": synchronized_head}
 
 
+REVIEW_HANDOFF_FIELDS = {
+    "status",
+    "path",
+    "task_temp_root",
+    "sha256",
+    "repository",
+    "pr",
+    "head_oid",
+    "reply_count",
+    "posted",
+    "resolved",
+    "already_addressed",
+    "cleanup",
+}
+
+
+def _review_request_scope(
+    request_path: pathlib.Path,
+    repo_root: pathlib.Path,
+    *,
+    require_file: bool,
+) -> tuple[pathlib.Path, pathlib.Path]:
+    """Bind one review request to the repository's direct task-temp owner."""
+
+    expanded = request_path.expanduser()
+    if expanded.is_symlink() or expanded.parent.is_symlink():
+        raise ShipError("Review replies request must be a regular task-temp file.")
+    try:
+        resolved = expanded.resolve(strict=require_file)
+    except OSError as exc:
+        raise ShipError(f"Review replies request is unavailable: {exc}") from exc
+    canonical_path = repo_root.parent / "tmp" / repo_root.name
+    if canonical_path.is_symlink():
+        raise ShipError("Canonical review-request root must not be a link.")
+    canonical_root = canonical_path.resolve()
+    task_temp_root = resolved.parent
+    if task_temp_root.parent != canonical_root:
+        raise ShipError(
+            "Review replies request must be directly under "
+            "<repo-parent>/tmp/<repo-name>/<task>/."
+        )
+    if require_file and not resolved.is_file():
+        raise ShipError("Review replies request must be a regular file.")
+    return resolved, task_temp_root
+
+
+def _review_handoff_record(
+    raw: object,
+    *,
+    repo_root: pathlib.Path,
+    repository: str,
+    pr: str,
+    commit: str,
+) -> dict[str, Any]:
+    """Validate one persisted successful review-reply handoff."""
+
+    if not isinstance(raw, dict) or set(raw) != REVIEW_HANDOFF_FIELDS:
+        raise ShipError("Review-reply checkpoint is invalid.")
+    if (
+        raw.get("status") != "addressed"
+        or raw.get("repository") != repository
+        or str(raw.get("pr")) != pr
+        or raw.get("head_oid") != commit
+        or not isinstance(raw.get("sha256"), str)
+        or SHA256_RE.fullmatch(str(raw.get("sha256"))) is None
+        or any(
+            not isinstance(raw.get(field), int)
+            or isinstance(raw.get(field), bool)
+            or int(raw[field]) < 0
+            for field in ("reply_count", "posted", "resolved", "already_addressed")
+        )
+    ):
+        raise ShipError("Review-reply checkpoint identity is invalid.")
+    path, task_temp_root = _review_request_scope(
+        pathlib.Path(str(raw.get("path"))),
+        repo_root,
+        require_file=False,
+    )
+    if str(path) != raw.get("path") or str(task_temp_root) != raw.get(
+        "task_temp_root"
+    ):
+        raise ShipError("Review-reply checkpoint path changed.")
+    cleanup = raw.get("cleanup")
+    if cleanup not in {"pending", "removed", "retained_nonempty"}:
+        raise ShipError("Review-reply cleanup checkpoint is invalid.")
+    return dict(raw)
+
+
+def _consume_review_request(
+    record: Mapping[str, Any],
+    repo_root: pathlib.Path,
+) -> str:
+    """Remove one checkpointed request and only its empty direct task root."""
+
+    path, task_temp_root = _review_request_scope(
+        pathlib.Path(str(record["path"])),
+        repo_root,
+        require_file=False,
+    )
+    if path.exists():
+        if path.is_symlink() or not path.is_file():
+            raise ShipError("Checkpointed review replies request changed type.")
+        if hashlib.sha256(path.read_bytes()).hexdigest() != record["sha256"]:
+            raise ShipError("Checkpointed review replies request changed content.")
+        path.unlink()
+    if path.exists():
+        raise ShipError("Review replies request cleanup did not remove the file.")
+    if not task_temp_root.exists():
+        return "removed"
+    if task_temp_root.is_symlink() or not task_temp_root.is_dir():
+        raise ShipError("Review replies task-temp root changed type.")
+    try:
+        task_temp_root.rmdir()
+        return "removed"
+    except OSError as exc:
+        if any(task_temp_root.iterdir()):
+            return "retained_nonempty"
+        raise ShipError("Empty review replies task-temp root could not be removed.") from exc
+
+
+def _address_review_replies(
+    args: argparse.Namespace,
+    *,
+    state: dict[str, Any],
+    checkpoint_path: pathlib.Path,
+    repo_root: pathlib.Path,
+    repository: str,
+    pr: str,
+    commit: str,
+) -> dict[str, Any] | None:
+    """Address, checkpoint, and consume one exact review-reply request."""
+
+    supplied = getattr(args, "review_replies_request", None)
+    raw_record = state.get("review_replies")
+    if raw_record is None and supplied is None:
+        return None
+    if raw_record is None:
+        if _phase_at_least(state, "gates_passed"):
+            raise ShipError("Review replies cannot be introduced after gates passed.")
+        request_path, task_temp_root = _review_request_scope(
+            pathlib.Path(supplied),
+            repo_root,
+            require_file=True,
+        )
+        digest = hashlib.sha256(request_path.read_bytes()).hexdigest()
+        addressed = codex_review.address_request(request_path, cwd=repo_root)
+        if (
+            addressed.get("status") != "addressed"
+            or addressed.get("repo") != repository
+            or str(addressed.get("pr")) != pr
+            or addressed.get("head_oid") != commit
+        ):
+            raise ShipError("Review-reply handoff returned mismatched identity.")
+        raw_record = {
+            "status": "addressed",
+            "path": str(request_path),
+            "task_temp_root": str(task_temp_root),
+            "sha256": digest,
+            "repository": repository,
+            "pr": pr,
+            "head_oid": commit,
+            "reply_count": int(addressed.get("reply_count") or 0),
+            "posted": int(addressed.get("posted") or 0),
+            "resolved": int(addressed.get("resolved") or 0),
+            "already_addressed": int(addressed.get("already_addressed") or 0),
+            "cleanup": "pending",
+        }
+        state["review_replies"] = raw_record
+        _write_checkpoint(checkpoint_path, state)
+    record = _review_handoff_record(
+        raw_record,
+        repo_root=repo_root,
+        repository=repository,
+        pr=pr,
+        commit=commit,
+    )
+    if supplied is not None:
+        supplied_path, _ = _review_request_scope(
+            pathlib.Path(supplied),
+            repo_root,
+            require_file=False,
+        )
+        if str(supplied_path) != record["path"]:
+            raise ShipError("Supplied review replies request differs from checkpoint.")
+    cleanup = _consume_review_request(record, repo_root)
+    if record["cleanup"] != cleanup:
+        record["cleanup"] = cleanup
+        state["review_replies"] = record
+        _write_checkpoint(checkpoint_path, state)
+    return {
+        "status": record["status"],
+        "reply_count": record["reply_count"],
+        "posted": record["posted"],
+        "resolved": record["resolved"],
+        "already_addressed": record["already_addressed"],
+        "cleanup": cleanup,
+    }
+
+
 def ship(args: argparse.Namespace) -> dict[str, Any]:
     """Advance one exact commit through PR publication, gates, merge, and sync."""
 
@@ -1572,6 +1772,19 @@ def ship(args: argparse.Namespace) -> dict[str, Any]:
             changes.append("merged_reconciled")
         elif live.get("state") != "OPEN":
             raise ShipError(f"Live PR state is {live.get('state')!r}, not OPEN.")
+
+    had_review_handoff = state.get("review_replies") is not None
+    review_replies = _address_review_replies(
+        args,
+        state=state,
+        checkpoint_path=checkpoint_path,
+        repo_root=repo_root,
+        repository=repository,
+        pr=pr,
+        commit=commit,
+    )
+    if review_replies is not None and not had_review_handoff:
+        changes.append("review_replies_addressed")
 
     if not _phase_at_least(state, "merged"):
         gate_result: dict[str, Any]
@@ -1695,6 +1908,7 @@ def ship(args: argparse.Namespace) -> dict[str, Any]:
         "merge_commit": state.get("merge_commit"),
         "synchronized_head": state.get("synchronized_head"),
         "removed_checkpoints": removed_checkpoints,
+        "review_replies": review_replies,
         "changes": changes,
     }
 
@@ -1737,6 +1951,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--ci-wait-seconds", type=int, default=900)
     parser.add_argument("--review-wait-seconds", type=int, default=260)
+    parser.add_argument("--review-replies-request", type=pathlib.Path)
     parser.add_argument("--interval-seconds", type=int, default=10)
     return parser
 

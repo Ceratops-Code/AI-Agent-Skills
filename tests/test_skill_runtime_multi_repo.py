@@ -3246,6 +3246,221 @@ def test_credit_analysis_workflow_rejects_invalid_and_conflicting_passes(
         "evidence://synthetic/primary"
     ]
 
+    contribution_root = tmp_path / "standalone-helper-contribution"
+    contribution_root.mkdir()
+    contribution_request, _, _ = credit_analysis_request(
+        contribution_root,
+        action="helper-contracts",
+    )
+    contribution_plan = workflow.command_plan_orchestration(
+        contribution_request,
+        available_models=available,
+    )
+
+    class StandaloneContributionRunner(FakeCreditModelRunner):
+        def _confirmation(
+            self,
+            task: Mapping[str, Any],
+            packet: Mapping[str, Any],
+            digest: str,
+        ) -> dict[str, Any]:
+            result = super()._confirmation(task, packet, digest)
+            candidate = result["candidate_assessments"][0]["candidate_ids"][0]
+            dossier = next(
+                call
+                for episode in packet["original_evidence_episodes"]
+                for call in episode["calls"]
+                if call["candidate_id"] == candidate
+            )
+            category = str(packet["helper_categories"][0])
+            finding = self._finding(
+                "helper-contracts",
+                "helper-contracts.cleanup-owner",
+                dossier,
+            )
+            finding["helper_categories"] = [category]
+            child = {
+                key: value
+                for key, value in finding.items()
+                if key not in {"candidate_ids", "affected_call_ids"}
+            }
+            result["candidate_assessments"][0].update(
+                {
+                    "disposition": "confirmed-finding",
+                    "confirmed_findings": [child],
+                }
+            )
+            result["helper_category_reviews"][0].update(
+                {
+                    "status": "applies",
+                    "finding_ids": [finding["id"]],
+                }
+            )
+            return result
+
+        def _synthesis(
+            self,
+            task: Mapping[str, Any],
+            packet: Mapping[str, Any],
+            digest: str,
+        ) -> dict[str, Any]:
+            confirmation = packet["confirmation_results"][0]
+            finding = confirmation["confirmed_findings"][0]
+            contribution = confirmation["temporary_control_contributions"][0]
+            canonical_id = f"{finding['id']}.canonical"
+            affected_calls = set(finding["affected_call_ids"])
+            classifications = [
+                {
+                    "classification": (
+                        "avoidable_unimplemented"
+                        if call_id in affected_calls
+                        else "reviewed_no_confirmed_waste"
+                    ),
+                    "call_ids": [call_id],
+                    "primary_finding_id": (
+                        canonical_id if call_id in affected_calls else None
+                    ),
+                    "reason_code": None,
+                    "reason": "The selected helper surface reviewed this call.",
+                }
+                for call_id in packet["call_inventory"]
+            ]
+            avoidable = sum(
+                len(item["call_ids"])
+                for item in classifications
+                if item["classification"].startswith("avoidable_")
+            )
+            return {
+                "schema": "ceratops-credit-analysis-orchestration-synthesis.v3",
+                "analysis_id": str(packet["analysis_id"]),
+                "task_id": task["task_id"],
+                "input_sha256": digest,
+                "finding_groups": [
+                    {
+                        "canonical_finding_id": canonical_id,
+                        "source_finding_ids": [finding["id"]],
+                        "primary_source_finding_id": finding["id"],
+                        "title": finding["title"],
+                        "problem_summary": finding["problem_summary"],
+                        "owner_key": finding["producer_owner"],
+                        "control_key": finding["proposed_durable_control"],
+                        "contributing_surfaces": ["helper-contracts"],
+                        "savings_source_finding_id": finding["id"],
+                    }
+                ],
+                "risk_order": [],
+                "temporary_control_merges": [
+                    {
+                        "merge_id": "temporary-merge.helper-cleanup",
+                        "owner_key": contribution["owner_key"],
+                        "control_key": contribution["control_key"],
+                        "review_ids": [],
+                        "contribution_ids": [contribution["id"]],
+                        "disposition": "durable-control-missing",
+                        "finding_id": canonical_id,
+                        "no_finding_reason": None,
+                        "contributing_surfaces": ["helper-contracts"],
+                    }
+                ],
+                "call_classifications": classifications,
+                "producer_groups": [
+                    {
+                        "id": "producer.helper-cleanup",
+                        "producer_type": finding["producer_type"],
+                        "owner": finding["producer_owner"],
+                        "finding_ids": [canonical_id],
+                        "recommended_control": finding[
+                            "proposed_durable_control"
+                        ],
+                        "targeted_verification": finding[
+                            "targeted_verification"
+                        ],
+                    }
+                ],
+                "analysis_summary": {
+                    "confirmed_count": 1,
+                    "risk_count": 0,
+                    "necessary_calls": 0,
+                    "protocol_overhead_calls": 0,
+                    "reviewed_no_confirmed_waste_calls": (
+                        len(classifications) - avoidable
+                    ),
+                    "unassessed_calls": 0,
+                    "avoidable_calls": avoidable,
+                    "meaningful_input_output_findings": [],
+                },
+            }
+
+    contribution_state = pathlib.Path(contribution_plan["state_path"])
+    contribution_status = workflow.command_execute_orchestration(
+        contribution_state,
+        runner=StandaloneContributionRunner(),
+        available_models=available,
+    )
+    assert contribution_status["complete"] is True
+    contribution_saved = json.loads(
+        contribution_state.read_text(encoding="utf-8")
+    )
+    contribution_final = json.loads(
+        pathlib.Path(contribution_saved["final_result"]["path"]).read_text(
+            encoding="utf-8"
+        )
+    )
+    assert contribution_final["temporary_control_merges"][0]["finding_id"] == (
+        "helper-contracts.cleanup-owner.canonical"
+    )
+
+    revalidation_root = tmp_path / "revalidate-failed-output"
+    revalidation_root.mkdir()
+    revalidation_request, _, _ = credit_analysis_request(revalidation_root)
+    revalidation_plan = workflow.command_plan_orchestration(
+        revalidation_request,
+        available_models=available,
+    )
+    revalidation_state = pathlib.Path(revalidation_plan["state_path"])
+    revalidation_runner = FakeCreditModelRunner()
+    original_validator = workflow._validate_task_result
+    rejected_once = False
+
+    def reject_once(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        nonlocal rejected_once
+        if not rejected_once:
+            rejected_once = True
+            raise workflow.CreditAnalysisError("synthetic stale validator")
+        return original_validator(*args, **kwargs)
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(workflow, "_validate_task_result", reject_once)
+        with pytest.raises(
+            workflow.CreditAnalysisError,
+            match="synthetic stale validator",
+        ):
+            workflow.command_execute_orchestration(
+                revalidation_state,
+                runner=revalidation_runner,
+                available_models=available,
+                task_limit=1,
+            )
+    invoked_before_recovery = len(revalidation_runner.calls)
+    workflow.command_execute_orchestration(
+        revalidation_state,
+        runner=revalidation_runner,
+        available_models=available,
+        task_limit=1,
+    )
+    assert len(revalidation_runner.calls) == invoked_before_recovery
+    revalidated_state = json.loads(revalidation_state.read_text(encoding="utf-8"))
+    revalidated_task = revalidated_state["task_order"][0]
+    assert revalidated_state["execution"][revalidated_task]["status"] == "complete"
+    assert revalidated_state["execution"][revalidated_task]["attempts"][-1][
+        "outcome"
+    ] == "validation-error"
+    assert revalidated_state["execution"][revalidated_task]["result"][
+        "recovered_without_model_call"
+    ] is True
+    assert revalidated_state["model_attempts"] == {"luna": 1, "sol": 0}
+    assert revalidated_state["model_calls"] == {"luna": 1, "sol": 0}
+
     retry_root = tmp_path / "failed-attempt-resume"
     retry_root.mkdir()
     retry_request, _, _ = credit_analysis_request(retry_root)
@@ -5651,9 +5866,13 @@ def run_fast_change(
     *,
     environment: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    """Write and run one fast-change request outside the target repository."""
+    """Write and run one fast-change request in its canonical task-temp root."""
 
-    request_path = repo.parent / f"request-{time.time_ns()}.json"
+    task_temp_root = (
+        repo.parent / "tmp" / repo.name / f"request-{time.time_ns()}"
+    )
+    task_temp_root.mkdir(parents=True)
+    request_path = task_temp_root / "request.json"
     request_path.write_text(
         json.dumps(request),
         encoding="utf-8",
@@ -6862,6 +7081,12 @@ def test_fast_change_commits_cohesive_rules_only_multi_skill_scope(
     payload = json.loads(result.stdout)
     assert payload["status"] == "committed"
     assert payload["skills"] == ["alpha-tool", "beta-tool"]
+    assert payload["request_cleanup"] == {
+        "request": "removed",
+        "task_temp_root": "removed",
+    }
+    canonical_requests = repo.parent / "tmp" / repo.name
+    assert list(canonical_requests.rglob("request.json")) == []
     assert run_git(repo, "status", "--porcelain").stdout == ""
     committed = set(
         run_git(repo, "show", "--pretty=", "--name-only", "HEAD").stdout.splitlines()
@@ -6915,6 +7140,36 @@ def test_fast_change_commits_cohesive_rules_only_multi_skill_scope(
     detail = json.loads(failed_lint.stderr)["detail"]
     assert detail["phase"] == "markdown_lint"
     assert detail["compensation"] == ["source_restored"]
+    assert len(list(canonical_requests.rglob("request.json"))) == 1
+
+    outside_request = repo.parent / "outside-fast-change-request.json"
+    outside_request.write_text(
+        json.dumps(
+            fast_change_request(
+                repo,
+                fast_change_edits(
+                    {
+                        "skills/alpha-tool/notes.txt": (
+                            "Updated notes",
+                            "Rejected notes",
+                        )
+                    }
+                ),
+                selected=["alpha-tool"],
+            )
+        ),
+        encoding="utf-8",
+        newline="\n",
+    )
+    noncanonical = subprocess.run(
+        [sys.executable, str(FAST_CHANGE), "--request", str(outside_request)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert noncanonical.returncode == 2
+    assert "<repo-parent>/tmp/<repo-name>/<task>/" in noncanonical.stderr
+    assert outside_request.is_file()
 
 
 def test_fast_change_helper_tests_and_compensates_failures(
@@ -7960,6 +8215,68 @@ def test_integrated_ship_delegates_admin_semantics_to_merge_owner(
 
     assert result["status"] == "shipped"
     assert events == ["recover", "merge"]
+
+    review_task_root = tmp_path / "tmp" / repo.name / "review-fix"
+    review_task_root.mkdir(parents=True)
+    review_request = review_task_root / "replies.json"
+    review_request.write_text("{}\n", encoding="utf-8", newline="\n")
+    review_state: dict[str, Any] = {
+        "phase": "pr_ready",
+        "pr": 24,
+        "url": "https://example.invalid/pull/24",
+        "commit": head,
+    }
+    address_calls: list[pathlib.Path] = []
+
+    def address_request(
+        request_path: pathlib.Path,
+        *,
+        cwd: pathlib.Path | None = None,
+    ) -> dict[str, Any]:
+        address_calls.append(request_path)
+        assert cwd == repo
+        return {
+            "status": "addressed",
+            "repo": "example/repository",
+            "pr": 24,
+            "head_oid": head,
+            "reply_count": 1,
+            "posted": 1,
+            "resolved": 1,
+            "already_addressed": 0,
+        }
+
+    monkeypatch.setattr(ship.codex_review, "address_request", address_request)
+    review_args = argparse.Namespace(review_replies_request=review_request)
+    addressed = ship._address_review_replies(
+        review_args,
+        state=review_state,
+        checkpoint_path=checkpoint,
+        repo_root=repo,
+        repository="example/repository",
+        pr="24",
+        commit=head,
+    )
+    assert addressed == {
+        "status": "addressed",
+        "reply_count": 1,
+        "posted": 1,
+        "resolved": 1,
+        "already_addressed": 0,
+        "cleanup": "removed",
+    }
+    assert not review_request.exists() and not review_task_root.exists()
+    assert review_state["review_replies"]["cleanup"] == "removed"
+    assert ship._address_review_replies(
+        review_args,
+        state=review_state,
+        checkpoint_path=checkpoint,
+        repo_root=repo,
+        repository="example/repository",
+        pr="24",
+        commit=head,
+    ) == addressed
+    assert address_calls == [review_request.resolve()]
 
     review_result = {
         "repo": "example/repository",
@@ -9594,11 +9911,18 @@ def test_repository_ship_absent_default_contract_is_no_op_and_finalizes(
         return responses[len(commands) - 1]
 
     loaded = runpy.run_path(str(SHIP_REPOSITORY))
+    review_request = tmp_path / "review-replies.json"
     parsed = loaded["build_parser"]().parse_args(
-        ["--head-branch", "release/local"]
+        [
+            "--head-branch",
+            "release/local",
+            "--review-replies-request",
+            str(review_request),
+        ]
     )
     assert not hasattr(parsed, "pending_work_scope")
     assert not hasattr(parsed, "no_pending_work_check")
+    assert parsed.review_replies_request == review_request
     ship_repository = loaded["ship_repository"]
     ship_repository.__globals__["_run_json"] = run_json
     result = ship_repository(
@@ -9618,6 +9942,7 @@ def test_repository_ship_absent_default_contract_is_no_op_and_finalizes(
             deploy_operation="deploy",
             ci_wait_seconds=1,
             review_wait_seconds=1,
+            review_replies_request=review_request,
             interval_seconds=1,
         )
     )
@@ -9637,6 +9962,9 @@ def test_repository_ship_absent_default_contract_is_no_op_and_finalizes(
     else:
         assert commands[0][-2:] == ["--target-commit", "a" * 40]
     assert commands[1][commands[1].index("--commit") + 1] == "a" * 40
+    assert commands[1][commands[1].index("--review-replies-request") + 1] == str(
+        review_request
+    )
     if scope_present:
         assert len(commands) == 4
         assert "--pending-work-check" in commands[1]
@@ -9695,6 +10023,7 @@ def test_repository_ship_absent_default_contract_is_no_op_and_finalizes(
                 deploy_operation="deploy",
                 ci_wait_seconds=1,
                 review_wait_seconds=1,
+                review_replies_request=None,
                 interval_seconds=1,
             )
         )

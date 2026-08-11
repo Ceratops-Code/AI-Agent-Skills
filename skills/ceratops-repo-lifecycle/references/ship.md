@@ -45,11 +45,13 @@ Infer missing values from the checkout, scope file, and live PR before asking.
    treat terminal JSON as the complete decision payload. CI blockers must name
    the exact head and failed check plus available run, job, URL, and compact log
    evidence; review blockers must include body, location, thread ID, and top
-   comment database ID. After fixing review findings, invoke `python -m
-   github_pr_workflow address --request REQUEST` once from the helper directory.
-   Its closed `ceratops-review-thread-replies.v1` request binds repository, PR,
-   head, thread and top-comment identities to prepared replies; the helper
-   verifies them, posts and resolves every reply, and emits only `OK` on success.
+   comment database ID. After fixing review findings, rerun the complete ship
+   helper with `--review-replies-request REQUEST`. Its closed
+   `ceratops-review-thread-replies.v1` request binds repository, PR, head,
+   thread and top-comment identities to prepared replies; the helper pushes the
+   exact head, verifies, posts and resolves every reply, checkpoints the
+   handoff, consumes its canonical task-temp request, and continues the same
+   gate and ship workflow.
 2. Before automatically selecting an incomplete checkpoint to resume, the
    GitHub workflow removes a matching checkpoint only when its phase is exactly
    `prepared`, the local head branch has moved, a fresh fetch proves the commit
