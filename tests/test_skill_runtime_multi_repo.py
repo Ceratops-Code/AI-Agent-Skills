@@ -1550,7 +1550,15 @@ def load_credit_analysis_workflow_module() -> Any:
     )
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    previous = sys.modules.get(spec.name)
+    sys.modules[spec.name] = module
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        if previous is None:
+            sys.modules.pop(spec.name, None)
+        else:
+            sys.modules[spec.name] = previous
     return module
 
 
@@ -1573,6 +1581,20 @@ class FakeCreditModelRunner:
     """Return sparse Luna discovery and one complete Sol adjudication."""
 
     available_models = holistic_model_catalog()
+    usage_by_phase = {
+        "luna-discovery": {
+            "input_tokens": 800,
+            "cached_input_tokens": 0,
+            "output_tokens": 180,
+            "reasoning_output_tokens": 420,
+        },
+        "sol-adjudication": {
+            "input_tokens": 1_200,
+            "cached_input_tokens": 0,
+            "output_tokens": 360,
+            "reasoning_output_tokens": 1_100,
+        },
+    }
 
     def __init__(self, *, temporary_controls: bool = True) -> None:
         self.calls: list[dict[str, Any]] = []
@@ -1677,9 +1699,6 @@ class FakeCreditModelRunner:
             "additional_recurring_calls_per_affected_run": 0.0,
             "affected_similar_run_frequency": 0.5,
             "affected_similar_run_frequency_range": [0.25, 0.75],
-            "estimated_calls_saved_per_similar_run": (
-                0.0 if volume_only else float(call_count) * 0.5
-            ),
             "assumptions": ["synthetic recurrence evidence"],
         }
 
@@ -1706,24 +1725,6 @@ class FakeCreditModelRunner:
                 for candidate_id in item["candidate_ids"]
             )
         )
-        workstream = inventory[candidate_records[0]["candidate_ids"][0]][
-            "workstream"
-        ]
-        surfaces = list(
-            dict.fromkeys(
-                surface
-                for item in candidate_records
-                for surface in item["surface_ids"]
-            )
-        )
-        fixed_surface_order = [
-            "helper-contracts",
-            "context-evidence",
-            "rework-validation",
-            "tool-flow",
-            "instruction-reasoning",
-        ]
-        surfaces = [surface for surface in fixed_surface_order if surface in surfaces]
         return {
             "id": finding_id,
             "title": finding_id.replace("-", " "),
@@ -1736,13 +1737,8 @@ class FakeCreditModelRunner:
             "evidence_refs": [
                 str(candidate_records[0]["evidence_refs"][0])
             ],
-            "evidence_narrative": (
-                "The causal record includes the user request, observable action, "
-                "result, telemetry, and final outcome."
-            ),
             "producer_type": "workflow",
             "producer_owner": "workflow:synthetic",
-            "workstream": workstream,
             "proposed_durable_control": (
                 "Make the deterministic workflow complete to its final boundary."
             ),
@@ -1750,9 +1746,6 @@ class FakeCreditModelRunner:
             "targeted_verification": [
                 "verify the workflow prevents the repeated causal episode"
             ],
-            "observed_avoidable_call_count": (
-                0 if volume_only else len(call_ids)
-            ),
             "recurrence": cls._recurrence(
                 len(call_ids),
                 volume_only=volume_only,
@@ -1764,7 +1757,6 @@ class FakeCreditModelRunner:
                 "description": "one targeted producer update",
             },
             "helper_categories": [],
-            "contributing_surfaces": surfaces,
         }
 
     def _sol(
@@ -1791,7 +1783,8 @@ class FakeCreditModelRunner:
         durable_candidates = [
             str(item["id"])
             for item in candidates
-            if str(item["id"]).endswith(("durable-a", "durable-b"))
+            if str(item["title"]).rsplit(".", 1)[-1].replace(" ", "-")
+            in {"durable-a", "durable-b"}
         ]
         if durable_candidates:
             first_durable = candidates_by_id[durable_candidates[0]]
@@ -1806,13 +1799,16 @@ class FakeCreditModelRunner:
             )
         for index, candidate in enumerate(candidates, start=1):
             candidate_id = str(candidate["id"])
+            semantic_suffix = str(candidate["title"]).rsplit(".", 1)[-1].replace(
+                " ", "-"
+            )
             evidence_refs = [str(candidate["evidence_refs"][0])]
             finding_ids: list[str] = []
             risk_ids: list[str] = []
             if candidate["kind"] == "provisional-finding":
                 finding_id = (
                     f"finding-volume-{index}"
-                    if candidate_id.endswith("volume-waste")
+                    if semantic_suffix == "volume-waste"
                     else f"finding-model-{index}"
                 )
                 findings.append(
@@ -1820,7 +1816,7 @@ class FakeCreditModelRunner:
                         finding_id,
                         candidate,
                         inventory,
-                        volume_only=candidate_id.endswith("volume-waste"),
+                        volume_only=semantic_suffix == "volume-waste",
                     )
                 )
                 finding_ids = [finding_id]
@@ -1836,8 +1832,6 @@ class FakeCreditModelRunner:
                         ),
                         "affected_call_ids": [inventory[candidate_key]["call_id"]],
                         "evidence_refs": evidence_refs,
-                        "workstream": inventory[candidate_key]["workstream"],
-                        "contributing_surfaces": list(candidate["surface_ids"]),
                         "competing_explanations": [
                             "completion was already visible",
                             "completion had not propagated",
@@ -1867,7 +1861,6 @@ class FakeCreditModelRunner:
             )
             if candidate["kind"] != "temporary-control":
                 continue
-            suffix = candidate_id.rsplit(".", 1)[-1]
             disposition_by_suffix = {
                 "transient": "transient-by-design",
                 "implemented": "permanently-implemented",
@@ -1876,7 +1869,7 @@ class FakeCreditModelRunner:
                 "durable-b": "durable-control-missing",
                 "unclear": "final-state-unclear",
             }
-            temporary_disposition = disposition_by_suffix[suffix]
+            temporary_disposition = disposition_by_suffix[semantic_suffix]
             durable = temporary_disposition == "durable-control-missing"
             candidate_key = str(candidate["candidate_ids"][0])
             reviews.append(
@@ -1889,7 +1882,11 @@ class FakeCreditModelRunner:
                         "A run-only deterministic orchestration step"
                     ),
                     "final_canonical_evidence_refs": [
-                        "evidence://canonical-state/synthetic"
+                        (
+                            packet["canonical_state"][0]["evidence_ref"]
+                            if packet["canonical_state"]
+                            else evidence_refs[0]
+                        )
                     ],
                     "disposition": temporary_disposition,
                     "owning_producer": (
@@ -1914,7 +1911,6 @@ class FakeCreditModelRunner:
                         if durable
                         else "The selected disposition does not justify a defect."
                     ),
-                    "contributing_surfaces": list(candidate["surface_ids"]),
                 }
             )
         durable_reviews = [
@@ -1928,15 +1924,6 @@ class FakeCreditModelRunner:
                     "control_key": "shared-temporary-orchestration",
                     "owning_producer": "workflow:shared",
                     "review_ids": durable_reviews,
-                    "contributing_surfaces": [
-                        surface
-                        for surface in packet["surface_order"]
-                        if any(
-                            surface in review["contributing_surfaces"]
-                            for review in reviews
-                            if review["id"] in durable_reviews
-                        )
-                    ],
                     "finding_id": "temporary-control-gap",
                 }
             ]
@@ -1950,6 +1937,7 @@ class FakeCreditModelRunner:
             for call_id in finding["affected_call_ids"]
         }
         groups: list[dict[str, Any]] = []
+        previous_signature: tuple[str, str] | None = None
         for row in packet["call_inventory"]["rows"]:
             item = dict(zip(fields, row, strict=True))
             classification = (
@@ -1958,10 +1946,7 @@ class FakeCreditModelRunner:
                 else "reviewed_no_confirmed_waste"
             )
             signature = (classification, item["workstream"])
-            if groups and (
-                groups[-1]["classification"],
-                groups[-1]["workstream"],
-            ) == signature:
+            if groups and previous_signature == signature:
                 groups[-1]["call_ids"].append(item["call_id"])
             else:
                 groups.append(
@@ -1973,38 +1958,10 @@ class FakeCreditModelRunner:
                             "The final pass checked this source-order call group."
                         ),
                         "evidence_refs": [item["primary_evidence_ref"]],
-                        "workstream": item["workstream"],
                     }
                 )
-        surface_summaries = []
-        for surface in packet["surface_order"]:
-            surface_summaries.append(
-                {
-                    "surface_id": surface,
-                    "finding_ids": [
-                        finding["id"]
-                        for finding in findings
-                        if surface in finding["contributing_surfaces"]
-                    ],
-                    "risk_ids": [
-                        risk["id"]
-                        for risk in risks
-                        if surface in risk["contributing_surfaces"]
-                    ],
-                    "temporary_control_review_ids": [
-                        review["id"]
-                        for review in reviews
-                        if surface in review["contributing_surfaces"]
-                    ],
-                    "summary": f"The {surface} lens was checked in this Sol pass.",
-                }
-            )
+                previous_signature = signature
         return {
-            "schema": "ceratops-credit-analysis-adjudication-result.v1",
-            "analysis_id": packet["analysis_id"],
-            "task_id": task["task_id"],
-            "input_sha256": digest,
-            "surface_summaries": surface_summaries,
             "candidate_decisions": decisions,
             "confirmed_findings": findings,
             "plausible_risks": risks,
@@ -2020,10 +1977,6 @@ class FakeCreditModelRunner:
                 for category in packet["helper_categories"]
             ],
             "call_classifications": groups,
-            "analysis_summary": (
-                "Sparse Luna candidates were adjudicated once against original "
-                "evidence with complete grouped call accounting."
-            ),
         }
 
     def run(
@@ -2056,11 +2009,38 @@ def test_credit_analysis_workflow_end_to_end_uses_two_semantic_calls(
     tmp_path: pathlib.Path,
 ) -> None:
     workflow = load_credit_analysis_workflow_module()
-    request, _, task_root = credit_analysis_request(
+    request, session_path, task_root = credit_analysis_request(
         tmp_path,
         extra_completed_turns=3,
         extra_calls_per_turn=4,
         oversized_user_message_chars=5_000,
+    )
+    canonical_artifact = tmp_path / "scripts" / "run_form.py"
+    canonical_artifact.parent.mkdir()
+    canonical_artifact.write_text("print('canonical')\n", encoding="utf-8")
+    session_rows = [
+        json.loads(line)
+        for line in session_path.read_text(encoding="utf-8").splitlines()
+    ]
+    for row in session_rows:
+        payload = row.get("payload", {})
+        if (
+            payload.get("type") == "function_call_output"
+            and payload.get("call_id") == "read-1"
+        ):
+            output = json.loads(payload["output"])
+            output.update(
+                {
+                    "canonical_context_reference": f"{canonical_artifact}-13-",
+                    "canonical_exact_reference": str(canonical_artifact),
+                    "canonical_match_reference": f"{canonical_artifact}:12:",
+                }
+            )
+            payload["output"] = json.dumps(output)
+    session_path.write_text(
+        "".join(json.dumps(row) + "\n" for row in session_rows),
+        encoding="utf-8",
+        newline="\n",
     )
     plan = workflow.command_plan_orchestration(
         request,
@@ -2085,6 +2065,45 @@ def test_credit_analysis_workflow_end_to_end_uses_two_semantic_calls(
             encoding="utf-8"
         )
     )
+    canonical_records = [
+        record
+        for record in compact["canonical_state"]
+        if record["artifact_reference"].endswith("/scripts/run_form.py")
+    ]
+    assert len(canonical_records) == 1
+    canonical_record = canonical_records[0]
+    assert canonical_record["status"] == "captured"
+    assert canonical_record["source_reference_count"] == 3
+    assert canonical_record["source_sha256"] == hashlib.sha256(
+        canonical_artifact.read_bytes()
+    ).hexdigest()
+    assert {
+        (location["line"], location["relation"])
+        for location in canonical_record["locations"]
+    } == {(12, "match"), (13, "context")}
+    canonical_reference = canonical_record["artifact_reference"]
+    call_artifact_references = [
+        reference
+        for record in compact["records"]
+        for reference in record["canonical_artifact_references"]
+    ]
+    assert canonical_reference in call_artifact_references
+    assert not any(
+        "run_form.py:" in reference or "run_form.py-" in reference
+        for reference in call_artifact_references
+    )
+    retained_canonical = json.loads(
+        pathlib.Path(manifest["canonical_state"]["path"]).read_text(
+            encoding="utf-8"
+        )
+    )
+    retained_records = [
+        record
+        for record in retained_canonical["records"]
+        if record["artifact_reference"].endswith("/scripts/run_form.py")
+    ]
+    assert len(retained_records) == 1
+    assert len(retained_records[0]["observed_references"]) == 3
     assert evidence["collection"]["session_reads"] == 1
     assert evidence["analysis_lineage"]["source_selection_uses_prompt_markers"] is False
     assert "TOOL_RESULT_TAIL_SENTINEL" in json.dumps(evidence)
@@ -2157,6 +2176,32 @@ def test_credit_analysis_workflow_end_to_end_uses_two_semantic_calls(
         "luna-discovery",
         "sol-adjudication",
     ]
+    sol_call = runner.calls[-1]
+    sol_packet_text = json.dumps(sol_call["input_payload"], ensure_ascii=False)
+    assert not any(
+        candidate_id in sol_packet_text for candidate_id in manifest["candidate_ids"]
+    )
+    assert not any(call_id in sol_packet_text for call_id in manifest["call_ids"])
+    assert set(sol_call["schema"]["properties"]) == {
+        "candidate_decisions",
+        "confirmed_findings",
+        "plausible_risks",
+        "temporary_control_reviews",
+        "temporary_control_merges",
+        "helper_category_reviews",
+        "call_classifications",
+    }
+    assert sol_call["schema"]["title"] == (
+        "ceratops-credit-analysis-sol-transport.v1"
+    )
+    assert "maxItems" not in sol_call["schema"]["properties"][
+        "confirmed_findings"
+    ]
+    assert (
+        sol_call["schema"]["properties"]["candidate_decisions"]["items"]
+        ["properties"]["reason"]["maxLength"]
+        == 320
+    )
     assert all(
         "Do not use tools" in call["prompt"]
         and "CERATOPS_CREDIT_ANALYSIS_CHILD" not in call["prompt"]
@@ -2165,6 +2210,48 @@ def test_credit_analysis_workflow_end_to_end_uses_two_semantic_calls(
     final_path = pathlib.Path(completed["final_result_path"])
     final_before = final_path.read_bytes()
     final = json.loads(final_before)
+    completed_state = json.loads(state_path.read_text(encoding="utf-8"))
+    sol_result_record = completed_state["execution"]["sol.adjudication"]["result"]
+    aliases_path = pathlib.Path(
+        completed_state["manifest"]["sol_task"]["artifacts"]["aliases"]
+    )
+    aliases = json.loads(aliases_path.read_text(encoding="utf-8"))
+    assert aliases["input_sha256"] == sol_result_record["input_sha256"]
+    assert aliases["aliases"]["calls"]
+    assert sol_result_record["aliases_sha256"] == hashlib.sha256(
+        aliases_path.read_bytes()
+    ).hexdigest()
+    assert sol_result_record["output_telemetry"] == {
+        "planned_output_reserve_tokens": 48_000,
+        "raw_result_chars": sol_result_record["output_telemetry"][
+            "raw_result_chars"
+        ],
+        "accepted_result_chars": sol_result_record["output_telemetry"][
+            "accepted_result_chars"
+        ],
+        "duration_ms": sol_result_record["output_telemetry"]["duration_ms"],
+        "visible_output_tokens": 360,
+        "reasoning_output_tokens": 1_100,
+        "total_output_tokens": 1_460,
+        "token_usage_available": True,
+    }
+    assert sol_result_record["output_telemetry"]["raw_result_chars"] > 0
+    assert sol_result_record["output_telemetry"]["accepted_result_chars"] > 0
+    assert sol_result_record["output_budget_warnings"] == []
+    raw_sol = json.loads(
+        pathlib.Path(
+            completed_state["execution"]["sol.adjudication"]["attempts"][-1]
+            ["raw_output_path"]
+        ).read_text(encoding="utf-8")
+    )
+    assert "surface_summaries" not in raw_sol
+    assert "analysis_summary" not in raw_sol
+    assert "schema" not in raw_sol
+    assert [decision["luna_candidate_id"] for decision in final["candidate_decisions"]]
+    assert all(
+        decision["luna_candidate_id"].startswith("luna.")
+        for decision in final["candidate_decisions"]
+    )
     assert final["model_calls"] == {
         "actual_luna": 1,
         "actual_sol": 1,
@@ -2372,7 +2459,6 @@ def test_credit_analysis_normalizes_sol_transport_without_changing_judgments(
             finding["affected_call_ids"] = [
                 call_id for call_id in call_order if call_id in finding_calls
             ]
-            finding["workstream"] = "analysis-overhead"
 
             implemented_call = next(
                 call_id
@@ -2398,7 +2484,6 @@ def test_credit_analysis_normalizes_sol_transport_without_changing_judgments(
                         "classification": "avoidable_implemented",
                     }
                 )
-            split_groups[0]["workstream"] = "analysis-overhead"
             result["call_classifications"] = list(reversed(split_groups))
 
             review = next(
@@ -2422,7 +2507,6 @@ def test_credit_analysis_normalizes_sol_transport_without_changing_judgments(
                     "control_key": "implemented-control-is-not-a-gap",
                     "owning_producer": review["owning_producer"],
                     "review_ids": [review["id"]],
-                    "contributing_surfaces": review["contributing_surfaces"],
                     "finding_id": finding["id"],
                 }
             )
@@ -2511,6 +2595,8 @@ def test_credit_analysis_model_catalog_decodes_cli_as_utf8(
     assert specs["luna"]["reasoning_effort"] == "medium"
     assert specs["sol"]["reasoning_effort"] == "max"
     assert specs["luna"]["evidence_token_budget"] > 200_000
+    assert specs["sol"]["output_reserve_tokens"] == 48_000
+    assert specs["sol"]["evidence_token_budget"] > 160_000
 
 
 def test_credit_analysis_child_command_places_global_approval_before_exec(
@@ -2634,6 +2720,28 @@ def test_credit_analysis_workflow_rejects_invalid_and_conflicting_passes(
     assert resumed_state["model_attempts"]["luna"] == 2
     assert resumed_state["model_calls"]["luna"] == 1
 
+    class VerboseRationaleRunner(FakeCreditModelRunner):
+        def _sol(
+            self,
+            task: Mapping[str, Any],
+            packet: Mapping[str, Any],
+            digest: str,
+        ) -> dict[str, Any]:
+            result = super()._sol(task, packet, digest)
+            result["candidate_decisions"][0]["reason"] = "x" * 321
+            return result
+
+    verbose_sol = VerboseRationaleRunner()
+    with pytest.raises(
+        workflow.CreditAnalysisError,
+        match="320-character semantic bound",
+    ):
+        workflow.command_execute_orchestration(
+            state_path,
+            runner=verbose_sol,
+            available_models=verbose_sol.available_models,
+        )
+
     class ExcessiveUnassessedRunner(FakeCreditModelRunner):
         def _sol(
             self,
@@ -2659,7 +2767,7 @@ def test_credit_analysis_workflow_rejects_invalid_and_conflicting_passes(
             available_models=bad_sol.available_models,
         )
     failed_sol_state = json.loads(state_path.read_text(encoding="utf-8"))
-    assert failed_sol_state["model_attempts"]["sol"] == 1
+    assert failed_sol_state["model_attempts"]["sol"] == 2
     assert failed_sol_state["model_calls"]["sol"] == 0
 
     completed = workflow.command_execute_orchestration(

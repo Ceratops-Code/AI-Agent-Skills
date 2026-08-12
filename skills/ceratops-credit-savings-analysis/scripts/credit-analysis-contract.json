@@ -36,7 +36,7 @@
     "hidden_prompt_reserve_tokens": 28000,
     "safety_margin_tokens": 12000,
     "luna_output_reserve_tokens": 4000,
-    "sol_output_reserve_tokens": 7000,
+    "sol_output_reserve_tokens": 48000,
     "minimum_evidence_tokens": 16000
   },
   "chunking": {
