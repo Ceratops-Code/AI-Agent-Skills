@@ -749,7 +749,6 @@ def _load_contract() -> dict[str, Any]:
     semantic_calls = contract.get("semantic_call_contract")
     if semantic_calls != {
         "normal_luna_calls": 1,
-        "maximum_luna_calls": 4,
         "sol_calls": 1,
         "bookkeeping_calls": 0,
     }:
@@ -781,7 +780,6 @@ def _load_contract() -> dict[str, Any]:
     chunking_keys = {
         "large_payload_inline_chars",
         "compact_text_chars",
-        "maximum_luna_packets",
         "sol_evidence_chars_per_candidate",
     }
     if (
@@ -793,8 +791,6 @@ def _load_contract() -> dict[str, Any]:
             or chunking[key] < 1
             for key in chunking_keys
         )
-        or chunking["maximum_luna_packets"]
-        != semantic_calls["maximum_luna_calls"]
     ):
         raise CreditAnalysisError("orchestration chunking contract is invalid")
     coverage = contract.get("coverage")

@@ -27,7 +27,6 @@
   },
   "semantic_call_contract": {
     "normal_luna_calls": 1,
-    "maximum_luna_calls": 4,
     "sol_calls": 1,
     "bookkeeping_calls": 0
   },
@@ -42,7 +41,6 @@
   "chunking": {
     "large_payload_inline_chars": 12000,
     "compact_text_chars": 900,
-    "maximum_luna_packets": 4,
     "sol_evidence_chars_per_candidate": 6000
   },
   "coverage": {

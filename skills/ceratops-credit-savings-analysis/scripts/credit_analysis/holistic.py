@@ -2277,7 +2277,6 @@ def _holistic_partition(
     episodes: Sequence[Mapping[str, Any]],
     bundle: Mapping[str, Any],
     budget_chars: int,
-    maximum_packets: int,
 ) -> list[list[dict[str, Any]]]:
     """Make the minimum greedy ordered shared partition, never one per surface."""
 
@@ -2322,11 +2321,6 @@ def _holistic_partition(
         packets.append(current)
     if not packets:
         raise CreditAnalysisError("holistic Luna plan is empty")
-    if len(packets) > maximum_packets:
-        raise CreditAnalysisError(
-            "projected Luna queue is clearly runaway: "
-            f"{len(packets)} shared packets exceeds {maximum_packets}"
-        )
     observed = [candidate for packet in packets for episode in packet for candidate in episode["candidate_ids"]]
     if observed != bundle["candidate_ids"] or len(observed) != len(set(observed)):
         raise CreditAnalysisError("holistic Luna partition changed call coverage")
@@ -2334,7 +2328,10 @@ def _holistic_partition(
 
 
 def _validate_holistic_manifest(
-    manifest: Mapping[str, Any], contract: Mapping[str, Any]
+    manifest: Mapping[str, Any],
+    contract: Mapping[str, Any],
+    *,
+    expected_packets: Sequence[Sequence[Mapping[str, Any]]] | None = None,
 ) -> None:
     if manifest.get("schema") != HOLISTIC_MANIFEST_SCHEMA:
         raise CreditAnalysisError("holistic manifest schema is invalid")
@@ -2345,8 +2342,21 @@ def _validate_holistic_manifest(
     observed = [candidate for task in tasks for candidate in task.get("candidate_ids", [])]
     if observed != expected or len(observed) != len(set(observed)):
         raise CreditAnalysisError("holistic manifest coverage is missing or duplicated")
-    if len(tasks) > int(contract["semantic_call_contract"]["maximum_luna_calls"]):
-        raise CreditAnalysisError("holistic manifest exceeds the Luna call cap")
+    if expected_packets is not None:
+        expected_membership = [
+            [
+                candidate
+                for episode in packet
+                for candidate in episode["candidate_ids"]
+            ]
+            for packet in expected_packets
+        ]
+        observed_membership = [list(task.get("candidate_ids", [])) for task in tasks]
+        if observed_membership != expected_membership:
+            raise CreditAnalysisError(
+                "holistic manifest packet boundaries do not match the minimum "
+                "ordered partition"
+            )
     if manifest.get("projected_luna_calls") != len(tasks):
         raise CreditAnalysisError("projected Luna count is invalid")
     if manifest.get("projected_sol_calls") != 1:
@@ -2450,7 +2460,6 @@ def command_plan_orchestration(
         episodes=episodes,
         bundle=bundle,
         budget_chars=int(model_specs["luna"]["evidence_char_budget"]),
-        maximum_packets=int(contract["chunking"]["maximum_luna_packets"]),
     )
     luna_tasks: list[dict[str, Any]] = []
     for ordinal, packet in enumerate(packets, start=1):
@@ -2518,7 +2527,7 @@ def command_plan_orchestration(
         "projected_sol_calls": 1,
         "projected_semantic_calls": len(luna_tasks) + 1,
     }
-    _validate_holistic_manifest(manifest, contract)
+    _validate_holistic_manifest(manifest, contract, expected_packets=packets)
     manifest_path = orchestration_root / "chunk-manifest.json"
     _exclusive_json(manifest_path, manifest, "holistic manifest")
     task_order = [*[task["task_id"] for task in luna_tasks], sol_task_id]
@@ -2636,10 +2645,20 @@ def _holistic_read_state(
     embedded.pop("sha256", None)
     if manifest != embedded:
         raise CreditAnalysisError("embedded holistic manifest changed")
-    _validate_holistic_manifest(manifest, contract)
     compact = _read_json(
         pathlib.Path(str(manifest["compact_evidence"]["path"])),
         "compact causal evidence",
+    )
+    expected_packets = _holistic_partition(
+        analysis_id=str(manifest["analysis_id"]),
+        episodes=_holistic_episodes(compact),
+        bundle=compact,
+        budget_chars=int(state["model_specs"]["luna"]["evidence_char_budget"]),
+    )
+    _validate_holistic_manifest(
+        manifest,
+        contract,
+        expected_packets=expected_packets,
     )
     if compact.get("schema") != HOLISTIC_EVIDENCE_SCHEMA:
         raise CreditAnalysisError("compact causal evidence schema changed")

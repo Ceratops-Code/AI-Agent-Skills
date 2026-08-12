@@ -66,18 +66,20 @@ applies them.
   in model evidence; no selected call is silently omitted or truncated away.
 - A normal full analysis runs one Luna discovery and one Sol adjudication. If
   the dynamically budgeted Luna packet cannot fit, partition the causal episodes
-  once into the minimum ordered shared packets, with at most four Luna calls and
-  no per-surface chunking or consolidation. Run exactly one Sol pass that verifies
-  every Luna candidate against original evidence and returns only bounded semantic
-  judgments through packet-local identifiers. Restore canonical identifiers and
-  derive nonsemantic summaries, ordering, surfaces, workstreams, repeated evidence,
-  and savings arithmetic in code; never bound findings, candidate coverage, or
-  material variants. Sol merges overlaps and temporary controls, applies recurrence
-  and ROI rules, classifies every source call in grouped form, and produces the final
-  synthesis. Persist result-size, duration, visible-token, and reasoning-token
-  telemetry as diagnostics only; treat the output reserve solely as overflow
-  protection. Run no model bookkeeping calls; stop before execution when the finite
-  plan is malformed or exceeds the cap.
+  once into the minimum ordered shared packets; do not impose a fixed Luna-call
+  cap or create per-surface chunking or consolidation. Run exactly one Sol pass
+  that verifies every Luna candidate against original evidence and returns only
+  bounded semantic judgments through packet-local identifiers. Restore canonical
+  identifiers and derive nonsemantic summaries, ordering, surfaces, workstreams,
+  repeated evidence, and savings arithmetic in code; never bound findings,
+  candidate coverage, or material variants. Sol merges overlaps and temporary
+  controls, applies recurrence and ROI rules, classifies every source call in
+  grouped form, and produces the final synthesis. Persist result-size, duration,
+  visible-token, and reasoning-token telemetry as diagnostics only; treat the
+  output reserve solely as overflow protection. Run no model bookkeeping calls;
+  stop before execution when the finite plan is malformed, changes candidate
+  coverage or order, or contains a packet boundary not required by the frozen
+  evidence volume and effective context budget.
 - Keep session evidence, accepted surface results, the append-only index, and
   the final machine result at their controller-retained paths. Do not echo raw
   session material or caller-local paths unnecessarily.

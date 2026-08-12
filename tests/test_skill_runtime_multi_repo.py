@@ -2804,25 +2804,93 @@ def test_credit_analysis_workflow_rejects_invalid_and_conflicting_passes(
         episodes=episodes,
         bundle=compact,
         budget_chars=max(8_000, one_packet_chars // 2),
-        maximum_packets=4,
     )
-    assert 2 <= len(packets) <= 4
+    assert len(packets) >= 2
     assert [
         candidate_id
         for packet in packets
         for episode in packet
         for candidate_id in episode["candidate_ids"]
     ] == compact["candidate_ids"]
+
+    synthetic_ids = [f"candidate.synthetic.{index}" for index in range(5)]
+    synthetic_records = [
+        {"candidate_id": candidate_id, "workstream": "producer"}
+        for candidate_id in synthetic_ids
+    ]
+    synthetic_bundle = {
+        "surface_order": compact["surface_order"],
+        "canonical_state": [],
+        "analysis_generated_activity": [],
+        "records": synthetic_records,
+        "candidate_ids": synthetic_ids,
+    }
+    synthetic_episodes = [
+        {
+            "episode_id": f"episode.synthetic.{index}",
+            "turn_id": f"turn.synthetic.{index}",
+            "candidate_ids": [candidate_id],
+            "user_messages": [],
+            "calls": [
+                {"candidate_id": candidate_id, "semantic_evidence": "x" * 4_000}
+            ],
+        }
+        for index, candidate_id in enumerate(synthetic_ids, start=1)
+    ]
+    five_packet_budget = max(
+        workflow._json_chars(
+            workflow._holistic_luna_payload(
+                analysis_id=compact["analysis_id"],
+                task_id="luna.discovery.0001",
+                ordinal=1,
+                episodes=[episode],
+                bundle=synthetic_bundle,
+            )
+        )
+        for episode in synthetic_episodes
+    )
+    five_packets = workflow._holistic_partition(
+        analysis_id=compact["analysis_id"],
+        episodes=synthetic_episodes,
+        bundle=synthetic_bundle,
+        budget_chars=five_packet_budget,
+    )
+    assert len(five_packets) == 5
+    assert [
+        candidate_id
+        for packet in five_packets
+        for episode in packet
+        for candidate_id in episode["candidate_ids"]
+    ] == synthetic_ids
+
+    manifest = json.loads(pathlib.Path(plan["manifest_path"]).read_text(encoding="utf-8"))
+    first = manifest["luna_tasks"][0]
+    assert len(first["candidate_ids"]) > 1
+    split = dict(first)
+    midpoint = len(first["candidate_ids"]) // 2
+    first["candidate_ids"] = first["candidate_ids"][:midpoint]
+    split["candidate_ids"] = split["candidate_ids"][midpoint:]
+    split["task_id"] = "luna.discovery.unnecessary"
+    manifest["luna_tasks"].insert(1, split)
+    manifest["projected_luna_calls"] += 1
+    manifest["projected_semantic_calls"] += 1
+    manifest["sol_task"]["dependencies"].insert(1, split["task_id"])
+    expected_packets = workflow._holistic_partition(
+        analysis_id=compact["analysis_id"],
+        episodes=episodes,
+        bundle=compact,
+        budget_chars=json.loads(state_path.read_text(encoding="utf-8"))[
+            "model_specs"
+        ]["luna"]["evidence_char_budget"],
+    )
     with pytest.raises(
         workflow.CreditAnalysisError,
-        match="clearly runaway",
+        match="minimum ordered partition",
     ):
-        workflow._holistic_partition(
-            analysis_id=compact["analysis_id"],
-            episodes=episodes,
-            bundle=compact,
-            budget_chars=max(8_000, one_packet_chars // 2),
-            maximum_packets=1,
+        workflow._validate_holistic_manifest(
+            manifest,
+            workflow._load_contract(),
+            expected_packets=expected_packets,
         )
 
     manifest_path = pathlib.Path(plan["manifest_path"])
