@@ -62,6 +62,7 @@ ALLOWED_ROUTES = frozenset(
 MAX_QUERY_CHARS = 2_000
 MAX_NAME_CHARS = 200
 MAX_SEARCH_RESULTS = 12
+MAX_FETCH_ATTEMPTS = 8
 MAX_OPENED_PAGES = 3
 MAX_CLAIMS = 8
 MAX_EVIDENCE_CHARS = 700
@@ -75,11 +76,19 @@ LINK_PATTERN = re.compile(
     r"^\s*-\s*\[([^]]+)]\((https://[^)]+)\)(?::\s*(.*))?\s*$"
 )
 TOKEN_PATTERN = re.compile(r"[a-z0-9][a-z0-9_.+-]*", re.IGNORECASE)
+NAMED_PHRASE_PATTERN = re.compile(
+    r"\b(?:[A-Z][A-Za-z0-9+._-]*|[A-Z]{2,})"
+    r"(?:\s+(?:[A-Z][A-Za-z0-9+._-]*|[A-Z]{2,}))*\b"
+)
 MODEL_PATH_PATTERN = re.compile(r"[a-z0-9][a-z0-9._-]*", re.IGNORECASE)
 MODEL_FAMILY_PATTERN = re.compile(r"^(gpt-\d+(?:\.\d+)+)", re.IGNORECASE)
 HEADING_PATTERN = re.compile(r"^\s{0,3}(#{1,6})\s+(.+?)\s*$")
 MARKDOWN_LINK_PATTERN = re.compile(r"!?\[([^]]*)]\(([^)]+)\)")
 SPACE_PATTERN = re.compile(r"\s+")
+GROUP_SPLIT_PATTERN = re.compile(
+    r"\s*(?:[/,;]|\b(?:and|with|versus|vs\.?)\b)\s*",
+    re.IGNORECASE,
+)
 MDX_CONFIG_PATTERN = re.compile(
     r'\{\s*key:\s*"(?P<key>[^"]+)",\s*'
     r'type:\s*"(?P<type>(?:\\.|[^"])*)",\s*'
@@ -113,6 +122,48 @@ STOPWORDS = frozenset(
         "with",
     }
 )
+INTENT_STOPWORDS = frozenset(
+    {
+        "compare",
+        "compared",
+        "comparing",
+        "differ",
+        "difference",
+        "differences",
+        "guide",
+        "guidance",
+    }
+)
+SURFACE_ANCHORS = frozenset(
+    {
+        "chatgpt",
+        "cli",
+        "codex",
+        "mcp",
+        "rbac",
+        "responses",
+        "sdk",
+    }
+)
+REGISTERED_SURFACE_PHRASES = frozenset(
+    {
+        "app server",
+        "chat completions",
+        "codex cli",
+        "codex sdk",
+        "responses api",
+        "structured outputs",
+    }
+)
+CONCEPT_ALIASES: dict[str, tuple[tuple[str, ...], ...]] = {
+    "availability": (
+        ("current snapshot",),
+        ("default snapshot",),
+        ("supported endpoints",),
+    ),
+}
+CURRENT_MODEL_TERMS = frozenset({"current", "latest", "newer", "newest"})
+VERSIONED_LATEST_MODEL_PATTERN = re.compile(r"/latest-model/gpt-[^/]+\.md$")
 NEGATIVE_CUES = (
     "not supported",
     "isn't supported",
@@ -353,6 +404,261 @@ def _term_weight(term: str) -> int:
     return min(12, max(2, len(term)))
 
 
+def _term_present(term: str, text: str) -> bool:
+    """Match one normalized term without accepting identifier substrings."""
+
+    normalized = term.casefold()
+    haystack = text.casefold()
+    if not normalized.isalnum():
+        return normalized in haystack
+    singular = (
+        normalized[:-1]
+        if normalized.endswith("s") and len(normalized) > 3
+        else normalized
+    )
+    pattern = rf"(?<![a-z0-9]){re.escape(singular)}s?(?![a-z0-9])"
+    return re.search(pattern, haystack) is not None
+
+
+def _query_groups(
+    query: str,
+    requested_product: str | None,
+    requested_model: str | None,
+) -> tuple[tuple[str, ...], ...]:
+    """Return explicit query content groups for ranking and sufficiency gates."""
+
+    _ = requested_product, requested_model
+    excluded = INTENT_STOPWORDS
+    groups: list[tuple[str, ...]] = []
+    for part in GROUP_SPLIT_PATTERN.split(query):
+        terms = tuple(term for term in _tokens(part) if term not in excluded)
+        if terms and terms not in groups:
+            groups.append(terms)
+    if groups:
+        return tuple(groups)
+    fallback = tuple(
+        term for term in _tokens(query) if term not in excluded
+    )
+    return (fallback,) if fallback else ()
+
+
+def _identifier_anchors(
+    query: str,
+    requested_product: str | None,
+    requested_model: str | None,
+) -> tuple[str, ...]:
+    """Retain distinctive caller tokens that generic evidence cannot satisfy."""
+
+    requested_product_text = (requested_product or "").strip().casefold()
+    requested_product_terms = _tokens(requested_product)
+    simple_product_terms = (
+        set(requested_product_terms) if len(requested_product_terms) <= 2 else set()
+    )
+    anchors: list[str] = []
+    seen: set[str] = set()
+    for match in NAMED_PHRASE_PATTERN.finditer(query):
+        parts = [part.casefold() for part in match.group(0).split()]
+        while parts and parts[0] in (STOPWORDS | INTENT_STOPWORDS):
+            parts.pop(0)
+        while parts and parts[-1] in STOPWORDS:
+            parts.pop()
+        if not parts:
+            continue
+        normalized = " ".join(parts)
+        if normalized == requested_product_text and len(parts) == 1:
+            continue
+        if len(parts) > 1 and normalized not in REGISTERED_SURFACE_PHRASES:
+            continue
+        if len(parts) == 1:
+            token = parts[0]
+            alphabetic = "".join(
+                character for character in match.group(0) if character.isalpha()
+            )
+            if (
+                token not in SURFACE_ANCHORS
+                and not (len(alphabetic) >= 2 and alphabetic.isupper())
+            ):
+                continue
+        if normalized not in seen:
+            seen.add(normalized)
+            anchors.append(normalized)
+    for match in TOKEN_PATTERN.finditer(query):
+        raw = match.group(0)
+        normalized = raw.casefold()
+        alphabetic = "".join(character for character in raw if character.isalpha())
+        is_acronym = len(alphabetic) >= 2 and alphabetic.isupper()
+        is_camel = bool(re.search(r"[a-z][A-Z]", raw))
+        is_structured = any(character in raw for character in ("_", ".", "+"))
+        is_model_family = normalized.startswith(("gpt-", "o1", "o3", "o4"))
+        is_surface = normalized in SURFACE_ANCHORS
+        if (
+            normalized in simple_product_terms
+            or normalized in seen
+            or any(
+                normalized in anchor.split()
+                for anchor in anchors
+                if " " in anchor
+            )
+            or not (is_acronym or is_camel or is_structured or is_model_family or is_surface)
+        ):
+            continue
+        seen.add(normalized)
+        anchors.append(normalized)
+    return tuple(anchors)
+
+
+def _coverage_first_hits(
+    hits: Sequence[SearchHit],
+    *,
+    groups: Sequence[Sequence[str]],
+    anchors: Sequence[str],
+) -> list[SearchHit]:
+    """Move the best same-route hit for each required concept ahead of fillers."""
+
+    ranked = list(hits)
+    selected: list[SearchHit] = []
+
+    def choose(terms: Sequence[str], *, anchor: bool = False) -> None:
+        candidates: list[tuple[int, int, str, SearchHit]] = []
+        for hit in ranked:
+            if hit in selected:
+                continue
+            text = f"{hit.title} {hit.snippet} {hit.url}"
+            matched = [term for term in terms if _term_present(term, text)]
+            if not matched:
+                continue
+            coverage = sum(_term_weight(term) for term in matched)
+            if anchor:
+                coverage += 100
+            if len(matched) == len(terms):
+                coverage += 25
+            candidates.append((coverage, hit.score, hit.url, hit))
+        if candidates:
+            candidates.sort(key=lambda item: (-item[0], -item[1], item[2]))
+            selected.append(candidates[0][3])
+
+    for term in anchors:
+        choose((term,), anchor=True)
+    for group in groups:
+        choose(group)
+    selected.extend(hit for hit in ranked if hit not in selected)
+    return selected
+
+
+def _current_migration_hits(
+    hits: Sequence[SearchHit],
+    *,
+    query: str,
+    requested_model: str | None,
+    route: str,
+) -> list[SearchHit]:
+    """Keep historical version guides from filling a current migration result."""
+
+    if (
+        route != "model-migration"
+        or requested_model is not None
+        or not (set(_tokens(query)) & CURRENT_MODEL_TERMS)
+    ):
+        return list(hits)
+    filtered: list[SearchHit] = []
+    versioned = [
+        hit
+        for hit in hits
+        if VERSIONED_LATEST_MODEL_PATTERN.search(
+            urllib.parse.urlsplit(hit.url).path.casefold()
+        )
+    ]
+
+    def version_key(hit: SearchHit) -> tuple[int, ...]:
+        match = re.search(
+            r"gpt-(\d+(?:\.\d+)+)",
+            urllib.parse.urlsplit(hit.url).path.casefold(),
+        )
+        return (
+            tuple(int(part) for part in match.group(1).split("."))
+            if match is not None
+            else ()
+        )
+
+    selected_versioned = max(
+        versioned,
+        key=version_key,
+        default=None,
+    )
+    for hit in hits:
+        is_versioned = VERSIONED_LATEST_MODEL_PATTERN.search(
+            urllib.parse.urlsplit(hit.url).path.casefold()
+        )
+        if is_versioned and hit is not selected_versioned:
+            continue
+        filtered.append(hit)
+    return filtered
+
+
+def _anchor_present(anchor: str, text: str) -> bool:
+    """Match a named surface by phrase or its distinctive technical term."""
+
+    if _term_present(anchor, text):
+        return True
+    broad = {"api", "chatgpt", "codex", "openai"}
+    variants = [
+        term
+        for term in anchor.split()
+        if term not in broad and term in SURFACE_ANCHORS
+    ]
+    return any(_term_present(term, text) for term in variants)
+
+
+def _concept_present(term: str, text: str) -> bool:
+    """Match one literal concept or a closed semantic alias."""
+
+    if _term_present(term, text):
+        return True
+    return any(
+        all(_term_present(alias_term, text) for alias_term in alias)
+        for alias in CONCEPT_ALIASES.get(term, ())
+    )
+
+
+def _group_anchor_requirements(
+    groups: Sequence[Sequence[str]],
+    anchors: Sequence[str],
+) -> list[tuple[str, ...]]:
+    """Attach each conjunction group to its named surface or prior subject."""
+
+    requirements: list[tuple[str, ...]] = []
+    current: tuple[str, ...] = ()
+    for group in groups:
+        group_terms = set(group)
+        direct = tuple(
+            anchor
+            for anchor in anchors
+            if set(anchor.split()).issubset(group_terms)
+        )
+        if direct:
+            current = direct
+        requirements.append(current)
+    return requirements
+
+
+def _payload_terms(
+    group: Sequence[str],
+    required_anchors: Sequence[str],
+) -> tuple[str, ...]:
+    """Return requested concepts not consumed by a named surface match."""
+
+    surface_terms = {
+        term
+        for anchor in required_anchors
+        for term in anchor.split()
+    }
+    return tuple(
+        term
+        for term in group
+        if term not in surface_terms and term not in INTENT_STOPWORDS
+    )
+
+
 def validate_request(value: Mapping[str, Any]) -> RetrievalRequest:
     """Validate the helper's closed JSON request."""
 
@@ -425,7 +731,7 @@ def select_route(request: RetrievalRequest) -> str:
         return "model-selection"
     if any(
         term in text
-        for term in ("troubleshoot", "error", "fails", "failure", "not working")
+        for term in ("troubleshoot", "error", "fail", "not working")
     ):
         return "troubleshooting"
     if "chatgpt" in text or "workspace" in text or "chatgpt work" in text:
@@ -691,6 +997,19 @@ class OfficialIndexSearchRunner:
                     )
                 )
         hits.sort(key=lambda hit: (-hit.score, hit.url))
+        groups = _query_groups(query, requested_product, requested_model)
+        anchors = list(
+            _identifier_anchors(query, requested_product, requested_model)
+        )
+        if requested_model:
+            anchors.insert(0, requested_model.casefold())
+        hits = _coverage_first_hits(hits, groups=groups, anchors=anchors)
+        hits = _current_migration_hits(
+            hits,
+            query=query,
+            requested_model=requested_model,
+            route=route,
+        )
         return SearchRun(
             tuple(hits[:MAX_SEARCH_RESULTS]),
             (attempt,),
@@ -892,7 +1211,7 @@ def _claim_evidence(
         for block in page.blocks:
             block_text = f"{block.heading or ''} {block.text}".casefold()
             if specific_terms and not any(
-                term in block_text for term in specific_terms
+                _concept_present(term, block_text) for term in specific_terms
             ):
                 continue
             score = _claim_score(
@@ -949,18 +1268,81 @@ def _semantic_conflict(
     negative_urls: set[str] = set()
     for claim in claims:
         text = str(claim.get("claim", ""))
-        if anchor and anchor.casefold() not in text.casefold():
-            continue
         source = claim.get("source")
         if not isinstance(source, Mapping):
             continue
         url = str(source.get("url", ""))
-        polarity = _polarity(text)
-        if polarity == "positive":
-            positive_urls.add(url)
-        elif polarity == "negative":
-            negative_urls.add(url)
+        units = re.split(r"(?<=[.!?])\s+|\s+\|\s+|\r?\n", text)
+        for unit in units:
+            if anchor and not _anchor_present(anchor, unit):
+                continue
+            polarity = _polarity(unit)
+            if polarity == "positive":
+                positive_urls.add(url)
+            elif polarity == "negative":
+                negative_urls.add(url)
     return bool(positive_urls and negative_urls and positive_urls != negative_urls)
+
+
+def _missing_evidence_requirements(
+    claims: Sequence[Mapping[str, Any]],
+    request: RetrievalRequest,
+) -> tuple[list[str], list[tuple[str, ...]]]:
+    """Find required identifiers and content groups absent from claim evidence."""
+
+    evidence_by_url: dict[str, list[str]] = {}
+    for claim in claims:
+        source = claim.get("source")
+        url = str(source.get("url", "")) if isinstance(source, Mapping) else ""
+        evidence_parts = evidence_by_url.setdefault(url, [])
+        evidence_parts.append(str(claim.get("claim", "")))
+        if isinstance(source, Mapping):
+            evidence_parts.extend(
+                str(source.get(field, "")) for field in ("title", "locator")
+            )
+    evidence_units = [" ".join(parts) for parts in evidence_by_url.values()]
+    missing_anchors = [
+        anchor
+        for anchor in _identifier_anchors(
+            request.query,
+            request.requested_product,
+            request.requested_model,
+        )
+        if not any(_anchor_present(anchor, evidence) for evidence in evidence_units)
+    ]
+    missing_groups: list[tuple[str, ...]] = []
+    groups = _query_groups(
+        request.query,
+        request.requested_product,
+        request.requested_model,
+    )
+    anchors = _identifier_anchors(
+        request.query,
+        request.requested_product,
+        request.requested_model,
+    )
+    group_anchors = _group_anchor_requirements(groups, anchors)
+    for group, required_anchors in zip(groups, group_anchors, strict=True):
+        payload = _payload_terms(group, required_anchors)
+        required = 1 if len(payload) == 1 else 2
+        required = min(required, len(payload))
+        if not any(
+            (
+                not payload
+                or sum(_concept_present(term, evidence) for term in payload)
+                >= required
+            )
+            and (
+                not required_anchors
+                or any(
+                    _anchor_present(anchor, evidence)
+                    for anchor in required_anchors
+                )
+            )
+            for evidence in evidence_units
+        ):
+            missing_groups.append(tuple(group))
+    return missing_anchors, missing_groups
 
 
 def _fetch_attempt(response: FetchResult, *, opened: bool) -> dict[str, Any]:
@@ -1118,7 +1500,7 @@ def retrieve_documentation(
     pages: list[OpenedPage] = []
     fetch_attempts: list[dict[str, Any]] = []
     fatal_redirect: FetchResult | None = None
-    for hit in allowed_hits[:MAX_OPENED_PAGES]:
+    for hit in allowed_hits[:MAX_FETCH_ATTEMPTS]:
         response = fetcher(hit.url)
         try:
             _require_allowed_url(response.requested_url)
@@ -1145,6 +1527,8 @@ def retrieve_documentation(
         fetch_attempts.append(_fetch_attempt(response, opened=opened))
         if opened and page is not None:
             pages.append(page)
+            if len(pages) >= MAX_OPENED_PAGES:
+                break
 
     telemetry["fetch_attempts"] = fetch_attempts
     telemetry["bytes_received"] = sum(
@@ -1186,7 +1570,8 @@ def retrieve_documentation(
             "Opened pages did not establish a source-backed answer.",
         )
     elif request.requested_model and not any(
-        request.requested_model.casefold() in page.body_text.casefold()
+        request.requested_model.casefold()
+        in f"{page.title} {page.body_text}".casefold()
         for page in pages
     ):
         ambiguities.append(
@@ -1196,6 +1581,28 @@ def retrieve_documentation(
         blocker = _blocker(
             "insufficient_evidence",
             "Opened pages did not establish the exact requested model.",
+        )
+    missing_anchors, missing_groups = _missing_evidence_requirements(
+        claims,
+        request,
+    )
+    if claims and (missing_anchors or missing_groups):
+        if missing_anchors:
+            ambiguities.append(
+                "Opened claim evidence omitted required identifiers: "
+                + ", ".join(missing_anchors)
+                + "."
+            )
+        if missing_groups:
+            rendered = [" ".join(group) for group in missing_groups]
+            ambiguities.append(
+                "Opened claim evidence did not cover requested content groups: "
+                + "; ".join(rendered)
+                + "."
+            )
+        blocker = _blocker(
+            "insufficient_evidence",
+            "Opened pages did not establish every required query concept.",
         )
     conflict = _semantic_conflict(claims, request)
     if conflict:

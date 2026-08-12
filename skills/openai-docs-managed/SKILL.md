@@ -64,6 +64,15 @@ model name exactly as supplied.
   `developers.openai.com`, `platform.openai.com`, and `learn.chatgpt.com`.
 - Search indexes and snippets are routing evidence only. A claim is usable only
   after the helper opens its actual source page.
+- Rank and validate required concepts through code-owned named-surface and
+  semantic-alias sets. On one opened page, require the named surface plus a
+  payload concept; treat unregistered phrases compositionally.
+- For unspecified current-model migration, exclude older version guides from
+  filler slots. Compare support polarity only within anchor-bearing sentences
+  or rows.
+- Within the selected route, continue past non-policy page-open failures within
+  the coded fetch-attempt bound until the opened-page limit is reached; never
+  select another route.
 - Unavailable, disallowed-redirect, conflicting, and insufficient documentation
   states are blockers or ambiguity, not permission to invent an answer.
 

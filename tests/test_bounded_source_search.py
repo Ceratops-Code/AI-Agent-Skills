@@ -367,6 +367,355 @@ class ManagedOpenAIDocsRetrievalTests(unittest.TestCase):
         self.assertNotIn(nested_index, urls)
         self.assertEqual(result.rejected_results, 1)
 
+    def test_mcp_identifier_drives_ranking_and_opened_claim_evidence(self):
+        index_url = "https://learn.chatgpt.com/llms.txt"
+        generic = "https://learn.chatgpt.com/docs/reference/troubleshooting.md"
+        app_server = "https://learn.chatgpt.com/docs/app-server.md"
+        security = "https://learn.chatgpt.com/docs/security/setup.md"
+        mcp = "https://learn.chatgpt.com/docs/mcp-server.md"
+        index_body = (
+            "# Codex\n\n"
+            f"- [Troubleshooting]({generic}): Troubleshooting Codex.\n"
+            f"- [Codex App Server]({app_server}): Rich client interface.\n"
+            f"- [Codex Security setup]({security}): Set up scanning.\n"
+            f"- [Use Codex with the Agents SDK]({mcp}): Run an MCP server.\n"
+        )
+        fetch = FakeDocumentationFetch(
+            {
+                index_url: self.page(index_url, index_body),
+                generic: self.page(
+                    generic,
+                    "# Troubleshooting\n\nGeneral Codex troubleshooting steps.",
+                ),
+                app_server: self.page(
+                    app_server,
+                    "# App Server\n\nCodex app-server powers rich clients.",
+                ),
+                security: self.page(
+                    security,
+                    "# Security setup\n\nSet up a repository security scan.",
+                ),
+                mcp: self.page(
+                    mcp,
+                    "# Codex MCP Server\n\n"
+                    "Run codex mcp-server and inspect the MCP tools list. "
+                    "Troubleshooting MCP setup starts by listing tools.",
+                ),
+            }
+        )
+
+        record = OPENAI_DOCS.retrieve_documentation(
+            self.request(
+                query="Codex MCP server setup/troubleshooting",
+                route="troubleshooting",
+            ),
+            fetch_runner=fetch,
+        )
+
+        self.assertEqual(record["status"], "ok")
+        self.assertIn(mcp, record["opened_urls"])
+        self.assertIn(
+            "MCP",
+            " ".join(claim["claim"] for claim in record["claim_evidence"]),
+        )
+
+    def test_missing_identifier_is_an_insufficient_evidence_blocker(self):
+        generic = "https://learn.chatgpt.com/docs/app-server.md"
+        search = FakeDocumentationSearch([self.hit(generic)])
+        fetch = FakeDocumentationFetch(
+            {
+                generic: self.page(
+                    generic,
+                    "# App Server setup\n\n"
+                    "Codex app-server setup supports rich clients.",
+                )
+            }
+        )
+
+        record = OPENAI_DOCS.retrieve_documentation(
+            self.request(
+                query="Codex MCP server setup",
+                route="troubleshooting",
+            ),
+            search_runner=search,
+            fetch_runner=fetch,
+        )
+
+        self.assertEqual(record["status"], "blocked")
+        self.assertEqual(record["blocker"]["code"], "insufficient_evidence")
+        self.assertIn("mcp", " ".join(record["unresolved_ambiguity"]))
+
+    def test_followup_group_must_share_the_named_surface(self):
+        mcp = "https://learn.chatgpt.com/docs/mcp-server.md"
+        generic = "https://learn.chatgpt.com/docs/reference/troubleshooting.md"
+        search = FakeDocumentationSearch([self.hit(mcp), self.hit(generic)])
+        fetch = FakeDocumentationFetch(
+            {
+                mcp: self.page(
+                    mcp,
+                    "# Codex MCP Server\n\nRun codex mcp-server for setup.",
+                ),
+                generic: self.page(
+                    generic,
+                    "# Troubleshooting\n\nGeneral Codex troubleshooting guidance.",
+                ),
+            }
+        )
+
+        record = OPENAI_DOCS.retrieve_documentation(
+            self.request(
+                query="Codex MCP server setup/troubleshooting",
+                route="troubleshooting",
+            ),
+            search_runner=search,
+            fetch_runner=fetch,
+        )
+
+        self.assertEqual(record["status"], "blocked")
+        self.assertEqual(record["blocker"]["code"], "insufficient_evidence")
+        self.assertIn(
+            "troubleshooting",
+            " ".join(record["unresolved_ambiguity"]),
+        )
+
+    def test_each_explicit_content_group_requires_opened_claim_evidence(self):
+        structured = (
+            "https://developers.openai.com/api/docs/guides/"
+            "structured-outputs.md"
+        )
+        search = FakeDocumentationSearch([self.hit(structured)])
+        fetch = FakeDocumentationFetch(
+            {
+                structured: self.page(
+                    structured,
+                    "# Structured Outputs\n\n"
+                    "The Responses API can return schema-constrained output.",
+                )
+            }
+        )
+
+        record = OPENAI_DOCS.retrieve_documentation(
+            self.request(
+                query="Responses API structured outputs/tool use",
+                product="OpenAI API",
+                route="api",
+            ),
+            search_runner=search,
+            fetch_runner=fetch,
+        )
+
+        self.assertEqual(record["status"], "blocked")
+        self.assertEqual(record["blocker"]["code"], "insufficient_evidence")
+        self.assertIn("tool use", " ".join(record["unresolved_ambiguity"]))
+
+    def test_named_surface_requires_a_payload_concept_on_the_same_page(self):
+        auth = "https://learn.chatgpt.com/docs/auth.md"
+        cli = "https://learn.chatgpt.com/docs/codex/cli.md"
+        security = "https://learn.chatgpt.com/docs/security/setup.md"
+        search = FakeDocumentationSearch(
+            [self.hit(auth), self.hit(cli), self.hit(security)]
+        )
+        fetch = FakeDocumentationFetch(
+            {
+                auth: self.page(
+                    auth,
+                    "# Authentication\n\nCodex CLI supports ChatGPT sign-in.",
+                ),
+                cli: self.page(
+                    cli,
+                    "# Codex CLI\n\nReview authentication options.",
+                ),
+                security: self.page(
+                    security,
+                    "# Codex Security setup\n\nSet up repository scanning.",
+                ),
+            }
+        )
+
+        record = OPENAI_DOCS.retrieve_documentation(
+            self.request(
+                query="Codex CLI setup and authentication",
+                product="Codex CLI",
+                route="codex",
+            ),
+            search_runner=search,
+            fetch_runner=fetch,
+        )
+
+        self.assertEqual(record["status"], "blocked")
+        self.assertIn("codex cli setup", " ".join(record["unresolved_ambiguity"]))
+
+    def test_model_availability_accepts_supported_endpoint_alias(self):
+        model = "gpt-5.6-luna"
+        page = f"https://developers.openai.com/api/docs/models/{model}.md"
+        search = FakeDocumentationSearch([self.hit(page)])
+        fetch = FakeDocumentationFetch(
+            {
+                page: self.page(
+                    page,
+                    f"# {model}\n\nCurrent snapshot with supported endpoints.",
+                )
+            }
+        )
+
+        record = OPENAI_DOCS.retrieve_documentation(
+            self.request(
+                query=f"Exact model {model} capabilities/availability",
+                product="OpenAI API",
+                model=model,
+                route="model-selection",
+            ),
+            search_runner=search,
+            fetch_runner=fetch,
+        )
+
+        self.assertEqual(record["status"], "ok")
+
+    def test_compositional_capitalized_terms_are_not_literal_phrases(self):
+        windows = "https://learn.chatgpt.com/docs/windows/windows-sandbox.md"
+        auth = "https://learn.chatgpt.com/docs/auth.md"
+        search = FakeDocumentationSearch([self.hit(windows), self.hit(auth)])
+        fetch = FakeDocumentationFetch(
+            {
+                windows: self.page(
+                    windows,
+                    "# Windows troubleshooting\n\n"
+                    "Troubleshoot Codex sandbox behavior on Windows.",
+                ),
+                auth: self.page(
+                    auth,
+                    "# Codex authentication\n\n"
+                    "Troubleshoot authentication with device code login.",
+                ),
+            }
+        )
+
+        record = OPENAI_DOCS.retrieve_documentation(
+            self.request(
+                query="Codex Windows authentication troubleshooting",
+                route="troubleshooting",
+            ),
+            search_runner=search,
+            fetch_runner=fetch,
+        )
+
+        self.assertNotIn("codex windows", " ".join(record["unresolved_ambiguity"]))
+
+    def test_conflict_polarity_uses_only_anchor_bearing_sentences(self):
+        migration = (
+            "https://developers.openai.com/api/docs/guides/"
+            "migrate-to-responses.md"
+        )
+        structured = (
+            "https://developers.openai.com/api/docs/guides/"
+            "structured-outputs.md"
+        )
+        search = FakeDocumentationSearch(
+            [self.hit(migration), self.hit(structured)]
+        )
+        fetch = FakeDocumentationFetch(
+            {
+                migration: self.page(
+                    migration,
+                    "# Responses API\n\n"
+                    "Responses API supports tool calling. Tool calling with "
+                    "reasoning is not supported in Chat Completions.",
+                ),
+                structured: self.page(
+                    structured,
+                    "# Structured Outputs\n\n"
+                    "Responses API supports Structured Outputs and tools.",
+                ),
+            }
+        )
+
+        record = OPENAI_DOCS.retrieve_documentation(
+            self.request(
+                query="Responses API structured outputs/tool use",
+                product="Responses API",
+                route="api",
+            ),
+            search_runner=search,
+            fetch_runner=fetch,
+        )
+
+        self.assertNotEqual(record["blocker"], {"code": "conflicting_documentation"})
+        self.assertNotEqual(record["status"], "ambiguous")
+
+    def test_content_group_terms_cannot_be_pooled_across_pages(self):
+        first = "https://developers.openai.com/api/docs/guides/tools.md"
+        second = "https://developers.openai.com/api/docs/guides/outputs.md"
+        search = FakeDocumentationSearch([self.hit(first), self.hit(second)])
+        fetch = FakeDocumentationFetch(
+            {
+                first: self.page(
+                    first,
+                    "# Tools\n\nThe Responses API supports tool calling.",
+                ),
+                second: self.page(
+                    second,
+                    "# Outputs\n\nSchema-constrained outputs are supported.",
+                ),
+            }
+        )
+
+        record = OPENAI_DOCS.retrieve_documentation(
+            self.request(
+                query="Responses API and tool outputs",
+                product="OpenAI API",
+                route="api",
+            ),
+            search_runner=search,
+            fetch_runner=fetch,
+        )
+
+        self.assertEqual(record["status"], "blocked")
+        self.assertEqual(record["blocker"]["code"], "insufficient_evidence")
+
+    def test_requested_products_remain_required_cross_route_anchors(self):
+        administration = "https://learn.chatgpt.com/docs/administration.md"
+        auth = "https://learn.chatgpt.com/docs/auth.md"
+        ci = "https://learn.chatgpt.com/docs/security/cli/ci.md"
+        search = FakeDocumentationSearch(
+            [self.hit(administration), self.hit(auth), self.hit(ci)]
+        )
+        fetch = FakeDocumentationFetch(
+            {
+                administration: self.page(
+                    administration,
+                    "# ChatGPT workspace administration\n\n"
+                    "Workspace members receive assigned roles and permissions.",
+                ),
+                auth: self.page(
+                    auth,
+                    "# Codex CLI authentication\n\n"
+                    "Codex CLI supports ChatGPT sign-in authentication.",
+                ),
+                ci: self.page(
+                    ci,
+                    "# CI setup\n\nConfigure outputs and repository permissions.",
+                ),
+            }
+        )
+
+        record = OPENAI_DOCS.retrieve_documentation(
+            self.request(
+                query=(
+                    "Compare ChatGPT workspace member administration with "
+                    "Codex CLI authentication and Responses API structured "
+                    "outputs: what setup and permissions differ?"
+                ),
+                product="ChatGPT, Codex CLI, and Responses API",
+                route="chatgpt",
+            ),
+            search_runner=search,
+            fetch_runner=fetch,
+        )
+
+        self.assertEqual(record["status"], "blocked")
+        self.assertEqual(record["blocker"]["code"], "insufficient_evidence")
+        self.assertIn("responses api", " ".join(record["unresolved_ambiguity"]))
+
     def test_route_search_prefers_each_named_architecture_surface(self):
         index_url = "https://learn.chatgpt.com/llms.txt"
         surfaces = {
@@ -397,6 +746,228 @@ class ManagedOpenAIDocsRetrievalTests(unittest.TestCase):
                 surfaces["App Server"],
             },
         )
+
+    def test_multiword_app_server_surface_gets_an_open_page_slot(self):
+        index_url = "https://learn.chatgpt.com/llms.txt"
+        cli = "https://learn.chatgpt.com/docs/codex/cli.md"
+        sdk = "https://learn.chatgpt.com/docs/codex-sdk.md"
+        app_server = "https://learn.chatgpt.com/docs/app-server.md"
+        security = "https://learn.chatgpt.com/docs/security.md"
+        body = (
+            "# Codex\n\n"
+            f"- [Codex CLI]({cli}): Run Codex locally.\n"
+            f"- [Codex SDK]({sdk}): Automate coding threads.\n"
+            f"- [App Server]({app_server}): Integrate rich clients.\n"
+            f"- [Codex Security]({security}): Scan repositories.\n"
+        )
+        fetch = FakeDocumentationFetch({index_url: self.page(index_url, body)})
+
+        result = OPENAI_DOCS.OfficialIndexSearchRunner(fetch)(
+            query="Codex architecture: CLI vs SDK vs App Server",
+            requested_product="Codex",
+            requested_model=None,
+            route="codex",
+        )
+
+        self.assertEqual(
+            {hit.url for hit in result.hits[:3]},
+            {cli, sdk, app_server},
+        )
+
+    def test_current_migration_does_not_fill_with_older_version_guides(self):
+        index_url = "https://developers.openai.com/api/docs/llms.txt"
+        current = (
+            "https://developers.openai.com/api/docs/guides/"
+            "latest-model/gpt-5.6.md"
+        )
+        older = (
+            "https://developers.openai.com/api/docs/guides/"
+            "latest-model/gpt-5.2.md"
+        )
+        older_codex = (
+            "https://developers.openai.com/api/docs/guides/"
+            "latest-model/gpt-5.3-codex.md"
+        )
+        older_integer = (
+            "https://developers.openai.com/api/docs/guides/"
+            "latest-model/gpt-5.md"
+        )
+        general = "https://developers.openai.com/api/docs/guides/models.md"
+        body = (
+            "# Models\n\n"
+            f"- [GPT-5.6 migration]({current}): Current model guide.\n"
+            f"- [GPT-5.2 migration]({older}): Older model guide.\n"
+            f"- [GPT-5.3-Codex migration]({older_codex}): Older guide.\n"
+            f"- [GPT-5 migration]({older_integer}): Older guide.\n"
+            f"- [Model migration]({general}): General model guidance.\n"
+        )
+        fetch = FakeDocumentationFetch({index_url: self.page(index_url, body)})
+
+        result = OPENAI_DOCS.OfficialIndexSearchRunner(fetch)(
+            query="Migration to a newer GPT-5 family model",
+            requested_product="OpenAI API",
+            requested_model=None,
+            route="model-migration",
+        )
+
+        urls = [hit.url for hit in result.hits]
+        self.assertIn(current, urls)
+        self.assertNotIn(older, urls)
+        self.assertNotIn(older_codex, urls)
+        self.assertNotIn(older_integer, urls)
+
+    def test_representative_questions_select_one_expected_route(self):
+        cases = (
+            ("How do I install and configure Codex CLI?", "Codex", "codex"),
+            (
+                "How do Codex SDK and App Server differ?",
+                "Codex",
+                "codex",
+            ),
+            (
+                "Which model should I choose for high-volume API work?",
+                "OpenAI API",
+                "model-selection",
+            ),
+            (
+                "How do I migrate from Chat Completions to Responses?",
+                "OpenAI API",
+                "model-migration",
+            ),
+            ("Why does Codex authentication fail?", "Codex", "troubleshooting"),
+            (
+                "How do I manage ChatGPT workspace members?",
+                "ChatGPT",
+                "chatgpt",
+            ),
+            ("How do I stream Responses API output?", "OpenAI API", "api"),
+        )
+
+        for query, product, expected in cases:
+            with self.subTest(query=query):
+                request = OPENAI_DOCS.validate_request(
+                    self.request(query=query, product=product)
+                )
+                self.assertEqual(OPENAI_DOCS.select_route(request), expected)
+
+    def test_non_policy_failures_fall_through_to_later_same_route_page(self):
+        urls = [
+            f"https://developers.openai.com/api/docs/guides/candidate-{index}.md"
+            for index in range(1, 5)
+        ]
+        search = FakeDocumentationSearch([self.hit(url) for url in urls])
+        fetch = FakeDocumentationFetch(
+            {
+                **{
+                    url: self.page(url, "", error="http_404")
+                    for url in urls[:3]
+                },
+                urls[3]: self.page(
+                    urls[3],
+                    "# Codex approval policy\n\n"
+                    "Codex approval policy is configured in config.toml.",
+                ),
+            }
+        )
+
+        record = OPENAI_DOCS.retrieve_documentation(
+            self.request(route="codex"),
+            search_runner=search,
+            fetch_runner=fetch,
+        )
+
+        self.assertEqual(record["status"], "ok")
+        self.assertEqual(fetch.calls, urls[:4])
+        self.assertEqual(record["opened_urls"], [urls[3]])
+        self.assertEqual(len(record["fetch_telemetry"]["fetch_attempts"]), 4)
+
+    def test_fetching_stops_after_three_opened_pages(self):
+        urls = [
+            f"https://developers.openai.com/api/docs/guides/open-{index}.md"
+            for index in range(1, 6)
+        ]
+        search = FakeDocumentationSearch([self.hit(url) for url in urls])
+        fetch = FakeDocumentationFetch(
+            {
+                url: self.page(
+                    url,
+                    "# Codex approval policy\n\n"
+                    "Codex approval policy is configured in config.toml.",
+                )
+                for url in urls
+            }
+        )
+
+        record = OPENAI_DOCS.retrieve_documentation(
+            self.request(route="codex"),
+            search_runner=search,
+            fetch_runner=fetch,
+        )
+
+        self.assertEqual(fetch.calls, urls[: OPENAI_DOCS.MAX_OPENED_PAGES])
+        self.assertEqual(
+            len(record["opened_urls"]),
+            OPENAI_DOCS.MAX_OPENED_PAGES,
+        )
+
+    def test_failed_fetch_attempts_and_record_remain_bounded(self):
+        urls = [
+            f"https://developers.openai.com/api/docs/guides/missing-{index}.md"
+            for index in range(1, OPENAI_DOCS.MAX_SEARCH_RESULTS + 1)
+        ]
+        search = FakeDocumentationSearch([self.hit(url) for url in urls])
+        fetch = FakeDocumentationFetch({})
+
+        record = OPENAI_DOCS.retrieve_documentation(
+            self.request(route="codex"),
+            search_runner=search,
+            fetch_runner=fetch,
+        )
+
+        self.assertEqual(
+            len(fetch.calls),
+            OPENAI_DOCS.MAX_FETCH_ATTEMPTS,
+        )
+        self.assertEqual(
+            record["blocker"]["code"],
+            "documentation_unavailable",
+        )
+        encoded = json.dumps(
+            record,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        self.assertLessEqual(len(encoded), OPENAI_DOCS.MAX_RECORD_BYTES)
+
+    def test_policy_redirect_stops_without_falling_through(self):
+        first = "https://developers.openai.com/api/docs/guides/redirect.md"
+        second = "https://developers.openai.com/api/docs/guides/usable.md"
+        search = FakeDocumentationSearch([self.hit(first), self.hit(second)])
+        fetch = FakeDocumentationFetch(
+            {
+                first: self.page(
+                    first,
+                    "# Redirected",
+                    final_url="https://example.com/redirected.md",
+                    redirects=("https://example.com/redirected.md",),
+                ),
+                second: self.page(
+                    second,
+                    "# Codex approval policy\n\n"
+                    "Codex approval policy is configured in config.toml.",
+                ),
+            }
+        )
+
+        record = OPENAI_DOCS.retrieve_documentation(
+            self.request(route="codex"),
+            search_runner=search,
+            fetch_runner=fetch,
+        )
+
+        self.assertEqual(record["blocker"]["code"], "disallowed_redirect")
+        self.assertEqual(fetch.calls, [first])
+        self.assertEqual(record["opened_urls"], [])
 
     def test_allowed_and_disallowed_redirects_are_distinguished(self):
         requested = "https://developers.openai.com/codex/config-reference"
