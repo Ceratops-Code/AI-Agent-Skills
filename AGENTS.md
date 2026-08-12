@@ -81,9 +81,8 @@ Project-specific rules for this skills repository.
   owning skill; keep executable deliverables shared by multiple skills under
   `skills/sections/scripts` and map each installed target through
   `skills/skill-sections.json`.
-- [SKILLS-DELIVERY-02] When repository maintenance needs deliverable behavior,
-  invoke its deployed interface or maintain an independent repository
-  implementation with separate ownership and tests.
+- [SKILLS-DELIVERY-02] Repository maintenance must invoke an installed
+  deliverable or own a separate implementation and tests.
 - [SKILLS-STYLE-01] Prefer concise, principle-based, machine-oriented wording;
   avoid example lists unless needed to disambiguate behavior.
 - [SKILLS-VERIFY-01] After instruction edits, verify the changed diff or

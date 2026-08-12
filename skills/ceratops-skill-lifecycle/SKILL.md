@@ -58,9 +58,8 @@ Infer missing inputs from the current repo state before asking.
   owning skill's `scripts/`, or `skills/sections/scripts/`, respectively, and
   map shared deliverables to installed skill-relative targets through
   `runtime_payloads`.
-- When repository maintenance needs deliverable behavior, invoke its deployed
-  interface; otherwise maintain an independent repository implementation with
-  separate ownership and tests.
+- Repository maintenance must invoke an installed deliverable or own a
+  separate implementation and tests.
 - Treat another repo as Ceratops-compatible only when its section manifest
   declares `runtime_source_id`, `validation_profile: ceratops-compatible`, an
   assignment for every source skill, and shared sections when source skills

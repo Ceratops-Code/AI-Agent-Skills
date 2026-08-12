@@ -268,6 +268,14 @@
       "decision": "Separate repository-maintenance executables from skill deliverables, assign multi-skill shared sources to skills/sections/scripts, and require repository reuse through deployed interfaces or an independently owned implementation.",
       "reason": "The prior maintenance rule conflated installed skill helpers with repository-maintenance scripts and allowed an installed skill folder to become a maintenance fallback.",
       "regression": "Preserve source-checkout maintenance execution, installed-skill portability, manifest-backed shared sources, and independent ownership for any separate repository implementation."
+    },
+    {
+      "rules": [
+        "SKILLS-DELIVERY-02"
+      ],
+      "decision": "Define the repository-to-deliverable boundary as installed-runtime reuse or a separately owned implementation.",
+      "reason": "The prior phrase deployed interface did not identify a stable dependency boundary.",
+      "regression": "Preserve repository-maintenance ownership, installed-skill portability, and separate tests for independent implementations."
     }
   ]
 }
