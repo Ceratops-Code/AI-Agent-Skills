@@ -59,7 +59,9 @@ Skill names are independent of the profile and need no `ceratops-` prefix.
 `core` is assigned to every skill; `multi-action-skill` is assigned only to
 skills that select among multiple action references.
 The `skills/` tree is authoritative skill source for this repository.
-`deploy/deploy.yml` is its authoritative structured deployment definition.
+`deploy/deploy.yml` is its authoritative structured local deployment
+definition. Target repositories declare remote release publication separately
+in `release/release.yml`.
 The repository-compatibility templates under
 `skills/ceratops-repo-lifecycle/references/templates/` are reusable skeletons
 to copy into other repositories, not live configuration.
@@ -118,10 +120,12 @@ without repository deduplication.
 | `skills/ceratops-governance-lifecycle/scripts/rule_graph.py` | Parses canonical AGENTS rules and rejects structural syntax or rule-local explicit-user override escape clauses. |
 | `skills/ceratops-repo-lifecycle/scripts/github_contract_engine/` | Package CLI for compact local audit snapshots, contract evaluation, shared GitHub API access, sanitized evidence, and evidence-gated CodeQL disposition. |
 | `skills/ceratops-repo-lifecycle/scripts/github_pr_workflow/` | Package CLI for individual PR operations, one-call retry-safe review replies and resolutions, decision-complete gate blockers, exact-commit checkpointed shipping, four-proof obsolete-prepared-checkpoint cleanup before automatic resume, scoped pending-work checks, concurrent gates, integrated admin merge, reusable-branch restoration, and terminal cleanup. |
-| `skills/ceratops-repo-lifecycle/scripts/promote-repository.py` | Prepares `release/local`; promotes selected branches with no deployment or one named operation; or composes promotion into exact-head shipping, post-merge deployment, finalization, and cleanup. |
+| `skills/ceratops-repo-lifecycle/scripts/promote-repository.py` | Prepares `release/local`; promotes selected branches with no deployment or one named operation; or composes promotion into exact-head shipping, remote release publication, local deployment, finalization, and cleanup. |
 | `skills/ceratops-repo-lifecycle/scripts/manage-pending-work.py` | Records, checks, automatically resumes the retained target commit, and progressively finalizes the exact selected branch and worktree scope, including automatic residual cleanup of a validated unregistered directory. |
-| `skills/ceratops-repo-lifecycle/scripts/run-deploy-operation.py` | Uses the shared validator for `deploy/deploy.yml`, executes ordered argv steps without a shell, and returns any optional declarative agent handoff. |
-| `skills/ceratops-repo-lifecycle/scripts/ship-repository.py` | Orchestrates scoped pre-push checking, automatic retained-commit resume, guarded GitHub shipping, main synchronization, deployment, and resumable selected-source cleanup while preserving decision-complete blockers from delegated phases. |
+| `skills/ceratops-repo-lifecycle/scripts/repository_operation.py` | Shares schema-selected argv execution, strict parameters, repository path boundaries, compact results, and bounded failures without conflating release publication and deployment. |
+| `skills/ceratops-repo-lifecycle/scripts/run-deploy-operation.py` | Validates and executes one named local operation from `deploy/deploy.yml`, returning any optional declarative agent handoff. |
+| `skills/ceratops-repo-lifecycle/scripts/run-release-operation.py` | Validates and executes one named remote publication operation from `release/release.yml`. |
+| `skills/ceratops-repo-lifecycle/scripts/ship-repository.py` | Orchestrates scoped pre-push checking, guarded GitHub shipping, main synchronization, separately checkpointed release publication and local deployment, and resumable selected-source cleanup. |
 | `skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py` | Skill-lifecycle-owned source, metadata, runtime-input, contract, and portability validator used only by explicit skill workflows. |
 | `skills/ceratops-skill-lifecycle/scripts/fast-change.py` | Classifies exact structured replacements, generates their diff, and owns the eligible direct-release change through declared Markdown lint, exact helper tests, targeted installation, commit, and failure compensation. |
 
@@ -148,18 +152,22 @@ The runner never converts prose instructions into commands.
 
 `ship` takes either an exact pending-work scope or an explicit disabled-check
 mode. When enabled, the same generic scope is checked before the first remote
-push, after synchronization before deployment, and again before cleanup because
-local state can change while CI or deployment runs. Pre-push detection returns
-compact `pending_work` output with `remote_mutation: false`; later detection
-reports `remote_mutation: true` because the merge already occurred. The initial
-integrated ship request authorizes the complete workflow. Its final merge uses
-admin only after readiness, CI, Codex-review, and exact-head gates pass;
-standalone merge behavior remains unchanged.
+push, after synchronization before release publication and local deployment,
+and again before cleanup because local state can change while CI or operations
+run. Pre-push detection returns compact `pending_work` output with
+`remote_mutation: false`; later detection reports `remote_mutation: true`
+because the merge already occurred. The initial integrated ship request
+authorizes the complete workflow. Its final merge uses admin only after
+readiness, CI, Codex-review, and exact-head gates pass; standalone merge
+behavior remains unchanged.
 
 ## Contracts
 
 The contract structure is split by the owning lifecycle skill:
 
+- `release/release.yml` declares a target repository's executable remote
+  release-publication operations and is validated against
+  `skills/ceratops-repo-lifecycle/references/schemas/release-contract.schema.json`.
 - `deploy/deploy.yml` declares this repository's executable deployment
   operations and is validated against
   `skills/ceratops-repo-lifecycle/references/schemas/deploy-contract.schema.json`.
@@ -198,8 +206,8 @@ The contract structure is split by the owning lifecycle skill:
   confirmation, or current-doc interpretation after bundled evidence is
   collected.
 - `skills/ceratops-repo-lifecycle/references/schemas/` contains shared closed
-  schemas for state, PR-readiness, non-deterministic, and source-registry
-  contract families.
+  schemas for state, repository operations, PR-readiness, non-deterministic,
+  and source-registry contract families.
 
 Run deterministic checks with bundled selections instead of one command per
 setting:
@@ -244,7 +252,9 @@ percentage and its 100% contract target; inventory alone is not a finding.
 Local health collection validates every present `deploy/deploy.yml` with the
 repository-lifecycle schema and runs the generic compatibility postcondition
 checker whenever a manifest, source skill, deploy definition, or repository
-validation surface is present. It does not run skill-source validation.
+validation surface is present. Ship separately validates a selected
+`release/release.yml` before remote mutation. Local health does not run
+skill-source validation.
 
 Collect review evidence for non-deterministic checks with:
 

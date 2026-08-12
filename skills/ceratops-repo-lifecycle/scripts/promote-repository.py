@@ -7,7 +7,8 @@ verify the exact source snapshot before blocking. Repository-specific
 validation or installation runs only through a named operation from
 ``deploy/deploy.yml`` when explicitly selected. Composed shipping suppresses
 that promotion-time operation and delegates the exact promoted head to the
-sibling ship helper, which owns post-merge deployment and cleanup.
+sibling ship helper, which owns post-merge release publication, local
+deployment, and cleanup.
 """
 
 from __future__ import annotations
@@ -26,7 +27,6 @@ from github_pr_workflow.command import (
     require_success,
     run_command,
 )
-
 
 SCRIPT_ROOT = pathlib.Path(__file__).resolve().parent
 PENDING_MANAGER = SCRIPT_ROOT / "manage-pending-work.py"
@@ -497,6 +497,12 @@ def _ship_after_promotion(
         "--commit",
         target_commit,
         "--reusable-head",
+        "--release-contract",
+        str(args.release_contract),
+        "--release-preflight-operation",
+        args.release_preflight_operation,
+        "--release-operation",
+        args.release_operation,
         "--deploy-contract",
         str(args.deploy_contract),
         "--deploy-operation",
@@ -509,6 +515,7 @@ def _ship_after_promotion(
             status not in {"shipped", "already_shipped"}
             or shipped.get("commit") != target_commit
             or not isinstance(shipped.get("synchronized_head"), str)
+            or not isinstance(shipped.get("release_publication"), dict)
             or not isinstance(shipped.get("deployment"), dict)
             or "finalization" not in shipped
         ):
@@ -750,9 +757,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--ship-after-promotion",
         action="store_true",
         help=(
-            "Promote, then invoke terminal shipping with deployment only after merge."
+            "Promote, then invoke terminal shipping with release publication "
+            "and local deployment only after merge."
         ),
     )
+    parser.add_argument(
+        "--release-contract",
+        type=pathlib.Path,
+        default=pathlib.Path("release/release.yml"),
+    )
+    parser.add_argument("--release-preflight-operation", default="preflight")
+    parser.add_argument("--release-operation", default="publish")
     parser.add_argument(
         "--deploy-contract",
         type=pathlib.Path,

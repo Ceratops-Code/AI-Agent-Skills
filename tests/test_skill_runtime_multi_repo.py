@@ -56,6 +56,7 @@ RULE_CANDIDATE_VALIDATOR = (
     GOVERNANCE_SOURCE / "scripts" / "validate_rule_candidate.py"
 )
 DEPLOY_OPERATION = REPOSITORY_LIFECYCLE_SOURCE / "scripts" / "run-deploy-operation.py"
+RELEASE_OPERATION = REPOSITORY_LIFECYCLE_SOURCE / "scripts" / "run-release-operation.py"
 PROMOTE_REPOSITORY = REPOSITORY_LIFECYCLE_SOURCE / "scripts" / "promote-repository.py"
 MANAGE_PENDING_WORK = REPOSITORY_LIFECYCLE_SOURCE / "scripts" / "manage-pending-work.py"
 SHIP_REPOSITORY = REPOSITORY_LIFECYCLE_SOURCE / "scripts" / "ship-repository.py"
@@ -8021,6 +8022,30 @@ def write_deploy_contract(
     return contract
 
 
+def write_release_contract(
+    repo: pathlib.Path,
+    operations: dict[str, object],
+) -> pathlib.Path:
+    """Write one JSON-compatible YAML release-publication contract."""
+
+    contract = repo / "release" / "release.yml"
+    contract.parent.mkdir(parents=True, exist_ok=True)
+    contract.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "kind": "ceratops-release",
+                "operations": operations,
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    return contract
+
+
 def run_deploy_operation(
     repo: pathlib.Path,
     operation: str,
@@ -8048,6 +8073,32 @@ def run_deploy_operation(
         command.extend(("--parameter-if-declared", parameter))
     if if_declared:
         command.append("--if-declared")
+    return subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def run_release_operation(
+    repo: pathlib.Path,
+    operation: str,
+    *,
+    contract: pathlib.Path | None = None,
+) -> subprocess.CompletedProcess[str]:
+    """Run one isolated release-publication operation."""
+
+    command = [
+        sys.executable,
+        str(RELEASE_OPERATION),
+        "--repo-root",
+        str(repo),
+        "--operation",
+        operation,
+    ]
+    if contract is not None:
+        command.extend(("--contract", str(contract)))
     return subprocess.run(
         command,
         capture_output=True,
@@ -8130,6 +8181,48 @@ def test_deploy_operation_preserves_argv_without_a_shell(
         "value with spaces",
         literal,
     ]
+    assert not injected.exists()
+
+    write_release_contract(
+        repo,
+        {
+            "publish": {
+                "steps": [
+                    {
+                        "id": "argv",
+                        "run": [
+                            sys.executable,
+                            "argv-probe.py",
+                            str(output),
+                            "release value",
+                            literal,
+                        ],
+                    }
+                ]
+            }
+        },
+    )
+    published = run_release_operation(repo, "publish")
+
+    assert published.returncode == 0, published.stderr
+    assert json.loads(published.stdout) == {
+        "status": "published",
+        "operation": "publish",
+        "steps": ["argv"],
+    }
+    assert json.loads(output.read_text(encoding="utf-8")) == [
+        "release value",
+        literal,
+    ]
+    wrong_contract = run_release_operation(
+        repo,
+        "verify",
+        contract=repo / "deploy" / "deploy.yml",
+    )
+    assert wrong_contract.returncode == 1
+    assert json.loads(wrong_contract.stderr)["message"].startswith(
+        "Invalid release contract:"
+    )
     assert not injected.exists()
 
 
@@ -9003,6 +9096,11 @@ def test_promote_repository_ship_after_promotion_composes_terminal_workflow(
         "url": "https://example.invalid/pull/31",
         "merge_commit": "c" * 40,
         "synchronized_head": "b" * 40,
+        "release_publication": {
+            "status": "published",
+            "operation": "publish",
+            "steps": ["publish"],
+        },
         "deployment": {
             "status": "deployed",
             "operation": "deploy",
@@ -9067,6 +9165,13 @@ def test_promote_repository_ship_after_promotion_composes_terminal_workflow(
     assert ship_command[ship_command.index("--base-branch") + 1] == "main"
     assert ship_command[ship_command.index("--remote-name") + 1] == "origin"
     assert ship_command[ship_command.index("--commit") + 1] == approved_head
+    assert pathlib.Path(
+        ship_command[ship_command.index("--release-contract") + 1]
+    ) == pathlib.Path("release/release.yml")
+    assert ship_command[
+        ship_command.index("--release-preflight-operation") + 1
+    ] == "preflight"
+    assert ship_command[ship_command.index("--release-operation") + 1] == "publish"
     assert ship_command[ship_command.index("--deploy-operation") + 1] == "deploy"
     assert "--reusable-head" in ship_command
     assert str(PROMOTE_REPOSITORY.parent / "run-deploy-operation.py") not in (
@@ -9111,7 +9216,7 @@ def test_promote_repository_ship_after_promotion_preserves_blocked_state(
         if pathlib.Path(command[1]) == MANAGE_PENDING_WORK:
             code, result = original_run_json(command, cwd)
             scope = pathlib.Path(str(result["pending_work_scope"]))
-            checkpoint = scope.with_suffix(".after-ship.json")
+            checkpoint = scope.with_suffix(".release-publication.json")
             retained.update({"scope": scope, "checkpoint": checkpoint})
             return code, result
         assert pathlib.Path(command[1]) == SHIP_REPOSITORY
@@ -9585,6 +9690,9 @@ def test_repository_ship_absent_default_contract_is_no_op_and_finalizes(
             merge_method="merge",
             delete_branch=False,
             reusable_head=True,
+            release_contract=pathlib.Path("release/release.yml"),
+            release_preflight_operation="preflight",
+            release_operation="publish",
             deploy_contract=pathlib.Path("deploy/deploy.yml"),
             deploy_operation="deploy",
             ci_wait_seconds=1,
@@ -9594,6 +9702,12 @@ def test_repository_ship_absent_default_contract_is_no_op_and_finalizes(
         )
     )
 
+    assert result["release_publication"] == {
+        "status": "no_op",
+        "operation": "publish",
+        "steps": [],
+        "reason": "release_contract_absent",
+    }
     assert result["deployment"] == {
         "status": "no_op",
         "operation": "deploy",
@@ -9666,6 +9780,9 @@ def test_repository_ship_absent_default_contract_is_no_op_and_finalizes(
                 merge_method="merge",
                 delete_branch=False,
                 reusable_head=True,
+                release_contract=pathlib.Path("release/release.yml"),
+                release_preflight_operation="preflight",
+                release_operation="publish",
                 deploy_contract=pathlib.Path("deploy/deploy.yml"),
                 deploy_operation="deploy",
                 ci_wait_seconds=1,
@@ -9677,8 +9794,10 @@ def test_repository_ship_absent_default_contract_is_no_op_and_finalizes(
     assert captured.value.payload == blocker
 
 
+@pytest.mark.parametrize("contract_kind", ["release", "deploy"])
 def test_repository_ship_missing_custom_contract_blocks_before_remote_mutation(
     tmp_path: pathlib.Path,
+    contract_kind: str,
 ) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -9708,7 +9827,18 @@ def test_repository_ship_missing_custom_contract_blocks_before_remote_mutation(
                 merge_method="merge",
                 delete_branch=False,
                 reusable_head=False,
-                deploy_contract=pathlib.Path("deploy/custom.yml"),
+                release_contract=pathlib.Path(
+                    "release/custom.yml"
+                    if contract_kind == "release"
+                    else "release/release.yml"
+                ),
+                release_preflight_operation="preflight",
+                release_operation="publish",
+                deploy_contract=pathlib.Path(
+                    "deploy/custom.yml"
+                    if contract_kind == "deploy"
+                    else "deploy/deploy.yml"
+                ),
                 deploy_operation="deploy",
                 ci_wait_seconds=1,
                 review_wait_seconds=1,
@@ -9717,6 +9847,103 @@ def test_repository_ship_missing_custom_contract_blocks_before_remote_mutation(
         )
 
     assert commands == []
+
+
+def test_repository_ship_release_failure_blocks_deployment_and_cleanup(
+    tmp_path: pathlib.Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    write_release_contract(
+        repo,
+        {
+            "preflight": {
+                "steps": [{"id": "check", "run": ["python", "check.py"]}]
+            },
+            "publish": {
+                "steps": [{"id": "publish", "run": ["python", "publish.py"]}]
+            },
+        },
+    )
+    write_deploy_contract(
+        repo,
+        {
+            "deploy": {
+                "steps": [
+                    {"id": "deploy", "run": ["python", "deploy.py"]}
+                ]
+            }
+        },
+    )
+    prepared = {
+        "status": "ready",
+        "source_branches": [],
+        "pending_work_scope": "",
+    }
+    shipped = {
+        "status": "shipped",
+        "repository": "example/repository",
+        "commit": "a" * 40,
+        "pr": 17,
+        "url": "https://example.invalid/pull/17",
+        "merge_commit": "c" * 40,
+        "synchronized_head": "b" * 40,
+    }
+    release_error = {"status": "error", "message": "workflow failed"}
+    responses: list[tuple[int, dict[str, Any]]] = [
+        (
+            0,
+            {
+                "status": "checked",
+                "operation": "preflight",
+                "steps": ["check"],
+            },
+        ),
+        (0, prepared),
+        (0, shipped),
+        (1, release_error),
+    ]
+    commands: list[list[str]] = []
+
+    def run_json(command: list[str]) -> tuple[int, dict[str, Any]]:
+        commands.append(command)
+        return responses[len(commands) - 1]
+
+    loaded = runpy.run_path(str(SHIP_REPOSITORY))
+    ship_repository = loaded["ship_repository"]
+    ship_repository.__globals__["_run_json"] = run_json
+    with pytest.raises(loaded["RepositoryShipError"]) as captured:
+        ship_repository(
+            argparse.Namespace(
+                repo_root=repo,
+                repo="example/repository",
+                head_branch="release/local",
+                base_branch="main",
+                remote_name="origin",
+                commit="a" * 40,
+                title=None,
+                body=None,
+                merge_method="merge",
+                delete_branch=False,
+                reusable_head=True,
+                release_contract=pathlib.Path("release/release.yml"),
+                release_preflight_operation="preflight",
+                release_operation="publish",
+                deploy_contract=pathlib.Path("deploy/deploy.yml"),
+                deploy_operation="deploy",
+                ci_wait_seconds=1,
+                review_wait_seconds=1,
+                review_replies_request=None,
+                interval_seconds=1,
+            )
+        )
+
+    assert captured.value.payload["phase"] == "release_publication"
+    assert captured.value.payload["remote_mutation"] is True
+    assert len(commands) == 4
+    assert str(RELEASE_OPERATION) in commands[-1]
+    assert "publish" in commands[-1]
+    assert all(str(DEPLOY_OPERATION) not in command for command in commands)
 
 
 @pytest.mark.parametrize("late_phase", ["post_sync", "post_finalize"])
@@ -9733,6 +9960,17 @@ def test_repository_ship_late_pending_work_reports_remote_mutation(
         "version: 1\noperations: {}\n",
         encoding="utf-8",
         newline="\n",
+    )
+    write_release_contract(
+        repo,
+        {
+            "preflight": {
+                "steps": [{"id": "check", "run": ["python", "check.py"]}]
+            },
+            "publish": {
+                "steps": [{"id": "publish", "run": ["python", "publish.py"]}]
+            },
+        },
     )
     scope = repo / "scope.json" if relative_scope else tmp_path / "scope.json"
     scope.write_text(
@@ -9765,18 +10003,30 @@ def test_repository_ship_late_pending_work_reports_remote_mutation(
         "operation": "deploy",
         "steps": ["install"],
     }
+    preflight = {
+        "status": "checked",
+        "operation": "preflight",
+        "steps": ["check"],
+    }
+    published = {
+        "status": "published",
+        "operation": "publish",
+        "steps": ["publish"],
+    }
     prepared = {
         "status": "ready",
         "source_branches": ["selected"],
         "pending_work_scope": str(scope.resolve()),
     }
     responses: list[tuple[int, dict[str, Any]]] = (
-        [(0, prepared), (0, shipped), (2, pending)]
+        [(0, preflight), (0, prepared), (0, shipped), (2, pending)]
         if late_phase == "post_sync"
         else [
+            (0, preflight),
             (0, prepared),
             (0, shipped),
             (0, prepared),
+            (0, published),
             (0, deployed),
             (2, pending),
         ]
@@ -9807,6 +10057,9 @@ def test_repository_ship_late_pending_work_reports_remote_mutation(
         merge_method="merge",
         delete_branch=False,
         reusable_head=True,
+        release_contract=pathlib.Path("release/release.yml"),
+        release_preflight_operation="preflight",
+        release_operation="publish",
         deploy_contract=pathlib.Path("deploy/deploy.yml"),
         deploy_operation="deploy",
         ci_wait_seconds=1,
@@ -9814,15 +10067,17 @@ def test_repository_ship_late_pending_work_reports_remote_mutation(
         interval_seconds=1,
     )
     if late_phase == "post_finalize":
-        stale_identity = loaded["_deployment_identity"](
+        stale_identity = loaded["_operation_identity"](
             repo,
+            phase="deployment",
             target_branch="release/local",
             target_commit="d" * 40,
+            synchronized_commit="b" * 40,
             contract=args.deploy_contract,
             operation="deploy",
         )
-        loaded["_write_deployment_checkpoint"](
-            scope.with_suffix(".after-ship.json"),
+        loaded["_write_operation_checkpoint"](
+            scope.with_suffix(".deployment.json"),
             stale_identity,
             {"status": "deployed", "operation": "deploy", "steps": ["old"]},
         )
@@ -9833,19 +10088,30 @@ def test_repository_ship_late_pending_work_reports_remote_mutation(
     assert result["remote_mutation"] is True
     assert result["repository"] == "example/repository"
     assert result["commit"] == "a" * 40
-    assert "prepare" in commands[0]
-    assert "check" in commands[2]
+    release_runner = str(SHIP_REPOSITORY.parent / "run-release-operation.py")
+    deploy_runner = str(SHIP_REPOSITORY.parent / "run-deploy-operation.py")
+    assert release_runner in commands[0]
+    assert "preflight" in commands[0]
+    assert "prepare" in commands[1]
+    assert "check" in commands[3]
     if late_phase == "post_sync":
-        assert len(commands) == 3
+        assert len(commands) == 4
         assert "deployment" not in result
     else:
-        assert len(commands) == 5
-        assert "finalize" in commands[4]
+        assert len(commands) == 7
+        assert release_runner in commands[4]
+        assert "publish" in commands[4]
+        assert deploy_runner in commands[5]
+        assert "finalize" in commands[6]
+        assert result["release_publication"] == published
         assert result["deployment"] == deployed
-        checkpoint = scope.with_suffix(".after-ship.json")
-        assert checkpoint.is_file()
+        release_checkpoint = scope.with_suffix(".release-publication.json")
+        deployment_checkpoint = scope.with_suffix(".deployment.json")
+        assert release_checkpoint.is_file()
+        assert deployment_checkpoint.is_file()
         responses.extend(
             [
+                (0, preflight),
                 (0, prepared),
                 (0, {**shipped, "status": "already_shipped"}),
                 (0, prepared),
@@ -9856,23 +10122,27 @@ def test_repository_ship_late_pending_work_reports_remote_mutation(
         resumed = ship_repository(args)
 
         assert resumed["status"] == "already_shipped"
+        assert resumed["release_publication"] == published
         assert resumed["deployment"] == deployed
-        assert len(commands) == 9
-        deploy_runner = str(SHIP_REPOSITORY.parent / "run-deploy-operation.py")
-        assert all(deploy_runner not in command for command in commands[5:])
-        assert not checkpoint.exists()
+        assert len(commands) == 12
+        assert all(release_runner not in command for command in commands[8:])
+        assert all(deploy_runner not in command for command in commands[7:])
+        assert not release_checkpoint.exists()
+        assert not deployment_checkpoint.exists()
 
 
 def test_repository_ship_rejects_malformed_deployment_checkpoint(
     tmp_path: pathlib.Path,
 ) -> None:
     loaded = runpy.run_path(str(SHIP_REPOSITORY))
-    checkpoint = tmp_path / "scope.after-ship.json"
+    checkpoint = tmp_path / "scope.deployment.json"
     checkpoint.write_text("{}", encoding="utf-8", newline="\n")
     identity = {
         "version": 1,
+        "phase": "deployment",
         "target_branch": "release/local",
         "target_commit": "a" * 40,
+        "synchronized_commit": "b" * 40,
         "contract": str(tmp_path / "deploy.yml"),
         "operation": "deploy",
     }
@@ -9881,7 +10151,7 @@ def test_repository_ship_rejects_malformed_deployment_checkpoint(
         loaded["RepositoryShipError"],
         match="invalid structure",
     ):
-        loaded["_read_deployment_checkpoint"](checkpoint, identity)
+        loaded["_read_operation_checkpoint"](checkpoint, identity)
 
 
 def test_repository_ship_rejects_noncanonical_release_branch_before_remote_process(
@@ -10005,6 +10275,9 @@ def test_repository_ship_blocks_selected_worktree_caller_before_remote_process(
                 merge_method="merge",
                 delete_branch=False,
                 reusable_head=True,
+                release_contract=pathlib.Path("release/release.yml"),
+                release_preflight_operation="preflight",
+                release_operation="publish",
                 deploy_contract=pathlib.Path("deploy/deploy.yml"),
                 deploy_operation="deploy",
                 ci_wait_seconds=1,

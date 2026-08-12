@@ -3,9 +3,10 @@
 ## Goal
 
 Ship one staged integration branch through GitHub, synchronize local main,
-recheck selected local work, execute or explicitly no-op repository `deploy`,
-handle its managed-skill handoff, recheck again, and clean only the selected
-merged source branches and worktrees.
+recheck selected local work, execute or explicitly no-op declared remote
+release publication, then execute or explicitly no-op local repository
+`deploy`, handle its managed-skill handoff, recheck again, and clean only the
+selected merged source branches and worktrees.
 
 ## Context
 
@@ -75,22 +76,28 @@ Infer missing values from the checkout, scope file, and live PR before asking.
    and critical recovery semantics; ship contains no independent toggle logic.
 6. After merge, the helper synchronizes local main and restores a reusable
    integration branch when selected.
-7. Before remote mutation, the wrapper classifies deployment. An absent default
-   `deploy/deploy.yml` makes `deploy` an explicit no-op; a missing custom
-   contract blocks. After synchronization it rechecks the selected scope, runs
-   a declared operation or records the no-op, and rechecks. Before removing a
-   selected worktree, finalization records its exact path. Automatic residual
-   cleanup handles only the case where Git unregisters the worktree but leaves
-   that recorded directory. The helper verifies that the path is unregistered
-   and remains below the canonical worktree root before deleting it. When the
-   helper runs elevated, the same cleanup may take ownership only of that
-   validated path, without a public flag or second confirmation. The helper
-   removes the residual-cleanup record only after verifying the path is absent,
-   then removes the merged selected branch.
-8. After a declared `deploy` succeeds, the helper checkpoints its result
-   against the exact target, operation, and resolved contract before
-   finalization. A retry reuses that result while cleanup remains pending and
-   removes the checkpoint after cleanup succeeds. Deployment operations must
+7. Before remote mutation, the wrapper classifies release publication and
+   deployment. An absent default `release/release.yml` makes release preflight
+   and publication explicit no-ops, and an absent default `deploy/deploy.yml`
+   makes `deploy` an explicit no-op; a missing custom contract blocks. Run a
+   declared release preflight before the first remote mutation. After
+   synchronization, recheck the selected scope, run declared release
+   publication or record its no-op, then run declared local deployment or
+   record its no-op, and recheck. Before removing a selected worktree,
+   finalization records its exact path. Automatic residual cleanup handles
+   only the case where Git unregisters the worktree but leaves that recorded
+   directory. The helper verifies that the path is unregistered and remains
+   below the canonical worktree root before deleting it. When the helper runs
+   elevated, the same cleanup may take ownership only of that validated path,
+   without a public flag or second confirmation. The helper removes the
+   residual-cleanup record only after verifying the path is absent, then
+   removes the merged selected branch.
+8. After declared release publication or deployment succeeds, the helper
+   checkpoints each result independently against the exact target, operation,
+   and resolved contract before the next phase. A retry reuses each completed
+   result while later work remains pending and removes both checkpoints only
+   after cleanup succeeds. A publication failure blocks deployment and
+   finalization; a deployment failure blocks finalization. Both operations must
    remain retry-safe across interruption.
 9. After the helper completes, when synchronized main declares managed skills,
    execute the handoff returned in its deployment result against that exact
@@ -101,9 +108,10 @@ Infer missing values from the checkout, scope file, and live PR before asking.
 
 ### Completion Gate
 
-- PR publication, all gates, exact-head admin merge, main synchronization, and
-  declared or explicit no-op repository deployment completed; any returned
-  handoff completed, and managed skills without one were reported.
+- PR publication, all gates, exact-head admin merge, main synchronization,
+  declared or explicit no-op remote release publication, and declared or
+  explicit no-op local repository deployment completed; any returned handoff
+  completed, and managed skills without one were reported.
 - Every remaining selected source branch passed pending-work checks; an absent
   or emptied scope completed as a cleanup no-op.
 - Only selected clean merged source work was removed.
@@ -113,6 +121,6 @@ Infer missing values from the checkout, scope file, and live PR before asking.
 Report only:
 
 - PR URL and merge outcome
-- synchronized main and deployment outcome
+- synchronized main, release-publication outcome, and local deployment outcome
 - finalized or retained selected scope with reasons
 - blockers or anything important not verified
