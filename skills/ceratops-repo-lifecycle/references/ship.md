@@ -107,8 +107,11 @@ Infer missing values from the checkout, scope file, and live PR before asking.
    and resolved contract before the next phase. A retry reuses each completed
    result while later work remains pending and removes both checkpoints only
    after cleanup succeeds. A publication failure blocks deployment and
-   finalization; a deployment failure blocks finalization. Both operations must
-   remain retry-safe across interruption.
+   finalization; a deployment failure blocks finalization. Terminal success
+   also removes every exact helper-owned atomic-write `.tmp` sibling for retired
+   scopes, residual-cleanup records, operation checkpoints, and PR checkpoints;
+   it never scans for or removes unrelated temporary files. Both operations
+   must remain retry-safe across interruption.
 9. After the helper completes, when synchronized main declares managed skills,
    execute the handoff returned in its deployment result against that exact
    checkout. If none was declared, report the managed skills as not deployed

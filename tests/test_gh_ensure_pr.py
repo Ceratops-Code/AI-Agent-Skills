@@ -1349,6 +1349,8 @@ class ShipTests(unittest.TestCase):
             args = self.args(repo_root)
             checkpoint = repo_root / "checkpoint.json"
             checkpoint.write_text("checkpoint", encoding="utf-8")
+            checkpoint_temporary = checkpoint.with_suffix(".tmp")
+            checkpoint_temporary.write_text("stale", encoding="utf-8")
             same_pr_checkpoint = repo_root / "same-pr.json"
             same_pr_checkpoint.write_text(
                 json.dumps(
@@ -1361,6 +1363,8 @@ class ShipTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
+            same_pr_temporary = same_pr_checkpoint.with_suffix(".tmp")
+            same_pr_temporary.write_text("stale", encoding="utf-8")
             unrelated_checkpoint = repo_root / "unrelated.json"
             unrelated_checkpoint.write_text(
                 json.dumps(
@@ -1373,6 +1377,8 @@ class ShipTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
+            unrelated_temporary = unrelated_checkpoint.with_suffix(".tmp")
+            unrelated_temporary.write_text("retained", encoding="utf-8")
             unidentifiable_checkpoint = repo_root / "unidentifiable.json"
             unidentifiable_checkpoint.write_text("invalid", encoding="utf-8")
             with (
@@ -1441,8 +1447,11 @@ class ShipTests(unittest.TestCase):
             ):
                 result = ship.ship(args)
             checkpoint_removed = not checkpoint.exists()
+            checkpoint_temporary_removed = not checkpoint_temporary.exists()
             same_pr_removed = not same_pr_checkpoint.exists()
+            same_pr_temporary_removed = not same_pr_temporary.exists()
             unrelated_retained = unrelated_checkpoint.exists()
+            unrelated_temporary_retained = unrelated_temporary.exists()
             unidentifiable_retained = unidentifiable_checkpoint.exists()
 
         self.assertEqual(result["status"], "shipped")
@@ -1457,8 +1466,11 @@ class ShipTests(unittest.TestCase):
             ],
         )
         self.assertTrue(checkpoint_removed)
+        self.assertTrue(checkpoint_temporary_removed)
         self.assertTrue(same_pr_removed)
+        self.assertTrue(same_pr_temporary_removed)
         self.assertTrue(unrelated_retained)
+        self.assertTrue(unrelated_temporary_retained)
         self.assertTrue(unidentifiable_retained)
         self.assertEqual(result["removed_checkpoints"], 2)
         ensure.assert_called_once()

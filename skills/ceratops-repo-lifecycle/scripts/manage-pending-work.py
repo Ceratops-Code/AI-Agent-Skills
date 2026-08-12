@@ -95,14 +95,40 @@ def _read_scope(path: pathlib.Path) -> dict[str, Any]:
     return value
 
 
+def _atomic_temporary_path(path: pathlib.Path) -> pathlib.Path:
+    """Return the exact helper-owned sibling used for one atomic write."""
+
+    return path.with_suffix(".tmp")
+
+
 def _write_scope(path: pathlib.Path, scope: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(".tmp")
+    temporary = _atomic_temporary_path(path)
     temporary.write_text(
         json.dumps(scope, separators=(",", ":"), sort_keys=True),
         encoding="utf-8",
     )
     os.replace(temporary, path)
+
+
+def _remove_completed_state_file(path: pathlib.Path) -> None:
+    """Retire one state file and only its exact atomic-write sibling."""
+
+    temporary = _atomic_temporary_path(path)
+    try:
+        temporary.unlink(missing_ok=True)
+        path.unlink(missing_ok=True)
+    except OSError as exc:
+        raise PendingWorkError(
+            f"Could not remove completed state {path}: {exc}"
+        ) from exc
+    if (
+        temporary.exists()
+        or temporary.is_symlink()
+        or path.exists()
+        or path.is_symlink()
+    ):
+        raise PendingWorkError(f"Completed state cleanup left an artifact: {path}")
 
 
 def _lstat(path: pathlib.Path) -> os.stat_result | None:
@@ -310,7 +336,7 @@ def _finish_recorded_residual_cleanup(
         _run_recorded_residual_cleanup(repo_root, record_path)
     if _lstat(worktree) is not None:
         raise PendingWorkError("Residual worktree directory still exists after cleanup.")
-    record_path.unlink()
+    _remove_completed_state_file(record_path)
 
 
 def _validated_scope(
@@ -453,7 +479,7 @@ def _recover_completed_deletions(
         recovered = _scope_with_sources(scope, retained)
         _write_scope(path, recovered)
         return recovered
-    path.unlink()
+    _remove_completed_state_file(path)
     return None
 
 
@@ -506,7 +532,7 @@ def _remove_source_record(
         updated = _scope_with_sources(scope, remaining)
         _write_scope(path, updated)
         return updated
-    path.unlink()
+    _remove_completed_state_file(path)
     return None
 
 

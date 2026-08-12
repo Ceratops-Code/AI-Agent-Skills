@@ -138,6 +138,34 @@ def _operation_checkpoint_path(scope: pathlib.Path, phase: str) -> pathlib.Path:
     return scope.with_suffix(suffix)
 
 
+def _operation_checkpoint_temporary_path(path: pathlib.Path) -> pathlib.Path:
+    """Return one exact helper-owned atomic operation-checkpoint sibling."""
+
+    return path.with_suffix(path.suffix + ".tmp")
+
+
+def _remove_completed_operation_checkpoint(path: pathlib.Path) -> None:
+    """Remove completed operation state and only its atomic-write sibling."""
+
+    temporary = _operation_checkpoint_temporary_path(path)
+    try:
+        temporary.unlink(missing_ok=True)
+        path.unlink(missing_ok=True)
+    except OSError as exc:
+        raise RepositoryShipError(
+            f"Could not remove completed operation checkpoint {path}: {exc}"
+        ) from exc
+    if (
+        temporary.exists()
+        or temporary.is_symlink()
+        or path.exists()
+        or path.is_symlink()
+    ):
+        raise RepositoryShipError(
+            f"Completed operation checkpoint cleanup left an artifact: {path}"
+        )
+
+
 def _branch_worktree(repo_root: pathlib.Path, branch: str) -> pathlib.Path | None:
     """Return the registered worktree for one selected source branch."""
 
@@ -286,7 +314,7 @@ def _write_operation_checkpoint(
     """Atomically persist one completed phase before later side effects."""
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary = _operation_checkpoint_temporary_path(path)
     temporary.write_text(
         json.dumps(
             {**identity, "result": result},
@@ -715,7 +743,7 @@ def ship_repository(args: argparse.Namespace) -> dict[str, object]:
             )
     for checkpoint in (release_checkpoint, deployment_checkpoint):
         if checkpoint is not None:
-            checkpoint.unlink(missing_ok=True)
+            _remove_completed_operation_checkpoint(checkpoint)
 
     return {
         "status": shipped["status"],

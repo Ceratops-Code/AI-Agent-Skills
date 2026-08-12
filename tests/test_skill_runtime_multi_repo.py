@@ -10350,6 +10350,16 @@ def test_repository_ship_late_pending_work_reports_remote_mutation(
         deployment_checkpoint = scope.with_suffix(".deployment.json")
         assert release_checkpoint.is_file()
         assert deployment_checkpoint.is_file()
+        release_temporary = release_checkpoint.with_suffix(
+            release_checkpoint.suffix + ".tmp"
+        )
+        deployment_temporary = deployment_checkpoint.with_suffix(
+            deployment_checkpoint.suffix + ".tmp"
+        )
+        release_temporary.write_text("stale", encoding="utf-8", newline="\n")
+        deployment_temporary.write_text("stale", encoding="utf-8", newline="\n")
+        unrelated_temporary = scope.with_name("unrelated.tmp")
+        unrelated_temporary.write_text("retained", encoding="utf-8", newline="\n")
         responses.extend(
             [
                 (0, preflight),
@@ -10370,6 +10380,9 @@ def test_repository_ship_late_pending_work_reports_remote_mutation(
         assert all(deploy_runner not in command for command in commands[7:])
         assert not release_checkpoint.exists()
         assert not deployment_checkpoint.exists()
+        assert not release_temporary.exists()
+        assert not deployment_temporary.exists()
+        assert unrelated_temporary.is_file()
 
 
 def test_repository_ship_rejects_malformed_deployment_checkpoint(
@@ -11170,6 +11183,10 @@ def test_pending_work_finalization_persists_partial_cleanup_progress(
         scope_path, "selected-a"
     )
     assert residual_cleanup_record.is_file()
+    residual_temporary = residual_cleanup_record.with_suffix(".tmp")
+    residual_temporary.write_text("stale", encoding="utf-8", newline="\n")
+    unrelated_temporary = residual_cleanup_record.with_name("unrelated.tmp")
+    unrelated_temporary.write_text("retained", encoding="utf-8", newline="\n")
     assert selected_a.is_dir()
     assert (
         run_git(
@@ -11244,6 +11261,8 @@ def test_pending_work_finalization_persists_partial_cleanup_progress(
     assert residual_cleanup_steps == ["permission_denied", "ownership"]
     assert not selected_a.exists()
     assert not residual_cleanup_record.exists()
+    assert not residual_temporary.exists()
+    assert unrelated_temporary.is_file()
     assert json.loads(scope_path.read_text(encoding="utf-8"))["sources"] == [
         {
             "branch": "selected-b",
@@ -11318,6 +11337,8 @@ def test_pending_work_finalization_persists_partial_cleanup_progress(
             "state": "deleting",
         }
     ]
+    crash_temporary = crash_scope.with_suffix(".tmp")
+    crash_temporary.write_text("stale", encoding="utf-8", newline="\n")
     finalize_scope.__globals__["_remove_source_record"] = original_remove_source
     recovered = finalize_scope(
         repo,
@@ -11333,6 +11354,8 @@ def test_pending_work_finalization_persists_partial_cleanup_progress(
         "pending_work_scope": "",
     }
     assert not crash_scope.exists()
+    assert not crash_temporary.exists()
+    assert unrelated_temporary.is_file()
 
     ownership_target = worktree_root / "ownership-target"
     ownership_target.mkdir(parents=True)

@@ -121,16 +121,44 @@ def _read_checkpoint(path: pathlib.Path) -> dict[str, Any]:
     return value
 
 
+def _checkpoint_temporary_path(path: pathlib.Path) -> pathlib.Path:
+    """Return the exact helper-owned sibling used for one atomic checkpoint."""
+
+    return path.with_suffix(".tmp")
+
+
 def _write_checkpoint(path: pathlib.Path, state: dict[str, Any]) -> None:
     """Atomically persist a compact checkpoint without touching tracked files."""
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(".tmp")
+    temporary = _checkpoint_temporary_path(path)
     temporary.write_text(
         json.dumps(state, separators=(",", ":"), sort_keys=True),
         encoding="utf-8",
     )
     os.replace(temporary, path)
+
+
+def _remove_completed_checkpoint(path: pathlib.Path) -> bool:
+    """Remove one completed checkpoint and only its atomic-write sibling."""
+
+    temporary = _checkpoint_temporary_path(path)
+    existed = path.is_file()
+    try:
+        temporary.unlink(missing_ok=True)
+        path.unlink(missing_ok=True)
+    except OSError as exc:
+        raise ShipError(
+            f"Could not remove successful PR checkpoint {path}: {exc}"
+        ) from exc
+    if (
+        temporary.exists()
+        or temporary.is_symlink()
+        or path.exists()
+        or path.is_symlink()
+    ):
+        raise ShipError(f"Successful PR checkpoint cleanup left an artifact: {path}")
+    return existed
 
 
 def _remove_completed_pr_checkpoints(
@@ -157,14 +185,7 @@ def _remove_completed_pr_checkpoints(
             )
         if not should_remove:
             continue
-        existed = path.is_file()
-        try:
-            path.unlink(missing_ok=True)
-        except OSError as exc:
-            raise ShipError(
-                f"Could not remove successful PR checkpoint {path}: {exc}"
-            ) from exc
-        if existed:
+        if _remove_completed_checkpoint(path):
             removed += 1
     return removed
 
