@@ -5,6 +5,14 @@ from __future__ import annotations
 
 from .core import *
 
+
+def _holistic_controller() -> ModuleType:
+    """Resolve the owning per-thread controller lazily to avoid an import cycle."""
+
+    from . import holistic
+
+    return holistic
+
 def _project_selector(raw: Any) -> dict[str, str] | None:
     """Normalize one exact project selector without filesystem discovery."""
 
@@ -360,7 +368,9 @@ def _recover_prepared_batch_item(
     state_path = child_paths["analysis_root"] / "state.json"
     if not state_path.exists():
         return None
-    child_state, evidence, _ = _load_state(state_path)
+    child_state, evidence, child_contract, _ = (
+        _holistic_controller()._holistic_read_state(state_path)
+    )
     request_path = pathlib.Path(child_state["immutable_artifacts"]["request"]["path"])
     if request_path.resolve() != child_paths["request"].resolve():
         raise CreditAnalysisError("prepared batch child request path changed")
@@ -368,10 +378,14 @@ def _recover_prepared_batch_item(
         "evidence"
     ].resolve():
         raise CreditAnalysisError("prepared batch child evidence path changed")
+    projected_calls = child_state.get("manifest", {}).get(
+        "projected_semantic_calls"
+    )
     if (
         child_state["action"] != "full-analysis"
         or child_state["mode"] != "full-analysis"
-        or child_state["queue"] != contract["full_queue"]
+        or child_contract["surface_contract_version"]
+        != contract["surface_contract_version"]
         or child_state["source"].get("kind") != "thread_id"
         or child_state["source"].get("value") != candidate["thread_id"]
         or pathlib.Path(child_state["source"]["resolved_session"]).resolve()
@@ -380,6 +394,9 @@ def _recover_prepared_batch_item(
         != pathlib.Path(candidate["session"]).resolve()
         or evidence.get("source_fingerprint") != child_state["source"]["fingerprint"]
         or evidence.get("collection", {}).get("session_reads") != 1
+        or not isinstance(projected_calls, int)
+        or isinstance(projected_calls, bool)
+        or projected_calls < 2
     ):
         raise CreditAnalysisError("prepared batch child identity is invalid")
     return _batch_item_record(
@@ -393,9 +410,8 @@ def _recover_prepared_batch_item(
 def _resume_batch_preparation(
     state: dict[str, Any],
     contract: Mapping[str, Any],
-    ledger: ModuleType,
 ) -> None:
-    """Prepare each child once and checkpoint after every retained controller."""
+    """Plan each holistic child once and checkpoint every retained controller."""
 
     if state["phase"] != "preparing":
         return
@@ -407,6 +423,8 @@ def _resume_batch_preparation(
         if isinstance(pricing_record, Mapping)
         else None
     )
+    holistic = _holistic_controller()
+    available_models: Mapping[str, Mapping[str, Any]] | None = None
     while state["candidate_index"] < len(state["candidates"]):
         if isinstance(target_count, int) and len(state["items"]) >= target_count:
             break
@@ -421,35 +439,6 @@ def _resume_batch_preparation(
         )
         if recovered is not None:
             state["items"].append(recovered)
-            state["candidate_index"] += 1
-            _save_batch_state(state)
-            continue
-        session = pathlib.Path(candidate["session"])
-        try:
-            rows, source_fingerprint = ledger.load_rows_with_fingerprint(session)
-            metadata = ledger.session_source_metadata(
-                rows,
-                expected_thread_id=candidate["thread_id"],
-            )
-            if metadata["project_key"] != candidate["project"]["key"]:
-                raise CreditAnalysisError("session project identity changed during prepare")
-            collected = ledger.collect_session_evidence_from_rows(
-                rows,
-                session=session,
-                source_fingerprint=source_fingerprint,
-                pricing_profile=pricing,
-            )
-        except (OSError, RuntimeError, ValueError) as exc:
-            raise CreditAnalysisError(
-                f"batch session collection failed for {candidate['thread_id']}: {exc}"
-            ) from exc
-        if collected["collection"]["model_calls"] < 1:
-            state["exclusions"].append(
-                {
-                    "thread_id": candidate["thread_id"],
-                    "reason": "no-completed-model-calls",
-                }
-            )
             state["candidate_index"] += 1
             _save_batch_state(state)
             continue
@@ -473,13 +462,43 @@ def _resume_batch_preparation(
         _write_or_verify_json(
             child_paths["request"], child_request, "batch child request"
         )
-        validated = _validate_request(child_paths["request"], dict(contract), ledger)
-        _initialize_analysis(validated, contract, collected)
+        try:
+            if available_models is None:
+                available_models = holistic._codex_model_catalog()
+            child_status = holistic.command_plan_orchestration(
+                child_paths["request"],
+                available_models=available_models,
+            )
+        except CreditAnalysisError as exc:
+            if str(exc) != "selected completed-run window has no model calls":
+                raise CreditAnalysisError(
+                    f"batch holistic planning failed for {candidate['thread_id']}: {exc}"
+                ) from exc
+            child_paths["request"].unlink()
+            child_paths["analysis_root"].rmdir()
+            state["exclusions"].append(
+                {
+                    "thread_id": candidate["thread_id"],
+                    "reason": "no-completed-model-calls",
+                }
+            )
+            state["candidate_index"] += 1
+            _save_batch_state(state)
+            continue
+        child_state, evidence, _, _ = holistic._holistic_read_state(
+            pathlib.Path(child_status["state_path"])
+        )
+        if (
+            evidence.get("collection", {}).get("session_reads") != 1
+            or pathlib.Path(str(evidence.get("session"))).resolve()
+            != pathlib.Path(candidate["session"]).resolve()
+        ):
+            raise CreditAnalysisError("batch holistic child collection is invalid")
         item = _batch_item_record(
             candidate,
             child_paths,
             ordinal=ordinal,
-            source_fingerprint=source_fingerprint,
+            source_fingerprint=child_state["source"]["fingerprint"],
         )
         state["items"].append(item)
         state["candidate_index"] += 1
@@ -586,6 +605,198 @@ def _batch_finding_id(thread_id: str, finding_id: str) -> str:
     return f"{thread_id}:{finding_id}"
 
 
+def _batch_child_view(
+    result: Mapping[str, Any],
+    contract: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Project a validated holistic result onto the stable batch aggregate shape."""
+
+    if (
+        result.get("schema") != contract["orchestration_final_schema"]
+        or result.get("action") != "full-analysis"
+        or result.get("mode") != "full-analysis"
+    ):
+        raise CreditAnalysisError("batch child holistic result schema changed")
+    classifications = result.get("classification_totals")
+    if not isinstance(classifications, Mapping):
+        raise CreditAnalysisError("batch child classification totals are invalid")
+    classification_keys = (
+        "necessary",
+        "avoidable_implemented",
+        "avoidable_unimplemented",
+        "reviewed_no_confirmed_waste",
+        "unassessed",
+    )
+    if any(
+        not isinstance(classifications.get(key), int)
+        or isinstance(classifications.get(key), bool)
+        or classifications[key] < 0
+        for key in classification_keys
+    ):
+        raise CreditAnalysisError("batch child classification totals are invalid")
+    findings_value = result.get("confirmed_findings")
+    risks_value = result.get("plausible_risks")
+    decisions_value = result.get("candidate_decisions")
+    groups_value = result.get("call_classifications")
+    if not isinstance(findings_value, list):
+        raise CreditAnalysisError("batch child holistic inventory is invalid")
+    if not isinstance(risks_value, list):
+        raise CreditAnalysisError("batch child holistic inventory is invalid")
+    if not isinstance(decisions_value, list):
+        raise CreditAnalysisError("batch child holistic inventory is invalid")
+    if not isinstance(groups_value, list):
+        raise CreditAnalysisError("batch child holistic inventory is invalid")
+
+    producer_keys: list[tuple[str, str, str]] = []
+    for finding in findings_value:
+        if not isinstance(finding, Mapping):
+            raise CreditAnalysisError("batch child finding is invalid")
+        key = (
+            str(finding.get("producer_type")),
+            str(finding.get("producer_owner")),
+            str(finding.get("proposed_durable_control")),
+        )
+        if key not in producer_keys:
+            producer_keys.append(key)
+    producer_group_by_key = {
+        key: f"holistic-producer-{index:04d}"
+        for index, key in enumerate(producer_keys, start=1)
+    }
+    findings: list[dict[str, Any]] = []
+    for rank, raw in enumerate(findings_value, start=1):
+        finding = dict(raw)
+        surfaces = finding.get("contributing_surfaces")
+        if not isinstance(surfaces, list) or not surfaces:
+            raise CreditAnalysisError("batch child finding has no contributing surface")
+        affected_calls = finding.get("affected_call_ids")
+        if not isinstance(affected_calls, list):
+            raise CreditAnalysisError("batch child finding calls are invalid")
+        observed = finding.get("observed_avoidable_call_count")
+        if not isinstance(observed, int) or isinstance(observed, bool) or observed < 0:
+            raise CreditAnalysisError("batch child finding count is invalid")
+        producer_key = (
+            str(finding.get("producer_type")),
+            str(finding.get("producer_owner")),
+            str(finding.get("proposed_durable_control")),
+        )
+        findings.append(
+            {
+                **finding,
+                "source_surface": surfaces[0],
+                "expected_value_rank": rank,
+                "primary_call_ids": (
+                    list(affected_calls)
+                    if finding.get("waste_kind") == "model-calls"
+                    else []
+                ),
+                "secondary_call_ids": [],
+                "deduplicated_avoidable_call_count": observed,
+                "producer_group_id": producer_group_by_key[producer_key],
+                "roi": {
+                    "finding_id": finding.get("id"),
+                    "recurrence": finding.get("recurrence"),
+                    "one_time_implementation_cost": finding.get(
+                        "one_time_implementation_cost"
+                    ),
+                    "ongoing_complexity": finding.get("complexity"),
+                    "confidence": finding.get("confidence"),
+                },
+            }
+        )
+
+    producer_groups = []
+    for key in producer_keys:
+        producer_type, owner, control = key
+        members = [
+            finding
+            for finding in findings
+            if (
+                str(finding["producer_type"]),
+                str(finding["producer_owner"]),
+                str(finding["proposed_durable_control"]),
+            )
+            == key
+        ]
+        producer_groups.append(
+            {
+                "id": producer_group_by_key[key],
+                "producer_type": producer_type,
+                "owner": owner,
+                "finding_ids": [str(finding["id"]) for finding in members],
+                "recommended_control": control,
+                "targeted_verification": list(
+                    dict.fromkeys(
+                        check
+                        for finding in members
+                        for check in finding["targeted_verification"]
+                    )
+                ),
+            }
+        )
+
+    primary: list[dict[str, Any]] = []
+    necessary: list[dict[str, Any]] = []
+    for group in groups_value:
+        if not isinstance(group, Mapping) or not isinstance(group.get("call_ids"), list):
+            raise CreditAnalysisError("batch child call classification is invalid")
+        for call_id in group["call_ids"]:
+            mapping = {
+                "call_id": call_id,
+                "classification": group.get("classification"),
+                "reason_code": group.get("reason_code"),
+                "reason": group.get("rationale"),
+                "evidence_refs": group.get("evidence_refs"),
+                "workstream": group.get("workstream"),
+            }
+            primary.append(mapping)
+            if group.get("classification") == "necessary":
+                necessary.append(
+                    {
+                        "call_id": call_id,
+                        "reason_code": group.get("reason_code"),
+                        "reason": group.get("rationale"),
+                    }
+                )
+
+    total_calls = sum(int(classifications[key]) for key in classification_keys)
+    protocol_overhead = classifications.get("protocol_overhead", 0)
+    if not isinstance(protocol_overhead, int) or isinstance(protocol_overhead, bool):
+        raise CreditAnalysisError("batch child protocol overhead total is invalid")
+    totals = {
+        "total_model_calls": total_calls,
+        "necessary_calls": classifications["necessary"],
+        "protocol_overhead_calls": protocol_overhead,
+        "reviewed_no_confirmed_waste_calls": classifications[
+            "reviewed_no_confirmed_waste"
+        ],
+        "unassessed_calls": classifications["unassessed"],
+        "avoidable_calls": classifications["avoidable_implemented"]
+        + classifications["avoidable_unimplemented"],
+        "avoidable_implemented_calls": classifications["avoidable_implemented"],
+        "avoidable_unimplemented_calls": classifications[
+            "avoidable_unimplemented"
+        ],
+        "confirmed_findings": len(findings),
+        "plausible_risks": len(risks_value),
+    }
+    return {
+        "confirmed_findings": findings,
+        "plausible_risks": list(risks_value),
+        "dismissals": [
+            dict(decision)
+            for decision in decisions_value
+            if isinstance(decision, Mapping)
+            and decision.get("disposition") == "dismissed-candidate"
+        ],
+        "necessary_call_exclusions": necessary,
+        "primary_call_mappings": primary,
+        "secondary_call_mappings": [],
+        "producer_grouped_recommendations": producer_groups,
+        "totals": totals,
+        "priced_cost": None,
+    }
+
+
 def _batch_finding_records(
     state: Mapping[str, Any],
     contract: Mapping[str, Any],
@@ -597,17 +808,16 @@ def _batch_finding_records(
     seen: set[str] = set()
     for item, record in zip(state["items"], state["completed"], strict=True):
         result = _read_json(pathlib.Path(record["path"]), "batch child final result")
-        if result.get("schema") != contract["final_result_schema"]:
-            raise CreditAnalysisError("batch child final result schema changed")
+        child = _batch_child_view(result, contract)
         thread_totals.append(
             {
                 "thread_id": item["thread_id"],
                 "thread_name": item["thread_name"],
                 "analysis_id": result["analysis_id"],
-                "totals": result["totals"],
+                "totals": child["totals"],
             }
         )
-        for finding in result["confirmed_findings"]:
+        for finding in child["confirmed_findings"]:
             batch_finding_id = _batch_finding_id(item["thread_id"], finding["id"])
             if batch_finding_id in seen:
                 raise CreditAnalysisError(
@@ -625,6 +835,7 @@ def _batch_finding_records(
                     "problem_summary": finding["problem_summary"],
                     "waste_kind": finding["waste_kind"],
                     "source_surface": finding["source_surface"],
+                    "contributing_surfaces": finding["contributing_surfaces"],
                     "producer_type": finding["producer_type"],
                     "producer_owner": finding["producer_owner"],
                     "proposed_durable_control": finding[
@@ -1083,7 +1294,9 @@ def _batch_public_status(
             "batch_summary_result_path": state["batch_summary"]["result_path"],
         }
     item = state["items"][state["current_index"]]
-    child_status = command_status(pathlib.Path(item["state_path"]))
+    child_status = _holistic_controller().command_orchestration_status(
+        pathlib.Path(item["state_path"])
+    )
     return {
         **common,
         "current_ordinal": item["ordinal"],
@@ -1110,7 +1323,7 @@ def command_prepare_batch(request_path: pathlib.Path) -> dict[str, Any]:
         if _file_hash(request_path) != request_record["sha256"]:
             raise CreditAnalysisError("batch request changed during resume")
         if state["phase"] == "preparing":
-            _resume_batch_preparation(state, contract, _load_ledger())
+            _resume_batch_preparation(state, contract)
         return _batch_public_status(state, contract)
     contract = _load_contract()
     ledger = _load_ledger()
@@ -1174,7 +1387,7 @@ def command_prepare_batch(request_path: pathlib.Path) -> dict[str, Any]:
         "final_result": None,
     }
     _exclusive_json(state_path, state, "batch state")
-    _resume_batch_preparation(state, contract, ledger)
+    _resume_batch_preparation(state, contract)
     return _batch_public_status(state, contract)
 
 
@@ -1229,12 +1442,14 @@ def command_advance_batch(
     item = state["items"][state["current_index"]]
     if result.resolve() != pathlib.Path(item["final_result_path"]).resolve():
         raise CreditAnalysisError("batch result is not for the exact pending thread")
-    child_state, _, _ = _load_state(pathlib.Path(item["state_path"]))
-    if child_state["finalized"] is not True:
-        raise CreditAnalysisError("pending thread analysis is not finalized")
+    child_state, _, _, _ = _holistic_controller()._holistic_read_state(
+        pathlib.Path(item["state_path"])
+    )
+    if child_state["phase"] != "complete":
+        raise CreditAnalysisError("pending thread holistic analysis is not complete")
     payload = _read_json(result, "batch child final result")
     if (
-        payload.get("schema") != contract["final_result_schema"]
+        payload.get("schema") != contract["orchestration_final_schema"]
         or payload.get("mode") != "full-analysis"
         or child_state["source"].get("value") != item["thread_id"]
     ):
@@ -1279,16 +1494,15 @@ def _build_batch_final(
     pricing_complete = True
     for item, record in zip(state["items"], state["completed"], strict=True):
         result = _read_json(pathlib.Path(record["path"]), "batch child final result")
-        if result.get("schema") != contract["final_result_schema"]:
-            raise CreditAnalysisError("batch child final result schema changed")
+        child = _batch_child_view(result, contract)
         identity = {
             "thread_id": item["thread_id"],
             "thread_name": item["thread_name"],
             "analysis_id": result["analysis_id"],
         }
         thread_results.append({**identity, "path": record["path"], "result": result})
-        thread_totals.append({**identity, "totals": result["totals"]})
-        for value in result["confirmed_findings"]:
+        thread_totals.append({**identity, "totals": child["totals"]})
+        for value in child["confirmed_findings"]:
             batch_finding_id = _batch_finding_id(item["thread_id"], value["id"])
             if batch_finding_id in finding_by_batch_id:
                 raise CreditAnalysisError(
@@ -1301,28 +1515,28 @@ def _build_batch_final(
             }
             finding_by_batch_id[batch_finding_id] = entry
             findings.append(entry)
-        risks.extend({**identity, "risk": value} for value in result["plausible_risks"])
-        dismissals.extend({**identity, "dismissal": value} for value in result["dismissals"])
+        risks.extend({**identity, "risk": value} for value in child["plausible_risks"])
+        dismissals.extend({**identity, "dismissal": value} for value in child["dismissals"])
         exclusions.extend(
             {**identity, "exclusion": value}
-            for value in result["necessary_call_exclusions"]
+            for value in child["necessary_call_exclusions"]
         )
         primary.extend(
             {**identity, "mapping": value}
-            for value in result["primary_call_mappings"]
+            for value in child["primary_call_mappings"]
         )
         secondary.extend(
             {**identity, "mapping": value}
-            for value in result["secondary_call_mappings"]
+            for value in child["secondary_call_mappings"]
         )
         producer_groups.extend(
             {**identity, "group": value}
-            for value in result["producer_grouped_recommendations"]
+            for value in child["producer_grouped_recommendations"]
         )
-        for key, value in result["totals"].items():
+        for key, value in child["totals"].items():
             if isinstance(value, int) and not isinstance(value, bool):
                 totals[key] += value
-        priced = result.get("priced_cost")
+        priced = child.get("priced_cost")
         if not isinstance(priced, Mapping):
             pricing_complete = False
         else:
@@ -1387,6 +1601,9 @@ def _build_batch_final(
                         "finding_id": member["finding"]["id"],
                         "title": member["finding"]["title"],
                         "source_surface": member["finding"]["source_surface"],
+                        "contributing_surfaces": member["finding"][
+                            "contributing_surfaces"
+                        ],
                     }
                     for member in members
                 ],
@@ -1394,7 +1611,11 @@ def _build_batch_final(
                     dict.fromkeys(member["thread_id"] for member in members)
                 ),
                 "contributing_surfaces": sorted(
-                    {member["finding"]["source_surface"] for member in members},
+                    {
+                        surface
+                        for member in members
+                        for surface in member["finding"]["contributing_surfaces"]
+                    },
                     key=lambda value: surface_rank[value],
                 ),
                 "helper_categories": sorted(

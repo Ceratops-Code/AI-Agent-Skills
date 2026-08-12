@@ -1,6 +1,6 @@
 {
   "schema": "ceratops-credit-analysis-contract.v1",
-  "surface_contract_version": 4,
+  "surface_contract_version": 5,
   "source_selection_contract_version": 1,
   "request_schema": "ceratops-credit-analysis-request.v1",
   "batch_request_schema": "ceratops-credit-analysis-batch-request.v1",
@@ -29,6 +29,20 @@
     "normal_luna_calls": 1,
     "sol_calls": 1,
     "bookkeeping_calls": 0
+  },
+  "analysis_policy": {
+    "implementation_status_source": "frozen-current-canonical-state",
+    "existing_control_classification": "implemented-compliance-or-runtime-gap",
+    "excluded_waste": [
+      "intentional-full-skill-body-injection"
+    ],
+    "prohibited_recommendations": [
+      "reasoning-settings-or-levels"
+    ],
+    "external_research": "targeted-official-sources-only",
+    "broader_research_handoff": "paste-ready-prompt",
+    "mutation_authority": false,
+    "outstanding_finding_cap": null
   },
   "context_budget": {
     "characters_per_token": 2.4,

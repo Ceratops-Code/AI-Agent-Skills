@@ -33,11 +33,12 @@ final synthesis. Preserve and present every confirmed finding.
 
 1. Run controller `plan` once. It resolves, collects, and parses the selected
    session once; freezes its cutoff and exact lineage before children; retains
-   complete evidence and read-only canonical snapshots; separates prior
-   analysis-generated activity from producer work; builds compact causal episodes
-   once; dynamically budgets against the local model context; and reports the
-   finite projected call count. Analysis A excludes only its own descendants; a
-   later B may inspect A's retained analysis activity and excludes only B's.
+   complete evidence from every completed run, including corrective follow-ups,
+   and read-only canonical snapshots; separates prior analysis-generated
+   activity from producer work; builds compact causal episodes once; dynamically
+   budgets against the local model context; and reports the finite projected
+   call count. Analysis A excludes only its own descendants; a later B may inspect
+   A's retained analysis activity and excludes only B's.
 2. Run controller `execute`. It never recollects. In the normal case it sends
    every causal episode in one packet to `gpt-5.6-luna` at medium effort. If the
    packet cannot fit, it uses the minimum ordered shared partition, never splits
@@ -61,11 +62,14 @@ controller-owned schema, event, and result files. The controller waits
 internally and emits periodic non-model progress. On interruption, rerun
 `execute`; never recollect prepared evidence or overwrite an accepted result.
 
-For a batch, use the existing `prepare-batch`, `advance-batch`, `status-batch`,
-and `finalize-batch` compatibility interface. It freezes selection and each
-lower-level child controller once, preserves the existing batch manifest and
-summary contracts, and does not expose Luna chunking, consolidation, or
-synthesis as public actions. Never create a temporary discovery script.
+For a batch, run `prepare-batch` once; it freezes selection and plans one
+ordinary holistic child per selected thread. For the pending child returned by
+`status-batch`, run `execute --state CHILD_STATE`, then pass its retained final
+result to `advance-batch`. Repeat until the batch-summary phase, satisfy that
+existing summary contract, advance it, and run `finalize-batch`. This preserves
+the existing batch manifest and summary contracts and does not expose Luna
+chunking, consolidation, or synthesis as public actions. Never collect a child
+through a parallel controller or create a temporary discovery script.
 
 ## Completion Gate
 

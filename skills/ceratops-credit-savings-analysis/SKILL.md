@@ -85,9 +85,12 @@ applies them.
   session material or caller-local paths unnecessarily.
 - Preserve the existing `prepare-batch`, `advance-batch`, `status-batch`, and
   `finalize-batch` compatibility interface for recent-thread selection and
-  aggregation. Its child-controller and batch-summary contracts remain
-  lower-level interfaces; group similar findings for presentation while
-  preserving each thread's findings and totals.
+  aggregation. `prepare-batch` plans one ordinary holistic controller per
+  selected thread. Execute each pending child with `execute`, then pass its
+  retained final result to `advance-batch`; never prepare or collect through a
+  parallel child workflow. The batch-summary contract remains a lower-level
+  interface; group similar findings for presentation while preserving each
+  thread's findings and totals.
 
 ## Common Classification And ROI Rules
 
@@ -109,9 +112,14 @@ applies them.
   owner when known, a plain-language problem summary, one durable control,
   implementation status, targeted verification, observed avoidable calls,
   recurrence range, confidence, one-time implementation cost, and Minimal,
-  Low, Medium, or High ongoing complexity. Use Minimal only for a local one- or
-  two-line correction with local verification; broader ownership, failure, or
-  verification work is at least Low.
+  Low, Medium, or High ongoing complexity. Before proposing a missing control,
+  validate its status against frozen current-source evidence for the relevant
+  instructions, skills, automations, and helper contracts. When a durable
+  safeguard already exists, mark the finding `implemented` and classify
+  violating behavior as a compliance or runtime gap instead of proposing a
+  duplicate control. Use Minimal only for a local one- or two-line correction
+  with local verification; broader ownership, failure, or verification work is
+  at least Low.
 - Treat an overbroad command or tool result contract as tool-flow waste and
   unnecessarily selected or loaded model context as context-evidence waste.
   Preserve a supported overlap as secondary evidence without double-counting
@@ -161,6 +169,11 @@ applies them.
     cost, ongoing complexity, and material assumptions.
 - Do not show status labels, confidence, internal IDs, or helper taxonomy unless
   requested.
+- Keep every finding concise, self-contained, and understandable without
+  follow-up. Explain what happened and why the work was avoidable before using
+  implementation jargon; define each necessary non-obvious term; name the
+  broadest correct implementation scope and concrete next artifact or action;
+  and omit routine operational detail.
 - Present each plausible risk separately with `Observed:` for the concrete
   sequence, `Unknown:` for competing explanations, `Why not confirmed:` for the
   exact missing fact and why choosing an explanation would be speculation, and
@@ -173,6 +186,16 @@ applies them.
   describe reviewed or unassessed calls as necessary.
 
 ## Analysis-Only Boundaries
+
+### Research Boundaries
+
+- Use frozen local evidence first. Run only a targeted official-source check
+  when a concrete finding depends on current external behavior. Do not perform
+  deep or broad research; when broader research is required, report the exact
+  uncertainty and a concise paste-ready research prompt as the concrete next
+  action.
+- Treat intentional full skill-body injection as required runtime context, not
+  avoidable spend. Never recommend changes to reasoning settings or levels.
 
 ### Boundaries
 

@@ -461,7 +461,7 @@ def credit_analysis_request(
             "task_temp_root": str(task_root),
             "evidence_output": str(evidence),
             "pricing_profile": None,
-            "expected_surface_contract_version": 4,
+            "expected_surface_contract_version": 5,
             "mutation_authority": False,
         },
     )
@@ -529,7 +529,7 @@ def credit_analysis_batch_request(
             "task_temp_root": str(task_root),
             "manifest_output": str(tmp_path / f"batch-manifest-{name}.json"),
             "pricing_profile": None,
-            "expected_surface_contract_version": 4,
+            "expected_surface_contract_version": 5,
             "expected_source_selection_contract_version": 1,
             "mutation_authority": False,
         },
@@ -1647,6 +1647,13 @@ class FakeCreditModelRunner:
             add("volume-waste", "provisional-finding", records[1], surfaces)
         if len(records) > 2:
             add("uncertain-wait", "plausible-risk", records[2], surfaces)
+        for index, record in enumerate(records[9:], start=1):
+            add(
+                f"uncapped-model-waste-{index}",
+                "provisional-finding",
+                record,
+                surfaces,
+            )
         if self.temporary_controls and len(records) > 8:
             dispositions = [
                 ("temporary.transient", records[3], ["rework-validation"]),
@@ -1711,6 +1718,7 @@ class FakeCreditModelRunner:
         inventory: Mapping[str, Mapping[str, Any]],
         *,
         volume_only: bool = False,
+        status: str = "unimplemented",
         candidate_ids: list[str] | None = None,
         candidates_by_id: Mapping[str, Mapping[str, Any]] | None = None,
     ) -> dict[str, Any]:
@@ -1743,7 +1751,7 @@ class FakeCreditModelRunner:
             "proposed_durable_control": (
                 "Make the deterministic workflow complete to its final boundary."
             ),
-            "implementation_status": "unimplemented",
+            "implementation_status": status,
             "targeted_verification": [
                 "verify the workflow prevents the repeated causal episode"
             ],
@@ -1818,6 +1826,11 @@ class FakeCreditModelRunner:
                         candidate,
                         inventory,
                         volume_only=semantic_suffix == "volume-waste",
+                        status=(
+                            "implemented"
+                            if semantic_suffix == "model-waste"
+                            else "unimplemented"
+                        ),
                     )
                 )
                 finding_ids = [finding_id]
@@ -1931,10 +1944,18 @@ class FakeCreditModelRunner:
             if durable_reviews
             else []
         )
-        avoidable_calls = {
+        implemented_calls = {
             call_id
             for finding in findings
             if finding["waste_kind"] == "model-calls"
+            and finding["implementation_status"] == "implemented"
+            for call_id in finding["affected_call_ids"]
+        }
+        unimplemented_calls = {
+            call_id
+            for finding in findings
+            if finding["waste_kind"] == "model-calls"
+            and finding["implementation_status"] == "unimplemented"
             for call_id in finding["affected_call_ids"]
         }
         groups: list[dict[str, Any]] = []
@@ -1943,8 +1964,12 @@ class FakeCreditModelRunner:
             item = dict(zip(fields, row, strict=True))
             classification = (
                 "avoidable_unimplemented"
-                if item["call_id"] in avoidable_calls
-                else "reviewed_no_confirmed_waste"
+                if item["call_id"] in unimplemented_calls
+                else (
+                    "avoidable_implemented"
+                    if item["call_id"] in implemented_calls
+                    else "reviewed_no_confirmed_waste"
+                )
             )
             signature = (classification, item["workstream"])
             if groups and previous_signature == signature:
@@ -2006,10 +2031,53 @@ class FakeCreditModelRunner:
         return self._sol(task, input_payload, input_sha256)
 
 
+def complete_holistic_credit_analysis(
+    workflow: Any,
+    child_status: Mapping[str, Any],
+) -> pathlib.Path:
+    """Execute one batch child through the same holistic controller as one source."""
+
+    runner = FakeCreditModelRunner(temporary_controls=False)
+    status = workflow.command_execute_orchestration(
+        pathlib.Path(child_status["state_path"]),
+        runner=runner,
+        available_models=runner.available_models,
+    )
+    assert status["complete"] is True
+    assert status["actual_luna_calls"] == 1
+    assert status["actual_sol_calls"] == 1
+    assert len(runner.calls) == 2
+    return pathlib.Path(status["final_result_path"])
+
+
 def test_credit_analysis_workflow_end_to_end_uses_two_semantic_calls(
     tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     workflow = load_credit_analysis_workflow_module()
+    codex_home = tmp_path / "codex-home"
+    automation_root = codex_home / "automations" / "credits-saving-analysis"
+    installed_skill_root = (
+        codex_home / "skills" / "ceratops-credit-savings-analysis"
+    )
+    automation_root.mkdir(parents=True)
+    installed_skill_root.mkdir(parents=True)
+    (codex_home / "AGENTS.md").write_text(
+        "CURRENT_GLOBAL_CONTROL_SENTINEL\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    (automation_root / "automation.toml").write_text(
+        'prompt = "CURRENT_AUTOMATION_CONTROL_SENTINEL"\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    (installed_skill_root / "SKILL.md").write_text(
+        "# CURRENT_SKILL_CONTROL_SENTINEL\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
     request, session_path, task_root = credit_analysis_request(
         tmp_path,
         extra_completed_turns=3,
@@ -2025,6 +2093,11 @@ def test_credit_analysis_workflow_end_to_end_uses_two_semantic_calls(
     ]
     for row in session_rows:
         payload = row.get("payload", {})
+        if row.get("type") == "session_meta":
+            payload["base_instructions"] += (
+                "\nAutomation ID: credits-saving-analysis\n"
+                "Check $CODEX_HOME/skills/ceratops-credit-savings-analysis/SKILL.md."
+            )
         if (
             payload.get("type") == "function_call_output"
             and payload.get("call_id") == "read-1"
@@ -2093,6 +2166,24 @@ def test_credit_analysis_workflow_end_to_end_uses_two_semantic_calls(
         "run_form.py:" in reference or "run_form.py-" in reference
         for reference in call_artifact_references
     )
+    canonical_by_reference = {
+        record["artifact_reference"]: record
+        for record in compact["canonical_state"]
+    }
+    for reference, sentinel in (
+        ("<codex-home>/AGENTS.md", "CURRENT_GLOBAL_CONTROL_SENTINEL"),
+        (
+            "<codex-home>/automations/credits-saving-analysis/automation.toml",
+            "CURRENT_AUTOMATION_CONTROL_SENTINEL",
+        ),
+        (
+            "<codex-home>/skills/ceratops-credit-savings-analysis/SKILL.md",
+            "CURRENT_SKILL_CONTROL_SENTINEL",
+        ),
+    ):
+        record = canonical_by_reference[reference]
+        assert record["status"] == "captured"
+        assert sentinel in json.dumps(record["projection"])
     retained_canonical = json.loads(
         pathlib.Path(manifest["canonical_state"]["path"]).read_text(
             encoding="utf-8"
@@ -2205,9 +2296,24 @@ def test_credit_analysis_workflow_end_to_end_uses_two_semantic_calls(
     )
     assert all(
         "Do not use tools" in call["prompt"]
+        and "Intentional full skill-body injection" in call["prompt"]
+        and "Never recommend a reasoning" in call["prompt"]
         and "CERATOPS_CREDIT_ANALYSIS_CHILD" not in call["prompt"]
         for call in runner.calls
     )
+    assert "frozen current canonical state" in runner.calls[-1]["prompt"]
+    assert runner.calls[-1]["input_payload"]["analysis_policy"] == {
+        "implementation_status_source": "frozen-current-canonical-state",
+        "existing_control_classification": (
+            "implemented-compliance-or-runtime-gap"
+        ),
+        "excluded_waste": ["intentional-full-skill-body-injection"],
+        "prohibited_recommendations": ["reasoning-settings-or-levels"],
+        "external_research": "targeted-official-sources-only",
+        "broader_research_handoff": "paste-ready-prompt",
+        "mutation_authority": False,
+        "outstanding_finding_cap": None,
+    }
     final_path = pathlib.Path(completed["final_result_path"])
     final_before = final_path.read_bytes()
     final = json.loads(final_before)
@@ -2303,6 +2409,28 @@ def test_credit_analysis_workflow_end_to_end_uses_two_semantic_calls(
     assert volume_findings
     assert volume_findings[0]["volume"]["input_tokens"] > 0
     assert volume_findings[0]["volume"]["output_tokens"] > 0
+    implemented_findings = [
+        finding
+        for finding in final["confirmed_findings"]
+        if finding["implementation_status"] == "implemented"
+    ]
+    outstanding_findings = [
+        finding
+        for finding in final["confirmed_findings"]
+        if finding["implementation_status"] == "unimplemented"
+    ]
+    assert len(implemented_findings) == 1
+    assert len(outstanding_findings) > 5
+    report = pathlib.Path(completed_state["paths"]["report"]).read_text(
+        encoding="utf-8"
+    )
+    report_lines = set(report.splitlines())
+    assert "already addressed: 1" in report
+    assert f"## {implemented_findings[0]['title']}" not in report_lines
+    assert all(
+        f"## {finding['title']}" in report_lines
+        for finding in outstanding_findings
+    )
     assert len(final["candidate_decisions"]) == final["luna_discovery"][
         "candidate_count"
     ]
@@ -2821,6 +2949,7 @@ def test_credit_analysis_workflow_rejects_invalid_and_conflicting_passes(
     ]
     synthetic_bundle = {
         "surface_order": compact["surface_order"],
+        "analysis_policy": compact["analysis_policy"],
         "canonical_state": [],
         "analysis_generated_activity": [],
         "records": synthetic_records,
@@ -3313,7 +3442,7 @@ def test_credit_analysis_workflow_resolves_current_and_named_threads(
                 "task_temp_root": str(root),
                 "evidence_output": str(tmp_path / f"single-evidence-{name}.json"),
                 "pricing_profile": None,
-                "expected_surface_contract_version": 4,
+                "expected_surface_contract_version": 5,
                 "mutation_authority": False,
             },
         )
@@ -3378,6 +3507,12 @@ def test_credit_analysis_batch_selects_recent_threads_and_projects_once(
     tmp_path: pathlib.Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    workflow = load_credit_analysis_workflow_module()
+    monkeypatch.setattr(
+        workflow,
+        "_codex_model_catalog",
+        lambda: holistic_model_catalog(),
+    )
     codex_home = tmp_path / "codex-home"
     codex_home.mkdir()
     thread_ids = {
@@ -3386,6 +3521,10 @@ def test_credit_analysis_batch_selects_recent_threads_and_projects_once(
         "beta_old": "00000000-0000-4000-8000-000000000013",
         "alpha_stale": "00000000-0000-4000-8000-000000000014",
         "beta_new": "00000000-0000-4000-8000-000000000015",
+        "gamma_mid": "00000000-0000-4000-8000-000000000017",
+        "gamma_edge": "00000000-0000-4000-8000-000000000018",
+        "boundary": "00000000-0000-4000-8000-000000000019",
+        "future": "00000000-0000-4000-8000-00000000001a",
     }
     indexed_credit_analysis_session(
         codex_home,
@@ -3421,6 +3560,34 @@ def test_credit_analysis_batch_selects_recent_threads_and_projects_once(
         thread_name="Beta new",
         updated_at="2026-08-07T17:00:00Z",
         project_name="beta",
+    )
+    indexed_credit_analysis_session(
+        codex_home,
+        thread_id=thread_ids["gamma_mid"],
+        thread_name="Gamma mid",
+        updated_at="2026-08-06T12:00:00Z",
+        project_name="gamma",
+    )
+    indexed_credit_analysis_session(
+        codex_home,
+        thread_id=thread_ids["gamma_edge"],
+        thread_name="Gamma edge",
+        updated_at="2026-08-04T19:00:00Z",
+        project_name="gamma",
+    )
+    indexed_credit_analysis_session(
+        codex_home,
+        thread_id=thread_ids["boundary"],
+        thread_name="Boundary inclusive",
+        updated_at="2026-08-04T18:00:00Z",
+        project_name="boundary",
+    )
+    indexed_credit_analysis_session(
+        codex_home,
+        thread_id=thread_ids["future"],
+        thread_name="Future excluded",
+        updated_at="2026-08-07T18:00:01Z",
+        project_name="future",
     )
     with (codex_home / "session_index.jsonl").open(
         "a", encoding="utf-8", newline="\n"
@@ -3459,7 +3626,10 @@ def test_credit_analysis_batch_selects_recent_threads_and_projects_once(
                 thread_ids["alpha_new"],
                 thread_ids["beta_new"],
                 thread_ids["alpha_old"],
+                thread_ids["gamma_mid"],
                 thread_ids["beta_old"],
+                thread_ids["gamma_edge"],
+                thread_ids["boundary"],
             ],
         ),
         (
@@ -3492,38 +3662,41 @@ def test_credit_analysis_batch_selects_recent_threads_and_projects_once(
         if name == "count-overall":
             task_root = tmp_path / f"batch-{name}"
             task_root.rmdir()
-        prepared = run_credit_analysis_workflow(
-            "prepare-batch", "--request", str(request)
-        )
-        assert prepared.returncode == 0, prepared.stderr
+        status = workflow.command_prepare_batch(request)
         if name == "count-overall":
             assert task_root.is_dir()
-        status = json.loads(prepared.stdout)
         manifest = json.loads(
             pathlib.Path(status["manifest_path"]).read_text(encoding="utf-8")
         )
         assert [item["thread_id"] for item in manifest["items"]] == expected_ids
+        assert manifest["as_of"] == "2026-08-07T18:00:00Z"
+        if name == "days-overall":
+            assert manifest["selection"]["selected_count"] == 7
+            assert len(manifest["items"]) == 7
+            assert all(item["source_fingerprint"] for item in manifest["items"])
         for item in manifest["items"]:
             evidence = json.loads(
                 pathlib.Path(item["evidence_path"]).read_text(encoding="utf-8")
             )
             assert evidence["collection"]["session_reads"] == 1
+            assert evidence["collection"]["completed_runs"] == 3
+            assert evidence["semantic_coverage"]["covered_percent"] == 100.0
+            assert "correct the earlier plan" in json.dumps(
+                evidence["runs"][0]["user_messages"]
+            )
             child_state = json.loads(
                 pathlib.Path(item["state_path"]).read_text(encoding="utf-8")
             )
-            assert child_state["queue"] == [
-                "helper-contracts",
-                "context-evidence",
-                "rework-validation",
-                "tool-flow",
-                "instruction-reasoning",
-                "synthesis",
+            assert child_state["schema"] == (
+                "ceratops-credit-analysis-orchestration-state.v4"
+            )
+            assert child_state["manifest"]["projected_semantic_calls"] == 2
+            assert child_state["task_order"] == [
+                "luna.discovery.0001",
+                "sol.adjudication",
             ]
-        resumed = run_credit_analysis_workflow(
-            "prepare-batch", "--request", str(request)
-        )
-        assert resumed.returncode == 0, resumed.stderr
-        assert json.loads(resumed.stdout) == status
+            assert "queue" not in child_state
+        assert workflow.command_prepare_batch(request) == status
 
     indexed_credit_analysis_session(
         codex_home,
@@ -3543,17 +3716,20 @@ def test_credit_analysis_batch_selects_recent_threads_and_projects_once(
         },
         name="ambiguous-project",
     )
-    ambiguous = run_credit_analysis_workflow(
-        "prepare-batch", "--request", str(ambiguous_request)
-    )
-    assert ambiguous.returncode == 2
-    assert "project name is ambiguous" in ambiguous.stderr
+    with pytest.raises(workflow.CreditAnalysisError, match="project name is ambiguous"):
+        workflow.command_prepare_batch(ambiguous_request)
 
 
 def test_credit_analysis_batch_resumes_and_preserves_every_thread_finding(
     tmp_path: pathlib.Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    workflow = load_credit_analysis_workflow_module()
+    monkeypatch.setattr(
+        workflow,
+        "_codex_model_catalog",
+        lambda: holistic_model_catalog(),
+    )
     codex_home = tmp_path / "codex-home"
     codex_home.mkdir()
     ids = [
@@ -3581,11 +3757,7 @@ def test_credit_analysis_batch_resumes_and_preserves_every_thread_finding(
         },
         name="finalize",
     )
-    prepared = run_credit_analysis_workflow(
-        "prepare-batch", "--request", str(request)
-    )
-    assert prepared.returncode == 0, prepared.stderr
-    status = json.loads(prepared.stdout)
+    status = workflow.command_prepare_batch(request)
     state_path = pathlib.Path(status["batch_state_path"])
     prepared_state = json.loads(state_path.read_text(encoding="utf-8"))
     prepared_items = prepared_state["items"]
@@ -3597,16 +3769,13 @@ def test_credit_analysis_batch_resumes_and_preserves_every_thread_finding(
     write_json_file(state_path, prepared_state)
     for index, session in enumerate(sessions):
         session.rename(session.with_name(f"retired-{index}.jsonl"))
-    resumed_prepare = run_credit_analysis_workflow(
-        "prepare-batch", "--request", str(request)
-    )
-    assert resumed_prepare.returncode == 0, resumed_prepare.stderr
-    status = json.loads(resumed_prepare.stdout)
+    status = workflow.command_prepare_batch(request)
     resumed_state = json.loads(state_path.read_text(encoding="utf-8"))
     assert resumed_state["items"] == prepared_items
 
-    first_final = complete_credit_analysis_with_instruction_finding(
-        status["child_status"]
+    first_final = complete_holistic_credit_analysis(
+        workflow,
+        status["child_status"],
     )
     before_recovery = json.loads(state_path.read_text(encoding="utf-8"))
     first_payload = json.loads(first_final.read_text(encoding="utf-8"))
@@ -3660,8 +3829,9 @@ def test_credit_analysis_batch_resumes_and_preserves_every_thread_finding(
     assert resumed.returncode == 0, resumed.stderr
     assert json.loads(resumed.stdout) == second_status
 
-    second_final = complete_credit_analysis_with_instruction_finding(
-        second_status["child_status"]
+    second_final = complete_holistic_credit_analysis(
+        workflow,
+        second_status["child_status"],
     )
     ready = run_credit_analysis_workflow(
         "advance-batch",
@@ -3679,8 +3849,10 @@ def test_credit_analysis_batch_resumes_and_preserves_every_thread_finding(
     context = json.loads(summary_context_path.read_text(encoding="utf-8"))
     batch_finding_ids = [item["batch_finding_id"] for item in context["findings"]]
     assert batch_finding_ids == [
-        f"{ids[0]}:instruction-gap",
-        f"{ids[1]}:instruction-gap",
+        f"{ids[0]}:finding-model-1",
+        f"{ids[0]}:finding-volume-2",
+        f"{ids[1]}:finding-model-1",
+        f"{ids[1]}:finding-volume-2",
     ]
     assert all(item["problem_summary"] for item in context["findings"])
     assert [item["thread_id"] for item in context["thread_totals"]] == ids
@@ -3710,10 +3882,10 @@ def test_credit_analysis_batch_resumes_and_preserves_every_thread_finding(
         "artifact_paths": context["artifact_paths"],
         "groups": [
             {
-                "id": "shared-instruction-gap",
-                "title": "Shared instruction gap",
-                "producer_type": "prompt",
-                "owner": "synthetic request",
+                "id": "shared-holistic-control",
+                "title": "Shared holistic control",
+                "producer_type": "workflow",
+                "owner": "workflow:synthetic",
                 "finding_ids": batch_finding_ids,
                 "recommended_control": context["findings"][0][
                     "proposed_durable_control"
@@ -3810,20 +3982,29 @@ def test_credit_analysis_batch_resumes_and_preserves_every_thread_finding(
     )
     assert "schema" not in final
     assert "version" not in final
-    assert [item["thread_id"] for item in final["confirmed_findings"]] == ids
+    assert [item["thread_id"] for item in final["confirmed_findings"]] == [
+        ids[0],
+        ids[0],
+        ids[1],
+        ids[1],
+    ]
     assert [item["finding"]["id"] for item in final["confirmed_findings"]] == [
-        "instruction-gap",
-        "instruction-gap",
+        "finding-model-1",
+        "finding-volume-2",
+        "finding-model-1",
+        "finding-volume-2",
     ]
     assert [item["thread_id"] for item in final["per_thread_totals"]] == ids
     assert len(final["summary_groups"]) == 1
     group = final["summary_groups"][0]
-    assert group["id"] == "shared-instruction-gap"
+    assert group["id"] == "shared-holistic-control"
     assert [item["batch_finding_id"] for item in group["findings"]] == (
         batch_finding_ids
     )
     assert group["threads"] == ids
-    assert group["contributing_surfaces"] == ["instruction-reasoning"]
+    assert group["contributing_surfaces"] == json.loads(
+        CREDIT_ANALYSIS_CONTRACT.read_text(encoding="utf-8")
+    )["surface_order"]
     assert group["deduplicated_avoidable_call_count"] == 2
     assert len(group["affected_calls"]) == 2
     assert final["totals"]["analyzed_threads"] == 2
@@ -3839,8 +4020,8 @@ def test_credit_analysis_batch_resumes_and_preserves_every_thread_finding(
     assert final["retained_paths"]["batch_summary_result"] == str(summary_path)
     for item in state["items"]:
         child_root = pathlib.Path(item["state_path"]).parent
-        assert not (child_root / "context").exists()
-        assert not (child_root / "pending").exists()
+        assert (child_root / "orchestration").is_dir()
+        assert not (child_root / "orchestration" / "transient").exists()
         assert pathlib.Path(item["request_path"]).is_file()
         assert pathlib.Path(item["evidence_path"]).is_file()
     complete = run_credit_analysis_workflow(
@@ -4310,7 +4491,11 @@ def test_model_call_ledger_usage_summary_is_ranked_and_evidence_based(
                 "type": "custom_tool_call",
                 "name": "exec",
                 "call_id": "call-6",
-                "input": f"await tools.shell_command({local_path!r}, {secret!r})",
+                "input": (
+                    "const result = await tools.exec_command({cmd: "
+                    + json.dumps(f"rg sentinel {local_path}")
+                    + "}); text(result.output);"
+                ),
             },
         },
         {
@@ -4326,6 +4511,7 @@ def test_model_call_ledger_usage_summary_is_ranked_and_evidence_based(
                             {
                                 "exit_code": 9,
                                 "timed_out": True,
+                                "error": "PreToolUse rejected the nested command",
                                 "path": local_path,
                                 "secret": secret,
                             }
@@ -4554,12 +4740,13 @@ def test_model_call_ledger_usage_summary_is_ranked_and_evidence_based(
     assert all(len(ranked) == 1 for ranked in summary["rankings"].values())
     assert summary["telemetry"]["functions_exec"] == {
         "outer_actions": 1,
-        "child_calls": "not_enumerated",
+        "enumerated_child_calls": 1,
+        "dynamic_or_unparsed_outer_actions": 0,
         "outer_actions_with_emitted_process_results": 1,
     }
-    assert "functions_exec_child_calls_not_enumerated" in summary["telemetry"][
-        "limitations"
-    ]
+    assert "functions_exec_dynamic_child_calls_not_enumerated" not in summary[
+        "telemetry"
+    ]["limitations"]
 
     detailed = json.loads(evidence_text)
     assert detailed["schema"] == "ceratops-model-call-usage-evidence.v1"
@@ -4584,6 +4771,25 @@ def test_model_call_ledger_usage_summary_is_ranked_and_evidence_based(
     assert first["tool_action_results"][-1]["name"] == "exec"
     assert first["tool_action_results"][-1]["result_telemetry"] == "structured"
     assert first["tool_action_results"][-1]["process_exit_codes"] == [9]
+    nested_exec = first["tool_action_results"][-1]
+    assert nested_exec["nested_calls"] == [
+        {
+            "tool": "exec_command",
+            "command_label": "rg sentinel <local-path>",
+            "command_chars": len(f"rg sentinel {local_path}"),
+            "fingerprint": nested_exec["nested_calls"][0]["fingerprint"],
+        }
+    ]
+    assert nested_exec["failure_provenance"] == {
+        "category": "pre_tool_use_rejection",
+        "semantic_failure": True,
+        "reason_label": nested_exec["failure_provenance"]["reason_label"],
+        "originating_nested_call": nested_exec["nested_calls"][0],
+        "candidate_nested_calls": [],
+    }
+    assert "PreToolUse rejected" in nested_exec["failure_provenance"][
+        "reason_label"
+    ]
     assert detailed["telemetry"]["structured_process_result_actions"] == 4
     assert detailed["telemetry"][
         "nonzero_process_results_are_semantic_failures"

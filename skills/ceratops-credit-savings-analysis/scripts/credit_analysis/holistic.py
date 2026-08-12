@@ -283,18 +283,42 @@ def _shared_relevant_segments(
     return result
 
 
-WORKSPACE_REFERENCE_RE = re.compile(
-    r"<workspace:[^>]+>(?:[\\/][^\s\"'<>|,;}\]]+)*"
+CANONICAL_REFERENCE_RE = re.compile(
+    r"(?:<workspace:[^>]+>|<codex-home>|\$CODEX_HOME)"
+    r"(?:[\\/][^\s\"'<>|,;}\]]+)*"
 )
 WORKSPACE_LOCATION_RE = re.compile(
     r"(?P<separator>[:-])(?P<line>[1-9]\d*)(?P<terminator>[:-])"
 )
 
 
+def _analysis_policy(contract: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate the closed full-analysis policy embedded in every child packet."""
+
+    policy = contract.get("analysis_policy")
+    expected = {
+        "implementation_status_source": "frozen-current-canonical-state",
+        "existing_control_classification": (
+            "implemented-compliance-or-runtime-gap"
+        ),
+        "excluded_waste": ["intentional-full-skill-body-injection"],
+        "prohibited_recommendations": ["reasoning-settings-or-levels"],
+        "external_research": "targeted-official-sources-only",
+        "broader_research_handoff": "paste-ready-prompt",
+        "mutation_authority": False,
+        "outstanding_finding_cap": None,
+    }
+    if policy != expected:
+        raise CreditAnalysisError("analysis policy contract is invalid")
+    return dict(policy)
+
+
 def _canonical_artifact_references(text: str) -> list[str]:
     refs: list[str] = []
-    for match in WORKSPACE_REFERENCE_RE.finditer(text):
-        value = match.group(0).replace("\\", "/")
+    for match in CANONICAL_REFERENCE_RE.finditer(text):
+        value = match.group(0).replace("\\", "/").rstrip(".")
+        if value.startswith("$CODEX_HOME"):
+            value = "<codex-home>" + value[len("$CODEX_HOME") :]
         root_label, separator, relative = value.partition(">")
         if separator:
             value = root_label + separator + re.sub(r"/+", "/", relative)
@@ -305,9 +329,9 @@ def _canonical_artifact_references(text: str) -> list[str]:
 
 def _canonical_workspace_target(
     reference: str,
-    workspace_roots: Mapping[str, pathlib.Path],
+    canonical_roots: Mapping[str, pathlib.Path],
 ) -> tuple[str, pathlib.Path | None, dict[str, Any] | None, str | None]:
-    """Resolve one protected reference without treating line output as a filename.
+    """Resolve one protected root reference without treating line output as a filename.
 
     Exact files win. Otherwise the longest existing prefix immediately before an
     ``rg``-style line marker becomes the canonical artifact, while the location
@@ -315,16 +339,18 @@ def _canonical_workspace_target(
     boundaries before reading the target.
     """
 
-    match = re.fullmatch(r"(<workspace:[^>]+>)(?:/(.*))?", reference)
-    if match is None or match.group(1) not in workspace_roots:
-        return reference, None, None, "workspace-root-unavailable"
+    match = re.fullmatch(
+        r"(<workspace:[^>]+>|<codex-home>)(?:/(.*))?", reference
+    )
+    if match is None or match.group(1) not in canonical_roots:
+        return reference, None, None, "canonical-root-unavailable"
     root_label = match.group(1)
-    workspace_root = workspace_roots[root_label]
+    canonical_root = canonical_roots[root_label]
     relative = match.group(2) or ""
     parts = [part for part in re.split(r"[\\/]+", relative) if part]
     if any(part in {".", ".."} for part in parts):
         return reference, None, None, "unsafe-relative-reference"
-    exact = workspace_root.joinpath(*parts)
+    exact = canonical_root.joinpath(*parts)
     if exact.exists():
         return reference, exact, None, None
 
@@ -338,7 +364,7 @@ def _canonical_workspace_target(
             part in {".", ".."} for part in candidate_parts
         ):
             continue
-        candidate = workspace_root.joinpath(*candidate_parts)
+        candidate = canonical_root.joinpath(*candidate_parts)
         if candidate.exists():
             candidates.append(
                 (
@@ -372,7 +398,7 @@ def _canonical_workspace_target(
 
 
 def _canonical_references_from_evidence(evidence: Mapping[str, Any]) -> list[str]:
-    """Inventory portable workspace references without exposing local roots."""
+    """Inventory portable current-source references without exposing local roots."""
 
     references: list[str] = []
     model_review = evidence.get("model_review")
@@ -392,6 +418,27 @@ def _canonical_references_from_evidence(evidence: Mapping[str, Any]) -> list[str
         for reference in _canonical_artifact_references(serialized):
             if reference not in references:
                 references.append(reference)
+    if "<codex-home>/AGENTS.md" not in references:
+        references.append("<codex-home>/AGENTS.md")
+    complete_serialized = json.dumps(
+        evidence,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        default=str,
+    )
+    automation_ids = []
+    for suffix in complete_serialized.split("Automation ID:")[1:]:
+        match = re.match(r"\s*(?P<id>[A-Za-z0-9_.-]+)", suffix)
+        if match is None or match.group("id") in automation_ids:
+            continue
+        automation_ids.append(match.group("id"))
+    for automation_id in automation_ids:
+        automation_reference = (
+            f"<codex-home>/automations/{automation_id}/automation.toml"
+        )
+        if automation_reference not in references:
+            references.append(automation_reference)
     return references
 
 
@@ -432,16 +479,16 @@ def _collect_canonical_state_snapshot(
     payload_root = snapshot_root / "payloads"
     snapshot_root.mkdir(parents=True, exist_ok=False)
     payload_root.mkdir()
-    workspace_roots = {
+    canonical_roots = {
         label: pathlib.Path(root).expanduser().resolve()
         for root, label in path_roots
-        if label.startswith("<workspace:")
+        if label == "<codex-home>" or label.startswith("<workspace:")
     }
     grouped: list[dict[str, Any]] = []
     grouped_by_target: dict[str, dict[str, Any]] = {}
     for reference in _canonical_references_from_evidence(evidence):
         canonical_reference, unresolved, location, initial_status = (
-            _canonical_workspace_target(reference, workspace_roots)
+            _canonical_workspace_target(reference, canonical_roots)
         )
         if unresolved is None:
             target_key = f"reference:{canonical_reference}"
@@ -494,17 +541,19 @@ def _collect_canonical_state_snapshot(
         elif not isinstance(unresolved, pathlib.Path):
             public["status"] = "workspace-root-unavailable"
         else:
-            root_match = re.match(r"(<workspace:[^>]+>)", reference)
-            if root_match is None or root_match.group(1) not in workspace_roots:
-                public["status"] = "workspace-root-unavailable"
+            root_match = re.match(
+                r"(<workspace:[^>]+>|<codex-home>)", reference
+            )
+            if root_match is None or root_match.group(1) not in canonical_roots:
+                public["status"] = "canonical-root-unavailable"
             else:
-                workspace_root = workspace_roots[root_match.group(1)]
+                canonical_root = canonical_roots[root_match.group(1)]
                 resolved = unresolved.resolve(strict=False)
                 if not (
-                    resolved == workspace_root
-                    or resolved.is_relative_to(workspace_root)
+                    resolved == canonical_root
+                    or resolved.is_relative_to(canonical_root)
                 ):
-                    public["status"] = "outside-workspace"
+                    public["status"] = "outside-canonical-root"
                 elif unresolved.is_symlink():
                     public["status"] = "symlink-withheld"
                 elif not unresolved.exists():
@@ -620,6 +669,8 @@ def _has_failure_telemetry(value: Any) -> bool:
                     and item.casefold() in {"true", "timeout", "terminated", "killed"}
                 ):
                     return True
+            elif normalized in {"explicit_failure", "semantic_failure"} and item is True:
+                return True
             elif normalized in {"error", "errors", "stderr"} and (
                 item is not None and item != "" and item != [] and item != {}
             ):
@@ -2122,6 +2173,7 @@ def _holistic_compact_bundle(
         "schema": HOLISTIC_EVIDENCE_SCHEMA,
         "analysis_id": analysis_id,
         "retained_evidence_path": str(evidence_path),
+        "analysis_policy": _analysis_policy(contract),
         "surface_order": list(surface_order),
         "candidate_ids": [record["candidate_id"] for record in records],
         "call_ids": [record["call_id"] for record in records],
@@ -2190,6 +2242,7 @@ def _holistic_luna_payload(
         "phase": "luna-discovery",
         "packet_ordinal": ordinal,
         "surface_order": bundle["surface_order"],
+        "analysis_policy": bundle["analysis_policy"],
         "candidate_ids": candidate_ids,
         "candidate_ids_sha256": _content_hash(candidate_ids),
         "episodes": list(episodes),
@@ -3407,6 +3460,7 @@ def _holistic_sol_input(
         "task_id": task["task_id"],
         "phase": "sol-adjudication",
         "surface_order": state["manifest"]["surface_order"],
+        "analysis_policy": compact["analysis_policy"],
         "surface_contracts": {
             surface: _surface_reference_text(surface, contract)
             for surface in state["manifest"]["surface_order"]
@@ -3609,6 +3663,11 @@ def _holistic_prompt(
 This is an analysis-only child. Do not use tools, read files, run commands, or
 modify any repository, skill, prompt, helper, workflow, or instruction. Analyze
 only the supplied packet and return one JSON object matching the output schema.
+Apply the supplied analysis_policy exactly. Intentional full skill-body injection
+is required runtime context, never credit waste. Never recommend a reasoning
+setting, effort, or level. Use only frozen local and canonical-state evidence;
+when broader or deep research would be required, preserve the uncertainty and
+provide a concise paste-ready targeted official-source check instead of guessing.
 The input identity is {input_sha256}.
 """
     if task["phase"] == "luna-discovery":
@@ -3652,14 +3711,19 @@ without confirmed waste. `unassessed` is only for a decision-blocking evidence
 gap and must stay within the supplied cap. Let explicit avoidable call
 classifications govern model-call finding membership and observed counts; an
 unimplemented finding may include already-implemented calls when at least one
-affected call remains unimplemented. Do not perform broad rediscovery that
-duplicates Luna, but use the supplied high-signal audit evidence to catch a
-material miss. Return only the semantic fields in the schema: do not restate
-identity, surface summaries, workstreams, observed counts, recurrence arithmetic,
-or an analysis summary. Keep rationales compact and do not repeat evidence text
-already addressed by an evidence alias. Aim for about 1,500 visible output tokens
-while retaining every candidate decision, confirmed finding, material variant,
-required review, and call classification.
+affected call remains unimplemented. Before labeling a durable control missing,
+check the frozen current canonical state for the relevant instruction, skill,
+automation, or helper contract. If that state proves the safeguard already
+exists, preserve `implementation_status` as `implemented` and describe violating
+behavior as a compliance or runtime gap; do not propose a duplicate control. Do
+not perform broad rediscovery that duplicates Luna, but use the supplied
+high-signal audit evidence to catch a material miss. Return only the semantic
+fields in the schema: do not restate identity, surface summaries, workstreams,
+observed counts, recurrence arithmetic, or an analysis summary. Keep rationales
+compact and do not repeat evidence text already addressed by an evidence alias.
+Aim for about 1,500 visible output tokens while retaining every candidate
+decision, confirmed finding, material variant, required review, and call
+classification.
 """
     packet = json.dumps(input_payload, ensure_ascii=False, separators=(",", ":"))
     return common + instructions + "\nInput packet:\n" + packet + "\n"
@@ -5379,8 +5443,8 @@ __all__ = (
     "TEMPORARY_CONTRIBUTION_FIELDS",
     "TEMPORARY_MERGE_FIELDS",
     "TEMPORARY_REVIEW_FIELDS",
+    "CANONICAL_REFERENCE_RE",
     "WORKSPACE_LOCATION_RE",
-    "WORKSPACE_REFERENCE_RE",
     "_aggregate_finding_volume",
     "_bind_attempt_record",
     "_canonical_artifact_references",
