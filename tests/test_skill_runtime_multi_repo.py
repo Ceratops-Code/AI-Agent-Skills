@@ -9249,10 +9249,16 @@ def test_promote_repository_requires_an_explicit_deployment_choice(
         assert result["handoff"] == expected_handoff
     scope_path = pathlib.Path(result["pending_work_scope"])
     assert json.loads(scope_path.read_text(encoding="utf-8")) == {
-        "source_branches": ["approved"],
+        "sources": [
+            {
+                "branch": "approved",
+                "commit": approved_head,
+                "state": "retained",
+            }
+        ],
         "target_branch": "release/local",
         "target_commit": approved_head,
-        "version": 1,
+        "version": 2,
     }
     assert run_git(repo, "branch", "--show-current").stdout.strip() == "release/local"
     assert run_git(repo, "status", "--porcelain").stdout == ""
@@ -9828,7 +9834,20 @@ def test_repository_ship_absent_default_contract_is_no_op_and_finalizes(
     repo.mkdir()
     scope = tmp_path / "scope.json"
     scope.write_text(
-        json.dumps({"source_branches": []}),
+        json.dumps(
+            {
+                "version": 2,
+                "target_branch": "release/local",
+                "target_commit": "a" * 40,
+                "sources": [
+                    {
+                        "branch": "selected",
+                        "commit": "a" * 40,
+                        "state": "retained",
+                    }
+                ],
+            }
+        ),
         encoding="utf-8",
         newline="\n",
     )
@@ -9883,6 +9902,9 @@ def test_repository_ship_absent_default_contract_is_no_op_and_finalizes(
     assert parsed.review_replies_request == review_request
     ship_repository = loaded["ship_repository"]
     ship_repository.__globals__["_run_json"] = run_json
+    ship_repository.__globals__["_branch_worktree"] = (
+        lambda repo_root, branch: None
+    )
     result = ship_repository(
         argparse.Namespace(
             repo_root=repo,
@@ -10180,7 +10202,20 @@ def test_repository_ship_late_pending_work_reports_remote_mutation(
     )
     scope = repo / "scope.json" if relative_scope else tmp_path / "scope.json"
     scope.write_text(
-        json.dumps({"source_branches": ["selected"]}),
+        json.dumps(
+            {
+                "version": 2,
+                "target_branch": "release/local",
+                "target_commit": "a" * 40,
+                "sources": [
+                    {
+                        "branch": "selected",
+                        "commit": "a" * 40,
+                        "state": "retained",
+                    }
+                ],
+            }
+        ),
         encoding="utf-8",
         newline="\n",
     )
@@ -10435,10 +10470,16 @@ def test_repository_ship_blocks_selected_worktree_caller_before_remote_process(
     scope.write_text(
         json.dumps(
             {
-                "version": 1,
+                "version": 2,
                 "target_branch": "release/local",
                 "target_commit": "a" * 40,
-                "source_branches": ["selected"],
+                "sources": [
+                    {
+                        "branch": "selected",
+                        "commit": "a" * 40,
+                        "state": "retained",
+                    }
+                ],
             }
         ),
         encoding="utf-8",
@@ -10570,22 +10611,145 @@ def test_pending_work_scope_is_selected_generic_and_finalized_late(
     assert recorded_payload["status"] == "ready"
     scope_path = pathlib.Path(recorded_payload["pending_work_scope"])
     assert json.loads(scope_path.read_text(encoding="utf-8")) == {
-        "source_branches": ["selected"],
+        "sources": [
+            {
+                "branch": "selected",
+                "commit": target_commit,
+                "state": "retained",
+            }
+        ],
         "target_branch": "release/local",
         "target_commit": target_commit,
-        "version": 1,
+        "version": 2,
     }
-    scope_path.write_text(
+
+    lifecycle_scripts = str(MANAGE_PENDING_WORK.parent)
+    sys.path.insert(0, lifecycle_scripts)
+    try:
+        loaded = runpy.run_path(str(MANAGE_PENDING_WORK))
+    finally:
+        sys.path.remove(lifecycle_scripts)
+    ship_module = loaded["ship"]
+    unrelated_commit = run_git(repo, "rev-parse", "refs/heads/unrelated").stdout.strip()
+    identity_scope = tmp_path / "identity-scope.json"
+    identity_scope.write_text(
         json.dumps(
             {
-                "source_branches": ["missing", "selected"],
+                "version": 2,
                 "target_branch": "release/local",
                 "target_commit": target_commit,
-                "version": 1,
+                "sources": [
+                    {
+                        "branch": "unrelated",
+                        "commit": unrelated_commit,
+                        "state": "retained",
+                    },
+                    {
+                        "branch": "selected",
+                        "commit": target_commit,
+                        "state": "retained",
+                    },
+                ],
             }
         ),
         encoding="utf-8",
         newline="\n",
+    )
+    identity, normalized = ship_module._load_pending_work_scope(
+        argparse.Namespace(
+            pending_work_check=True,
+            pending_work_scope=identity_scope,
+            head_branch="release/local",
+        ),
+        repo,
+        target_commit,
+    )
+    expected_normalized = {
+        "version": 2,
+        "target_branch": "release/local",
+        "target_commit": target_commit,
+        "sources": [
+            {
+                "branch": "selected",
+                "commit": target_commit,
+                "state": "retained",
+            },
+            {
+                "branch": "unrelated",
+                "commit": unrelated_commit,
+                "state": "retained",
+            },
+        ],
+    }
+    assert normalized == expected_normalized
+    serialized_scope = json.dumps(
+        expected_normalized, separators=(",", ":"), sort_keys=True
+    ).encode("utf-8")
+    assert identity == {
+        "enabled": True,
+        "scope_sha256": hashlib.sha256(serialized_scope).hexdigest(),
+    }
+
+    scope_value = json.loads(scope_path.read_text(encoding="utf-8"))
+    scope_value["sources"][0]["state"] = "deleting"
+    scope_path.write_text(
+        json.dumps(scope_value), encoding="utf-8", newline="\n"
+    )
+    incomplete = run_pending_work(
+        repo,
+        "record",
+        "--target-branch",
+        "release/local",
+        "--target-commit",
+        target_commit,
+        "--source-branch",
+        "selected",
+    )
+    assert incomplete.returncode == 2, incomplete.stderr
+    incomplete_payload = json.loads(incomplete.stdout)
+    assert [item["kind"] for item in incomplete_payload["findings"]] == [
+        "incomplete_cleanup"
+    ]
+    assert run_git(repo, "show-ref", "--verify", "refs/heads/selected").returncode == 0
+    assert json.loads(scope_path.read_text(encoding="utf-8"))["sources"][0][
+        "state"
+    ] == "deleting"
+
+    scope_value["sources"][0]["state"] = "retained"
+    scope_value["sources"].insert(
+        0,
+        {
+            "branch": "missing",
+            "commit": target_commit,
+            "state": "retained",
+        },
+    )
+    scope_path.write_text(
+        json.dumps(scope_value),
+        encoding="utf-8",
+        newline="\n",
+    )
+    missing_retained = run_pending_work(
+        repo,
+        "prepare",
+        "--target-branch",
+        "release/local",
+    )
+    assert missing_retained.returncode == 2, missing_retained.stderr
+    missing_payload = json.loads(missing_retained.stdout)
+    assert missing_payload["findings"] == [
+        {
+            "kind": "missing_branch",
+            "subject": "missing",
+            "detail": "selected source branch is missing",
+        }
+    ]
+    assert [source["branch"] for source in json.loads(
+        scope_path.read_text(encoding="utf-8")
+    )["sources"]] == ["missing", "selected"]
+    scope_value["sources"] = [scope_value["sources"][1]]
+    scope_path.write_text(
+        json.dumps(scope_value), encoding="utf-8", newline="\n"
     )
 
     (selected_worktree / "README.md").write_text(
@@ -10629,8 +10793,12 @@ def test_pending_work_scope_is_selected_generic_and_finalized_late(
         ("dirty_worktree", "selected"),
         ("unmerged_branch_commits", "selected"),
     ]
-    assert json.loads(scope_path.read_text(encoding="utf-8"))["source_branches"] == [
-        "selected"
+    assert json.loads(scope_path.read_text(encoding="utf-8"))["sources"] == [
+        {
+            "branch": "selected",
+            "commit": target_commit,
+            "state": "retained",
+        }
     ]
     assert all(
         item["subject"] != "unrelated" for item in checked_payload["findings"]
@@ -10659,6 +10827,28 @@ def test_pending_work_scope_is_selected_generic_and_finalized_late(
         ).returncode
         == 0
     )
+    assert run_git(repo, "branch", "next-selected", advanced_commit).returncode == 0
+    diverged = run_pending_work(
+        repo,
+        "record",
+        "--target-branch",
+        "release/local",
+        "--target-commit",
+        advanced_commit,
+        "--source-branch",
+        "next-selected",
+    )
+    assert diverged.returncode == 2, diverged.stderr
+    assert json.loads(diverged.stdout)["findings"] == [
+        {
+            "kind": "target_history_diverged",
+            "subject": "release/local",
+            "detail": "recorded target is not an ancestor of new target",
+        }
+    ]
+    assert json.loads(scope_path.read_text(encoding="utf-8"))[
+        "target_commit"
+    ] == target_commit
     resumed = run_pending_work(
         repo,
         "prepare",
@@ -10720,13 +10910,99 @@ def test_pending_work_scope_is_selected_generic_and_finalized_late(
     assert run_git(repo, "show-ref", "--verify", "refs/heads/unrelated").returncode == 0
     assert not scope_path.exists()
 
+    assert run_git(repo, "branch", "recover-old", target_commit).returncode == 0
+    recover_recorded = run_pending_work(
+        repo,
+        "record",
+        "--target-branch",
+        "release/local",
+        "--target-commit",
+        target_commit,
+        "--source-branch",
+        "recover-old",
+    )
+    assert recover_recorded.returncode == 0, recover_recorded.stderr
+    recovery_scope = json.loads(scope_path.read_text(encoding="utf-8"))
+    recovery_scope["sources"][0]["state"] = "deleting"
+    scope_path.write_text(
+        json.dumps(recovery_scope), encoding="utf-8", newline="\n"
+    )
+    assert run_git(repo, "branch", "-d", "recover-old").returncode == 0
+    target_tree = run_git(repo, "rev-parse", f"{target_commit}^{{tree}}").stdout.strip()
+    descendant = run_git(
+        repo,
+        "commit-tree",
+        target_tree,
+        "-p",
+        target_commit,
+        "-m",
+        "advance reusable release",
+    )
+    assert descendant.returncode == 0, descendant.stderr
+    descendant_target = descendant.stdout.strip()
+    assert run_git(
+        repo,
+        "update-ref",
+        "refs/heads/release/local",
+        descendant_target,
+        target_commit,
+    ).returncode == 0
+    assert run_git(repo, "branch", "next-source", descendant_target).returncode == 0
+    advanced_record = run_pending_work(
+        repo,
+        "record",
+        "--target-branch",
+        "release/local",
+        "--target-commit",
+        descendant_target,
+        "--source-branch",
+        "next-source",
+    )
+    assert advanced_record.returncode == 0, advanced_record.stderr
+    assert json.loads(scope_path.read_text(encoding="utf-8")) == {
+        "version": 2,
+        "target_branch": "release/local",
+        "target_commit": descendant_target,
+        "sources": [
+            {
+                "branch": "next-source",
+                "commit": descendant_target,
+                "state": "retained",
+            }
+        ],
+    }
+    assert run_git(repo, "merge", "--ff-only", "release/local").returncode == 0
+    descendant_main = run_git(repo, "rev-parse", "HEAD").stdout.strip()
+    finalized_advanced = run_pending_work(
+        repo,
+        "finalize",
+        "--scope",
+        str(scope_path),
+        "--target-branch",
+        "release/local",
+        "--target-commit",
+        descendant_target,
+        "--current-branch",
+        "main",
+        "--current-commit",
+        descendant_main,
+    )
+    assert finalized_advanced.returncode == 0, finalized_advanced.stderr
+    assert not scope_path.exists()
+
     scope_path.write_text(
         json.dumps(
             {
-                "source_branches": ["already-gone"],
+                "sources": [
+                    {
+                        "branch": "already-gone",
+                        "commit": advanced_commit,
+                        "state": "deleting",
+                    }
+                ],
                 "target_branch": "release/local",
-                "target_commit": target_commit,
-                "version": 1,
+                "target_commit": descendant_target,
+                "version": 2,
             }
         ),
         encoding="utf-8",
@@ -10738,16 +11014,43 @@ def test_pending_work_scope_is_selected_generic_and_finalized_late(
         "--target-branch",
         "release/local",
         "--target-commit",
-        target_commit,
+        descendant_target,
     )
 
-    assert prepared.returncode == 0, prepared.stderr
-    assert json.loads(prepared.stdout) == {
-        "status": "ready",
-        "source_branches": [],
-        "pending_work_scope": "",
-    }
-    assert not scope_path.exists()
+    assert prepared.returncode == 2, prepared.stderr
+    assert json.loads(prepared.stdout)["findings"] == [
+        {
+            "kind": "recorded_source_not_in_target",
+            "subject": "already-gone",
+            "detail": "recorded source commit is not in target commit",
+        }
+    ]
+    assert scope_path.is_file()
+
+    scope_path.write_text(
+        json.dumps(
+            {
+                "source_branches": ["old-format"],
+                "target_branch": "release/local",
+                "target_commit": descendant_target,
+                "version": 1,
+            }
+        ),
+        encoding="utf-8",
+        newline="\n",
+    )
+    old_format = run_pending_work(
+        repo,
+        "prepare",
+        "--target-branch",
+        "release/local",
+        "--target-commit",
+        descendant_target,
+    )
+    assert old_format.returncode == 1
+    assert "sources" in json.loads(old_format.stderr)["message"]
+    assert scope_path.is_file()
+    scope_path.unlink()
 
     absent = run_pending_work(
         repo,
@@ -10780,6 +11083,7 @@ def test_pending_work_finalization_persists_partial_cleanup_progress(
     assert run_git(repo, "switch", "-c", "selected-a").returncode == 0
     readme.write_text("base\na\n", encoding="utf-8", newline="\n")
     assert run_git(repo, "commit", "-am", "selected a").returncode == 0
+    selected_a_commit = run_git(repo, "rev-parse", "HEAD").stdout.strip()
     assert run_git(repo, "switch", "-c", "selected-b").returncode == 0
     readme.write_text("base\na\nb\n", encoding="utf-8", newline="\n")
     assert run_git(repo, "commit", "-am", "selected b").returncode == 0
@@ -10876,9 +11180,17 @@ def test_pending_work_finalization_persists_partial_cleanup_progress(
         ).stdout.strip()
         == ""
     )
-    assert json.loads(scope_path.read_text(encoding="utf-8"))["source_branches"] == [
-        "selected-a",
-        "selected-b",
+    assert json.loads(scope_path.read_text(encoding="utf-8"))["sources"] == [
+        {
+            "branch": "selected-a",
+            "commit": selected_a_commit,
+            "state": "deleting",
+        },
+        {
+            "branch": "selected-b",
+            "commit": target_commit,
+            "state": "retained",
+        },
     ]
 
     finalize_scope.__globals__["run_command"] = original_run_command
@@ -10932,8 +11244,12 @@ def test_pending_work_finalization_persists_partial_cleanup_progress(
     assert residual_cleanup_steps == ["permission_denied", "ownership"]
     assert not selected_a.exists()
     assert not residual_cleanup_record.exists()
-    assert json.loads(scope_path.read_text(encoding="utf-8"))["source_branches"] == [
-        "selected-b"
+    assert json.loads(scope_path.read_text(encoding="utf-8"))["sources"] == [
+        {
+            "branch": "selected-b",
+            "commit": target_commit,
+            "state": "deleting",
+        }
     ]
     assert run_git(repo, "show-ref", "--verify", "refs/heads/selected-a").returncode != 0
     assert run_git(repo, "show-ref", "--verify", "refs/heads/selected-b").returncode == 0
@@ -10953,6 +11269,70 @@ def test_pending_work_finalization_persists_partial_cleanup_progress(
     assert resumed["removed"] == ["selected-b"]
     assert not scope_path.exists()
     assert run_git(repo, "show-ref", "--verify", "refs/heads/selected-b").returncode != 0
+
+    assert run_git(repo, "branch", "crash-delete", target_commit).returncode == 0
+    crash_recorded = run_pending_work(
+        repo,
+        "record",
+        "--target-branch",
+        "release/local",
+        "--target-commit",
+        target_commit,
+        "--source-branch",
+        "crash-delete",
+    )
+    assert crash_recorded.returncode == 0, crash_recorded.stderr
+    crash_scope = pathlib.Path(
+        json.loads(crash_recorded.stdout)["pending_work_scope"]
+    )
+    original_remove_source = finalize_scope.__globals__["_remove_source_record"]
+
+    def interrupt_after_branch_deletion(
+        path: pathlib.Path,
+        scope: dict[str, Any],
+        branch: str,
+    ) -> None:
+        assert branch == "crash-delete"
+        raise pending_error("simulated interruption after branch deletion")
+
+    finalize_scope.__globals__["_remove_source_record"] = (
+        interrupt_after_branch_deletion
+    )
+    with pytest.raises(pending_error, match="after branch deletion"):
+        finalize_scope(
+            repo,
+            crash_scope,
+            target_branch="release/local",
+            target_commit=target_commit,
+            current_branch="main",
+            current_commit=current_commit,
+        )
+
+    assert run_git(
+        repo, "show-ref", "--verify", "refs/heads/crash-delete"
+    ).returncode != 0
+    assert json.loads(crash_scope.read_text(encoding="utf-8"))["sources"] == [
+        {
+            "branch": "crash-delete",
+            "commit": target_commit,
+            "state": "deleting",
+        }
+    ]
+    finalize_scope.__globals__["_remove_source_record"] = original_remove_source
+    recovered = finalize_scope(
+        repo,
+        crash_scope,
+        target_branch="release/local",
+        target_commit=target_commit,
+        current_branch="main",
+        current_commit=current_commit,
+    )
+    assert recovered == {
+        "status": "finalized",
+        "removed": [],
+        "pending_work_scope": "",
+    }
+    assert not crash_scope.exists()
 
     ownership_target = worktree_root / "ownership-target"
     ownership_target.mkdir(parents=True)

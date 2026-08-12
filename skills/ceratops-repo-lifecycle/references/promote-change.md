@@ -76,7 +76,12 @@ Infer missing branch and checkout inputs from local Git state before asking.
    operation succeeds or no-ops. Execute a returned handoff against
    `release/local`; when managed skills exist without one, report them as not
    deployed and continue.
-6. Treat the pending-work scope as the only source scope later passed to ship.
+6. Treat the version-2 pending-work scope as the only source scope later passed
+   to ship. Persist each selected source's exact tip and helper-owned `retained`
+   or `deleting` cleanup state. Advance a reusable scope only when its recorded
+   target is an ancestor of the new target. Recover a missing source
+   automatically only when its `deleting` state and recorded commit ancestry
+   prove an interrupted helper deletion; a missing `retained` source blocks.
 7. On a shipping blocker, retain the scope, branches, worktrees, and checkpoints
    for resume. Terminal shipping owns finalization and selected-work cleanup.
 

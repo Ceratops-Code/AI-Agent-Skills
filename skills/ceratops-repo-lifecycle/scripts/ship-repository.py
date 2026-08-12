@@ -17,6 +17,8 @@ import subprocess
 import sys
 from typing import Any
 
+from github_pr_workflow import ship as github_ship
+
 SCRIPT_ROOT = pathlib.Path(__file__).resolve().parent
 DEPLOY_RUNNER = SCRIPT_ROOT / "run-deploy-operation.py"
 RELEASE_RUNNER = SCRIPT_ROOT / "run-release-operation.py"
@@ -174,11 +176,29 @@ def _require_cleanup_safe_caller(
         value = json.loads(scope.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise RepositoryShipError(f"Could not read pending-work scope: {exc}") from exc
-    branches = value.get("source_branches") if isinstance(value, dict) else None
-    if not isinstance(branches, list) or not all(
-        isinstance(branch, str) and branch for branch in branches
+    sources = value.get("sources") if isinstance(value, dict) else None
+    if (
+        not isinstance(value, dict)
+        or value.get("version") != github_ship.PENDING_WORK_SCOPE_VERSION
+        or not isinstance(sources, list)
+        or not sources
     ):
-        raise RepositoryShipError("Pending-work scope has invalid source branches.")
+        raise RepositoryShipError("Pending-work scope has invalid sources.")
+    branches: list[str] = []
+    for source in sources:
+        if (
+            not isinstance(source, dict)
+            or set(source) != {"branch", "commit", "state"}
+            or not isinstance(source.get("branch"), str)
+            or not source["branch"]
+            or not isinstance(source.get("commit"), str)
+            or github_ship.FULL_SHA_RE.fullmatch(source["commit"].lower()) is None
+            or source.get("state") not in github_ship.PENDING_SOURCE_STATES
+        ):
+            raise RepositoryShipError("Pending-work scope has invalid sources.")
+        branches.append(source["branch"])
+    if len(branches) != len(set(branches)):
+        raise RepositoryShipError("Pending-work scope has duplicate sources.")
 
     caller = pathlib.Path.cwd().resolve()
     for branch in branches:

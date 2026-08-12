@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Record, prepare, recheck, and finalize one selected repository work scope.
 
-Scope files live under the repository's common Git directory and name only the
-source branches approved for one integration target. Unrelated branches and
-worktrees are never enumerated. Finalization removes only clean selected
-worktrees under the repository's expected worktree root and merged branches.
+Scope files live under the repository's common Git directory and persist the
+exact source tips approved for one integration target plus helper-owned cleanup
+state. Unrelated branches and worktrees are never enumerated. Finalization
+removes only clean selected worktrees under the repository's expected worktree
+root and merged branches.
 """
 
 from __future__ import annotations
@@ -332,6 +333,8 @@ def _validated_scope(
     _, scope = ship._load_pending_work_scope(args, repo_root, target_commit)
     if scope is None:
         raise PendingWorkError("Pending-work scope unexpectedly disabled its check.")
+    if _read_scope(path) != scope:
+        _write_scope(path, scope)
     return scope
 
 
@@ -345,38 +348,166 @@ def _ready_without_scope() -> dict[str, object]:
     }
 
 
-def _prune_missing_branches(
+def _branch_exists(repo_root: pathlib.Path, branch: str) -> bool:
+    """Return exact local-branch existence without treating Git errors as absence."""
+
+    result = run_command(
+        _git(repo_root, "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"),
+        cwd=repo_root,
+    )
+    if result.returncode not in {0, 1}:
+        raise PendingWorkError(f"Could not verify pending-work branch {branch!r}.")
+    return result.returncode == 0
+
+
+def _commit_exists(repo_root: pathlib.Path, commit: str) -> bool:
+    """Return whether one recorded full SHA still resolves to a commit object."""
+
+    result = run_command(
+        _git(repo_root, "cat-file", "-e", f"{commit}^{{commit}}"),
+        cwd=repo_root,
+    )
+    return result.returncode == 0
+
+
+def _is_ancestor(repo_root: pathlib.Path, ancestor: str, descendant: str) -> bool:
+    """Compare two recorded commits while preserving Git comparison errors."""
+
+    result = run_command(
+        _git(repo_root, "merge-base", "--is-ancestor", ancestor, descendant),
+        cwd=repo_root,
+    )
+    if result.returncode not in {0, 1}:
+        raise PendingWorkError(
+            f"Could not compare recorded commits {ancestor} and {descendant}."
+        )
+    return result.returncode == 0
+
+
+def _source_record(repo_root: pathlib.Path, branch: str) -> dict[str, str]:
+    """Capture one selected branch's exact current tip before scope recording."""
+
+    commit = require_output(
+        _git(repo_root, "rev-parse", f"refs/heads/{branch}"), cwd=repo_root
+    ).splitlines()[0]
+    if ship.FULL_SHA_RE.fullmatch(commit) is None:
+        raise PendingWorkError(f"Source branch has an invalid commit: {branch!r}")
+    return {"branch": branch, "commit": commit, "state": "retained"}
+
+
+def _source_branches(scope: dict[str, Any]) -> list[str]:
+    """Return the compact branch-only result retained by the public CLI."""
+
+    return [str(source["branch"]) for source in scope["sources"]]
+
+
+def _scope_with_sources(
+    scope: dict[str, Any], sources: list[dict[str, str]]
+) -> dict[str, Any]:
+    """Build the canonical v2 record ordering used by every atomic write."""
+
+    return {
+        **scope,
+        "sources": sorted(sources, key=lambda source: source["branch"]),
+    }
+
+
+def _recover_completed_deletions(
+    repo_root: pathlib.Path,
     path: pathlib.Path,
     scope: dict[str, Any],
-    findings: list[dict[str, str]],
-) -> tuple[dict[str, Any] | None, list[dict[str, str]]]:
-    """Atomically remove stale branch entries without weakening real findings."""
+) -> dict[str, Any] | None:
+    """Retire only evidence-proven interruptions after helper-owned deletion.
 
-    missing = {
-        finding["subject"]
-        for finding in findings
-        if finding.get("kind") == "missing_branch"
-        and isinstance(finding.get("subject"), str)
-    }
-    if not missing:
-        return scope, findings
-    retained = [
-        branch for branch in scope["source_branches"] if branch not in missing
-    ]
-    remaining_findings = [
-        finding
-        for finding in findings
-        if not (
-            finding.get("kind") == "missing_branch"
-            and finding.get("subject") in missing
-        )
-    ]
+    ``deleting`` is written before cleanup begins. A missing branch alone is
+    never sufficient: its recorded source commit must still exist and be
+    contained in this scope's recorded target. Any residual-worktree record is
+    completed before the source identity is discarded.
+    """
+
+    retained: list[dict[str, str]] = []
+    changed = False
+    target_commit = str(scope["target_commit"])
+    for source in scope["sources"]:
+        normalized = {
+            "branch": str(source["branch"]),
+            "commit": str(source["commit"]),
+            "state": str(source["state"]),
+        }
+        branch = normalized["branch"]
+        if (
+            normalized["state"] != "deleting"
+            or _branch_exists(repo_root, branch)
+            or not _commit_exists(repo_root, normalized["commit"])
+            or not _is_ancestor(repo_root, normalized["commit"], target_commit)
+        ):
+            retained.append(normalized)
+            continue
+        residual_record = _residual_cleanup_record_path(path, branch)
+        if residual_record.exists():
+            _finish_recorded_residual_cleanup(repo_root, residual_record)
+        changed = True
+    if not changed:
+        return scope
     if retained:
-        scope = {**scope, "source_branches": retained}
-        _write_scope(path, scope)
-        return scope, remaining_findings
+        recovered = _scope_with_sources(scope, retained)
+        _write_scope(path, recovered)
+        return recovered
     path.unlink()
-    return None, remaining_findings
+    return None
+
+
+def _set_source_state(
+    path: pathlib.Path,
+    scope: dict[str, Any],
+    branch: str,
+    state: str,
+) -> dict[str, Any]:
+    """Atomically persist one helper-owned cleanup transition."""
+
+    updated: list[dict[str, str]] = []
+    found = False
+    for source in scope["sources"]:
+        normalized = {
+            "branch": str(source["branch"]),
+            "commit": str(source["commit"]),
+            "state": str(source["state"]),
+        }
+        if normalized["branch"] == branch:
+            normalized["state"] = state
+            found = True
+        updated.append(normalized)
+    if not found:
+        raise PendingWorkError(f"Pending-work source is missing: {branch!r}")
+    transitioned = _scope_with_sources(scope, updated)
+    _write_scope(path, transitioned)
+    return transitioned
+
+
+def _remove_source_record(
+    path: pathlib.Path,
+    scope: dict[str, Any],
+    branch: str,
+) -> dict[str, Any] | None:
+    """Atomically retire one source only after its branch deletion succeeded."""
+
+    remaining = [
+        {
+            "branch": str(source["branch"]),
+            "commit": str(source["commit"]),
+            "state": str(source["state"]),
+        }
+        for source in scope["sources"]
+        if source["branch"] != branch
+    ]
+    if len(remaining) == len(scope["sources"]):
+        raise PendingWorkError(f"Pending-work source is missing: {branch!r}")
+    if remaining:
+        updated = _scope_with_sources(scope, remaining)
+        _write_scope(path, updated)
+        return updated
+    path.unlink()
+    return None
 
 
 def _validate_branch(repo_root: pathlib.Path, branch: str) -> None:
@@ -421,11 +552,15 @@ def record_scope(
             "Target branch does not point at the recorded target commit."
         )
 
+    requested_sources = sorted(
+        (_source_record(repo_root, branch) for branch in source_branches),
+        key=lambda source: source["branch"],
+    )
     requested_scope = {
-        "version": 1,
+        "version": ship.PENDING_WORK_SCOPE_VERSION,
         "target_branch": target_branch,
         "target_commit": target_commit,
-        "source_branches": sorted(source_branches),
+        "sources": requested_sources,
     }
     findings = ship._pending_work_findings(repo_root, requested_scope)
     if findings:
@@ -436,39 +571,87 @@ def record_scope(
         }
 
     path = _scope_path(repo_root, target_branch)
-    retained: list[str] = []
+    retained: list[dict[str, str]] = []
     if path.is_file():
-        existing = _read_scope(path)
+        raw_existing = _read_scope(path)
+        recorded_target = raw_existing.get("target_commit")
         if (
-            set(existing)
-            != {
-                "version",
-                "target_branch",
-                "target_commit",
-                "source_branches",
-            }
-            or
-            existing.get("version") != 1
-            or existing.get("target_branch") != target_branch
-            or not isinstance(existing.get("source_branches"), list)
-            or not existing["source_branches"]
-            or len(set(existing["source_branches"]))
-            != len(existing["source_branches"])
-            or any(
-                not isinstance(value, str) or not value
-                for value in existing["source_branches"]
-            )
+            not isinstance(recorded_target, str)
+            or ship.FULL_SHA_RE.fullmatch(recorded_target.lower()) is None
         ):
-            raise PendingWorkError("Existing pending-work scope has incompatible identity.")
-        retained = list(existing["source_branches"])
-        for branch in retained:
-            _validate_branch(repo_root, branch)
-    merged = sorted(set(retained) | set(source_branches))
+            raise PendingWorkError("Pending-work scope has an invalid target commit.")
+        existing = _validated_scope(
+            repo_root,
+            path,
+            target_branch=target_branch,
+            target_commit=recorded_target.lower(),
+        )
+        old_target = str(existing["target_commit"])
+        if old_target != target_commit:
+            if not _commit_exists(repo_root, old_target):
+                return {
+                    "status": "pending_work",
+                    "remote_mutation": False,
+                    "findings": [
+                        {
+                            "kind": "missing_target_commit",
+                            "subject": target_branch,
+                            "detail": "recorded target commit is unavailable",
+                        }
+                    ],
+                }
+            if not _is_ancestor(repo_root, old_target, target_commit):
+                return {
+                    "status": "pending_work",
+                    "remote_mutation": False,
+                    "findings": [
+                        {
+                            "kind": "target_history_diverged",
+                            "subject": target_branch,
+                            "detail": "recorded target is not an ancestor of new target",
+                        }
+                    ],
+                }
+        existing = _recover_completed_deletions(repo_root, path, existing)
+        if existing is not None:
+            candidate_existing = {**existing, "target_commit": target_commit}
+            existing_findings = ship._pending_work_findings(
+                repo_root, candidate_existing
+            )
+            existing_findings.extend(
+                {
+                    "kind": "incomplete_cleanup",
+                    "subject": str(source["branch"]),
+                    "detail": "complete prior helper cleanup before recording",
+                }
+                for source in existing["sources"]
+                if source["state"] == "deleting"
+                and _branch_exists(repo_root, str(source["branch"]))
+            )
+            if existing_findings:
+                return {
+                    "status": "pending_work",
+                    "remote_mutation": False,
+                    "findings": existing_findings,
+                }
+            retained = [
+                {
+                    "branch": str(source["branch"]),
+                    "commit": str(source["commit"]),
+                    "state": str(source["state"]),
+                }
+                for source in existing["sources"]
+            ]
+    merged_by_branch = {source["branch"]: source for source in retained}
+    merged_by_branch.update(
+        {source["branch"]: source for source in requested_sources}
+    )
+    merged = sorted(merged_by_branch.values(), key=lambda source: source["branch"])
     scope = {
-        "version": 1,
+        "version": ship.PENDING_WORK_SCOPE_VERSION,
         "target_branch": target_branch,
         "target_commit": target_commit,
-        "source_branches": merged,
+        "sources": merged,
     }
     _write_scope(path, scope)
     _validated_scope(
@@ -481,7 +664,7 @@ def record_scope(
         "status": "ready",
         "target_branch": target_branch,
         "target_commit": target_commit,
-        "source_branches": merged,
+        "source_branches": _source_branches(scope),
         "pending_work_scope": str(path),
     }
 
@@ -508,11 +691,10 @@ def check_scope(
         target_branch=target_branch,
         target_commit=target_commit,
     )
-    findings = ship._pending_work_findings(repo_root, scope)
-    pruned_scope, findings = _prune_missing_branches(path, scope, findings)
-    if pruned_scope is None:
+    scope = _recover_completed_deletions(repo_root, path, scope)
+    if scope is None:
         return _ready_without_scope()
-    scope = pruned_scope
+    findings = ship._pending_work_findings(repo_root, scope)
     if findings:
         return {
             "status": "pending_work",
@@ -524,7 +706,7 @@ def check_scope(
     return {
         "status": "ready",
         "target_commit": scope["target_commit"],
-        "source_branches": scope["source_branches"],
+        "source_branches": _source_branches(scope),
         "pending_work_scope": str(path.resolve()),
     }
 
@@ -657,13 +839,21 @@ def finalize_scope(
     ).strip():
         raise PendingWorkError("Repository is dirty after synchronization.")
 
-    scope = _read_scope(path)
+    scope = _validated_scope(
+        repo_root,
+        path,
+        target_branch=target_branch,
+        target_commit=target_commit,
+    )
     expected_root = (repo_root.parent / "worktrees" / repo_root.name).resolve()
     removed: list[str] = []
-    source_branches = list(scope["source_branches"])
-    for index, branch in enumerate(source_branches):
+    sources = list(scope["sources"])
+    for source in sources:
+        branch = str(source["branch"])
         if branch in {current_branch, target_branch}:
             raise PendingWorkError("Pending-work scope contains a protected branch.")
+        if source["state"] == "retained":
+            scope = _set_source_state(path, scope, branch, "deleting")
         worktree = _selected_worktree(repo_root, branch)
         if worktree is not None:
             _remove_selected_worktree(
@@ -682,12 +872,7 @@ def finalize_scope(
             cwd=repo_root,
         )
         removed.append(branch)
-        remaining = source_branches[index + 1 :]
-        if remaining:
-            scope = {**scope, "source_branches": remaining}
-            _write_scope(path, scope)
-        else:
-            path.unlink()
+        scope = _remove_source_record(path, scope, branch)
     if expected_root.is_dir() and not any(expected_root.iterdir()):
         expected_root.rmdir()
     return {

@@ -28,6 +28,8 @@ from .command import CommandError, require_output, require_success, run_command
 PHASES = ("prepared", "pr_ready", "gates_passed", "merged", "synchronized")
 FULL_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+PENDING_WORK_SCOPE_VERSION = 2
+PENDING_SOURCE_STATES = {"retained", "deleting"}
 ACTION_LINK_RE = re.compile(
     r"/actions/runs/(?P<run>\d+)(?:/job/(?P<job>\d+))?"
 )
@@ -410,43 +412,58 @@ def _load_pending_work_scope(
         raise ShipError(
             f"Could not read pending-work scope {scope_path}: {exc}"
         ) from exc
-    expected_fields = {
-        "version",
-        "target_branch",
-        "target_commit",
-        "source_branches",
-    }
+    expected_fields = {"version", "target_branch", "target_commit", "sources"}
     if not isinstance(raw_scope, dict) or set(raw_scope) != expected_fields:
         raise ShipError(
             "Pending-work scope must contain exactly version, target_branch, "
-            "target_commit, and source_branches."
+            "target_commit, and sources."
         )
-    source_branches = raw_scope.get("source_branches")
+    raw_sources = raw_scope.get("sources")
     if (
-        raw_scope.get("version") != 1
+        raw_scope.get("version") != PENDING_WORK_SCOPE_VERSION
         or not isinstance(raw_scope.get("target_branch"), str)
         or not isinstance(raw_scope.get("target_commit"), str)
-        or not isinstance(source_branches, list)
-        or not source_branches
-        or any(
-            not isinstance(branch, str) or not branch
-            for branch in source_branches
-        )
-        or len(set(source_branches)) != len(source_branches)
+        or not isinstance(raw_sources, list)
+        or not raw_sources
     ):
         raise ShipError("Pending-work scope has invalid field values.")
     target_branch = str(raw_scope["target_branch"])
     target_commit = str(raw_scope["target_commit"]).lower()
+    if FULL_SHA_RE.fullmatch(target_commit) is None:
+        raise ShipError("Pending-work scope has an invalid target commit.")
     if target_branch != args.head_branch or target_commit != commit:
         raise ShipError(
             "Pending-work scope does not match the exact shipped branch and "
             "commit."
         )
-    if target_branch in source_branches:
-        raise ShipError(
-            "Pending-work source branches must not include the target branch."
-        )
-    for branch in source_branches:
+    normalized_sources: list[dict[str, str]] = []
+    source_branches: set[str] = set()
+    for index, raw_source in enumerate(raw_sources, start=1):
+        if not isinstance(raw_source, dict) or set(raw_source) != {
+            "branch",
+            "commit",
+            "state",
+        }:
+            raise ShipError(
+                f"Pending-work source {index} must contain exactly branch, "
+                "commit, and state."
+            )
+        branch = raw_source.get("branch")
+        source_commit = raw_source.get("commit")
+        state = raw_source.get("state")
+        if (
+            not isinstance(branch, str)
+            or not branch
+            or not isinstance(source_commit, str)
+            or FULL_SHA_RE.fullmatch(source_commit.lower()) is None
+            or state not in PENDING_SOURCE_STATES
+            or branch in source_branches
+        ):
+            raise ShipError(f"Pending-work source {index} has invalid field values.")
+        if branch == target_branch:
+            raise ShipError(
+                "Pending-work source branches must not include the target branch."
+            )
         checked = run_command(
             ["git", "check-ref-format", "--branch", branch],
             cwd=repo_root,
@@ -455,12 +472,20 @@ def _load_pending_work_scope(
             raise ShipError(
                 f"Pending-work scope contains an invalid branch: {branch!r}."
             )
+        source_branches.add(branch)
+        normalized_sources.append(
+            {
+                "branch": branch,
+                "commit": source_commit.lower(),
+                "state": str(state),
+            }
+        )
 
     normalized_scope = {
-        "version": 1,
+        "version": PENDING_WORK_SCOPE_VERSION,
         "target_branch": target_branch,
         "target_commit": target_commit,
-        "source_branches": sorted(source_branches),
+        "sources": sorted(normalized_sources, key=lambda source: source["branch"]),
     }
     serialized = json.dumps(
         normalized_scope,
@@ -482,7 +507,10 @@ def _pending_work_findings(
 
     target_commit = str(scope["target_commit"])
     findings: list[dict[str, str]] = []
-    for branch in scope["source_branches"]:
+    for source in scope["sources"]:
+        branch = str(source["branch"])
+        source_commit = str(source["commit"])
+        source_state = str(source["state"])
         branch_ref = f"refs/heads/{branch}"
         exists = run_command(
             [
@@ -497,6 +525,51 @@ def _pending_work_findings(
             cwd=repo_root,
         )
         if exists.returncode == 1:
+            if source_state == "deleting":
+                recorded = run_command(
+                    _git(repo_root, "cat-file", "-e", f"{source_commit}^{{commit}}"),
+                    cwd=repo_root,
+                )
+                if recorded.returncode:
+                    findings.append(
+                        {
+                            "kind": "missing_source_commit",
+                            "subject": branch,
+                            "detail": "recorded source commit is unavailable",
+                        }
+                    )
+                    continue
+                contained = run_command(
+                    _git(
+                        repo_root,
+                        "merge-base",
+                        "--is-ancestor",
+                        source_commit,
+                        target_commit,
+                    ),
+                    cwd=repo_root,
+                )
+                if contained.returncode == 1:
+                    findings.append(
+                        {
+                            "kind": "recorded_source_not_in_target",
+                            "subject": branch,
+                            "detail": "recorded source commit is not in target commit",
+                        }
+                    )
+                    continue
+                if contained.returncode:
+                    raise ShipError(
+                        f"Could not compare recorded source commit for {branch!r}."
+                    )
+                findings.append(
+                    {
+                        "kind": "interrupted_cleanup",
+                        "subject": branch,
+                        "detail": "scope manager must retire proven helper cleanup",
+                    }
+                )
+                continue
             findings.append(
                 {
                     "kind": "missing_branch",

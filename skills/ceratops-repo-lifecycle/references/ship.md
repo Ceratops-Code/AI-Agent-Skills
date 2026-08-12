@@ -23,8 +23,12 @@ selected merged source branches and worktrees.
 - The helper derives the canonical pending-work scope from `--head-branch`.
   When a retained scope exists, the wrapper reuses its recorded exact target
   commit; a caller-supplied `--commit` must match it. An absent scope is a
-  cleanup no-op. Entries for missing source branches are atomically removed
-  from an existing scope before shipping continues.
+  cleanup no-op. Each version-2 source persists its branch, exact recorded tip,
+  and helper-owned `retained` or `deleting` cleanup state. A missing `retained`
+  source remains blocking. Only a missing `deleting` source whose recorded
+  commit exists and is an ancestor of the recorded target may be atomically
+  retired as completed interrupted helper cleanup. An old-format scope blocks
+  rollout; there is no migration or fallback.
 
 ### Inputs To Capture
 
@@ -65,9 +69,11 @@ Infer missing values from the checkout, scope file, and live PR before asking.
    retains the checkpoint and resumes or blocks. This checkpoint logic receives
    the exact commit already selected by the wrapper.
 3. Before the first remote push, the helper checks the canonical scope when it
-   exists. It atomically removes entries for missing source branches and deletes
-   the scope if none remain. An absent or emptied scope is a cleanup no-op;
-   remaining `pending_work` performs no remote mutation.
+   exists. It atomically removes a missing `deleting` source only when its
+   recorded commit exists and is an ancestor of the recorded target. A missing
+   `retained` source or an unproven `deleting` source remains `pending_work` and
+   performs no remote mutation. An absent or proven-empty scope is a cleanup
+   no-op.
 4. (D) The delegated GitHub workflow owns deterministic, decision-complete
    PR-gate resolution for the exact head.
 5. Only after those gates pass, integrated ship delegates the final exact-head
@@ -83,15 +89,19 @@ Infer missing values from the checkout, scope file, and live PR before asking.
    declared release preflight before the first remote mutation. After
    synchronization, recheck the selected scope, run declared release
    publication or record its no-op, then run declared local deployment or
-   record its no-op, and recheck. Before removing a selected worktree,
-   finalization records its exact path. Automatic residual cleanup handles
-   only the case where Git unregisters the worktree but leaves that recorded
-   directory. The helper verifies that the path is unregistered and remains
-   below the canonical worktree root before deleting it. When the helper runs
-   elevated, the same cleanup may take ownership only of that validated path,
-   without a public flag or second confirmation. The helper removes the
-   residual-cleanup record only after verifying the path is absent, then
-   removes the merged selected branch.
+   record its no-op, and recheck. Before removing a selected worktree or branch
+   for a retained source, finalization atomically changes its state to
+   `deleting`; an existing `deleting` branch first passes the same cleanliness
+   and ancestry checks. Before removing a selected worktree, finalization
+   records its exact path. Automatic residual cleanup handles only the case
+   where Git unregisters the worktree but leaves that recorded directory. The
+   helper verifies that the path is unregistered and remains below the
+   canonical worktree root before deleting it. When the helper runs elevated,
+   the same cleanup may take ownership only of that validated path, without a
+   public flag or second confirmation. The helper removes the residual-cleanup
+   record only after verifying the path is absent. After successful branch
+   deletion, it atomically removes the source record and deletes the scope after
+   the final source is removed.
 8. After declared release publication or deployment succeeds, the helper
    checkpoints each result independently against the exact target, operation,
    and resolved contract before the next phase. A retry reuses each completed
@@ -112,8 +122,10 @@ Infer missing values from the checkout, scope file, and live PR before asking.
   declared or explicit no-op remote release publication, and declared or
   explicit no-op local repository deployment completed; any returned handoff
   completed, and managed skills without one were reported.
-- Every remaining selected source branch passed pending-work checks; an absent
-  or emptied scope completed as a cleanup no-op.
+- Every existing selected source branch passed pending-work checks; an absent
+  or proven-empty scope completed as a cleanup no-op.
+- Only an evidence-proven interrupted `deleting` record was recovered
+  automatically; every missing `retained` source remained blocking.
 - Only selected clean merged source work was removed.
 
 ### Output Contract
