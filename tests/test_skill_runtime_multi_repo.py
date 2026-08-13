@@ -11125,10 +11125,57 @@ def test_pending_work_scope_is_selected_generic_and_finalized_late(
     ]
     assert scope_path.is_file()
 
+    assert run_git(repo, "branch", "legacy-clean", descendant_target).returncode == 0
+    assert run_git(repo, "branch", "legacy-dirty", descendant_target).returncode == 0
+    legacy_dirty_worktree = worktree_root / "legacy-dirty"
+    assert (
+        run_git(
+            repo,
+            "worktree",
+            "add",
+            str(legacy_dirty_worktree),
+            "legacy-dirty",
+        ).returncode
+        == 0
+    )
+    (legacy_dirty_worktree / "README.md").write_text(
+        "base\nselected\nlegacy dirty\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    migration_tree = run_git(
+        repo, "rev-parse", f"{descendant_target}^{{tree}}"
+    ).stdout.strip()
+    migration = run_git(
+        repo,
+        "commit-tree",
+        migration_tree,
+        "-p",
+        descendant_target,
+        "-m",
+        "advance release after legacy scope",
+    )
+    assert migration.returncode == 0, migration.stderr
+    migration_target = migration.stdout.strip()
+    assert (
+        run_git(
+            repo,
+            "update-ref",
+            "refs/heads/release/local",
+            migration_target,
+            descendant_target,
+        ).returncode
+        == 0
+    )
+    assert run_git(repo, "branch", "legacy-new", migration_target).returncode == 0
     scope_path.write_text(
         json.dumps(
             {
-                "source_branches": ["old-format"],
+                "source_branches": [
+                    "legacy-clean",
+                    "legacy-dirty",
+                    "old-format",
+                ],
                 "target_branch": "release/local",
                 "target_commit": descendant_target,
                 "version": 1,
@@ -11139,14 +11186,108 @@ def test_pending_work_scope_is_selected_generic_and_finalized_late(
     )
     old_format = run_pending_work(
         repo,
+        "record",
+        "--target-branch",
+        "release/local",
+        "--target-commit",
+        migration_target,
+        "--source-branch",
+        "legacy-new",
+    )
+    assert old_format.returncode == 0, old_format.stderr
+    assert json.loads(old_format.stdout) == {
+        "status": "ready",
+        "target_branch": "release/local",
+        "target_commit": migration_target,
+        "source_branches": ["legacy-clean", "legacy-dirty", "legacy-new"],
+        "pending_work_scope": str(scope_path.resolve()),
+    }
+    assert json.loads(scope_path.read_text(encoding="utf-8")) == {
+        "version": 2,
+        "target_branch": "release/local",
+        "target_commit": migration_target,
+        "sources": [
+            {
+                "branch": "legacy-clean",
+                "commit": descendant_target,
+                "state": "retained",
+            },
+            {
+                "branch": "legacy-dirty",
+                "commit": descendant_target,
+                "state": "preserved",
+            },
+            {
+                "branch": "legacy-new",
+                "commit": migration_target,
+                "state": "retained",
+            },
+        ],
+    }
+    assert run_git(repo, "merge", "--ff-only", "release/local").returncode == 0
+    migration_main = run_git(repo, "rev-parse", "HEAD").stdout.strip()
+    legacy_finalized = run_pending_work(
+        repo,
+        "finalize",
+        "--scope",
+        str(scope_path),
+        "--target-branch",
+        "release/local",
+        "--target-commit",
+        migration_target,
+        "--current-branch",
+        "main",
+        "--current-commit",
+        migration_main,
+    )
+    assert legacy_finalized.returncode == 0, legacy_finalized.stderr
+    assert json.loads(legacy_finalized.stdout) == {
+        "status": "finalized",
+        "removed": ["legacy-clean", "legacy-new"],
+        "preserved": ["legacy-dirty"],
+        "pending_work_scope": "",
+    }
+    assert not scope_path.exists()
+    assert (
+        run_git(repo, "show-ref", "--verify", "refs/heads/legacy-clean").returncode
+        != 0
+    )
+    assert (
+        run_git(repo, "show-ref", "--verify", "refs/heads/legacy-dirty").returncode
+        == 0
+    )
+    assert (
+        run_git(repo, "show-ref", "--verify", "refs/heads/legacy-new").returncode
+        != 0
+    )
+    assert legacy_dirty_worktree.is_dir()
+    assert "legacy dirty" in (legacy_dirty_worktree / "README.md").read_text(
+        encoding="utf-8"
+    )
+
+    scope_path.write_text(
+        json.dumps(
+            {
+                "source_branches": ["legacy-dirty"],
+                "target_branch": "release/local",
+                "target_commit": migration_target,
+                "unexpected": True,
+                "version": 1,
+            }
+        ),
+        encoding="utf-8",
+        newline="\n",
+    )
+    malformed = run_pending_work(
+        repo,
         "prepare",
         "--target-branch",
         "release/local",
         "--target-commit",
-        descendant_target,
+        migration_target,
     )
-    assert old_format.returncode == 1
-    assert "sources" in json.loads(old_format.stderr)["message"]
+    assert malformed.returncode == 1
+    assert "exactly version" in json.loads(malformed.stderr)["message"]
     assert scope_path.is_file()
     scope_path.unlink()
 

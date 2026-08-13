@@ -35,6 +35,13 @@ class PendingWorkError(RuntimeError):
 
 
 RESIDUAL_CLEANUP_RECORD_VERSION = 1
+LEGACY_PENDING_WORK_SCOPE_VERSION = 1
+LEGACY_PENDING_WORK_SCOPE_FIELDS = {
+    "version",
+    "target_branch",
+    "target_commit",
+    "source_branches",
+}
 RESIDUAL_CLEANUP_RECORD_FIELDS = {
     "version",
     "scope",
@@ -339,6 +346,104 @@ def _finish_recorded_residual_cleanup(
     _remove_completed_state_file(record_path)
 
 
+def _legacy_worktree_is_clean(repo_root: pathlib.Path, branch: str) -> bool:
+    """Return whether an exact legacy source is safe for later cleanup.
+
+    Unavailable worktrees are preserved. A missing worktree means the branch
+    has no uncommitted filesystem state and remains eligible for cleanup.
+    """
+
+    located = run_command(
+        _git(
+            repo_root,
+            "for-each-ref",
+            "--format=%(worktreepath)",
+            f"refs/heads/{branch}",
+        ),
+        cwd=repo_root,
+    )
+    if located.returncode:
+        return False
+    raw = located.stdout.strip()
+    if not raw:
+        return True
+    worktree = pathlib.Path(raw)
+    status = run_command(
+        _git(worktree, "status", "--porcelain"),
+        cwd=repo_root,
+    )
+    return status.returncode == 0 and not status.stdout.strip()
+
+
+def _normalize_legacy_scope(
+    repo_root: pathlib.Path,
+    path: pathlib.Path,
+    *,
+    target_branch: str,
+) -> dict[str, Any] | None:
+    """Atomically convert the exact v1 schema into canonical v2 state.
+
+    Version 1 did not pin source tips or cleanup ownership. Only a clean branch
+    still contained in the legacy target can safely become cleanup-selected.
+    Evolved or unavailable sources are retained outside publication blockers
+    and destructive cleanup through the helper-owned ``preserved`` state.
+    """
+
+    raw = _read_scope(path)
+    if raw.get("version") != LEGACY_PENDING_WORK_SCOPE_VERSION:
+        return raw
+    if set(raw) != LEGACY_PENDING_WORK_SCOPE_FIELDS:
+        raise PendingWorkError(
+            "Version-1 pending-work scope must contain exactly version, "
+            "target_branch, target_commit, and source_branches."
+        )
+    recorded_branch = raw.get("target_branch")
+    recorded_commit = raw.get("target_commit")
+    source_branches = raw.get("source_branches")
+    if (
+        not isinstance(recorded_branch, str)
+        or recorded_branch != target_branch
+        or not isinstance(recorded_commit, str)
+        or ship.FULL_SHA_RE.fullmatch(recorded_commit.lower()) is None
+        or not isinstance(source_branches, list)
+        or not source_branches
+        or any(not isinstance(branch, str) or not branch for branch in source_branches)
+        or len(set(source_branches)) != len(source_branches)
+        or target_branch in source_branches
+    ):
+        raise PendingWorkError("Version-1 pending-work scope has invalid field values.")
+    recorded_commit = recorded_commit.lower()
+    _validate_branch(repo_root, recorded_branch)
+    for branch in source_branches:
+        _validate_branch(repo_root, branch)
+    if not _commit_exists(repo_root, recorded_commit):
+        raise PendingWorkError("Version-1 pending-work target commit is unavailable.")
+
+    normalized_sources: list[dict[str, str]] = []
+    for branch in sorted(source_branches):
+        if not _branch_exists(repo_root, branch):
+            continue
+        source = _source_record(repo_root, branch)
+        source["state"] = (
+            "retained"
+            if _is_ancestor(repo_root, source["commit"], recorded_commit)
+            and _legacy_worktree_is_clean(repo_root, branch)
+            else "preserved"
+        )
+        normalized_sources.append(source)
+    if not normalized_sources:
+        _remove_completed_state_file(path)
+        return None
+    normalized = {
+        "version": ship.PENDING_WORK_SCOPE_VERSION,
+        "target_branch": recorded_branch,
+        "target_commit": recorded_commit,
+        "sources": normalized_sources,
+    }
+    _write_scope(path, normalized)
+    return normalized
+
+
 def _validated_scope(
     repo_root: pathlib.Path,
     path: pathlib.Path,
@@ -597,9 +702,17 @@ def record_scope(
         }
 
     path = _scope_path(repo_root, target_branch)
+    raw_existing = (
+        _normalize_legacy_scope(
+            repo_root,
+            path,
+            target_branch=target_branch,
+        )
+        if path.is_file()
+        else None
+    )
     retained: list[dict[str, str]] = []
-    if path.is_file():
-        raw_existing = _read_scope(path)
+    if raw_existing is not None:
         recorded_target = raw_existing.get("target_commit")
         if (
             not isinstance(recorded_target, str)
@@ -714,6 +827,15 @@ def check_scope(
         )
     if not path.exists():
         return _ready_without_scope()
+    if (
+        _normalize_legacy_scope(
+            repo_root,
+            path,
+            target_branch=target_branch,
+        )
+        is None
+    ):
+        return _ready_without_scope()
     scope = _validated_scope(
         repo_root,
         path,
@@ -753,7 +875,13 @@ def prepare_scope(
     path = _scope_path(repo_root, target_branch)
     if not path.exists():
         return _ready_without_scope()
-    recorded_scope = _read_scope(path)
+    recorded_scope = _normalize_legacy_scope(
+        repo_root,
+        path,
+        target_branch=target_branch,
+    )
+    if recorded_scope is None:
+        return _ready_without_scope()
     recorded_commit = recorded_scope.get("target_commit")
     if (
         not isinstance(recorded_commit, str)
@@ -877,11 +1005,18 @@ def finalize_scope(
     )
     expected_root = (repo_root.parent / "worktrees" / repo_root.name).resolve()
     removed: list[str] = []
+    preserved: list[str] = []
     sources = list(scope["sources"])
     for source in sources:
         branch = str(source["branch"])
         if branch in {current_branch, target_branch}:
             raise PendingWorkError("Pending-work scope contains a protected branch.")
+        if source["state"] == "preserved":
+            preserved.append(branch)
+            remaining_scope = _remove_source_record(path, scope, branch)
+            if remaining_scope is not None:
+                scope = remaining_scope
+            continue
         if source["state"] == "retained":
             scope = _set_source_state(path, scope, branch, "deleting")
         worktree = _selected_worktree(repo_root, branch)
@@ -907,11 +1042,14 @@ def finalize_scope(
             scope = remaining_scope
     if expected_root.is_dir() and not any(expected_root.iterdir()):
         expected_root.rmdir()
-    return {
+    result: dict[str, object] = {
         "status": "finalized",
         "removed": removed,
         "pending_work_scope": "",
     }
+    if preserved:
+        result["preserved"] = preserved
+    return result
 
 
 def build_parser() -> argparse.ArgumentParser:

@@ -29,7 +29,7 @@ PHASES = ("prepared", "pr_ready", "gates_passed", "merged", "synchronized")
 FULL_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 PENDING_WORK_SCOPE_VERSION = 2
-PENDING_SOURCE_STATES = {"retained", "deleting"}
+PENDING_SOURCE_STATES = {"retained", "preserved", "deleting"}
 ACTION_LINK_RE = re.compile(
     r"/actions/runs/(?P<run>\d+)(?:/job/(?P<job>\d+))?"
 )
@@ -524,7 +524,7 @@ def _pending_work_findings(
     repo_root: pathlib.Path,
     scope: dict[str, Any],
 ) -> list[dict[str, str]]:
-    """Check only the source branches named by one normalized scope."""
+    """Check only cleanup-selected branches in one normalized scope."""
 
     target_commit = str(scope["target_commit"])
     findings: list[dict[str, str]] = []
@@ -532,6 +532,8 @@ def _pending_work_findings(
         branch = str(source["branch"])
         source_commit = str(source["commit"])
         source_state = str(source["state"])
+        if source_state == "preserved":
+            continue
         branch_ref = f"refs/heads/{branch}"
         exists = run_command(
             [
