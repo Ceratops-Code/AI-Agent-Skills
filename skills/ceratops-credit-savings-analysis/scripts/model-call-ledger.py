@@ -723,7 +723,7 @@ def bounded_command_label(command: str) -> str:
     """Return a secret-safe inner-command label with deterministic truncation."""
 
     protected = re.sub(
-        r"<user-home>[\\/]<local-path>",
+        r"<user-home>(?:[\\/])?<local-path>",
         LOCAL_PATH,
         redact_text(command),
     )

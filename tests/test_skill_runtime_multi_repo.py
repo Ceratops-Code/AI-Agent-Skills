@@ -3107,7 +3107,17 @@ def test_credit_analysis_lineage_allows_later_meta_analysis_without_recursion(
         extra_completed_turns=1,
         extra_calls_per_turn=2,
     )
-    _attach_prior_analysis_state(session_b, pathlib.Path(plan_a["state_path"]))
+    prior_state_path = pathlib.Path(plan_a["state_path"])
+    _attach_prior_analysis_state(session_b, prior_state_path)
+    raw_rows = [
+        json.loads(line)
+        for line in session_b.read_text(encoding="utf-8").splitlines()
+    ]
+    raw_state_paths = workflow.command_plan_orchestration.__globals__[
+        "_holistic_raw_state_paths_by_call"
+    ](raw_rows)
+    assert raw_state_paths["read-1"] == [prior_state_path]
+    assert raw_state_paths["read-2"] == [prior_state_path]
     runner_b = FakeCreditModelRunner(temporary_controls=False)
     plan_b = workflow.command_plan_orchestration(
         request_b,
@@ -4306,6 +4316,11 @@ def test_model_call_ledger_keeps_full_evidence_out_of_stdout(
 def test_model_call_ledger_usage_summary_is_ranked_and_evidence_based(
     tmp_path: pathlib.Path,
 ) -> None:
+    ledger = load_credit_analysis_workflow_module()._load_ledger()
+    assert (
+        ledger.bounded_command_label("rg sentinel <user-home><local-path>")
+        == "rg sentinel <local-path>"
+    )
     session = tmp_path / "session.jsonl"
     evidence = tmp_path / "usage-evidence.json"
     unpriced_evidence = tmp_path / "unpriced-evidence.json"

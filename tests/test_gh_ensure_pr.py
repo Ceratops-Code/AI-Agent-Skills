@@ -508,10 +508,16 @@ class ShipTests(unittest.TestCase):
 
     def pending_scope(self, target_commit: str) -> dict[str, object]:
         return {
-            "version": 1,
+            "version": ship.PENDING_WORK_SCOPE_VERSION,
             "target_branch": "release/local",
             "target_commit": target_commit,
-            "source_branches": ["selected"],
+            "sources": [
+                {
+                    "branch": "selected",
+                    "commit": target_commit,
+                    "state": "retained",
+                }
+            ],
         }
 
     def test_pending_work_finds_dirty_selected_worktree(self) -> None:
@@ -687,10 +693,21 @@ class ShipTests(unittest.TestCase):
             scope_path.write_text(
                 json.dumps(
                     {
-                        "version": 1,
+                        "version": ship.PENDING_WORK_SCOPE_VERSION,
                         "target_branch": "release/local",
                         "target_commit": self.commit,
-                        "source_branches": ["zeta", "alpha"],
+                        "sources": [
+                            {
+                                "branch": "zeta",
+                                "commit": "B" * 40,
+                                "state": "retained",
+                            },
+                            {
+                                "branch": "alpha",
+                                "commit": "C" * 40,
+                                "state": "deleting",
+                            },
+                        ],
                     }
                 ),
                 encoding="utf-8",
@@ -708,7 +725,21 @@ class ShipTests(unittest.TestCase):
         self.assertTrue(identity["enabled"])
         self.assertRegex(identity["scope_sha256"], r"^[0-9a-f]{64}$")
         assert scope is not None
-        self.assertEqual(scope["source_branches"], ["alpha", "zeta"])
+        self.assertEqual(
+            scope["sources"],
+            [
+                {
+                    "branch": "alpha",
+                    "commit": "c" * 40,
+                    "state": "deleting",
+                },
+                {
+                    "branch": "zeta",
+                    "commit": "b" * 40,
+                    "state": "retained",
+                },
+            ],
+        )
 
     def test_pending_work_mode_is_pinned_in_checkpoint(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

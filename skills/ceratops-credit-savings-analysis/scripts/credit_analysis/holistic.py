@@ -1812,12 +1812,53 @@ def _holistic_state_paths(value: Any) -> list[pathlib.Path]:
     return list(dict.fromkeys(found))
 
 
+def _holistic_raw_state_paths_by_call(
+    rows: Sequence[Mapping[str, Any]],
+) -> dict[str, list[pathlib.Path]]:
+    """Index transient structured state paths before evidence redaction.
+
+    Raw local paths are used only to load explicitly referenced controller state
+    and are never copied into retained evidence. Correlation IDs keep each path
+    bound to the model call whose tool result supplied it.
+    """
+
+    indexed: dict[str, list[pathlib.Path]] = {}
+    for row in rows:
+        if row.get("type") != "response_item":
+            continue
+        payload = row.get("payload")
+        if not isinstance(payload, Mapping):
+            continue
+        item_type = payload.get("type")
+        call_id = payload.get("call_id") or payload.get("id")
+        if (
+            not isinstance(item_type, str)
+            or not item_type.endswith("_output")
+            or not isinstance(call_id, str)
+            or not call_id
+        ):
+            continue
+        paths = _holistic_state_paths(
+            {
+                key: item
+                for key, item in payload.items()
+                if key not in {"call_id", "id", "type"}
+            }
+        )
+        if paths:
+            indexed[call_id] = list(
+                dict.fromkeys([*indexed.get(call_id, []), *paths])
+            )
+    return indexed
+
+
 def _holistic_prior_analysis_activity(
     evidence: Mapping[str, Any],
     *,
     current_analysis_id: str,
     surface_ids: Sequence[str],
     text_limit: int,
+    raw_state_paths_by_call: Mapping[str, Sequence[pathlib.Path]],
 ) -> tuple[list[dict[str, Any]], set[str]]:
     """Load referenced earlier controller telemetry without prompt-text markers."""
 
@@ -1827,15 +1868,20 @@ def _holistic_prior_analysis_activity(
     review_index = _review_record_index(evidence)
     for call in _all_calls(evidence):
         call_id = str(call["call_id"])
-        review_payloads = [
-            review_index[record_id].get("content")
+        review_records = [
+            review_index[record_id]
             for record_id in call.get("model_review_record_ids", [])
             if record_id in review_index
         ]
+        review_payloads = [record.get("content") for record in review_records]
         state_paths = _holistic_state_paths(
             [call.get("tool_results", []), *review_payloads]
         )
-        for unresolved in state_paths:
+        for record in review_records:
+            record_call_id = record.get("call_id")
+            if isinstance(record_call_id, str):
+                state_paths.extend(raw_state_paths_by_call.get(record_call_id, ()))
+        for unresolved in dict.fromkeys(state_paths):
             try:
                 state_path = unresolved.expanduser().resolve(strict=True)
             except OSError:
@@ -1940,6 +1986,7 @@ def _collect_holistic_evidence(
     cutoff = dt.datetime.now(dt.timezone.utc).isoformat(timespec="microseconds")
     try:
         rows, source_fingerprint = ledger.load_rows_with_fingerprint(request["session"])
+        raw_state_paths_by_call = _holistic_raw_state_paths_by_call(rows)
         path_roots = ledger.review_path_roots(rows)
         collected = ledger.collect_session_evidence_from_rows(
             rows,
@@ -1972,6 +2019,7 @@ def _collect_holistic_evidence(
         current_analysis_id=analysis_id,
         surface_ids=surface_ids,
         text_limit=int(contract["chunking"]["compact_text_chars"]),
+        raw_state_paths_by_call=raw_state_paths_by_call,
     )
     evidence["analysis_generated_activity"] = prior_activity
     evidence["analysis_lineage"] = {
