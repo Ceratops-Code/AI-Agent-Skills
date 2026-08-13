@@ -97,13 +97,20 @@ selected merged source branches and worktrees.
    for a retained source, finalization atomically changes its state to
    `deleting`; an existing `deleting` branch first passes the same cleanliness
    and ancestry checks. Before removing a selected worktree, finalization
-   records its exact path. Automatic residual cleanup handles only the case
-   where Git unregisters the worktree but leaves that recorded directory. The
-   helper verifies that the path is unregistered and remains below the
-   canonical worktree root before deleting it. When the helper runs elevated,
-   the same cleanup may take ownership only of that validated path, without a
-   public flag or second confirmation. The helper removes the residual-cleanup
-   record only after verifying the path is absent. After successful branch
+   records its exact path, name, and any thread ID from its `.codex-thread`
+   file. Automatic residual cleanup handles only the case where Git unregisters
+   the worktree but leaves that recorded directory. The helper verifies that
+   the path is unregistered and remains below the canonical worktree root
+   before deleting it. When the helper runs elevated, the same cleanup may take
+   ownership only of that validated path, without a public flag or second
+   confirmation. Before retiring the residual-cleanup record, the helper
+   deletes task-temp subdirectories under
+   `<repo-parent>/tmp/<repo-name>` only when their names start with the recorded
+   worktree name or thread ID. It removes empty worktree and task-temp parent
+   directories only up to their nearest `worktrees`, `tmp`, or `temp` boundary
+   and never deletes the boundary itself. The helper removes the record only
+   after verifying the worktree path and matching task-temp directories are
+   absent. After successful branch
    deletion, it atomically removes the source record and deletes the scope after
    the final source is removed.
 8. After declared release publication or deployment succeeds, the helper

@@ -10928,6 +10928,9 @@ def test_pending_work_scope_is_selected_generic_and_finalized_late(
     assert run_git(repo, "init", "-b", "main").returncode == 0
     assert run_git(repo, "config", "user.email", "test@example.invalid").returncode == 0
     assert run_git(repo, "config", "user.name", "Test Agent").returncode == 0
+    (repo / ".git" / "info" / "exclude").write_text(
+        ".codex-thread\n", encoding="utf-8", newline="\n"
+    )
     (repo / "README.md").write_text("base\n", encoding="utf-8", newline="\n")
     assert run_git(repo, "add", "README.md").returncode == 0
     assert run_git(repo, "commit", "-m", "base").returncode == 0
@@ -10946,6 +10949,22 @@ def test_pending_work_scope_is_selected_generic_and_finalized_late(
         run_git(repo, "worktree", "add", str(unrelated_worktree), "unrelated").returncode
         == 0
     )
+    thread_id = "019ffd18-edc9-7c81-9a2c-4e07af2b2ca3"
+    (selected_worktree / ".codex-thread").write_text(
+        json.dumps({"name": "Selected work", "id": thread_id}) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    temp_boundary = tmp_path / "tmp"
+    task_temp_root = temp_boundary / repo.name
+    worktree_temp = task_temp_root / "selected-update-state"
+    thread_temp = task_temp_root / f"{thread_id}-evidence"
+    unrelated_temp = task_temp_root / "unrelated-task"
+    for directory in (worktree_temp, thread_temp, unrelated_temp):
+        directory.mkdir(parents=True)
+        (directory / "artifact.txt").write_text(
+            "temporary\n", encoding="utf-8", newline="\n"
+        )
     (selected_worktree / "README.md").write_text(
         "base\nselected\n",
         encoding="utf-8",
@@ -10990,6 +11009,28 @@ def test_pending_work_scope_is_selected_generic_and_finalized_late(
         loaded = runpy.run_path(str(MANAGE_PENDING_WORK))
     finally:
         sys.path.remove(lifecycle_scripts)
+    named_temp_boundary = tmp_path / "temp"
+    nested_temp = named_temp_boundary / "project" / "task"
+    nested_temp.mkdir(parents=True)
+    loaded["_remove_empty_parents"](
+        nested_temp,
+        boundary_names={"tmp", "temp"},
+    )
+    assert named_temp_boundary.is_dir()
+    assert not (named_temp_boundary / "project").exists()
+    boundary_free_path = (
+        pathlib.Path(tmp_path.anchor) / "__ceratops_boundary_test__" / "cache" / "task"
+    )
+    with pytest.raises(loaded["PendingWorkError"], match="directory boundary"):
+        loaded["_cleanup_boundary"](
+            boundary_free_path,
+            {"tmp", "temp"},
+        )
+    with pytest.raises(loaded["PendingWorkError"], match="directory boundary"):
+        loaded["_cleanup_boundary"](
+            boundary_free_path,
+            {"worktrees"},
+        )
     ship_module = loaded["ship"]
     unrelated_commit = run_git(repo, "rev-parse", "refs/heads/unrelated").stdout.strip()
     identity_scope = tmp_path / "identity-scope.json"
@@ -11270,6 +11311,11 @@ def test_pending_work_scope_is_selected_generic_and_finalized_late(
     assert unrelated_worktree.is_dir()
     assert run_git(repo, "show-ref", "--verify", "refs/heads/unrelated").returncode == 0
     assert not scope_path.exists()
+    assert not worktree_temp.exists()
+    assert not thread_temp.exists()
+    assert unrelated_temp.is_dir()
+    assert task_temp_root.is_dir()
+    assert temp_boundary.is_dir()
 
     assert run_git(repo, "branch", "recover-old", target_commit).returncode == 0
     recover_recorded = run_pending_work(
@@ -11390,7 +11436,19 @@ def test_pending_work_scope_is_selected_generic_and_finalized_late(
 
     assert run_git(repo, "branch", "legacy-clean", descendant_target).returncode == 0
     assert run_git(repo, "branch", "legacy-dirty", descendant_target).returncode == 0
+    shutil.rmtree(unrelated_temp)
+    legacy_clean_worktree = worktree_root / "legacy-clean"
     legacy_dirty_worktree = worktree_root / "legacy-dirty"
+    assert (
+        run_git(
+            repo,
+            "worktree",
+            "add",
+            str(legacy_clean_worktree),
+            "legacy-clean",
+        ).returncode
+        == 0
+    )
     assert (
         run_git(
             repo,
@@ -11400,6 +11458,16 @@ def test_pending_work_scope_is_selected_generic_and_finalized_late(
             "legacy-dirty",
         ).returncode
         == 0
+    )
+    (legacy_clean_worktree / ".codex-thread").write_text(
+        json.dumps({"name": "Legacy clean", "id": thread_id}) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    legacy_temp = task_temp_root / "legacy-clean-checks"
+    legacy_temp.mkdir(parents=True)
+    (legacy_temp / "result.json").write_text(
+        "{}\n", encoding="utf-8", newline="\n"
     )
     (legacy_dirty_worktree / "README.md").write_text(
         "base\nselected\nlegacy dirty\n",
@@ -11523,6 +11591,10 @@ def test_pending_work_scope_is_selected_generic_and_finalized_late(
         run_git(repo, "show-ref", "--verify", "refs/heads/legacy-new").returncode
         != 0
     )
+    assert not legacy_clean_worktree.exists()
+    assert not legacy_temp.exists()
+    assert not task_temp_root.exists()
+    assert temp_boundary.is_dir()
     assert legacy_dirty_worktree.is_dir()
     assert "legacy dirty" in (legacy_dirty_worktree / "README.md").read_text(
         encoding="utf-8"
@@ -11726,7 +11798,7 @@ def test_pending_work_finalization_persists_partial_cleanup_progress(
         repo_root: pathlib.Path,
         record_path: pathlib.Path,
     ) -> None:
-        _, _, worktree, _ = loaded["_read_residual_cleanup_record"](
+        _, _, worktree, _, _, _, _ = loaded["_read_residual_cleanup_record"](
             repo_root, record_path
         )
         residual_cleanup_steps.append("ownership")
@@ -11777,6 +11849,8 @@ def test_pending_work_finalization_persists_partial_cleanup_progress(
     assert resumed["removed"] == ["selected-b"]
     assert not scope_path.exists()
     assert run_git(repo, "show-ref", "--verify", "refs/heads/selected-b").returncode != 0
+    assert not worktree_root.exists()
+    assert (tmp_path / "worktrees").is_dir()
 
     assert run_git(repo, "branch", "crash-delete", target_commit).returncode == 0
     crash_recorded = run_pending_work(

@@ -5,7 +5,7 @@ Scope files live under the repository's common Git directory and persist the
 exact source tips approved for one integration target plus helper-owned cleanup
 state. Unrelated branches and worktrees are never enumerated. Finalization
 removes only clean selected worktrees under the repository's expected worktree
-root and merged branches.
+root, their identity-matched task-temp directories, and merged branches.
 """
 
 from __future__ import annotations
@@ -19,6 +19,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import uuid
 from typing import Any
 
 from github_pr_workflow import ship
@@ -34,7 +35,7 @@ class PendingWorkError(RuntimeError):
     """Raised when selected-scope persistence or cleanup is unsafe."""
 
 
-RESIDUAL_CLEANUP_RECORD_VERSION = 1
+RESIDUAL_CLEANUP_RECORD_VERSION = 2
 LEGACY_PENDING_WORK_SCOPE_VERSION = 1
 LEGACY_PENDING_WORK_SCOPE_FIELDS = {
     "version",
@@ -47,7 +48,10 @@ RESIDUAL_CLEANUP_RECORD_FIELDS = {
     "scope",
     "branch",
     "worktree_path",
+    "worktree_name",
+    "thread_id",
     "expected_root",
+    "task_temp_root",
 }
 ADMINISTRATORS_SID = "*S-1-5-32-544"
 
@@ -154,6 +158,132 @@ def _is_reparse(path: pathlib.Path, attributes: os.stat_result) -> bool:
     )
 
 
+def _cleanup_boundary(
+    path: pathlib.Path,
+    boundary_names: set[str],
+) -> pathlib.Path:
+    """Resolve the nearest named ancestor that empty cleanup must preserve."""
+
+    if not path.is_absolute():
+        raise PendingWorkError(f"Cleanup path must be absolute: {path}")
+    boundary = next(
+        (
+            candidate
+            for candidate in (path, *path.parents)
+            if candidate.name.casefold() in boundary_names
+        ),
+        None,
+    )
+    if boundary is None:
+        names = ", ".join(sorted(boundary_names))
+        raise PendingWorkError(f"Cleanup path has no {names} directory boundary: {path}")
+    attributes = _lstat(boundary)
+    if attributes is None or not stat.S_ISDIR(attributes.st_mode):
+        raise PendingWorkError(f"Cleanup boundary is not a directory: {boundary}")
+    if _is_reparse(boundary, attributes):
+        raise PendingWorkError(f"Cleanup boundary is a reparse point: {boundary}")
+    return boundary
+
+
+def _remove_empty_parents(
+    path: pathlib.Path,
+    *,
+    boundary_names: set[str],
+) -> None:
+    """Remove empty real directories below, but never including, a named boundary."""
+
+    boundary = _cleanup_boundary(path, boundary_names)
+    current = path
+    while current != boundary:
+        attributes = _lstat(current)
+        if attributes is None:
+            current = current.parent
+            continue
+        if not stat.S_ISDIR(attributes.st_mode) or _is_reparse(current, attributes):
+            raise PendingWorkError(f"Empty-folder cleanup target is unsafe: {current}")
+        try:
+            if any(current.iterdir()):
+                return
+            current.rmdir()
+        except OSError as exc:
+            raise PendingWorkError(
+                f"Could not remove empty cleanup directory {current}: {exc}"
+            ) from exc
+        current = current.parent
+
+
+def _worktree_thread_id(worktree: pathlib.Path) -> str | None:
+    """Read the canonical thread UUID before Git removes its worktree metadata."""
+
+    marker = worktree / ".codex-thread"
+    attributes = _lstat(marker)
+    if attributes is None:
+        return None
+    if not stat.S_ISREG(attributes.st_mode) or _is_reparse(marker, attributes):
+        raise PendingWorkError(f"Worktree thread marker is not a regular file: {marker}")
+    try:
+        value = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise PendingWorkError(f"Could not read worktree thread marker {marker}: {exc}") from exc
+    raw_id = value.get("id") if isinstance(value, dict) else None
+    if not isinstance(raw_id, str) or not raw_id:
+        raise PendingWorkError(f"Worktree thread marker has no valid ID: {marker}")
+    try:
+        return str(uuid.UUID(raw_id))
+    except ValueError as exc:
+        raise PendingWorkError(f"Worktree thread marker has an invalid ID: {marker}") from exc
+
+
+def _remove_matching_task_temp_directories(
+    repo_root: pathlib.Path,
+    task_temp_root: pathlib.Path,
+    *,
+    worktree_name: str,
+    thread_id: str | None,
+) -> None:
+    """Remove direct task-temp children matching one recorded worktree identity."""
+
+    canonical_root = (repo_root.parent / "tmp" / repo_root.name).resolve()
+    if task_temp_root != canonical_root:
+        raise PendingWorkError("Residual-cleanup record has an unexpected task-temp root.")
+    attributes = _lstat(task_temp_root)
+    if attributes is None:
+        return
+    _cleanup_boundary(task_temp_root, {"tmp", "temp"})
+    if not stat.S_ISDIR(attributes.st_mode) or _is_reparse(task_temp_root, attributes):
+        raise PendingWorkError(f"Task-temp root is not a real directory: {task_temp_root}")
+    prefixes = tuple(
+        value.casefold()
+        for value in (worktree_name, thread_id)
+        if isinstance(value, str) and value
+    )
+    for candidate in sorted(task_temp_root.iterdir(), key=lambda item: item.name.casefold()):
+        if not candidate.name.casefold().startswith(prefixes):
+            continue
+        candidate_attributes = _lstat(candidate)
+        if candidate_attributes is None:
+            continue
+        if _is_reparse(candidate, candidate_attributes):
+            raise PendingWorkError(f"Matching task-temp directory is a reparse point: {candidate}")
+        if not stat.S_ISDIR(candidate_attributes.st_mode):
+            continue
+        shutil.rmtree(candidate)
+        if _lstat(candidate) is not None:
+            raise PendingWorkError(f"Task-temp directory still exists after cleanup: {candidate}")
+    for candidate in task_temp_root.iterdir():
+        if not candidate.name.casefold().startswith(prefixes):
+            continue
+        candidate_attributes = _lstat(candidate)
+        if candidate_attributes is not None and (
+            stat.S_ISDIR(candidate_attributes.st_mode)
+            or _is_reparse(candidate, candidate_attributes)
+        ):
+            raise PendingWorkError(
+                f"Matching task-temp directory still exists after cleanup: {candidate}"
+            )
+    _remove_empty_parents(task_temp_root, boundary_names={"tmp", "temp"})
+
+
 def _validate_worktree_path(
     path: pathlib.Path,
     expected_root: pathlib.Path,
@@ -195,7 +325,15 @@ def _registered_worktree_paths(repo_root: pathlib.Path) -> set[pathlib.Path]:
 def _read_residual_cleanup_record(
     repo_root: pathlib.Path,
     record_path: pathlib.Path,
-) -> tuple[pathlib.Path, str, pathlib.Path, pathlib.Path]:
+) -> tuple[
+    pathlib.Path,
+    str,
+    pathlib.Path,
+    pathlib.Path,
+    str,
+    str | None,
+    pathlib.Path,
+]:
     """Validate one residual-cleanup record against repository topology."""
 
     if record_path.is_symlink() or not record_path.is_file():
@@ -212,7 +350,18 @@ def _read_residual_cleanup_record(
         or value.get("version") != RESIDUAL_CLEANUP_RECORD_VERSION
         or any(
             not isinstance(value.get(field), str) or not value[field]
-            for field in ("scope", "branch", "worktree_path", "expected_root")
+            for field in (
+                "scope",
+                "branch",
+                "worktree_path",
+                "worktree_name",
+                "expected_root",
+                "task_temp_root",
+            )
+        )
+        or (
+            value.get("thread_id") is not None
+            and (not isinstance(value["thread_id"], str) or not value["thread_id"])
         )
     ):
         raise PendingWorkError("Residual-cleanup record has invalid structure.")
@@ -220,10 +369,26 @@ def _read_residual_cleanup_record(
     _validate_branch(repo_root, branch)
     scope = pathlib.Path(value["scope"])
     worktree = pathlib.Path(value["worktree_path"])
+    worktree_name = value["worktree_name"]
+    thread_id = value["thread_id"]
     expected_root = pathlib.Path(value["expected_root"])
+    task_temp_root = pathlib.Path(value["task_temp_root"])
     canonical_root = (repo_root.parent / "worktrees" / repo_root.name).resolve()
     if expected_root != canonical_root:
         raise PendingWorkError("Residual-cleanup record has an unexpected root.")
+    canonical_temp_root = (repo_root.parent / "tmp" / repo_root.name).resolve()
+    if task_temp_root != canonical_temp_root:
+        raise PendingWorkError("Residual-cleanup record has an unexpected task-temp root.")
+    if worktree_name != worktree.name:
+        raise PendingWorkError("Residual-cleanup record has an unexpected worktree name.")
+    if thread_id is not None:
+        try:
+            if str(uuid.UUID(thread_id)) != thread_id:
+                raise ValueError
+        except ValueError as exc:
+            raise PendingWorkError(
+                "Residual-cleanup record has an invalid thread ID."
+            ) from exc
     expected_record = _residual_cleanup_record_path(scope, branch).resolve()
     if record_path.resolve() != expected_record:
         raise PendingWorkError("Residual-cleanup record has an unexpected path.")
@@ -236,7 +401,16 @@ def _read_residual_cleanup_record(
     if scope.parent.resolve() != promotions:
         raise PendingWorkError("Residual-cleanup record has an unexpected scope.")
     _validate_worktree_path(worktree, expected_root, allow_inaccessible=True)
-    return scope, branch, worktree, expected_root
+    _cleanup_boundary(expected_root, {"worktrees"})
+    return (
+        scope,
+        branch,
+        worktree,
+        expected_root,
+        worktree_name,
+        thread_id,
+        task_temp_root,
+    )
 
 
 def _write_residual_cleanup_record(
@@ -249,21 +423,36 @@ def _write_residual_cleanup_record(
     """Persist exact identity before automatic residual cleanup can be needed."""
 
     record_path = _residual_cleanup_record_path(scope, branch)
+    worktree_name = worktree.name
+    thread_id = _worktree_thread_id(worktree)
+    task_temp_root = (repo_root.parent / "tmp" / repo_root.name).resolve()
     record = {
         "version": RESIDUAL_CLEANUP_RECORD_VERSION,
         "scope": str(scope.resolve()),
         "branch": branch,
         "worktree_path": str(worktree),
+        "worktree_name": worktree_name,
+        "thread_id": thread_id,
         "expected_root": str(expected_root),
+        "task_temp_root": str(task_temp_root),
     }
     if record_path.exists():
-        _, existing_branch, existing_worktree, existing_root = (
-            _read_residual_cleanup_record(repo_root, record_path)
-        )
+        (
+            _,
+            existing_branch,
+            existing_worktree,
+            existing_root,
+            existing_worktree_name,
+            existing_thread_id,
+            existing_task_temp_root,
+        ) = _read_residual_cleanup_record(repo_root, record_path)
         if (
             existing_branch != branch
             or existing_worktree != worktree
             or existing_root != expected_root
+            or existing_worktree_name != worktree_name
+            or existing_thread_id != thread_id
+            or existing_task_temp_root != task_temp_root
         ):
             raise PendingWorkError("Residual-cleanup record has conflicting identity.")
         return record_path
@@ -311,7 +500,7 @@ def _run_recorded_residual_cleanup(
 ) -> None:
     """Revalidate and remove one unregistered residual worktree directory."""
 
-    _, branch, worktree, expected_root = _read_residual_cleanup_record(
+    _, branch, worktree, expected_root, _, _, _ = _read_residual_cleanup_record(
         repo_root, record_path
     )
     _validate_worktree_path(worktree, expected_root, allow_inaccessible=False)
@@ -332,7 +521,15 @@ def _finish_recorded_residual_cleanup(
 ) -> None:
     """Run automatic residual cleanup and retire its record after absence."""
 
-    _, branch, worktree, _ = _read_residual_cleanup_record(repo_root, record_path)
+    (
+        _,
+        branch,
+        worktree,
+        _,
+        worktree_name,
+        thread_id,
+        task_temp_root,
+    ) = _read_residual_cleanup_record(repo_root, record_path)
     registered = _selected_worktree(repo_root, branch)
     if registered is not None or worktree in _registered_worktree_paths(repo_root):
         raise PendingWorkError("Refusing to clean up a registered worktree path.")
@@ -343,6 +540,12 @@ def _finish_recorded_residual_cleanup(
         _run_recorded_residual_cleanup(repo_root, record_path)
     if _lstat(worktree) is not None:
         raise PendingWorkError("Residual worktree directory still exists after cleanup.")
+    _remove_matching_task_temp_directories(
+        repo_root,
+        task_temp_root,
+        worktree_name=worktree_name,
+        thread_id=thread_id,
+    )
     _remove_completed_state_file(record_path)
 
 
@@ -1040,8 +1243,7 @@ def finalize_scope(
         remaining_scope = _remove_source_record(path, scope, branch)
         if remaining_scope is not None:
             scope = remaining_scope
-    if expected_root.is_dir() and not any(expected_root.iterdir()):
-        expected_root.rmdir()
+    _remove_empty_parents(expected_root, boundary_names={"worktrees"})
     result: dict[str, object] = {
         "status": "finalized",
         "removed": removed,
