@@ -638,8 +638,11 @@ def record_scope(
                         }
                     ],
                 }
-        existing = _recover_completed_deletions(repo_root, path, existing)
-        if existing is not None:
+        recovered_existing = _recover_completed_deletions(
+            repo_root, path, existing
+        )
+        if recovered_existing is not None:
+            existing = recovered_existing
             candidate_existing = {**existing, "target_commit": target_commit}
             existing_findings = ship._pending_work_findings(
                 repo_root, candidate_existing
@@ -717,9 +720,10 @@ def check_scope(
         target_branch=target_branch,
         target_commit=target_commit,
     )
-    scope = _recover_completed_deletions(repo_root, path, scope)
-    if scope is None:
+    recovered_scope = _recover_completed_deletions(repo_root, path, scope)
+    if recovered_scope is None:
         return _ready_without_scope()
+    scope = recovered_scope
     findings = ship._pending_work_findings(repo_root, scope)
     if findings:
         return {
@@ -898,7 +902,9 @@ def finalize_scope(
             cwd=repo_root,
         )
         removed.append(branch)
-        scope = _remove_source_record(path, scope, branch)
+        remaining_scope = _remove_source_record(path, scope, branch)
+        if remaining_scope is not None:
+            scope = remaining_scope
     if expected_root.is_dir() and not any(expected_root.iterdir()):
         expected_root.rmdir()
     return {
