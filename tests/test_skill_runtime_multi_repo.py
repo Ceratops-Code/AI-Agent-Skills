@@ -8341,6 +8341,11 @@ def test_integrated_ship_delegates_admin_semantics_to_merge_owner(
                 message=None,
             )
         if command[1:3] == ["run", "view"]:
+            assert command[-2:] == [
+                "--json",
+                "status,conclusion,headSha,url,name,workflowName,jobs",
+            ]
+            assert "--jq" not in command
             return argparse.Namespace(
                 ok=True,
                 data={
@@ -8352,6 +8357,26 @@ def test_integrated_ship_delegates_admin_semantics_to_merge_owner(
                     ),
                     "name": "CI",
                     "workflowName": "CI",
+                    "jobs": [
+                        {
+                            "databaseId": 84,
+                            "name": "validate",
+                            "conclusion": None,
+                            "url": (
+                                "https://github.com/example/repository/"
+                                "actions/runs/42/job/84"
+                            ),
+                        },
+                        {
+                            "databaseId": 85,
+                            "name": "other",
+                            "conclusion": "success",
+                            "url": (
+                                "https://github.com/example/repository/"
+                                "actions/runs/42/job/85"
+                            ),
+                        },
+                    ],
                 },
                 message=None,
             )
@@ -8383,6 +8408,16 @@ def test_integrated_ship_delegates_admin_semantics_to_merge_owner(
         "pending"
     )
     assert ambiguous_payload["diagnostic"]["action_run"]["head_matches"] is True
+    assert ambiguous_payload["diagnostic"]["action_run"]["matching_jobs"] == [
+        {
+            "database_id": 84,
+            "name": "validate",
+            "conclusion": None,
+            "url": (
+                "https://github.com/example/repository/actions/runs/42/job/84"
+            ),
+        }
+    ]
     assert validation_times[:2] == [0.0, 0.0]
     assert validation_times[-1] == 60.0
 

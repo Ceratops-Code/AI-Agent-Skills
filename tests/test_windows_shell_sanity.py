@@ -100,6 +100,33 @@ class WindowsShellSanityTests(unittest.TestCase):
         )
         self.assertEqual(SANITY.analyze_command(rewritten).rewrites, ())
 
+    def test_existing_static_quoted_executable_gets_call_operator_once(self):
+        with tempfile.TemporaryDirectory() as directory:
+            executable = pathlib.Path(directory) / "quoted tool.exe"
+            executable.write_bytes(b"")
+            quoted = SANITY.powershell_quote(str(executable))
+            command = f"{quoted} --version"
+
+            analysis = SANITY.analyze_command(command)
+            payload = self.hook_result(command)
+
+            self.assertEqual(analysis.command, f"& {quoted} --version")
+            self.assertEqual(analysis.rewrites, ("static_quoted_executable",))
+            self.assertEqual(SANITY.analyze_command(analysis.command).rewrites, ())
+            self.assertIsNotNone(payload)
+            assert payload is not None
+            self.assertEqual(self.rewritten_command(payload), analysis.command)
+
+            missing = SANITY.powershell_quote(str(executable.with_name("missing.exe")))
+            self.assertEqual(
+                SANITY.analyze_command(f"{missing} --version").rewrites,
+                (),
+            )
+            self.assertEqual(
+                SANITY.analyze_command(f"Write-Output {quoted} --version").rewrites,
+                (),
+            )
+
     def test_combined_ranges_remain_blocked(self):
         command = "Get-Content x | Select-Object -Index (0..2, 8..10)"
 

@@ -79,7 +79,10 @@ selected merged source branches and worktrees.
    pending-work blockers and destructive cleanup. An absent or proven-empty
    scope is a cleanup no-op.
 4. (D) The delegated GitHub workflow owns deterministic, decision-complete
-   PR-gate resolution for the exact head.
+   PR-gate resolution for the exact head. It reads linked Actions runs with
+   argument-array `gh run view --json jobs` calls, matches affected jobs inside
+   the helper, and returns bounded run and job evidence without shell-evaluated
+   `--jq`.
 5. Only after those gates pass, integrated ship delegates the final exact-head
    merge to `merge.merge_verified_pr(admin=True)`. It inherits the shared
    merge action's checkpointed dedicated-endpoint bypass, restoration, read-back,

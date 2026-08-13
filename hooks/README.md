@@ -47,9 +47,12 @@ PowerShell preflight used by Codex shell calls. It can run as a Codex
 `PreToolUse` hook or as a direct wrapper around one PowerShell command.
 
 The helper reduces repeated model correction without hiding native command
-errors. It applies exact rewrites before execution, adds targeted guidance only
-after ordinary failures, and blocks only findings that can produce an
-unreliable result or violate the active structured-command policy.
+errors. It applies closed command-text rewrites before execution, adds targeted
+guidance only after ordinary failures, and blocks only findings that can produce
+an unreliable result or violate the active structured-command policy.
+Model-generated PowerShell text remains subject to this preflight. Helper-owned
+workflows invoke executables with argument arrays and parse structured output in
+their owner; PowerShell scripts and pipelines remain PowerShell.
 
 For `Docs-and-Claims`, `pdf-form-tools`, and `PixelTops-Skills`, hook mode also
 resolves the event `cwd` through Git's common directory and replaces each
@@ -98,6 +101,7 @@ appends one compact hint for each matched finding.
 
 | Finding | Disposition | Behavior |
 | --- | --- | --- |
+| `static_quoted_executable` | Rewrite | Adds PowerShell's call operator only when a single-quoted absolute `.exe`, `.com`, `.cmd`, or `.bat` path exists at a command boundary and is followed by arguments. Dynamic, missing, and data-position paths remain unchanged. |
 | `complex_inline_script` | Annotate on failure | Runs through encoded transport; suggests a named helper only when execution fails. |
 | `structured_powershell_oneliner` | Block | Enforces the active rule against loops combined with parsing, filtering, or aggregation one-liners. |
 | `bash_heredoc` | Annotate on failure | Preserves PowerShell's parser error and explains the PowerShell here-string alternative. |

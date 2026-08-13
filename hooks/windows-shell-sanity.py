@@ -140,6 +140,12 @@ INLINE_SCRIPT_RE = re.compile(
 HERE_STRING_RE = re.compile(
     r"(?ms)@(?P<quote>['\"])[ \t]*\r?\n.*?^(?P=quote)@[ \t]*(?:\r?$)"
 )
+STATIC_QUOTED_EXECUTABLE_RE = re.compile(
+    r"(?P<prefix>(?:\A|[;\r\n|])[ \t]*)"
+    r"(?P<quoted>'(?P<path>(?:''|[^'\r\n])+?\.(?:exe|com|cmd|bat))')"
+    r"(?=[ \t]+[^\s;|]+)",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -264,11 +270,44 @@ def _safe_static_path(token: str) -> bool:
     return not any(character in value for character in "*?[]")
 
 
+def _plan_static_quoted_executable_rewrites(
+    command: str,
+    masked: str,
+) -> list[Rewrite]:
+    """Add ``&`` only for a provable malformed executable invocation.
+
+    Existence, an absolute executable suffix, a command boundary, and trailing
+    arguments distinguish invocation intent from ordinary PowerShell string
+    data. Dynamic, missing, nested, and here-string paths remain unchanged.
+    """
+
+    rewrites: list[Rewrite] = []
+    here_strings = tuple(HERE_STRING_RE.finditer(command))
+    for match in STATIC_QUOTED_EXECUTABLE_RE.finditer(command):
+        prefix_start, prefix_end = match.span("prefix")
+        quoted_start = match.start("quoted")
+        if masked[prefix_start:prefix_end] != command[prefix_start:prefix_end]:
+            continue
+        if any(item.start() <= quoted_start < item.end() for item in here_strings):
+            continue
+        executable = match.group("path").replace("''", "'")
+        if (
+            not ntpath.isabs(executable)
+            or any(character in executable for character in "*?[]")
+            or not os.path.isfile(executable)
+        ):
+            continue
+        rewrites.append(
+            Rewrite("static_quoted_executable", quoted_start, quoted_start, "& ")
+        )
+    return rewrites
+
+
 def plan_rewrites(command: str) -> list[Rewrite]:
     """Return only closed rewrites whose replacement semantics are known."""
 
     masked = mask_non_code(command)
-    rewrites: list[Rewrite] = []
+    rewrites = _plan_static_quoted_executable_rewrites(command, masked)
 
     for match in SELECT_INDEX_BARE_RANGE_RE.finditer(masked):
         start, end = match.span("range")
@@ -839,16 +878,17 @@ def run_hook() -> int:
     if is_wrapped_command(command):
         return 0
 
+    analysis = analyze_command(command)
     project = target_project_for_cwd(event.get("cwd"))
     pc_python: str | None = None
     python_rewrites: list[Rewrite] = []
     if project is not None:
         try:
-            invocations = python_executable_invocations(command)
+            invocations = python_executable_invocations(analysis.command)
             if invocations:
                 pc_python = canonical_pc_python()
                 python_rewrites = plan_python_redirects(
-                    command,
+                    analysis.command,
                     invocations,
                     pc_python,
                 )
@@ -864,8 +904,14 @@ def run_hook() -> int:
             )
             return 0
 
-    analysis = analyze_command(command, python_rewrites)
     python_redirected = bool(python_rewrites)
+    if python_redirected:
+        redirected = analyze_command(analysis.command, python_rewrites)
+        analysis = Analysis(
+            command=redirected.command,
+            rewrites=analysis.rewrites + redirected.rewrites,
+            findings=redirected.findings,
+        )
     if python_redirected:
         assert pc_python is not None
         try:

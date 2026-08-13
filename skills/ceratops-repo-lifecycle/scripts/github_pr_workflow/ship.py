@@ -1029,12 +1029,27 @@ def _check_uncertainty_detail(
                 "--repo",
                 repository,
                 "--json",
-                "status,conclusion,headSha,url,name,workflowName",
+                "status,conclusion,headSha,url,name,workflowName,jobs",
             ],
             "gh run view",
             cwd=repo_root,
         )
         if action_result.ok and isinstance(action_result.data, dict):
+            jobs = action_result.data.get("jobs")
+            matching_jobs = (
+                [
+                    {
+                        "database_id": job.get("databaseId"),
+                        "name": job.get("name"),
+                        "conclusion": job.get("conclusion"),
+                        "url": job.get("url"),
+                    }
+                    for job in jobs[:50]
+                    if isinstance(job, dict) and job.get("name") in target_names
+                ]
+                if isinstance(jobs, list)
+                else []
+            )
             action_run = {
                 "run_id": run_id,
                 "status": action_result.data.get("status"),
@@ -1044,6 +1059,7 @@ def _check_uncertainty_detail(
                 "url": action_result.data.get("url"),
                 "name": action_result.data.get("name"),
                 "workflow": action_result.data.get("workflowName"),
+                "matching_jobs": matching_jobs,
             }
         else:
             action_diagnostic = (
