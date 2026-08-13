@@ -124,8 +124,29 @@ def _run_finalization(
             os.chdir(previous_cwd)
 
 
-def _operation_checkpoint_path(scope: pathlib.Path, phase: str) -> pathlib.Path:
-    """Return one scope-owned completed-operation record path."""
+def _operation_checkpoint_directory(repo_root: pathlib.Path) -> pathlib.Path:
+    """Return the repository-owned directory for completed operations."""
+
+    result = subprocess.run(
+        ["git", "-C", str(repo_root), "rev-parse", "--git-common-dir"],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    lines = result.stdout.strip().splitlines()
+    if result.returncode or not lines:
+        raise RepositoryShipError("Could not resolve the repository Git directory.")
+    common_dir = pathlib.Path(lines[0])
+    if not common_dir.is_absolute():
+        common_dir = repo_root / common_dir
+    return common_dir.resolve() / "codex" / "repository-lifecycle" / "operations"
+
+
+def _operation_checkpoint_path(
+    repo_root: pathlib.Path, target_commit: str, phase: str
+) -> pathlib.Path:
+    """Return one exact-target record independent of optional cleanup scope."""
 
     suffixes = {
         "release_publication": ".release-publication.json",
@@ -135,7 +156,10 @@ def _operation_checkpoint_path(scope: pathlib.Path, phase: str) -> pathlib.Path:
         suffix = suffixes[phase]
     except KeyError as exc:
         raise RepositoryShipError(f"Unknown checkpoint phase: {phase}") from exc
-    return scope.with_suffix(suffix)
+    normalized_commit = target_commit.lower()
+    if github_ship.FULL_SHA_RE.fullmatch(normalized_commit) is None:
+        raise RepositoryShipError("Operation checkpoint requires a full commit SHA.")
+    return _operation_checkpoint_directory(repo_root) / f"{normalized_commit}{suffix}"
 
 
 def _operation_checkpoint_temporary_path(path: pathlib.Path) -> pathlib.Path:
@@ -551,7 +575,6 @@ def ship_repository(args: argparse.Namespace) -> dict[str, object]:
         pending_scope,
         args.commit,
     )
-    checkpoint_scope = pending_scope
     _require_cleanup_safe_caller(repo_root, pending_scope)
     ship_code, shipped = _run_json(
         _ship_command(
@@ -611,9 +634,9 @@ def ship_repository(args: argparse.Namespace) -> dict[str, object]:
 
     release_checkpoint: pathlib.Path | None = None
     release_identity: dict[str, object] | None = None
-    if checkpoint_scope is not None and release_publication is None:
+    if release_publication is None:
         release_checkpoint = _operation_checkpoint_path(
-            checkpoint_scope, "release_publication"
+            repo_root, target_commit, "release_publication"
         )
         release_identity = _operation_identity(
             repo_root,
@@ -663,9 +686,9 @@ def ship_repository(args: argparse.Namespace) -> dict[str, object]:
 
     deployment_checkpoint: pathlib.Path | None = None
     deployment_identity: dict[str, object] | None = None
-    if checkpoint_scope is not None and deployment is None:
+    if deployment is None:
         deployment_checkpoint = _operation_checkpoint_path(
-            checkpoint_scope, "deployment"
+            repo_root, target_commit, "deployment"
         )
         deployment_identity = _operation_identity(
             repo_root,

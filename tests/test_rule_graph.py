@@ -19,6 +19,7 @@ SCRIPTS = (
 )
 sys.path.insert(0, str(SCRIPTS))
 
+import validate_rule_candidate as rule_candidate  # noqa: E402
 from apply_rules_update import ApplicationError, commit, prepare  # noqa: E402
 from rule_graph import (  # noqa: E402
     parse_rule_text,
@@ -551,6 +552,35 @@ class RuleGraphTests(unittest.TestCase):
         )
 
     def test_rules_update_can_repair_an_invalid_current_stack(self):
+        with tempfile.TemporaryDirectory() as dependency_directory:
+            source_repository = pathlib.Path(dependency_directory)
+            skill_root = (
+                source_repository / "skills" / "ceratops-governance-lifecycle"
+            )
+            executable = (
+                source_repository
+                / "node_modules"
+                / ".bin"
+                / ("markdownlint.cmd" if rule_candidate.os.name == "nt" else "markdownlint")
+            )
+            executable.parent.mkdir(parents=True)
+            executable.write_text("", encoding="utf-8", newline="\n")
+            manifest = source_repository / "skills" / "skill-sections.json"
+            manifest.parent.mkdir(parents=True, exist_ok=True)
+            manifest.write_text("{}\n", encoding="utf-8", newline="\n")
+            with (
+                mock.patch.object(rule_candidate, "SKILL_ROOT", skill_root),
+                mock.patch.object(
+                    rule_candidate,
+                    "SKILL_MARKDOWN_CONFIGURATION",
+                    SCRIPTS.parent / "references" / ".markdownlint.json",
+                ),
+                mock.patch.object(rule_candidate.shutil, "which", return_value=None),
+            ):
+                policy = resolve_markdown_policy(None)
+            self.assertEqual(
+                pathlib.Path(policy["validate_command"][0]), executable.resolve()
+            )
         current = (
             "- [LOCAL-01] Use the selected mechanism unless the user "
             "explicitly asks otherwise.\n"

@@ -235,7 +235,14 @@ def _markdownlint_executable() -> str:
     """Resolve the policy engine without borrowing target-repository tooling."""
 
     command = "markdownlint.cmd" if os.name == "nt" else "markdownlint"
-    executable = shutil.which(command) or shutil.which("markdownlint")
+    source_repository = SKILL_ROOT.parents[1]
+    source_manifest = source_repository / "skills" / "skill-sections.json"
+    source_executable = source_repository / "node_modules" / ".bin" / command
+    executable = (
+        str(source_executable.resolve())
+        if source_manifest.is_file() and source_executable.is_file()
+        else shutil.which(command) or shutil.which("markdownlint")
+    )
     if executable is None:
         raise RuleCandidateValidationError(
             "skill Markdown validator is unavailable: install markdownlint-cli"

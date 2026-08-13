@@ -10082,6 +10082,7 @@ def test_repository_ship_release_failure_blocks_deployment_and_cleanup(
 ) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
+    assert run_git(repo, "init").returncode == 0
     write_release_contract(
         repo,
         {
@@ -10140,31 +10141,30 @@ def test_repository_ship_release_failure_blocks_deployment_and_cleanup(
     loaded = runpy.run_path(str(SHIP_REPOSITORY))
     ship_repository = loaded["ship_repository"]
     ship_repository.__globals__["_run_json"] = run_json
+    args = argparse.Namespace(
+        repo_root=repo,
+        repo="example/repository",
+        head_branch="release/local",
+        base_branch="main",
+        remote_name="origin",
+        commit="a" * 40,
+        title=None,
+        body=None,
+        merge_method="merge",
+        delete_branch=False,
+        reusable_head=True,
+        release_contract=pathlib.Path("release/release.yml"),
+        release_preflight_operation="preflight",
+        release_operation="publish",
+        deploy_contract=pathlib.Path("deploy/deploy.yml"),
+        deploy_operation="deploy",
+        ci_wait_seconds=1,
+        review_wait_seconds=1,
+        review_replies_request=None,
+        interval_seconds=1,
+    )
     with pytest.raises(loaded["RepositoryShipError"]) as captured:
-        ship_repository(
-            argparse.Namespace(
-                repo_root=repo,
-                repo="example/repository",
-                head_branch="release/local",
-                base_branch="main",
-                remote_name="origin",
-                commit="a" * 40,
-                title=None,
-                body=None,
-                merge_method="merge",
-                delete_branch=False,
-                reusable_head=True,
-                release_contract=pathlib.Path("release/release.yml"),
-                release_preflight_operation="preflight",
-                release_operation="publish",
-                deploy_contract=pathlib.Path("deploy/deploy.yml"),
-                deploy_operation="deploy",
-                ci_wait_seconds=1,
-                review_wait_seconds=1,
-                review_replies_request=None,
-                interval_seconds=1,
-            )
-        )
+        ship_repository(args)
 
     assert captured.value.payload["phase"] == "release_publication"
     assert captured.value.payload["remote_mutation"] is True
@@ -10172,6 +10172,41 @@ def test_repository_ship_release_failure_blocks_deployment_and_cleanup(
     assert str(RELEASE_OPERATION) in commands[-1]
     assert "publish" in commands[-1]
     assert all(str(DEPLOY_OPERATION) not in command for command in commands)
+
+    published = {"status": "published", "operation": "publish", "steps": []}
+    deploy_error = {"status": "error", "message": "deployment failed"}
+    preflight = {"status": "checked", "operation": "preflight", "steps": []}
+    responses = [
+        (0, preflight),
+        (0, prepared),
+        (0, shipped),
+        (0, published),
+        (1, deploy_error),
+    ]
+    commands.clear()
+    with pytest.raises(loaded["RepositoryShipError"]) as captured:
+        ship_repository(args)
+
+    assert captured.value.payload["phase"] == "deployment"
+    release_checkpoint = loaded["_operation_checkpoint_path"](
+        repo, "a" * 40, "release_publication"
+    )
+    assert release_checkpoint.is_file()
+
+    deployed = {"status": "deployed", "operation": "deploy", "steps": []}
+    responses = [
+        (0, preflight),
+        (0, prepared),
+        (0, {**shipped, "status": "already_shipped"}),
+        (0, deployed),
+    ]
+    commands.clear()
+    resumed = ship_repository(args)
+
+    assert resumed["release_publication"] == published
+    assert resumed["deployment"] == deployed
+    assert all("publish" not in command for command in commands)
+    assert not release_checkpoint.exists()
 
 
 @pytest.mark.parametrize("late_phase", ["post_sync", "post_finalize"])
@@ -10183,6 +10218,7 @@ def test_repository_ship_late_pending_work_reports_remote_mutation(
 ) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
+    assert run_git(repo, "init").returncode == 0
     (repo / "deploy").mkdir()
     (repo / "deploy" / "deploy.yml").write_text(
         "version: 1\noperations: {}\n",
@@ -10318,7 +10354,9 @@ def test_repository_ship_late_pending_work_reports_remote_mutation(
             operation="deploy",
         )
         loaded["_write_operation_checkpoint"](
-            scope.with_suffix(".deployment.json"),
+            loaded["_operation_checkpoint_path"](
+                repo, "a" * 40, "deployment"
+            ),
             stale_identity,
             {"status": "deployed", "operation": "deploy", "steps": ["old"]},
         )
@@ -10346,8 +10384,12 @@ def test_repository_ship_late_pending_work_reports_remote_mutation(
         assert "finalize" in commands[6]
         assert result["release_publication"] == published
         assert result["deployment"] == deployed
-        release_checkpoint = scope.with_suffix(".release-publication.json")
-        deployment_checkpoint = scope.with_suffix(".deployment.json")
+        release_checkpoint = loaded["_operation_checkpoint_path"](
+            repo, "a" * 40, "release_publication"
+        )
+        deployment_checkpoint = loaded["_operation_checkpoint_path"](
+            repo, "a" * 40, "deployment"
+        )
         assert release_checkpoint.is_file()
         assert deployment_checkpoint.is_file()
         release_temporary = release_checkpoint.with_suffix(
