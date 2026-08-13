@@ -2603,11 +2603,18 @@ def test_credit_analysis_normalizes_sol_transport_without_changing_judgments(
         ) -> dict[str, Any]:
             result = super()._sol(task, packet, digest)
             call_order = [row[1] for row in packet["call_inventory"]["rows"]]
-            plausible_candidate_id = next(
-                str(candidate["id"])
+            packet_candidates = [
+                candidate
                 for luna_result in packet["luna_results"]
                 for candidate in luna_result["candidates"]
+            ]
+            self.reclassified_candidate_index = next(
+                index
+                for index, candidate in enumerate(packet_candidates)
                 if candidate["kind"] == "plausible-risk"
+            )
+            plausible_candidate_id = str(
+                packet_candidates[self.reclassified_candidate_index]["id"]
             )
             moved_review = result["temporary_control_reviews"].pop(2)
             result["temporary_control_reviews"][0][
@@ -2772,8 +2779,14 @@ def test_credit_analysis_normalizes_sol_transport_without_changing_judgments(
         for review in final["temporary_control_reviews"]
         for candidate_id in review["source_luna_candidate_ids"]
     ]
-    assert len(reviewed_sources) == 6
+    assert len(reviewed_sources) == 7
     assert len(reviewed_sources) == len(set(reviewed_sources))
+    assert (
+        final["candidate_decisions"][runner.reclassified_candidate_index][
+            "luna_candidate_id"
+        ]
+        in reviewed_sources
+    )
     final_findings = {
         finding["id"]: finding for finding in final["confirmed_findings"]
     }

@@ -4426,10 +4426,10 @@ def _validate_holistic_sol_result(
         review_by_id[review_id] = normalized_review
     if (
         len(reviewed_temporary) != len(set(reviewed_temporary))
-        or set(reviewed_temporary) != set(temporary_candidate_ids)
+        or not set(temporary_candidate_ids) <= set(reviewed_temporary)
     ):
         raise CreditAnalysisError(
-            "temporary-control review coverage is missing, duplicated, or invalid"
+            "temporary-control review coverage is missing or duplicated"
         )
     nonfinding_temporary_sources = {
         candidate_id
@@ -4818,23 +4818,12 @@ def _holistic_restore_sol_transport(
         )
     )
 
-    temporary_candidate_ids = {
-        candidate_id
-        for candidate_id, candidate in luna_candidates.items()
-        if candidate.get("kind") == "temporary-control"
-    }
     reviews: list[dict[str, Any]] = []
     for review in restored["temporary_control_reviews"]:
         sources = sorted(
-            [
-                str(item)
-                for item in review["source_luna_candidate_ids"]
-                if str(item) in temporary_candidate_ids
-            ],
+            [str(item) for item in review["source_luna_candidate_ids"]],
             key=lambda item: candidate_position.get(item, len(candidate_position)),
         )
-        if not sources:
-            continue
         surfaces = {
             surface
             for candidate_id in sources
@@ -4862,16 +4851,9 @@ def _holistic_restore_sol_transport(
 
     merges: list[dict[str, Any]] = []
     for merge in restored["temporary_control_merges"]:
-        review_ids = [
-            str(review_id)
-            for review_id in merge["review_ids"]
-            if str(review_id) in review_by_id
-        ]
-        if not review_ids:
-            continue
         surfaces = {
             surface
-            for review_id in review_ids
+            for review_id in merge["review_ids"]
             for surface in review_by_id.get(str(review_id), {}).get(
                 "contributing_surfaces",
                 [],
@@ -4880,7 +4862,6 @@ def _holistic_restore_sol_transport(
         merges.append(
             {
                 **merge,
-                "review_ids": review_ids,
                 "contributing_surfaces": [
                     surface for surface in surface_order if surface in surfaces
                 ],
