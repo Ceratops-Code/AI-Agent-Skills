@@ -91,8 +91,8 @@ GROUP_SPLIT_PATTERN = re.compile(
 )
 MDX_CONFIG_PATTERN = re.compile(
     r'\{\s*key:\s*"(?P<key>[^"]+)",\s*'
-    r'type:\s*"(?P<type>(?:\\.|[^"])*)",\s*'
-    r'description:\s*"(?P<description>(?:\\.|[^"])*)",\s*\}',
+    r'type:\s*"(?P<type>(?:\\.|[^"\\])*)",\s*'
+    r'description:\s*"(?P<description>(?:\\.|[^"\\])*)",\s*\}',
     re.DOTALL,
 )
 

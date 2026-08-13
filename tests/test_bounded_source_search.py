@@ -265,6 +265,34 @@ class ManagedOpenAIDocsRetrievalTests(unittest.TestCase):
         )
 
     def test_claims_use_opened_page_evidence_and_citable_urls(self):
+        escaped = r"\!" * 512
+        for malformed in (
+            '{{key:"!",type:"' + escaped,
+            '{{key:"!",type:"",description:"' + escaped,
+        ):
+            self.assertFalse(
+                any(
+                    block.heading and block.heading.startswith("Configuration key ")
+                    for block in OPENAI_DOCS._markdown_blocks(malformed)[1]
+                )
+            )
+        _, config_blocks, _ = OPENAI_DOCS._markdown_blocks(
+            r'{ key: "approval_policy", type: "string", '
+            r'description: "Use \"never\".", }'
+        )
+        self.assertEqual(
+            [
+                (block.heading, block.text)
+                for block in config_blocks
+                if block.heading and block.heading.startswith("Configuration key ")
+            ],
+            [
+                (
+                    "Configuration key approval_policy",
+                    r'approval_policy (string): Use \"never\".',
+                )
+            ],
+        )
         search = FakeDocumentationSearch(
             [
                 self.hit(
