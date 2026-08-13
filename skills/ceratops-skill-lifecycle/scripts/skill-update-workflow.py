@@ -3,8 +3,10 @@
 
 The helper records the caller's pre-existing Git baseline before source edits,
 then verifies that only declared paths changed and that undeclared dirty state
-was preserved. Prepare collects declared pytest nodes without running tests.
-Checks use closed structured forms and run without a shell.
+was preserved. One changed in-scope snapshot may start a correction generation
+after success; it invalidates the earlier success before checks and cannot be
+reopened after passing. Prepare collects declared pytest nodes without running
+tests. Checks use closed structured forms and run without a shell.
 Source files are never patched, staged, committed, installed, promoted, or
 rolled back. Prepare records exact cleanup ownership beneath the verified task
 temp root, verify retains detailed evidence, and finalize is the caller's
@@ -69,7 +71,7 @@ CLEANUP_FIELDS = {
     "protected_artifacts",
 }
 OWNED_ARTIFACT_FIELDS = {"role", "path", "sha256"}
-VERIFICATION_FIELDS = {"status", "evidence_sha256"}
+VERIFICATION_FIELDS = {"status", "evidence_sha256", "input_sha256", "generation"}
 DISPOSABLE_ROLES = {"request", "state", "evidence"}
 SKILL_NAME_RE = re.compile(
     r"^(?![a-z0-9-]*--)[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$"
@@ -835,10 +837,25 @@ def _validated_verification(value: object) -> dict[str, object] | None:
     if not isinstance(value, Mapping):
         raise UpdateExecutionError("state verification must be null or an object")
     _closed_fields(value, VERIFICATION_FIELDS, "state verification")
-    if value.get("status") != "passed":
-        raise UpdateExecutionError("state verification status must be passed")
-    if not _valid_sha256(value.get("evidence_sha256")):
-        raise UpdateExecutionError("state verification evidence hash is invalid")
+    status = value.get("status")
+    if status not in {"passed", "pending", "invalidated"}:
+        raise UpdateExecutionError("state verification status is invalid")
+    evidence_sha256 = value.get("evidence_sha256")
+    if status == "passed":
+        if not _valid_sha256(evidence_sha256):
+            raise UpdateExecutionError("state verification evidence hash is invalid")
+    elif evidence_sha256 is not None:
+        raise UpdateExecutionError("non-passed verification has an evidence hash")
+    if not _valid_sha256(value.get("input_sha256")):
+        raise UpdateExecutionError("state verification input hash is invalid")
+    generation = value.get("generation")
+    if (
+        not isinstance(generation, int)
+        or isinstance(generation, bool)
+        or generation not in {0, 1}
+        or (status != "passed" and generation != 1)
+    ):
+        raise UpdateExecutionError("state verification generation is invalid")
     return dict(value)
 
 
@@ -880,8 +897,8 @@ def _validated_state(path: pathlib.Path) -> dict[str, object]:
     branch, head = _verify_task_worktree(repo_root)
     if raw["branch"] != branch:
         raise UpdateExecutionError("task branch changed after prepare")
-    if raw["head"] != head:
-        raise UpdateExecutionError("task HEAD changed after prepare")
+    if raw["head"] != head and raw["verification"] is None:
+        raise UpdateExecutionError("task HEAD changed before successful verification")
     allowed = _string_list(raw["allowed_paths"], "state allowed_paths")
     selected = _string_list(raw["selected_skills"], "state selected_skills")
     for skill in selected:
@@ -1031,6 +1048,71 @@ def _baseline_changes(state: Mapping[str, object]) -> tuple[list[str], list[dict
     return changed, group_results
 
 
+def _verification_surface_sha256(state: Mapping[str, object]) -> str:
+    """Hash HEAD plus every prepared or currently dirty path without judging scope."""
+
+    repo_root = pathlib.Path(str(state["repo_root"]))
+    allowed_paths = state["allowed_paths"]
+    assert isinstance(allowed_paths, list)
+    observed = sorted(set(allowed_paths) | _dirty_paths(repo_root))
+    payload = {
+        "head": _git(repo_root, "rev-parse", "HEAD").strip(),
+        "paths": {path: _snapshot(repo_root, path) for path in observed},
+    }
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _verification_input(
+    state: Mapping[str, object],
+) -> tuple[str, list[str], list[dict[str, object]]]:
+    """Validate and hash one complete prepared verification surface."""
+
+    changed, groups = _baseline_changes(state)
+    repo_root = pathlib.Path(str(state["repo_root"]))
+    head = _git(repo_root, "rev-parse", "HEAD").strip()
+    if head != state["head"]:
+        ancestor = _run(
+            [
+                "git",
+                "-C",
+                str(repo_root),
+                "merge-base",
+                "--is-ancestor",
+                str(state["head"]),
+                head,
+            ],
+            cwd=repo_root,
+        )
+        if ancestor.returncode:
+            raise UpdateExecutionError("task HEAD is not a descendant of prepared HEAD")
+        committed = {
+            path
+            for path in _git(
+                repo_root,
+                "diff",
+                "--name-only",
+                "--no-renames",
+                f"{state['head']}..{head}",
+            ).splitlines()
+            if path
+        }
+        allowed_paths = state["allowed_paths"]
+        assert isinstance(allowed_paths, list)
+        allowed = set(allowed_paths)
+        broadened = sorted(committed - allowed)
+        if broadened:
+            raise UpdateExecutionError(
+                f"committed path is outside prepared scope: {broadened[0]}"
+            )
+    return _verification_surface_sha256(state), changed, groups
+
+
 def _bounded(value: str) -> str:
     return value if len(value) <= MAX_CAPTURE else value[:MAX_CAPTURE] + "\n[truncated]"
 
@@ -1124,8 +1206,6 @@ class CheckFailure(UpdateExecutionError):
 def command_verify(state_path: pathlib.Path, evidence_path: pathlib.Path) -> None:
     state = _validated_state(state_path)
     repo_root = pathlib.Path(str(state["repo_root"]))
-    if state["verification"] is not None:
-        raise UpdateExecutionError("state already records successful verification")
     cleanup = state["cleanup"]
     assert isinstance(cleanup, Mapping)
     owned_artifacts = cleanup["owned_artifacts"]
@@ -1136,14 +1216,55 @@ def command_verify(state_path: pathlib.Path, evidence_path: pathlib.Path) -> Non
     resolved_evidence = _absolute(evidence_path)
     if resolved_evidence != evidence_record["path"]:
         raise UpdateExecutionError("evidence output differs from prepared ownership")
+    input_sha256 = _verification_surface_sha256(state)
+    verification = state["verification"]
+    generation = 0
+    terminal_error: str | None = None
+    if verification is not None:
+        assert isinstance(verification, Mapping)
+        status = verification["status"]
+        generation = int(verification["generation"])
+        if status == "invalidated":
+            raise UpdateExecutionError("state is permanently invalidated")
+        if status == "passed":
+            if input_sha256 == verification["input_sha256"]:
+                raise UpdateExecutionError(
+                    "prepared scope has not changed since successful verification"
+                )
+            if generation == 1:
+                status = "invalidated"
+                terminal_error = "prepared scope changed after the correction generation"
+            else:
+                status = "pending"
+                generation = 1
+            state["verification"] = {
+                "status": status,
+                "evidence_sha256": None,
+                "input_sha256": input_sha256,
+                "generation": 1,
+            }
+            state["cleanup"] = _cleanup_payload(cleanup)
+            _write_json_atomic(_absolute(state_path), state, "state output")
+        elif status == "pending" and input_sha256 != verification["input_sha256"]:
+            state["verification"] = {
+                "status": "pending",
+                "evidence_sha256": None,
+                "input_sha256": input_sha256,
+                "generation": 1,
+            }
+            state["cleanup"] = _cleanup_payload(cleanup)
+            _write_json_atomic(_absolute(state_path), state, "state output")
     changed: list[str] = []
     groups: list[dict[str, object]] = []
     results: list[dict[str, object]] = []
-    failures: list[str] = []
-    try:
-        changed, groups = _baseline_changes(state)
-    except UpdateExecutionError as exc:
-        failures.append(str(exc))
+    failures: list[str] = [terminal_error] if terminal_error else []
+    if not failures:
+        try:
+            validated_input, changed, groups = _verification_input(state)
+            if validated_input != input_sha256:
+                failures.append("prepared scope changed before checks started")
+        except UpdateExecutionError as exc:
+            failures.append(str(exc))
     checks = state["checks"]
     assert isinstance(checks, list)
     for raw_check in (checks if not failures else []):
@@ -1167,14 +1288,22 @@ def command_verify(state_path: pathlib.Path, evidence_path: pathlib.Path) -> Non
             break
     if not failures or results:
         try:
-            _baseline_changes(state)
+            final_input_sha256, final_changed, final_groups = _verification_input(state)
+            if (
+                final_input_sha256 != input_sha256
+                or final_changed != changed
+                or final_groups != groups
+            ):
+                failures.append("prepared scope changed while checks were running")
         except UpdateExecutionError as exc:
             failures.append(str(exc))
     evidence = {
         "schema": EVIDENCE_SCHEMA,
         "status": "failed" if failures else "passed",
         "branch": state["branch"],
-        "head": state["head"],
+        "head": _git(repo_root, "rev-parse", "HEAD").strip(),
+        "generation": generation,
+        "input_sha256": input_sha256,
         "selected_skills": state["selected_skills"],
         "changed_paths": changed,
         "change_groups": groups,
@@ -1187,6 +1316,8 @@ def command_verify(state_path: pathlib.Path, evidence_path: pathlib.Path) -> Non
     state["verification"] = {
         "status": "passed",
         "evidence_sha256": _file_sha256(resolved_evidence),
+        "input_sha256": input_sha256,
+        "generation": generation,
     }
     state["cleanup"] = _cleanup_payload(cleanup)
     _write_json_atomic(_absolute(state_path), state, "state output")
@@ -1223,7 +1354,7 @@ def command_finalize(state_path: pathlib.Path) -> None:
         repo_root=repo_root,
     )
     verification = _validated_verification(raw["verification"])
-    if verification is None:
+    if verification is None or verification["status"] != "passed":
         raise UpdateExecutionError("refusing to finalize before successful verification")
     artifacts = cleanup["owned_artifacts"]
     assert isinstance(artifacts, list)

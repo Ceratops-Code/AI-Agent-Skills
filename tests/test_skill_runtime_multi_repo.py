@@ -5927,6 +5927,106 @@ def test_skill_update_workflow_preserves_baseline_runs_checks_once_and_finalizes
     assert check_log.read_text(encoding="utf-8").splitlines() == ["run"]
     assert baseline.read_text(encoding="utf-8") == "keep me\n"
 
+    unchanged = run_skill_update_workflow(
+        "verify",
+        "--state",
+        str(state_path),
+        "--evidence-output",
+        str(evidence_path),
+    )
+    assert unchanged.returncode == 2
+    assert "has not changed since successful verification" in unchanged.stderr
+    assert check_log.read_text(encoding="utf-8").splitlines() == ["run"]
+
+    outside_scope = worktree / "skills" / "beta-tool" / "notes.txt"
+    outside_scope.write_text("Changed notes\n", encoding="utf-8", newline="\n")
+    assert run_git(worktree, "add", "skills/beta-tool/notes.txt").returncode == 0
+    assert run_git(worktree, "commit", "-m", "outside scope").returncode == 0
+    broadened = run_skill_update_workflow(
+        "verify",
+        "--state",
+        str(state_path),
+        "--evidence-output",
+        str(evidence_path),
+    )
+    assert broadened.returncode == 2
+    assert "committed path is outside prepared scope" in broadened.stderr
+    pending_state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert pending_state["verification"]["status"] == "pending"
+    assert pending_state["verification"]["generation"] == 1
+    assert check_log.read_text(encoding="utf-8").splitlines() == ["run"]
+    blocked_pending = run_skill_update_workflow(
+        "finalize",
+        "--state",
+        str(state_path),
+    )
+    assert blocked_pending.returncode == 2
+    assert "before successful verification" in blocked_pending.stderr
+    assert run_git(worktree, "revert", "--no-edit", "HEAD").returncode == 0
+
+    helper.write_text(
+        "VALUE = 2\n# lint correction\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    assert run_git(
+        worktree,
+        "add",
+        "skills/alpha-tool/scripts/tool.py",
+    ).returncode == 0
+    assert run_git(worktree, "commit", "-m", "lint correction").returncode == 0
+    corrected = run_skill_update_workflow(
+        "verify",
+        "--state",
+        str(state_path),
+        "--evidence-output",
+        str(evidence_path),
+    )
+    assert corrected.returncode == 0, corrected.stderr
+    corrected_state_text = state_path.read_text(encoding="utf-8")
+    corrected_evidence_text = evidence_path.read_text(encoding="utf-8")
+    corrected_state = json.loads(corrected_state_text)
+    assert corrected_state["verification"]["status"] == "passed"
+    assert corrected_state["verification"]["generation"] == 1
+    assert check_log.read_text(encoding="utf-8").splitlines() == ["run", "run"]
+
+    helper.write_text(
+        "VALUE = 2\n# later change\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    exhausted = run_skill_update_workflow(
+        "verify",
+        "--state",
+        str(state_path),
+        "--evidence-output",
+        str(evidence_path),
+    )
+    assert exhausted.returncode == 2
+    assert "changed after the correction generation" in exhausted.stderr
+    assert check_log.read_text(encoding="utf-8").splitlines() == ["run", "run"]
+    blocked_state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert blocked_state["verification"]["status"] == "invalidated"
+    assert blocked_state["verification"]["generation"] == 1
+    blocked_finalize = run_skill_update_workflow(
+        "finalize",
+        "--state",
+        str(state_path),
+    )
+    assert blocked_finalize.returncode == 2
+    assert "before successful verification" in blocked_finalize.stderr
+    helper.write_text(
+        "VALUE = 2\n# lint correction\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    state_path.write_text(corrected_state_text, encoding="utf-8", newline="\n")
+    evidence_path.write_text(
+        corrected_evidence_text,
+        encoding="utf-8",
+        newline="\n",
+    )
+
     undeclared_input = task_temp_root / "user-input.txt"
     undeclared_input.write_text("preserve\n", encoding="utf-8", newline="\n")
     outside_evidence = scope / "outside-evidence.json"

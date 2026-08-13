@@ -90,7 +90,14 @@ repo docs, then update the narrowest correct source that exists.
   source drift, collect every declared pytest node before edits without
   executing tests, run the declared checks once, treat declared zero-match
   searches as success, write detailed evidence, and emit only `OK` or one
-  compact actionable error. Do not use it for skill-local text-only updates.
+  compact actionable error. After a passed verification, `verify` may start one
+  correction generation only when the current task HEAD or complete prepared
+  scope snapshot differs from the passed evidence. It must atomically make the
+  earlier success non-finalizable before correction checks, accept only the
+  prepared HEAD or a descendant whose committed paths stay declared, rerun the
+  declared checks, preserve retryable pending state on failure, reject unchanged
+  retries and scope broadening, and permanently invalidate state changed after
+  the correction generation. Do not use it for skill-local text-only updates.
 - Update skills, shared sections, manifest, runtime payloads, runtime generation
   or validation scripts, helper-runtime files or claims, contracts, and repo
   docs only where ownership requires it.
