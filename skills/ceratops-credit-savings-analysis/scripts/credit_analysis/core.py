@@ -934,6 +934,12 @@ def _validate_request(
     task_root = _task_directory(request.get("task_temp_root"), "task_temp_root")
     state_path = task_root / "state.json"
     evidence_path = _new_file(request.get("evidence_output"), "evidence output")
+    try:
+        evidence_path.relative_to(task_root)
+    except ValueError as exc:
+        raise CreditAnalysisError(
+            "evidence output must be inside task_temp_root"
+        ) from exc
     findings_dir = task_root / "findings"
     index_path = task_root / "findings.jsonl"
     context_dir = task_root / "context"

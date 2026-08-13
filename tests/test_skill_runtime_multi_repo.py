@@ -448,7 +448,7 @@ def credit_analysis_request(
     )
     task_root = tmp_path / f"analysis-{action}"
     task_root.mkdir()
-    evidence = tmp_path / f"evidence-{action}.json"
+    evidence = task_root / "evidence.json"
     request = tmp_path / f"request-{action}.json"
     write_json_file(
         request,
@@ -527,7 +527,7 @@ def credit_analysis_batch_request(
             "selector": selector,
             "as_of": as_of,
             "task_temp_root": str(task_root),
-            "manifest_output": str(tmp_path / f"batch-manifest-{name}.json"),
+            "manifest_output": str(task_root / "manifest.json"),
             "pricing_profile": None,
             "expected_surface_contract_version": 5,
             "expected_source_selection_contract_version": 1,
@@ -2941,6 +2941,24 @@ def test_credit_analysis_workflow_rejects_invalid_and_conflicting_passes(
     tmp_path: pathlib.Path,
 ) -> None:
     workflow = load_credit_analysis_workflow_module()
+    escaped_scope = tmp_path / "escaped-single-output"
+    escaped_scope.mkdir()
+    escaped_request, _, escaped_task_root = credit_analysis_request(escaped_scope)
+    escaped_payload = json.loads(escaped_request.read_text(encoding="utf-8"))
+    escaped_evidence = escaped_scope / "outside-evidence.json"
+    escaped_payload["evidence_output"] = str(escaped_evidence)
+    write_json_file(escaped_request, escaped_payload)
+    with pytest.raises(
+        workflow.CreditAnalysisError,
+        match="evidence output must be inside task_temp_root",
+    ):
+        workflow.command_plan_orchestration(
+            escaped_request,
+            available_models=holistic_model_catalog(),
+        )
+    assert not escaped_evidence.exists()
+    assert not (escaped_task_root / "state.json").exists()
+
     request, _, _ = credit_analysis_request(
         tmp_path,
         extra_completed_turns=2,
@@ -3432,7 +3450,7 @@ def test_credit_analysis_workflow_standalone_zero_findings_is_isolated(
             "action": "synthesis",
             "mode": "standalone",
             "task_temp_root": str(rejected_root),
-            "evidence_output": str(tmp_path / "synthesis-evidence.json"),
+            "evidence_output": str(rejected_root / "evidence.json"),
         },
     )
     rejected_synthesis = run_credit_analysis_workflow(
@@ -3594,7 +3612,7 @@ def test_credit_analysis_workflow_resolves_current_and_named_threads(
                     "turn_ids": [],
                 },
                 "task_temp_root": str(root),
-                "evidence_output": str(tmp_path / f"single-evidence-{name}.json"),
+                "evidence_output": str(root / "evidence.json"),
                 "pricing_profile": None,
                 "expected_surface_contract_version": 5,
                 "mutation_authority": False,
@@ -3829,6 +3847,9 @@ def test_credit_analysis_batch_selects_recent_threads_and_projects_once(
             assert len(manifest["items"]) == 7
             assert all(item["source_fingerprint"] for item in manifest["items"])
         for item in manifest["items"]:
+            assert pathlib.Path(item["evidence_path"]).parent == pathlib.Path(
+                item["state_path"]
+            ).parent
             evidence = json.loads(
                 pathlib.Path(item["evidence_path"]).read_text(encoding="utf-8")
             )
@@ -3851,6 +3872,32 @@ def test_credit_analysis_batch_selects_recent_threads_and_projects_once(
             ]
             assert "queue" not in child_state
         assert workflow.command_prepare_batch(request) == status
+
+    escaped_scope = tmp_path / "escaped-batch-output"
+    escaped_scope.mkdir()
+    escaped_request = credit_analysis_batch_request(
+        escaped_scope,
+        selector={
+            "kind": "recent_threads",
+            "count": 1,
+            "days": None,
+            "project": None,
+        },
+        name="escaped",
+    )
+    escaped_payload = json.loads(escaped_request.read_text(encoding="utf-8"))
+    escaped_manifest = escaped_scope / "outside-manifest.json"
+    escaped_payload["manifest_output"] = str(escaped_manifest)
+    write_json_file(escaped_request, escaped_payload)
+    with pytest.raises(
+        workflow.CreditAnalysisError,
+        match="batch manifest escapes task_temp_root",
+    ):
+        workflow.command_prepare_batch(escaped_request)
+    assert not escaped_manifest.exists()
+    assert not (
+        escaped_scope / "batch-escaped" / "batch-state.json"
+    ).exists()
 
     indexed_credit_analysis_session(
         codex_home,

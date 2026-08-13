@@ -91,6 +91,7 @@ def _batch_request_paths(
     if len(collisions) != len(set(collisions)):
         raise CreditAnalysisError("batch controller paths must be distinct")
     for key in (
+        "manifest",
         "requests_dir",
         "analyses_dir",
         "evidence_dir",
@@ -278,10 +279,11 @@ def _batch_item_paths(
 ) -> dict[str, pathlib.Path]:
     stem = f"{ordinal:03d}-{thread_id}"
     paths = state["paths"]
+    analysis_root = pathlib.Path(paths["analyses_dir"]) / stem
     return {
         "request": pathlib.Path(paths["requests_dir"]) / f"{stem}.json",
-        "analysis_root": pathlib.Path(paths["analyses_dir"]) / stem,
-        "evidence": pathlib.Path(paths["evidence_dir"]) / f"{stem}.json",
+        "analysis_root": analysis_root,
+        "evidence": analysis_root / "evidence.json",
     }
 
 
