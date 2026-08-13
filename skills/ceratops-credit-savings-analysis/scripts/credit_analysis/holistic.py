@@ -4075,6 +4075,64 @@ def _holistic_reconcile_findings(
     return normalized
 
 
+def _holistic_reconcile_orphaned_avoidable_calls(
+    classifications: Sequence[dict[str, Any]],
+    findings: Sequence[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, str], int]:
+    """Conservatively unassess avoidability that has no model-call finding.
+
+    The controller never invents a finding or savings claim. The caller's
+    existing unassessed-coverage gate still rejects broad inconsistencies.
+    """
+
+    finding_calls = {
+        call_id
+        for finding in findings
+        if finding["waste_kind"] == "model-calls"
+        for call_id in finding["affected_call_ids"]
+    }
+    normalized: list[dict[str, Any]] = []
+    for group in classifications:
+        for call_id in group["call_ids"]:
+            detail = {
+                key: value
+                for key, value in group.items()
+                if key != "call_ids"
+            }
+            if (
+                detail["classification"]
+                in {"avoidable_implemented", "avoidable_unimplemented"}
+                and call_id not in finding_calls
+            ):
+                detail.update(
+                    {
+                        "classification": "unassessed",
+                        "reason_code": None,
+                        "rationale": (
+                            "Sol marked this call avoidable but supplied no "
+                            "model-call finding; the controller conservatively "
+                            "left it unassessed."
+                        ),
+                    }
+                )
+            if normalized and all(
+                normalized[-1][key] == detail[key] for key in detail
+            ):
+                normalized[-1]["call_ids"].append(call_id)
+            else:
+                normalized.append({"call_ids": [call_id], **detail})
+    classification_by_call = {
+        call_id: str(group["classification"])
+        for group in normalized
+        for call_id in group["call_ids"]
+    }
+    unassessed = sum(
+        classification == "unassessed"
+        for classification in classification_by_call.values()
+    )
+    return normalized, classification_by_call, unassessed
+
+
 def _validate_holistic_sol_result(
     raw: Mapping[str, Any],
     *,
@@ -4132,6 +4190,9 @@ def _validate_holistic_sol_result(
             call_order=call_order,
             workstreams=workstreams,
         )
+    )
+    classifications, classification_by_call, unassessed = (
+        _holistic_reconcile_orphaned_avoidable_calls(classifications, findings)
     )
     maximum_unassessed = math.floor(
         len(call_order) * float(contract["coverage"]["maximum_unassessed_fraction"])

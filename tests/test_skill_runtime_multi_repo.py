@@ -2590,6 +2590,12 @@ def test_credit_analysis_normalizes_sol_transport_without_changing_judgments(
         ) -> dict[str, Any]:
             result = super()._sol(task, packet, digest)
             call_order = [row[1] for row in packet["call_inventory"]["rows"]]
+            volume_call = next(
+                call_id
+                for item in result["confirmed_findings"]
+                if item["waste_kind"] == "context-volume"
+                for call_id in item["affected_call_ids"]
+            )
             finding = next(
                 item
                 for item in result["confirmed_findings"]
@@ -2601,6 +2607,7 @@ def test_credit_analysis_normalizes_sol_transport_without_changing_judgments(
                 for group in result["call_classifications"]
                 if not group["classification"].startswith("avoidable_")
                 for call_id in group["call_ids"]
+                if call_id != volume_call
             )
             finding_calls = set(finding["affected_call_ids"])
             finding_calls.add(nonavoidable_call)
@@ -2633,6 +2640,27 @@ def test_credit_analysis_normalizes_sol_transport_without_changing_judgments(
                     }
                 )
             result["call_classifications"] = list(reversed(split_groups))
+            orphaned_groups: list[dict[str, Any]] = []
+            for group in result["call_classifications"]:
+                if volume_call not in group["call_ids"]:
+                    orphaned_groups.append(group)
+                    continue
+                remaining = [
+                    call_id
+                    for call_id in group["call_ids"]
+                    if call_id != volume_call
+                ]
+                if remaining:
+                    orphaned_groups.append({**group, "call_ids": remaining})
+                orphaned_groups.append(
+                    {
+                        **group,
+                        "call_ids": [volume_call],
+                        "classification": "avoidable_implemented",
+                        "reason_code": None,
+                    }
+                )
+            result["call_classifications"] = orphaned_groups
 
             review = next(
                 item
@@ -2689,6 +2717,11 @@ def test_credit_analysis_normalizes_sol_transport_without_changing_judgments(
         pathlib.Path(final["manifest"]["path"]).read_text(encoding="utf-8")
     )
     assert flattened == manifest["call_ids"]
+    assert sum(
+        len(group["call_ids"])
+        for group in final["call_classifications"]
+        if group["classification"] == "unassessed"
+    ) == 1
     assert all(
         finding["observed_avoidable_call_count"]
         == len(finding["affected_call_ids"])
