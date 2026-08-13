@@ -26,9 +26,6 @@ out.
 - Target repo `runtime_source_id` and `validation_profile` when the new skill is
   being integrated into a Ceratops-compatible repository.
 
-Infer missing inputs from the current repo structure and the user request before
-asking.
-
 ## Constraints
 
 ### Boundaries
@@ -125,6 +122,4 @@ Report only:
 
 - the new skill created
 - new shared sections or helper updates added with reasons
-- unresolved blockers or non-blocking debt
 - intentionally retained exceptions with reasons
-- anything important not verified

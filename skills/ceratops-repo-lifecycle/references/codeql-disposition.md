@@ -84,4 +84,3 @@ Report only:
 
 - repository, alert number, commit, rule, disposition, and final status
 - whether GitHub was mutated
-- blockers or anything important not verified

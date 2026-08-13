@@ -29,8 +29,6 @@ only partially cover.
 - High-risk surfaces such as public APIs, migrations, feature flags, rename
   waves, packaging, install flows, or generated artifacts.
 
-Infer missing inputs from repo state before asking.
-
 ## Constraints
 
 ### Skill-Specific Rules
@@ -53,7 +51,6 @@ Infer missing inputs from repo state before asking.
 - When git history or recent merge context is available, judge the current
   merged result against the latest target-branch state, not each branch in
   isolation.
-- Do not ask for credentials for normal local repo audits.
 - If external systems are genuinely needed, first exhaust local repo state,
   local git history, and no-auth metadata.
 
@@ -112,28 +109,17 @@ Check as many of these as the repo justifies:
   governance files. Treat lint or type output as consistency evidence, not as
   generic style findings.
 
-#### 4. Validate findings before reporting
+#### 4. Repair authorized findings
 
-- Prefer findings that point to exact conflicting artifacts, exact
-  inconsistency, actual risk, and the smallest credible fix.
-- Avoid style nits, naming preferences, or refactor suggestions unless they are
-  needed to resolve a real contradiction.
-- Distinguish confirmed findings from plausible but unverified risk areas.
-
-#### 5. Fix only when asked or clearly justified
-
-- Default to audit and report.
-- If the user asked to repair the repo or the smallest safe fix is already in
-  scope, apply the narrowest credible correction and rerun the relevant checks.
+- For an audit-and-fix request, apply the narrowest credible correction and
+  rerun only the relevant checks.
 - Escalate before risky deletions, broad rewrites, or behavior-changing
   interpretation choices.
 
-#### 6. Close with explicit coverage
+#### 5. Close with explicit coverage
 
 - Classify important checked surfaces as consistent, conflicting, blocked, or
   not verified.
-- If no findings remain, say so explicitly and note the residual coverage limits
-  instead of implying exhaustive certainty.
 
 ## Done When
 
@@ -161,10 +147,6 @@ Report only:
 - for each finding: conflicting artifacts, exact inconsistency, risk, and the
   smallest credible fix
 - important areas checked and found consistent
-- anything important not verified
-
-If no findings remain, say so explicitly and mention the main residual risk
-areas or coverage limits.
 
 ### Example Invocation
 

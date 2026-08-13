@@ -52,11 +52,9 @@ applies them.
   manifest.
 - The controller validates `gpt-5.6-luna` at medium effort and
   `gpt-5.6-sol` at maximum effort from the local Codex catalog. It launches
-  explicit-model, ephemeral, read-only, approval-free children, waits internally,
-  emits non-model progress, and owns every prompt, schema, evidence, event, and
-  result file. Accepted calls and attempts have immutable hashes and resumable
-  ledgers. Child prompts prohibit tools and mutation, and interruption or timeout
-  terminates the complete child process tree.
+  ephemeral, approval-free children and owns waiting, timeout, process-tree
+  termination, non-model progress, prompts, evidence, results, and telemetry.
+  Accepted calls and attempts retain immutable hashes and resumable ledgers.
 - Every selected call appears exactly once in one ordered compact causal packet.
   Luna receives 100% of those packets and performs high-recall discovery across
   the five fixed surfaces, returning only plausible findings, risks, and
@@ -108,11 +106,10 @@ applies them.
   Calls reviewed by every relevant surface without confirmed waste or a
   necessary exclusion are `reviewed-no-confirmed-waste`; this category is
   neither necessity nor savings.
-- Tie every confirmed finding to evidence call IDs, its producer and concrete
-  owner when known, a plain-language problem summary, one durable control,
-  implementation status, targeted verification, observed avoidable calls,
-  recurrence range, confidence, one-time implementation cost, and Minimal,
-  Low, Medium, or High ongoing complexity. Before proposing a missing control,
+- Add the credit-specific evidence IDs, implementation status, call counts,
+  recurrence, confidence, implementation cost, and ongoing-complexity fields
+  required by the controller schema and Output Contract. Before proposing a
+  missing control,
   validate its status against frozen current-source evidence for the relevant
   instructions, skills, automations, and helper contracts. When a durable
   safeguard already exists, mark the finding `implemented` and classify

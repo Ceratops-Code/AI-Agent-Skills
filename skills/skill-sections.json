@@ -3,7 +3,9 @@
   "validation_profile": "ceratops",
   "sections": {
     "core": "skills/sections/core.md",
-    "multi-action-skill": "skills/sections/multi-action-skill.md"
+    "multi-action-skill": "skills/sections/multi-action-skill.md",
+    "evidence-analysis": "skills/sections/evidence-analysis.md",
+    "bounded-model-analysis": "skills/sections/bounded-model-analysis.md"
   },
   "maintenance_workflows": {
     "shared_source_changes": [
@@ -40,18 +42,22 @@
       "core"
     ],
     "ceratops-code-consistency-audit": [
-      "core"
+      "core",
+      "evidence-analysis"
     ],
     "ceratops-credit-savings-analysis": [
       "core",
-      "multi-action-skill"
+      "multi-action-skill",
+      "evidence-analysis",
+      "bounded-model-analysis"
     ],
     "ceratops-governance-lifecycle": [
       "core",
       "multi-action-skill"
     ],
     "openai-docs-managed": [
-      "core"
+      "core",
+      "bounded-model-analysis"
     ],
     "ceratops-repo-lifecycle": [
       "core",

@@ -31,8 +31,6 @@ skill, instruction, and cross-scope audit decisions in one capability surface.
   regression or history evidence.
 - Whether the task is advisory-only or authorizes an exact mutation.
 
-Infer missing inputs from current context and local sources before asking.
-
 ## Constraints
 
 ### Shared Action Rules
@@ -42,10 +40,6 @@ Infer missing inputs from current context and local sources before asking.
   change.
 - Use only the action-scoped work and evidence needed to satisfy the selected
   action's completion gate; do not inspect or change unrelated surfaces.
-- Do not mutate an artifact unless the selected action pre-authorizes that exact
-  mutation or the user authorizes the exact artifact and change.
-- Keep skill optimization and prompt-rewrite deliverables advisory-only: do
-  not execute the underlying task or mutate artifacts.
 - In `execution-preflight` mode, keep the optimized prompt internal and resume
   the calling task.
 - For skill optimization, rule updates, and governance audits, inspect companion
@@ -54,8 +48,8 @@ Infer missing inputs from current context and local sources before asking.
 
 ### Skill-Specific Rules
 
-- For instruction updates, mutate only the exact artifacts the user authorized
-  after the proposal action accepts the candidate.
+- Apply an authorized instruction update only after the proposal action accepts
+  the candidate.
 
 ### Boundaries
 
@@ -66,14 +60,6 @@ Infer missing inputs from current context and local sources before asking.
   metadata, manifest, helper, validation, or documentation changes.
 - Use the owning lifecycle audit for domain-specific repository, code, runtime,
   GitHub, or skill-contract consistency.
-
-### Workflow
-
-#### Close from action evidence
-
-- Follow only the selected action unless its explicit boundary requires a
-  lifecycle handoff.
-- Match the final claim and output to the selected action's completion gate.
 
 ## Done When
 

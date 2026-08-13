@@ -15,8 +15,6 @@ Produce one copy-paste prompt for continuing the whole task in a new thread.
   next thread is likely to open immediately.
 - Any active constraints or instructions that materially affect the work.
 
-Infer missing inputs from the current thread and local state before asking.
-
 ### Required Prompt Content
 
 - What we were trying to do
@@ -47,8 +45,6 @@ Infer missing inputs from the current thread and local state before asking.
 - If the user says `include the following questions`, `including the questions`,
   or equivalent wording, carry those questions into the prompt as next-thread
   asks instead of answering them here.
-- Do not ask for credentials unless verifying the handoff requires protected
-  state that cannot be inferred locally.
 
 ### Boundaries
 

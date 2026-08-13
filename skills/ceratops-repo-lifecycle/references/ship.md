@@ -40,8 +40,6 @@ selected merged source branches and worktrees.
   and PR title/body.
 - Whether the head is reusable after merge.
 
-Infer missing values from the checkout, scope file, and live PR before asking.
-
 ## Constraints
 
 ### Boundaries
@@ -146,4 +144,3 @@ Report only:
 - PR URL and merge outcome
 - synchronized main, release-publication outcome, and local deployment outcome
 - finalized or retained selected scope with reasons
-- blockers or anything important not verified

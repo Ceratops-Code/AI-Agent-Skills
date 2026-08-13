@@ -30,8 +30,6 @@ repo docs, then update the narrowest correct source that exists.
 - Whether the task should stop at committed task-worktree changes or hand off
   to `$ceratops-repo-lifecycle`.
 
-Infer missing inputs from current repo state before asking.
-
 ## Constraints
 
 ### Boundaries
@@ -71,10 +69,11 @@ Infer missing inputs from current repo state before asking.
 
 #### 2. Decide ownership before editing
 
-- Prefer shared sections and the manifest for shared behavior, and keep
+- Prefer shared sections and the manifest when a rule is repeated, semantically
+  equivalent, or harmless as a common default for every assigned skill; keep
   per-skill source text limited to true deltas.
-- Add a new shared section only when it reduces meaningful duplication,
-  clarifies ownership, or prevents conflicting drift across multiple skills.
+- Add or expand a shared section only when that ownership reduces meaningful
+  duplication, clarifies ownership, or prevents cross-skill drift.
 - Keep trivial one-off text inline unless duplication is already causing drift
   or ownership confusion.
 
@@ -167,6 +166,4 @@ Report only:
 
 - skills or shared maintenance surfaces updated
 - new, removed, merged, or narrowed shared sections with reasons
-- unresolved blockers or non-blocking debt
 - intentionally retained inconsistencies or follow-up items with reasons
-- anything important not verified

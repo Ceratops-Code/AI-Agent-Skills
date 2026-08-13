@@ -21,9 +21,6 @@ what still needs attention.
 - Credit mode: `included` by default or `omitted` when the invocation requests
   closure without credit analysis.
 
-Infer missing inputs from the selected window, carried boundary state, and
-targeted local state before asking.
-
 ## Constraints
 
 ### Skill-Specific Rules

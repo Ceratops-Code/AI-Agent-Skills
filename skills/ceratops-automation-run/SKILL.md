@@ -55,8 +55,6 @@ repeated in every automation prompt.
 - If a genuine higher-priority runtime instruction conflicts with the no-memory
   policy, report the conflict explicitly instead of writing memory solely to
   record it or pretending the lower-level policy was followed.
-- Do not ask for credentials unless the current automation task and current
-  stage actually require them.
 
 ### Boundaries
 
@@ -119,9 +117,7 @@ Report only:
 
 - a compact final summary for project-list visibility
 - task-specific alert details when a user-visible alert is required
-- unresolved blockers or non-blocking debt
 - intentionally retained alerts, memory, or side effects with reasons
-- anything important not verified
 
 ### Example Invocation
 

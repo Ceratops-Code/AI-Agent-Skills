@@ -65,9 +65,6 @@ applied.
 - Which proposed changes require explicit approval and which findings require no
   repo change.
 
-Infer missing inputs from local repo state, live GitHub evidence, and the active
-request before asking.
-
 ## Constraints
 
 ### Boundaries
@@ -211,4 +208,3 @@ Report only:
 - applied explicitly approved contract or checker updates
 - approval-required recommendations, blockers, or non-blocking debt
 - intentionally retained leftovers or exceptions with reasons
-- anything important not verified

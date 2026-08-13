@@ -38,17 +38,13 @@ surface for standards refresh, repository consistency, creation, and mutation.
 - Whether the task should stop at committed task-worktree changes or hand off
   to `$ceratops-repo-lifecycle`.
 
-Infer missing inputs from the current repo state before asking.
-
 ## Constraints
 
 ### Skill-Specific Rules
 
-- Use the action references as the source of truth for skill-source edits,
-  validation, and output contracts.
 - Keep skill creation, fast change, update, contract review, and repository
   consistency review inside this multi-action skill and its `references/`
-  files; do not introduce alias skills or old-name shims.
+  files.
 - For skill-source mutation in this repo, treat source skill text, metadata,
   shared sections, `skills/skill-sections.json`, runtime payloads,
   validators, contracts, helper scripts, and docs as one coupled maintenance
@@ -115,8 +111,6 @@ Infer missing inputs from the current repo state before asking.
 
 #### 2. Close from action evidence
 
-- Match final claims to the exact source diff, validator output, or runtime state
-  actually verified.
 - Report retained runtime copies, automation prompts, or external side effects
   only when the selected action requires them.
 
@@ -133,10 +127,8 @@ Report only:
 
 - selected action and final outcome
 - updated skill, standards, contract, or shared maintenance surfaces
-- unresolved blockers or non-blocking debt
 - intentionally retained runtime copies, automation prompts, or external side
   effects with reasons
-- anything important not verified
 
 ### Example Invocation
 

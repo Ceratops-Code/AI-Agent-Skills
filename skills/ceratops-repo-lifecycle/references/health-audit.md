@@ -40,8 +40,6 @@ credential-bound fixes precisely.
 - Local repo path and local consumers needed to classify stale or risky side
   effects.
 
-Infer missing inputs from live repo state and local files before asking.
-
 ## Constraints
 
 ### Boundaries
@@ -144,6 +142,5 @@ Report only:
 - alerts or findings left open with name or id, blocking status, reason, and
   concrete work needed
 - health gaps intentionally retained with exact reasons
-- remaining blockers or credential steps
-- anything important not verified
+- remaining health blockers
 - paid requirement with product, reason, and price if encountered

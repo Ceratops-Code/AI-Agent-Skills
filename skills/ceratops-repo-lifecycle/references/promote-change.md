@@ -45,8 +45,6 @@ result.
 - Whether the selected action is `promote`, `promote-and-deploy`, or composed
   promotion and shipping.
 
-Infer missing branch and checkout inputs from local Git state before asking.
-
 ## Constraints
 
 ### Boundaries

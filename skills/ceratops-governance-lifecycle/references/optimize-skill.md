@@ -41,9 +41,10 @@ target set is available.
   they govern the action surface.
 - When companion artifacts govern the same behavior, include the aligned
   companion update or state why it is intentionally retained.
-- Merge semantically shared behavior even when wording differs; for multi-action
-  skills, place the common invariant in the parent `SKILL.md` and retain only
-  action-specific deltas in references.
+- Propose merging behavior when it is repeated, semantically equivalent, or
+  harmless as a common default for every assigned skill. For multi-action
+  skills, propose placing cross-action invariants in the parent `SKILL.md` and
+  retaining only action-specific deltas in references.
 - Avoid overlong, brittle, vague, contradictory, or purely stylistic changes.
 - Prefer deterministic scripts or helpers for repeatable procedural behavior
   only when text instructions are insufficient.

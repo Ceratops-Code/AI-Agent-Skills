@@ -50,8 +50,6 @@ installed-runtime surface.
 - Installed automation prompts or repo-owned automation templates that invoke a
   skill or action from the target skill.
 
-Infer missing inputs from the repository and installed manifests before asking.
-
 ### Global Automation Caller
 
 - The `global-skills-consistency-review` automation runs the global inventory

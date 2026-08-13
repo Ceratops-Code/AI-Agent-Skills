@@ -58,9 +58,6 @@ detected before merge.
 - Release policy, artifact-publish expectation, and whether merging creates an
   immediate publish obligation.
 
-Infer missing inputs from `gh`, git remotes, current branch, and live repo data
-before asking.
-
 ## Constraints
 
 ### Boundaries
@@ -177,8 +174,5 @@ before asking.
 Report only:
 
 - final merge outcome
-- unresolved blockers or non-blocking debt
 - intentionally retained branch or side effect with reason
-- anything important not verified
-- exact credential step if blocked
 - critical dedicated-endpoint recovery action if restoration is unverified

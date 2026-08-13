@@ -15,8 +15,6 @@ crash.
 - The local repos, files, artifacts, PRs, images, or automations that were in
   scope.
 
-Infer missing inputs from the recent thread and local state before asking.
-
 ## Constraints
 
 ### Skill-Specific Rules
@@ -33,7 +31,6 @@ Infer missing inputs from the recent thread and local state before asking.
   the next stage or final verification.
 - If the next viable option is complex, invasive, nonstandard, or
   high-maintenance, stop and ask before taking it.
-- Do not ask for credentials unless the resumed task actually requires them.
 - Do not add checks because execution was interrupted; retain checks already
   required by the original task.
 
@@ -70,8 +67,6 @@ Infer missing inputs from the recent thread and local state before asking.
 
 - Before completion, run the narrowest justified closure pass for the task.
 - Remove low-risk stale items that are no longer needed.
-- Report only unresolved blockers, unresolved non-blocking debt, intentionally
-  retained items, and anything important not verified.
 
 ## Done When
 
@@ -88,9 +83,7 @@ Report only:
 
 - the resumed stage or completed outcome
 - any detected divergence from the earlier assumed state
-- unresolved blockers or non-blocking debt
 - intentionally retained items with reasons
-- anything important not verified
 
 ### Example Invocation
 
