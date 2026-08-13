@@ -2,9 +2,9 @@
 
 ## Goal
 
-At the end of a thread, session, or task, give a concise, evidence-based answer
-about whether required work remains and include the credit-savings analysis
-result.
+At the end of a thread, session, or task, prioritize discovering forgotten
+open loops and task leftovers, then give a concise, evidence-based answer about
+what still needs attention.
 
 ## Context
 
@@ -16,8 +16,10 @@ result.
 - Completed actions, directly touched artifacts, and claims already made.
 - Touched repos, worktrees, branches, commits, PRs, automation folders,
   generated or runtime artifacts, active goals, failed commands, and warnings.
-- Thread-raised proposals, findings, questions, warnings, deferred decisions,
-  and follow-ups that may still affect closure.
+- User requests, preferences, corrections, questions, and desired behavior, plus
+  assistant proposals, questions, warnings, and next steps that may remain open.
+- Credit mode: `included` by default or `omitted` when the invocation requests
+  closure without credit analysis.
 
 Infer missing inputs from the selected window, carried boundary state, and
 targeted local state before asking.
@@ -40,13 +42,16 @@ targeted local state before asking.
   effects as active, intentionally retained, stale-in-scope, stale-out-of-scope,
   blocker, or unverified; do not fix stale-in-scope items during closure-check
   unless explicitly asked.
-- Use same-thread context and existing action evidence first; inspect files or
-  run commands only when needed to support or limit the closure claim.
-- Do not claim no required work remains unless required work, blockers,
-  retained state, stale state, warnings, uncommitted or unpushed changes, and
-  unverified claims were checked or explicitly classified.
-- Check for thread-raised follow-ups the user may have forgotten; report
-  unresolved ones only if still relevant to closure.
+- Spend most of the closure review on semantic discovery of forgotten requests,
+  proposals, unanswered questions, and undecided options.
+- Reuse fresh same-thread evidence and deterministic action results. Run a check
+  only when evidence is absent, stale, contradictory, or needed to classify a
+  plausible leftover.
+- Do not infer closure from related or partial implementation, an advisory
+  answer, or silence. A direction to defer execution does not abandon the
+  underlying option or decision.
+- After semantic discovery, sweep only touched scopes and the verified task temp
+  root for plausible task-created residue.
 - Separate required work from optional cleanup, intentionally retained state,
   and unverified external state.
 - If external state matters and was not freshly checked, say so.
@@ -70,22 +75,39 @@ targeted local state before asking.
 - Include pre-window state only when it was unresolved or intentionally
   retained at the selected boundary.
 
-#### 2. Identify Evidence Targets
+#### 2. Find Forgotten User Open Loops
 
-- From same-thread context, identify touched or claimed state relevant to
-  closure, including local, external, generated, runtime, warning, and follow-up
-  state only when present.
-- Use the selected or recently completed action's Done When and Output Contract
-  as closure evidence targets; do not re-run full action validation unless those
-  gates were not checked, became stale, or are needed for the closure claim.
+- Make a semantic pass over the selected conversation for user requests,
+  preferences, corrections, questions, or desired behavior that was deferred,
+  partly addressed, or left without a decision.
+- Compare each candidate with later context. Treat it as closed only when later
+  context establishes completion of the exact behavior, cancellation,
+  supersession, an explicit user decision to leave it unresolved, or
+  irrelevance.
+- Do not treat a request for advice or a direction to defer execution as a
+  decision to abandon the underlying option.
 
-#### 3. Gather Targeted Evidence
+#### 3. Find Forgotten Assistant Open Loops
 
-- Reuse fresh same-thread evidence first.
-- Run only targeted checks needed to classify required work, blockers,
-  retained state, stale state, warnings, unverified claims, and touched git
-  repos' branch, cleanliness, staged/unstaged/untracked state, and unpushed
-  commits.
+- Make a separate semantic pass for assistant proposals, alternatives,
+  unanswered questions, warnings, or suggested next steps that still materially
+  affect the user's stated desired state.
+- Report an item only when later context provides no completion, rejection,
+  supersession, explicit user decision, or reason it became irrelevant.
+- Before state checks, ask internally: "Besides the items already found, what
+  else was asked, proposed, or left undecided?" Reconcile every additional
+  item against both passes.
+
+#### 4. Sweep Narrow Task Leftovers
+
+- Use the selected or recently completed action's Done When and Output Contract,
+  together with fresh same-thread deterministic results, as disposition
+  evidence. Do not rerun action validation for properties that evidence proves.
+- Inspect only touched scopes and the verified task temp root when evidence is
+  missing, stale, contradictory, or leaves plausible task-created residue
+  unclassified. Cover temporary artifacts and unresolved Git, worktree,
+  generated, runtime, controller, goal, warning, or external state only when the
+  selected window makes that state plausible.
 - (D) For each touched local Git repository that needs refreshed closure
   evidence, run `python scripts/closure_snapshot.py --repo PATH
   [--fetch-remote NAME] [--release-branch BRANCH
@@ -99,19 +121,15 @@ targeted local state before asking.
   same-thread evidence shows a goal was created or active, and run additional
   diagnostics only for snapshot state that remains unresolved.
 
-#### 4. Scan Relevant Thread Follow-Ups
-
-- Scan task-relevant conversation context for unresolved proposals, findings,
-  questions, warnings, or deferred decisions.
-- Classify each as required, optional, superseded, or irrelevant.
-
 #### 5. Include Credit-Saving Analysis
 
-- Invoke `$ceratops-credit-savings-analysis` for the current thread and
-  selected closure window using `full-analysis`. Prepare the controller once,
-  use its shared evidence bundle for every fixed surface and internal
-  synthesis, finalize it, and include every confirmed finding or the exact
-  blocker under `Credit savings`.
+- In `included` mode, invoke `$ceratops-credit-savings-analysis` for the
+  current thread and selected closure window using `full-analysis`. Prepare the
+  controller once, use its shared evidence bundle for every fixed surface and
+  internal synthesis, finalize it, and include every confirmed finding or the
+  exact blocker under `Credit savings`.
+- In `omitted` mode, do not invoke the controller or apply its completion gates
+  or output contract.
 
 #### 6. Classify Closure State
 
@@ -130,20 +148,20 @@ targeted local state before asking.
 ### Completion Gate
 
 - The checked closure scope is clear.
-- Required remaining work and blockers are not omitted.
-- Uncommitted, unpushed, retained, stale, warning, forgotten-follow-up, and
+- Both origin-separated semantic passes and the final internal open-loop
+  question are complete.
+- Every still-relevant user-origin open loop and material assistant-origin open
+  loop without a later terminal disposition is reported. Related or partial
+  implementation, advisory answers that leave a choice open, silence, and
+  execution-only deferrals are not terminal dispositions.
+- Uncommitted, unpushed, retained, stale, warning, plausible task-temp, and
   unverified states from the selected window and carried boundary state are
-  reported.
+  classified and reported when unresolved. Fresh deterministic evidence was not
+  redundantly revalidated.
 - A response that reports no unresolved items is supported by checked evidence.
-- A completed `$ceratops-credit-savings-analysis` result or its blocker is
-  included under `Credit savings`; ledger evidence alone does not satisfy this
-  gate.
-- The credit analysis finalized the exact selected window through all fixed
-  surfaces and internal synthesis. An unfinalized, surface-limited, or
-  incompletely classified result is a blocker.
-- No mutation occurred except creation and helper-validated cleanup of
-  task-required temporary artifacts inside the verified task temp root, unless
-  the user explicitly requested another exact action.
+- In `included` mode, credit analysis completed and finalized the exact selected
+  window; an incomplete included analysis is a blocker.
+- No mutation occurred outside the action-authorized task-temp lifecycle.
 
 ### Output Contract
 
@@ -157,9 +175,9 @@ Return only relevant concise bullets:
 - intentionally retained state with reasons
 - stale or out-of-scope state
 - important unverified claims
-- relevant forgotten follow-ups
+- relevant unresolved requests, proposals, questions, warnings, or decisions
 - optional cleanup that was unsafe or unauthorized to perform
-- `Credit savings`: the required `$ceratops-credit-savings-analysis` result
+- `Credit savings`: the required result, only in `included` mode
 
 If no listed item applies, return only `- No unresolved items.`
 
