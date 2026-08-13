@@ -2511,14 +2511,27 @@ def test_credit_analysis_recovers_packet_local_luna_evidence_without_a_retry(
         input_sha256=input_sha,
         attempt_number=1,
     )
-    state["execution"][task["task_id"]]["attempts"].append(
-        {
-            **attempt,
-            "outcome": "validation-error",
-            "error": "simulated older packet-local evidence rejection",
-        }
+    validation_attempt = {
+        **attempt,
+        "outcome": "validation-error",
+        "error": "simulated older packet-local evidence rejection",
+    }
+    state["execution"][task["task_id"]]["attempts"].extend(
+        [
+            validation_attempt,
+            {
+                **validation_attempt,
+                "attempt_number": 2,
+                "outcome": "runner-error",
+                "error": "simulated interrupted later attempt",
+                "artifacts": {
+                    **validation_attempt["artifacts"],
+                    "raw_output": None,
+                },
+            },
+        ]
     )
-    state["model_attempts"]["luna"] = 1
+    state["model_attempts"]["luna"] = 2
     workflow._holistic_sync_child_lineage(state)
     workflow._holistic_save_state(state)
     monkeypatch.setattr(
@@ -2537,9 +2550,9 @@ def test_credit_analysis_recovers_packet_local_luna_evidence_without_a_retry(
     assert resumed["next_task"] == "sol.adjudication"
     assert len(runner.calls) == calls_before_resume
     recovered_state = json.loads(state_path.read_text(encoding="utf-8"))
-    assert recovered_state["model_attempts"] == {"luna": 1, "sol": 0}
+    assert recovered_state["model_attempts"] == {"luna": 2, "sol": 0}
     assert recovered_state["model_calls"] == {"luna": 1, "sol": 0}
-    assert len(recovered_state["child_lineage"]) == 1
+    assert len(recovered_state["child_lineage"]) == 2
     result_record = recovered_state["execution"][task["task_id"]]["result"]
     assert result_record["recovered_without_model_call"] is True
     result = json.loads(
@@ -2590,6 +2603,21 @@ def test_credit_analysis_normalizes_sol_transport_without_changing_judgments(
         ) -> dict[str, Any]:
             result = super()._sol(task, packet, digest)
             call_order = [row[1] for row in packet["call_inventory"]["rows"]]
+            plausible_candidate_id = next(
+                str(candidate["id"])
+                for luna_result in packet["luna_results"]
+                for candidate in luna_result["candidates"]
+                if candidate["kind"] == "plausible-risk"
+            )
+            moved_review = result["temporary_control_reviews"].pop(2)
+            result["temporary_control_reviews"][0][
+                "source_luna_candidate_ids"
+            ].extend(
+                [
+                    plausible_candidate_id,
+                    *moved_review["source_luna_candidate_ids"],
+                ]
+            )
             volume_call = next(
                 call_id
                 for item in result["confirmed_findings"]
@@ -2661,6 +2689,23 @@ def test_credit_analysis_normalizes_sol_transport_without_changing_judgments(
                     }
                 )
             result["call_classifications"] = orphaned_groups
+            implemented_finding = next(
+                item
+                for item in result["confirmed_findings"]
+                if item["waste_kind"] == "model-calls"
+                and item["implementation_status"] == "implemented"
+            )
+            historical_source = result["temporary_control_reviews"][0][
+                "source_luna_candidate_ids"
+            ][0]
+            historical_decision = next(
+                item
+                for item in result["candidate_decisions"]
+                if item["luna_candidate_id"] == historical_source
+            )
+            historical_decision["disposition"] = "confirmed-finding"
+            historical_decision["finding_ids"] = [implemented_finding["id"]]
+            historical_decision["risk_ids"] = []
 
             review = next(
                 item
@@ -2722,6 +2767,31 @@ def test_credit_analysis_normalizes_sol_transport_without_changing_judgments(
         for group in final["call_classifications"]
         if group["classification"] == "unassessed"
     ) == 1
+    reviewed_sources = [
+        candidate_id
+        for review in final["temporary_control_reviews"]
+        for candidate_id in review["source_luna_candidate_ids"]
+    ]
+    assert len(reviewed_sources) == 6
+    assert len(reviewed_sources) == len(set(reviewed_sources))
+    final_findings = {
+        finding["id"]: finding for finding in final["confirmed_findings"]
+    }
+    transient_review = next(
+        review
+        for review in final["temporary_control_reviews"]
+        if review["disposition"] == "transient-by-design"
+    )
+    assert any(
+        decision["disposition"] == "confirmed-finding"
+        and all(
+            final_findings[finding_id]["implementation_status"] == "implemented"
+            for finding_id in decision["finding_ids"]
+        )
+        for decision in final["candidate_decisions"]
+        if decision["luna_candidate_id"]
+        in transient_review["source_luna_candidate_ids"]
+    )
     assert all(
         finding["observed_avoidable_call_count"]
         == len(finding["affected_call_ids"])

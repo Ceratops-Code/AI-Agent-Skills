@@ -4424,17 +4424,13 @@ def _validate_holistic_sol_result(
             "contributing_surfaces": surfaces,
         }
         review_by_id[review_id] = normalized_review
-    expected_review_order = [
-        candidate_id
-        for candidate_id in all_luna_candidate_ids
-        if candidate_id in set(reviewed_temporary)
-    ]
     if (
-        reviewed_temporary != expected_review_order
-        or len(reviewed_temporary) != len(set(reviewed_temporary))
-        or not set(temporary_candidate_ids) <= set(reviewed_temporary)
+        len(reviewed_temporary) != len(set(reviewed_temporary))
+        or set(reviewed_temporary) != set(temporary_candidate_ids)
     ):
-        raise CreditAnalysisError("temporary-control review coverage is missing or duplicated")
+        raise CreditAnalysisError(
+            "temporary-control review coverage is missing, duplicated, or invalid"
+        )
     nonfinding_temporary_sources = {
         candidate_id
         for review in review_by_id.values()
@@ -4446,13 +4442,22 @@ def _validate_holistic_sol_result(
             decision["luna_candidate_id"] in nonfinding_temporary_sources
             and decision["disposition"] == "confirmed-finding"
         ):
-            decision["disposition"] = "dismissed-candidate"
-            decision["finding_ids"] = []
-            decision["risk_ids"] = []
-            decision["reason"] = (
-                "The mandatory temporary-control disposition records no missing "
-                "durable control."
-            )
+            implemented_finding_ids = [
+                finding_id
+                for finding_id in decision["finding_ids"]
+                if finding_by_id[finding_id]["implementation_status"]
+                == "implemented"
+            ]
+            if implemented_finding_ids:
+                decision["finding_ids"] = implemented_finding_ids
+            else:
+                decision["disposition"] = "dismissed-candidate"
+                decision["finding_ids"] = []
+                decision["risk_ids"] = []
+                decision["reason"] = (
+                    "The mandatory temporary-control disposition records no "
+                    "missing durable control."
+                )
     referenced_findings = {
         finding_id for decision in decisions for finding_id in decision["finding_ids"]
     }
@@ -4813,12 +4818,23 @@ def _holistic_restore_sol_transport(
         )
     )
 
+    temporary_candidate_ids = {
+        candidate_id
+        for candidate_id, candidate in luna_candidates.items()
+        if candidate.get("kind") == "temporary-control"
+    }
     reviews: list[dict[str, Any]] = []
     for review in restored["temporary_control_reviews"]:
         sources = sorted(
-            [str(item) for item in review["source_luna_candidate_ids"]],
+            [
+                str(item)
+                for item in review["source_luna_candidate_ids"]
+                if str(item) in temporary_candidate_ids
+            ],
             key=lambda item: candidate_position.get(item, len(candidate_position)),
         )
+        if not sources:
+            continue
         surfaces = {
             surface
             for candidate_id in sources
@@ -4846,9 +4862,16 @@ def _holistic_restore_sol_transport(
 
     merges: list[dict[str, Any]] = []
     for merge in restored["temporary_control_merges"]:
+        review_ids = [
+            str(review_id)
+            for review_id in merge["review_ids"]
+            if str(review_id) in review_by_id
+        ]
+        if not review_ids:
+            continue
         surfaces = {
             surface
-            for review_id in merge["review_ids"]
+            for review_id in review_ids
             for surface in review_by_id.get(str(review_id), {}).get(
                 "contributing_surfaces",
                 [],
@@ -4857,6 +4880,7 @@ def _holistic_restore_sol_transport(
         merges.append(
             {
                 **merge,
+                "review_ids": review_ids,
                 "contributing_surfaces": [
                     surface for surface in surface_order if surface in surfaces
                 ],
@@ -5112,17 +5136,19 @@ def _holistic_recoverable_raw(
     state: Mapping[str, Any], task: Mapping[str, Any], input_sha256: str
 ) -> Mapping[str, Any] | None:
     attempts = state["execution"][task["task_id"]]["attempts"]
-    if not attempts:
-        return None
-    latest = attempts[-1]
-    if latest.get("outcome") != "validation-error" or latest.get("input_sha256") != input_sha256:
-        return None
-    artifact = latest.get("artifacts", {}).get("raw_output")
-    if not isinstance(artifact, Mapping):
-        return None
-    return _read_json(
-        pathlib.Path(str(artifact["path"])), "recoverable holistic output"
-    )
+    for attempt in reversed(attempts):
+        if (
+            attempt.get("outcome") != "validation-error"
+            or attempt.get("input_sha256") != input_sha256
+        ):
+            continue
+        artifact = attempt.get("artifacts", {}).get("raw_output")
+        if isinstance(artifact, Mapping):
+            return _read_json(
+                pathlib.Path(str(artifact["path"])),
+                "recoverable holistic output",
+            )
+    return None
 
 
 def _holistic_final(
