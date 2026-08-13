@@ -3316,6 +3316,36 @@ def _holistic_luna_results(
     return results
 
 
+def _holistic_sol_luna_results(
+    state: Mapping[str, Any],
+    compact: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    """Replace model-selected Luna IDs with stable collision-free controller IDs."""
+
+    reserved = {
+        str(identity)
+        for record in compact["records"]
+        for identity in (record["candidate_id"], record["call_id"])
+    }
+    reserved.update(_holistic_evidence_references(compact))
+    normalized_results: list[dict[str, Any]] = []
+    identity_index = 0
+    for result in _holistic_luna_results(state, state["manifest"]):
+        candidates: list[dict[str, Any]] = []
+        for candidate in result["candidates"]:
+            while True:
+                identity_index += 1
+                candidate_id = (
+                    f"luna.{state['analysis_id']}.{identity_index:06d}"
+                )
+                if candidate_id not in reserved:
+                    break
+            reserved.add(candidate_id)
+            candidates.append({**candidate, "id": candidate_id})
+        normalized_results.append({**result, "candidates": candidates})
+    return normalized_results
+
+
 SOL_ALIAS_SCHEMA = "ceratops-credit-analysis-sol-alias-map.v1"
 
 
@@ -3460,15 +3490,10 @@ def _holistic_sol_input(
     compact: Mapping[str, Any],
     task: Mapping[str, Any],
 ) -> tuple[dict[str, Any], list[str], dict[str, Any]]:
-    luna_results = _holistic_luna_results(state, state["manifest"])
+    luna_results = _holistic_sol_luna_results(state, compact)
     candidates: list[dict[str, Any]] = []
-    seen: set[str] = set()
     for result in luna_results:
         for candidate in result["candidates"]:
-            candidate_id = str(candidate["id"])
-            if candidate_id in seen:
-                raise CreditAnalysisError("Luna candidate ID is duplicated across packets")
-            seen.add(candidate_id)
             candidates.append({**candidate, "source_task_id": result["task_id"]})
     record_index = {record["candidate_id"]: record for record in compact["records"]}
     per_candidate_limit = int(contract["chunking"]["sol_evidence_chars_per_candidate"])
@@ -4220,7 +4245,7 @@ def _validate_holistic_sol_result(
             raise CreditAnalysisError(f"{label} reason is empty")
     if observed_candidate_ids != list(luna_candidate_ids) or len(observed_candidate_ids) != len(set(observed_candidate_ids)):
         raise CreditAnalysisError("Sol did not adjudicate every Luna candidate exactly once")
-    luna_results = _holistic_luna_results(state, state["manifest"])
+    luna_results = _holistic_sol_luna_results(state, compact)
     all_luna_candidate_ids = [
         candidate["id"]
         for result in luna_results
@@ -4618,7 +4643,7 @@ def _holistic_restore_sol_transport(
     call_order = list(state["manifest"]["call_ids"])
     call_position = {call_id: index for index, call_id in enumerate(call_order)}
     workstreams = _holistic_workstream_by_call(compact)
-    luna_results = _holistic_luna_results(state, state["manifest"])
+    luna_results = _holistic_sol_luna_results(state, compact)
     luna_candidates = {
         str(candidate["id"]): candidate
         for result in luna_results

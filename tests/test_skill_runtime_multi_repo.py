@@ -2567,6 +2567,21 @@ def test_credit_analysis_normalizes_sol_transport_without_changing_judgments(
     )
 
     class TransportVariationRunner(FakeCreditModelRunner):
+        def _luna(
+            self,
+            task: Mapping[str, Any],
+            packet: Mapping[str, Any],
+            digest: str,
+        ) -> dict[str, Any]:
+            result = super()._luna(task, packet, digest)
+            self.colliding_luna_ids = {
+                str(candidate["candidate_ids"][0])
+                for candidate in result["candidates"]
+            }
+            for candidate in result["candidates"]:
+                candidate["id"] = str(candidate["candidate_ids"][0])
+            return result
+
         def _sol(
             self,
             task: Mapping[str, Any],
@@ -2655,6 +2670,15 @@ def test_credit_analysis_normalizes_sol_transport_without_changing_judgments(
     assert len(runner.calls) == 2
     final = json.loads(
         pathlib.Path(completed["final_result_path"]).read_text(encoding="utf-8")
+    )
+    final_luna_ids = {
+        str(decision["luna_candidate_id"])
+        for decision in final["candidate_decisions"]
+    }
+    assert final_luna_ids.isdisjoint(runner.colliding_luna_ids)
+    assert all(
+        candidate_id.startswith(f"luna.{final['analysis_id']}.")
+        for candidate_id in final_luna_ids
     )
     flattened = [
         call_id
