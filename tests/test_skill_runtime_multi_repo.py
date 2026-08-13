@@ -2487,8 +2487,8 @@ def test_credit_analysis_recovers_packet_local_luna_evidence_without_a_retry(
             result = super()._luna(task, packet, digest)
             records = self._records(packet)
             assert result["candidates"] and len(records) > 1
-            result["candidates"][0]["evidence_refs"].append(
-                records[1]["evidence_refs"][0]
+            result["candidates"][0]["evidence_refs"].extend(
+                [records[1]["candidate_id"], records[1]["evidence_refs"][0]]
             )
             return result
 
@@ -2511,14 +2511,27 @@ def test_credit_analysis_recovers_packet_local_luna_evidence_without_a_retry(
         input_sha256=input_sha,
         attempt_number=1,
     )
-    state["execution"][task["task_id"]]["attempts"].append(
-        {
-            **attempt,
-            "outcome": "validation-error",
-            "error": "simulated older packet-local evidence rejection",
-        }
+    validation_attempt = {
+        **attempt,
+        "outcome": "validation-error",
+        "error": "simulated older packet-local evidence rejection",
+    }
+    state["execution"][task["task_id"]]["attempts"].extend(
+        [
+            validation_attempt,
+            {
+                **validation_attempt,
+                "attempt_number": 2,
+                "outcome": "runner-error",
+                "error": "simulated interrupted later attempt",
+                "artifacts": {
+                    **validation_attempt["artifacts"],
+                    "raw_output": None,
+                },
+            },
+        ]
     )
-    state["model_attempts"]["luna"] = 1
+    state["model_attempts"]["luna"] = 2
     workflow._holistic_sync_child_lineage(state)
     workflow._holistic_save_state(state)
     monkeypatch.setattr(
@@ -2537,15 +2550,19 @@ def test_credit_analysis_recovers_packet_local_luna_evidence_without_a_retry(
     assert resumed["next_task"] == "sol.adjudication"
     assert len(runner.calls) == calls_before_resume
     recovered_state = json.loads(state_path.read_text(encoding="utf-8"))
-    assert recovered_state["model_attempts"] == {"luna": 1, "sol": 0}
+    assert recovered_state["model_attempts"] == {"luna": 2, "sol": 0}
     assert recovered_state["model_calls"] == {"luna": 1, "sol": 0}
-    assert len(recovered_state["child_lineage"]) == 1
+    assert len(recovered_state["child_lineage"]) == 2
     result_record = recovered_state["execution"][task["task_id"]]["result"]
     assert result_record["recovered_without_model_call"] is True
     result = json.loads(
         pathlib.Path(result_record["path"]).read_text(encoding="utf-8")
     )
     assert len(result["candidates"][0]["candidate_ids"]) == 2
+    assert all(
+        ref.startswith(("evidence://", "analysis://"))
+        for ref in result["candidates"][0]["evidence_refs"]
+    )
 
 
 def test_credit_analysis_normalizes_sol_transport_without_changing_judgments(
@@ -2563,6 +2580,21 @@ def test_credit_analysis_normalizes_sol_transport_without_changing_judgments(
     )
 
     class TransportVariationRunner(FakeCreditModelRunner):
+        def _luna(
+            self,
+            task: Mapping[str, Any],
+            packet: Mapping[str, Any],
+            digest: str,
+        ) -> dict[str, Any]:
+            result = super()._luna(task, packet, digest)
+            self.colliding_luna_ids = {
+                str(candidate["candidate_ids"][0])
+                for candidate in result["candidates"]
+            }
+            for candidate in result["candidates"]:
+                candidate["id"] = str(candidate["candidate_ids"][0])
+            return result
+
         def _sol(
             self,
             task: Mapping[str, Any],
@@ -2571,6 +2603,34 @@ def test_credit_analysis_normalizes_sol_transport_without_changing_judgments(
         ) -> dict[str, Any]:
             result = super()._sol(task, packet, digest)
             call_order = [row[1] for row in packet["call_inventory"]["rows"]]
+            packet_candidates = [
+                candidate
+                for luna_result in packet["luna_results"]
+                for candidate in luna_result["candidates"]
+            ]
+            self.reclassified_candidate_index = next(
+                index
+                for index, candidate in enumerate(packet_candidates)
+                if candidate["kind"] == "plausible-risk"
+            )
+            plausible_candidate_id = str(
+                packet_candidates[self.reclassified_candidate_index]["id"]
+            )
+            moved_review = result["temporary_control_reviews"].pop(2)
+            result["temporary_control_reviews"][0][
+                "source_luna_candidate_ids"
+            ].extend(
+                [
+                    plausible_candidate_id,
+                    *moved_review["source_luna_candidate_ids"],
+                ]
+            )
+            volume_call = next(
+                call_id
+                for item in result["confirmed_findings"]
+                if item["waste_kind"] == "context-volume"
+                for call_id in item["affected_call_ids"]
+            )
             finding = next(
                 item
                 for item in result["confirmed_findings"]
@@ -2582,6 +2642,7 @@ def test_credit_analysis_normalizes_sol_transport_without_changing_judgments(
                 for group in result["call_classifications"]
                 if not group["classification"].startswith("avoidable_")
                 for call_id in group["call_ids"]
+                if call_id != volume_call
             )
             finding_calls = set(finding["affected_call_ids"])
             finding_calls.add(nonavoidable_call)
@@ -2614,6 +2675,44 @@ def test_credit_analysis_normalizes_sol_transport_without_changing_judgments(
                     }
                 )
             result["call_classifications"] = list(reversed(split_groups))
+            orphaned_groups: list[dict[str, Any]] = []
+            for group in result["call_classifications"]:
+                if volume_call not in group["call_ids"]:
+                    orphaned_groups.append(group)
+                    continue
+                remaining = [
+                    call_id
+                    for call_id in group["call_ids"]
+                    if call_id != volume_call
+                ]
+                if remaining:
+                    orphaned_groups.append({**group, "call_ids": remaining})
+                orphaned_groups.append(
+                    {
+                        **group,
+                        "call_ids": [volume_call],
+                        "classification": "avoidable_implemented",
+                        "reason_code": None,
+                    }
+                )
+            result["call_classifications"] = orphaned_groups
+            implemented_finding = next(
+                item
+                for item in result["confirmed_findings"]
+                if item["waste_kind"] == "model-calls"
+                and item["implementation_status"] == "implemented"
+            )
+            historical_source = result["temporary_control_reviews"][0][
+                "source_luna_candidate_ids"
+            ][0]
+            historical_decision = next(
+                item
+                for item in result["candidate_decisions"]
+                if item["luna_candidate_id"] == historical_source
+            )
+            historical_decision["disposition"] = "confirmed-finding"
+            historical_decision["finding_ids"] = [implemented_finding["id"]]
+            historical_decision["risk_ids"] = []
 
             review = next(
                 item
@@ -2652,6 +2751,15 @@ def test_credit_analysis_normalizes_sol_transport_without_changing_judgments(
     final = json.loads(
         pathlib.Path(completed["final_result_path"]).read_text(encoding="utf-8")
     )
+    final_luna_ids = {
+        str(decision["luna_candidate_id"])
+        for decision in final["candidate_decisions"]
+    }
+    assert final_luna_ids.isdisjoint(runner.colliding_luna_ids)
+    assert all(
+        candidate_id.startswith(f"luna.{final['analysis_id']}.")
+        for candidate_id in final_luna_ids
+    )
     flattened = [
         call_id
         for group in final["call_classifications"]
@@ -2661,6 +2769,42 @@ def test_credit_analysis_normalizes_sol_transport_without_changing_judgments(
         pathlib.Path(final["manifest"]["path"]).read_text(encoding="utf-8")
     )
     assert flattened == manifest["call_ids"]
+    assert sum(
+        len(group["call_ids"])
+        for group in final["call_classifications"]
+        if group["classification"] == "unassessed"
+    ) == 1
+    reviewed_sources = [
+        candidate_id
+        for review in final["temporary_control_reviews"]
+        for candidate_id in review["source_luna_candidate_ids"]
+    ]
+    assert len(reviewed_sources) == 7
+    assert len(reviewed_sources) == len(set(reviewed_sources))
+    assert (
+        final["candidate_decisions"][runner.reclassified_candidate_index][
+            "luna_candidate_id"
+        ]
+        in reviewed_sources
+    )
+    final_findings = {
+        finding["id"]: finding for finding in final["confirmed_findings"]
+    }
+    transient_review = next(
+        review
+        for review in final["temporary_control_reviews"]
+        if review["disposition"] == "transient-by-design"
+    )
+    assert any(
+        decision["disposition"] == "confirmed-finding"
+        and all(
+            final_findings[finding_id]["implementation_status"] == "implemented"
+            for finding_id in decision["finding_ids"]
+        )
+        for decision in final["candidate_decisions"]
+        if decision["luna_candidate_id"]
+        in transient_review["source_luna_candidate_ids"]
+    )
     assert all(
         finding["observed_avoidable_call_count"]
         == len(finding["affected_call_ids"])
@@ -11097,10 +11241,57 @@ def test_pending_work_scope_is_selected_generic_and_finalized_late(
     ]
     assert scope_path.is_file()
 
+    assert run_git(repo, "branch", "legacy-clean", descendant_target).returncode == 0
+    assert run_git(repo, "branch", "legacy-dirty", descendant_target).returncode == 0
+    legacy_dirty_worktree = worktree_root / "legacy-dirty"
+    assert (
+        run_git(
+            repo,
+            "worktree",
+            "add",
+            str(legacy_dirty_worktree),
+            "legacy-dirty",
+        ).returncode
+        == 0
+    )
+    (legacy_dirty_worktree / "README.md").write_text(
+        "base\nselected\nlegacy dirty\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    migration_tree = run_git(
+        repo, "rev-parse", f"{descendant_target}^{{tree}}"
+    ).stdout.strip()
+    migration = run_git(
+        repo,
+        "commit-tree",
+        migration_tree,
+        "-p",
+        descendant_target,
+        "-m",
+        "advance release after legacy scope",
+    )
+    assert migration.returncode == 0, migration.stderr
+    migration_target = migration.stdout.strip()
+    assert (
+        run_git(
+            repo,
+            "update-ref",
+            "refs/heads/release/local",
+            migration_target,
+            descendant_target,
+        ).returncode
+        == 0
+    )
+    assert run_git(repo, "branch", "legacy-new", migration_target).returncode == 0
     scope_path.write_text(
         json.dumps(
             {
-                "source_branches": ["old-format"],
+                "source_branches": [
+                    "legacy-clean",
+                    "legacy-dirty",
+                    "old-format",
+                ],
                 "target_branch": "release/local",
                 "target_commit": descendant_target,
                 "version": 1,
@@ -11111,14 +11302,108 @@ def test_pending_work_scope_is_selected_generic_and_finalized_late(
     )
     old_format = run_pending_work(
         repo,
+        "record",
+        "--target-branch",
+        "release/local",
+        "--target-commit",
+        migration_target,
+        "--source-branch",
+        "legacy-new",
+    )
+    assert old_format.returncode == 0, old_format.stderr
+    assert json.loads(old_format.stdout) == {
+        "status": "ready",
+        "target_branch": "release/local",
+        "target_commit": migration_target,
+        "source_branches": ["legacy-clean", "legacy-dirty", "legacy-new"],
+        "pending_work_scope": str(scope_path.resolve()),
+    }
+    assert json.loads(scope_path.read_text(encoding="utf-8")) == {
+        "version": 2,
+        "target_branch": "release/local",
+        "target_commit": migration_target,
+        "sources": [
+            {
+                "branch": "legacy-clean",
+                "commit": descendant_target,
+                "state": "retained",
+            },
+            {
+                "branch": "legacy-dirty",
+                "commit": descendant_target,
+                "state": "preserved",
+            },
+            {
+                "branch": "legacy-new",
+                "commit": migration_target,
+                "state": "retained",
+            },
+        ],
+    }
+    assert run_git(repo, "merge", "--ff-only", "release/local").returncode == 0
+    migration_main = run_git(repo, "rev-parse", "HEAD").stdout.strip()
+    legacy_finalized = run_pending_work(
+        repo,
+        "finalize",
+        "--scope",
+        str(scope_path),
+        "--target-branch",
+        "release/local",
+        "--target-commit",
+        migration_target,
+        "--current-branch",
+        "main",
+        "--current-commit",
+        migration_main,
+    )
+    assert legacy_finalized.returncode == 0, legacy_finalized.stderr
+    assert json.loads(legacy_finalized.stdout) == {
+        "status": "finalized",
+        "removed": ["legacy-clean", "legacy-new"],
+        "preserved": ["legacy-dirty"],
+        "pending_work_scope": "",
+    }
+    assert not scope_path.exists()
+    assert (
+        run_git(repo, "show-ref", "--verify", "refs/heads/legacy-clean").returncode
+        != 0
+    )
+    assert (
+        run_git(repo, "show-ref", "--verify", "refs/heads/legacy-dirty").returncode
+        == 0
+    )
+    assert (
+        run_git(repo, "show-ref", "--verify", "refs/heads/legacy-new").returncode
+        != 0
+    )
+    assert legacy_dirty_worktree.is_dir()
+    assert "legacy dirty" in (legacy_dirty_worktree / "README.md").read_text(
+        encoding="utf-8"
+    )
+
+    scope_path.write_text(
+        json.dumps(
+            {
+                "source_branches": ["legacy-dirty"],
+                "target_branch": "release/local",
+                "target_commit": migration_target,
+                "unexpected": True,
+                "version": 1,
+            }
+        ),
+        encoding="utf-8",
+        newline="\n",
+    )
+    malformed = run_pending_work(
+        repo,
         "prepare",
         "--target-branch",
         "release/local",
         "--target-commit",
-        descendant_target,
+        migration_target,
     )
-    assert old_format.returncode == 1
-    assert "sources" in json.loads(old_format.stderr)["message"]
+    assert malformed.returncode == 1
+    assert "exactly version" in json.loads(malformed.stderr)["message"]
     assert scope_path.is_file()
     scope_path.unlink()
 

@@ -24,19 +24,21 @@ selected merged source branches and worktrees.
   When a retained scope exists, the wrapper reuses its recorded exact target
   commit; a caller-supplied `--commit` must match it. An absent scope is a
   cleanup no-op. Each version-2 source persists its branch, exact recorded tip,
-  and helper-owned `retained` or `deleting` cleanup state. A missing `retained`
-  source remains blocking. Only a missing `deleting` source whose recorded
-  commit exists and is an ancestor of the recorded target may be atomically
-  retired as completed interrupted helper cleanup. An old-format scope blocks
-  rollout; there is no migration or fallback.
+  and helper-owned `retained`, `preserved`, or `deleting` state. A missing
+  `retained` source remains blocking. Only a missing `deleting` source whose
+  recorded commit exists and is an ancestor of the recorded target may be
+  atomically retired as completed interrupted helper cleanup. Before normal
+  validation, the scope manager atomically converts an exact version-1 record
+  to version 2. A missing legacy source is retired; a clean source still
+  contained in the legacy target becomes `retained`; a dirty, unavailable, or
+  advanced source becomes `preserved`, does not block rollout, and remains
+  untouched during cleanup. Other old or malformed formats block.
 
 ### Inputs To Capture
 
 - Repository checkout, staged `release/local`, base branch, remote, merge method,
   and PR title/body.
 - Whether the head is reusable after merge.
-
-Infer missing values from the checkout, scope file, and live PR before asking.
 
 ## Constraints
 
@@ -68,12 +70,14 @@ Infer missing values from the checkout, scope file, and live PR before asking.
    lookup proves no PR has that exact head. Missing or uncertain evidence
    retains the checkpoint and resumes or blocks. This checkpoint logic receives
    the exact commit already selected by the wrapper.
-3. Before the first remote push, the helper checks the canonical scope when it
-   exists. It atomically removes a missing `deleting` source only when its
-   recorded commit exists and is an ancestor of the recorded target. A missing
+3. Before the first remote push, the scope manager atomically normalizes an
+   exact version-1 record, then the helper checks the canonical version-2 scope.
+   It atomically removes a missing `deleting` source only when its recorded
+   commit exists and is an ancestor of the recorded target. A missing
    `retained` source or an unproven `deleting` source remains `pending_work` and
-   performs no remote mutation. An absent or proven-empty scope is a cleanup
-   no-op.
+   performs no remote mutation. A `preserved` legacy source is outside
+   pending-work blockers and destructive cleanup. An absent or proven-empty
+   scope is a cleanup no-op.
 4. (D) The delegated GitHub workflow owns deterministic, decision-complete
    PR-gate resolution for the exact head.
 5. Only after those gates pass, integrated ship delegates the final exact-head
@@ -125,10 +129,12 @@ Infer missing values from the checkout, scope file, and live PR before asking.
   declared or explicit no-op remote release publication, and declared or
   explicit no-op local repository deployment completed; any returned handoff
   completed, and managed skills without one were reported.
-- Every existing selected source branch passed pending-work checks; an absent
+- Every existing cleanup-selected source branch passed pending-work checks; an
   or proven-empty scope completed as a cleanup no-op.
 - Only an evidence-proven interrupted `deleting` record was recovered
   automatically; every missing `retained` source remained blocking.
+- Dirty, unavailable, or advanced legacy sources were preserved, excluded from
+  destructive cleanup, and reported by finalization.
 - Only selected clean merged source work was removed.
 
 ### Output Contract
@@ -138,4 +144,3 @@ Report only:
 - PR URL and merge outcome
 - synchronized main, release-publication outcome, and local deployment outcome
 - finalized or retained selected scope with reasons
-- blockers or anything important not verified

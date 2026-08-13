@@ -46,8 +46,6 @@ first.
 - Whether `github-actions` updates are in scope and whether the repo enforces
   SHA pinning.
 
-Infer missing inputs from local files and live GitHub state before asking.
-
 ## Constraints
 
 ### Boundaries
@@ -159,6 +157,4 @@ Report only:
 - dependency updates applied
 - dependency updates skipped, retained, or blocked with exact reasons
 - released or published artifact details when materially relevant
-- unresolved blockers or non-blocking debt
-- anything important not verified
-- exact credential step or paid requirement if blocked
+- exact paid requirement if blocked

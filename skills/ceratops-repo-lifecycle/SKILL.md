@@ -44,18 +44,13 @@ release publication in `release/release.yml` and local deployment in
 - Required live GitHub, local repository, CI, artifact, credential, and
   deployment context named by the selected action reference.
 
-Infer missing inputs from local Git state, the release and deployment
-contracts, `gh`, remotes, manifests, and live repository data before asking.
-
 ## Constraints
 
 ### Skill-Specific Rules
 
-- Use action references as the source of truth for deterministic helpers,
-  readiness gates, cleanup, and output contracts.
 - Keep local promotion, GitHub publication, guarded merge, synchronization,
   deployment routing, repository compatibility, and selected-source cleanup in
-  this skill; do not create alias skills or old-name shims.
+  this skill.
 - Execute only named structured release operations from `release/release.yml`
   and deployment operations from `deploy/deploy.yml` through the operation
   runner. Do not interpret prose as executable commands.
@@ -100,7 +95,6 @@ contracts, `gh`, remotes, manifests, and live repository data before asking.
 
 #### 2. Close from action evidence
 
-- Match final claims to the exact action checks and state actually verified.
 - Report retained branches, worktrees, scopes, PRs, artifacts, or external side
   effects only when the selected action requires them.
 
@@ -116,10 +110,8 @@ contracts, `gh`, remotes, manifests, and live repository data before asking.
 Report only:
 
 - selected action and final outcome
-- unresolved blockers or non-blocking debt
 - intentionally retained branches, scopes, PRs, artifacts, worktrees, or
   external side effects with reasons
-- anything important not verified
 
 ### Example Invocation
 

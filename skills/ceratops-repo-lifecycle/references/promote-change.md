@@ -45,8 +45,6 @@ result.
 - Whether the selected action is `promote`, `promote-and-deploy`, or composed
   promotion and shipping.
 
-Infer missing branch and checkout inputs from local Git state before asking.
-
 ## Constraints
 
 ### Boundaries
@@ -76,9 +74,13 @@ Infer missing branch and checkout inputs from local Git state before asking.
    operation succeeds or no-ops. Execute a returned handoff against
    `release/local`; when managed skills exist without one, report them as not
    deployed and continue.
-6. Treat the version-2 pending-work scope as the only source scope later passed
-   to ship. Persist each selected source's exact tip and helper-owned `retained`
-   or `deleting` cleanup state. Advance a reusable scope only when its recorded
+6. Atomically normalize an exact version-1 pending-work scope to version 2
+   before reuse. Retire a missing legacy source, keep a clean source contained
+   in the legacy target as `retained`, and mark a dirty, unavailable, or
+   advanced source `preserved` so stale cleanup cannot block the new promotion
+   or delete evolved work. Treat the normalized version-2 scope as the only
+   source scope later passed to ship. Persist each selected source's exact tip
+   and helper-owned state. Advance a reusable scope only when its recorded
    target is an ancestor of the new target. Recover a missing source
    automatically only when its `deleting` state and recorded commit ancestry
    prove an interrupted helper deletion; a missing `retained` source blocks.
@@ -118,7 +120,8 @@ or deployment.
   release or recorded its no-op, then deployed locally or recorded its no-op,
   exactly once after merge.
 - The exact pending-work scope is retained for standalone promotion or a
-  shipping blocker; successful composed shipping finalizes and cleans it.
+  shipping blocker; successful composed shipping finalizes it, cleans selected
+  sources, and reports any preserved legacy sources left untouched.
 
 ### Output Contract
 

@@ -44,13 +44,9 @@ model name exactly as supplied.
   an unsupported answer from memory.
 - Routine retrieval uses no child model. A child is eligible only when the
   caller explicitly requested independent synthesis or the record reports
-  `semantic_reconciliation_required`.
-- When eligible and supported by the runtime, invoke exactly one analysis-only
-  `gpt-5.6-luna` child at low reasoning effort. Give it only the retained JSON
-  record, no tools, and no file-mutation authority. It may summarize or
-  reconcile that record only; never substitute another model or effort.
-- If the required child configuration is unavailable, retain the deterministic
-  record, report the escalation blocker, and do not make another model call.
+  `semantic_reconciliation_required`; when eligible, use exactly one
+  `gpt-5.6-luna` child at low reasoning effort. It may only summarize or
+  reconcile the retained record.
 
 ### Boundaries
 
@@ -82,9 +78,7 @@ model name exactly as supplied.
    synthesis request.
 2. Run the bundled helper once and parse its single bounded JSON record.
 3. Stop factual retrieval. Use only opened-page claim evidence from the record.
-4. If the record permits escalation, use at most one Luna-low analysis child
-   under the stated no-tool, no-mutation boundary.
-5. Answer concisely with source links and disclose unresolved ambiguity or the
+4. Answer concisely with source links and disclose unresolved ambiguity or the
    exact blocker.
 
 ## Done When

@@ -2,17 +2,19 @@
 
 ## Multi-Action Skill Contract
 
-- List every supported action exactly once under `### Action References` in the
-  parent `SKILL.md`, map it to one direct `references/*.md` file titled
-  `# <Action Name> Action`, and reserve that title form for action files.
-- Load only the selected action reference unless the current action explicitly
-  hands off to another action.
-- Read the selected action file under `references/` and follow its inputs,
-  constraints, helper contracts, workflow, completion gate, and output contract.
-- If the selected action discovers another action owns the remaining work,
-  switch through this multi-action skill and report the handoff reason only when
-  it changes the user's next step.
-- Do not claim completion unless the selected action reference was followed or
-  the task was explicitly blocked.
-- Keep cross-action handoffs inside this multi-action skill rather than creating
-  standalone skill identities.
+- Under `### Action References`, list each public action exactly once and map it
+  to one direct `references/*.md` file titled `# <Action Name> Action`; reserve
+  that title form for public action files.
+- Select the single action whose stated output and resulting state match the
+  user's request. Use the parent's named default for a generic request; ask only
+  when two actions would produce materially different results and evidence
+  cannot decide.
+- Load only the selected action reference. Follow another action only through an
+  explicit handoff from the current action.
+- Treat the selected action reference as the source of truth for its inputs,
+  constraints, helper contracts, workflow, completion gate, and output contract;
+  keep only cross-action invariants in the parent.
+- Completion requires the selected action's completion gate or an explicit
+  blocker.
+- Keep public actions and cross-action handoffs inside the parent skill; do not
+  create standalone, alias, old-name, or pointer skill identities.

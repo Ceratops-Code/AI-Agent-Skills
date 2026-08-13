@@ -67,8 +67,9 @@ Infer the source identity from stable repository evidence before asking.
 
 - Preserve each existing skill's purpose, trigger, workflow, constraints, and
   output contract.
-- Move text into a shared section only when it is genuinely shared; keep
-  skill-specific behavior in the source `SKILL.md`.
+- Move a rule into a shared section when it is repeated, semantically equivalent,
+  or harmless as a common default for every assigned skill; keep only true
+  exceptions and skill-specific deltas in source `SKILL.md`.
 - Use one stable `runtime_source_id` unique among repositories sharing an
   install root and set `validation_profile` to `ceratops-compatible`.
 - Assign every source skill to `core`; when none exist, keep the skill map

@@ -29,19 +29,12 @@ same-thread resume, task handoff, and closure assessment.
   or closure check.
 - Current local or external entities that constrain the selected action.
 
-Infer missing inputs from recent thread context and local state before asking.
-
 ## Constraints
 
 ### Skill-Specific Rules
 
-- Use the selected action reference as the source of truth for workflow,
-  evidence refresh, completion gate, and output contract.
 - Keep fix-loop break, same-thread resume, task handoff, and closure check
-  inside this multi-action skill and its `references/` files; do not introduce
-  alias skills or old-name shims.
-- If action identity is ambiguous, choose the action that matches the user's
-  immediate requested output or next state.
+  inside this multi-action skill and its `references/` files.
 
 ### Boundaries
 
@@ -70,8 +63,6 @@ Infer missing inputs from recent thread context and local state before asking.
 
 #### 2. Close From Action Evidence
 
-- Match final claims to the exact current state, prompt content, local checks,
-  or external evidence actually verified.
 - Report only the retained state, blockers, unresolved debt, or unverified items
   required by the selected action.
 
@@ -88,9 +79,7 @@ Report only:
 
 - selected action and final outcome, unless the selected action requires a
   prompt-only output
-- unresolved blockers or non-blocking debt
 - intentionally retained items with reasons
-- anything important not verified
 
 ### Example Invocation
 

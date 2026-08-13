@@ -23,6 +23,8 @@ skills/
   sections/
     core.md
     multi-action-skill.md
+    evidence-analysis.md
+    bounded-model-analysis.md
   ceratops-*/
     SKILL.md
     agents/openai.yaml
@@ -56,7 +58,10 @@ this repo uses `ceratops`, which adds Ceratops icon, contract,
 retired-artifact, and repository-governance checks to the common full checks.
 Skill names are independent of the profile and need no `ceratops-` prefix.
 `core` is assigned to every skill; `multi-action-skill` is assigned only to
-skills that select among multiple action references.
+skills that select among multiple action references. `evidence-analysis` is
+assigned to skills whose primary output is evidence-backed findings, while
+`bounded-model-analysis` is assigned to skills that invoke bounded
+analysis-only child models.
 The `skills/` tree is authoritative skill source for this repository.
 `deploy/deploy.yml` is its authoritative structured local deployment
 definition. Target repositories declare remote release publication separately

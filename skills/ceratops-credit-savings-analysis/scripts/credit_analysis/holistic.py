@@ -2923,7 +2923,10 @@ def _holistic_luna_schema(
                     "evidence_refs": {
                         "type": "array",
                         "minItems": 1,
-                        "items": {"type": "string", "minLength": 1},
+                        "items": {
+                            "type": "string",
+                            "pattern": r"^(?:evidence|analysis)://",
+                        },
                     },
                     "producer_owner_hint": {"type": "string", "minLength": 1},
                 },
@@ -3245,7 +3248,17 @@ def _validate_holistic_luna_result(
         referenced = _result_deduped_strings(candidate.get("candidate_ids"), f"{label} calls")
         if not set(referenced) <= allowed_candidates:
             raise CreditAnalysisError(f"{label} references another Luna packet")
-        refs = _holistic_result_refs(candidate.get("evidence_refs"), f"{label} evidence")
+        raw_refs = _result_deduped_strings(
+            candidate.get("evidence_refs"), f"{label} evidence"
+        )
+        # Older frozen prompts told Luna to include adjacent candidate IDs in
+        # evidence_refs. Recover those packet-local IDs into their canonical
+        # field while continuing to reject every other non-evidence value.
+        candidate_refs = [ref for ref in raw_refs if ref in allowed_candidates]
+        refs = _holistic_result_refs(
+            [ref for ref in raw_refs if ref not in allowed_candidates],
+            f"{label} evidence",
+        )
         packet_refs = {
             ref
             for candidate_key in task["candidate_ids"]
@@ -3266,6 +3279,7 @@ def _validate_holistic_luna_result(
         # packet. Expand its mapping deterministically so Sol receives the
         # cited original record instead of only Luna's summary.
         referenced_set = set(referenced)
+        referenced_set.update(candidate_refs)
         referenced_set.update(
             candidate_key
             for candidate_key in task["candidate_ids"]
@@ -3300,6 +3314,36 @@ def _holistic_luna_results(
             raise CreditAnalysisError("Sol cannot start before all Luna results")
         results.append(_read_json(pathlib.Path(result_record["path"]), "accepted Luna result"))
     return results
+
+
+def _holistic_sol_luna_results(
+    state: Mapping[str, Any],
+    compact: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    """Replace model-selected Luna IDs with stable collision-free controller IDs."""
+
+    reserved = {
+        str(identity)
+        for record in compact["records"]
+        for identity in (record["candidate_id"], record["call_id"])
+    }
+    reserved.update(_holistic_evidence_references(compact))
+    normalized_results: list[dict[str, Any]] = []
+    identity_index = 0
+    for result in _holistic_luna_results(state, state["manifest"]):
+        candidates: list[dict[str, Any]] = []
+        for candidate in result["candidates"]:
+            while True:
+                identity_index += 1
+                candidate_id = (
+                    f"luna.{state['analysis_id']}.{identity_index:06d}"
+                )
+                if candidate_id not in reserved:
+                    break
+            reserved.add(candidate_id)
+            candidates.append({**candidate, "id": candidate_id})
+        normalized_results.append({**result, "candidates": candidates})
+    return normalized_results
 
 
 SOL_ALIAS_SCHEMA = "ceratops-credit-analysis-sol-alias-map.v1"
@@ -3446,15 +3490,10 @@ def _holistic_sol_input(
     compact: Mapping[str, Any],
     task: Mapping[str, Any],
 ) -> tuple[dict[str, Any], list[str], dict[str, Any]]:
-    luna_results = _holistic_luna_results(state, state["manifest"])
+    luna_results = _holistic_sol_luna_results(state, compact)
     candidates: list[dict[str, Any]] = []
-    seen: set[str] = set()
     for result in luna_results:
         for candidate in result["candidates"]:
-            candidate_id = str(candidate["id"])
-            if candidate_id in seen:
-                raise CreditAnalysisError("Luna candidate ID is duplicated across packets")
-            seen.add(candidate_id)
             candidates.append({**candidate, "source_task_id": result["task_id"]})
     record_index = {record["candidate_id"]: record for record in compact["records"]}
     per_candidate_limit = int(contract["chunking"]["sol_evidence_chars_per_candidate"])
@@ -3727,8 +3766,10 @@ observed temporary control for mandatory Sol review even when it appears
 intentional or harmless. Do not enumerate routine dismissals,
 do not classify every action or call-surface pair, do not calculate savings, and
 do not make final findings. Every emitted candidate must cite supplied candidate
-IDs and packet-local original evidence references, including the candidate ID
-for each adjacent record whose evidence it cites. Keep shared producer/control episodes
+IDs and packet-local original evidence references. Put candidate IDs only in
+`candidate_ids`; put only `evidence://` or `analysis://` values in
+`evidence_refs`. When citing an adjacent record, add its candidate ID to
+`candidate_ids` and its original reference to `evidence_refs`. Keep shared producer/control episodes
 together and keep analysis-overhead work separate from producer work. Aim for
 about 2,500 output tokens; concise hypotheses are sufficient and genuine
 candidates must not be silently dropped.
@@ -4034,6 +4075,64 @@ def _holistic_reconcile_findings(
     return normalized
 
 
+def _holistic_reconcile_orphaned_avoidable_calls(
+    classifications: Sequence[dict[str, Any]],
+    findings: Sequence[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, str], int]:
+    """Conservatively unassess avoidability that has no model-call finding.
+
+    The controller never invents a finding or savings claim. The caller's
+    existing unassessed-coverage gate still rejects broad inconsistencies.
+    """
+
+    finding_calls = {
+        call_id
+        for finding in findings
+        if finding["waste_kind"] == "model-calls"
+        for call_id in finding["affected_call_ids"]
+    }
+    normalized: list[dict[str, Any]] = []
+    for group in classifications:
+        for call_id in group["call_ids"]:
+            detail = {
+                key: value
+                for key, value in group.items()
+                if key != "call_ids"
+            }
+            if (
+                detail["classification"]
+                in {"avoidable_implemented", "avoidable_unimplemented"}
+                and call_id not in finding_calls
+            ):
+                detail.update(
+                    {
+                        "classification": "unassessed",
+                        "reason_code": None,
+                        "rationale": (
+                            "Sol marked this call avoidable but supplied no "
+                            "model-call finding; the controller conservatively "
+                            "left it unassessed."
+                        ),
+                    }
+                )
+            if normalized and all(
+                normalized[-1][key] == detail[key] for key in detail
+            ):
+                normalized[-1]["call_ids"].append(call_id)
+            else:
+                normalized.append({"call_ids": [call_id], **detail})
+    classification_by_call = {
+        call_id: str(group["classification"])
+        for group in normalized
+        for call_id in group["call_ids"]
+    }
+    unassessed = sum(
+        classification == "unassessed"
+        for classification in classification_by_call.values()
+    )
+    return normalized, classification_by_call, unassessed
+
+
 def _validate_holistic_sol_result(
     raw: Mapping[str, Any],
     *,
@@ -4091,6 +4190,9 @@ def _validate_holistic_sol_result(
             call_order=call_order,
             workstreams=workstreams,
         )
+    )
+    classifications, classification_by_call, unassessed = (
+        _holistic_reconcile_orphaned_avoidable_calls(classifications, findings)
     )
     maximum_unassessed = math.floor(
         len(call_order) * float(contract["coverage"]["maximum_unassessed_fraction"])
@@ -4204,7 +4306,7 @@ def _validate_holistic_sol_result(
             raise CreditAnalysisError(f"{label} reason is empty")
     if observed_candidate_ids != list(luna_candidate_ids) or len(observed_candidate_ids) != len(set(observed_candidate_ids)):
         raise CreditAnalysisError("Sol did not adjudicate every Luna candidate exactly once")
-    luna_results = _holistic_luna_results(state, state["manifest"])
+    luna_results = _holistic_sol_luna_results(state, compact)
     all_luna_candidate_ids = [
         candidate["id"]
         for result in luna_results
@@ -4322,17 +4424,13 @@ def _validate_holistic_sol_result(
             "contributing_surfaces": surfaces,
         }
         review_by_id[review_id] = normalized_review
-    expected_review_order = [
-        candidate_id
-        for candidate_id in all_luna_candidate_ids
-        if candidate_id in set(reviewed_temporary)
-    ]
     if (
-        reviewed_temporary != expected_review_order
-        or len(reviewed_temporary) != len(set(reviewed_temporary))
+        len(reviewed_temporary) != len(set(reviewed_temporary))
         or not set(temporary_candidate_ids) <= set(reviewed_temporary)
     ):
-        raise CreditAnalysisError("temporary-control review coverage is missing or duplicated")
+        raise CreditAnalysisError(
+            "temporary-control review coverage is missing or duplicated"
+        )
     nonfinding_temporary_sources = {
         candidate_id
         for review in review_by_id.values()
@@ -4344,13 +4442,22 @@ def _validate_holistic_sol_result(
             decision["luna_candidate_id"] in nonfinding_temporary_sources
             and decision["disposition"] == "confirmed-finding"
         ):
-            decision["disposition"] = "dismissed-candidate"
-            decision["finding_ids"] = []
-            decision["risk_ids"] = []
-            decision["reason"] = (
-                "The mandatory temporary-control disposition records no missing "
-                "durable control."
-            )
+            implemented_finding_ids = [
+                finding_id
+                for finding_id in decision["finding_ids"]
+                if finding_by_id[finding_id]["implementation_status"]
+                == "implemented"
+            ]
+            if implemented_finding_ids:
+                decision["finding_ids"] = implemented_finding_ids
+            else:
+                decision["disposition"] = "dismissed-candidate"
+                decision["finding_ids"] = []
+                decision["risk_ids"] = []
+                decision["reason"] = (
+                    "The mandatory temporary-control disposition records no "
+                    "missing durable control."
+                )
     referenced_findings = {
         finding_id for decision in decisions for finding_id in decision["finding_ids"]
     }
@@ -4602,7 +4709,7 @@ def _holistic_restore_sol_transport(
     call_order = list(state["manifest"]["call_ids"])
     call_position = {call_id: index for index, call_id in enumerate(call_order)}
     workstreams = _holistic_workstream_by_call(compact)
-    luna_results = _holistic_luna_results(state, state["manifest"])
+    luna_results = _holistic_sol_luna_results(state, compact)
     luna_candidates = {
         str(candidate["id"]): candidate
         for result in luna_results
@@ -5010,17 +5117,19 @@ def _holistic_recoverable_raw(
     state: Mapping[str, Any], task: Mapping[str, Any], input_sha256: str
 ) -> Mapping[str, Any] | None:
     attempts = state["execution"][task["task_id"]]["attempts"]
-    if not attempts:
-        return None
-    latest = attempts[-1]
-    if latest.get("outcome") != "validation-error" or latest.get("input_sha256") != input_sha256:
-        return None
-    artifact = latest.get("artifacts", {}).get("raw_output")
-    if not isinstance(artifact, Mapping):
-        return None
-    return _read_json(
-        pathlib.Path(str(artifact["path"])), "recoverable holistic output"
-    )
+    for attempt in reversed(attempts):
+        if (
+            attempt.get("outcome") != "validation-error"
+            or attempt.get("input_sha256") != input_sha256
+        ):
+            continue
+        artifact = attempt.get("artifacts", {}).get("raw_output")
+        if isinstance(artifact, Mapping):
+            return _read_json(
+                pathlib.Path(str(artifact["path"])),
+                "recoverable holistic output",
+            )
+    return None
 
 
 def _holistic_final(

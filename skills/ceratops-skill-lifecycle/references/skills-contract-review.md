@@ -26,8 +26,6 @@ best practices from
 - Whether the source-doc registry itself is stale or incomplete for that
   question.
 
-Infer missing inputs from the contract files before asking.
-
 ## Constraints
 
 ### Boundaries
@@ -112,4 +110,3 @@ Report only:
 - source evidence refreshed
 - contract entries added, changed, retained, or retired
 - unresolved standards questions or unavailable evidence
-- anything important not verified

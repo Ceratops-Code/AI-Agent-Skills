@@ -114,7 +114,5 @@ Report only:
 
 - what was created or changed
 - new repo or published artifact details when materially relevant
-- unresolved blockers or non-blocking debt
 - intentionally retained branches, PRs, temp files, or side effects with reasons
-- anything important not verified
-- exact credential step or paid requirement if blocked
+- exact paid requirement if blocked

@@ -62,9 +62,6 @@ domain audits owned by other lifecycle actions.
   guidance is materially in question.
 - Any task-specific exceptions that narrow findings or authorize a mutation.
 
-Infer roots from the active automation workspace and local environment; ask only
-when the projects root remains ambiguous.
-
 ## Constraints
 
 ### Skill-Specific Rules
