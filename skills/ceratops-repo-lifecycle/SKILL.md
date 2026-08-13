@@ -1,15 +1,16 @@
 ---
 name: ceratops-repo-lifecycle
-description: Route Ceratops repository lifecycle work to action references for repository creation, compatibility, contracts, health, dependencies, local promotion, deterministic deployment, GitHub shipping, and PR merge. Use when Codex should create or harden a repository, make it Ceratops-compatible, review its contracts, disposition CodeQL, maintain dependencies, promote selected task branches into a local release branch with or without deployment, ship a staged branch through guarded GitHub merge and post-merge deployment, or finalize an already-ready PR.
+description: Route Ceratops repository lifecycle work to action references for repository creation, compatibility, contracts, health, dependencies, local promotion, remote release publication, deterministic local deployment, GitHub shipping, and PR merge. Use when Codex should create or harden a repository, make it Ceratops-compatible, review its contracts, disposition CodeQL, maintain dependencies, promote selected task branches into a local release branch with or without deployment, ship a staged branch through guarded GitHub merge, post-merge release publication, and local deployment, or finalize an already-ready PR.
 ---
 
 # Ceratops Repository Lifecycle
 
 ## Goal
 
-Route repository compatibility, local Git, GitHub, and deployment lifecycle
-work to the narrowest action reference. Keep repository state transitions in
-one skill while each repository owns its executable deployment behavior in
+Route repository compatibility, local Git, GitHub, release publication, and
+deployment lifecycle work to the narrowest action reference. Keep repository
+state transitions in one skill while each repository owns declared remote
+release publication in `release/release.yml` and local deployment in
 `deploy/deploy.yml`.
 
 ## Context
@@ -27,7 +28,8 @@ one skill while each repository owns its executable deployment behavior in
 - Maintain dependency PRs or alerts: `references/dependency-maintenance.md`
 - Promote selected branches with or without deployment:
   `references/promote-change.md`
-- Ship, synchronize, deploy, and finalize selected work: `references/ship.md`
+- Ship, synchronize, publish, deploy, and finalize selected work:
+  `references/ship.md`
 - Finalize an already-ready PR: `references/merge-pr.md`
 
 ### Inputs To Capture
@@ -37,12 +39,13 @@ one skill while each repository owns its executable deployment behavior in
   identifies the action.
 - Whether promotion should stop after assembling `release/local`, run its
   optional `deploy` operation before shipping, or continue directly into
-  terminal shipping with deployment only after merge.
+  terminal shipping with release publication and local deployment only after
+  merge.
 - Required live GitHub, local repository, CI, artifact, credential, and
   deployment context named by the selected action reference.
 
-Infer missing inputs from local Git state, the deployment contract, `gh`,
-remotes, manifests, and live repository data before asking.
+Infer missing inputs from local Git state, the release and deployment
+contracts, `gh`, remotes, manifests, and live repository data before asking.
 
 ## Constraints
 
@@ -53,8 +56,9 @@ remotes, manifests, and live repository data before asking.
 - Keep local promotion, GitHub publication, guarded merge, synchronization,
   deployment routing, repository compatibility, and selected-source cleanup in
   this skill; do not create alias skills or old-name shims.
-- Execute only named structured operations from `deploy/deploy.yml` through
-  the operation runner. Do not interpret prose as deployment commands.
+- Execute only named structured release operations from `release/release.yml`
+  and deployment operations from `deploy/deploy.yml` through the operation
+  runner. Do not interpret prose as executable commands.
 - Use `references/merge-pr.md` for standalone PR finalization. Integrated ship
   must preserve every readiness, CI, Codex-review, and exact-head gate before
   its final admin merge.
@@ -87,10 +91,11 @@ remotes, manifests, and live repository data before asking.
   when no handoff is declared.
 - Use composed promotion and shipping when selected committed branches should
   enter the complete ship workflow immediately after promotion; only shipping
-  may deploy in this mode.
+  may publish a release or deploy in this mode.
 - Use `ship` for the complete staged-branch PR, gate, merge, main sync,
-  optional repository deployment, returned handoff handling, late recheck, and
-  selected-source cleanup workflow.
+  optional remote release publication, optional local repository deployment,
+  returned handoff handling, late recheck, and selected-source cleanup
+  workflow.
 - Use `merge-pr` only when standalone PR finalization is the whole task.
 
 #### 2. Close from action evidence
@@ -103,8 +108,8 @@ remotes, manifests, and live repository data before asking.
 
 ### Completion Gate
 
-- Repository, deployment, GitHub, artifact, and local-state claims are limited
-  to the checks and live data actually verified.
+- Repository, release-publication, deployment, GitHub, artifact, and
+  local-state claims are limited to the checks and live data actually verified.
 
 ### Output Contract
 

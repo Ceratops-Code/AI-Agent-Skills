@@ -19,12 +19,14 @@ SCRIPTS = (
 )
 sys.path.insert(0, str(SCRIPTS))
 
+import validate_rule_candidate as rule_candidate  # noqa: E402
 from apply_rules_update import ApplicationError, commit, prepare  # noqa: E402
 from rule_graph import (  # noqa: E402
     parse_rule_text,
     rule_source_summary,
     validate_rule_stack,
 )
+from validate_rule_candidate import resolve_markdown_policy  # noqa: E402
 
 GOVERNANCE_SNAPSHOT = runpy.run_path(str(SCRIPTS / "governance-snapshot.py"))
 agents_rule_graph_inventory = GOVERNANCE_SNAPSHOT["agents_rule_graph_inventory"]
@@ -114,7 +116,6 @@ class RuleGraphTests(unittest.TestCase):
         global_rules.parent.mkdir()
         local_rules.parent.mkdir()
         task_temp_root.mkdir()
-        markdown_config = root / ".markdownlint.json"
         global_rules.write_text(
             "- [AUTH-10] An explicit current user instruction overrides "
             "default behavior.\n",
@@ -141,25 +142,6 @@ class RuleGraphTests(unittest.TestCase):
             encoding="utf-8",
             newline="",
         )
-        markdown_config.write_text(
-            '{"default": false}\n',
-            encoding="utf-8",
-            newline="\n",
-        )
-        policy = {
-            "repository_root": str(root.resolve()),
-            "configuration": str(markdown_config.resolve()),
-            "configuration_sha256": hashlib.sha256(
-                markdown_config.read_bytes()
-            ).hexdigest(),
-            "validate_command": [
-                sys.executable,
-                "-c",
-                "import pathlib,sys; pathlib.Path(sys.argv[1]).read_bytes()",
-                "{file}",
-            ],
-            "fix_command": None,
-        }
         candidate_path = task_temp_root / "validated-candidate.json"
         evidence_path = task_temp_root / "application-validation.json"
         candidate = {
@@ -172,7 +154,7 @@ class RuleGraphTests(unittest.TestCase):
                     "source_sha256": hashlib.sha256(
                         local_rules.read_bytes()
                     ).hexdigest(),
-                    "markdown_policy": policy,
+                    "markdown_policy": resolve_markdown_policy(None),
                     "replacements": [
                         {
                             "expected_old": current_rule,
@@ -570,6 +552,35 @@ class RuleGraphTests(unittest.TestCase):
         )
 
     def test_rules_update_can_repair_an_invalid_current_stack(self):
+        with tempfile.TemporaryDirectory() as dependency_directory:
+            source_repository = pathlib.Path(dependency_directory)
+            skill_root = (
+                source_repository / "skills" / "ceratops-governance-lifecycle"
+            )
+            executable = (
+                source_repository
+                / "node_modules"
+                / ".bin"
+                / ("markdownlint.cmd" if rule_candidate.os.name == "nt" else "markdownlint")
+            )
+            executable.parent.mkdir(parents=True)
+            executable.write_text("", encoding="utf-8", newline="\n")
+            manifest = source_repository / "skills" / "skill-sections.json"
+            manifest.parent.mkdir(parents=True, exist_ok=True)
+            manifest.write_text("{}\n", encoding="utf-8", newline="\n")
+            with (
+                mock.patch.object(rule_candidate, "SKILL_ROOT", skill_root),
+                mock.patch.object(
+                    rule_candidate,
+                    "SKILL_MARKDOWN_CONFIGURATION",
+                    SCRIPTS.parent / "references" / ".markdownlint.json",
+                ),
+                mock.patch.object(rule_candidate.shutil, "which", return_value=None),
+            ):
+                policy = resolve_markdown_policy(None)
+            self.assertEqual(
+                pathlib.Path(policy["validate_command"][0]), executable.resolve()
+            )
         current = (
             "- [LOCAL-01] Use the selected mechanism unless the user "
             "explicitly asks otherwise.\n"

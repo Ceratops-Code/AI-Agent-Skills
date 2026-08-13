@@ -9,11 +9,11 @@ Reusable Ceratops skills for Codex and other agents compatible with `SKILL.md`.
 | `ceratops-repo-lifecycle` | Route repository lifecycle work across compatibility, local promotion, structured deployment, guarded shipping, GitHub creation, contracts, health, dependencies, and PR merge actions. |
 | `ceratops-governance-lifecycle` | Route prompt optimization, advisory skill optimization, regression-safe instruction updates, and cross-scope governance consistency audits across action references. |
 | `ceratops-credit-savings-analysis` | Analyze one credit-waste surface or run fixed per-thread analyses for the current, named, or recent project-filtered threads while preserving every confirmed finding. |
-| `ceratops-credit-savings-analysis-old` | Run the pre-redesign credit savings analysis workflow retained from the August 5 source state. |
 | `ceratops-skill-lifecycle` | Route skill-domain work across create, deploy, preferred eligible fast-change, update, skills-contract-review, and skills-consistency-review actions. |
 | `ceratops-automation-run` | Run recurring automations with shared Ceratops alert, memory, and completion policy. |
 | `ceratops-task-lifecycle` | Route failed-fix-loop breaks, same-thread task resume, whole-task handoff, and closure checks across action references. |
 | `ceratops-code-consistency-audit` | Audit merged refactors for contradictions, docs drift, comment sufficiency, stale follow-through, and merged-only edge cases. |
+| `openai-docs-managed` | Retrieve cited official OpenAI documentation through an allowlisted helper with zero routine child-model calls. |
 
 ## Layout
 
@@ -58,7 +58,9 @@ Skill names are independent of the profile and need no `ceratops-` prefix.
 `core` is assigned to every skill; `multi-action-skill` is assigned only to
 skills that select among multiple action references.
 The `skills/` tree is authoritative skill source for this repository.
-`deploy/deploy.yml` is its authoritative structured deployment definition.
+`deploy/deploy.yml` is its authoritative structured local deployment
+definition. Target repositories declare remote release publication separately
+in `release/release.yml`.
 The repository-compatibility templates under
 `skills/ceratops-repo-lifecycle/references/templates/` are reusable skeletons
 to copy into other repositories, not live configuration.
@@ -106,9 +108,8 @@ without repository deduplication.
 | `skills/ceratops-skill-lifecycle/scripts/runtime/install-managed-skills.py` | Classifies explicit, promotion-relative, or all-managed affected sets; owns direct-manifest inventory; and invokes one runtime transaction without source validation. |
 | `skills/ceratops-skill-lifecycle/scripts/runtime/managed_runtime_builder.py` | Stages, activates, rolls back, recovers, and cleans one locked selected-skill runtime transaction. |
 | `skills/ceratops-skill-lifecycle/scripts/skill-update-workflow.py` | Prepares and verifies declared cohesive skill updates, preserves unrelated dirty state, records exact task-temp ownership, finalizes owned request, state, and evidence files, and removes the verified task-temp root only when empty after completed caller use. |
-| `skills/ceratops-credit-savings-analysis/scripts/model-call-ledger.py` | Resolves current, named, indexed, and project-identified sessions and collects one complete prepared traversal per analysis, preserving formatted messages, canonical workspace references, tool and process telemetry, fingerprints, usage, closure, and classification CLI modes. |
-| `skills/ceratops-credit-savings-analysis/scripts/credit-analysis-workflow.py` | Owns complete shared causal-episode evidence, protected final-state snapshots, finite Luna chunk and consolidation manifests, explicit Luna/Sol execution, immutable persistence, resume state, batch contracts, ROI arithmetic, rendering, and scoped cleanup. |
-| `skills/ceratops-credit-savings-analysis-old/scripts/model-call-ledger.py` | Preserves the pre-redesign fingerprint, usage, selected-semantic, closure, and classification evidence workflow. |
+| `skills/ceratops-credit-savings-analysis/scripts/model-call-ledger.py` | Resolves current, named, indexed, and project-identified sessions and collects one complete prepared traversal per analysis, preserving formatted messages, canonical current-source references, bounded nested-command failure provenance, tool and process telemetry, fingerprints, usage, closure, and classification CLI modes. |
+| `skills/ceratops-credit-savings-analysis/scripts/credit-analysis-workflow.py` and `scripts/credit_analysis/` | Keep one stable CLI over separate shared-core, batch, holistic-model, and dispatch modules for causal evidence, model execution, persistence, resume, ROI, rendering, and cleanup. |
 | `skills/ceratops-task-lifecycle/scripts/closure_snapshot.py` | Emits one compact snapshot for explicitly named closure targets and optionally removes exact task-created files validated inside the task temp root. |
 | `skills/ceratops-governance-lifecycle/scripts/apply_rules_update.py` | Applies approved rule text with coupled history appends or exact ID migrations, supports validated history-only identity repairs, rolls back coupled writes, and cleans only explicitly disposable artifacts after success. |
 | `skills/ceratops-governance-lifecycle/scripts/validate_rule_candidate.py` | Safely repairs candidate-only Markdown whitespace, validates complete prospective targets through declared policies and shared rule/history checks, proves idempotence, and writes caller-selected evidence. |
@@ -117,10 +118,12 @@ without repository deduplication.
 | `skills/ceratops-governance-lifecycle/scripts/rule_graph.py` | Parses canonical AGENTS rules and rejects structural syntax or rule-local explicit-user override escape clauses. |
 | `skills/ceratops-repo-lifecycle/scripts/github_contract_engine/` | Package CLI for compact local audit snapshots, contract evaluation, shared GitHub API access, sanitized evidence, and evidence-gated CodeQL disposition. |
 | `skills/ceratops-repo-lifecycle/scripts/github_pr_workflow/` | Package CLI for individual PR operations, one-call retry-safe review replies and resolutions, decision-complete gate blockers, exact-commit checkpointed shipping, four-proof obsolete-prepared-checkpoint cleanup before automatic resume, scoped pending-work checks, concurrent gates, integrated admin merge, reusable-branch restoration, and terminal cleanup. |
-| `skills/ceratops-repo-lifecycle/scripts/promote-repository.py` | Prepares `release/local`; promotes selected branches with no deployment or one named operation; or composes promotion into exact-head shipping, post-merge deployment, finalization, and cleanup. |
+| `skills/ceratops-repo-lifecycle/scripts/promote-repository.py` | Prepares `release/local`; promotes selected branches with no deployment or one named operation; or composes promotion into exact-head shipping, remote release publication, local deployment, finalization, and cleanup. |
 | `skills/ceratops-repo-lifecycle/scripts/manage-pending-work.py` | Records, checks, automatically resumes the retained target commit, and progressively finalizes the exact selected branch and worktree scope, including automatic residual cleanup of a validated unregistered directory. |
-| `skills/ceratops-repo-lifecycle/scripts/run-deploy-operation.py` | Uses the shared validator for `deploy/deploy.yml`, executes ordered argv steps without a shell, and returns any optional declarative agent handoff. |
-| `skills/ceratops-repo-lifecycle/scripts/ship-repository.py` | Orchestrates scoped pre-push checking, automatic retained-commit resume, guarded GitHub shipping, main synchronization, deployment, and resumable selected-source cleanup while preserving decision-complete blockers from delegated phases. |
+| `skills/ceratops-repo-lifecycle/scripts/repository_operation.py` | Shares schema-selected argv execution, strict parameters, repository path boundaries, compact results, and bounded failures without conflating release publication and deployment. |
+| `skills/ceratops-repo-lifecycle/scripts/run-deploy-operation.py` | Validates and executes one named local operation from `deploy/deploy.yml`, returning any optional declarative agent handoff. |
+| `skills/ceratops-repo-lifecycle/scripts/run-release-operation.py` | Validates and executes one named remote publication operation from `release/release.yml`. |
+| `skills/ceratops-repo-lifecycle/scripts/ship-repository.py` | Orchestrates scoped pre-push checking, guarded GitHub shipping, main synchronization, separately checkpointed release publication and local deployment, and resumable selected-source cleanup. |
 | `skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py` | Skill-lifecycle-owned source, metadata, runtime-input, contract, and portability validator used only by explicit skill workflows. |
 | `skills/ceratops-skill-lifecycle/scripts/fast-change.py` | Classifies exact structured replacements, generates their diff, and owns the eligible direct-release change through declared Markdown lint, exact helper tests, targeted installation, commit, and failure compensation. |
 
@@ -147,18 +150,22 @@ The runner never converts prose instructions into commands.
 
 `ship` takes either an exact pending-work scope or an explicit disabled-check
 mode. When enabled, the same generic scope is checked before the first remote
-push, after synchronization before deployment, and again before cleanup because
-local state can change while CI or deployment runs. Pre-push detection returns
-compact `pending_work` output with `remote_mutation: false`; later detection
-reports `remote_mutation: true` because the merge already occurred. The initial
-integrated ship request authorizes the complete workflow. Its final merge uses
-admin only after readiness, CI, Codex-review, and exact-head gates pass;
-standalone merge behavior remains unchanged.
+push, after synchronization before release publication and local deployment,
+and again before cleanup because local state can change while CI or operations
+run. Pre-push detection returns compact `pending_work` output with
+`remote_mutation: false`; later detection reports `remote_mutation: true`
+because the merge already occurred. The initial integrated ship request
+authorizes the complete workflow. Its final merge uses admin only after
+readiness, CI, Codex-review, and exact-head gates pass; standalone merge
+behavior remains unchanged.
 
 ## Contracts
 
 The contract structure is split by the owning lifecycle skill:
 
+- `release/release.yml` declares a target repository's executable remote
+  release-publication operations and is validated against
+  `skills/ceratops-repo-lifecycle/references/schemas/release-contract.schema.json`.
 - `deploy/deploy.yml` declares this repository's executable deployment
   operations and is validated against
   `skills/ceratops-repo-lifecycle/references/schemas/deploy-contract.schema.json`.
@@ -197,8 +204,8 @@ The contract structure is split by the owning lifecycle skill:
   confirmation, or current-doc interpretation after bundled evidence is
   collected.
 - `skills/ceratops-repo-lifecycle/references/schemas/` contains shared closed
-  schemas for state, PR-readiness, non-deterministic, and source-registry
-  contract families.
+  schemas for state, repository operations, PR-readiness, non-deterministic,
+  and source-registry contract families.
 
 Run deterministic checks with bundled selections instead of one command per
 setting:
@@ -243,7 +250,9 @@ percentage and its 100% contract target; inventory alone is not a finding.
 Local health collection validates every present `deploy/deploy.yml` with the
 repository-lifecycle schema and runs the generic compatibility postcondition
 checker whenever a manifest, source skill, deploy definition, or repository
-validation surface is present. It does not run skill-source validation.
+validation surface is present. Ship separately validates a selected
+`release/release.yml` before remote mutation. Local health does not run
+skill-source validation.
 
 Collect review evidence for non-deterministic checks with:
 
@@ -453,7 +462,12 @@ by each maintenance workflow.
 The runtime builder composes each runtime skill's shared block from
 `skills/skill-sections.json` and `skills/sections/`, and each generated
 runtime `SKILL.md` block includes section-source comments so the origin of every
-shared section stays visible in the installed skill copy. Full validation
+shared section stays visible in the installed skill copy. Runtime payload
+strings preserve their repository-relative installed paths; an exact
+`{"source": "...", "target": "..."}` entry maps one shared source file to
+an installed-skill-relative target. Single-skill executable sources belong to
+that skill, while multi-skill executable sources belong under
+`skills/sections/scripts`. Full validation
 always checks manifest identity and profile, source skill structure,
 shared-section assignments and rendering, payload portability, Codex metadata
 and relative icon existence, the README Skills table, cross-skill references,

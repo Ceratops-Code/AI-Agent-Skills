@@ -1,6 +1,6 @@
 {
   "schema": "ceratops-credit-analysis-contract.v1",
-  "surface_contract_version": 3,
+  "surface_contract_version": 5,
   "source_selection_contract_version": 1,
   "request_schema": "ceratops-credit-analysis-request.v1",
   "batch_request_schema": "ceratops-credit-analysis-batch-request.v1",
@@ -12,49 +12,63 @@
   "final_result_schema": "ceratops-credit-analysis-final-result.v1",
   "single_controller_commands": ["prepare", "advance", "status", "finalize"],
   "end_to_end_controller_commands": ["plan", "execute"],
-  "orchestration_state_schema": "ceratops-credit-analysis-orchestration-state.v3",
-  "chunk_manifest_schema": "ceratops-credit-analysis-chunk-manifest.v3",
-  "luna_result_schema": "ceratops-credit-analysis-luna-result.v3",
-  "confirmation_result_schema": "ceratops-credit-analysis-confirmation-result.v3",
-  "orchestration_synthesis_schema": "ceratops-credit-analysis-orchestration-synthesis.v3",
-  "orchestration_final_schema": "ceratops-credit-analysis-orchestration-final.v3",
+  "orchestration_state_schema": "ceratops-credit-analysis-orchestration-state.v4",
+  "chunk_manifest_schema": "ceratops-credit-analysis-chunk-manifest.v4",
+  "luna_result_schema": "ceratops-credit-analysis-luna-result.v4",
+  "adjudication_result_schema": "ceratops-credit-analysis-adjudication-result.v1",
+  "orchestration_final_schema": "ceratops-credit-analysis-orchestration-final.v4",
   "models": {
     "luna": "gpt-5.6-luna",
-    "confirmation": "gpt-5.6-sol",
-    "synthesis": "gpt-5.6-sol"
+    "sol": "gpt-5.6-sol"
   },
-  "model_reasoning_effort": "max",
+  "model_reasoning_effort": {
+    "luna": "medium",
+    "sol": "max"
+  },
   "semantic_call_contract": {
-    "full_analysis_sol_calls": 6,
-    "surface_confirmation_calls": 5,
-    "synthesis_calls": 1,
+    "normal_luna_calls": 1,
+    "sol_calls": 1,
     "bookkeeping_calls": 0
   },
-  "chunking": {
-    "target_chars": 480000,
-    "maximum_chars": 600000,
-    "maximum_candidates": 96,
-    "large_payload_inline_chars": 12000,
-    "confirmation_packet_chars": 750000,
-    "synthesis_packet_chars": 750000,
-    "consolidation_fan_in": 16,
-    "maximum_luna_tasks": 90,
-    "maximum_semantic_tasks": 96,
-    "maximum_consolidation_depth": 4,
-    "confirmation_audit_fraction": 0.05,
-    "confirmation_audit_minimum": 8
+  "analysis_policy": {
+    "implementation_status_source": "frozen-current-canonical-state",
+    "existing_control_classification": "implemented-compliance-or-runtime-gap",
+    "excluded_waste": [
+      "intentional-full-skill-body-injection"
+    ],
+    "prohibited_recommendations": [
+      "reasoning-settings-or-levels"
+    ],
+    "external_research": "targeted-official-sources-only",
+    "broader_research_handoff": "paste-ready-prompt",
+    "mutation_authority": false,
+    "outstanding_finding_cap": null
   },
-  "luna_dispositions": [
-    "provisional-finding-evidence",
+  "context_budget": {
+    "characters_per_token": 2.4,
+    "hidden_prompt_reserve_tokens": 28000,
+    "safety_margin_tokens": 12000,
+    "luna_output_reserve_tokens": 4000,
+    "sol_output_reserve_tokens": 48000,
+    "minimum_evidence_tokens": 16000
+  },
+  "chunking": {
+    "large_payload_inline_chars": 12000,
+    "compact_text_chars": 900,
+    "sol_evidence_chars_per_candidate": 6000
+  },
+  "coverage": {
+    "maximum_unassessed_fraction": 0.2
+  },
+  "luna_candidate_kinds": [
+    "provisional-finding",
     "plausible-risk",
-    "dismissed-candidate",
-    "necessary-exclusion"
+    "temporary-control"
   ],
-  "confirmation_dispositions": [
+  "adjudication_dispositions": [
     "confirmed-finding",
     "plausible-risk",
-    "dismissed-candidate",
-    "necessary-exclusion"
+    "dismissed-candidate"
   ],
   "temporary_control_dispositions": [
     "transient-by-design",

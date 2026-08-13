@@ -894,7 +894,7 @@ def rollback(
 
 
 def verify_application_inputs(update: PreparedUpdate) -> None:
-    """Recheck the exact approved artifact and declared Markdown policies."""
+    """Recheck the exact approved artifact and skill-owned Markdown policy."""
 
     if update.candidate_path is not None:
         if file_hash(update.candidate_path) != update.candidate_sha256:

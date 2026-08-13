@@ -159,6 +159,31 @@ def _safe_repo_pattern(pattern: str) -> bool:
     )
 
 
+def payload_parts(value: object, label: str) -> tuple[str, str | None]:
+    """Normalize one portable payload pattern or exact target mapping."""
+
+    if isinstance(value, str):
+        if not _safe_repo_pattern(value):
+            raise ValueError(f"{label} has unsafe source path: {value!r}")
+        return value, None
+    if not isinstance(value, Mapping) or set(value) != {"source", "target"}:
+        raise ValueError(f"{label} must be a path or source-target mapping")
+    source = value.get("source")
+    destination = value.get("target")
+    if not isinstance(source, str) or not isinstance(destination, str):
+        raise ValueError(f"{label} source and target must be strings")
+    if (
+        not _safe_repo_pattern(source)
+        or not _safe_repo_pattern(destination)
+        or any(token in source for token in "*?[")
+        or any(token in destination for token in "*?[")
+        or pathlib.PurePosixPath(destination).as_posix()
+        in {".", "SKILL.md", MANIFEST_NAME}
+    ):
+        raise ValueError(f"{label} has unsafe exact mapping")
+    return source, destination
+
+
 def validate_manifest(
     manifest: Mapping[str, object],
     source_names: set[str],
@@ -228,9 +253,11 @@ def validate_manifest(
             if not isinstance(values, Sequence) or isinstance(values, str):
                 errors.append(f"runtime_payloads.{key} must be a list")
                 continue
-            for value in values:
-                if not isinstance(value, str) or not _safe_repo_pattern(value):
-                    errors.append(f"runtime_payloads.{key} has unsafe path {value!r}")
+            for index, value in enumerate(values):
+                try:
+                    payload_parts(value, f"runtime_payloads.{key}[{index}]")
+                except ValueError as exc:
+                    errors.append(str(exc))
     return errors
 
 
@@ -357,13 +384,16 @@ def copy_path(source: pathlib.Path, target: pathlib.Path) -> None:
     shutil.copy2(source, target)
 
 
-def expand_payload_patterns(patterns: Sequence[str]) -> list[pathlib.Path]:
-    """Expand validated runtime payload globs relative to the source root."""
+def expand_payload_declarations(
+    declarations: Sequence[object],
+) -> list[tuple[pathlib.Path, pathlib.PurePosixPath]]:
+    """Resolve payload sources and their installed-skill-relative targets."""
 
-    paths: list[pathlib.Path] = []
-    for pattern in patterns:
-        if not _safe_repo_pattern(pattern):
-            raise ValueError(f"unsafe runtime payload pattern: {pattern}")
+    resolved: dict[str, tuple[pathlib.Path, pathlib.PurePosixPath]] = {}
+    for index, declaration in enumerate(declarations):
+        pattern, mapped_target = payload_parts(
+            declaration, f"runtime payload {index}"
+        )
         matches = sorted(ROOT.glob(pattern))
         if not matches:
             if any(token in pattern for token in "*?["):
@@ -371,30 +401,53 @@ def expand_payload_patterns(patterns: Sequence[str]) -> list[pathlib.Path]:
             raise FileNotFoundError(
                 f"runtime payload path does not exist: {pattern}"
             )
-        paths.extend(path for path in matches if ".git" not in path.parts)
-    unique: dict[str, pathlib.Path] = {}
-    for path in paths:
-        _assert_inside(path, ROOT)
-        if path.resolve() == ROOT.resolve():
-            raise ValueError("runtime payload cannot select the repository root")
-        unique[path.relative_to(ROOT).as_posix()] = path
-    return list(unique.values())
+        if mapped_target is not None and (
+            len(matches) != 1 or not matches[0].is_file()
+        ):
+            raise ValueError("mapped runtime payload source must be one file")
+        for path in matches:
+            if ".git" in path.parts:
+                continue
+            _assert_inside(path, ROOT)
+            if path.resolve() == ROOT.resolve():
+                raise ValueError("runtime payload cannot select the repository root")
+            relative = (
+                pathlib.PurePosixPath(mapped_target)
+                if mapped_target is not None
+                else pathlib.PurePosixPath(path.relative_to(ROOT).as_posix())
+            )
+            target_key = relative.as_posix()
+            prior = resolved.get(target_key)
+            if prior is not None and prior[0] != path:
+                raise ValueError(
+                    f"runtime payload target has multiple sources: {target_key}"
+                )
+            resolved[target_key] = (path, relative)
+    return list(resolved.values())
 
 
-def payload_patterns_for(
+def payload_declarations_for(
     skill_name: str, manifest: Mapping[str, object]
-) -> list[str]:
-    """Return global and skill-specific runtime payload patterns."""
+) -> list[object]:
+    """Return global and skill-specific runtime payload declarations."""
 
     payloads = manifest.get("runtime_payloads", {})
     if not isinstance(payloads, Mapping):
         return []
-    patterns: list[str] = []
+    declarations: list[object] = []
     for key in ("*", skill_name):
         values = payloads.get(key, [])
         if isinstance(values, Sequence) and not isinstance(values, str):
-            patterns.extend(str(value) for value in values)
-    return patterns
+            for index, value in enumerate(values):
+                source, target = payload_parts(
+                    value, f"runtime_payloads.{key}[{index}]"
+                )
+                declarations.append(
+                    source
+                    if target is None
+                    else {"source": source, "target": target}
+                )
+    return declarations
 
 
 def read_runtime_manifest(path: pathlib.Path) -> dict[str, object]:
@@ -480,11 +533,16 @@ def write_expected_skill(
     (target_skill / "SKILL.md").write_text(
         runtime_skill_text, encoding="utf-8", newline="\n"
     )
-    for payload in expand_payload_patterns(
-        payload_patterns_for(skill_name, manifest)
-    ):
-        relative = payload.relative_to(ROOT)
-        copy_path(payload, target_skill / relative)
+    declarations = payload_declarations_for(skill_name, manifest)
+    for payload, relative in expand_payload_declarations(declarations):
+        destination = target_skill.joinpath(*relative.parts)
+        _assert_inside(destination, target_skill)
+        if destination.exists() or destination.is_symlink():
+            raise ValueError(
+                "runtime payload target collides with skill source: "
+                f"{relative.as_posix()}"
+            )
+        copy_path(payload, destination)
 
     runtime_manifest = {
         "schema": RUNTIME_MANIFEST_SCHEMA,
@@ -494,7 +552,7 @@ def write_expected_skill(
         "source_path": source_dir.relative_to(ROOT).as_posix(),
         "source_repository_root": str(source_repository_root or ROOT),
         "generated_from": SECTION_MANIFEST.relative_to(ROOT).as_posix(),
-        "payload_patterns": payload_patterns_for(skill_name, manifest),
+        "payload_patterns": declarations,
     }
     (target_skill / MANIFEST_NAME).write_text(
         json.dumps(runtime_manifest, indent=2, sort_keys=True) + "\n",

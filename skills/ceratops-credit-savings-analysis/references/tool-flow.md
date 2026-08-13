@@ -32,10 +32,10 @@ Detect avoidable tool, command, wait, and model-mediated transitions.
 
 ## Completion Gate
 
-Account for every controller-exposed candidate against original evidence,
-including protocol-only exclusions. Persist the complete classification and any
-temporary-control contributions in the single controller-owned confirmation
-result.
+Review all tool-flow signals supplied through the complete causal stream,
+including protocol-only exclusions, and persist every Sol-confirmed finding,
+plausible risk, and temporary-control contribution. Final grouped call accounting
+must cover every source call without per-surface dismissal records.
 
 ## Output Contract
 

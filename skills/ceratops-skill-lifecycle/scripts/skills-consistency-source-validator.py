@@ -289,27 +289,146 @@ def check_runtime_payloads(
     """Validate applicable runtime payload paths without copying any files."""
 
     errors: list[str] = []
+    normalized: dict[str, list[tuple[str, str | None]]] = {}
     payloads = manifest.get("runtime_payloads", {})
     if not isinstance(payloads, dict):
         errors.append("section manifest runtime_payloads must be an object")
         return errors
     for skill_name, values in payloads.items():
-        if selected_skill_names is not None and skill_name != "*" and skill_name not in selected_skill_names:
+        if (
+            selected_skill_names is not None
+            and skill_name != "*"
+            and skill_name not in selected_skill_names
+        ):
             continue
         if skill_name != "*" and skill_name not in skill_names:
             errors.append(f"runtime_payloads points to unknown skill {skill_name}")
-        if not isinstance(values, list) or not all(isinstance(item, str) for item in values):
-            errors.append(f"runtime_payloads.{skill_name} must be a list of strings")
+        if not isinstance(values, list):
+            errors.append(f"runtime_payloads.{skill_name} must be a list")
             continue
-        for rel_path in values:
-            if pathlib.PurePath(rel_path).is_absolute() or ".." in pathlib.PurePath(rel_path).parts:
-                errors.append(f"runtime_payloads.{skill_name} contains non-portable path {rel_path}")
+        declarations: list[tuple[str, str | None]] = []
+        for index, value in enumerate(values):
+            label = f"runtime_payloads.{skill_name}[{index}]"
+            if isinstance(value, str):
+                source, target = value, None
+            elif isinstance(value, Mapping) and set(value) == {"source", "target"}:
+                raw_source = value.get("source")
+                raw_target = value.get("target")
+                if not isinstance(raw_source, str) or not isinstance(raw_target, str):
+                    errors.append(f"{label} source and target must be strings")
+                    continue
+                source, target = raw_source, raw_target
+            else:
+                errors.append(f"{label} must be a path or source-target mapping")
                 continue
-            if any(token in rel_path for token in "*?["):
-                if not list(ROOT.glob(rel_path)):
-                    errors.append(f"runtime_payloads.{skill_name} glob has no matches: {rel_path}")
-            elif not (ROOT / rel_path).exists():
-                errors.append(f"runtime_payloads.{skill_name} path does not exist: {rel_path}")
+            source_posix = pathlib.PurePosixPath(source.replace("\\", "/"))
+            source_windows = pathlib.PureWindowsPath(source)
+            if (
+                not source
+                or source_posix.is_absolute()
+                or source_windows.is_absolute()
+                or source_windows.drive
+                or ".." in source_posix.parts
+            ):
+                errors.append(f"{label} contains non-portable source {source}")
+                continue
+            matches = list(ROOT.glob(source))
+            if target is not None:
+                target_posix = pathlib.PurePosixPath(target.replace("\\", "/"))
+                target_windows = pathlib.PureWindowsPath(target)
+                if (
+                    not target
+                    or target_posix.is_absolute()
+                    or target_windows.is_absolute()
+                    or target_windows.drive
+                    or ".." in target_posix.parts
+                    or any(token in source for token in "*?[")
+                    or any(token in target for token in "*?[")
+                    or target_posix.as_posix()
+                    in {".", "SKILL.md", ".runtime-manifest.json"}
+                ):
+                    errors.append(f"{label} has unsafe exact mapping")
+                    continue
+                if len(matches) != 1 or not matches[0].is_file():
+                    errors.append(f"{label} mapped source must be one file")
+                    continue
+            elif any(token in source for token in "*?["):
+                if not matches:
+                    errors.append(f"{label} glob has no matches: {source}")
+                    continue
+            elif not (ROOT / source).exists():
+                errors.append(f"{label} path does not exist: {source}")
+                continue
+            declarations.append((source, target))
+        normalized[skill_name] = declarations
+
+    executable_suffixes = {
+        ".bat",
+        ".cmd",
+        ".exe",
+        ".js",
+        ".mjs",
+        ".ps1",
+        ".py",
+        ".sh",
+        ".ts",
+    }
+    selected_executable_sources = {
+        source
+        for declarations in normalized.values()
+        for source, _target in declarations
+        if pathlib.PurePosixPath(source).suffix.lower() in executable_suffixes
+    }
+    source_consumers: dict[str, set[str]] = {}
+    for key, values in payloads.items():
+        if not isinstance(key, str) or not isinstance(values, list):
+            continue
+        consumers = skill_names if key == "*" else {key}
+        for value in values:
+            candidate_source = (
+                value
+                if isinstance(value, str)
+                else value.get("source")
+                if isinstance(value, Mapping)
+                else None
+            )
+            if (
+                isinstance(candidate_source, str)
+                and pathlib.PurePosixPath(candidate_source).suffix.lower()
+                in executable_suffixes
+            ):
+                source_consumers.setdefault(candidate_source, set()).update(consumers)
+    for source in sorted(selected_executable_sources):
+        consumers = source_consumers[source]
+        normalized_source = source.replace("\\", "/")
+        if len(consumers) > 1:
+            if not normalized_source.startswith("skills/sections/scripts/"):
+                errors.append(
+                    "multi-skill executable payload source must be under "
+                    f"skills/sections/scripts: {source}"
+                )
+        elif consumers:
+            owner = next(iter(consumers))
+            if not normalized_source.startswith(f"skills/{owner}/"):
+                errors.append(
+                    f"{owner} executable payload source must be skill-owned: "
+                    f"{source}"
+                )
+
+    selected = skill_names if selected_skill_names is None else selected_skill_names
+    for skill_name in sorted(selected & skill_names):
+        destinations: dict[str, pathlib.Path] = {}
+        for key in ("*", skill_name):
+            for source, target in normalized.get(key, []):
+                for match in sorted(ROOT.glob(source)):
+                    destination = target or match.relative_to(ROOT).as_posix()
+                    prior = destinations.get(destination)
+                    if prior is not None and prior.resolve() != match.resolve():
+                        errors.append(
+                            f"runtime_payloads.{skill_name} target has multiple "
+                            f"sources: {destination}"
+                        )
+                    destinations[destination] = match
     return errors
 
 
@@ -349,7 +468,13 @@ def manifest_runtime_input_paths(
             values = payloads.get(skill_name, [])
             if not isinstance(values, list):
                 continue
-            for rel_path in values:
+            for value in values:
+                if isinstance(value, str):
+                    rel_path = value
+                elif isinstance(value, Mapping):
+                    rel_path = value.get("source")
+                else:
+                    continue
                 if not isinstance(rel_path, str):
                     continue
                 pure_path = pathlib.PurePath(rel_path)

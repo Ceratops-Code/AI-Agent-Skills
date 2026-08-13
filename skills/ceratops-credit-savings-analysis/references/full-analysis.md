@@ -2,10 +2,10 @@
 
 ## Goal
 
-Run one complete two-tier controller plan. Analyze shared causal episodes once
-with Luna across every applicable surface, confirm material and audited evidence
-with one Sol pass per surface, and run one Sol synthesis. Preserve and present
-every confirmed finding.
+Run one complete two-tier controller plan. Give Luna the complete compact causal
+evidence once for high-recall discovery across all five surfaces, then use one
+Sol pass to verify those candidates against original evidence and produce the
+final synthesis. Preserve and present every confirmed finding.
 
 ## Inputs And Constraints
 
@@ -26,36 +26,35 @@ every confirmed finding.
   versions, and mutation authority fixed to false.
 - Prepare with action and mode `full-analysis`. Do not run a standalone surface
   in parallel or collect another bundle.
-- Follow only the pending surface. Do not draft findings for later surfaces.
+- Execute only the next frozen controller task. Luna discovers across the fixed
+  surface set and Sol adjudicates that complete set in one pass.
 
 ## Workflow
 
 1. Run controller `plan` once. It resolves, collects, and parses the selected
-   session once; freezes its collection cutoff and source lineage before any
-   child execution; excludes controller-generated analysis-child sessions by
-   stable marker;
-   retains complete protected evidence; snapshots referenced final canonical
-   artifacts read-only; builds causally adjacent episodes once; maps candidates
-   to all five surfaces in fixed order; partitions the shared episode stream
-   into finite chunks; and reports projected Luna and Sol calls. Stop on an
-   empty, malformed, or over-cap plan without truncating source coverage.
-2. Run controller `execute`. It never recollects the session. It processes the
-   finite ordered resumable shared queue with `gpt-5.6-luna` at maximum effort.
-   Every primary result accounts once for every applicable candidate-surface
-   pair. One shared Luna consolidation queue then preserves every pair and
-   material variant before results are projected to surfaces. The controller
-   persists identity and content hashes and validates 100% Luna coverage before
-   Sol begins.
-3. In fixed surface order, run exactly one `gpt-5.6-sol` confirmation at maximum
-   effort. Each packet verifies Luna findings and risks, every observably
-   high-signal episode even if Luna dismissed it through deterministic first/last
-   representatives per episode and signal reason, and a deterministic audit
-   sample of ordinary dismissals against original evidence.
-4. Run exactly one `gpt-5.6-sol` synthesis at maximum effort. It merges duplicate
-   owner/control findings and temporary-control contributions once, preserves
-   contributing surfaces, assigns savings once, classifies every call, and
-   retains every confirmed finding. A full analysis uses five Sol confirmations
-   plus one Sol synthesis; Luna calls are additional and manifest-derived.
+   session once; freezes its cutoff and exact lineage before children; retains
+   complete evidence from every completed run, including corrective follow-ups,
+   and read-only canonical snapshots; separates prior analysis-generated
+   activity from producer work; builds compact causal episodes once; dynamically
+   budgets against the local model context; and reports the finite projected
+   call count. Analysis A excludes only its own descendants; a later B may inspect
+   A's retained analysis activity and excludes only B's.
+2. Run controller `execute`. It never recollects. In the normal case it sends
+   every causal episode in one packet to `gpt-5.6-luna` at medium effort. If the
+   packet cannot fit, it uses the minimum ordered shared partition, never splits
+   by surface, and stops above four Luna calls. Luna performs sparse high-recall
+   discovery across the five fixed lenses without a dismissal for every call
+   and lens combination.
+3. Run exactly one `gpt-5.6-sol` pass at maximum effort. It receives every Luna
+   candidate plus original evidence excerpts, verifies or rejects each candidate,
+   performs the mandatory temporary-control review, merges overlaps by owner,
+   applies recurrence and ROI gates, preserves every confirmed finding, and
+   classifies every source call in compact groups while limiting `unassessed`.
+4. Persist immutable identities, prompts, results, attempts, latency, and usage.
+   Wait without model polling, terminate the complete child process tree on
+   interruption or timeout, and resume accepted phases idempotently. A normal
+   full analysis uses two semantic calls; bounded oversize fallback uses two to
+   five, with one Sol call and no bookkeeping calls.
 
 Every child Codex execution uses an explicit model, a read-only sandbox, no
 approvals, ephemeral state, a self-contained no-tools prompt, and
@@ -63,19 +62,22 @@ controller-owned schema, event, and result files. The controller waits
 internally and emits periodic non-model progress. On interruption, rerun
 `execute`; never recollect prepared evidence or overwrite an accepted result.
 
-For a batch, use the existing `prepare-batch`, `advance-batch`, `status-batch`,
-and `finalize-batch` compatibility interface. It freezes selection and each
-lower-level child controller once, preserves the existing batch manifest and
-summary contracts, and does not expose Luna chunking, consolidation, or
-synthesis as public actions. Never create a temporary discovery script.
+For a batch, run `prepare-batch` once; it freezes selection and plans one
+ordinary holistic child per selected thread. For the pending child returned by
+`status-batch`, run `execute --state CHILD_STATE`, then pass its retained final
+result to `advance-batch`. Repeat until the batch-summary phase, satisfy that
+existing summary contract, advance it, and run `finalize-batch`. This preserves
+the existing batch manifest and summary contracts and does not expose Luna
+chunking, consolidation, or synthesis as public actions. Never collect a child
+through a parallel controller or create a temporary discovery script.
 
 ## Completion Gate
 
 Complete only when orchestration status reports `complete: true` and retained
 evidence contains the frozen shared manifest, every hashed Luna and Sol result,
-finding, risk, dismissal, exclusion, temporary-control review and
-merge, reviewed-no-confirmed-waste and unassessed call, producer group, and ROI
-input.
+every Luna candidate adjudication, confirmed finding, plausible risk,
+temporary-control review and merge, call classification, producer group, and
+ROI input.
 For a batch, every selected child must also be finalized and indexed exactly
 once before batch finalization succeeds.
 

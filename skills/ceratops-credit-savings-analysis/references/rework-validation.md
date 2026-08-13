@@ -48,11 +48,11 @@ maintenance. Persist every review in `temporary_control_reviews`.
 
 ## Completion Gate
 
-Account for every controller-exposed candidate, record why controlled iteration
-was necessary when excluded, and persist one complete review for every detected
-temporary control. All five dispositions are valid outcomes. Intentionally
-transient work must not create a finding, and permanent recommendations must
-pass recurrence and ROI gates.
+Review all rework signals supplied through the complete causal stream, record
+why controlled iteration was necessary when relevant, and persist one review for
+every detected temporary control. All five dispositions are valid outcomes.
+Intentionally transient work must not create a finding, and permanent
+recommendations must pass recurrence and ROI gates.
 
 ## Output Contract
 

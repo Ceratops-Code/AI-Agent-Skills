@@ -2,8 +2,11 @@
 """Resolve Codex thread sources and emit a compact judgment-free call ledger.
 
 The ledger groups automatic continuations by turn ID, includes only completed
-runs, and fingerprints tool arguments instead of reproducing potentially
-sensitive command text. Ordinary mode writes detailed evidence to a
+runs, and fingerprints top-level tool arguments instead of reproducing
+potentially sensitive input. For ``functions.exec``, statically declared shell
+children retain a bounded redacted command label and exact observable failure
+category so provenance is not hidden by the outer tool name; dynamic child
+calls remain explicitly unenumerated. Ordinary mode writes detailed evidence to a
 caller-selected file. Closure mode emits the minimum redacted selected-window
 call inventory in one invocation and creates no cleanup artifact. Repeated
 ``--include-run`` requires ``--semantic-evidence-output``. The helper writes
@@ -137,6 +140,21 @@ BINARY_DATA_URL_RE = re.compile(
     re.IGNORECASE,
 )
 BASE64_BODY_RE = re.compile(r"^[A-Za-z0-9+/=_-]+$")
+NESTED_TOOL_CALL_RE = re.compile(
+    r"\btools\.(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\("
+)
+NESTED_COMMAND_PROPERTY_RE = re.compile(
+    r"(?:^|[,{])\s*(?:cmd|command|[\"'](?:cmd|command)[\"'])\s*:\s*"
+)
+TEXT_EXIT_CODE_RE = re.compile(
+    r"(?:Exit code:|[\"']?(?:exit_code|returncode)[\"']?\s*[:=])\s*"
+    r"(?P<code>\d+)",
+    re.IGNORECASE,
+)
+FUNCTIONS_EXEC_NAMES = frozenset({"exec", "functions.exec"})
+STATIC_COMMAND_TOOLS = frozenset({"exec_command", "shell_command"})
+NESTED_COMMAND_LABEL_LIMIT = 500
+FAILURE_REASON_LABEL_LIMIT = 420
 
 
 class LedgerError(RuntimeError):
@@ -598,6 +616,310 @@ def semantic_summary(value: Any, *, decode_json: bool = True) -> str:
     return compact[: SEMANTIC_SUMMARY_LIMIT - 3] + "..."
 
 
+def matching_javascript_delimiter(
+    source: str,
+    start: int,
+    opener: str,
+    closer: str,
+) -> int | None:
+    """Find one JavaScript delimiter while ignoring quoted text and comments."""
+
+    depth = 0
+    quote: str | None = None
+    escaped = False
+    index = start
+    while index < len(source):
+        char = source[index]
+        if quote is not None:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = None
+            index += 1
+            continue
+        if source.startswith("//", index):
+            newline = source.find("\n", index + 2)
+            index = len(source) if newline < 0 else newline + 1
+            continue
+        if source.startswith("/*", index):
+            comment_end = source.find("*/", index + 2)
+            index = len(source) if comment_end < 0 else comment_end + 2
+            continue
+        if char in {'"', "'", "`"}:
+            quote = char
+        elif char == opener:
+            depth += 1
+        elif char == closer:
+            depth -= 1
+            if depth == 0:
+                return index
+        index += 1
+    return None
+
+
+def decode_static_javascript_string(source: str, start: int) -> str | None:
+    """Decode one static JavaScript string and reject interpolated templates."""
+
+    if start >= len(source) or source[start] not in {'"', "'", "`"}:
+        return None
+    quote = source[start]
+    decoded: list[str] = []
+    index = start + 1
+    escapes = {
+        "b": "\b",
+        "f": "\f",
+        "n": "\n",
+        "r": "\r",
+        "t": "\t",
+        "v": "\v",
+        "0": "\0",
+    }
+    while index < len(source):
+        char = source[index]
+        if char == quote:
+            return "".join(decoded)
+        if quote == "`" and source.startswith("${", index):
+            return None
+        if char != "\\":
+            decoded.append(char)
+            index += 1
+            continue
+        index += 1
+        if index >= len(source):
+            return None
+        escape = source[index]
+        if escape in {"\n", "\r"}:
+            if (
+                escape == "\r"
+                and index + 1 < len(source)
+                and source[index + 1] == "\n"
+            ):
+                index += 1
+        elif escape in escapes:
+            decoded.append(escapes[escape])
+        elif escape == "x" and index + 2 < len(source):
+            value = source[index + 1 : index + 3]
+            if re.fullmatch(r"[0-9A-Fa-f]{2}", value):
+                decoded.append(chr(int(value, 16)))
+                index += 2
+            else:
+                decoded.append(escape)
+        elif escape == "u" and index + 4 < len(source):
+            value = source[index + 1 : index + 5]
+            if re.fullmatch(r"[0-9A-Fa-f]{4}", value):
+                decoded.append(chr(int(value, 16)))
+                index += 4
+            else:
+                decoded.append(escape)
+        else:
+            decoded.append(escape)
+        index += 1
+    return None
+
+
+def bounded_command_label(command: str) -> str:
+    """Return a secret-safe inner-command label with deterministic truncation."""
+
+    protected = re.sub(
+        r"<user-home>(?:[\\/])?<local-path>",
+        LOCAL_PATH,
+        redact_text(command),
+    )
+    compact = re.sub(r"\s+", " ", protected).strip()
+    if len(compact) <= NESTED_COMMAND_LABEL_LIMIT:
+        return compact
+    return compact[: NESTED_COMMAND_LABEL_LIMIT - 3] + "..."
+
+
+def functions_exec_child_calls(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """Enumerate statically declared shell children from one functions.exec call."""
+
+    if payload.get("type") != "custom_tool_call":
+        return []
+    name = payload.get("name")
+    if name not in FUNCTIONS_EXEC_NAMES:
+        return []
+    source = payload.get("input") or payload.get("arguments")
+    if not isinstance(source, str):
+        return []
+    children: list[dict[str, Any]] = []
+    for match in NESTED_TOOL_CALL_RE.finditer(source):
+        tool = match.group("name")
+        if tool not in STATIC_COMMAND_TOOLS:
+            continue
+        open_paren = match.end() - 1
+        close_paren = matching_javascript_delimiter(source, open_paren, "(", ")")
+        if close_paren is None:
+            continue
+        arguments = source[open_paren + 1 : close_paren]
+        property_match = NESTED_COMMAND_PROPERTY_RE.search(arguments)
+        if property_match is None:
+            continue
+        value_start = property_match.end()
+        while value_start < len(arguments) and arguments[value_start].isspace():
+            value_start += 1
+        command = decode_static_javascript_string(arguments, value_start)
+        if not command or not command.strip():
+            continue
+        children.append(
+            {
+                "tool": tool,
+                "command_label": bounded_command_label(command),
+                "command_chars": len(command),
+                "fingerprint": payload_fingerprint(
+                    {"tool": tool, "command": command}
+                ),
+            }
+        )
+    return children
+
+
+def result_text_fragments(value: Any, *, key: object | None = None) -> list[str]:
+    """Return only failure-bearing result text, excluding unrelated payload values."""
+
+    signal = re.compile(
+        r"PreToolUse|rejected|Script (?:failed|timed out)|timed out|"
+        r"(?:^|\W)error(?:\W|$)|exit[_ ]code|returncode|terminated|killed",
+        re.IGNORECASE,
+    )
+    if key is not None and sensitive_key(key):
+        return []
+    if isinstance(value, str):
+        try:
+            decoded = json.loads(value)
+        except json.JSONDecodeError:
+            return [value] if signal.search(value) else []
+        if isinstance(decoded, (dict, list)):
+            return result_text_fragments(decoded, key=key)
+        return [value] if signal.search(value) else []
+    if isinstance(value, list):
+        return [
+            fragment
+            for item in value
+            for fragment in result_text_fragments(item, key=key)
+        ]
+    if isinstance(value, dict):
+        return [
+            fragment
+            for item_key, item in value.items()
+            for fragment in result_text_fragments(item, key=item_key)
+        ]
+    return []
+
+
+def failure_reason_label(value: Any) -> str:
+    """Retain one bounded redacted result excerpt nearest an observable failure."""
+
+    signal = re.compile(
+        r"PreToolUse|rejected|Script (?:failed|timed out)|timed out|"
+        r"(?:^|\W)error(?:\W|$)|exit[_ ]code|returncode|terminated|killed",
+        re.IGNORECASE,
+    )
+    fallback = ""
+    for fragment in result_text_fragments(value):
+        lines = [line.strip() for line in fragment.splitlines() if line.strip()]
+        if not lines:
+            continue
+        if not fallback:
+            fallback = " | ".join(lines[:2])
+        for index, line in enumerate(lines):
+            if signal.search(line):
+                fallback = " | ".join(lines[index : index + 5])
+                break
+        if signal.search(fallback):
+            break
+    compact = re.sub(r"\s+", " ", redact_text(fallback)).strip()
+    if len(compact) <= FAILURE_REASON_LABEL_LIMIT:
+        return compact
+    return compact[: FAILURE_REASON_LABEL_LIMIT - 3] + "..."
+
+
+def failure_family(
+    command: str,
+    reason: str,
+    action: dict[str, Any],
+) -> tuple[str | None, bool]:
+    """Classify exact observable failure provenance without judging credit waste."""
+
+    direct = f"{command}\n{reason}".casefold()
+    if "pretooluse" in direct and "reject" in direct:
+        return "pre_tool_use_rejection", True
+    families = (
+        ("empty pipe element", "powershell_empty_pipe"),
+        ("convertfrom-json", "powershell_json_parse"),
+        ("invalid json primitive", "powershell_json_parse"),
+        ("unicodeencodeerror", "python_output_encoding"),
+        ("missing required system tool", "missing_system_tool"),
+        ("selection must produce exactly one", "ambiguous_selection"),
+        ("the following arguments are required", "missing_cli_argument"),
+    )
+    for marker, family in families:
+        if marker in direct:
+            return family, True
+    if "windows-shell-sanity.py" in direct and any(
+        marker in direct
+        for marker in (
+            "foreach_pipeline",
+            "select_object_",
+            "json_pipeline_contract",
+            "python_non_ascii_output",
+            "blocking_count",
+        )
+    ):
+        return "windows_shell_sanity_block", True
+    if "tool" in direct and "rejected" in direct:
+        return "tool_rejected", True
+    if "timed out" in direct or action["timeout"]:
+        return "command_timeout", True
+    if action["termination"]:
+        return "termination", True
+    if action["structured_tool_error"]:
+        return "structured_tool_error", True
+    exit_match = TEXT_EXIT_CODE_RE.search(reason)
+    codes = action["process_exit_codes"]
+    exit_code = (
+        int(exit_match.group("code"))
+        if exit_match is not None
+        else next((code for code in codes if code != 0), None)
+    )
+    if exit_code is not None and exit_code != 0:
+        return f"exit_code_{exit_code}", False
+    if re.search(
+        r"Script (?:failed|timed out)|(?:^|\W)error(?:\W|$)|rejected",
+        reason,
+        re.IGNORECASE,
+    ):
+        return "failure_signal", True
+    return None, False
+
+
+def result_failure_provenance(
+    payload: dict[str, Any],
+    action: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Bind a failure category to its bounded nested command when observable."""
+
+    reason = failure_reason_label(payload)
+    nested_calls = action["nested_calls"]
+    command = (
+        nested_calls[0]["command_label"]
+        if len(nested_calls) == 1
+        else ""
+    )
+    category, semantic_failure = failure_family(command, reason, action)
+    if category is None:
+        return None
+    return {
+        "category": category,
+        "semantic_failure": semantic_failure,
+        "reason_label": reason,
+        "originating_nested_call": nested_calls[0] if len(nested_calls) == 1 else None,
+        "candidate_nested_calls": nested_calls if len(nested_calls) > 1 else [],
+    }
+
+
 def redaction_contract() -> dict[str, Any]:
     """Describe the pattern-based evidence transformation without overclaiming."""
 
@@ -636,11 +958,8 @@ def model_review_preparation_contract() -> dict[str, Any]:
 def review_path_roots(rows: list[dict[str, Any]]) -> list[tuple[str, str]]:
     """Resolve workspace and Codex roots for meaning-preserving path labels."""
 
-    codex_roots: list[str] = []
+    codex_roots: list[str] = [str(codex_home())]
     workspace_roots: list[str] = []
-    codex_root = os.environ.get("CODEX_HOME")
-    if codex_root:
-        codex_roots.append(str(pathlib.Path(codex_root).expanduser()))
     for row in rows:
         payload = row.get("payload")
         if not isinstance(payload, dict):
@@ -2155,7 +2474,7 @@ def public_tool_action(action: dict[str, Any]) -> dict[str, Any]:
         telemetry = "unstructured"
     else:
         telemetry = "missing"
-    return {
+    public = {
         "index": action["index"],
         "model_call_index": action["model_call_index"],
         "name": action["name"],
@@ -2178,6 +2497,11 @@ def public_tool_action(action: dict[str, Any]) -> dict[str, Any]:
             )
         },
     }
+    if action["nested_calls"]:
+        public["nested_calls"] = action["nested_calls"]
+    if action["failure_provenance"] is not None:
+        public["failure_provenance"] = action["failure_provenance"]
+    return public
 
 
 def build_usage_evidence(
@@ -2263,6 +2587,9 @@ def build_usage_evidence(
                 else patch_outcomes(payload)
             )
             merge_outcomes(result_action, signals)
+            provenance = result_failure_provenance(payload, result_action)
+            if provenance is not None:
+                result_action["failure_provenance"] = provenance
             continue
 
         if row_type == "response_item" and str(payload.get("type", "")).endswith(
@@ -2276,6 +2603,9 @@ def build_usage_evidence(
                     payload
                 )
                 merge_outcomes(result_action, response_outcomes(payload))
+                provenance = result_failure_provenance(payload, result_action)
+                if provenance is not None:
+                    result_action["failure_provenance"] = provenance
             continue
 
         if active_turn is None:
@@ -2300,6 +2630,8 @@ def build_usage_evidence(
                 "repeated": False,
                 "retry": False,
                 "explicit_failure": False,
+                "nested_calls": functions_exec_child_calls(payload),
+                "failure_provenance": None,
                 **empty_outcomes(),
             }
             state["tool_actions"].append(new_action)
@@ -2338,6 +2670,10 @@ def build_usage_evidence(
                 action["structured_tool_error"]
                 or action["timeout"]
                 or action["termination"]
+                or (
+                    action["failure_provenance"] is not None
+                    and action["failure_provenance"]["semantic_failure"]
+                )
             )
             signature = (action["name"], action["fingerprint"])
             earlier = previous.get(signature)
@@ -2417,9 +2753,20 @@ def build_usage_evidence(
         if action["name"] in {"exec", "functions.exec"}
         and action["process_result_observed"]
     )
+    enumerated_exec_child_calls = sum(
+        len(action.get("nested_calls", []))
+        for action in all_actions
+        if action["name"] in FUNCTIONS_EXEC_NAMES
+    )
+    unparsed_exec_actions = sum(
+        1
+        for action in all_actions
+        if action["name"] in FUNCTIONS_EXEC_NAMES
+        and not action.get("nested_calls")
+    )
     limitations: list[str] = []
-    if exec_actions:
-        limitations.append("functions_exec_child_calls_not_enumerated")
+    if unparsed_exec_actions:
+        limitations.append("functions_exec_dynamic_child_calls_not_enumerated")
     if result_recorded > structured_results:
         limitations.append("unstructured_tool_result_outcomes")
     if duration_covered_turns < len(evidence_runs):
@@ -2454,9 +2801,8 @@ def build_usage_evidence(
             "duration_total_turns": len(evidence_runs),
             "functions_exec": {
                 "outer_actions": exec_actions,
-                "child_calls": (
-                    "not_enumerated" if exec_actions else "not_observed"
-                ),
+                "enumerated_child_calls": enumerated_exec_child_calls,
+                "dynamic_or_unparsed_outer_actions": unparsed_exec_actions,
                 "outer_actions_with_emitted_process_results": (
                     exec_actions_with_process_results
                 ),

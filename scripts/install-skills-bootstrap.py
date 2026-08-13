@@ -21,7 +21,7 @@ import uuid
 from collections.abc import Mapping, Sequence
 from typing import cast
 
-INSTALLER_VERSION = 10
+INSTALLER_VERSION = 11
 MANIFEST_NAME = ".runtime-manifest.json"
 RUNTIME_MANIFEST_SCHEMA = "ceratops-runtime-skill.v3"
 START = "<!-- CERATOPS_SHARED_SECTIONS_START -->"
@@ -212,39 +212,82 @@ def render_skill(source: str, shared: str, skill: str) -> str:
     return f"{before}\n\n{shared}\n"
 
 
-def payload_patterns(
+def payload_parts(
+    value: object, label: str
+) -> tuple[str, str | None]:
+    """Normalize one portable payload pattern or exact source-target mapping."""
+
+    if isinstance(value, str):
+        if not safe_relative(value):
+            raise ValueError(f"{label} has unsafe source path: {value!r}")
+        return value, None
+    if not isinstance(value, dict) or set(value) != {"source", "target"}:
+        raise ValueError(f"{label} must be a path or source-target mapping")
+    source = value.get("source")
+    destination = value.get("target")
+    if not isinstance(source, str) or not isinstance(destination, str):
+        raise ValueError(f"{label} source and target must be strings")
+    if (
+        not safe_relative(source)
+        or not safe_relative(destination)
+        or any(token in source for token in "*?[")
+        or any(token in destination for token in "*?[")
+        or pathlib.PurePosixPath(destination).as_posix()
+        in {".", "SKILL.md", MANIFEST_NAME}
+    ):
+        raise ValueError(f"{label} has unsafe exact mapping")
+    return source, destination
+
+
+def payload_declarations(
     manifest: Mapping[str, object], skill: str
-) -> list[str]:
-    """Return only globally and directly declared payload patterns."""
+) -> list[object]:
+    """Return validated global and skill-specific payload declarations."""
 
     payloads = cast(Mapping[str, object], manifest.get("runtime_payloads", {}))
-    result: list[str] = []
+    result: list[object] = []
     for key in ("*", skill):
         values = payloads.get(key, [])
-        if not isinstance(values, list) or not all(
-            isinstance(value, str) for value in values
-        ):
-            raise ValueError(f"runtime_payloads.{key} must be a string list")
-        result.extend(cast(list[str], values))
+        if not isinstance(values, list):
+            raise ValueError(f"runtime_payloads.{key} must be a list")
+        for index, value in enumerate(values):
+            payload_parts(value, f"runtime_payloads.{key}[{index}]")
+            result.append(value)
     return result
 
 
 def copy_payload(
-    repo_root: pathlib.Path, pattern: str, target: pathlib.Path
+    repo_root: pathlib.Path, declaration: object, target: pathlib.Path
 ) -> None:
-    """Copy one resolved payload pattern into a staged skill tree."""
+    """Copy one payload declaration into its staged installed-skill target."""
 
-    if not safe_relative(pattern):
-        raise ValueError(f"unsafe runtime payload pattern: {pattern!r}")
+    pattern, mapped_target = payload_parts(declaration, "runtime payload")
     matches = sorted(repo_root.glob(pattern))
     if not matches and not any(token in pattern for token in "*?["):
         raise ValueError(f"runtime payload does not exist: {pattern}")
+    if mapped_target is not None and (
+        len(matches) != 1 or not matches[0].is_file()
+    ):
+        raise ValueError("mapped runtime payload source must be one file")
     for source in matches:
         require_inside(source, repo_root)
         if unsafe_link(source):
             raise ValueError(f"runtime payload cannot be a link: {source}")
-        relative = source.relative_to(repo_root)
-        destination = target / relative
+        relative = (
+            pathlib.PurePosixPath(mapped_target)
+            if mapped_target is not None
+            else pathlib.PurePosixPath(
+                source.relative_to(repo_root).as_posix()
+            )
+        )
+        destination = target.joinpath(*relative.parts)
+        require_inside(destination, target)
+        if mapped_target is not None and (
+            destination.exists() or destination.is_symlink()
+        ):
+            raise ValueError(
+                f"runtime payload target collides with skill source: {mapped_target}"
+            )
         if source.is_dir():
             shutil.copytree(
                 source,
@@ -284,9 +327,9 @@ def build_skill(
     (target / "SKILL.md").write_text(
         rendered, encoding="utf-8", newline="\n"
     )
-    patterns = payload_patterns(manifest, skill)
-    for pattern in patterns:
-        copy_payload(repo_root, pattern, target)
+    declarations = payload_declarations(manifest, skill)
+    for declaration in declarations:
+        copy_payload(repo_root, declaration, target)
     metadata = {
         "schema": RUNTIME_MANIFEST_SCHEMA,
         "skill": skill,
@@ -297,7 +340,7 @@ def build_skill(
         "source_path": f"skills/{skill}",
         "source_repository_root": str(repo_root),
         "generated_from": "skills/skill-sections.json",
-        "payload_patterns": patterns,
+        "payload_patterns": declarations,
     }
     (target / MANIFEST_NAME).write_text(
         json.dumps(metadata, indent=2, sort_keys=True) + "\n",

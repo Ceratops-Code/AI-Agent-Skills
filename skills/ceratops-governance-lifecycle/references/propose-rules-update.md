@@ -94,16 +94,17 @@ under the history contract in [rule-design.md](rule-design.md).
 ## Iterative optimization
 
 - (D) For every proposal, create one request naming applicable rule sources and
-  histories, rule IDs, every candidate target and exact expected-old text, each
-  target's declared Markdown configuration and formatter or validator command,
+  histories, rule IDs, every candidate target and exact expected-old text,
   original and regression inputs, controller and evidence paths, a
   caller-selected champion output, mutation authority, side effects, the
-  verified task-temp root, iteration artifacts, and disposable roles; use null
-  history only when none exists and include one history-backed source. Run
-  `python scripts/proposal-workflow.py prepare --request REQUEST`. The helper
-  must verify current source and policy hashes, write compact context evidence,
-  initialize the controller's candidate-validation state, and open iteration 1
-  without mutating a governed target.
+  verified task-temp root, iteration artifacts, and disposable roles; set
+  `markdown_policy` to null for every source because the helper must resolve and
+  hash the skill-owned `references/.markdownlint.json` for candidate targets;
+  use null history only when none exists and include one history-backed source.
+  Run `python scripts/proposal-workflow.py prepare --request REQUEST`. The
+  helper must verify current source and skill-policy hashes, write compact
+  context evidence, initialize the controller's candidate-validation state, and
+  open iteration 1 without mutating a governed target.
 - (D) After writing each pending structured candidate and semantic assessment,
   run `python scripts/proposal-workflow.py advance --state STATE --outcome
   OUTCOME --regressions RESULT`. Before hashing or recording, the controller

@@ -161,16 +161,16 @@
         "skill top-level files and directories",
         "skills/<skill-name>/references/"
       ],
-      "pass_condition": "Each skill folder contains `SKILL.md` as the only top-level file and uses only profile-supported resource directories; the compatible profile may include `tests/`, while the ceratops profile allows `agents/`, `assets/`, `scripts/`, and `references/`. Reference files remain at the reference root or in the supported contracts, schemas, and templates collections."
+      "pass_condition": "Each skill folder contains `SKILL.md` as the only top-level file and uses only profile-supported resource directories; the compatible profile may include `tests/`, while the ceratops profile allows `agents/`, `assets/`, `scripts/`, and `references/`. Reference files remain at the reference root or in the supported contracts, schemas, and templates collections. Multi-skill executable sources remain under `skills/sections/scripts`, separate from repository-maintenance scripts."
     },
     {
       "id": "skill.runtime_payload_portability",
       "category": "runtime",
       "deterministic_evidence": [
         "skills/skill-sections.json runtime_payloads",
-        "declared payload paths"
+        "declared payload source and target paths"
       ],
-      "pass_condition": "Runtime payload declarations point only to existing repo-relative paths or matching globs and do not use absolute paths or parent-directory traversal."
+      "pass_condition": "Runtime payload declarations use either an existing repo-relative path or matching glob copied at its source-relative target, or an exact `source` and installed-skill-relative `target` mapping. Exact mappings select one file, all paths are portable, installed targets are collision-free, single-skill executable sources are skill-owned, and multi-skill executable sources remain under `skills/sections/scripts`."
     },
     {
       "id": "skill.runtime_source_ownership",

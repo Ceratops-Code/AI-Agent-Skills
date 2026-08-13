@@ -30,6 +30,9 @@
     ],
     "ceratops-skill-lifecycle": [
       "skills/sections/*.md"
+    ],
+    "openai-docs-managed": [
+      "skills/openai-docs-managed/scripts/openai_docs_retrieval.py"
     ]
   },
   "skills": {
@@ -43,12 +46,12 @@
       "core",
       "multi-action-skill"
     ],
-    "ceratops-credit-savings-analysis-old": [
-      "core"
-    ],
     "ceratops-governance-lifecycle": [
       "core",
       "multi-action-skill"
+    ],
+    "openai-docs-managed": [
+      "core"
     ],
     "ceratops-repo-lifecycle": [
       "core",

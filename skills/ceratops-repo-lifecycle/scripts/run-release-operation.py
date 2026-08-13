@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate and execute one named local repository deployment operation."""
+"""Validate and execute one named remote release-publication operation."""
 
 from __future__ import annotations
 
@@ -10,13 +10,13 @@ from repository_operation import OperationProfile, operation_main
 from repository_operation import run_operation as _run_operation
 
 SCRIPT_ROOT = pathlib.Path(__file__).resolve().parent
-DEFAULT_CONTRACT = pathlib.Path("deploy/deploy.yml")
+DEFAULT_CONTRACT = pathlib.Path("release/release.yml")
 PROFILE = OperationProfile(
-    label="Deployment",
+    label="Release",
     default_contract=DEFAULT_CONTRACT,
-    schema=SCRIPT_ROOT.parent / "references" / "schemas" / "deploy-contract.schema.json",
-    default_success_status="deployed",
-    operation_statuses={},
+    schema=SCRIPT_ROOT.parent / "references" / "schemas" / "release-contract.schema.json",
+    default_success_status="completed",
+    operation_statuses={"preflight": "checked", "publish": "published"},
 )
 
 
@@ -29,7 +29,7 @@ def run_operation(
     *,
     if_declared: bool = False,
 ) -> dict[str, object]:
-    """Run one local deployment while preserving the deploy wrapper API."""
+    """Run one release operation through the release-specific schema."""
 
     return _run_operation(
         repo_root,
@@ -43,7 +43,7 @@ def run_operation(
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Execute one deployment operation and emit one compact result."""
+    """Execute one release operation and emit one compact result."""
 
     return operation_main(PROFILE, argv)
 

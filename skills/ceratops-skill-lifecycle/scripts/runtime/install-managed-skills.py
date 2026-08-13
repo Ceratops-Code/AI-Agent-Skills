@@ -44,6 +44,7 @@ GLOBAL_RUNTIME_PATHS = {
     "skills/ceratops-skill-lifecycle/scripts/runtime/managed_runtime_builder.py",
 }
 FULL_SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
+PayloadDeclaration = str | tuple[str, str]
 
 
 class InstallerError(RuntimeError):
@@ -231,20 +232,35 @@ def _string_mapping(
 
 def _payloads(
     manifest: Mapping[str, object], label: str
-) -> dict[str, tuple[str, ...]]:
+) -> dict[str, tuple[PayloadDeclaration, ...]]:
     value = manifest.get("runtime_payloads", {})
     mapping = _mapping(value, f"{label} runtime_payloads")
-    result: dict[str, tuple[str, ...]] = {}
-    for key, patterns in mapping.items():
+    result: dict[str, tuple[PayloadDeclaration, ...]] = {}
+    for key, declarations in mapping.items():
         if (
             not isinstance(key, str)
-            or not isinstance(patterns, Sequence)
-            or isinstance(patterns, str)
-            or not all(isinstance(item, str) for item in patterns)
+            or not isinstance(declarations, Sequence)
+            or isinstance(declarations, str)
         ):
             raise DecisionRequired(f"{label} has invalid runtime payloads")
-        result[key] = tuple(cast(Sequence[str], patterns))
+        normalized: list[PayloadDeclaration] = []
+        for index, declaration in enumerate(declarations):
+            try:
+                source, target = runtime_builder.payload_parts(
+                    declaration,
+                    f"{label} runtime_payloads.{key}[{index}]",
+                )
+            except ValueError as exc:
+                raise DecisionRequired(str(exc)) from exc
+            normalized.append(source if target is None else (source, target))
+        result[key] = tuple(normalized)
     return result
+
+
+def _payload_source(declaration: PayloadDeclaration) -> str:
+    """Return the source pattern used for affected-path classification."""
+
+    return declaration if isinstance(declaration, str) else declaration[0]
 
 
 def _consumers(
@@ -372,22 +388,32 @@ def affected_from_base(
             if skill in current_names:
                 deploy.add(skill)
 
+    base_payloads = _payloads(base_manifest, "base")
+    current_payloads = _payloads(current_manifest, "current")
     declared_section_paths = set(base_sections.values()) | set(
         current_sections.values()
+    )
+    declared_payloads = tuple(
+        declaration
+        for payload_map in (base_payloads, current_payloads)
+        for declarations in payload_map.values()
+        for declaration in declarations
     )
     unknown_section_changes = {
         path
         for path in changed
         if path.startswith("skills/sections/")
         and path not in declared_section_paths
+        and not any(
+            _matches_pattern(path, _payload_source(declaration))
+            for declaration in declared_payloads
+        )
     }
     if unknown_section_changes:
         raise DecisionRequired(
             "changed shared-section paths are not declared by the manifest"
         )
 
-    base_payloads = _payloads(base_manifest, "base")
-    current_payloads = _payloads(current_manifest, "current")
     for key in set(base_payloads) | set(current_payloads):
         if base_payloads.get(key) != current_payloads.get(key):
             if key == "*":
@@ -398,12 +424,15 @@ def affected_from_base(
                 deploy.add(key)
     for path in changed:
         for key in set(base_payloads) | set(current_payloads):
-            patterns = tuple(
+            declarations = tuple(
                 dict.fromkeys(
                     (*base_payloads.get(key, ()), *current_payloads.get(key, ()))
                 )
             )
-            if any(_matches_pattern(path, pattern) for pattern in patterns):
+            if any(
+                _matches_pattern(path, _payload_source(declaration))
+                for declaration in declarations
+            ):
                 if key == "*":
                     return AffectedSet(
                         tuple(sorted(current_names)), tuple(sorted(remove)), True

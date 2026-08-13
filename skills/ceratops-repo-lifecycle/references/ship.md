@@ -3,23 +3,32 @@
 ## Goal
 
 Ship one staged integration branch through GitHub, synchronize local main,
-recheck selected local work, execute or explicitly no-op repository `deploy`,
-handle its managed-skill handoff, recheck again, and clean only the selected
-merged source branches and worktrees.
+recheck selected local work, execute or explicitly no-op declared remote
+release publication, then execute or explicitly no-op local repository
+`deploy`, handle its managed-skill handoff, recheck again, and clean only the
+selected merged source branches and worktrees.
 
 ## Context
 
 ### Script Bundle
 
-- (D) Complete repository ship:
+- (D) From the installed `ceratops-repo-lifecycle` skill root, run complete
+  repository ship before manual readiness or implementation inspection:
   `python scripts/ship-repository.py --repo-root PATH --repo OWNER/REPO
   --head-branch release/local --base-branch main --remote-name origin
   --reusable-head`.
+  `--repo-root` identifies the target repository; never search that target for
+  this helper. The helper owns preflight; after a terminal blocker, inspect
+  only the exact blocker-named surface.
 - The helper derives the canonical pending-work scope from `--head-branch`.
   When a retained scope exists, the wrapper reuses its recorded exact target
   commit; a caller-supplied `--commit` must match it. An absent scope is a
-  cleanup no-op. Entries for missing source branches are atomically removed
-  from an existing scope before shipping continues.
+  cleanup no-op. Each version-2 source persists its branch, exact recorded tip,
+  and helper-owned `retained` or `deleting` cleanup state. A missing `retained`
+  source remains blocking. Only a missing `deleting` source whose recorded
+  commit exists and is an ancestor of the recorded target may be atomically
+  retired as completed interrupted helper cleanup. An old-format scope blocks
+  rollout; there is no migration or fallback.
 
 ### Inputs To Capture
 
@@ -60,9 +69,11 @@ Infer missing values from the checkout, scope file, and live PR before asking.
    retains the checkpoint and resumes or blocks. This checkpoint logic receives
    the exact commit already selected by the wrapper.
 3. Before the first remote push, the helper checks the canonical scope when it
-   exists. It atomically removes entries for missing source branches and deletes
-   the scope if none remain. An absent or emptied scope is a cleanup no-op;
-   remaining `pending_work` performs no remote mutation.
+   exists. It atomically removes a missing `deleting` source only when its
+   recorded commit exists and is an ancestor of the recorded target. A missing
+   `retained` source or an unproven `deleting` source remains `pending_work` and
+   performs no remote mutation. An absent or proven-empty scope is a cleanup
+   no-op.
 4. (D) The delegated GitHub workflow owns deterministic, decision-complete
    PR-gate resolution for the exact head.
 5. Only after those gates pass, integrated ship delegates the final exact-head
@@ -71,23 +82,36 @@ Infer missing values from the checkout, scope file, and live PR before asking.
    and critical recovery semantics; ship contains no independent toggle logic.
 6. After merge, the helper synchronizes local main and restores a reusable
    integration branch when selected.
-7. Before remote mutation, the wrapper classifies deployment. An absent default
-   `deploy/deploy.yml` makes `deploy` an explicit no-op; a missing custom
-   contract blocks. After synchronization it rechecks the selected scope, runs
-   a declared operation or records the no-op, and rechecks. Before removing a
-   selected worktree, finalization records its exact path. Automatic residual
-   cleanup handles only the case where Git unregisters the worktree but leaves
-   that recorded directory. The helper verifies that the path is unregistered
-   and remains below the canonical worktree root before deleting it. When the
-   helper runs elevated, the same cleanup may take ownership only of that
-   validated path, without a public flag or second confirmation. The helper
-   removes the residual-cleanup record only after verifying the path is absent,
-   then removes the merged selected branch.
-8. After a declared `deploy` succeeds, the helper checkpoints its result
-   against the exact target, operation, and resolved contract before
-   finalization. A retry reuses that result while cleanup remains pending and
-   removes the checkpoint after cleanup succeeds. Deployment operations must
-   remain retry-safe across interruption.
+7. Before remote mutation, the wrapper classifies release publication and
+   deployment. An absent default `release/release.yml` makes release preflight
+   and publication explicit no-ops, and an absent default `deploy/deploy.yml`
+   makes `deploy` an explicit no-op; a missing custom contract blocks. Run a
+   declared release preflight before the first remote mutation. After
+   synchronization, recheck the selected scope, run declared release
+   publication or record its no-op, then run declared local deployment or
+   record its no-op, and recheck. Before removing a selected worktree or branch
+   for a retained source, finalization atomically changes its state to
+   `deleting`; an existing `deleting` branch first passes the same cleanliness
+   and ancestry checks. Before removing a selected worktree, finalization
+   records its exact path. Automatic residual cleanup handles only the case
+   where Git unregisters the worktree but leaves that recorded directory. The
+   helper verifies that the path is unregistered and remains below the
+   canonical worktree root before deleting it. When the helper runs elevated,
+   the same cleanup may take ownership only of that validated path, without a
+   public flag or second confirmation. The helper removes the residual-cleanup
+   record only after verifying the path is absent. After successful branch
+   deletion, it atomically removes the source record and deletes the scope after
+   the final source is removed.
+8. After declared release publication or deployment succeeds, the helper
+   checkpoints each result independently against the exact target, operation,
+   and resolved contract before the next phase. A retry reuses each completed
+   result while later work remains pending and removes both checkpoints only
+   after cleanup succeeds. A publication failure blocks deployment and
+   finalization; a deployment failure blocks finalization. Terminal success
+   also removes every exact helper-owned atomic-write `.tmp` sibling for retired
+   scopes, residual-cleanup records, operation checkpoints, and PR checkpoints;
+   it never scans for or removes unrelated temporary files. Both operations
+   must remain retry-safe across interruption.
 9. After the helper completes, when synchronized main declares managed skills,
    execute the handoff returned in its deployment result against that exact
    checkout. If none was declared, report the managed skills as not deployed
@@ -97,11 +121,14 @@ Infer missing values from the checkout, scope file, and live PR before asking.
 
 ### Completion Gate
 
-- PR publication, all gates, exact-head admin merge, main synchronization, and
-  declared or explicit no-op repository deployment completed; any returned
-  handoff completed, and managed skills without one were reported.
-- Every remaining selected source branch passed pending-work checks; an absent
-  or emptied scope completed as a cleanup no-op.
+- PR publication, all gates, exact-head admin merge, main synchronization,
+  declared or explicit no-op remote release publication, and declared or
+  explicit no-op local repository deployment completed; any returned handoff
+  completed, and managed skills without one were reported.
+- Every existing selected source branch passed pending-work checks; an absent
+  or proven-empty scope completed as a cleanup no-op.
+- Only an evidence-proven interrupted `deleting` record was recovered
+  automatically; every missing `retained` source remained blocking.
 - Only selected clean merged source work was removed.
 
 ### Output Contract
@@ -109,6 +136,6 @@ Infer missing values from the checkout, scope file, and live PR before asking.
 Report only:
 
 - PR URL and merge outcome
-- synchronized main and deployment outcome
+- synchronized main, release-publication outcome, and local deployment outcome
 - finalized or retained selected scope with reasons
 - blockers or anything important not verified
