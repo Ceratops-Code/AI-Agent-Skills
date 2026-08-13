@@ -2923,7 +2923,10 @@ def _holistic_luna_schema(
                     "evidence_refs": {
                         "type": "array",
                         "minItems": 1,
-                        "items": {"type": "string", "minLength": 1},
+                        "items": {
+                            "type": "string",
+                            "pattern": r"^(?:evidence|analysis)://",
+                        },
                     },
                     "producer_owner_hint": {"type": "string", "minLength": 1},
                 },
@@ -3245,7 +3248,17 @@ def _validate_holistic_luna_result(
         referenced = _result_deduped_strings(candidate.get("candidate_ids"), f"{label} calls")
         if not set(referenced) <= allowed_candidates:
             raise CreditAnalysisError(f"{label} references another Luna packet")
-        refs = _holistic_result_refs(candidate.get("evidence_refs"), f"{label} evidence")
+        raw_refs = _result_deduped_strings(
+            candidate.get("evidence_refs"), f"{label} evidence"
+        )
+        # Older frozen prompts told Luna to include adjacent candidate IDs in
+        # evidence_refs. Recover those packet-local IDs into their canonical
+        # field while continuing to reject every other non-evidence value.
+        candidate_refs = [ref for ref in raw_refs if ref in allowed_candidates]
+        refs = _holistic_result_refs(
+            [ref for ref in raw_refs if ref not in allowed_candidates],
+            f"{label} evidence",
+        )
         packet_refs = {
             ref
             for candidate_key in task["candidate_ids"]
@@ -3266,6 +3279,7 @@ def _validate_holistic_luna_result(
         # packet. Expand its mapping deterministically so Sol receives the
         # cited original record instead of only Luna's summary.
         referenced_set = set(referenced)
+        referenced_set.update(candidate_refs)
         referenced_set.update(
             candidate_key
             for candidate_key in task["candidate_ids"]
@@ -3727,8 +3741,10 @@ observed temporary control for mandatory Sol review even when it appears
 intentional or harmless. Do not enumerate routine dismissals,
 do not classify every action or call-surface pair, do not calculate savings, and
 do not make final findings. Every emitted candidate must cite supplied candidate
-IDs and packet-local original evidence references, including the candidate ID
-for each adjacent record whose evidence it cites. Keep shared producer/control episodes
+IDs and packet-local original evidence references. Put candidate IDs only in
+`candidate_ids`; put only `evidence://` or `analysis://` values in
+`evidence_refs`. When citing an adjacent record, add its candidate ID to
+`candidate_ids` and its original reference to `evidence_refs`. Keep shared producer/control episodes
 together and keep analysis-overhead work separate from producer work. Aim for
 about 2,500 output tokens; concise hypotheses are sufficient and genuine
 candidates must not be silently dropped.

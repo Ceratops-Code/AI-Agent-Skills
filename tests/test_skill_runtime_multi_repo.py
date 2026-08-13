@@ -2487,8 +2487,8 @@ def test_credit_analysis_recovers_packet_local_luna_evidence_without_a_retry(
             result = super()._luna(task, packet, digest)
             records = self._records(packet)
             assert result["candidates"] and len(records) > 1
-            result["candidates"][0]["evidence_refs"].append(
-                records[1]["evidence_refs"][0]
+            result["candidates"][0]["evidence_refs"].extend(
+                [records[1]["candidate_id"], records[1]["evidence_refs"][0]]
             )
             return result
 
@@ -2546,6 +2546,10 @@ def test_credit_analysis_recovers_packet_local_luna_evidence_without_a_retry(
         pathlib.Path(result_record["path"]).read_text(encoding="utf-8")
     )
     assert len(result["candidates"][0]["candidate_ids"]) == 2
+    assert all(
+        ref.startswith(("evidence://", "analysis://"))
+        for ref in result["candidates"][0]["evidence_refs"]
+    )
 
 
 def test_credit_analysis_normalizes_sol_transport_without_changing_judgments(
