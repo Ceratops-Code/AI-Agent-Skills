@@ -32,20 +32,21 @@ final synthesis. Preserve and present every confirmed finding.
 
 ## Workflow
 
-1. Run controller `plan` once. It resolves, collects, and parses the selected
-   session once; freezes its cutoff and exact lineage before children; retains
-   complete evidence from every completed run, including corrective follow-ups,
-   and read-only canonical snapshots; separates prior analysis-generated
-   activity from producer work; builds compact causal episodes once; dynamically
-   budgets against the local model context; and reports the finite projected
-   call count. Analysis A excludes only its own descendants; a later B may inspect
-   A's retained analysis activity and excludes only B's.
-2. Run controller `execute`. It never recollects. In the normal case it sends
-   every causal episode in one packet to `gpt-5.6-luna` at medium effort. If the
-   packet cannot fit, it uses the minimum ordered shared partition, never splits
-   by surface or imposes a fixed Luna-call cap. Luna performs sparse high-recall
-   discovery across the five fixed lenses without a dismissal for every call and
-   lens combination.
+1. Run controller `run --request REQUEST`. On a fresh request it resolves,
+   collects, and parses the selected session once; freezes its cutoff and exact
+   lineage before children; retains complete evidence from every completed run,
+   including corrective follow-ups, and read-only canonical snapshots; separates
+   prior analysis-generated activity from producer work; builds compact causal
+   episodes once; dynamically budgets against the local model context; and
+   reports the finite projected call count. Analysis A excludes only its own
+   descendants; a later B may inspect A's retained analysis activity and
+   excludes only B's.
+2. The same controller run executes the frozen plan without recollection. In the
+   normal case it sends every causal episode in one packet to `gpt-5.6-luna` at
+   medium effort. If the packet cannot fit, it uses the minimum ordered shared
+   partition, never splits by surface or imposes a fixed Luna-call cap. Luna
+   performs sparse high-recall discovery across the five fixed lenses without a
+   dismissal for every call and lens combination.
 3. Run exactly one `gpt-5.6-sol` pass at maximum effort. It receives every Luna
    candidate plus original evidence excerpts, verifies or rejects each candidate,
    performs the mandatory temporary-control review, merges overlaps by owner,
@@ -60,8 +61,9 @@ final synthesis. Preserve and present every confirmed finding.
 Every child Codex execution uses an explicit model, a read-only sandbox, no
 approvals, ephemeral state, a self-contained no-tools prompt, and
 controller-owned schema, event, and result files. The controller waits
-internally and emits periodic non-model progress. On interruption, rerun
-`execute`; never recollect prepared evidence or overwrite an accepted result.
+internally and emits periodic non-model progress. Resume the exact request.
+Alternatively use `execute --state STATE`; never recollect prepared evidence
+or overwrite an accepted result. Use `plan` only for planning-only inspection.
 
 For a batch, run `prepare-batch` once; it freezes selection and plans one
 ordinary holistic child per selected thread. For the pending child returned by

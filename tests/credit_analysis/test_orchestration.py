@@ -270,6 +270,66 @@ def test_bounded_largest_runs_plan_reports_coverage_and_resumes_idempotently(
     assert len(runner.calls) == accepted_call_count
     assert pathlib.Path(plan["evidence_path"]).read_bytes() == retained_evidence
 
+    run_base = tmp_path / "end-to-end-run"
+    run_base.mkdir()
+    run_request, run_session, _ = credit_analysis_request(
+        run_base,
+        action="bounded-largest-runs-analysis",
+    )
+    run_runner = FakeCreditModelRunner(temporary_controls=False)
+
+    def unexpected_catalog_read() -> dict[str, dict[str, Any]]:
+        raise AssertionError("injected runner catalog should be reused")
+
+    workflow._codex_model_catalog = unexpected_catalog_read
+    paused = workflow.command_run_orchestration(
+        run_request,
+        runner=run_runner,
+        task_limit=1,
+    )
+    assert paused["next_task"] == "sol.adjudication"
+    assert len(run_runner.calls) == 1
+    run_evidence = pathlib.Path(paused["evidence_path"])
+    retained_run_evidence = run_evidence.read_bytes()
+    run_session.rename(run_session.with_suffix(".collected"))
+
+    run_completed = workflow.command_run_orchestration(
+        run_request,
+        runner=run_runner,
+    )
+    assert run_completed["complete"] is True
+    assert [call["phase"] for call in run_runner.calls] == [
+        "luna-discovery",
+        "sol-adjudication",
+    ]
+    assert run_evidence.read_bytes() == retained_run_evidence
+
+    repeated_run = workflow.command_run_orchestration(
+        run_request,
+        runner=run_runner,
+    )
+    assert repeated_run["complete"] is True
+    assert len(run_runner.calls) == 2
+    assert run_evidence.read_bytes() == retained_run_evidence
+
+    copied_request = run_base / "copied-request.json"
+    write_json_file(
+        copied_request,
+        json.loads(run_request.read_text(encoding="utf-8")),
+    )
+    with pytest.raises(
+        workflow.CreditAnalysisError,
+        match="request does not own the existing orchestration state",
+    ):
+        workflow.command_run_orchestration(
+            copied_request,
+            runner=run_runner,
+        )
+    assert len(run_runner.calls) == 2
+    assert workflow.build_parser().parse_args(
+        ["run", "--request", str(run_request)]
+    ).command == "run"
+
 
 def test_credit_analysis_workflow_full_analysis_persists_every_finding(
     tmp_path: pathlib.Path,

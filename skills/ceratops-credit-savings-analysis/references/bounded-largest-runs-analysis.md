@@ -37,17 +37,19 @@ largest-runs analysis, never a full-thread analysis.
 
 ## Workflow
 
-1. Run controller `plan` once with action and mode
-   `bounded-largest-runs-analysis`. Collect the selected session once, freeze
-   run order and compact evidence, select bundles deterministically, and persist
-   the immutable selection manifest and both budget proofs.
-2. Run controller `execute`. Luna receives every selected run exactly once and
-   performs high-recall discovery across all fixed surfaces. Sol receives its
-   accepted output and the selected original evidence, adjudicates every
-   candidate, and classifies only selected calls.
-3. Resume with the same state path after interruption. Validate immutable
-   hashes, reuse accepted calls, never recollect evidence, and never repeat a
-   completed Luna or Sol call.
+1. Run controller `run --request REQUEST` with action and mode
+   `bounded-largest-runs-analysis`. On a fresh request it collects the selected
+   session once, freezes run order and compact evidence, selects bundles
+   deterministically, and persists the immutable selection manifest and both
+   budget proofs.
+2. The same controller run executes the frozen plan. Luna receives every
+   selected run exactly once and performs high-recall discovery across all fixed
+   surfaces. Sol receives its accepted output and the selected original
+   evidence, adjudicates every candidate, and classifies only selected calls.
+3. Rerun the exact request or use `execute --state STATE` after interruption.
+   Validate immutable hashes, reuse accepted calls, never recollect evidence,
+   and never repeat a completed Luna or Sol call. Use `plan --request REQUEST`
+   only for planning-only inspection.
 
 ## Completion Gate
 

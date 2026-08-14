@@ -35,8 +35,9 @@ them.
   contract. An incremental closure begins strictly after the previous completed
   closure; active runs and the boundary run are excluded.
 - For a single-thread full, bounded largest-runs, or standalone analysis, run
-  `python scripts/credit-analysis-workflow.py plan --request REQUEST` once.
-  Require mutation authority `false`, current contract versions, and a
+  `python scripts/credit-analysis-workflow.py run --request REQUEST`. On a fresh
+  request, the controller plans once; rerunning the exact request resumes its
+  state. Require mutation authority `false`, current contract versions, and a
   caller-selected task root under
   `<repo-parent>/tmp/<repo-name>/<thread-name>`. Keep retained evidence inside
   that task root.
@@ -53,12 +54,12 @@ them.
   serialized compact run, ranks anchors by anchor size, adds each positional
   successor as an indivisible bundle, and proves one Luna and one Sol budget
   before execution.
-- Run `python scripts/credit-analysis-workflow.py execute --state STATE` to
-  execute or resume the frozen plan. Treat controller state, evidence and
-  manifest hashes, task identities, candidate membership, prompts, results,
-  and attempt telemetry as authoritative. Execution never recollects the
-  session. Never skip, repeat, reorder, or add a semantic task outside the
-  manifest.
+- The end-to-end `run` command executes or resumes the frozen plan. Keep
+  `plan --request` for planning-only inspection and `execute --state` for direct
+  state-path resume. Treat controller state, evidence and manifest hashes, task
+  identities, candidate membership, prompts, results, and attempt telemetry as
+  authoritative. Execution never recollects the session. Never skip, repeat,
+  reorder, or add a semantic task outside the manifest.
 - The controller validates `gpt-5.6-luna` at medium effort and
   `gpt-5.6-sol` at maximum effort from the local Codex catalog. It launches
   ephemeral, approval-free children and owns waiting, timeout, process-tree

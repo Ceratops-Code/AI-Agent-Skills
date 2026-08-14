@@ -10,6 +10,8 @@ from .holistic import *
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
+    run = commands.add_parser("run")
+    run.add_argument("--request", required=True, type=pathlib.Path)
     plan = commands.add_parser("plan")
     plan.add_argument("--request", required=True, type=pathlib.Path)
     execute = commands.add_parser("execute")
@@ -48,7 +50,11 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     output: Any
     try:
-        if args.command == "plan":
+        if args.command == "run":
+            output = command_run_orchestration(
+                args.request.expanduser().resolve(strict=True)
+            )
+        elif args.command == "plan":
             output = command_plan_orchestration(
                 args.request.expanduser().resolve(strict=True)
             )

@@ -715,6 +715,7 @@ def _load_contract() -> dict[str, Any]:
         "status",
         "finalize",
     ] or contract.get("end_to_end_controller_commands") != [
+        "run",
         "plan",
         "execute",
     ] or contract.get("batch_controller_commands") != [

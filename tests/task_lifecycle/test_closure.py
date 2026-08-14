@@ -156,3 +156,9 @@ def test_closure_credit_analysis_defaults_to_bounded_largest_runs() -> None:
     assert bounded.startswith("# Bounded Largest Runs Analysis Action\n")
     assert "one Luna discovery and one Sol adjudication" in bounded
     assert "never a full-thread analysis" in bounded
+    assert contract["end_to_end_controller_commands"] == [
+        "run",
+        "plan",
+        "execute",
+    ]
+    assert "Run its end-to-end controller once" in closure

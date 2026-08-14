@@ -6330,10 +6330,21 @@ def command_execute_orchestration(
     runner: Any | None = None,
     available_models: set[str] | Mapping[str, Mapping[str, Any]] | None = None,
     task_limit: int | None = None,
+    expected_request_path: pathlib.Path | None = None,
 ) -> dict[str, Any]:
     """Execute or resume the finite queue with no model-mediated polling."""
 
     state, evidence, contract, compact = _holistic_read_state(state_path)
+    if expected_request_path is not None:
+        expected_request = expected_request_path.expanduser().resolve(strict=True)
+        request_record = state["immutable_artifacts"]["request"]
+        planned_request = pathlib.Path(str(request_record["path"])).resolve(
+            strict=True
+        )
+        if planned_request != expected_request:
+            raise CreditAnalysisError(
+                "request does not own the existing orchestration state"
+            )
     if state["phase"] == "complete":
         return _holistic_public_status(state)
     catalog = (
@@ -6510,6 +6521,71 @@ def command_execute_orchestration(
         _holistic_save_state(state)
     return _holistic_public_status(state)
 
+
+def _orchestration_state_path_from_request(
+    request_path: pathlib.Path,
+    *,
+    task_root_boundary: pathlib.Path | None = None,
+) -> pathlib.Path:
+    """Resolve the one controller state path without collecting source evidence."""
+
+    request = _read_json(request_path, "request")
+    _closed(request, REQUEST_FIELDS, "request")
+    task_root = _task_directory(
+        request.get("task_temp_root"),
+        "task_temp_root",
+        canonical_boundary=task_root_boundary,
+    )
+    return task_root / "state.json"
+
+
+def command_run_orchestration(
+    request_path: pathlib.Path,
+    *,
+    runner: Any | None = None,
+    available_models: set[str] | Mapping[str, Mapping[str, Any]] | None = None,
+    task_limit: int | None = None,
+    task_root_boundary: pathlib.Path | None = None,
+) -> dict[str, Any]:
+    """Plan once, then execute or resume the request-owned finite queue."""
+
+    request = request_path.expanduser().resolve(strict=True)
+    state_path = _orchestration_state_path_from_request(
+        request,
+        task_root_boundary=task_root_boundary,
+    )
+    if state_path.exists() or state_path.is_symlink():
+        return command_execute_orchestration(
+            state_path,
+            runner=runner,
+            available_models=available_models,
+            task_limit=task_limit,
+            expected_request_path=request,
+        )
+
+    catalog = available_models
+    if catalog is None:
+        catalog = (
+            runner.available_models
+            if runner is not None and hasattr(runner, "available_models")
+            else _codex_model_catalog()
+        )
+    planned = command_plan_orchestration(
+        request,
+        available_models=catalog,
+        task_root_boundary=task_root_boundary,
+    )
+    planned_state = pathlib.Path(str(planned["state_path"])).resolve(strict=True)
+    if planned_state != state_path.resolve(strict=True):
+        raise CreditAnalysisError("planned orchestration state path changed")
+    return command_execute_orchestration(
+        planned_state,
+        runner=runner,
+        available_models=catalog,
+        task_limit=task_limit,
+        expected_request_path=request,
+    )
+
 __all__ = (
     "ANALYSIS_SUMMARY_FIELDS",
     "CALL_CLASSIFICATION_FIELDS",
@@ -6597,6 +6673,7 @@ __all__ = (
     "_invoke_injected_runner",
     "_jsonl_event_summary",
     "_observable_high_signal_reasons",
+    "_orchestration_state_path_from_request",
     "_process_is_alive",
     "_relevant_segments",
     "_render_holistic_report",
@@ -6623,4 +6700,5 @@ __all__ = (
     "command_execute_orchestration",
     "command_orchestration_status",
     "command_plan_orchestration",
+    "command_run_orchestration",
 )

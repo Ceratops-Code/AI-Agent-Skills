@@ -11,7 +11,7 @@
   "synthesis_result_schema": "ceratops-credit-analysis-synthesis-result.v1",
   "final_result_schema": "ceratops-credit-analysis-final-result.v1",
   "single_controller_commands": ["prepare", "advance", "status", "finalize"],
-  "end_to_end_controller_commands": ["plan", "execute"],
+  "end_to_end_controller_commands": ["run", "plan", "execute"],
   "orchestration_state_schema": "ceratops-credit-analysis-orchestration-state.v4",
   "chunk_manifest_schema": "ceratops-credit-analysis-chunk-manifest.v4",
   "luna_result_schema": "ceratops-credit-analysis-luna-result.v4",
