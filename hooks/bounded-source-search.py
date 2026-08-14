@@ -31,6 +31,7 @@ DEFAULT_MAX_BYTES = 8_000
 MAX_DISCOVERY_MATCHES = 50_000
 MAX_LINE_BYTES = 500
 RG_COMMAND = re.compile(r"(?i)(?:^|[\s;&|])(?:&\s*)?rg(?:\.exe)?(?=\s|$)")
+COMMAND_PROBE_RESULT_SCHEMA = "ceratops-command-probe-result.v1"
 RG_OUTPUT_LINE = re.compile(
     r"^(?P<path>.*)(?P<separator>[:-])(?P<line>\d+)(?P=separator)(?P<text>.*)$"
 )
@@ -325,6 +326,32 @@ def _tool_response_text(value: object) -> str | None:
     return None
 
 
+def _ripgrep_response(command: str, value: object) -> str | None:
+    """Extract successful ripgrep text, including command-probe envelopes."""
+
+    output = _tool_response_text(value)
+    if output is None:
+        return None
+    if RG_COMMAND.search(command) is not None:
+        return output
+    if "command-probe.py" not in command:
+        return None
+    try:
+        payload = json.loads(output)
+    except json.JSONDecodeError:
+        return None
+    if (
+        not isinstance(payload, dict)
+        or payload.get("schema") != COMMAND_PROBE_RESULT_SCHEMA
+        or payload.get("ok") is not True
+        or payload.get("mode") not in {"search", "tracked-search"}
+        or payload.get("matched") is not True
+        or not isinstance(payload.get("stdout"), str)
+    ):
+        return None
+    return payload["stdout"]
+
+
 def _bound_existing_output(value: str, maximum_bytes: int) -> str:
     grouped: dict[str, list[tuple[int, str, str]]] = defaultdict(list)
     match_counts: Counter[str] = Counter()
@@ -384,9 +411,9 @@ def run_hook(max_bytes: int = DEFAULT_MAX_BYTES) -> int:
     command = tool_input.get("command")
     if not isinstance(command, str):
         raise SearchError("PostToolUse tool_input.command must be text")
-    if "bounded-source-search.py" in command or RG_COMMAND.search(command) is None:
+    if "bounded-source-search.py" in command:
         return 0
-    output = _tool_response_text(value.get("tool_response"))
+    output = _ripgrep_response(command, value.get("tool_response"))
     if output is None or len(output.encode("utf-8")) <= max_bytes:
         return 0
     print(
