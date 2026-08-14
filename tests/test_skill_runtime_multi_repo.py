@@ -446,8 +446,7 @@ def credit_analysis_request(
         extra_calls_per_turn=extra_calls_per_turn,
         oversized_user_message_chars=oversized_user_message_chars,
     )
-    task_root = tmp_path / f"analysis-{action}"
-    task_root.mkdir()
+    task_root = canonical_credit_task_root(tmp_path, f"analysis-{action}")
     evidence = task_root / "evidence.json"
     request = tmp_path / f"request-{action}.json"
     write_json_file(
@@ -515,8 +514,7 @@ def credit_analysis_batch_request(
 ) -> pathlib.Path:
     """Create one caller-bounded per-thread batch request."""
 
-    task_root = tmp_path / f"batch-{name}"
-    task_root.mkdir()
+    task_root = canonical_credit_task_root(tmp_path, f"batch-{name}")
     request = tmp_path / f"batch-request-{name}.json"
     write_json_file(
         request,
@@ -535,6 +533,20 @@ def credit_analysis_batch_request(
         },
     )
     return request
+
+
+def canonical_credit_task_root(
+    base: pathlib.Path,
+    thread_name: str,
+) -> pathlib.Path:
+    """Create the repository-bound task-temp topology required by the controller."""
+
+    repository = base / "credit-analysis-repo"
+    repository.mkdir(exist_ok=True)
+    (repository / ".git").mkdir(exist_ok=True)
+    task_root = base / "tmp" / repository.name / thread_name
+    task_root.mkdir(parents=True)
+    return task_root
 
 
 def finding_record(
@@ -2972,6 +2984,31 @@ def test_credit_analysis_workflow_rejects_invalid_and_conflicting_passes(
     tmp_path: pathlib.Path,
 ) -> None:
     workflow = load_credit_analysis_workflow_module()
+    noncanonical_scope = tmp_path / "noncanonical-task-root"
+    noncanonical_scope.mkdir()
+    noncanonical_base = tmp_path / "noncanonical-request"
+    noncanonical_base.mkdir()
+    noncanonical_request, _, _ = credit_analysis_request(
+        noncanonical_base
+    )
+    noncanonical_payload = json.loads(
+        noncanonical_request.read_text(encoding="utf-8")
+    )
+    noncanonical_payload["task_temp_root"] = str(noncanonical_scope)
+    noncanonical_payload["evidence_output"] = str(
+        noncanonical_scope / "evidence.json"
+    )
+    write_json_file(noncanonical_request, noncanonical_payload)
+    with pytest.raises(
+        workflow.CreditAnalysisError,
+        match="must match <repo-parent>/tmp/<repo-name>/<thread-name>",
+    ):
+        workflow.command_plan_orchestration(
+            noncanonical_request,
+            available_models=holistic_model_catalog(),
+        )
+    assert not (noncanonical_scope / "state.json").exists()
+
     escaped_scope = tmp_path / "escaped-single-output"
     escaped_scope.mkdir()
     escaped_request, _, escaped_task_root = credit_analysis_request(escaped_scope)
@@ -3627,8 +3664,7 @@ def test_credit_analysis_workflow_resolves_current_and_named_threads(
     monkeypatch.setenv("CODEX_THREAD_ID", current_id)
 
     def request_for(name: str, source: dict[str, Any]) -> pathlib.Path:
-        root = tmp_path / f"single-{name}"
-        root.mkdir()
+        root = canonical_credit_task_root(tmp_path, f"single-{name}")
         request = tmp_path / f"single-request-{name}.json"
         write_json_file(
             request,
@@ -3863,7 +3899,9 @@ def test_credit_analysis_batch_selects_recent_threads_and_projects_once(
             name=name,
         )
         if name == "count-overall":
-            task_root = tmp_path / f"batch-{name}"
+            task_root = pathlib.Path(
+                json.loads(request.read_text(encoding="utf-8"))["task_temp_root"]
+            )
             task_root.rmdir()
         status = workflow.command_prepare_batch(request)
         if name == "count-overall":
@@ -11156,10 +11194,11 @@ def test_pending_work_scope_is_selected_generic_and_finalized_late(
     )
     temp_boundary = tmp_path / "tmp"
     task_temp_root = temp_boundary / repo.name
-    worktree_temp = task_temp_root / "selected-update-state"
+    worktree_temp = task_temp_root / "selected"
     thread_temp = task_temp_root / f"{thread_id}-evidence"
+    ambiguous_temp = task_temp_root / "selected-2-update"
     unrelated_temp = task_temp_root / "unrelated-task"
-    for directory in (worktree_temp, thread_temp, unrelated_temp):
+    for directory in (worktree_temp, thread_temp, ambiguous_temp, unrelated_temp):
         directory.mkdir(parents=True)
         (directory / "artifact.txt").write_text(
             "temporary\n", encoding="utf-8", newline="\n"
@@ -11512,6 +11551,7 @@ def test_pending_work_scope_is_selected_generic_and_finalized_late(
     assert not scope_path.exists()
     assert not worktree_temp.exists()
     assert not thread_temp.exists()
+    assert ambiguous_temp.is_dir()
     assert unrelated_temp.is_dir()
     assert task_temp_root.is_dir()
     assert temp_boundary.is_dir()
@@ -11663,7 +11703,7 @@ def test_pending_work_scope_is_selected_generic_and_finalized_late(
         encoding="utf-8",
         newline="\n",
     )
-    legacy_temp = task_temp_root / "legacy-clean-checks"
+    legacy_temp = task_temp_root / "legacy-clean"
     legacy_temp.mkdir(parents=True)
     (legacy_temp / "result.json").write_text(
         "{}\n", encoding="utf-8", newline="\n"
@@ -11792,7 +11832,8 @@ def test_pending_work_scope_is_selected_generic_and_finalized_late(
     )
     assert not legacy_clean_worktree.exists()
     assert not legacy_temp.exists()
-    assert not task_temp_root.exists()
+    assert ambiguous_temp.is_dir()
+    assert task_temp_root.is_dir()
     assert temp_boundary.is_dir()
     assert legacy_dirty_worktree.is_dir()
     assert "legacy dirty" in (legacy_dirty_worktree / "README.md").read_text(

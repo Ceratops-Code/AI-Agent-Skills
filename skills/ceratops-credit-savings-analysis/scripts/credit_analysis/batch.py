@@ -470,6 +470,7 @@ def _resume_batch_preparation(
             child_status = holistic.command_plan_orchestration(
                 child_paths["request"],
                 available_models=available_models,
+                task_root_boundary=pathlib.Path(state["paths"]["state"]).parent,
             )
         except CreditAnalysisError as exc:
             if str(exc) != "selected completed-run window has no model calls":

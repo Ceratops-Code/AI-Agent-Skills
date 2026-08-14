@@ -321,7 +321,7 @@ def _plan_static_quoted_executable_rewrites(
             continue
         executable = match.group("path").replace("''", "'")
         if (
-            not ntpath.isabs(executable)
+            not (ntpath.isabs(executable) or os.path.isabs(executable))
             or any(character in executable for character in "*?[]")
             or not os.path.isfile(executable)
         ):

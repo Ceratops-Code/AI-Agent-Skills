@@ -2514,14 +2514,24 @@ def command_plan_orchestration(
     request_path: pathlib.Path,
     *,
     available_models: set[str] | Mapping[str, Mapping[str, Any]] | None = None,
+    task_root_boundary: pathlib.Path | None = None,
 ) -> dict[str, Any]:
-    """Collect once and freeze the finite holistic Luna-plus-Sol plan."""
+    """Collect once and freeze the finite holistic Luna-plus-Sol plan.
+
+    ``task_root_boundary`` is an internal batch-owner handoff; public CLI calls
+    omit it and must provide a canonical repository-bound task root directly.
+    """
 
     contract = _load_contract()
     catalog = _codex_model_catalog() if available_models is None else available_models
     model_specs = _holistic_model_specs(contract, catalog)
     ledger = _load_ledger()
-    request = _validate_request(request_path, contract, ledger)
+    request = _validate_request(
+        request_path,
+        contract,
+        ledger,
+        task_root_boundary=task_root_boundary,
+    )
     surface_order = _surface_order_for_request(request, contract)
     analysis_id = secrets.token_hex(12)
     evidence, fingerprint, evidence_sha, path_roots, analysis_call_ids = (

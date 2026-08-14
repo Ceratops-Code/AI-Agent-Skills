@@ -250,7 +250,12 @@ def _remove_matching_task_temp_directories(
     worktree_name: str,
     thread_id: str | None,
 ) -> None:
-    """Remove direct task-temp children matching one recorded worktree identity."""
+    """Remove only unambiguous direct children owned by one worktree identity.
+
+    A worktree name owns only an exact directory name. A canonical thread UUID
+    may own its exact name or a ``UUID-`` suffix because the full UUID plus the
+    delimiter cannot collide with another worktree-name prefix.
+    """
 
     canonical_root = (repo_root.parent / "tmp" / repo_root.name).resolve()
     if task_temp_root != canonical_root:
@@ -261,13 +266,21 @@ def _remove_matching_task_temp_directories(
     _cleanup_boundary(task_temp_root, {"tmp", "temp"})
     if not stat.S_ISDIR(attributes.st_mode) or _is_reparse(task_temp_root, attributes):
         raise PendingWorkError(f"Task-temp root is not a real directory: {task_temp_root}")
-    prefixes = tuple(
-        value.casefold()
-        for value in (worktree_name, thread_id)
-        if isinstance(value, str) and value
-    )
+    exact_names = {worktree_name.casefold()}
+    thread_prefix = None
+    if isinstance(thread_id, str) and thread_id:
+        folded_thread = thread_id.casefold()
+        exact_names.add(folded_thread)
+        thread_prefix = f"{folded_thread}-"
+
+    def matches_recorded_identity(candidate: pathlib.Path) -> bool:
+        folded_name = candidate.name.casefold()
+        return folded_name in exact_names or (
+            thread_prefix is not None and folded_name.startswith(thread_prefix)
+        )
+
     for candidate in sorted(task_temp_root.iterdir(), key=lambda item: item.name.casefold()):
-        if not candidate.name.casefold().startswith(prefixes):
+        if not matches_recorded_identity(candidate):
             continue
         candidate_attributes = _lstat(candidate)
         if candidate_attributes is None:
@@ -280,7 +293,7 @@ def _remove_matching_task_temp_directories(
         if _lstat(candidate) is not None:
             raise PendingWorkError(f"Task-temp directory still exists after cleanup: {candidate}")
     for candidate in task_temp_root.iterdir():
-        if not candidate.name.casefold().startswith(prefixes):
+        if not matches_recorded_identity(candidate):
             continue
         candidate_attributes = _lstat(candidate)
         if candidate_attributes is not None and (
