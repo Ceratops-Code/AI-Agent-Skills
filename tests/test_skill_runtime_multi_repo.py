@@ -12122,6 +12122,61 @@ def test_pending_work_finalization_persists_partial_cleanup_progress(
         },
     ]
 
+    record_scope = loaded["record_scope"]
+    pending_ship = record_scope.__globals__["ship"]
+    original_pending_findings = pending_ship._pending_work_findings
+    finding_calls = 0
+
+    def evolved_source_findings(
+        repo_root: pathlib.Path,
+        scope: dict[str, Any],
+    ) -> list[dict[str, str]]:
+        nonlocal finding_calls
+        finding_calls += 1
+        if finding_calls == 2:
+            return [
+                {
+                    "kind": "unmerged_branch_commits",
+                    "subject": "selected-b",
+                    "detail": "simulated evolved source",
+                }
+            ]
+        return []
+
+    monkeypatch.setattr(
+        pending_ship,
+        "_pending_work_findings",
+        evolved_source_findings,
+    )
+    preservation_blocker = record_scope(
+        repo,
+        target_branch="release/local",
+        target_commit=target_commit,
+        source_branches=["selected-b"],
+    )
+    monkeypatch.setattr(
+        pending_ship,
+        "_pending_work_findings",
+        original_pending_findings,
+    )
+
+    assert preservation_blocker["findings"] == [
+        {
+            "kind": "incomplete_cleanup",
+            "subject": "selected-a",
+            "detail": "complete prior helper cleanup before recording",
+        }
+    ]
+    assert preservation_blocker["preserved_sources"][0]["branch"] == "selected-b"
+    preserved_scope = json.loads(scope_path.read_text(encoding="utf-8"))
+    assert preserved_scope["sources"][1]["state"] == "preserved"
+    preserved_scope["sources"][1]["state"] = "retained"
+    scope_path.write_text(
+        json.dumps(preserved_scope),
+        encoding="utf-8",
+        newline="\n",
+    )
+
     finalize_scope.__globals__["run_command"] = original_run_command
     finalize_scope.__globals__["_finish_recorded_residual_cleanup"] = (
         original_residual_cleanup

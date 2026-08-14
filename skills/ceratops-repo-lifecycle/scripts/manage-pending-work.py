@@ -1127,6 +1127,13 @@ def record_scope(
                 candidate_existing,
                 candidate_findings,
             )
+            preserved_existing = _scope_with_sources(
+                existing,
+                candidate_existing["sources"],
+            )
+            if preserved_existing != existing:
+                _write_scope(path, preserved_existing)
+                existing = preserved_existing
             existing_findings = ship._pending_work_findings(
                 repo_root, candidate_existing
             )
@@ -1141,11 +1148,14 @@ def record_scope(
                 and _branch_exists(repo_root, str(source["branch"]))
             )
             if existing_findings:
-                return {
+                pending_result: dict[str, object] = {
                     "status": "pending_work",
                     "remote_mutation": False,
                     "findings": existing_findings,
                 }
+                if preserved_sources:
+                    pending_result["preserved_sources"] = preserved_sources
+                return pending_result
             retained = [
                 {
                     "branch": str(source["branch"]),
