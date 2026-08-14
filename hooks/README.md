@@ -221,11 +221,10 @@ Windows shell sanity hints:
 
 ## Tests
 
-Run the focused behavior suite from the repository root:
+Run deterministic tests for the current worktree from the repository root:
 
 ```powershell
-python -m pytest -q tests/test_windows_shell_sanity.py
-python -m pytest -q tests/test_bounded_source_search.py
+python scripts/run-tests.py --worktree
 ```
 
 Smoke-test the command interface with:

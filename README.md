@@ -104,7 +104,8 @@ without repository deduplication.
 | `hooks/preserve-eol-for-apply-patch-tool.py` | Preserves each updated text file's existing encoding and uniform line-ending convention around `apply_patch`. |
 | `hooks/windows-shell-sanity.py` | Repository-owned source for the user-global Windows PowerShell preflight; rewrites exact command defects, annotates ordinary failures, and blocks unreliable or policy-prohibited forms. |
 | `scripts/install-skills-bootstrap.py` | Self-contained first-install bootstrap; stages and validates one complete selected batch under the install root and never calls lifecycle runtime code. |
-| `scripts/validate-repository.py` | Sole full local-and-CI validation owner; captures child output, writes first-failure evidence to a caller-selected file, and removes stale evidence after the next successful run. |
+| `scripts/run-tests.py` | Sole test-selection and pytest-execution owner; validates `tests/test-impact.json`, explains deterministic Git-diff selection, fails closed to the full suite on mapping gaps, and supports explicit committed-diff, worktree, and `--all` validation. |
+| `scripts/validate-repository.py` | Local validation coordinator; captures first-failure evidence, delegates its default full test phase to `scripts/run-tests.py --all`, and supports CI's separate runner-owned test phase. |
 | `skills/ceratops-repo-lifecycle/references/templates/install-skills-bootstrap-template.py` | Authoritative standard-library-only bootstrap copied into compatible skill repositories as `scripts/install-skills-bootstrap.py`. |
 | `skills/ceratops-repo-lifecycle/references/repository-validation-catalog.json` | Closed catalog of repository checks that compatibility materialization may select without additional approval. |
 | `skills/ceratops-repo-lifecycle/references/templates/validate-repository.py.tmpl` and `validate.yml.tmpl` | Repository-neutral validator and CI templates materialized only when their target files are absent. |
@@ -432,7 +433,11 @@ Failure evidence remains available for diagnosis until the next successful run,
 which removes the selected evidence file and prunes the dedicated default
 directory when it is empty.
 The validator runs Markdown and YAML lint, Ruff, mypy for Linux and Win32, and
-pytest. It does not invoke skill-local validators. Generic compatibility and
+`scripts/run-tests.py --all`. Pull-request CI calls the same runner with exact
+base and head commit SHAs. Local uncommitted selection is explicit through
+`python scripts/run-tests.py --worktree`, and manifest validation is available
+through `python scripts/run-tests.py --validate-manifest`. The validator does
+not invoke skill-local validators. Generic compatibility and
 health validate deployment definitions through the repository-lifecycle
 `ceratops_repo_compatibility_engine.deploy_contract_validation` module. Runtime
 rendering is owned only by bootstrap and managed deployment under the selected

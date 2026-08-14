@@ -16,11 +16,11 @@
       "python skills/ceratops-skill-lifecycle/scripts/fast-change.py --request <request>"
     ],
     "runtime_generation_changes": [
-      "python -m pytest -q tests/test_skill_runtime_multi_repo.py",
+      "python scripts/run-tests.py --worktree",
       "python scripts/install-skills-bootstrap.py --install-root <task-temp-root>"
     ],
     "contract_checker_changes": [
-      "python -m pytest -q tests/test_gh_validator_summary.py"
+      "python scripts/run-tests.py --worktree"
     ],
     "new_skill_local_availability": [
       "$ceratops-skill-lifecycle"

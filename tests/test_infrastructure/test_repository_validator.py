@@ -9,7 +9,7 @@ from typing import Any
 
 import yaml
 
-ROOT = pathlib.Path(__file__).resolve().parents[1]
+ROOT = pathlib.Path(__file__).resolve().parents[2]
 VALIDATOR_PATH = ROOT / "scripts" / "validate-repository.py"
 SPEC = importlib.util.spec_from_file_location(
     "validate_repository_under_test", VALIDATOR_PATH
@@ -56,6 +56,19 @@ def test_build_checks_owns_order_both_platforms_and_space_safe_paths(
     )
     assert checks[3].command[-2:] == ("--platform", "linux")
     assert checks[4].command[-2:] == ("--platform", "win32")
+    assert checks[5].command == (
+        "python executable",
+        "scripts/run-tests.py",
+        "--all",
+    )
+    assert len(
+        VALIDATOR.build_checks(
+            repo_root,
+            python_executable="python executable",
+            npm_executable="npm executable",
+            include_tests=False,
+        )
+    ) == 5
 
 
 def test_ci_runs_repository_validator_that_owns_both_mypy_platforms() -> None:
@@ -71,6 +84,18 @@ def test_ci_runs_repository_validator_that_owns_both_mypy_platforms() -> None:
     assert " ".join(validation_step["run"].split()).startswith(
         "python scripts/validate-repository.py "
     )
+    assert "--without-tests" in validation_step["run"].split()
+    pull_request_step = next(
+        step for step in steps if step.get("name") == "Run pull-request impact tests"
+    )
+    full_step = next(
+        step for step in steps if step.get("name") == "Run full main-branch tests"
+    )
+    assert " ".join(pull_request_step["run"].split()).startswith(
+        "python scripts/run-tests.py --base "
+    )
+    assert " --head " in " ".join(pull_request_step["run"].split())
+    assert full_step["run"] == "python scripts/run-tests.py --all"
 
     checks = VALIDATOR.build_checks(
         ROOT,
@@ -82,6 +107,11 @@ def test_ci_runs_repository_validator_that_owns_both_mypy_platforms() -> None:
         for check in checks
         if check.name == "mypy"
     ] == ["linux", "win32"]
+    assert next(check for check in checks if check.name == "pytest").command == (
+        "python",
+        "scripts/run-tests.py",
+        "--all",
+    )
 
 
 def test_run_process_captures_output_without_a_shell(

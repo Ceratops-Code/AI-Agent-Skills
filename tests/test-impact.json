@@ -1,0 +1,149 @@
+{
+  "version": 1,
+  "suites": {
+    "credit-analysis": {
+      "pytest": [
+        "tests/credit_analysis"
+      ],
+      "depends_on": []
+    },
+    "governance-lifecycle": {
+      "pytest": [
+        "tests/governance_lifecycle"
+      ],
+      "depends_on": []
+    },
+    "openai-docs": {
+      "pytest": [
+        "tests/openai_docs"
+      ],
+      "depends_on": []
+    },
+    "repository-lifecycle": {
+      "pytest": [
+        "tests/repository_lifecycle"
+      ],
+      "depends_on": []
+    },
+    "skill-lifecycle": {
+      "pytest": [
+        "tests/skill_lifecycle"
+      ],
+      "depends_on": []
+    },
+    "task-lifecycle": {
+      "pytest": [
+        "tests/task_lifecycle"
+      ],
+      "depends_on": []
+    },
+    "test-infrastructure": {
+      "pytest": [
+        "tests/test_infrastructure"
+      ],
+      "depends_on": []
+    }
+  },
+  "rules": [
+    {
+      "id": "credit-analysis-source",
+      "paths": [
+        "skills/ceratops-credit-savings-analysis/**"
+      ],
+      "suites": [
+        "credit-analysis"
+      ]
+    },
+    {
+      "id": "governance-lifecycle-source",
+      "paths": [
+        "skills/ceratops-governance-lifecycle/**"
+      ],
+      "suites": [
+        "governance-lifecycle"
+      ]
+    },
+    {
+      "id": "openai-docs-source",
+      "paths": [
+        "skills/openai-docs-managed/**"
+      ],
+      "suites": [
+        "openai-docs"
+      ]
+    },
+    {
+      "id": "repository-lifecycle-source",
+      "paths": [
+        "skills/ceratops-repo-lifecycle/**",
+        "deploy/**"
+      ],
+      "suites": [
+        "repository-lifecycle"
+      ]
+    },
+    {
+      "id": "skill-lifecycle-source",
+      "paths": [
+        "scripts/install-skills-bootstrap.py",
+        "skills/ceratops-skill-lifecycle/**"
+      ],
+      "suites": [
+        "repository-lifecycle",
+        "skill-lifecycle"
+      ]
+    },
+    {
+      "id": "task-lifecycle-source",
+      "paths": [
+        "skills/ceratops-task-lifecycle/**"
+      ],
+      "suites": [
+        "task-lifecycle"
+      ]
+    },
+    {
+      "id": "test-hook-source",
+      "paths": [
+        "hooks/*.py"
+      ],
+      "suites": [
+        "test-infrastructure"
+      ]
+    }
+  ],
+  "full_suite_paths": [
+    ".github/workflows/**",
+    "AGENTS.md",
+    "package-lock.json",
+    "package.json",
+    "pyproject.toml",
+    "requirements-dev.txt",
+    "requirements-runtime.txt",
+    "scripts/run-tests.py",
+    "scripts/validate-repository.py",
+    "skills/ceratops-automation-run/**",
+    "skills/ceratops-code-consistency-audit/**",
+    "skills/sections/**",
+    "skills/skill-sections.json",
+    "tests/__init__.py",
+    "tests/conftest.py",
+    "tests/support/**",
+    "tests/test-impact.json"
+  ],
+  "ignored_paths": [
+    {
+      "id": "documentation-only",
+      "paths": [
+        ".github/CODEOWNERS",
+        ".github/ISSUE_TEMPLATE/**",
+        ".github/pull_request_template.md",
+        "LICENSE",
+        "README.md",
+        "hooks/README.md"
+      ],
+      "reason": "These files contain repository documentation or contribution metadata and cannot change executable behavior."
+    }
+  ],
+  "unmapped_production": "full-and-error"
+}
