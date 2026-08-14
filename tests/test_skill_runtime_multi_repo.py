@@ -2569,6 +2569,37 @@ def test_credit_analysis_normalizes_sol_transport_without_changing_judgments(
     tmp_path: pathlib.Path,
 ) -> None:
     workflow = load_credit_analysis_workflow_module()
+    normalized_groups, classifications, unassessed = (
+        workflow._holistic_call_classifications(
+            [
+                {
+                    "call_ids": ["call-1", "call-2"],
+                    "classification": "necessary",
+                    "reason_code": "required-workflow",
+                    "rationale": "Both calls complete the selected workflow.",
+                    "evidence_refs": ["evidence://review/test:000001"],
+                    "workstream": "producer",
+                }
+            ],
+            contract=workflow._load_contract(),
+            call_order=["call-1", "call-2"],
+            workstreams={
+                "call-1": "producer",
+                "call-2": "analysis-overhead",
+            },
+        )
+    )
+    assert [group["call_ids"] for group in normalized_groups] == [
+        ["call-1"],
+        ["call-2"],
+    ]
+    assert [group["workstream"] for group in normalized_groups] == [
+        "producer",
+        "analysis-overhead",
+    ]
+    assert classifications == {"call-1": "necessary", "call-2": "necessary"}
+    assert unassessed == 0
+
     request, _, _ = credit_analysis_request(
         tmp_path,
         extra_completed_turns=3,
