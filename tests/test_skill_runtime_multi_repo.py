@@ -12271,6 +12271,96 @@ def test_pending_work_finalization_persists_partial_cleanup_progress(
     assert not crash_temporary.exists()
     assert unrelated_temporary.is_file()
 
+    assert run_git(repo, "branch", "sharing-locked", target_commit).returncode == 0
+    sharing_worktree = worktree_root / "sharing-locked"
+    worktree_root.mkdir(parents=True, exist_ok=True)
+    assert (
+        run_git(
+            repo,
+            "worktree",
+            "add",
+            str(sharing_worktree),
+            "sharing-locked",
+        ).returncode
+        == 0
+    )
+    sharing_recorded = run_pending_work(
+        repo,
+        "record",
+        "--target-branch",
+        "release/local",
+        "--target-commit",
+        target_commit,
+        "--source-branch",
+        "sharing-locked",
+    )
+    assert sharing_recorded.returncode == 0, sharing_recorded.stderr
+    sharing_scope = pathlib.Path(
+        json.loads(sharing_recorded.stdout)["pending_work_scope"]
+    )
+    sharing_record = loaded["_write_residual_cleanup_record"](
+        repo,
+        sharing_scope,
+        "sharing-locked",
+        sharing_worktree.resolve(),
+        worktree_root.resolve(),
+    )
+    assert (
+        run_git(repo, "worktree", "remove", str(sharing_worktree)).returncode
+        == 0
+    )
+    sharing_worktree.mkdir()
+
+    def sharing_locked_rmtree(
+        path: pathlib.Path,
+        *args: Any,
+        **kwargs: Any,
+    ) -> None:
+        if pathlib.Path(path) == sharing_worktree:
+            error = PermissionError("simulated Windows sharing violation")
+            setattr(error, "winerror", 32)
+            raise error
+        original_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(shutil, "rmtree", sharing_locked_rmtree)
+    sharing_finalized = finalize_scope(
+        repo,
+        sharing_scope,
+        target_branch="release/local",
+        target_commit=target_commit,
+        current_branch="main",
+        current_commit=current_commit,
+    )
+    monkeypatch.setattr(shutil, "rmtree", original_rmtree)
+
+    assert sharing_finalized == {
+        "status": "finalized",
+        "removed": ["sharing-locked"],
+        "pending_work_scope": "",
+        "preserved_worktrees": [
+            {
+                "branch": "sharing-locked",
+                "path": str(sharing_worktree),
+                "reason": (
+                    "Windows sharing violation 32 after Git unregistered "
+                    "the worktree"
+                ),
+            }
+        ],
+    }
+    assert sharing_worktree.is_dir()
+    assert not sharing_record.exists()
+    assert not sharing_scope.exists()
+    assert (
+        run_git(
+            repo,
+            "show-ref",
+            "--verify",
+            "refs/heads/sharing-locked",
+        ).returncode
+        != 0
+    )
+
     ownership_target = worktree_root / "ownership-target"
     ownership_target.mkdir(parents=True)
     ownership_commands: list[list[str]] = []
