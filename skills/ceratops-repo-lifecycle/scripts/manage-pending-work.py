@@ -1127,6 +1127,43 @@ def record_scope(
                 candidate_existing,
                 candidate_findings,
             )
+            requested_by_branch = {
+                source["branch"]: source for source in requested_sources
+            }
+            advanced_sources: list[dict[str, str]] = []
+            for source in candidate_existing["sources"]:
+                normalized = {
+                    "branch": str(source["branch"]),
+                    "commit": str(source["commit"]),
+                    "state": str(source["state"]),
+                }
+                requested = requested_by_branch.get(normalized["branch"])
+                if (
+                    normalized["state"] == "retained"
+                    and requested is not None
+                    and requested["commit"] != normalized["commit"]
+                ):
+                    normalized["state"] = "preserved"
+                    preserved_sources.append(
+                        {
+                            "branch": normalized["branch"],
+                            "findings": [
+                                {
+                                    "kind": "source_tip_advanced",
+                                    "subject": normalized["branch"],
+                                    "detail": (
+                                        "selected source advanced into the new target "
+                                        "during prior cleanup"
+                                    ),
+                                }
+                            ],
+                        }
+                    )
+                advanced_sources.append(normalized)
+            candidate_existing = _scope_with_sources(
+                candidate_existing,
+                advanced_sources,
+            )
             preserved_existing = _scope_with_sources(
                 existing,
                 candidate_existing["sources"],

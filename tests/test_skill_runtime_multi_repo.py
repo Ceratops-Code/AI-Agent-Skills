@@ -12125,35 +12125,36 @@ def test_pending_work_finalization_persists_partial_cleanup_progress(
     record_scope = loaded["record_scope"]
     pending_ship = record_scope.__globals__["ship"]
     original_pending_findings = pending_ship._pending_work_findings
-    finding_calls = 0
+    original_source_record = record_scope.__globals__["_source_record"]
 
-    def evolved_source_findings(
+    def no_pending_findings(
         repo_root: pathlib.Path,
         scope: dict[str, Any],
     ) -> list[dict[str, str]]:
-        nonlocal finding_calls
-        finding_calls += 1
-        if finding_calls == 2:
-            return [
-                {
-                    "kind": "unmerged_branch_commits",
-                    "subject": "selected-b",
-                    "detail": "simulated evolved source",
-                }
-            ]
         return []
+
+    def advanced_source_record(
+        repo_root: pathlib.Path,
+        branch: str,
+    ) -> dict[str, str]:
+        source = original_source_record(repo_root, branch)
+        if branch == "selected-b":
+            source["commit"] = "f" * 40
+        return source
 
     monkeypatch.setattr(
         pending_ship,
         "_pending_work_findings",
-        evolved_source_findings,
+        no_pending_findings,
     )
+    record_scope.__globals__["_source_record"] = advanced_source_record
     preservation_blocker = record_scope(
         repo,
         target_branch="release/local",
         target_commit=target_commit,
         source_branches=["selected-b"],
     )
+    record_scope.__globals__["_source_record"] = original_source_record
     monkeypatch.setattr(
         pending_ship,
         "_pending_work_findings",
