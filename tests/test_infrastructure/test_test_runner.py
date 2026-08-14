@@ -58,6 +58,37 @@ class DeterministicExecution:
         return subprocess.CompletedProcess(command, 0, self.diff, b"")
 
 
+class CollectionExecution:
+    """Return one declared pytest collection without running any test."""
+
+    def __init__(self, runner: Any, nodes: tuple[str, ...]) -> None:
+        self.runner = runner
+        self.nodes = nodes
+        self.commands: list[tuple[str, ...]] = []
+
+    def text(
+        self, command: Any, cwd: pathlib.Path
+    ) -> subprocess.CompletedProcess[str]:
+        argv = tuple(command)
+        self.commands.append(argv)
+        assert argv[:5] == (
+            sys.executable,
+            "-m",
+            "pytest",
+            "--collect-only",
+            "-q",
+        )
+        return subprocess.CompletedProcess(command, 0, "\n".join(self.nodes) + "\n", "")
+
+    def bytes(
+        self, command: Any, cwd: pathlib.Path
+    ) -> subprocess.CompletedProcess[bytes]:
+        argv = tuple(command)
+        self.commands.append(argv)
+        assert argv == ("git", "ls-files", "-z")
+        return self.runner.run_bytes(command, cwd)
+
+
 def payload(capsys: pytest.CaptureFixture[str]) -> dict[str, Any]:
     return json.loads(capsys.readouterr().out)
 
@@ -225,3 +256,144 @@ def test_manifest_validation_mode_collects_every_declared_target(
     assert exit_code == 0
     assert result["status"] == "manifest-valid"
     assert result["pytest"]["outcome"] == "not-run"
+
+
+def test_collection_snapshot_reconciles_moved_parameterized_nodes(
+    test_runner_module: Any,
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    runner = test_runner_module
+    baseline_path = tmp_path / "collection.json"
+    old_nodes = (
+        "tests/legacy/test_flow.py::test_case[first]",
+        "tests/legacy/test_flow.py::test_case[second]",
+    )
+    writer = CollectionExecution(runner, old_nodes)
+
+    write_exit = runner.execute(
+        ["--write-collection", str(baseline_path)],
+        repo_root=ROOT,
+        text_runner=writer.text,
+        bytes_runner=writer.bytes,
+    )
+    written = payload(capsys)
+
+    assert write_exit == 0
+    assert written["status"] == "collection-snapshot-written"
+    assert written["collection"]["count"] == 2
+    baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
+    assert baseline["schema"] == runner.COLLECTION_SCHEMA
+    assert baseline["nodes"] == list(old_nodes)
+
+    current_nodes = (
+        "tests/domain/test_flow.py::test_case[first]",
+        "tests/domain/test_flow.py::test_case[second]",
+        "tests/domain/test_flow.py::test_new_case",
+    )
+    reconciler = CollectionExecution(runner, current_nodes)
+    reconcile_exit = runner.execute(
+        ["--reconcile-collection", str(baseline_path)],
+        repo_root=ROOT,
+        text_runner=reconciler.text,
+        bytes_runner=reconciler.bytes,
+    )
+    reconciled = payload(capsys)
+
+    assert reconcile_exit == 0
+    assert reconciled["status"] == "collection-reconciled"
+    assert reconciled["collection"]["preserved_count"] == 2
+    assert reconciled["collection"]["moved_count"] == 2
+    assert reconciled["collection"]["added"] == [
+        "tests/domain/test_flow.py::test_new_case"
+    ]
+    assert {
+        (item["old"], item["new"], item["method"])
+        for item in reconciled["collection"]["moved"]
+    } == {
+        (old_nodes[0], current_nodes[0], "identity"),
+        (old_nodes[1], current_nodes[1], "identity"),
+    }
+
+
+def test_collection_node_map_resolves_ambiguous_identity(
+    test_runner_module: Any,
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    runner = test_runner_module
+    baseline_path = tmp_path / "collection.json"
+    old = "tests/legacy/test_flow.py::test_case[value]"
+    writer = CollectionExecution(runner, (old,))
+    assert runner.execute(
+        ["--write-collection", str(baseline_path)],
+        repo_root=ROOT,
+        text_runner=writer.text,
+        bytes_runner=writer.bytes,
+    ) == 0
+    payload(capsys)
+
+    candidates = (
+        "tests/alpha/test_flow.py::test_case[value]",
+        "tests/beta/test_flow.py::test_case[value]",
+    )
+    ambiguous = CollectionExecution(runner, candidates)
+    mismatch_exit = runner.execute(
+        ["--reconcile-collection", str(baseline_path)],
+        repo_root=ROOT,
+        text_runner=ambiguous.text,
+        bytes_runner=ambiguous.bytes,
+    )
+    mismatch = payload(capsys)
+
+    assert mismatch_exit == runner.COLLECTION_MISMATCH_EXIT_CODE
+    assert mismatch["status"] == "collection-mismatch"
+    assert mismatch["collection"]["ambiguous"] == [
+        {"old": old, "candidates": list(candidates)}
+    ]
+    missing = runner.reconcile_collections((old,), (), {})
+    assert missing["ok"] is False
+    assert missing["missing"] == [old]
+
+    node_map = tmp_path / "node-map.json"
+    node_map.write_text(
+        json.dumps(
+            {
+                "schema": runner.NODE_MAP_SCHEMA,
+                "mappings": {old: candidates[1]},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    resolved = CollectionExecution(runner, candidates)
+    resolved_exit = runner.execute(
+        [
+            "--reconcile-collection",
+            str(baseline_path),
+            "--node-map",
+            str(node_map),
+        ],
+        repo_root=ROOT,
+        text_runner=resolved.text,
+        bytes_runner=resolved.bytes,
+    )
+    result = payload(capsys)
+
+    assert resolved_exit == 0
+    assert result["status"] == "collection-reconciled"
+    assert result["collection"]["moved"] == [
+        {"method": "explicit", "new": candidates[1], "old": old}
+    ]
+    assert result["collection"]["added"] == [candidates[0]]
+    changed_identity = runner.reconcile_collections(
+        (old,),
+        ("tests/beta/test_flow.py::test_case[changed]",),
+        {old: "tests/beta/test_flow.py::test_case[changed]"},
+    )
+    assert changed_identity["ok"] is False
+    assert changed_identity["mapping_errors"] == [
+        "node map changes pytest identity: "
+        f"{old} -> tests/beta/test_flow.py::test_case[changed]"
+    ]

@@ -104,7 +104,7 @@ without repository deduplication.
 | `hooks/preserve-eol-for-apply-patch-tool.py` | Preserves each updated text file's existing encoding and uniform line-ending convention around `apply_patch`. |
 | `hooks/windows-shell-sanity.py` | Repository-owned source for the user-global Windows PowerShell preflight; rewrites exact command defects, annotates ordinary failures, and blocks unreliable or policy-prohibited forms. |
 | `scripts/install-skills-bootstrap.py` | Self-contained first-install bootstrap; stages and validates one complete selected batch under the install root and never calls lifecycle runtime code. |
-| `scripts/run-tests.py` | Sole test-selection and pytest-execution owner; validates `tests/test-impact.json`, explains deterministic Git-diff selection, fails closed to the full suite on mapping gaps, and supports explicit committed-diff, worktree, and `--all` validation. |
+| `scripts/run-tests.py` | Sole test-selection, collection-reconciliation, and pytest-execution owner; validates `tests/test-impact.json`, explains deterministic Git-diff selection, fails closed to the full suite on mapping gaps, and supports explicit committed-diff, worktree, collection, and `--all` modes. |
 | `scripts/validate-repository.py` | Local validation coordinator; captures first-failure evidence, delegates its default full test phase to `scripts/run-tests.py --all`, and supports CI's separate runner-owned test phase. |
 | `skills/ceratops-repo-lifecycle/references/templates/install-skills-bootstrap-template.py` | Authoritative standard-library-only bootstrap copied into compatible skill repositories as `scripts/install-skills-bootstrap.py`. |
 | `skills/ceratops-repo-lifecycle/references/repository-validation-catalog.json` | Closed catalog of repository checks that compatibility materialization may select without additional approval. |
@@ -442,6 +442,30 @@ health validate deployment definitions through the repository-lifecycle
 `ceratops_repo_compatibility_engine.deploy_contract_validation` module. Runtime
 rendering is owned only by bootstrap and managed deployment under the selected
 install root.
+
+For a structural test migration, capture the pre-migration collection and
+reconcile it after moving tests:
+
+```powershell
+$collection = Join-Path $env:TEMP "pytest-collection.json"
+python scripts/run-tests.py --write-collection $collection
+python scripts/run-tests.py --reconcile-collection $collection
+```
+
+Reconciliation preserves complete pytest identities, including parameter IDs,
+automatically matches unique path moves, reports additive tests, and exits `4`
+for missing or ambiguous legacy nodes. Supply a versioned explicit map with
+`--node-map PATH` only when multiple current nodes share one legacy identity.
+The map format is:
+
+```json
+{
+  "schema": "ai-agent-skills-pytest-node-map.v1",
+  "mappings": {
+    "tests/old/test_flow.py::test_case[id]": "tests/new/test_flow.py::test_case[id]"
+  }
+}
+```
 
 Run full skill-source validation explicitly when that source surface is in
 scope:

@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """Select, explain, validate, and run repository tests from deterministic data.
 
-The runner accepts only explicit full-suite, committed-revision, manifest, or
-worktree modes. Worktree mode compares tracked and untracked paths with the
-resolved HEAD commit; no mode is inferred from ambient state. The runner uses
-Git, the checked-in impact manifest, and pytest through argv arrays; it never
-invokes a shell, network client, model, prompt, agent, or semantic classifier.
-A mapping gap deliberately runs every suite and returns exit code 3 when pytest
-passes so CI cannot silently accept incomplete ownership data.
+The runner accepts only explicit full-suite, committed-revision, manifest,
+worktree, collection-snapshot, or collection-reconciliation modes. Worktree
+mode compares tracked and untracked paths with the resolved HEAD commit; no
+mode is inferred from ambient state. Collection modes preserve every pytest
+node identity, including parameter IDs, across structural moves without a
+model. The runner uses Git, the checked-in impact manifest, and pytest through
+argv arrays; it never invokes a shell, network client, model, prompt, agent, or
+semantic classifier. A mapping gap deliberately runs every suite and returns
+exit code 3 when pytest passes so CI cannot silently accept incomplete
+ownership data.
 """
 
 from __future__ import annotations
@@ -16,17 +19,22 @@ import argparse
 import fnmatch
 import functools
 import json
+import os
 import pathlib
 import re
 import subprocess
 import sys
-from collections.abc import Callable, Iterable, Sequence
+import tempfile
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
 SCHEMA = "ai-agent-skills-test-impact-result.v1"
+COLLECTION_SCHEMA = "ai-agent-skills-pytest-collection.v1"
+NODE_MAP_SCHEMA = "ai-agent-skills-pytest-node-map.v1"
 MANIFEST_VERSION = 1
 MAPPING_GAP_EXIT_CODE = 3
+COLLECTION_MISMATCH_EXIT_CODE = 4
 CONFIGURATION_EXIT_CODE = 2
 FULL_SHA = re.compile(r"[0-9a-fA-F]{40}")
 STABLE_ID = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
@@ -228,6 +236,20 @@ def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return result
 
 
+def load_json_object(path: pathlib.Path, label: str) -> dict[str, Any]:
+    """Load one JSON object while rejecting duplicate keys and read failures."""
+
+    try:
+        data = json.loads(
+            path.read_text(encoding="utf-8"), object_pairs_hook=_unique_object
+        )
+    except (OSError, json.JSONDecodeError, ImpactError) as exc:
+        raise ImpactError(f"cannot load {label}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ImpactError(f"{label} must be a JSON object")
+    return data
+
+
 def _string_tuple(value: Any, field: str) -> tuple[str, ...]:
     if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
         raise ImpactError(f"{field} must be an array of strings")
@@ -239,13 +261,8 @@ def _string_tuple(value: Any, field: str) -> tuple[str, ...]:
 def load_manifest(path: pathlib.Path) -> Manifest:
     """Parse the versioned manifest while rejecting duplicate JSON keys."""
 
-    try:
-        data = json.loads(
-            path.read_text(encoding="utf-8"), object_pairs_hook=_unique_object
-        )
-    except (OSError, json.JSONDecodeError, ImpactError) as exc:
-        raise ImpactError(f"cannot load impact manifest: {exc}") from exc
-    if not isinstance(data, dict) or data.get("version") != MANIFEST_VERSION:
+    data = load_json_object(path, "impact manifest")
+    if data.get("version") != MANIFEST_VERSION:
         raise ImpactError(f"impact manifest version must be {MANIFEST_VERSION}")
     raw_suites = data.get("suites")
     if not isinstance(raw_suites, dict) or not raw_suites:
@@ -587,6 +604,218 @@ def collect_errors(
     return errors
 
 
+def validate_collection_nodeid(nodeid: str, label: str) -> None:
+    """Require one repository test node with an exact pytest identity suffix."""
+
+    path, separator, identity = nodeid.partition("::")
+    if not separator or not identity or not path.startswith("tests/"):
+        raise ImpactError(f"{label} contains invalid pytest node: {nodeid!r}")
+    normalize_path(path)
+
+
+def collect_nodeids(
+    repo_root: pathlib.Path,
+    targets: Iterable[str],
+    *,
+    runner: TextRunner = run_text,
+) -> tuple[str, ...]:
+    """Collect all declared targets once and return unique sorted node IDs."""
+
+    selected = tuple(sorted(set(targets)))
+    result = runner(
+        [sys.executable, "-m", "pytest", "--collect-only", "-q", *selected],
+        repo_root,
+    )
+    nodeids = [
+        line.strip()
+        for line in result.stdout.splitlines()
+        if line.startswith("tests/") and "::" in line
+    ]
+    if result.returncode != 0 or not nodeids:
+        detail = (result.stdout + result.stderr).strip().splitlines()
+        tail = " | ".join(detail[-3:]) if detail else f"exit {result.returncode}"
+        raise ImpactError(f"full pytest collection failed: {tail}")
+    counts: dict[str, int] = {}
+    for nodeid in nodeids:
+        counts[nodeid] = counts.get(nodeid, 0) + 1
+    duplicates = sorted(nodeid for nodeid, count in counts.items() if count != 1)
+    if duplicates:
+        raise ImpactError(f"duplicate collected pytest nodes: {duplicates}")
+    for nodeid in nodeids:
+        validate_collection_nodeid(nodeid, "pytest collection")
+    return tuple(sorted(nodeids))
+
+
+def collection_snapshot(
+    nodeids: tuple[str, ...], targets: Iterable[str]
+) -> dict[str, object]:
+    """Build the complete versioned baseline used by reconciliation mode."""
+
+    return {
+        "schema": COLLECTION_SCHEMA,
+        "count": len(nodeids),
+        "nodes": list(nodeids),
+        "pytest_targets": sorted(set(targets)),
+    }
+
+
+def load_collection_snapshot(path: pathlib.Path) -> tuple[str, ...]:
+    """Load and structurally validate one deterministic collection baseline."""
+
+    data = load_json_object(path, "collection snapshot")
+    if data.get("schema") != COLLECTION_SCHEMA:
+        raise ImpactError(f"collection snapshot schema must be {COLLECTION_SCHEMA}")
+    nodeids = _string_tuple(data.get("nodes"), "collection snapshot nodes")
+    _string_tuple(data.get("pytest_targets"), "collection snapshot pytest_targets")
+    if type(data.get("count")) is not int or data.get("count") != len(nodeids):
+        raise ImpactError("collection snapshot count does not match its nodes")
+    if nodeids != tuple(sorted(nodeids)):
+        raise ImpactError("collection snapshot nodes must be sorted")
+    for nodeid in nodeids:
+        validate_collection_nodeid(nodeid, "collection snapshot")
+    return nodeids
+
+
+def load_node_map(path: pathlib.Path) -> dict[str, str]:
+    """Load explicit old-to-new node mappings for ambiguous identities."""
+
+    data = load_json_object(path, "pytest node map")
+    if data.get("schema") != NODE_MAP_SCHEMA:
+        raise ImpactError(f"pytest node map schema must be {NODE_MAP_SCHEMA}")
+    raw = data.get("mappings")
+    if not isinstance(raw, dict) or not all(
+        isinstance(old, str) and isinstance(new, str) for old, new in raw.items()
+    ):
+        raise ImpactError("pytest node map mappings must be a string-to-string object")
+    mappings = dict(sorted(raw.items()))
+    if len(set(mappings.values())) != len(mappings):
+        raise ImpactError("pytest node map assigns multiple old nodes to one new node")
+    for old, new in mappings.items():
+        validate_collection_nodeid(old, "pytest node map key")
+        validate_collection_nodeid(new, "pytest node map value")
+    return mappings
+
+
+def resolve_data_path(repo_root: pathlib.Path, value: pathlib.Path) -> pathlib.Path:
+    """Resolve an explicit collection artifact relative to the repository root."""
+
+    expanded = value.expanduser()
+    return (expanded if expanded.is_absolute() else repo_root / expanded).resolve()
+
+
+def write_json_atomic(path: pathlib.Path, payload: Mapping[str, object]) -> None:
+    """Atomically replace one caller-selected JSON artifact and clean its temp file."""
+
+    if not path.parent.is_dir():
+        raise ImpactError(f"collection output parent does not exist: {path.parent}")
+    temporary: pathlib.Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            newline="\n",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temporary = pathlib.Path(handle.name)
+            json.dump(payload, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        temporary = None
+    except OSError as exc:
+        raise ImpactError(f"cannot write collection snapshot: {exc}") from exc
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def node_identity(nodeid: str) -> str:
+    """Return the path-independent pytest identity, including parameter IDs."""
+
+    return nodeid.split("::", 1)[1]
+
+
+def reconcile_collections(
+    baseline: tuple[str, ...],
+    current: tuple[str, ...],
+    explicit: Mapping[str, str] | None = None,
+) -> dict[str, object]:
+    """Prove every baseline node has exactly one current owner after path moves."""
+
+    baseline_set = set(baseline)
+    current_set = set(current)
+    requested = dict(explicit or {})
+    mapping_errors: list[str] = []
+    usable: dict[str, str] = {}
+    for old, new in sorted(requested.items()):
+        if old not in baseline_set:
+            mapping_errors.append(f"node map key is absent from baseline: {old}")
+        elif new not in current_set:
+            mapping_errors.append(f"node map value is absent from current collection: {new}")
+        elif node_identity(old) != node_identity(new):
+            mapping_errors.append(f"node map changes pytest identity: {old} -> {new}")
+        else:
+            usable[old] = new
+
+    by_identity: dict[str, list[str]] = {}
+    for nodeid in current:
+        by_identity.setdefault(node_identity(nodeid), []).append(nodeid)
+    reserved = set(usable.values())
+    claimed: dict[str, str] = {}
+    missing: list[str] = []
+    ambiguous: list[dict[str, object]] = []
+    moved: list[dict[str, str]] = []
+    for old in baseline:
+        method = "explicit"
+        target = usable.get(old)
+        if target is None and old in current_set and old not in reserved:
+            method = "exact"
+            target = old
+        if target is None:
+            candidates = sorted(
+                candidate
+                for candidate in by_identity.get(node_identity(old), [])
+                if candidate not in claimed and candidate not in reserved
+            )
+            if len(candidates) == 1:
+                method = "identity"
+                target = candidates[0]
+            elif not candidates:
+                missing.append(old)
+                continue
+            else:
+                ambiguous.append({"old": old, "candidates": candidates})
+                continue
+        if target in claimed:
+            mapping_errors.append(
+                f"current node is claimed by multiple baseline nodes: {target}"
+            )
+            continue
+        claimed[target] = old
+        if target != old:
+            moved.append({"method": method, "new": target, "old": old})
+
+    added = sorted(current_set - set(claimed))
+    ok = not missing and not ambiguous and not mapping_errors
+    return {
+        "added": added,
+        "added_count": len(added),
+        "ambiguous": ambiguous,
+        "baseline_count": len(baseline),
+        "current_count": len(current),
+        "mapping_errors": mapping_errors,
+        "missing": missing,
+        "moved": moved,
+        "moved_count": len(moved),
+        "ok": ok,
+        "preserved_count": len(claimed),
+    }
+
+
 def validate_manifest(
     repo_root: pathlib.Path,
     manifest: Manifest,
@@ -878,6 +1107,8 @@ def base_payload(
     return {
         "base": base,
         "changed": [item.payload() for item in changes],
+        "collection": None,
+        "collection_errors": [],
         "full_suite": False,
         "full_suite_fallback": False,
         "head": head,
@@ -912,17 +1143,30 @@ def execute(
     parser.add_argument("--all", action="store_true")
     parser.add_argument("--base")
     parser.add_argument("--head")
+    parser.add_argument("--node-map", type=pathlib.Path)
+    parser.add_argument("--reconcile-collection", type=pathlib.Path)
     parser.add_argument("--validate-manifest", action="store_true")
     parser.add_argument("--worktree", action="store_true")
+    parser.add_argument("--write-collection", type=pathlib.Path)
     args = parser.parse_args(list(argv) if argv is not None else None)
-    selected_modes = int(args.all) + int(args.validate_manifest) + int(args.worktree) + int(
-        args.base is not None or args.head is not None
+    selected_modes = (
+        int(args.all)
+        + int(args.validate_manifest)
+        + int(args.worktree)
+        + int(args.write_collection is not None)
+        + int(args.reconcile_collection is not None)
+        + int(args.base is not None or args.head is not None)
     )
-    if selected_modes != 1 or ((args.base is None) != (args.head is None)):
+    if (
+        selected_modes != 1
+        or ((args.base is None) != (args.head is None))
+        or (args.node_map is not None and args.reconcile_collection is None)
+    ):
         payload = base_payload(mode="configuration", base=args.base, head=args.head)
         payload["manifest_errors"] = [
-            "choose exactly one of --all, --validate-manifest, --worktree, or "
-            "--base with --head"
+            "choose exactly one of --all, --validate-manifest, --worktree, "
+            "--write-collection, --reconcile-collection, or --base with --head; "
+            "--node-map is valid only with --reconcile-collection"
         ]
         payload["status"] = "configuration-error"
         emit(payload)
@@ -934,6 +1178,10 @@ def execute(
         if args.all
         else "worktree"
         if args.worktree
+        else "write-collection"
+        if args.write_collection is not None
+        else "reconcile-collection"
+        if args.reconcile_collection is not None
         else "diff"
     )
     payload = base_payload(mode=mode, base=args.base, head=args.head)
@@ -961,6 +1209,48 @@ def execute(
         payload["status"] = "manifest-valid"
         emit(payload)
         return 0
+    if args.write_collection is not None or args.reconcile_collection is not None:
+        try:
+            targets = all_selection(manifest).pytest_targets
+            nodeids = collect_nodeids(root, targets, runner=text_runner)
+            if args.write_collection is not None:
+                destination = resolve_data_path(root, args.write_collection)
+                snapshot = collection_snapshot(nodeids, targets)
+                write_json_atomic(destination, snapshot)
+                payload["collection"] = {
+                    "count": len(nodeids),
+                    "path": str(destination),
+                    "schema": COLLECTION_SCHEMA,
+                }
+                payload["status"] = "collection-snapshot-written"
+                emit(payload)
+                return 0
+            baseline_path = resolve_data_path(root, args.reconcile_collection)
+            baseline = load_collection_snapshot(baseline_path)
+            node_map_path = (
+                resolve_data_path(root, args.node_map)
+                if args.node_map is not None
+                else None
+            )
+            explicit = load_node_map(node_map_path) if node_map_path else {}
+            reconciliation = reconcile_collections(baseline, nodeids, explicit)
+            payload["collection"] = {
+                **reconciliation,
+                "baseline": str(baseline_path),
+                "node_map": str(node_map_path) if node_map_path else None,
+            }
+        except ImpactError as exc:
+            payload["collection_errors"] = [str(exc)]
+            payload["status"] = "collection-invalid"
+            emit(payload)
+            return CONFIGURATION_EXIT_CODE
+        if reconciliation["ok"]:
+            payload["status"] = "collection-reconciled"
+            emit(payload)
+            return 0
+        payload["status"] = "collection-mismatch"
+        emit(payload)
+        return COLLECTION_MISMATCH_EXIT_CODE
     changes: tuple[ChangedFile, ...] = ()
     if args.all:
         selection = all_selection(manifest)
