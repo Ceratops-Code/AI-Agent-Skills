@@ -126,10 +126,11 @@ what still needs attention.
 #### 5. Include Credit-Saving Analysis
 
 - In `included` mode, invoke `$ceratops-credit-savings-analysis` for the
-  current thread and selected closure window using `full-analysis`. Prepare the
-  controller once, use its shared evidence bundle for every fixed surface and
-  internal synthesis, finalize it, and include every confirmed finding or the
-  exact blocker under `Credit savings`.
+  current thread and selected closure window using
+  `bounded-largest-runs-analysis`. Prepare the controller once, execute its one
+  Luna discovery and one Sol adjudication from the immutable selection manifest,
+  finalize it, and include every confirmed finding, bounded coverage, or exact
+  blocker under `Credit savings`.
 - In `omitted` mode, do not invoke the controller or apply its completion gates
   or output contract.
 

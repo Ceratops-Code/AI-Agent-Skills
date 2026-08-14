@@ -1,6 +1,6 @@
 ---
 name: ceratops-credit-savings-analysis
-description: Analyze one credit-waste surface or run comprehensive per-thread analyses for the current thread, a named thread, or recent threads overall or in one project, preserving every confirmed finding without modifying the analyzed producer or workflow.
+description: Analyze one credit-waste surface, bounded largest runs, or an explicit exhaustive per-thread scope while preserving every confirmed finding without modifying the analyzed producer or workflow.
 ---
 
 # Ceratops Credit Savings Analysis
@@ -8,15 +8,19 @@ description: Analyze one credit-waste surface or run comprehensive per-thread an
 ## Goal
 
 Analyze completed model-call evidence for avoidable credit spend. Use
-`full-analysis` for a generic or comprehensive request and select one named
-surface only when the user names it. This skill recommends controls but never
-applies them.
+`bounded-largest-runs-analysis` for a generic single-thread or closure request,
+`full-analysis` only for an explicit exhaustive request, and one named surface
+only when the user names it. This skill recommends controls but never applies
+them.
 
 ## Public Action Routing
 
 ### Action References
 
-- Run the complete fixed-surface analysis: `references/full-analysis.md`
+- Run the explicit exhaustive fixed-surface analysis:
+  `references/full-analysis.md`
+- Run the bounded largest-runs analysis:
+  `references/bounded-largest-runs-analysis.md`
 - Analyze deterministic helper contracts: `references/helper-contracts.md`
 - Analyze context and evidence reuse: `references/context-evidence.md`
 - Analyze rework and validation: `references/rework-validation.md`
@@ -30,7 +34,7 @@ applies them.
   recency. Exact-name and recent-thread selection use the versioned source
   contract. An incremental closure begins strictly after the previous completed
   closure; active runs and the boundary run are excluded.
-- For a single-thread full analysis or standalone surface, run
+- For a single-thread full, bounded largest-runs, or standalone analysis, run
   `python scripts/credit-analysis-workflow.py plan --request REQUEST` once.
   Require mutation authority `false`, current contract versions, and a
   caller-selected task root under
@@ -42,10 +46,13 @@ applies them.
   A's retained prompts, model calls, latency, failures, token usage, and
   orchestration while excluding only B's descendants. Keep analysis-generated
   work separate from producer work and savings attribution.
-- Planning retains complete protected evidence and read-only canonical snapshots,
-  builds one compact causal episode stream for every selected call, budgets each
-  model packet from the effective local model context, splits that shared stream
-  only when required, and reports projected Luna and Sol calls before execution.
+- Planning retains complete protected evidence and read-only canonical
+  snapshots.
+  Full analysis builds the complete causal stream and partitions only when
+  required. Bounded largest-runs analysis freezes run order, measures each
+  serialized compact run, ranks anchors by anchor size, adds each positional
+  successor as an indivisible bundle, and proves one Luna and one Sol budget
+  before execution.
 - Run `python scripts/credit-analysis-workflow.py execute --state STATE` to
   execute or resume the frozen plan. Treat controller state, evidence and
   manifest hashes, task identities, candidate membership, prompts, results,
@@ -143,11 +150,16 @@ applies them.
   in the final result. Do not require a semantic dismissal record for every
   call-surface pair.
 - `full-analysis` is complete only after the frozen manifest proves complete,
-  ordered, non-overlapping call coverage; every Luna task and the single Sol task
-  have immutable identity and content hashes; temporary-control contributions
-  are merged once by owner/control; every confirmed finding remains; every source
-  call has one primary grouped classification; unassessed calls stay within the
-  contract limit; overlaps do not double-count savings; and finalization succeeds.
+  ordered, non-overlapping call coverage; every Luna task and the single Sol
+  task have immutable identity and content hashes; temporary-control
+  contributions are merged once by owner/control; every confirmed finding
+  remains; every source call has one primary grouped classification; unassessed
+  calls stay within the contract limit; overlaps do not double-count savings;
+  and finalization succeeds.
+- `bounded-largest-runs-analysis` is complete only after its immutable selection
+  manifest proves positional anchor-plus-successor selection, deduplicated run
+  payloads, end-to-end Luna and Sol capacity, one accepted call per model, exact
+  bounded coverage, and idempotent finalization.
 - A standalone action is complete only after the selected surface result is
   accepted and controller finalization succeeds.
 
@@ -180,9 +192,12 @@ applies them.
   hides a distinct unknown or evidence source, and do not include a risk in
   confirmed savings. For standalone actions, state that the conclusion is
   limited to the selected surface and is not a whole-thread reconciliation.
-- Report necessary, protocol-overhead, avoidable,
-  reviewed-no-confirmed-waste, and unassessed call totals separately. Never
-  describe reviewed or unassessed calls as necessary.
+- For exhaustive full analysis, report necessary, protocol-overhead, avoidable,
+  reviewed-no-confirmed-waste, and unassessed totals separately. For bounded
+  largest-runs analysis, label the result as bounded, report selected anchors,
+  companions, unique and eligible runs, evidence volume and percentage, retain
+  only ID/order/size inventory for omissions, and report classifications only
+  for selected runs. Never imply that omitted runs were reviewed.
 
 ## Analysis-Only Boundaries
 

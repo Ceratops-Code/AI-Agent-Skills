@@ -24,6 +24,253 @@ from tests.credit_analysis.sessions import (
 from tests.credit_analysis.workflow import run_credit_analysis_workflow
 
 
+def test_bounded_largest_runs_selection_uses_anchor_size_and_positional_successors() -> None:
+    workflow = load_credit_analysis_workflow_module()
+    inventory = [
+        {"turn_id": "a", "original_order": 1, "evidence_chars": 100},
+        {"turn_id": "b", "original_order": 2, "evidence_chars": 1},
+        {"turn_id": "c", "original_order": 3, "evidence_chars": 90},
+        {"turn_id": "d", "original_order": 4, "evidence_chars": 80},
+    ]
+
+    def fits(_: list[str]) -> dict[str, Any]:
+        return {"fits": True, "luna": {"fits": True}, "sol": {"fits": True}}
+
+    selection = workflow._bounded_select_run_bundles(inventory, fits)
+
+    # Anchor a ranks before c even though c+d is the larger pair. Its tiny
+    # positional follower b remains indivisible from a.
+    assert [row["turn_id"] for row in selection["anchor_order"]] == [
+        "a",
+        "c",
+        "d",
+        "b",
+    ]
+    assert selection["selected_bundles"][0] == {
+        "anchor_rank": 1,
+        "anchor_turn_id": "a",
+        "companion_turn_id": "b",
+    }
+    # Companion b later acts as an anchor and still brings successor c. The
+    # final run d also remains a valid anchor without a successor.
+    assert selection["selected_bundles"][-1] == {
+        "anchor_rank": 4,
+        "anchor_turn_id": "b",
+        "companion_turn_id": "c",
+    }
+    assert any(
+        row["anchor_turn_id"] == "d" and row["companion_turn_id"] is None
+        for row in selection["selected_bundles"]
+    )
+    assert selection["selected_run_ids"] == ["a", "b", "c", "d"]
+
+
+def test_bounded_largest_runs_capacity_blocks_initial_bundle_and_skips_later() -> None:
+    workflow = load_credit_analysis_workflow_module()
+    inventory = [
+        {
+            "turn_id": turn_id,
+            "episode_id": f"episode.{turn_id}",
+            "original_order": order,
+            "started_at": f"2026-08-01T00:00:0{order}Z",
+            "evidence_chars": size,
+            "candidate_count": 1,
+        }
+        for order, (turn_id, size) in enumerate(
+            [("a", 100), ("b", 1), ("c", 90), ("d", 1), ("e", 2)],
+            start=1,
+        )
+    ]
+    evaluated: list[list[str]] = []
+
+    def capacity(selected_ids: list[str]) -> dict[str, Any]:
+        evaluated.append(list(selected_ids))
+        selected_size = sum(
+            row["evidence_chars"]
+            for row in inventory
+            if row["turn_id"] in set(selected_ids)
+        )
+        fits = selected_size <= 103
+        return {
+            "fits": fits,
+            "luna": {
+                "fits": fits,
+                "planned_input_chars": selected_size,
+                "input_char_capacity": 103,
+                "output_reserve_tokens": 1,
+            },
+            "sol": {
+                "fits": fits,
+                "planned_input_chars": selected_size,
+                "input_char_capacity": 103,
+                "output_reserve_tokens": 1,
+            },
+        }
+
+    selection = workflow._bounded_select_run_bundles(inventory, capacity)
+    repeated = workflow._bounded_select_run_bundles(inventory, capacity)
+    assert selection == repeated
+    assert [row["anchor_turn_id"] for row in selection["selected_bundles"]] == [
+        "a",
+        "e",
+    ]
+    assert selection["skipped_bundles"][0]["anchor_turn_id"] == "c"
+    assert selection["selected_run_ids"] == ["a", "b", "e"]
+
+    manifest = workflow._bounded_selection_document(
+        analysis_id="analysis-selection",
+        run_inventory=inventory,
+        selection=selection,
+    )
+    assert manifest["coverage"] == {
+        "selected_anchor_count": 2,
+        "companion_count": 1,
+        "unique_selected_runs": 3,
+        "total_eligible_runs": 5,
+        "selected_evidence_chars": 103,
+        "total_evidence_chars": 194,
+        "coverage_percentage": 53.09,
+    }
+    assert [row["turn_id"] for row in manifest["omitted_runs"]] == ["c", "d"]
+    assert all(
+        set(row) == {
+            "turn_id",
+            "original_order",
+            "evidence_chars",
+            "candidate_count",
+        }
+        for row in manifest["omitted_runs"]
+    )
+
+    initial_evaluations: list[list[str]] = []
+    model_calls: list[str] = []
+
+    def initial_too_large(selected_ids: list[str]) -> dict[str, Any]:
+        initial_evaluations.append(list(selected_ids))
+        return {"fits": False}
+
+    with pytest.raises(
+        workflow.CreditAnalysisError,
+        match="capacity blocker: the largest anchor and its immediate successor",
+    ):
+        workflow._bounded_select_run_bundles(inventory, initial_too_large)
+    assert initial_evaluations == [["a", "b"]]
+    assert model_calls == []
+
+
+def test_bounded_largest_runs_plan_reports_coverage_and_resumes_idempotently(
+    tmp_path: pathlib.Path,
+) -> None:
+    workflow = load_credit_analysis_workflow_module()
+    request, session_path, _ = credit_analysis_request(
+        tmp_path,
+        action="bounded-largest-runs-analysis",
+    )
+    catalog = holistic_model_catalog()
+    plan = workflow.command_plan_orchestration(
+        request,
+        available_models=catalog,
+    )
+
+    assert plan["action"] == "bounded-largest-runs-analysis"
+    assert plan["mode"] == "bounded-largest-runs-analysis"
+    assert plan["analysis_scope_label"] == "bounded largest-runs analysis"
+    assert plan["projected_luna_calls"] == 1
+    assert plan["projected_sol_calls"] == 1
+    assert plan["projected_semantic_calls"] == 2
+    manifest = json.loads(
+        pathlib.Path(plan["manifest_path"]).read_text(encoding="utf-8")
+    )
+    selection_path = pathlib.Path(manifest["selection_manifest"]["path"])
+    selection = json.loads(selection_path.read_text(encoding="utf-8"))
+    compact = json.loads(
+        pathlib.Path(manifest["compact_evidence"]["path"]).read_text(
+            encoding="utf-8"
+        )
+    )
+    assert len(manifest["luna_tasks"]) == 1
+    assert selection["coverage"] == plan["selection_coverage"]
+    assert selection["coverage"]["unique_selected_runs"] <= selection["coverage"][
+        "total_eligible_runs"
+    ]
+    assert selection["coverage"]["selected_evidence_chars"] <= selection[
+        "coverage"
+    ]["total_evidence_chars"]
+    for role in ("luna", "sol"):
+        proof = selection["budget_proof"][role]
+        assert proof["fits"] is True
+        assert proof["planned_input_chars"] <= proof["input_char_capacity"]
+        assert proof["output_reserve_tokens"] > 0
+    assert selection["budget_proof"]["sol"][
+        "maximum_accepted_luna_output_chars"
+    ] > 0
+    assert [row["turn_id"] for row in selection["selected_runs"]] == [
+        episode["turn_id"] for episode in compact["episodes"]
+    ]
+    assert [row["started_at"] for row in selection["selected_runs"]] == [
+        episode["started_at"] for episode in compact["episodes"]
+    ]
+    assert all(
+        set(row) == {
+            "turn_id",
+            "original_order",
+            "evidence_chars",
+            "candidate_count",
+        }
+        for row in selection["omitted_runs"]
+    )
+
+    retained_evidence = pathlib.Path(plan["evidence_path"]).read_bytes()
+    session_path.rename(session_path.with_suffix(".collected"))
+    runner = FakeCreditModelRunner(temporary_controls=False)
+    state_path = pathlib.Path(plan["state_path"])
+    after_luna = workflow.command_execute_orchestration(
+        state_path,
+        runner=runner,
+        available_models=runner.available_models,
+        task_limit=1,
+    )
+    assert after_luna["next_task"] == "sol.adjudication"
+    completed = workflow.command_execute_orchestration(
+        state_path,
+        runner=runner,
+        available_models=runner.available_models,
+    )
+    assert completed["complete"] is True
+    assert len(runner.calls) == 2
+    assert [call["phase"] for call in runner.calls] == [
+        "luna-discovery",
+        "sol-adjudication",
+    ]
+    assert "bounded largest-runs analysis" in runner.calls[-1]["prompt"]
+    assert "selected_original_evidence" in runner.calls[-1]["input_payload"]
+    assert "selection_coverage" in runner.calls[-1]["input_payload"]
+    assert pathlib.Path(plan["evidence_path"]).read_bytes() == retained_evidence
+
+    final = json.loads(
+        pathlib.Path(completed["final_result_path"]).read_text(encoding="utf-8")
+    )
+    report = pathlib.Path(completed["report_path"]).read_text(encoding="utf-8")
+    assert final["analysis_scope_label"] == "bounded largest-runs analysis"
+    assert final["selection_coverage"] == selection["coverage"]
+    assert final["deterministic_totals"]["model_calls"] == len(
+        manifest["candidate_ids"]
+    )
+    assert report.startswith("Bounded largest-runs analysis.\n")
+    assert "Omitted runs were not reviewed" in report
+    assert "# Selected-call accounting" in report
+
+    accepted_call_count = len(runner.calls)
+    repeated_status = workflow.command_execute_orchestration(
+        state_path,
+        runner=runner,
+        available_models=runner.available_models,
+    )
+    assert repeated_status["complete"] is True
+    assert len(runner.calls) == accepted_call_count
+    assert pathlib.Path(plan["evidence_path"]).read_bytes() == retained_evidence
+
+
 def test_credit_analysis_workflow_full_analysis_persists_every_finding(
     tmp_path: pathlib.Path,
 ) -> None:
@@ -745,6 +992,9 @@ def test_credit_analysis_workflow_end_to_end_uses_two_semantic_calls(
         available_models=holistic_model_catalog(),
     )
     assert plan["phase"] == "planned"
+    assert plan["action"] == "full-analysis"
+    assert plan["mode"] == "full-analysis"
+    assert plan["analysis_scope_label"] == "exhaustive full analysis"
     assert plan["projected_luna_calls"] == 1
     assert plan["projected_sol_calls"] == 1
     assert plan["projected_semantic_calls"] == 2
@@ -755,6 +1005,7 @@ def test_credit_analysis_workflow_end_to_end_uses_two_semantic_calls(
     manifest = json.loads(
         pathlib.Path(plan["manifest_path"]).read_text(encoding="utf-8")
     )
+    assert "selection_manifest" not in manifest
     evidence = json.loads(
         pathlib.Path(plan["evidence_path"]).read_text(encoding="utf-8")
     )
@@ -941,6 +1192,7 @@ def test_credit_analysis_workflow_end_to_end_uses_two_semantic_calls(
     final_path = pathlib.Path(completed["final_result_path"])
     final_before = final_path.read_bytes()
     final = json.loads(final_before)
+    assert final["analysis_scope_label"] == "exhaustive full analysis"
     completed_state = json.loads(state_path.read_text(encoding="utf-8"))
     sol_result_record = completed_state["execution"]["sol.adjudication"]["result"]
     aliases_path = pathlib.Path(

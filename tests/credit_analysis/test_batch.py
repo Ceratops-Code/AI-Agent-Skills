@@ -115,7 +115,7 @@ def test_credit_analysis_workflow_resolves_current_and_named_threads(
                 "task_temp_root": str(root),
                 "evidence_output": str(root / "evidence.json"),
                 "pricing_profile": None,
-                "expected_surface_contract_version": 5,
+                "expected_surface_contract_version": 6,
                 "mutation_authority": False,
             },
         )

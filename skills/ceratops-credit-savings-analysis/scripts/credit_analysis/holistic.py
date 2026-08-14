@@ -93,7 +93,7 @@ def _codex_model_catalog() -> dict[str, dict[str, Any]]:
 def _surface_order_for_request(
     request: Mapping[str, Any], contract: Mapping[str, Any]
 ) -> list[str]:
-    if request["mode"] == "full-analysis":
+    if request["mode"] in {"full-analysis", BOUNDED_MODE}:
         return list(contract["surface_order"])
     return [str(request["action"])]
 
@@ -293,7 +293,7 @@ WORKSPACE_LOCATION_RE = re.compile(
 
 
 def _analysis_policy(contract: Mapping[str, Any]) -> dict[str, Any]:
-    """Validate the closed full-analysis policy embedded in every child packet."""
+    """Validate the closed holistic-analysis policy embedded in every child packet."""
 
     policy = contract.get("analysis_policy")
     expected = {
@@ -1731,6 +1731,14 @@ def _holistic_model_specs(
             "evidence_char_budget": math.floor(
                 evidence_tokens * float(budget["characters_per_token"])
             ),
+            "input_char_budget": math.floor(
+                evidence_tokens * float(budget["characters_per_token"])
+            ),
+            "characters_per_token": float(budget["characters_per_token"]),
+            "hidden_prompt_reserve_tokens": int(
+                budget["hidden_prompt_reserve_tokens"]
+            ),
+            "safety_margin_tokens": int(budget["safety_margin_tokens"]),
             "output_reserve_tokens": output_reserve,
         }
     return specs
@@ -2160,6 +2168,7 @@ def _holistic_compact_bundle(
                 "candidate_ordinal": ordinal,
                 "call_id": call_id,
                 "turn_id": turn_id,
+                "run_started_at": run.get("started_at"),
                 "model_call_index": call.get("index"),
                 "timestamp": call.get("timestamp"),
                 "workstream": (
@@ -2234,6 +2243,21 @@ def _holistic_compact_bundle(
 def _holistic_episodes(bundle: Mapping[str, Any]) -> list[dict[str, Any]]:
     """Group adjacent calls by turn while deduplicating each user message once."""
 
+    frozen = bundle.get("episodes")
+    if frozen is not None:
+        if not isinstance(frozen, list) or not frozen:
+            raise CreditAnalysisError("frozen bounded episodes are invalid")
+        if any(not isinstance(episode, Mapping) for episode in frozen):
+            raise CreditAnalysisError("frozen bounded episode is invalid")
+        observed = [
+            candidate
+            for episode in frozen
+            for candidate in episode.get("candidate_ids", [])
+        ]
+        if observed != bundle["candidate_ids"] or len(observed) != len(set(observed)):
+            raise CreditAnalysisError("frozen bounded episodes changed call coverage")
+        return [dict(episode) for episode in frozen]
+
     episodes: list[dict[str, Any]] = []
     current: list[Mapping[str, Any]] = []
 
@@ -2255,6 +2279,7 @@ def _holistic_episodes(bundle: Mapping[str, Any]) -> list[dict[str, Any]]:
             {
                 "episode_id": f"episode.{len(episodes) + 1:06d}",
                 "turn_id": str(current[0]["turn_id"]),
+                "started_at": current[0].get("run_started_at"),
                 "candidate_ids": [str(call["candidate_id"]) for call in calls],
                 "user_messages": list(messages.values()),
                 "calls": calls,
@@ -2308,6 +2333,620 @@ def _holistic_luna_payload(
             )
         ),
     }
+
+
+def _bounded_subset_bundle(
+    bundle: Mapping[str, Any], episodes: Sequence[Mapping[str, Any]]
+) -> dict[str, Any]:
+    """Store selected run payloads once, in deterministic packing order."""
+
+    candidate_ids = [
+        str(candidate)
+        for episode in episodes
+        for candidate in episode["candidate_ids"]
+    ]
+    if len(candidate_ids) != len(set(candidate_ids)):
+        raise CreditAnalysisError("bounded run payloads overlap after deduplication")
+    record_index = {
+        str(record["candidate_id"]): record for record in bundle["records"]
+    }
+    try:
+        records = [record_index[candidate_id] for candidate_id in candidate_ids]
+    except KeyError as exc:
+        raise CreditAnalysisError("bounded run references unknown compact evidence") from exc
+    return {
+        **bundle,
+        "selection_mode": BOUNDED_MODE,
+        "candidate_ids": candidate_ids,
+        "call_ids": [str(record["call_id"]) for record in records],
+        "records": records,
+        "episodes": [dict(episode) for episode in episodes],
+    }
+
+
+def _bounded_selected_totals(compact: Mapping[str, Any]) -> dict[str, Any]:
+    """Derive accounting only for selected calls; omitted runs remain unreviewed."""
+
+    totals: Counter[str] = Counter()
+    totals["model_calls"] = len(compact["records"])
+    for record in compact["records"]:
+        volume = record.get("volume")
+        if not isinstance(volume, Mapping):
+            continue
+        tokens = volume.get("tokens")
+        if isinstance(tokens, Mapping):
+            for key in (
+                "input_tokens",
+                "cached_input_tokens",
+                "output_tokens",
+                "reasoning_output_tokens",
+            ):
+                value = tokens.get(key)
+                if isinstance(value, int) and not isinstance(value, bool):
+                    totals[key] += value
+        for key in ("tool_argument_chars", "tool_result_chars"):
+            value = volume.get(key)
+            if isinstance(value, int) and not isinstance(value, bool):
+                totals[key] += value
+    return dict(totals)
+
+
+def _bounded_sol_payload(
+    *,
+    state: Mapping[str, Any],
+    evidence: Mapping[str, Any],
+    contract: Mapping[str, Any],
+    compact: Mapping[str, Any],
+    task: Mapping[str, Any],
+    luna_results: Sequence[Mapping[str, Any]],
+    coverage: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Build one deduplicated Sol packet whose variable input is Luna output."""
+
+    inventory = [
+        [
+            record["candidate_id"],
+            record["call_id"],
+            record["workstream"],
+            record["surface_lenses"],
+            record["high_signal_reasons"],
+            record["volume"],
+            record["evidence_refs"][0],
+        ]
+        for record in compact["records"]
+    ]
+    return {
+        "schema": HOLISTIC_TASK_SCHEMA,
+        "analysis_id": state["analysis_id"],
+        "task_id": task["task_id"],
+        "phase": "sol-adjudication",
+        "surface_order": state["manifest"]["surface_order"],
+        "analysis_policy": compact["analysis_policy"],
+        "surface_contracts": {
+            surface: _surface_reference_text(surface, contract)
+            for surface in state["manifest"]["surface_order"]
+        },
+        "luna_results": list(luna_results),
+        "selected_original_evidence": list(compact["episodes"]),
+        "call_inventory": {
+            "fields": [
+                "candidate_id",
+                "call_id",
+                "workstream",
+                "surface_lenses",
+                "high_signal_reasons",
+                "volume",
+                "primary_evidence_ref",
+            ],
+            "rows": inventory,
+        },
+        "selection_coverage": dict(coverage),
+        "analysis_generated_activity": compact["analysis_generated_activity"],
+        "canonical_state": compact["canonical_state"],
+        "deterministic_totals": _bounded_selected_totals(compact),
+        "pricing": evidence["pricing"],
+        "helper_categories": contract["helper_categories"],
+        "temporary_control_dispositions": contract["temporary_control_dispositions"],
+        "call_classifications": contract["call_classifications"],
+        "necessary_reason_codes": contract["necessary_reason_codes"],
+        "maximum_unassessed_fraction": contract["coverage"][
+            "maximum_unassessed_fraction"
+        ],
+    }
+
+
+def _bounded_budget_projection(
+    *,
+    analysis_id: str,
+    episodes: Sequence[Mapping[str, Any]],
+    bundle: Mapping[str, Any],
+    evidence: Mapping[str, Any],
+    contract: Mapping[str, Any],
+    model_specs: Mapping[str, Mapping[str, Any]],
+    total_run_count: int,
+    total_evidence_chars: int,
+) -> dict[str, Any]:
+    """Prove both model envelopes before Luna can be launched."""
+
+    compact = _bounded_subset_bundle(bundle, episodes)
+    task_id = "luna.discovery.0001"
+    luna_payload = _holistic_luna_payload(
+        analysis_id=analysis_id,
+        task_id=task_id,
+        ordinal=1,
+        episodes=episodes,
+        bundle=compact,
+    )
+    luna_task = {
+        "task_id": task_id,
+        "phase": "luna-discovery",
+        "ordinal": 1,
+        "candidate_ids": list(compact["candidate_ids"]),
+        "candidate_ids_sha256": _content_hash(compact["candidate_ids"]),
+    }
+    provisional_state = {
+        "analysis_id": analysis_id,
+        "mode": BOUNDED_MODE,
+        "manifest": {"surface_order": list(compact["surface_order"])},
+    }
+    input_identity = "0" * 64
+    luna_schema = _holistic_luna_schema(
+        state=provisional_state,
+        task=luna_task,
+        input_sha256=input_identity,
+        contract=contract,
+    )
+    luna_prefix = _holistic_prompt_prefix(
+        state=provisional_state,
+        task=luna_task,
+        input_sha256=input_identity,
+        luna_candidate_ids=[],
+    )
+    luna_packet_chars = _json_chars(luna_payload)
+    luna_planned_input = (
+        len(luna_prefix) + luna_packet_chars + 1 + _json_chars(luna_schema)
+    )
+    selected_evidence_chars = sum(_json_chars(episode) for episode in episodes)
+    coverage = {
+        "unique_selected_runs": len(episodes),
+        "total_eligible_runs": total_run_count,
+        "selected_evidence_chars": selected_evidence_chars,
+        "total_evidence_chars": total_evidence_chars,
+        "coverage_percentage": round(
+            selected_evidence_chars * 100 / total_evidence_chars, 2
+        ),
+    }
+    sol_task = {
+        "task_id": "sol.adjudication",
+        "phase": "sol-adjudication",
+        "ordinal": 1,
+    }
+    sol_static_payload = _bounded_sol_payload(
+        state=provisional_state,
+        evidence=evidence,
+        contract=contract,
+        compact=compact,
+        task=sol_task,
+        luna_results=[],
+        coverage=coverage,
+    )
+    maximum_luna_candidates = len(compact["candidate_ids"])
+    synthetic_candidates = [
+        {
+            "id": f"luna.{analysis_id}.{index:06d}",
+            "candidate_ids": [],
+            "evidence_refs": [],
+        }
+        for index in range(1, maximum_luna_candidates + 1)
+    ]
+    aliases = _holistic_sol_aliases(
+        state=provisional_state,
+        task=sol_task,
+        candidates=synthetic_candidates,
+        compact=compact,
+    )
+    sol_schema = _holistic_sol_schema(
+        state=provisional_state,
+        task=sol_task,
+        input_sha256=input_identity,
+        contract=contract,
+        luna_candidate_ids=[str(item["id"]) for item in synthetic_candidates],
+        alias_record=aliases,
+    )
+    sol_prefix = _holistic_prompt_prefix(
+        state=provisional_state,
+        task=sol_task,
+        input_sha256=input_identity,
+        luna_candidate_ids=[str(item["id"]) for item in synthetic_candidates],
+    )
+    maximum_luna_output_chars = math.floor(
+        int(model_specs["luna"]["output_reserve_tokens"])
+        * float(model_specs["luna"]["characters_per_token"])
+    )
+    sol_static_chars = _json_chars(sol_static_payload)
+    sol_planned_input = (
+        len(sol_prefix)
+        + sol_static_chars
+        + maximum_luna_output_chars
+        + 1
+        + _json_chars(sol_schema)
+    )
+    luna_capacity = int(model_specs["luna"]["input_char_budget"])
+    sol_capacity = int(model_specs["sol"]["input_char_budget"])
+    luna_proof = {
+        "input_char_capacity": luna_capacity,
+        "fixed_prompt_chars": len(luna_prefix),
+        "schema_chars": _json_chars(luna_schema),
+        "selected_evidence_chars": selected_evidence_chars,
+        "packet_chars": luna_packet_chars,
+        "planned_input_chars": luna_planned_input,
+        "output_reserve_tokens": int(model_specs["luna"]["output_reserve_tokens"]),
+        "fits": luna_planned_input <= luna_capacity,
+    }
+    sol_proof = {
+        "input_char_capacity": sol_capacity,
+        "fixed_prompt_and_instructions_chars": len(sol_prefix),
+        "maximum_schema_chars": _json_chars(sol_schema),
+        "static_packet_chars": sol_static_chars,
+        "selected_evidence_excerpt_chars": selected_evidence_chars,
+        "maximum_accepted_luna_output_chars": maximum_luna_output_chars,
+        "planned_input_chars": sol_planned_input,
+        "output_reserve_tokens": int(model_specs["sol"]["output_reserve_tokens"]),
+        "fits": sol_planned_input <= sol_capacity,
+    }
+    return {
+        "fits": bool(luna_proof["fits"] and sol_proof["fits"]),
+        "luna": luna_proof,
+        "sol": sol_proof,
+    }
+
+
+def _bounded_select_run_bundles(
+    run_inventory: Sequence[Mapping[str, Any]],
+    budget_evaluator: Any,
+) -> dict[str, Any]:
+    """Select descending anchors with their positional successor, once per run."""
+
+    if not run_inventory:
+        raise CreditAnalysisError("bounded largest-runs analysis has no eligible runs")
+    original = sorted(run_inventory, key=lambda item: int(item["original_order"]))
+    if [int(item["original_order"]) for item in original] != list(
+        range(1, len(original) + 1)
+    ):
+        raise CreditAnalysisError("bounded run order is not contiguous")
+    ranked = sorted(
+        original,
+        key=lambda item: (-int(item["evidence_chars"]), int(item["original_order"])),
+    )
+    selected_ids: list[str] = []
+    selected: set[str] = set()
+    accepted: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    final_proof: dict[str, Any] | None = None
+    for anchor_rank, anchor in enumerate(ranked, start=1):
+        position = int(anchor["original_order"])
+        companion = original[position] if position < len(original) else None
+        bundle_ids = [str(anchor["turn_id"])]
+        if companion is not None:
+            bundle_ids.append(str(companion["turn_id"]))
+        proposed = [*selected_ids]
+        for turn_id in bundle_ids:
+            if turn_id not in selected:
+                proposed.append(turn_id)
+        proof = dict(budget_evaluator(proposed))
+        if proof.get("fits") is not True:
+            if anchor_rank == 1:
+                raise CreditAnalysisError(
+                    "bounded largest-runs capacity blocker: the largest anchor "
+                    "and its immediate successor cannot fit the planned Luna and Sol budgets"
+                )
+            skipped.append(
+                {
+                    "anchor_rank": anchor_rank,
+                    "anchor_turn_id": str(anchor["turn_id"]),
+                    "companion_turn_id": (
+                        str(companion["turn_id"]) if companion is not None else None
+                    ),
+                    "reason": "capacity",
+                }
+            )
+            continue
+        for turn_id in bundle_ids:
+            if turn_id not in selected:
+                selected.add(turn_id)
+                selected_ids.append(turn_id)
+        accepted.append(
+            {
+                "anchor_rank": anchor_rank,
+                "anchor_turn_id": str(anchor["turn_id"]),
+                "companion_turn_id": (
+                    str(companion["turn_id"]) if companion is not None else None
+                ),
+            }
+        )
+        final_proof = proof
+    if final_proof is None:
+        raise CreditAnalysisError("bounded largest-runs selection is empty")
+    return {
+        "anchor_order": [
+            {
+                "turn_id": str(item["turn_id"]),
+                "original_order": int(item["original_order"]),
+                "evidence_chars": int(item["evidence_chars"]),
+            }
+            for item in ranked
+        ],
+        "selected_run_ids": selected_ids,
+        "selected_bundles": accepted,
+        "skipped_bundles": skipped,
+        "budget_proof": final_proof,
+    }
+
+
+def _bounded_selection_document(
+    *,
+    analysis_id: str,
+    run_inventory: Sequence[Mapping[str, Any]],
+    selection: Mapping[str, Any],
+) -> dict[str, Any]:
+    inventory = {
+        str(item["turn_id"]): item for item in run_inventory
+    }
+    selected_ids = [str(value) for value in selection["selected_run_ids"]]
+    selected_set = set(selected_ids)
+    selected_runs = [
+        {
+            "turn_id": turn_id,
+            "episode_id": str(inventory[turn_id]["episode_id"]),
+            "original_order": int(inventory[turn_id]["original_order"]),
+            "started_at": inventory[turn_id].get("started_at"),
+            "evidence_chars": int(inventory[turn_id]["evidence_chars"]),
+            "candidate_count": int(inventory[turn_id]["candidate_count"]),
+        }
+        for turn_id in selected_ids
+    ]
+    omitted = [
+        {
+            "turn_id": str(item["turn_id"]),
+            "original_order": int(item["original_order"]),
+            "evidence_chars": int(item["evidence_chars"]),
+            "candidate_count": int(item["candidate_count"]),
+        }
+        for item in sorted(run_inventory, key=lambda value: int(value["original_order"]))
+        if str(item["turn_id"]) not in selected_set
+    ]
+    selected_chars = sum(item["evidence_chars"] for item in selected_runs)
+    total_chars = selected_chars + sum(item["evidence_chars"] for item in omitted)
+    coverage = {
+        "selected_anchor_count": len(selection["selected_bundles"]),
+        "companion_count": sum(
+            1
+            for item in selection["selected_bundles"]
+            if item["companion_turn_id"] is not None
+        ),
+        "unique_selected_runs": len(selected_runs),
+        "total_eligible_runs": len(run_inventory),
+        "selected_evidence_chars": selected_chars,
+        "total_evidence_chars": total_chars,
+        "coverage_percentage": round(selected_chars * 100 / total_chars, 2),
+    }
+    return {
+        "schema": BOUNDED_SELECTION_SCHEMA,
+        "analysis_id": analysis_id,
+        "action": BOUNDED_ACTION,
+        "algorithm": {
+            "rank_metric": "anchor_serialized_compact_evidence_chars",
+            "rank_direction": "descending",
+            "successor_rule": "immediate-next-completed-run-in-frozen-order",
+            "bundle_indivisible": True,
+            "deduplicate_run_payloads": True,
+            "skip_later_oversized_bundles": True,
+        },
+        "frozen_run_order_sha256": _content_hash(
+            [
+                str(item["turn_id"])
+                for item in sorted(
+                    run_inventory, key=lambda value: int(value["original_order"])
+                )
+            ]
+        ),
+        "anchor_order": list(selection["anchor_order"]),
+        "selected_run_ids_packing_order": selected_ids,
+        "selected_bundles": list(selection["selected_bundles"]),
+        "skipped_bundles": list(selection["skipped_bundles"]),
+        "selected_runs": selected_runs,
+        "omitted_runs": omitted,
+        "coverage": coverage,
+        "budget_proof": selection["budget_proof"],
+    }
+
+
+def _validate_bounded_selection_document(
+    selection: Mapping[str, Any], compact: Mapping[str, Any]
+) -> None:
+    """Validate frozen positional selection, deduplication, coverage, and budgets."""
+
+    if (
+        selection.get("schema") != BOUNDED_SELECTION_SCHEMA
+        or selection.get("action") != BOUNDED_ACTION
+        or selection.get("analysis_id") != compact.get("analysis_id")
+        or compact.get("selection_mode") != BOUNDED_MODE
+    ):
+        raise CreditAnalysisError("bounded selection identity is invalid")
+    if selection.get("algorithm") != {
+        "rank_metric": "anchor_serialized_compact_evidence_chars",
+        "rank_direction": "descending",
+        "successor_rule": "immediate-next-completed-run-in-frozen-order",
+        "bundle_indivisible": True,
+        "deduplicate_run_payloads": True,
+        "skip_later_oversized_bundles": True,
+    }:
+        raise CreditAnalysisError("bounded selection algorithm changed")
+    selected_runs = selection.get("selected_runs")
+    omitted_runs = selection.get("omitted_runs")
+    if not isinstance(selected_runs, list) or not selected_runs:
+        raise CreditAnalysisError("bounded selection has no selected runs")
+    if not isinstance(omitted_runs, list):
+        raise CreditAnalysisError("bounded omitted-run inventory is invalid")
+    selected_fields = {
+        "turn_id",
+        "episode_id",
+        "original_order",
+        "started_at",
+        "evidence_chars",
+        "candidate_count",
+    }
+    omitted_fields = {
+        "turn_id",
+        "original_order",
+        "evidence_chars",
+        "candidate_count",
+    }
+    if any(not isinstance(row, Mapping) or set(row) != selected_fields for row in selected_runs):
+        raise CreditAnalysisError("bounded selected-run inventory fields are invalid")
+    if any(not isinstance(row, Mapping) or set(row) != omitted_fields for row in omitted_runs):
+        raise CreditAnalysisError("bounded omitted-run inventory is not compact")
+    all_runs = [*selected_runs, *omitted_runs]
+    turn_ids = [str(row["turn_id"]) for row in all_runs]
+    orders = [int(row["original_order"]) for row in all_runs]
+    if len(turn_ids) != len(set(turn_ids)) or sorted(orders) != list(
+        range(1, len(all_runs) + 1)
+    ):
+        raise CreditAnalysisError("bounded frozen run inventory is duplicated or incomplete")
+    ordered = sorted(all_runs, key=lambda row: int(row["original_order"]))
+    if selection.get("frozen_run_order_sha256") != _content_hash(
+        [str(row["turn_id"]) for row in ordered]
+    ):
+        raise CreditAnalysisError("bounded frozen run order changed")
+    expected_anchor_order = [
+        {
+            "turn_id": str(row["turn_id"]),
+            "original_order": int(row["original_order"]),
+            "evidence_chars": int(row["evidence_chars"]),
+        }
+        for row in sorted(
+            ordered,
+            key=lambda row: (-int(row["evidence_chars"]), int(row["original_order"])),
+        )
+    ]
+    if selection.get("anchor_order") != expected_anchor_order:
+        raise CreditAnalysisError("bounded anchors are not ranked by anchor size")
+    accepted = selection.get("selected_bundles")
+    skipped = selection.get("skipped_bundles")
+    if not isinstance(accepted, list) or not isinstance(skipped, list):
+        raise CreditAnalysisError("bounded bundle ledger is invalid")
+    if any(
+        not isinstance(row, Mapping)
+        or set(row) != {"anchor_rank", "anchor_turn_id", "companion_turn_id"}
+        for row in accepted
+    ) or any(
+        not isinstance(row, Mapping)
+        or set(row)
+        != {"anchor_rank", "anchor_turn_id", "companion_turn_id", "reason"}
+        for row in skipped
+    ):
+        raise CreditAnalysisError("bounded bundle ledger fields are invalid")
+    decisions = [
+        *[(int(row["anchor_rank"]), True, row) for row in accepted if isinstance(row, Mapping)],
+        *[(int(row["anchor_rank"]), False, row) for row in skipped if isinstance(row, Mapping)],
+    ]
+    if len(decisions) != len(accepted) + len(skipped) or sorted(
+        rank for rank, _, _ in decisions
+    ) != list(range(1, len(ordered) + 1)):
+        raise CreditAnalysisError("bounded bundle ledger does not cover every anchor")
+    expected_selected_ids: list[str] = []
+    selected_seen: set[str] = set()
+    for rank, was_accepted, row in sorted(decisions):
+        anchor = expected_anchor_order[rank - 1]
+        original_position = int(anchor["original_order"])
+        companion_id = (
+            str(ordered[original_position]["turn_id"])
+            if original_position < len(ordered)
+            else None
+        )
+        if (
+            row.get("anchor_turn_id") != anchor["turn_id"]
+            or row.get("companion_turn_id") != companion_id
+        ):
+            raise CreditAnalysisError("bounded bundle successor is not positional")
+        if not was_accepted:
+            if row.get("reason") != "capacity":
+                raise CreditAnalysisError("bounded skipped bundle reason is invalid")
+            continue
+        for turn_id in (anchor["turn_id"], companion_id):
+            if turn_id is not None and turn_id not in selected_seen:
+                selected_seen.add(turn_id)
+                expected_selected_ids.append(turn_id)
+    selected_ids = selection.get("selected_run_ids_packing_order")
+    if selected_ids != expected_selected_ids or len(selected_ids) != len(set(selected_ids)):
+        raise CreditAnalysisError("bounded selected payload order or deduplication changed")
+    if [str(row["turn_id"]) for row in selected_runs] != selected_ids:
+        raise CreditAnalysisError("bounded selected-run inventory order changed")
+    episodes = compact.get("episodes")
+    if not isinstance(episodes, list) or len(episodes) != len(selected_runs):
+        raise CreditAnalysisError("bounded compact run payload count changed")
+    for row, episode in zip(selected_runs, episodes, strict=True):
+        if not isinstance(episode, Mapping):
+            raise CreditAnalysisError("bounded compact run payload is invalid")
+        if (
+            str(episode.get("turn_id")) != row["turn_id"]
+            or str(episode.get("episode_id")) != row["episode_id"]
+            or episode.get("started_at") != row["started_at"]
+            or _json_chars(episode) != row["evidence_chars"]
+            or len(episode.get("candidate_ids", [])) != row["candidate_count"]
+        ):
+            raise CreditAnalysisError("bounded compact run payload changed")
+    compact_candidates = [
+        str(candidate)
+        for episode in episodes
+        for candidate in episode["candidate_ids"]
+    ]
+    if compact.get("candidate_ids") != compact_candidates:
+        raise CreditAnalysisError("bounded compact candidate order changed")
+    expected_omitted = [
+        {
+            "turn_id": str(row["turn_id"]),
+            "original_order": int(row["original_order"]),
+            "evidence_chars": int(row["evidence_chars"]),
+            "candidate_count": int(row["candidate_count"]),
+        }
+        for row in ordered
+        if str(row["turn_id"]) not in selected_seen
+    ]
+    if omitted_runs != expected_omitted:
+        raise CreditAnalysisError("bounded omitted-run inventory changed")
+    selected_chars = sum(int(row["evidence_chars"]) for row in selected_runs)
+    total_chars = sum(int(row["evidence_chars"]) for row in ordered)
+    expected_coverage = {
+        "selected_anchor_count": len(accepted),
+        "companion_count": sum(1 for row in accepted if row["companion_turn_id"] is not None),
+        "unique_selected_runs": len(selected_runs),
+        "total_eligible_runs": len(ordered),
+        "selected_evidence_chars": selected_chars,
+        "total_evidence_chars": total_chars,
+        "coverage_percentage": round(selected_chars * 100 / total_chars, 2),
+    }
+    if selection.get("coverage") != expected_coverage:
+        raise CreditAnalysisError("bounded selection coverage changed")
+    proof = selection.get("budget_proof")
+    if not isinstance(proof, Mapping) or proof.get("fits") is not True:
+        raise CreditAnalysisError("bounded selection budget proof is invalid")
+    for model in ("luna", "sol"):
+        model_proof = proof.get(model)
+        if (
+            not isinstance(model_proof, Mapping)
+            or model_proof.get("fits") is not True
+            or int(model_proof.get("planned_input_chars", -1))
+            > int(model_proof.get("input_char_capacity", -1))
+            or int(model_proof.get("output_reserve_tokens", -1)) <= 0
+        ):
+            raise CreditAnalysisError(f"bounded {model} budget proof is invalid")
+    if (
+        proof["luna"].get("selected_evidence_chars") != selected_chars
+        or proof["sol"].get("selected_evidence_excerpt_chars") != selected_chars
+        or int(proof["sol"].get("maximum_accepted_luna_output_chars", -1)) <= 0
+    ):
+        raise CreditAnalysisError("bounded selected evidence budget proof changed")
 
 
 def _holistic_split_episode(
@@ -2433,6 +3072,8 @@ def _validate_holistic_manifest(
     contract: Mapping[str, Any],
     *,
     expected_packets: Sequence[Sequence[Mapping[str, Any]]] | None = None,
+    selection_document: Mapping[str, Any] | None = None,
+    compact: Mapping[str, Any] | None = None,
 ) -> None:
     if manifest.get("schema") != HOLISTIC_MANIFEST_SCHEMA:
         raise CreditAnalysisError("holistic manifest schema is invalid")
@@ -2473,6 +3114,38 @@ def _validate_holistic_manifest(
         task["task_id"] for task in tasks
     ]:
         raise CreditAnalysisError("Sol task does not depend on every Luna packet")
+    bounded = manifest.get("mode") == BOUNDED_MODE
+    if bounded:
+        if manifest.get("action") != BOUNDED_ACTION or len(tasks) != 1:
+            raise CreditAnalysisError("bounded analysis must use one Luna discovery")
+        selection_record = manifest.get("selection_manifest")
+        if (
+            not isinstance(selection_record, Mapping)
+            or selection_record.get("schema") != BOUNDED_SELECTION_SCHEMA
+            or not isinstance(selection_document, Mapping)
+            or not isinstance(compact, Mapping)
+        ):
+            raise CreditAnalysisError("bounded selection manifest is missing")
+        _validate_bounded_selection_document(selection_document, compact)
+        if (
+            selection_record.get("sha256") != _content_hash(selection_document)
+            or manifest.get("selection_coverage") != selection_document["coverage"]
+            or manifest.get("budget_proof") != selection_document["budget_proof"]
+        ):
+            raise CreditAnalysisError("bounded selection manifest record changed")
+    elif any(
+        key in manifest
+        for key in ("selection_manifest", "selection_coverage", "budget_proof")
+    ):
+        raise CreditAnalysisError("exhaustive analysis contains bounded selection state")
+
+
+def _holistic_scope_label(state: Mapping[str, Any]) -> str:
+    if state.get("mode") == BOUNDED_MODE:
+        return "bounded largest-runs analysis"
+    if state.get("mode") == "full-analysis":
+        return "exhaustive full analysis"
+    return f"standalone {state.get('action')} analysis"
 
 
 def _holistic_public_status(state: Mapping[str, Any]) -> dict[str, Any]:
@@ -2484,6 +3157,9 @@ def _holistic_public_status(state: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "schema": HOLISTIC_STATE_SCHEMA,
         "analysis_id": state["analysis_id"],
+        "action": state["action"],
+        "mode": state["mode"],
+        "analysis_scope_label": _holistic_scope_label(state),
         "phase": state["phase"],
         "complete": state["phase"] == "complete",
         "state_path": state["paths"]["state"],
@@ -2507,6 +3183,14 @@ def _holistic_public_status(state: Mapping[str, Any]) -> dict[str, Any]:
             None,
         ),
         "included_prior_analysis_ids": state["lineage"]["included_prior_analysis_ids"],
+        **(
+            {
+                "selection_manifest_path": manifest["selection_manifest"]["path"],
+                "selection_coverage": manifest["selection_coverage"],
+            }
+            if state["mode"] == BOUNDED_MODE
+            else {}
+        ),
     }
 
 
@@ -2554,7 +3238,7 @@ def command_plan_orchestration(
         orchestration_root=orchestration_root,
         ledger=ledger,
     )
-    bundle = _holistic_compact_bundle(
+    eligible_bundle = _holistic_compact_bundle(
         analysis_id=analysis_id,
         evidence=evidence,
         evidence_path=pathlib.Path(request["evidence_path"]),
@@ -2563,15 +3247,74 @@ def command_plan_orchestration(
         surface_order=surface_order,
         analysis_call_ids=analysis_call_ids,
     )
+    eligible_episodes = _holistic_episodes(eligible_bundle)
+    selection_document: dict[str, Any] | None = None
+    selection_record: dict[str, Any] | None = None
+    if request["mode"] == BOUNDED_MODE:
+        total_evidence_chars = sum(
+            _json_chars(episode) for episode in eligible_episodes
+        )
+        run_inventory = [
+            {
+                "turn_id": str(episode["turn_id"]),
+                "episode_id": str(episode["episode_id"]),
+                "original_order": index,
+                "started_at": episode.get("started_at"),
+                "evidence_chars": _json_chars(episode),
+                "candidate_count": len(episode["candidate_ids"]),
+                "episode": episode,
+            }
+            for index, episode in enumerate(eligible_episodes, start=1)
+        ]
+        episodes_by_id = {
+            str(item["turn_id"]): item["episode"] for item in run_inventory
+        }
+
+        def evaluate(selected_run_ids: Sequence[str]) -> dict[str, Any]:
+            return _bounded_budget_projection(
+                analysis_id=analysis_id,
+                episodes=[episodes_by_id[turn_id] for turn_id in selected_run_ids],
+                bundle=eligible_bundle,
+                evidence=evidence,
+                contract=contract,
+                model_specs=model_specs,
+                total_run_count=len(run_inventory),
+                total_evidence_chars=total_evidence_chars,
+            )
+
+        selection = _bounded_select_run_bundles(run_inventory, evaluate)
+        episodes = [
+            episodes_by_id[turn_id] for turn_id in selection["selected_run_ids"]
+        ]
+        bundle = _bounded_subset_bundle(eligible_bundle, episodes)
+        selection_document = _bounded_selection_document(
+            analysis_id=analysis_id,
+            run_inventory=run_inventory,
+            selection=selection,
+        )
+        selection_path = orchestration_root / "selection-manifest.json"
+        _exclusive_json(
+            selection_path,
+            selection_document,
+            "bounded run selection manifest",
+        )
+        selection_record = {
+            "path": str(selection_path),
+            "sha256": _file_hash(selection_path),
+            "schema": BOUNDED_SELECTION_SCHEMA,
+        }
+        packets = [[dict(episode) for episode in episodes]]
+    else:
+        bundle = eligible_bundle
+        episodes = eligible_episodes
+        packets = _holistic_partition(
+            analysis_id=analysis_id,
+            episodes=episodes,
+            bundle=bundle,
+            budget_chars=int(model_specs["luna"]["evidence_char_budget"]),
+        )
     compact_path = orchestration_root / "compact-causal-evidence.json"
     _exclusive_json(compact_path, bundle, "compact causal evidence")
-    episodes = _holistic_episodes(bundle)
-    packets = _holistic_partition(
-        analysis_id=analysis_id,
-        episodes=episodes,
-        bundle=bundle,
-        budget_chars=int(model_specs["luna"]["evidence_char_budget"]),
-    )
     luna_tasks: list[dict[str, Any]] = []
     for ordinal, packet in enumerate(packets, start=1):
         task_id = f"luna.discovery.{ordinal:04d}"
@@ -2632,13 +3375,28 @@ def command_plan_orchestration(
         "call_ids": list(bundle["call_ids"]),
         "candidate_ids_sha256": _content_hash(bundle["candidate_ids"]),
         "episode_count": len(episodes),
+        **(
+            {
+                "selection_manifest": selection_record,
+                "selection_coverage": selection_document["coverage"],
+                "budget_proof": selection_document["budget_proof"],
+            }
+            if selection_document is not None and selection_record is not None
+            else {}
+        ),
         "luna_tasks": luna_tasks,
         "sol_task": sol_task,
         "projected_luna_calls": len(luna_tasks),
         "projected_sol_calls": 1,
         "projected_semantic_calls": len(luna_tasks) + 1,
     }
-    _validate_holistic_manifest(manifest, contract, expected_packets=packets)
+    _validate_holistic_manifest(
+        manifest,
+        contract,
+        expected_packets=packets,
+        selection_document=selection_document,
+        compact=bundle,
+    )
     manifest_path = orchestration_root / "chunk-manifest.json"
     _exclusive_json(manifest_path, manifest, "holistic manifest")
     task_order = [*[task["task_id"] for task in luna_tasks], sol_task_id]
@@ -2679,6 +3437,11 @@ def command_plan_orchestration(
             "manifest": {"path": str(manifest_path), "sha256": _file_hash(manifest_path)},
             "compact_evidence": manifest["compact_evidence"],
             "canonical_state": canonical_record,
+            **(
+                {"selection_manifest": selection_record}
+                if selection_record is not None
+                else {}
+            ),
         },
         "task_order": task_order,
         "execution": {
@@ -2733,13 +3496,38 @@ def _holistic_read_state(
         raise CreditAnalysisError("holistic state identity changed")
     if state.get("mutation_authority") is not False:
         raise CreditAnalysisError("holistic state mutation authority changed")
+    if state.get("mode") not in {"full-analysis", BOUNDED_MODE, "standalone"}:
+        raise CreditAnalysisError("holistic state mode changed")
     contract = _load_contract()
+    expected_action = (
+        state["mode"] if state["mode"] in {"full-analysis", BOUNDED_MODE} else None
+    )
+    if (
+        (expected_action is not None and state.get("action") != expected_action)
+        or (
+            state["mode"] == "standalone"
+            and state.get("action") not in contract["surface_order"]
+        )
+    ):
+        raise CreditAnalysisError("holistic state action changed")
     if state.get("surface_contract_version") != contract["surface_contract_version"]:
         raise CreditAnalysisError("holistic state contract version changed")
     immutable = state.get("immutable_artifacts")
     if not isinstance(immutable, Mapping):
         raise CreditAnalysisError("holistic immutable artifact index is invalid")
-    for label in ("request", "surface_contract", "evidence", "manifest", "compact_evidence"):
+    immutable_labels = [
+        "request",
+        "surface_contract",
+        "evidence",
+        "manifest",
+        "compact_evidence",
+        "canonical_state",
+    ]
+    if state["mode"] == BOUNDED_MODE:
+        immutable_labels.append("selection_manifest")
+    elif "selection_manifest" in immutable:
+        raise CreditAnalysisError("exhaustive analysis contains bounded immutable state")
+    for label in immutable_labels:
         record = immutable.get(label)
         if not isinstance(record, Mapping):
             raise CreditAnalysisError(f"holistic immutable artifact is missing: {label}")
@@ -2760,16 +3548,29 @@ def _holistic_read_state(
         pathlib.Path(str(manifest["compact_evidence"]["path"])),
         "compact causal evidence",
     )
-    expected_packets = _holistic_partition(
-        analysis_id=str(manifest["analysis_id"]),
-        episodes=_holistic_episodes(compact),
-        bundle=compact,
-        budget_chars=int(state["model_specs"]["luna"]["evidence_char_budget"]),
-    )
+    selection_document: Mapping[str, Any] | None = None
+    if state["mode"] == BOUNDED_MODE:
+        selection_record = manifest.get("selection_manifest")
+        if not isinstance(selection_record, Mapping):
+            raise CreditAnalysisError("bounded selection manifest record is missing")
+        selection_document = _read_json(
+            pathlib.Path(str(selection_record["path"])),
+            "bounded selection manifest",
+        )
+        expected_packets = [_holistic_episodes(compact)]
+    else:
+        expected_packets = _holistic_partition(
+            analysis_id=str(manifest["analysis_id"]),
+            episodes=_holistic_episodes(compact),
+            bundle=compact,
+            budget_chars=int(state["model_specs"]["luna"]["evidence_char_budget"]),
+        )
     _validate_holistic_manifest(
         manifest,
         contract,
         expected_packets=expected_packets,
+        selection_document=selection_document,
+        compact=compact,
     )
     if compact.get("schema") != HOLISTIC_EVIDENCE_SCHEMA:
         raise CreditAnalysisError("compact causal evidence schema changed")
@@ -2954,6 +3755,8 @@ def _holistic_luna_schema(
             },
         },
     }
+    if state.get("mode") == BOUNDED_MODE:
+        properties["candidates"]["maxItems"] = len(task["candidate_ids"])
     return {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
@@ -3304,7 +4107,7 @@ def _validate_holistic_luna_result(
             if not isinstance(candidate.get(text_key), str) or not candidate[text_key].strip():
                 raise CreditAnalysisError(f"{label} {text_key} is empty")
         normalized.append({**candidate, "surface_ids": surface_ids, "candidate_ids": referenced, "evidence_refs": refs})
-    return {
+    result = {
         "schema": HOLISTIC_LUNA_RESULT_SCHEMA,
         "analysis_id": state["analysis_id"],
         "task_id": task["task_id"],
@@ -3312,6 +4115,21 @@ def _validate_holistic_luna_result(
         "coverage": expected_coverage,
         "candidates": normalized,
     }
+    if state.get("mode") == BOUNDED_MODE:
+        if len(normalized) > len(task["candidate_ids"]):
+            raise CreditAnalysisError(
+                "bounded Luna result exceeds the selected-call candidate limit"
+            )
+        maximum_chars = int(
+            state["manifest"]["budget_proof"]["sol"][
+                "maximum_accepted_luna_output_chars"
+            ]
+        )
+        if _json_chars(result) > maximum_chars:
+            raise CreditAnalysisError(
+                "bounded Luna result exceeds the planned Sol input reserve"
+            )
+    return result
 
 
 def _holistic_luna_results(
@@ -3505,6 +4323,29 @@ def _holistic_sol_input(
     for result in luna_results:
         for candidate in result["candidates"]:
             candidates.append({**candidate, "source_task_id": result["task_id"]})
+    if state.get("mode") == BOUNDED_MODE:
+        canonical_payload = _bounded_sol_payload(
+            state=state,
+            evidence=evidence,
+            contract=contract,
+            compact=compact,
+            task=task,
+            luna_results=luna_results,
+            coverage=state["manifest"]["selection_coverage"],
+        )
+        aliases = _holistic_sol_aliases(
+            state=state,
+            task=task,
+            candidates=candidates,
+            compact=compact,
+        )
+        canonical_to_alias, _ = _holistic_alias_lookups(aliases)
+        payload = _holistic_alias_value(canonical_payload, canonical_to_alias)
+        if _json_chars(payload) > int(state["model_specs"]["sol"]["input_char_budget"]):
+            raise CreditAnalysisError(
+                "bounded Sol packet exceeds its frozen input capacity"
+            )
+        return payload, [str(candidate["id"]) for candidate in candidates], aliases
     record_index = {record["candidate_id"]: record for record in compact["records"]}
     per_candidate_limit = int(contract["chunking"]["sol_evidence_chars_per_candidate"])
     candidate_evidence = [
@@ -3736,14 +4577,25 @@ def _holistic_prepare_task(
             luna_candidate_ids=luna_candidate_ids,
         )
         _write_or_verify_text(prompt_path, prompt, "holistic model prompt")
+        prompt_text = prompt
+    if state.get("mode") == BOUNDED_MODE:
+        role = "luna" if task["phase"] == "luna-discovery" else "sol"
+        proof = state["manifest"]["budget_proof"][role]
+        actual_input_chars = len(prompt_text) + _json_chars(schema)
+        if (
+            actual_input_chars > int(proof["planned_input_chars"])
+            or actual_input_chars > int(proof["input_char_capacity"])
+        ):
+            raise CreditAnalysisError(
+                f"bounded {role} input exceeds its frozen end-to-end budget"
+            )
     return payload, digest, prompt_path, schema_path, luna_candidate_ids
 
 
-def _holistic_prompt(
+def _holistic_prompt_prefix(
     *,
     state: Mapping[str, Any],
     task: Mapping[str, Any],
-    input_payload: Mapping[str, Any],
     input_sha256: str,
     luna_candidate_ids: Sequence[str],
 ) -> str:
@@ -3785,8 +4637,15 @@ about 2,500 output tokens; concise hypotheses are sufficient and genuine
 candidates must not be silently dropped.
 """
     else:
+        bounded_note = (
+            "This is a bounded largest-runs analysis. Verify candidates only "
+            "against selected_original_evidence, classify only selected calls, "
+            "and never claim that omitted runs were reviewed.\n\n"
+            if state.get("mode") == BOUNDED_MODE
+            else ""
+        )
         instructions = f"""
-Act as the sole final adjudication and synthesis tier. Adjudicate every Luna
+{bounded_note}Act as the sole final adjudication and synthesis tier. Adjudicate every Luna
 candidate exactly once ({len(luna_candidate_ids)} total) against its original
 evidence excerpt. Review every supplied surface section in its fixed order,
 merge overlapping findings once by owning producer/control, and preserve every
@@ -3824,8 +4683,25 @@ Aim for about 1,500 visible output tokens while retaining every candidate
 decision, confirmed finding, material variant, required review, and call
 classification.
 """
+    return common + instructions + "\nInput packet:\n"
+
+
+def _holistic_prompt(
+    *,
+    state: Mapping[str, Any],
+    task: Mapping[str, Any],
+    input_payload: Mapping[str, Any],
+    input_sha256: str,
+    luna_candidate_ids: Sequence[str],
+) -> str:
+    prefix = _holistic_prompt_prefix(
+        state=state,
+        task=task,
+        input_sha256=input_sha256,
+        luna_candidate_ids=luna_candidate_ids,
+    )
     packet = json.dumps(input_payload, ensure_ascii=False, separators=(",", ":"))
-    return common + instructions + "\nInput packet:\n" + packet + "\n"
+    return prefix + packet + "\n"
 
 
 def _holistic_workstream_by_call(compact: Mapping[str, Any]) -> dict[str, str]:
@@ -5140,8 +6016,12 @@ def _holistic_recoverable_raw(
 
 
 def _holistic_final(
-    state: Mapping[str, Any], evidence: Mapping[str, Any], sol: Mapping[str, Any]
+    state: Mapping[str, Any],
+    evidence: Mapping[str, Any],
+    sol: Mapping[str, Any],
+    compact: Mapping[str, Any],
 ) -> dict[str, Any]:
+    bounded = state["mode"] == BOUNDED_MODE
     findings = [
         {**finding, "volume": _aggregate_finding_volume(finding, evidence)}
         for finding in sol["confirmed_findings"]
@@ -5168,6 +6048,7 @@ def _holistic_final(
         "analysis_id": state["analysis_id"],
         "action": state["action"],
         "mode": state["mode"],
+        "analysis_scope_label": _holistic_scope_label(state),
         "mutation_authority": False,
         "source": state["source"],
         "window": state["window"],
@@ -5192,6 +6073,15 @@ def _holistic_final(
             "shared_candidate_count": len(state["manifest"]["candidate_ids"]),
             "candidate_coverage_sha256": state["manifest"]["candidate_ids_sha256"],
             "unclassified_calls": 0,
+            **(
+                {
+                    "selection_manifest": state["manifest"]["selection_manifest"],
+                    "selection_coverage": state["manifest"]["selection_coverage"],
+                    "budget_proof": state["manifest"]["budget_proof"],
+                }
+                if bounded
+                else {}
+            ),
         },
         "model_calls": {
             "actual_luna": state["model_attempts"]["luna"],
@@ -5240,7 +6130,9 @@ def _holistic_final(
             for workstream, totals in workstream_totals.items()
         },
         "analysis_summary": sol["analysis_summary"],
-        "deterministic_totals": evidence["totals"],
+        "deterministic_totals": (
+            _bounded_selected_totals(compact) if bounded else evidence["totals"]
+        ),
         "pricing": evidence["pricing"],
         "retained_artifacts": {
             "state": state["paths"]["state"],
@@ -5248,7 +6140,19 @@ def _holistic_final(
             "manifest": state["manifest"]["path"],
             "compact_evidence": state["manifest"]["compact_evidence"]["path"],
             "orchestration_root": state["paths"]["orchestration_root"],
+            **(
+                {
+                    "selection_manifest": state["manifest"]["selection_manifest"]["path"]
+                }
+                if bounded
+                else {}
+            ),
         },
+        **(
+            {"selection_coverage": state["manifest"]["selection_coverage"]}
+            if bounded
+            else {}
+        ),
     }
 
 
@@ -5258,7 +6162,27 @@ def _render_holistic_report(final: Mapping[str, Any]) -> str:
         finding for finding in findings if finding["implementation_status"] == "unimplemented"
     ]
     implemented = len(findings) - len(outstanding)
+    bounded = final["mode"] == BOUNDED_MODE
+    coverage_lines: list[str] = []
+    if bounded:
+        coverage = final["selection_coverage"]
+        coverage_lines = [
+            "Bounded largest-runs analysis.",
+            "",
+            (
+                f"Selected anchors: {coverage['selected_anchor_count']}; companions: "
+                f"{coverage['companion_count']}; unique selected runs: "
+                f"{coverage['unique_selected_runs']} of {coverage['total_eligible_runs']}; "
+                f"selected evidence: {coverage['selected_evidence_chars']} of "
+                f"{coverage['total_evidence_chars']} serialized characters "
+                f"({coverage['coverage_percentage']:.2f}%)."
+            ),
+            "",
+            "Omitted runs were not reviewed; their compact inventory is retained in the selection manifest.",
+            "",
+        ]
     lines = [
+        *coverage_lines,
         f"Confirmed: {len(findings)}; outstanding: {len(outstanding)}; already addressed: {implemented}",
         "",
         (
@@ -5325,12 +6249,18 @@ def _render_holistic_report(final: Mapping[str, Any]) -> str:
     totals = final["classification_totals"]
     producer = final["workstream_classification_totals"]["producer"]
     analysis = final["workstream_classification_totals"]["analysis-overhead"]
+    accounting_title = "# Selected-call accounting" if bounded else "# Call accounting"
+    accounting_prefix = "Selected calls — " if bounded else ""
+    producer_prefix = "Selected producer calls" if bounded else "Producer calls"
+    analysis_prefix = (
+        "Selected analysis-generated calls" if bounded else "Analysis-generated calls"
+    )
     lines.extend(
         [
-            "# Call accounting",
+            accounting_title,
             "",
             (
-                f"Necessary: {totals['necessary']}; protocol overhead: "
+                f"{accounting_prefix}necessary: {totals['necessary']}; protocol overhead: "
                 f"{totals['protocol_overhead']}; avoidable implemented: "
                 f"{totals['avoidable_implemented']}; avoidable unimplemented: "
                 f"{totals['avoidable_unimplemented']}; reviewed without confirmed waste: "
@@ -5339,7 +6269,7 @@ def _render_holistic_report(final: Mapping[str, Any]) -> str:
             ),
             "",
             (
-                "Producer calls — necessary: "
+                f"{producer_prefix} — necessary: "
                 f"{producer['necessary']}; avoidable: "
                 f"{producer['avoidable_implemented'] + producer['avoidable_unimplemented']}; "
                 f"reviewed: {producer['reviewed_no_confirmed_waste']}; "
@@ -5347,7 +6277,7 @@ def _render_holistic_report(final: Mapping[str, Any]) -> str:
             ),
             "",
             (
-                "Analysis-generated calls — necessary: "
+                f"{analysis_prefix} — necessary: "
                 f"{analysis['necessary']}; avoidable: "
                 f"{analysis['avoidable_implemented'] + analysis['avoidable_unimplemented']}; "
                 f"reviewed: {analysis['reviewed_no_confirmed_waste']}; "
@@ -5361,7 +6291,11 @@ def _render_holistic_report(final: Mapping[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def _finalize_holistic(state: dict[str, Any], evidence: Mapping[str, Any]) -> None:
+def _finalize_holistic(
+    state: dict[str, Any],
+    evidence: Mapping[str, Any],
+    compact: Mapping[str, Any],
+) -> None:
     if state["model_calls"]["luna"] != state["manifest"]["projected_luna_calls"]:
         raise CreditAnalysisError("accepted Luna calls do not match the frozen plan")
     if state["model_calls"]["sol"] != 1:
@@ -5369,7 +6303,7 @@ def _finalize_holistic(state: dict[str, Any], evidence: Mapping[str, Any]) -> No
     sol_task = state["manifest"]["sol_task"]
     sol_record = state["execution"][sol_task["task_id"]]["result"]
     sol = _read_json(pathlib.Path(sol_record["path"]), "accepted Sol result")
-    final = _holistic_final(state, evidence, sol)
+    final = _holistic_final(state, evidence, sol, compact)
     final_path = pathlib.Path(state["paths"]["final_result"])
     _write_or_verify_json(final_path, final, "holistic final result")
     report_path = pathlib.Path(state["paths"]["report"])
@@ -5571,7 +6505,7 @@ def command_execute_orchestration(
         )
         completed_this_run += 1
     if all(state["execution"][task_id]["status"] == "complete" for task_id in state["task_order"]):
-        _finalize_holistic(state, evidence)
+        _finalize_holistic(state, evidence, compact)
     else:
         _holistic_save_state(state)
     return _holistic_public_status(state)
@@ -5610,6 +6544,12 @@ __all__ = (
     "CANONICAL_REFERENCE_RE",
     "WORKSPACE_LOCATION_RE",
     "_aggregate_finding_volume",
+    "_bounded_budget_projection",
+    "_bounded_select_run_bundles",
+    "_bounded_selected_totals",
+    "_bounded_selection_document",
+    "_bounded_sol_payload",
+    "_bounded_subset_bundle",
     "_bind_attempt_record",
     "_canonical_artifact_references",
     "_canonical_projection",
@@ -5638,6 +6578,7 @@ __all__ = (
     "_holistic_prior_analysis_activity",
     "_holistic_projection",
     "_holistic_prompt",
+    "_holistic_prompt_prefix",
     "_holistic_public_status",
     "_holistic_read_state",
     "_holistic_reconcile_findings",
@@ -5673,6 +6614,7 @@ __all__ = (
     "_validate_holistic_finding",
     "_validate_holistic_luna_result",
     "_validate_holistic_manifest",
+    "_validate_bounded_selection_document",
     "_validate_holistic_sol_result",
     "_validate_holistic_task_result",
     "_validate_recurrence_inputs",

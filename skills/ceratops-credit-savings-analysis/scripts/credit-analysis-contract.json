@@ -1,6 +1,6 @@
 {
   "schema": "ceratops-credit-analysis-contract.v1",
-  "surface_contract_version": 5,
+  "surface_contract_version": 6,
   "source_selection_contract_version": 1,
   "request_schema": "ceratops-credit-analysis-request.v1",
   "batch_request_schema": "ceratops-credit-analysis-batch-request.v1",
@@ -17,6 +17,7 @@
   "luna_result_schema": "ceratops-credit-analysis-luna-result.v4",
   "adjudication_result_schema": "ceratops-credit-analysis-adjudication-result.v1",
   "orchestration_final_schema": "ceratops-credit-analysis-orchestration-final.v4",
+  "selection_manifest_schema": "ceratops-credit-analysis-run-selection.v1",
   "models": {
     "luna": "gpt-5.6-luna",
     "sol": "gpt-5.6-sol"
@@ -27,6 +28,7 @@
   },
   "semantic_call_contract": {
     "normal_luna_calls": 1,
+    "bounded_luna_calls": 1,
     "sol_calls": 1,
     "bookkeeping_calls": 0
   },
@@ -114,6 +116,11 @@
       "id": "full-analysis",
       "reference": "references/full-analysis.md",
       "mode": "full-analysis"
+    },
+    {
+      "id": "bounded-largest-runs-analysis",
+      "reference": "references/bounded-largest-runs-analysis.md",
+      "mode": "bounded-largest-runs-analysis"
     },
     {
       "id": "helper-contracts",

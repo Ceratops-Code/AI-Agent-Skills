@@ -8,6 +8,22 @@ import sys
 from tests.support.repositories import ROOT, run_git
 
 CLOSURE_SNAPSHOT = ROOT / "skills" / "ceratops-task-lifecycle" / "scripts" / "closure_snapshot.py"
+CLOSURE_REFERENCE = ROOT / "skills" / "ceratops-task-lifecycle" / "references" / "closure-check.md"
+CREDIT_SKILL = ROOT / "skills" / "ceratops-credit-savings-analysis" / "SKILL.md"
+CREDIT_CONTRACT = (
+    ROOT
+    / "skills"
+    / "ceratops-credit-savings-analysis"
+    / "scripts"
+    / "credit-analysis-contract.json"
+)
+CREDIT_BOUNDED_REFERENCE = (
+    ROOT
+    / "skills"
+    / "ceratops-credit-savings-analysis"
+    / "references"
+    / "bounded-largest-runs-analysis.md"
+)
 
 
 def test_closure_snapshot_composes_only_named_local_state(
@@ -118,3 +134,25 @@ def test_closure_snapshot_composes_only_named_local_state(
     )
     assert invalid.returncode == 2
     assert "must be provided together" in invalid.stderr
+
+
+def test_closure_credit_analysis_defaults_to_bounded_largest_runs() -> None:
+    closure = CLOSURE_REFERENCE.read_text(encoding="utf-8")
+    skill = CREDIT_SKILL.read_text(encoding="utf-8")
+    bounded = CREDIT_BOUNDED_REFERENCE.read_text(encoding="utf-8")
+    contract = json.loads(CREDIT_CONTRACT.read_text(encoding="utf-8"))
+    actions = {row["id"]: row for row in contract["public_actions"]}
+
+    assert "using\n  `bounded-largest-runs-analysis`" in closure
+    assert "using `full-analysis`" not in closure
+    assert (
+        "`full-analysis` only for an explicit exhaustive request" in skill
+    )
+    assert actions["bounded-largest-runs-analysis"] == {
+        "id": "bounded-largest-runs-analysis",
+        "reference": "references/bounded-largest-runs-analysis.md",
+        "mode": "bounded-largest-runs-analysis",
+    }
+    assert bounded.startswith("# Bounded Largest Runs Analysis Action\n")
+    assert "one Luna discovery and one Sol adjudication" in bounded
+    assert "never a full-thread analysis" in bounded

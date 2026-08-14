@@ -57,6 +57,9 @@ HOLISTIC_SOL_TRANSPORT_SCHEMA = "ceratops-credit-analysis-sol-transport.v1"
 HOLISTIC_FINAL_SCHEMA = "ceratops-credit-analysis-orchestration-final.v4"
 HOLISTIC_EVIDENCE_SCHEMA = "ceratops-credit-analysis-formatted-evidence.v4"
 HOLISTIC_TASK_SCHEMA = "ceratops-credit-analysis-model-task.v4"
+BOUNDED_ACTION = "bounded-largest-runs-analysis"
+BOUNDED_MODE = "bounded-largest-runs-analysis"
+BOUNDED_SELECTION_SCHEMA = "ceratops-credit-analysis-run-selection.v1"
 MODEL_PROGRESS_SECONDS = 60
 EVIDENCE_NARRATIVE_LIMIT = 1200
 PASS_PACKET_CHAR_LIMIT = 29_500
@@ -726,7 +729,7 @@ def _load_contract() -> dict[str, Any]:
     surface_order = _strings(contract.get("surface_order"), "surface order")
     full_queue = _strings(contract.get("full_queue"), "full queue")
     public_ids = [_identifier(item.get("id"), "public action id") for item in public]
-    if public_ids != ["full-analysis", *surface_order]:
+    if public_ids != ["full-analysis", BOUNDED_ACTION, *surface_order]:
         raise CreditAnalysisError("public actions do not match the surface order")
     if [_identifier(item.get("id"), "surface id") for item in surfaces] != surface_order:
         raise CreditAnalysisError("surface metadata does not match surface order")
@@ -741,7 +744,11 @@ def _load_contract() -> dict[str, Any]:
             f"`{reference}`"
         ) is None:
             raise CreditAnalysisError("public action reference is invalid")
-        expected_mode = "full-analysis" if item["id"] == "full-analysis" else "standalone"
+        expected_mode = (
+            "full-analysis"
+            if item["id"] == "full-analysis"
+            else BOUNDED_MODE if item["id"] == BOUNDED_ACTION else "standalone"
+        )
         if item.get("mode") != expected_mode:
             raise CreditAnalysisError(f"public action mode is invalid: {item['id']}")
         references.append(reference)
@@ -795,6 +802,7 @@ def _load_contract() -> dict[str, Any]:
         "luna_result_schema": HOLISTIC_LUNA_RESULT_SCHEMA,
         "adjudication_result_schema": HOLISTIC_SOL_RESULT_SCHEMA,
         "orchestration_final_schema": HOLISTIC_FINAL_SCHEMA,
+        "selection_manifest_schema": BOUNDED_SELECTION_SCHEMA,
     }
     if any(contract.get(key) != value for key, value in orchestration_schemas.items()):
         raise CreditAnalysisError("orchestration schema contract is invalid")
@@ -810,6 +818,7 @@ def _load_contract() -> dict[str, Any]:
     semantic_calls = contract.get("semantic_call_contract")
     if semantic_calls != {
         "normal_luna_calls": 1,
+        "bounded_luna_calls": 1,
         "sol_calls": 1,
         "bookkeeping_calls": 0,
     }:
@@ -1031,7 +1040,7 @@ def _validate_request(
         raise CreditAnalysisError("pricing profile and evidence output must differ")
     queue = (
         list(contract["full_queue"])
-        if mode == "full-analysis"
+        if mode in {"full-analysis", BOUNDED_MODE}
         else [str(action)]
     )
     return {
@@ -2489,6 +2498,10 @@ def command_prepare(request_path: pathlib.Path) -> dict[str, Any]:
     contract = _load_contract()
     ledger = _load_ledger()
     request = _validate_request(request_path, contract, ledger)
+    if request["mode"] == BOUNDED_MODE:
+        raise CreditAnalysisError(
+            "bounded largest-runs analysis requires the plan/execute controller"
+        )
     collector_window = request["collector_window"]
     try:
         collected = ledger.collect_session_evidence(
@@ -5066,6 +5079,9 @@ __all__ = (
     "BATCH_SUMMARY_RESULT_FIELDS",
     "BATCH_SUMMARY_RESULT_FIELD_ORDER",
     "BATCH_SUMMARY_STATE_FIELDS",
+    "BOUNDED_ACTION",
+    "BOUNDED_MODE",
+    "BOUNDED_SELECTION_SCHEMA",
     "CALL_SELECTOR_FIELDS",
     "CANONICAL_STATE_SCHEMA",
     "CLASSIFICATION_GROUP_FIELDS",

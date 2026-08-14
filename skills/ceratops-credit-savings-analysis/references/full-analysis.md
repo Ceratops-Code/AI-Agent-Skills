@@ -2,8 +2,8 @@
 
 ## Goal
 
-Run one complete two-tier controller plan. Give Luna the complete compact causal
-evidence once for high-recall discovery across all five surfaces, then use one
+Run the explicit exhaustive two-tier controller plan. Give Luna every compact
+causal episode for high-recall discovery across all five surfaces, then use one
 Sol pass to verify those candidates against original evidence and produce the
 final synthesis. Preserve and present every confirmed finding.
 
@@ -43,9 +43,9 @@ final synthesis. Preserve and present every confirmed finding.
 2. Run controller `execute`. It never recollects. In the normal case it sends
    every causal episode in one packet to `gpt-5.6-luna` at medium effort. If the
    packet cannot fit, it uses the minimum ordered shared partition, never splits
-   by surface, and stops above four Luna calls. Luna performs sparse high-recall
-   discovery across the five fixed lenses without a dismissal for every call
-   and lens combination.
+   by surface or imposes a fixed Luna-call cap. Luna performs sparse high-recall
+   discovery across the five fixed lenses without a dismissal for every call and
+   lens combination.
 3. Run exactly one `gpt-5.6-sol` pass at maximum effort. It receives every Luna
    candidate plus original evidence excerpts, verifies or rejects each candidate,
    performs the mandatory temporary-control review, merges overlaps by owner,
@@ -54,8 +54,8 @@ final synthesis. Preserve and present every confirmed finding.
 4. Persist immutable identities, prompts, results, attempts, latency, and usage.
    Wait without model polling, terminate the complete child process tree on
    interruption or timeout, and resume accepted phases idempotently. A normal
-   full analysis uses two semantic calls; bounded oversize fallback uses two to
-   five, with one Sol call and no bookkeeping calls.
+   full analysis uses two semantic calls; oversize fallback adds only the minimum
+   necessary Luna partitions, with one Sol call and no bookkeeping calls.
 
 Every child Codex execution uses an explicit model, a read-only sandbox, no
 approvals, ephemeral state, a self-contained no-tools prompt, and

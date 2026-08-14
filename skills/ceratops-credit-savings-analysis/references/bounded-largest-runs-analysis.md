@@ -1,0 +1,69 @@
+# Bounded Largest Runs Analysis Action
+
+## Goal
+
+Analyze the largest completed producer runs within one end-to-end capacity
+envelope. Use one Luna discovery and one Sol adjudication while preserving the
+immediate positional follow-up to every selected anchor. This is a bounded
+largest-runs analysis, never a full-thread analysis.
+
+## Deterministic Selection
+
+- Freeze completed producer-run order before selection. Treat each run as one
+  selectable unit and retain its original sequence ID and timestamp.
+- Measure a run by the serialized compact evidence that would enter model
+  context. Rank anchors by that run size descending, with original order as the
+  deterministic tie-breaker; never rank by bundle size.
+- For each candidate anchor, bundle the anchor with the immediately following
+  completed run in frozen order. Determine the follower positionally without a
+  model or semantic heuristic. A final anchor with no follower is a one-run
+  bundle.
+- Keep the anchor and follower indivisible. If a previously included follower
+  later becomes an anchor, evaluate it with its own immediate successor. Store
+  each selected run payload once, while preserving event order inside every run.
+- Packing may follow descending anchor size. Skip a later bundle that cannot fit
+  and continue evaluating smaller anchors.
+
+## End-To-End Budget
+
+- Before the first model call, prove the complete Luna input and projected Sol
+  input/output envelope. Include fixed prompts and schemas, selected evidence,
+  the maximum accepted Luna output, Sol instructions, and both output reserves.
+- If the largest anchor and its immediate successor cannot fit together, return
+  a deterministic capacity blocker before model execution. Never truncate the
+  bundle or omit its successor.
+- Freeze one Luna task and one dependent Sol task. Do not add bookkeeping,
+  grouping, consolidation, or other semantic calls.
+
+## Workflow
+
+1. Run controller `plan` once with action and mode
+   `bounded-largest-runs-analysis`. Collect the selected session once, freeze
+   run order and compact evidence, select bundles deterministically, and persist
+   the immutable selection manifest and both budget proofs.
+2. Run controller `execute`. Luna receives every selected run exactly once and
+   performs high-recall discovery across all fixed surfaces. Sol receives its
+   accepted output and the selected original evidence, adjudicates every
+   candidate, and classifies only selected calls.
+3. Resume with the same state path after interruption. Validate immutable
+   hashes, reuse accepted calls, never recollect evidence, and never repeat a
+   completed Luna or Sol call.
+
+## Completion Gate
+
+Complete only when the selection manifest proves anchor-size ranking,
+positional followers, deduplicated selected payloads, deterministic later-bundle
+skips, and fitting Luna and Sol budgets; exactly one Luna and one Sol result are
+accepted; and finalization succeeds idempotently.
+
+## Output Contract
+
+- Label the result `bounded largest-runs analysis`, never full-thread analysis.
+- Report selected anchor count, companion count, unique selected runs, total
+  eligible runs, selected and total serialized evidence volume, and coverage
+  percentage.
+- Retain omitted runs only as IDs, original ordering, and size metrics. Do not
+  send omitted evidence to a model, produce exhaustive whole-thread totals, or
+  imply that omitted runs were reviewed.
+- Present confirmed findings and selected-call classifications under the parent
+  output contract and retain the selection-manifest path.

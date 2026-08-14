@@ -361,13 +361,17 @@ def credit_analysis_request(
         {
             "schema": "ceratops-credit-analysis-request.v1",
             "action": action,
-            "mode": "full-analysis" if action == "full-analysis" else "standalone",
+            "mode": (
+                action
+                if action in {"full-analysis", "bounded-largest-runs-analysis"}
+                else "standalone"
+            ),
             "source": {"thread_id": None, "session": str(session)},
             "window": {"mode": "full_thread", "last_runs": None, "turn_ids": []},
             "task_temp_root": str(task_root),
             "evidence_output": str(evidence),
             "pricing_profile": None,
-            "expected_surface_contract_version": 5,
+            "expected_surface_contract_version": 6,
             "mutation_authority": False,
         },
     )
@@ -434,7 +438,7 @@ def credit_analysis_batch_request(
             "task_temp_root": str(task_root),
             "manifest_output": str(task_root / "manifest.json"),
             "pricing_profile": None,
-            "expected_surface_contract_version": 5,
+            "expected_surface_contract_version": 6,
             "expected_source_selection_contract_version": 1,
             "mutation_authority": False,
         },
