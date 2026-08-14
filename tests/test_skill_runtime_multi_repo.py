@@ -10587,6 +10587,21 @@ def test_repository_ship_release_failure_blocks_deployment_and_cleanup(
 
     assert captured.value.payload["phase"] == "release_publication"
     assert captured.value.payload["remote_mutation"] is True
+    assert captured.value.payload["remaining"] == "release_publication"
+    assert list(captured.value.payload["completed"]) == [
+        "merge",
+        "synchronization",
+    ]
+    release_resume = captured.value.payload["resume_action"]
+    assert pathlib.Path(release_resume["cwd"]) == repo.resolve()
+    assert release_resume["argv"][:2] == [
+        sys.executable,
+        str(SHIP_REPOSITORY.resolve()),
+    ]
+    assert release_resume["argv"][
+        release_resume["argv"].index("--commit") + 1
+    ] == "a" * 40
+    assert "--review-replies-request" not in release_resume["argv"]
     assert len(commands) == 4
     assert str(RELEASE_OPERATION) in commands[-1]
     assert "publish" in commands[-1]
@@ -10607,6 +10622,12 @@ def test_repository_ship_release_failure_blocks_deployment_and_cleanup(
         ship_repository(args)
 
     assert captured.value.payload["phase"] == "deployment"
+    assert captured.value.payload["remaining"] == "deployment"
+    assert list(captured.value.payload["completed"]) == [
+        "merge",
+        "synchronization",
+        "release_publication",
+    ]
     release_checkpoint = loaded["_operation_checkpoint_path"](
         repo, "a" * 40, "release_publication"
     )
@@ -10786,6 +10807,24 @@ def test_repository_ship_late_pending_work_reports_remote_mutation(
     assert result["remote_mutation"] is True
     assert result["repository"] == "example/repository"
     assert result["commit"] == "a" * 40
+    assert result["remaining"] == (
+        "selected_work_recheck"
+        if late_phase == "post_sync"
+        else "finalization"
+    )
+    assert list(result["completed"]) == (
+        ["merge", "synchronization"]
+        if late_phase == "post_sync"
+        else [
+            "merge",
+            "synchronization",
+            "release_publication",
+            "deployment",
+        ]
+    )
+    assert result["resume_action"]["argv"][
+        result["resume_action"]["argv"].index("--commit") + 1
+    ] == "a" * 40
     release_runner = str(SHIP_REPOSITORY.parent / "run-release-operation.py")
     deploy_runner = str(SHIP_REPOSITORY.parent / "run-deploy-operation.py")
     assert release_runner in commands[0]
@@ -10827,6 +10866,29 @@ def test_repository_ship_late_pending_work_reports_remote_mutation(
                 (0, prepared),
                 (0, {**shipped, "status": "already_shipped"}),
                 (0, prepared),
+                (1, {"status": "error", "message": "cleanup failed"}),
+            ]
+        )
+
+        with pytest.raises(loaded["RepositoryShipError"]) as captured:
+            ship_repository(args)
+
+        recovery = captured.value.payload
+        assert recovery["phase"] == "finalization"
+        assert recovery["remaining"] == "finalization"
+        assert recovery["completed"]["release_publication"] == published
+        assert recovery["completed"]["deployment"] == deployed
+        assert recovery["resume_action"] == result["resume_action"]
+        assert "--review-replies-request" not in recovery["resume_action"]["argv"]
+        assert release_checkpoint.is_file()
+        assert deployment_checkpoint.is_file()
+
+        responses.extend(
+            [
+                (0, preflight),
+                (0, prepared),
+                (0, {**shipped, "status": "already_shipped"}),
+                (0, prepared),
                 (0, {"status": "finalized"}),
             ]
         )
@@ -10836,8 +10898,15 @@ def test_repository_ship_late_pending_work_reports_remote_mutation(
         assert resumed["status"] == "already_shipped"
         assert resumed["release_publication"] == published
         assert resumed["deployment"] == deployed
-        assert len(commands) == 12
-        assert all(release_runner not in command for command in commands[8:])
+        assert len(commands) == 17
+        retry_release_commands = [
+            command for command in commands[7:] if release_runner in command
+        ]
+        assert len(retry_release_commands) == 2
+        assert all(
+            "preflight" in command and "publish" not in command
+            for command in retry_release_commands
+        )
         assert all(deploy_runner not in command for command in commands[7:])
         assert not release_checkpoint.exists()
         assert not deployment_checkpoint.exists()
@@ -10960,11 +11029,12 @@ def test_repository_ship_blocks_selected_worktree_caller_before_remote_process(
         newline="\n",
     )
     child_calls: list[list[str]] = []
+    selected_path = {"value": selected}
 
     def branch_worktree(repo_root: pathlib.Path, branch: str) -> pathlib.Path:
         assert repo_root == repo
         assert branch == "selected"
-        return selected
+        return selected_path["value"]
 
     def run_json(command: list[str]) -> tuple[int, dict[str, Any]]:
         child_calls.append(command)
@@ -11009,6 +11079,22 @@ def test_repository_ship_blocks_selected_worktree_caller_before_remote_process(
 
     assert len(child_calls) == 1
     assert "prepare" in child_calls[0]
+
+    preserved = tmp_path / "custom" / "repo" / "thread"
+    preserved.mkdir(parents=True)
+    selected_path["value"] = preserved
+    monkeypatch.chdir(preserved)
+    loaded["_require_cleanup_safe_caller"](
+        repo,
+        scope,
+        [
+            {
+                "branch": "selected",
+                "path": str(preserved.resolve()),
+                "reason": "resolved parent chain has no 'worktrees' directory",
+            }
+        ],
+    )
 
 
 def run_pending_work(
@@ -11752,6 +11838,117 @@ def test_pending_work_scope_is_selected_generic_and_finalized_late(
         "source_branches": [],
         "pending_work_scope": "",
     }
+
+    assert run_git(repo, "branch", "external-safe", migration_target).returncode == 0
+    assert (
+        run_git(repo, "branch", "external-preserved", migration_target).returncode
+        == 0
+    )
+    external_safe_root = tmp_path / "alternate" / "worktrees" / repo.name
+    external_safe = external_safe_root / "external-safe"
+    external_preserved = tmp_path / "alternate" / "custom" / "external-preserved"
+    external_safe_root.mkdir(parents=True)
+    external_preserved.parent.mkdir(parents=True)
+    assert (
+        run_git(
+            repo,
+            "worktree",
+            "add",
+            str(external_safe),
+            "external-safe",
+        ).returncode
+        == 0
+    )
+    assert (
+        run_git(
+            repo,
+            "worktree",
+            "add",
+            str(external_preserved),
+            "external-preserved",
+        ).returncode
+        == 0
+    )
+    external_recorded = run_pending_work(
+        repo,
+        "record",
+        "--target-branch",
+        "release/local",
+        "--target-commit",
+        migration_target,
+        "--source-branch",
+        "external-safe",
+        "--source-branch",
+        "external-preserved",
+    )
+    assert external_recorded.returncode == 0, external_recorded.stderr
+    external_scope = pathlib.Path(
+        json.loads(external_recorded.stdout)["pending_work_scope"]
+    )
+
+    external_preflight = run_pending_work(
+        repo,
+        "prepare",
+        "--target-branch",
+        "release/local",
+    )
+    assert external_preflight.returncode == 0, external_preflight.stderr
+    external_preflight_payload = json.loads(external_preflight.stdout)
+    expected_preservation = {
+        "branch": "external-preserved",
+        "path": str(external_preserved.resolve()),
+        "reason": "resolved parent chain has no 'worktrees' directory",
+    }
+    assert external_preflight_payload["preserved_worktrees"] == [
+        expected_preservation
+    ]
+    assert [source["state"] for source in json.loads(
+        external_scope.read_text(encoding="utf-8")
+    )["sources"]] == ["retained", "retained"]
+
+    external_finalized = run_pending_work(
+        repo,
+        "finalize",
+        "--scope",
+        str(external_scope),
+        "--target-branch",
+        "release/local",
+        "--target-commit",
+        migration_target,
+        "--current-branch",
+        "main",
+        "--current-commit",
+        migration_main,
+    )
+    assert external_finalized.returncode == 0, external_finalized.stderr
+    assert json.loads(external_finalized.stdout) == {
+        "status": "finalized",
+        "removed": ["external-safe"],
+        "preserved": ["external-preserved"],
+        "preserved_worktrees": [expected_preservation],
+        "pending_work_scope": "",
+    }
+    assert not external_safe.exists()
+    assert not external_safe_root.exists()
+    assert external_preserved.is_dir()
+    assert (
+        run_git(
+            repo,
+            "show-ref",
+            "--verify",
+            "refs/heads/external-safe",
+        ).returncode
+        != 0
+    )
+    assert (
+        run_git(
+            repo,
+            "show-ref",
+            "--verify",
+            "refs/heads/external-preserved",
+        ).returncode
+        == 0
+    )
 
 
 def test_pending_work_finalization_persists_partial_cleanup_progress(

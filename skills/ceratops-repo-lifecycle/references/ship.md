@@ -72,6 +72,11 @@ selected merged source branches and worktrees.
    the exact commit already selected by the wrapper.
 3. Before the first remote push, the scope manager atomically normalizes an
    exact version-1 record, then the helper checks the canonical version-2 scope.
+   During the same preflight it validates every registered selected worktree's
+   resolved path. A worktree is cleanup-eligible only when its parent chain
+   contains a case-insensitive `worktrees` directory component; otherwise the
+   helper returns its branch and exact path in non-blocking
+   `preserved_worktrees` while continuing all selected-branch content checks.
    It atomically removes a missing `deleting` source only when its recorded
    commit exists and is an ancestor of the recorded target. A missing
    `retained` source or an unproven `deleting` source remains `pending_work` and
@@ -100,32 +105,37 @@ selected merged source branches and worktrees.
    for a retained source, finalization atomically changes its state to
    `deleting`; an existing `deleting` branch first passes the same cleanliness
    and ancestry checks. Before removing a selected worktree, finalization
-   records its exact path, name, and any thread ID from its `.codex-thread`
-   file. Automatic residual cleanup handles only the case where Git unregisters
-   the worktree but leaves that recorded directory. The helper verifies that
-   the path is unregistered and remains below the canonical worktree root
-   before deleting it. When the helper runs elevated, the same cleanup may take
-   ownership only of that validated path, without a public flag or second
-   confirmation. Before retiring the residual-cleanup record, the helper
-   deletes task-temp subdirectories under
+   revalidates its exact path and derives its direct parent as the cleanup root
+   only when that parent chain contains a case-insensitive `worktrees` directory
+   component. Otherwise it leaves the worktree and branch untouched, retires
+   their scope record, and returns the exact preserved path. For an eligible
+   worktree, it records the exact path, name, cleanup root, and any thread ID
+   from `.codex-thread`. Automatic residual cleanup handles only the case where
+   Git unregisters that worktree but leaves the recorded directory. The helper
+   verifies that the path is unregistered and remains below the recorded root
+   before deleting it. When elevated, it may take ownership only of that
+   validated path, without a public flag or second confirmation. Before
+   retiring the record, it deletes task-temp subdirectories under
    `<repo-parent>/tmp/<repo-name>` only when their names start with the recorded
-   worktree name or thread ID. It removes empty worktree and task-temp parent
-   directories only up to their nearest `worktrees`, `tmp`, or `temp` boundary
-   and never deletes the boundary itself. The helper removes the record only
-   after verifying the worktree path and matching task-temp directories are
-   absent. After successful branch
+   worktree name or thread ID. It removes empty worktree and task-temp parents
+   only up to their nearest `worktrees`, `tmp`, or `temp` boundary and never
+   deletes the boundary itself. The record is removed only after the worktree
+   path and matching task-temp directories are absent. After successful branch
    deletion, it atomically removes the source record and deletes the scope after
    the final source is removed.
 8. After declared release publication or deployment succeeds, the helper
    checkpoints each result independently against the exact target, operation,
    and resolved contract before the next phase. A retry reuses each completed
    result while later work remains pending and removes both checkpoints only
-   after cleanup succeeds. A publication failure blocks deployment and
-   finalization; a deployment failure blocks finalization. Terminal success
-   also removes every exact helper-owned atomic-write `.tmp` sibling for retired
-   scopes, residual-cleanup records, operation checkpoints, and PR checkpoints;
-   it never scans for or removes unrelated temporary files. Both operations
-   must remain retry-safe across interruption.
+   after cleanup succeeds. Every terminal blocker after remote mutation returns
+   the phases proven complete, the exact remaining phase, and a structured
+   `resume_action` containing the owning ship helper's argv and working
+   directory; consumed review-reply input is excluded. A publication failure
+   blocks deployment and finalization; a deployment failure blocks finalization.
+   Terminal success also removes every exact helper-owned atomic-write `.tmp`
+   sibling for retired scopes, residual-cleanup records, operation checkpoints,
+   and PR checkpoints; it never scans for or removes unrelated temporary files.
+   Both operations must remain retry-safe across interruption.
 9. After the helper completes, when synchronized main declares managed skills,
    execute the handoff returned in its deployment result against that exact
    checkout. If none was declared, report the managed skills as not deployed
@@ -153,4 +163,5 @@ Report only:
 
 - PR URL and merge outcome
 - synchronized main, release-publication outcome, and local deployment outcome
-- finalized or retained selected scope with reasons
+- finalized or retained selected scope with reasons, exact preserved worktree
+  paths, and phase-aware recovery data for terminal post-mutation blockers

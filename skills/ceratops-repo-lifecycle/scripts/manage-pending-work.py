@@ -4,8 +4,9 @@
 Scope files live under the repository's common Git directory and persist the
 exact source tips approved for one integration target plus helper-owned cleanup
 state. Unrelated branches and worktrees are never enumerated. Finalization
-removes only clean selected worktrees under the repository's expected worktree
-root, their identity-matched task-temp directories, and merged branches.
+removes only clean selected worktrees whose parent chain contains a
+``worktrees`` directory, their identity-matched task-temp directories, and
+merged branches; other selected worktrees and branches are preserved.
 """
 
 from __future__ import annotations
@@ -292,15 +293,37 @@ def _remove_matching_task_temp_directories(
     _remove_empty_parents(task_temp_root, boundary_names={"tmp", "temp"})
 
 
+def _worktree_cleanup_root(path: pathlib.Path) -> pathlib.Path | None:
+    """Return the exact cleanup parent only inside a ``worktrees`` tree.
+
+    Worktrees may be registered anywhere. Automatic deletion is deliberately
+    narrower: the resolved worktree's direct parent must itself be beneath a
+    directory component named ``worktrees`` (case-insensitive for Windows).
+    """
+
+    if not path.is_absolute():
+        return None
+    parent = path.parent
+    if not any(part.casefold() == "worktrees" for part in parent.parts):
+        return None
+    return parent
+
+
 def _validate_worktree_path(
     path: pathlib.Path,
     expected_root: pathlib.Path,
     *,
     allow_inaccessible: bool,
 ) -> None:
-    """Confine cleanup to one non-reparse child of the canonical root."""
+    """Confine cleanup to one normalized non-reparse ``worktrees`` child."""
 
-    if not path.is_absolute() or not _inside(path, expected_root) or path == expected_root:
+    if (
+        path != path.resolve()
+        or expected_root != expected_root.resolve()
+        or _worktree_cleanup_root(path) != expected_root
+        or not _inside(path, expected_root)
+        or path == expected_root
+    ):
         raise PendingWorkError("Recorded worktree is outside the expected root.")
     root_attributes = _lstat(expected_root)
     if root_attributes is None:
@@ -315,6 +338,51 @@ def _validate_worktree_path(
         raise
     if attributes is not None and _is_reparse(path, attributes):
         raise PendingWorkError("Recorded worktree is a reparse point.")
+
+
+def _classify_worktree_cleanup(
+    path: pathlib.Path,
+) -> tuple[pathlib.Path | None, str | None]:
+    """Return a safe cleanup root or a non-blocking preservation reason."""
+
+    expected_root = _worktree_cleanup_root(path)
+    if expected_root is None:
+        return None, "resolved parent chain has no 'worktrees' directory"
+    try:
+        _validate_worktree_path(path, expected_root, allow_inaccessible=True)
+    except (OSError, PendingWorkError) as exc:
+        return None, str(exc)
+    return expected_root, None
+
+
+def _preserved_worktree(
+    branch: str,
+    path: pathlib.Path,
+    reason: str,
+) -> dict[str, str]:
+    """Build the public exact-path record for non-destructive retention."""
+
+    return {"branch": branch, "path": str(path), "reason": reason}
+
+
+def _preflight_preserved_worktrees(
+    repo_root: pathlib.Path,
+    scope: dict[str, Any],
+) -> list[dict[str, str]]:
+    """Classify every registered selected path before remote mutation."""
+
+    preserved: list[dict[str, str]] = []
+    for source in scope["sources"]:
+        if source["state"] == "preserved":
+            continue
+        branch = str(source["branch"])
+        worktree = _selected_worktree(repo_root, branch)
+        if worktree is None:
+            continue
+        _, reason = _classify_worktree_cleanup(worktree)
+        if reason is not None:
+            preserved.append(_preserved_worktree(branch, worktree, reason))
+    return preserved
 
 
 def _registered_worktree_paths(repo_root: pathlib.Path) -> set[pathlib.Path]:
@@ -381,8 +449,7 @@ def _read_residual_cleanup_record(
     thread_id = value["thread_id"]
     expected_root = pathlib.Path(value["expected_root"])
     task_temp_root = pathlib.Path(value["task_temp_root"])
-    canonical_root = (repo_root.parent / "worktrees" / repo_root.name).resolve()
-    if expected_root != canonical_root:
+    if _worktree_cleanup_root(worktree) != expected_root:
         raise PendingWorkError("Residual-cleanup record has an unexpected root.")
     canonical_temp_root = (repo_root.parent / "tmp" / repo_root.name).resolve()
     if task_temp_root != canonical_temp_root:
@@ -1106,21 +1173,28 @@ def check_scope(
     if recovered_scope is None:
         return _ready_without_scope()
     scope = recovered_scope
+    preserved_worktrees = _preflight_preserved_worktrees(repo_root, scope)
     findings = ship._pending_work_findings(repo_root, scope)
     if findings:
-        return {
+        result: dict[str, object] = {
             "status": "pending_work",
             "remote_mutation": False,
             "findings": findings,
             "target_commit": scope["target_commit"],
             "pending_work_scope": str(path.resolve()),
         }
-    return {
+        if preserved_worktrees:
+            result["preserved_worktrees"] = preserved_worktrees
+        return result
+    result = {
         "status": "ready",
         "target_commit": scope["target_commit"],
         "source_branches": _source_branches(scope),
         "pending_work_scope": str(path.resolve()),
     }
+    if preserved_worktrees:
+        result["preserved_worktrees"] = preserved_worktrees
+    return result
 
 
 def prepare_scope(
@@ -1228,7 +1302,7 @@ def finalize_scope(
     current_branch: str,
     current_commit: str,
 ) -> dict[str, object]:
-    """Late-recheck selected source work and prune its empty project root."""
+    """Late-recheck selected work and prune only eligible cleanup parents."""
 
     checked = check_scope(
         repo_root,
@@ -1263,9 +1337,10 @@ def finalize_scope(
         target_branch=target_branch,
         target_commit=target_commit,
     )
-    expected_root = (repo_root.parent / "worktrees" / repo_root.name).resolve()
     removed: list[str] = []
     preserved: list[str] = []
+    preserved_worktrees: list[dict[str, str]] = []
+    cleanup_roots: set[pathlib.Path] = set()
     sources = list(scope["sources"])
     for source in sources:
         branch = str(source["branch"])
@@ -1277,10 +1352,27 @@ def finalize_scope(
             if remaining_scope is not None:
                 scope = remaining_scope
             continue
+        worktree = _selected_worktree(repo_root, branch)
+        expected_root: pathlib.Path | None = None
+        if worktree is not None:
+            expected_root, reason = _classify_worktree_cleanup(worktree)
+            if expected_root is None:
+                preserved.append(branch)
+                preserved_worktrees.append(
+                    _preserved_worktree(
+                        branch,
+                        worktree,
+                        reason or "automatic cleanup is unavailable",
+                    )
+                )
+                remaining_scope = _remove_source_record(path, scope, branch)
+                if remaining_scope is not None:
+                    scope = remaining_scope
+                continue
         if source["state"] == "retained":
             scope = _set_source_state(path, scope, branch, "deleting")
-        worktree = _selected_worktree(repo_root, branch)
-        if worktree is not None:
+        if worktree is not None and expected_root is not None:
+            cleanup_roots.add(expected_root)
             _remove_selected_worktree(
                 repo_root,
                 path,
@@ -1300,7 +1392,8 @@ def finalize_scope(
         remaining_scope = _remove_source_record(path, scope, branch)
         if remaining_scope is not None:
             scope = remaining_scope
-    _remove_empty_parents(expected_root, boundary_names={"worktrees"})
+    for cleanup_root in sorted(cleanup_roots, key=lambda item: str(item).casefold()):
+        _remove_empty_parents(cleanup_root, boundary_names={"worktrees"})
     result: dict[str, object] = {
         "status": "finalized",
         "removed": removed,
@@ -1308,6 +1401,8 @@ def finalize_scope(
     }
     if preserved:
         result["preserved"] = preserved
+    if preserved_worktrees:
+        result["preserved_worktrees"] = preserved_worktrees
     return result
 
 
