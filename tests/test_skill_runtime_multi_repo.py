@@ -9889,7 +9889,11 @@ def test_promote_repository_prepare_only_mode_remains_unchanged(
 def test_promote_and_deploy_does_not_inject_base_revision(
     tmp_path: pathlib.Path,
 ) -> None:
-    repo, approved_head, log, environment = prepare_repository_lifecycle_repo(tmp_path)
+    repo, approved_head, log, environment = prepare_repository_lifecycle_repo(
+        tmp_path,
+        managed_skills=True,
+        handoff="ceratops-skill-lifecycle/deploy",
+    )
     first = subprocess.run(
         [
             sys.executable,
@@ -9907,6 +9911,14 @@ def test_promote_and_deploy_does_not_inject_base_revision(
     )
     assert first.returncode == 0, first.stderr
     assert not log.exists()
+
+    retained_worktree = tmp_path / "approved-retained"
+    assert (
+        run_git(repo, "worktree", "add", str(retained_worktree), "approved").returncode
+        == 0
+    )
+    retained_file = retained_worktree / "uncommitted.txt"
+    retained_file.write_text("preserve me\n", encoding="utf-8", newline="\n")
 
     assert run_git(repo, "switch", "-c", "approved-second", "release/local").returncode == 0
     (repo / "README.md").write_text(
@@ -9934,7 +9946,42 @@ def test_promote_and_deploy_does_not_inject_base_revision(
     )
 
     assert second.returncode == 0, second.stderr
-    assert json.loads(second.stdout)["release_start"] == approved_head
+    second_result = json.loads(second.stdout)
+    assert second_result["release_start"] == approved_head
+    assert second_result["handoff"] == "ceratops-skill-lifecycle/deploy"
+    assert second_result["preserved_sources"] == [
+        {
+            "branch": "approved",
+            "findings": [
+                {
+                    "kind": "dirty_worktree",
+                    "subject": "approved",
+                    "detail": "1 status entry",
+                }
+            ],
+        }
+    ]
+    second_head = run_git(repo, "rev-parse", "release/local").stdout.strip()
+    assert json.loads(
+        pathlib.Path(second_result["pending_work_scope"]).read_text(encoding="utf-8")
+    ) == {
+        "sources": [
+            {
+                "branch": "approved",
+                "commit": approved_head,
+                "state": "preserved",
+            },
+            {
+                "branch": "approved-second",
+                "commit": second_head,
+                "state": "retained",
+            },
+        ],
+        "target_branch": "release/local",
+        "target_commit": second_head,
+        "version": 2,
+    }
+    assert retained_file.read_text(encoding="utf-8") == "preserve me\n"
     assert log.read_text(encoding="utf-8") == "no-base\n"
 
     divergent = tmp_path / "automatic-rebase-success"

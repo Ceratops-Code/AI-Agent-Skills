@@ -853,6 +853,49 @@ def _validate_branch(repo_root: pathlib.Path, branch: str) -> None:
         raise PendingWorkError(f"Invalid source branch: {branch!r}")
 
 
+def _preserve_evolved_sources(
+    scope: dict[str, Any],
+    findings: list[dict[str, str]],
+) -> tuple[dict[str, Any], list[dict[str, object]]]:
+    """Exclude evolved retained sources from cleanup without hiding blockers."""
+
+    preservable_kinds = {
+        "dirty_worktree",
+        "unmerged_branch_commits",
+        "worktree_unavailable",
+    }
+    findings_by_branch: dict[str, list[dict[str, str]]] = {}
+    for finding in findings:
+        findings_by_branch.setdefault(finding["subject"], []).append(finding)
+
+    updated_sources: list[dict[str, str]] = []
+    preserved_sources: list[dict[str, object]] = []
+    for source in scope["sources"]:
+        normalized = {
+            "branch": str(source["branch"]),
+            "commit": str(source["commit"]),
+            "state": str(source["state"]),
+        }
+        source_findings = findings_by_branch.get(normalized["branch"], [])
+        if (
+            normalized["state"] == "retained"
+            and source_findings
+            and all(
+                finding["kind"] in preservable_kinds
+                for finding in source_findings
+            )
+        ):
+            normalized["state"] = "preserved"
+            preserved_sources.append(
+                {
+                    "branch": normalized["branch"],
+                    "findings": [dict(finding) for finding in source_findings],
+                }
+            )
+        updated_sources.append(normalized)
+    return _scope_with_sources(scope, updated_sources), preserved_sources
+
+
 def record_scope(
     repo_root: pathlib.Path,
     *,
@@ -915,6 +958,7 @@ def record_scope(
         else None
     )
     retained: list[dict[str, str]] = []
+    preserved_sources: list[dict[str, object]] = []
     if raw_existing is not None:
         recorded_target = raw_existing.get("target_commit")
         if (
@@ -960,6 +1004,13 @@ def record_scope(
         if recovered_existing is not None:
             existing = recovered_existing
             candidate_existing = {**existing, "target_commit": target_commit}
+            candidate_findings = ship._pending_work_findings(
+                repo_root, candidate_existing
+            )
+            candidate_existing, preserved_sources = _preserve_evolved_sources(
+                candidate_existing,
+                candidate_findings,
+            )
             existing_findings = ship._pending_work_findings(
                 repo_root, candidate_existing
             )
@@ -969,7 +1020,7 @@ def record_scope(
                     "subject": str(source["branch"]),
                     "detail": "complete prior helper cleanup before recording",
                 }
-                for source in existing["sources"]
+                for source in candidate_existing["sources"]
                 if source["state"] == "deleting"
                 and _branch_exists(repo_root, str(source["branch"]))
             )
@@ -985,7 +1036,7 @@ def record_scope(
                     "commit": str(source["commit"]),
                     "state": str(source["state"]),
                 }
-                for source in existing["sources"]
+                for source in candidate_existing["sources"]
             ]
     merged_by_branch = {source["branch"]: source for source in retained}
     merged_by_branch.update(
@@ -1005,13 +1056,16 @@ def record_scope(
         target_branch=target_branch,
         target_commit=target_commit,
     )
-    return {
+    result: dict[str, object] = {
         "status": "ready",
         "target_branch": target_branch,
         "target_commit": target_commit,
         "source_branches": _source_branches(scope),
         "pending_work_scope": str(path),
     }
+    if preserved_sources:
+        result["preserved_sources"] = preserved_sources
+    return result
 
 
 def check_scope(
