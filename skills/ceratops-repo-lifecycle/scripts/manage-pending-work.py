@@ -54,6 +54,14 @@ RESIDUAL_CLEANUP_RECORD_FIELDS = {
     "task_temp_root",
 }
 ADMINISTRATORS_SID = "*S-1-5-32-544"
+# These findings prove evolved work that must survive later source cleanup.
+PRESERVABLE_EXISTING_FINDING_KINDS = frozenset(
+    {
+        "dirty_worktree",
+        "unmerged_branch_commits",
+        "worktree_unavailable",
+    }
+)
 
 
 def _git(repo_root: pathlib.Path, *args: str) -> list[str]:
@@ -859,11 +867,6 @@ def _preserve_evolved_sources(
 ) -> tuple[dict[str, Any], list[dict[str, object]]]:
     """Exclude evolved retained sources from cleanup without hiding blockers."""
 
-    preservable_kinds = {
-        "dirty_worktree",
-        "unmerged_branch_commits",
-        "worktree_unavailable",
-    }
     findings_by_branch: dict[str, list[dict[str, str]]] = {}
     for finding in findings:
         findings_by_branch.setdefault(finding["subject"], []).append(finding)
@@ -881,7 +884,7 @@ def _preserve_evolved_sources(
             normalized["state"] == "retained"
             and source_findings
             and all(
-                finding["kind"] in preservable_kinds
+                finding["kind"] in PRESERVABLE_EXISTING_FINDING_KINDS
                 for finding in source_findings
             )
         ):
