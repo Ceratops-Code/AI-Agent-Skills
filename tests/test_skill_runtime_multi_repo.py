@@ -12379,6 +12379,41 @@ def test_pending_work_finalization_persists_partial_cleanup_progress(
         original_rmtree(path, *args, **kwargs)
 
     monkeypatch.setattr(shutil, "rmtree", sharing_locked_rmtree)
+    original_finalize_require = finalize_scope.__globals__["require_success"]
+    branch_delete_attempts = 0
+
+    def fail_first_sharing_branch_delete(
+        command: list[str],
+        *,
+        cwd: pathlib.Path,
+    ) -> subprocess.CompletedProcess[str]:
+        nonlocal branch_delete_attempts
+        if command[-3:] == ["branch", "-d", "sharing-locked"]:
+            branch_delete_attempts += 1
+            if branch_delete_attempts == 1:
+                raise pending_error("simulated sharing branch deletion failure")
+        return original_finalize_require(command, cwd=cwd)
+
+    finalize_scope.__globals__["require_success"] = fail_first_sharing_branch_delete
+    with pytest.raises(pending_error, match="sharing branch deletion failure"):
+        finalize_scope(
+            repo,
+            sharing_scope,
+            target_branch="release/local",
+            target_commit=target_commit,
+            current_branch="main",
+            current_commit=current_commit,
+        )
+    assert sharing_record.is_file()
+    assert sharing_worktree.is_dir()
+    assert run_git(
+        repo,
+        "show-ref",
+        "--verify",
+        "refs/heads/sharing-locked",
+    ).returncode == 0
+
+    finalize_scope.__globals__["require_success"] = original_finalize_require
     sharing_finalized = finalize_scope(
         repo,
         sharing_scope,

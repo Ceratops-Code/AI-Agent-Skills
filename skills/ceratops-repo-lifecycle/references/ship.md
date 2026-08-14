@@ -123,8 +123,9 @@ selected merged source branches and worktrees.
    only up to their nearest `worktrees`, `tmp`, or `temp` boundary and never
    deletes the boundary itself. On Windows sharing violation 32,
    after Git unregisters an eligible worktree, the helper preserves and reports
-   the exact residual path, retires its cleanup record, and continues
-   merged-branch cleanup. Other residual cleanup errors remain blocking.
+   the exact residual path, retains its cleanup record until branch deletion
+   succeeds, and continues merged-branch cleanup. Other residual cleanup errors
+   remain blocking.
    Otherwise, the record is removed only after the worktree path and matching
    task-temp directories are absent. After successful branch
    deletion, it atomically removes the source record and deletes the scope after

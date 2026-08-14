@@ -607,11 +607,11 @@ def _finish_recorded_residual_cleanup(
     repo_root: pathlib.Path,
     record_path: pathlib.Path,
 ) -> dict[str, str] | None:
-    """Retire one residual record after deletion or a Windows sharing hold.
+    """Finish one residual cleanup and retain sharing-hold evidence for its caller.
 
     Sharing violation 32 is non-destructive only after the exact worktree is
-    proven unregistered. The residual path remains visible to the caller while
-    every other cleanup failure stays blocking.
+    proven unregistered. Its record remains durable until the caller deletes
+    the branch; every other cleanup failure stays blocking.
     """
 
     (
@@ -664,8 +664,8 @@ def _finish_recorded_residual_cleanup(
         worktree_name=worktree_name,
         thread_id=thread_id,
     )
-    _remove_completed_state_file(record_path)
     if preserved_worktree is None:
+        _remove_completed_state_file(record_path)
         _remove_empty_parents(expected_root, boundary_names={"worktrees"})
     return preserved_worktree
 
@@ -900,7 +900,11 @@ def _recover_completed_deletions(
             continue
         residual_record = _residual_cleanup_record_path(path, branch)
         if residual_record.exists():
-            _finish_recorded_residual_cleanup(repo_root, residual_record)
+            residual_preserved = _finish_recorded_residual_cleanup(
+                repo_root, residual_record
+            )
+            if residual_preserved is not None:
+                _remove_completed_state_file(residual_record)
         changed = True
     if not changed:
         return scope
@@ -1465,6 +1469,7 @@ def finalize_scope(
         if source["state"] == "retained":
             scope = _set_source_state(path, scope, branch, "deleting")
         residual_preserved: dict[str, str] | None = None
+        record_path = _residual_cleanup_record_path(path, branch)
         if worktree is not None and expected_root is not None:
             cleanup_roots.add(expected_root)
             residual_preserved = _remove_selected_worktree(
@@ -1475,19 +1480,20 @@ def finalize_scope(
                 expected_root,
             )
         else:
-            record_path = _residual_cleanup_record_path(path, branch)
             if record_path.exists():
                 residual_preserved = _finish_recorded_residual_cleanup(
                     repo_root,
                     record_path,
                 )
+        if residual_preserved is not None:
+            preserved_worktrees.append(residual_preserved)
         require_success(
             _git(repo_root, "branch", "-d", branch),
             cwd=repo_root,
         )
         removed.append(branch)
         if residual_preserved is not None:
-            preserved_worktrees.append(residual_preserved)
+            _remove_completed_state_file(record_path)
         remaining_scope = _remove_source_record(path, scope, branch)
         if remaining_scope is not None:
             scope = remaining_scope
