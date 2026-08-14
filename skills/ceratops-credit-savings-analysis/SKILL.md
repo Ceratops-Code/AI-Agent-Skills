@@ -32,8 +32,10 @@ applies them.
   closure; active runs and the boundary run are excluded.
 - For a single-thread full analysis or standalone surface, run
   `python scripts/credit-analysis-workflow.py plan --request REQUEST` once.
-  Require mutation authority `false`, current contract versions, and
-  caller-selected task-root and retained-evidence paths.
+  Require mutation authority `false`, current contract versions, and a
+  caller-selected task root under
+  `<repo-parent>/tmp/<repo-name>/<thread-name>`. Keep retained evidence inside
+  that task root.
   Planning collects and parses the selected session exactly once, freezes its
   cutoff before child execution, and assigns exact controller lineage. Analysis
   A excludes only its own recorded descendants. A later analysis B may inspect

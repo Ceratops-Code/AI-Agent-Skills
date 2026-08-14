@@ -21,6 +21,13 @@ SANITY = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = SANITY
 SPEC.loader.exec_module(SANITY)
 
+PROBE_SCRIPT = ROOT / "hooks" / "command-probe.py"
+PROBE_SPEC = importlib.util.spec_from_file_location("command_probe", PROBE_SCRIPT)
+assert PROBE_SPEC is not None and PROBE_SPEC.loader is not None
+PROBE = importlib.util.module_from_spec(PROBE_SPEC)
+sys.modules[PROBE_SPEC.name] = PROBE
+PROBE_SPEC.loader.exec_module(PROBE)
+
 
 class WindowsShellSanityTests(unittest.TestCase):
     @staticmethod
@@ -54,6 +61,14 @@ class WindowsShellSanityTests(unittest.TestCase):
         assert isinstance(wrapper, str)
         encoded = wrapper.rsplit("'", 2)[1]
         return base64.b64decode(encoded, validate=True).decode("utf-8")
+
+    @staticmethod
+    def probe_request(payload: dict[str, Any]) -> dict[str, Any]:
+        wrapper = payload["hookSpecificOutput"]["updatedInput"]["command"]
+        encoded = wrapper.rsplit("'", 2)[1]
+        value = json.loads(base64.b64decode(encoded, validate=True).decode("utf-8"))
+        assert isinstance(value, dict)
+        return value
 
     def test_valid_inline_pipeline_routes_instead_of_denying(self):
         command = 'powershell -Command "Get-Date | Select-Object DateTime"'
@@ -99,6 +114,33 @@ class WindowsShellSanityTests(unittest.TestCase):
             "Get-Content -LiteralPath 'x' | Select-Object -Index (2..5)",
         )
         self.assertEqual(SANITY.analyze_command(rewritten).rewrites, ())
+
+    def test_existing_static_quoted_executable_gets_call_operator_once(self):
+        with tempfile.TemporaryDirectory() as directory:
+            executable = pathlib.Path(directory) / "quoted tool.exe"
+            executable.write_bytes(b"")
+            quoted = SANITY.powershell_quote(str(executable))
+            command = f"{quoted} --version"
+
+            analysis = SANITY.analyze_command(command)
+            payload = self.hook_result(command)
+
+            self.assertEqual(analysis.command, f"& {quoted} --version")
+            self.assertEqual(analysis.rewrites, ("static_quoted_executable",))
+            self.assertEqual(SANITY.analyze_command(analysis.command).rewrites, ())
+            self.assertIsNotNone(payload)
+            assert payload is not None
+            self.assertEqual(self.rewritten_command(payload), analysis.command)
+
+            missing = SANITY.powershell_quote(str(executable.with_name("missing.exe")))
+            self.assertEqual(
+                SANITY.analyze_command(f"{missing} --version").rewrites,
+                (),
+            )
+            self.assertEqual(
+                SANITY.analyze_command(f"Write-Output {quoted} --version").rewrites,
+                (),
+            )
 
     def test_combined_ranges_remain_blocked(self):
         command = "Get-Content x | Select-Object -Index (0..2, 8..10)"
@@ -240,6 +282,220 @@ class WindowsShellSanityTests(unittest.TestCase):
         payload = json.loads(stderr.getvalue())
         self.assertEqual(returncode, 127)
         self.assertEqual(payload["findings"][0]["kind"], "powershell_not_found")
+
+    def test_static_expected_negative_probes_route_to_structured_helper(self):
+        cases = (
+            ("rg -n 'needle with space' hooks", "search"),
+            (
+                "git show-ref --verify --quiet refs/heads/missing",
+                "ref-exists",
+            ),
+            ("git merge-base --is-ancestor main feature", "is-ancestor"),
+            ("git ls-files | rg -n node", "tracked-search"),
+        )
+        for command, mode in cases:
+            with self.subTest(command=command):
+                payload = self.hook_result(
+                    command,
+                    tool_input_fields={"yield_time_ms": 12_000},
+                )
+                self.assertIsNotNone(payload)
+                assert payload is not None
+                output = payload["hookSpecificOutput"]
+                self.assertEqual(output["permissionDecision"], "allow")
+                self.assertEqual(output["updatedInput"]["yield_time_ms"], 12_000)
+                self.assertEqual(self.probe_request(payload)["mode"], mode)
+                wrapper = output["updatedInput"]["command"]
+                self.assertIn("command-probe.py", wrapper)
+                self.assertTrue(SANITY.is_wrapped_command(wrapper))
+
+    def test_dynamic_or_composed_probe_forms_keep_native_shell_handling(self):
+        commands = (
+            "rg $pattern hooks",
+            "rg needle hooks; git status",
+            "git ls-files | rg node > result.txt",
+            "git show-ref --verify refs/heads/missing",
+        )
+        for command in commands:
+            with self.subTest(command=command):
+                self.assertIsNone(SANITY.probe_request_for_command(command))
+                self.assertIsNone(self.hook_result(command))
+
+    def test_windows_powershell_repairs_module_path_and_preflights_get_file_hash(self):
+        completed = SimpleNamespace(returncode=0, stdout="", stderr="")
+        with mock.patch.dict(
+            SANITY.os.environ,
+            {"PSModulePath": r"C:\Program Files\PowerShell\7\Modules"},
+            clear=True,
+        ):
+            with mock.patch.object(
+                SANITY.subprocess,
+                "run",
+                side_effect=(completed, completed),
+            ) as run:
+                returncode = SANITY.execute_powershell(
+                    "Get-FileHash -LiteralPath file.txt",
+                    None,
+                    "powershell.exe",
+                )
+
+        self.assertEqual(returncode, 0)
+        self.assertEqual(run.call_count, 2)
+        for call in run.call_args_list:
+            environment = call.kwargs["env"]
+            self.assertFalse(
+                any(key.casefold() == "psmodulepath" for key in environment)
+            )
+        preflight = base64.b64decode(run.call_args_list[0].args[0][-1]).decode(
+            "utf-16le"
+        )
+        target = base64.b64decode(run.call_args_list[1].args[0][-1]).decode(
+            "utf-16le"
+        )
+        self.assertIn("Get-FileHash", preflight)
+        self.assertIn("$commands[0]", preflight)
+        self.assertIn("CompatiblePSEditions", preflight)
+        self.assertEqual(target, "Get-FileHash -LiteralPath file.txt")
+
+    def test_pwsh_preserves_environment_without_module_preflight(self):
+        completed = SimpleNamespace(returncode=0)
+        with mock.patch.object(
+            SANITY.subprocess,
+            "run",
+            return_value=completed,
+        ) as run:
+            returncode = SANITY.execute_powershell(
+                "Get-FileHash -LiteralPath file.txt",
+                None,
+                "pwsh.exe",
+            )
+
+        self.assertEqual(returncode, 0)
+        self.assertEqual(run.call_count, 1)
+        self.assertNotIn("env", run.call_args.kwargs)
+
+    def test_failed_module_preflight_stops_before_target_execution(self):
+        failed = SimpleNamespace(
+            returncode=1,
+            stdout="",
+            stderr="Get-FileHash is unavailable",
+        )
+        stderr = io.StringIO()
+        with mock.patch.object(
+            SANITY.subprocess,
+            "run",
+            return_value=failed,
+        ) as run:
+            with contextlib.redirect_stderr(stderr):
+                returncode = SANITY.execute_powershell(
+                    "Get-FileHash file.txt",
+                    None,
+                    "powershell",
+                )
+
+        payload = json.loads(stderr.getvalue())
+        self.assertEqual(returncode, 1)
+        self.assertEqual(run.call_count, 1)
+        self.assertEqual(
+            payload["findings"][0]["kind"],
+            "powershell_module_provenance",
+        )
+
+
+class CommandProbeTests(unittest.TestCase):
+    @staticmethod
+    def completed(
+        returncode: int,
+        *,
+        stdout: str = "",
+        stderr: str = "",
+    ) -> SimpleNamespace:
+        return SimpleNamespace(
+            returncode=returncode,
+            stdout=stdout,
+            stderr=stderr,
+        )
+
+    def test_expected_negative_results_return_structured_false_and_exit_zero(self):
+        cases = (
+            (
+                {"schema": PROBE.REQUEST_SCHEMA, "mode": "search", "argv": ["rg", "missing"]},
+                "matched",
+            ),
+            (
+                {
+                    "schema": PROBE.REQUEST_SCHEMA,
+                    "mode": "ref-exists",
+                    "argv": [
+                        "git",
+                        "show-ref",
+                        "--verify",
+                        "--quiet",
+                        "refs/heads/missing",
+                    ],
+                },
+                "exists",
+            ),
+            (
+                {
+                    "schema": PROBE.REQUEST_SCHEMA,
+                    "mode": "is-ancestor",
+                    "argv": ["git", "merge-base", "--is-ancestor", "a", "b"],
+                },
+                "ancestor",
+            ),
+        )
+        for request, predicate in cases:
+            with self.subTest(mode=request["mode"]):
+                with mock.patch.object(
+                    PROBE.subprocess,
+                    "run",
+                    return_value=self.completed(1),
+                ):
+                    payload, returncode = PROBE.execute_request(request)
+                self.assertEqual(returncode, 0)
+                self.assertTrue(payload["ok"])
+                self.assertFalse(payload[predicate])
+                self.assertEqual(payload["tool_returncode"], 1)
+
+    def test_tracked_search_passes_git_output_to_rg_and_classifies_no_match(self):
+        request = {
+            "schema": PROBE.REQUEST_SCHEMA,
+            "mode": "tracked-search",
+            "producer_argv": ["git", "ls-files"],
+            "search_argv": ["rg", "node"],
+        }
+        with mock.patch.object(
+            PROBE.subprocess,
+            "run",
+            side_effect=(
+                self.completed(0, stdout="README.md\n"),
+                self.completed(1),
+            ),
+        ) as run:
+            payload, returncode = PROBE.execute_request(request)
+
+        self.assertEqual(returncode, 0)
+        self.assertFalse(payload["matched"])
+        self.assertEqual(run.call_args_list[1].kwargs["input"], "README.md\n")
+
+    def test_real_probe_error_remains_nonzero(self):
+        request = {
+            "schema": PROBE.REQUEST_SCHEMA,
+            "mode": "search",
+            "argv": ["rg", "needle"],
+        }
+        with mock.patch.object(
+            PROBE.subprocess,
+            "run",
+            return_value=self.completed(2, stderr="invalid pattern"),
+        ):
+            payload, returncode = PROBE.execute_request(request)
+
+        self.assertEqual(returncode, 2)
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["tool_returncode"], 2)
+        self.assertIn("invalid pattern", payload["error"])
 
 
 class ProjectPythonRedirectionTests(unittest.TestCase):

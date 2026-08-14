@@ -720,6 +720,8 @@ def promote(args: argparse.Namespace) -> dict[str, object]:
         "pending_work_scope": pending_work_scope,
         "operation": operation,
     }
+    if record.get("preserved_sources"):
+        result["preserved_sources"] = record["preserved_sources"]
     if managed_skills is not None:
         result["managed_skills"] = managed_skills
         result["handoff"] = handoff

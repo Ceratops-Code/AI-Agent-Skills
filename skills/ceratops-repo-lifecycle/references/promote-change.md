@@ -85,7 +85,9 @@ result.
    automatically only when its `deleting` state and recorded commit ancestry
    prove an interrupted helper deletion; a missing `retained` source blocks.
 7. On a shipping blocker, retain the scope, branches, worktrees, and checkpoints
-   for resume. Terminal shipping owns finalization and selected-work cleanup.
+   for resume. Terminal shipping owns finalization and selected-work cleanup;
+   it leaves a worktree and branch untouched when the worktree's parent chain
+   has no `worktrees` directory component and reports the exact preserved path.
 
 The helper refreshes the remote, fast-forwards main, reuses an existing local
 `release/local` without merging main into it, and creates it from main when
@@ -121,7 +123,8 @@ or deployment.
   exactly once after merge.
 - The exact pending-work scope is retained for standalone promotion or a
   shipping blocker; successful composed shipping finalizes it, cleans selected
-  sources, and reports any preserved legacy sources left untouched.
+  sources, and reports any preserved legacy sources or non-cleanup-eligible
+  worktrees left untouched.
 
 ### Output Contract
 

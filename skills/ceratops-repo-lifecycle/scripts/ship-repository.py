@@ -214,12 +214,15 @@ def _branch_worktree(repo_root: pathlib.Path, branch: str) -> pathlib.Path | Non
 
 
 def _require_cleanup_safe_caller(
-    repo_root: pathlib.Path, scope: pathlib.Path | None
+    repo_root: pathlib.Path,
+    scope: pathlib.Path | None,
+    preserved_worktrees: list[dict[str, str]],
 ) -> None:
     """Block publication when the parent shell pins a selected worktree.
 
     A child process cannot change its parent shell's working directory. On
     Windows that shell would prevent finalization from deleting the worktree.
+    Paths preflight has classified for preservation are never cleanup targets.
     """
 
     if scope is None:
@@ -252,10 +255,16 @@ def _require_cleanup_safe_caller(
     if len(branches) != len(set(branches)):
         raise RepositoryShipError("Pending-work scope has duplicate sources.")
 
+    preserved = {
+        (item["branch"], pathlib.Path(item["path"]).resolve())
+        for item in preserved_worktrees
+    }
     caller = pathlib.Path.cwd().resolve()
     for branch in branches:
         worktree = _branch_worktree(repo_root, branch)
         if worktree is None:
+            continue
+        if (branch, worktree) in preserved:
             continue
         try:
             caller.relative_to(worktree)
@@ -441,6 +450,49 @@ def _prepared_scope(result: dict[str, Any]) -> pathlib.Path | None:
     return pathlib.Path(value).resolve() if value else None
 
 
+def _prepared_preserved_worktrees(
+    result: dict[str, Any],
+) -> list[dict[str, str]]:
+    """Validate exact non-blocking worktree paths returned by preflight."""
+
+    raw = result.get("preserved_worktrees", [])
+    if not isinstance(raw, list):
+        raise RepositoryShipError("Pending-work preservation result is invalid.")
+    normalized: list[dict[str, str]] = []
+    for index, item in enumerate(raw):
+        if (
+            not isinstance(item, dict)
+            or set(item) != {"branch", "path", "reason"}
+            or any(
+                not isinstance(item.get(field), str) or not item[field]
+                for field in ("branch", "path", "reason")
+            )
+            or not pathlib.Path(item["path"]).is_absolute()
+        ):
+            raise RepositoryShipError(
+                f"Pending-work preservation item {index} is invalid."
+            )
+        normalized.append(
+            {
+                "branch": item["branch"],
+                "path": str(pathlib.Path(item["path"]).resolve()),
+                "reason": item["reason"],
+            }
+        )
+    return normalized
+
+
+def _with_preserved_worktrees(
+    result: dict[str, Any],
+    preserved_worktrees: list[dict[str, str]],
+) -> dict[str, Any]:
+    """Attach preflight preservation evidence to one later phase result."""
+
+    if preserved_worktrees and "preserved_worktrees" not in result:
+        return {**result, "preserved_worktrees": preserved_worktrees}
+    return result
+
+
 def _prepared_target_commit(
     result: dict[str, Any],
     pending_scope: pathlib.Path | None,
@@ -504,6 +556,101 @@ def _pending_command(
             )
         )
     return command
+
+
+def _resume_ship_command(
+    args: argparse.Namespace,
+    repo_root: pathlib.Path,
+    target_commit: str,
+) -> list[str]:
+    """Return the exact idempotent owner command for post-mutation recovery.
+
+    A direct pending-work command would bypass release and deployment checkpoint
+    cleanup. The recovery action therefore reruns this wrapper with the stable
+    operation inputs while omitting any consumed review-reply request.
+    """
+
+    command = [
+        sys.executable,
+        str(pathlib.Path(__file__).resolve()),
+        "--repo-root",
+        str(repo_root),
+    ]
+    if args.repo:
+        command.extend(("--repo", args.repo))
+    command.extend(
+        (
+            "--head-branch",
+            args.head_branch,
+            "--base-branch",
+            args.base_branch,
+            "--remote-name",
+            args.remote_name,
+            "--commit",
+            target_commit,
+            "--merge-method",
+            args.merge_method,
+            "--release-contract",
+            str(args.release_contract),
+            "--release-preflight-operation",
+            args.release_preflight_operation,
+            "--release-operation",
+            args.release_operation,
+            "--deploy-contract",
+            str(args.deploy_contract),
+            "--deploy-operation",
+            args.deploy_operation,
+            "--ci-wait-seconds",
+            str(args.ci_wait_seconds),
+            "--review-wait-seconds",
+            str(args.review_wait_seconds),
+            "--interval-seconds",
+            str(args.interval_seconds),
+        )
+    )
+    if args.delete_branch:
+        command.append("--delete-branch")
+    if args.reusable_head:
+        command.append("--reusable-head")
+    return command
+
+
+def _phase_recovery(
+    args: argparse.Namespace,
+    *,
+    repo_root: pathlib.Path,
+    shipped: dict[str, Any],
+    target_commit: str,
+    synchronized_head: str,
+    remaining: str,
+    release_publication: dict[str, Any] | None = None,
+    deployment: dict[str, Any] | None = None,
+) -> dict[str, object]:
+    """Describe proven completed phases and one exact safe ``resume_action``."""
+
+    completed: dict[str, object] = {
+        "merge": {
+            "status": shipped["status"],
+            "pr": shipped.get("pr"),
+            "commit": shipped.get("merge_commit"),
+        },
+        "synchronization": {
+            "status": "completed",
+            "commit": synchronized_head,
+        },
+    }
+    if release_publication is not None:
+        completed["release_publication"] = release_publication
+    if deployment is not None:
+        completed["deployment"] = deployment
+    return {
+        "completed": completed,
+        "remaining": remaining,
+        "resume_action": {
+            "cwd": str(repo_root),
+            "argv": _resume_ship_command(args, repo_root, target_commit),
+        },
+    }
 
 
 def ship_repository(args: argparse.Namespace) -> dict[str, object]:
@@ -570,12 +717,17 @@ def ship_repository(args: argparse.Namespace) -> dict[str, object]:
             prepared,
         )
     pending_scope = _prepared_scope(prepared)
+    preserved_worktrees = _prepared_preserved_worktrees(prepared)
     prepared_target_commit = _prepared_target_commit(
         prepared,
         pending_scope,
         args.commit,
     )
-    _require_cleanup_safe_caller(repo_root, pending_scope)
+    _require_cleanup_safe_caller(
+        repo_root,
+        pending_scope,
+        preserved_worktrees,
+    )
     ship_code, shipped = _run_json(
         _ship_command(
             args,
@@ -585,7 +737,7 @@ def ship_repository(args: argparse.Namespace) -> dict[str, object]:
         )
     )
     if ship_code == 2:
-        return shipped
+        return _with_preserved_worktrees(shipped, preserved_worktrees)
     if ship_code:
         raise RepositoryShipError(
             str(shipped.get("message", "Shipping failed.")),
@@ -616,7 +768,7 @@ def ship_repository(args: argparse.Namespace) -> dict[str, object]:
             )
         )
         if check_code == 2:
-            return {
+            return _with_preserved_worktrees({
                 **checked,
                 "phase": "post_sync",
                 "repository": shipped.get("repository"),
@@ -624,7 +776,15 @@ def ship_repository(args: argparse.Namespace) -> dict[str, object]:
                 "pr": shipped.get("pr"),
                 "url": shipped.get("url"),
                 "remote_mutation": True,
-            }
+                **_phase_recovery(
+                    args,
+                    repo_root=repo_root,
+                    shipped=shipped,
+                    target_commit=target_commit,
+                    synchronized_head=synchronized_head,
+                    remaining="selected_work_recheck",
+                ),
+            }, preserved_worktrees)
         if check_code:
             raise RepositoryShipError(
                 str(checked.get("message", "Late pending-work check failed.")),
@@ -675,6 +835,14 @@ def ship_repository(args: argparse.Namespace) -> dict[str, object]:
                     **release_publication,
                     "phase": "release_publication",
                     "remote_mutation": True,
+                    **_phase_recovery(
+                        args,
+                        repo_root=repo_root,
+                        shipped=shipped,
+                        target_commit=target_commit,
+                        synchronized_head=synchronized_head,
+                        remaining="release_publication",
+                    ),
                 },
             )
         if release_checkpoint is not None and release_identity is not None:
@@ -724,6 +892,15 @@ def ship_repository(args: argparse.Namespace) -> dict[str, object]:
                     **deployment,
                     "phase": "deployment",
                     "remote_mutation": True,
+                    **_phase_recovery(
+                        args,
+                        repo_root=repo_root,
+                        shipped=shipped,
+                        target_commit=target_commit,
+                        synchronized_head=synchronized_head,
+                        remaining="deployment",
+                        release_publication=release_publication,
+                    ),
                 },
             )
         if deployment_checkpoint is not None and deployment_identity is not None:
@@ -748,7 +925,7 @@ def ship_repository(args: argparse.Namespace) -> dict[str, object]:
             repo_root=repo_root,
         )
         if finalize_code == 2:
-            return {
+            return _with_preserved_worktrees({
                 **finalized,
                 "phase": "post_operations",
                 "repository": shipped.get("repository"),
@@ -758,17 +935,47 @@ def ship_repository(args: argparse.Namespace) -> dict[str, object]:
                 "release_publication": release_publication,
                 "deployment": deployment,
                 "remote_mutation": True,
-            }
+                **_phase_recovery(
+                    args,
+                    repo_root=repo_root,
+                    shipped=shipped,
+                    target_commit=target_commit,
+                    synchronized_head=synchronized_head,
+                    remaining="finalization",
+                    release_publication=release_publication,
+                    deployment=deployment,
+                ),
+            }, preserved_worktrees)
         if finalize_code:
             raise RepositoryShipError(
                 str(finalized.get("message", "Selected-work cleanup failed.")),
-                finalized,
+                {
+                    **finalized,
+                    "phase": "finalization",
+                    "repository": shipped.get("repository"),
+                    "commit": target_commit,
+                    "pr": shipped.get("pr"),
+                    "url": shipped.get("url"),
+                    "release_publication": release_publication,
+                    "deployment": deployment,
+                    "remote_mutation": True,
+                    **_phase_recovery(
+                        args,
+                        repo_root=repo_root,
+                        shipped=shipped,
+                        target_commit=target_commit,
+                        synchronized_head=synchronized_head,
+                        remaining="finalization",
+                        release_publication=release_publication,
+                        deployment=deployment,
+                    ),
+                },
             )
     for checkpoint in (release_checkpoint, deployment_checkpoint):
         if checkpoint is not None:
             _remove_completed_operation_checkpoint(checkpoint)
 
-    return {
+    result: dict[str, Any] = {
         "status": shipped["status"],
         "repository": shipped.get("repository"),
         "commit": target_commit,
@@ -780,6 +987,7 @@ def ship_repository(args: argparse.Namespace) -> dict[str, object]:
         "deployment": deployment,
         "finalization": finalized,
     }
+    return _with_preserved_worktrees(result, preserved_worktrees)
 
 
 def build_parser() -> argparse.ArgumentParser:

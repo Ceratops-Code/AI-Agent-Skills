@@ -10,7 +10,8 @@ final synthesis. Preserve and present every confirmed finding.
 ## Inputs And Constraints
 
 - Use the source, completed-run window, task temporary root, retained evidence
-  path, optional pricing profile, and contract version required by the parent.
+  path inside that root, optional pricing profile, and contract version required
+  by the parent.
 - For one source, accept an explicit thread ID or session path, the current
   thread, or one exact thread name. Resolve the current thread only from
   `CODEX_THREAD_ID`; resolve a name against the latest thread-index records and
@@ -22,8 +23,8 @@ final synthesis. Preserve and present every confirmed finding.
   selected thread is then analyzed over all of its completed runs.
 - Use the controller-owned batch request schema with action `full-analysis`,
   mode `per-thread-batch`, selector, `as_of`, caller-selected task root and
-  retained manifest output, optional pricing profile, both expected contract
-  versions, and mutation authority fixed to false.
+  retained manifest output inside that root, optional pricing profile, both
+  expected contract versions, and mutation authority fixed to false.
 - Prepare with action and mode `full-analysis`. Do not run a standalone surface
   in parallel or collect another bundle.
 - Execute only the next frozen controller task. Luna discovers across the fixed

@@ -35,6 +35,35 @@ TARGET_PROJECTS_BY_REPOSITORY = {
 }
 PYTHON_EXECUTABLE_NAMES = frozenset({"python", "python.exe", "py", "py.exe"})
 PYTHON_COMMAND_HINT_RE = re.compile(r"(?:python|py)(?:\.exe)?", re.IGNORECASE)
+WINDOWS_POWERSHELL_NAMES = frozenset({"powershell", "powershell.exe"})
+GET_FILE_HASH_RE = re.compile(
+    r"\b(?:Microsoft\.PowerShell\.Utility\\)?Get-FileHash\b",
+    re.IGNORECASE,
+)
+COMMAND_PROBE_SCHEMA = "ceratops-command-probe.v1"
+COMMAND_PROBE_NAME = "command-probe.py"
+POWERSHELL_UTILITY_PREFLIGHT = r"""
+$ErrorActionPreference = 'Stop'
+$commands = @(Get-Command `
+    -Name 'Get-FileHash' `
+    -ErrorAction Stop)
+if ($commands.Count -lt 1) {
+    throw 'Get-FileHash did not resolve.'
+}
+$command = $commands[0]
+$module = $command.Module
+if (
+    @('Function', 'Cmdlet') -notcontains $command.CommandType.ToString() -or
+    $null -eq $module -or
+    $module.Name -ne 'Microsoft.PowerShell.Utility'
+) {
+    throw 'Get-FileHash did not resolve from Microsoft.PowerShell.Utility.'
+}
+$editions = @($module.CompatiblePSEditions)
+if ($editions.Count -gt 0 -and $editions -notcontains 'Desktop') {
+    throw 'Microsoft.PowerShell.Utility is not compatible with Windows PowerShell.'
+}
+""".strip()
 POWERSHELL_COMMAND_AST = r"""
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
@@ -139,6 +168,12 @@ INLINE_SCRIPT_RE = re.compile(
 )
 HERE_STRING_RE = re.compile(
     r"(?ms)@(?P<quote>['\"])[ \t]*\r?\n.*?^(?P=quote)@[ \t]*(?:\r?$)"
+)
+STATIC_QUOTED_EXECUTABLE_RE = re.compile(
+    r"(?P<prefix>(?:\A|[;\r\n|])[ \t]*)"
+    r"(?P<quoted>'(?P<path>(?:''|[^'\r\n])+?\.(?:exe|com|cmd|bat))')"
+    r"(?=[ \t]+[^\s;|]+)",
+    re.IGNORECASE,
 )
 
 
@@ -264,11 +299,44 @@ def _safe_static_path(token: str) -> bool:
     return not any(character in value for character in "*?[]")
 
 
+def _plan_static_quoted_executable_rewrites(
+    command: str,
+    masked: str,
+) -> list[Rewrite]:
+    """Add ``&`` only for a provable malformed executable invocation.
+
+    Existence, an absolute executable suffix, a command boundary, and trailing
+    arguments distinguish invocation intent from ordinary PowerShell string
+    data. Dynamic, missing, nested, and here-string paths remain unchanged.
+    """
+
+    rewrites: list[Rewrite] = []
+    here_strings = tuple(HERE_STRING_RE.finditer(command))
+    for match in STATIC_QUOTED_EXECUTABLE_RE.finditer(command):
+        prefix_start, prefix_end = match.span("prefix")
+        quoted_start = match.start("quoted")
+        if masked[prefix_start:prefix_end] != command[prefix_start:prefix_end]:
+            continue
+        if any(item.start() <= quoted_start < item.end() for item in here_strings):
+            continue
+        executable = match.group("path").replace("''", "'")
+        if (
+            not (ntpath.isabs(executable) or os.path.isabs(executable))
+            or any(character in executable for character in "*?[]")
+            or not os.path.isfile(executable)
+        ):
+            continue
+        rewrites.append(
+            Rewrite("static_quoted_executable", quoted_start, quoted_start, "& ")
+        )
+    return rewrites
+
+
 def plan_rewrites(command: str) -> list[Rewrite]:
     """Return only closed rewrites whose replacement semantics are known."""
 
     masked = mask_non_code(command)
-    rewrites: list[Rewrite] = []
+    rewrites = _plan_static_quoted_executable_rewrites(command, masked)
 
     for match in SELECT_INDEX_BARE_RANGE_RE.finditer(masked):
         start, end = match.span("range")
@@ -486,6 +554,162 @@ def powershell_quote(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
+def is_windows_powershell(executable: str) -> bool:
+    """Return whether ``executable`` selects legacy Windows PowerShell."""
+
+    return ntpath.basename(executable).casefold() in WINDOWS_POWERSHELL_NAMES
+
+
+def windows_powershell_environment(executable: str) -> dict[str, str] | None:
+    """Remove inherited module paths for Windows PowerShell child processes.
+
+    Windows PowerShell reconstructs its edition-compatible defaults when
+    ``PSModulePath`` is absent. PowerShell 7 and other executables inherit the
+    caller environment unchanged.
+    """
+
+    if not is_windows_powershell(executable):
+        return None
+    environment = dict(os.environ)
+    for key in tuple(environment):
+        if key.casefold() == "psmodulepath":
+            del environment[key]
+    return environment
+
+
+def requires_utility_module_preflight(command: str, powershell: str) -> bool:
+    """Return whether a Windows PowerShell command needs Get-FileHash proof."""
+
+    return is_windows_powershell(powershell) and bool(
+        GET_FILE_HASH_RE.search(mask_non_code(command))
+    )
+
+
+def _static_probe_pipeline(command: str) -> list[list[str]] | None:
+    """Parse the closed literal PowerShell subset accepted for command probes."""
+
+    if not command or "\n" in command or "\r" in command:
+        return None
+    segments: list[list[str]] = [[]]
+    index = 0
+    while index < len(command):
+        if command[index].isspace():
+            index += 1
+            continue
+        if command[index] == "|":
+            if not segments[-1] or len(segments) == 2:
+                return None
+            segments.append([])
+            index += 1
+            continue
+        if command[index] in ";&<>(){},#":
+            return None
+
+        quote = command[index] if command[index] in "'\"" else None
+        if quote is not None:
+            index += 1
+            characters: list[str] = []
+            closed = False
+            while index < len(command):
+                character = command[index]
+                if quote == "'" and character == "'":
+                    if index + 1 < len(command) and command[index + 1] == "'":
+                        characters.append("'")
+                        index += 2
+                        continue
+                    closed = True
+                    index += 1
+                    break
+                if quote == '"' and character == '"':
+                    closed = True
+                    index += 1
+                    break
+                if quote == '"' and character in "$`":
+                    return None
+                characters.append(character)
+                index += 1
+            if not closed or (
+                index < len(command)
+                and not command[index].isspace()
+                and command[index] != "|"
+            ):
+                return None
+            segments[-1].append("".join(characters))
+            continue
+
+        start = index
+        while (
+            index < len(command)
+            and not command[index].isspace()
+            and command[index] != "|"
+        ):
+            if command[index] in "'$`;\"&<>(){},#":
+                return None
+            index += 1
+        if index == start:
+            return None
+        segments[-1].append(command[start:index])
+    if not segments[-1]:
+        return None
+    return segments
+
+
+def probe_request_for_command(command: str) -> dict[str, object] | None:
+    """Recognize exact read-only probes whose exit 1 means a false result."""
+
+    pipeline = _static_probe_pipeline(command)
+    if pipeline is None:
+        return None
+    if len(pipeline) == 1:
+        argv = pipeline[0]
+        tool = ntpath.basename(argv[0]).casefold()
+        if tool in {"rg", "rg.exe"} and len(argv) >= 2:
+            return {"schema": COMMAND_PROBE_SCHEMA, "mode": "search", "argv": argv}
+        if tool not in {"git", "git.exe"}:
+            return None
+        if len(argv) == 5 and argv[1:4] == ["show-ref", "--verify", "--quiet"]:
+            return {
+                "schema": COMMAND_PROBE_SCHEMA,
+                "mode": "ref-exists",
+                "argv": argv,
+            }
+        if len(argv) == 5 and argv[1:3] == ["merge-base", "--is-ancestor"]:
+            return {
+                "schema": COMMAND_PROBE_SCHEMA,
+                "mode": "is-ancestor",
+                "argv": argv,
+            }
+        return None
+    producer, search = pipeline
+    if (
+        ntpath.basename(producer[0]).casefold() in {"git", "git.exe"}
+        and len(producer) >= 2
+        and producer[1] == "ls-files"
+        and ntpath.basename(search[0]).casefold() in {"rg", "rg.exe"}
+        and len(search) >= 2
+    ):
+        return {
+            "schema": COMMAND_PROBE_SCHEMA,
+            "mode": "tracked-search",
+            "producer_argv": producer,
+            "search_argv": search,
+        }
+    return None
+
+
+def wrapped_probe_request(request: dict[str, object]) -> str:
+    """Encode one validated-shape probe request for the sibling helper."""
+
+    encoded = base64.b64encode(
+        json.dumps(request, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    ).decode("ascii")
+    helper = pathlib.Path(__file__).resolve().with_name(COMMAND_PROBE_NAME)
+    return (
+        f"& {powershell_quote(sys.executable)} {powershell_quote(str(helper))} "
+        f"--encoded-request {powershell_quote(encoded)}"
+    )
+
+
 def target_project_for_cwd(cwd: object) -> str | None:
     """Resolve a target project from Git's common directory for ``cwd``.
 
@@ -606,6 +830,7 @@ def executable_invocations(command: str) -> list[ExecutableInvocation]:
             encoding="utf-8",
             errors="replace",
             timeout=10,
+            env=windows_powershell_environment("powershell"),
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise PythonRedirectionError(
@@ -776,30 +1001,37 @@ def wrapped_command(command: str, interpreter: str | None = None) -> str:
 def is_wrapped_command(command: str) -> bool:
     """Prevent the rewritten helper invocation from recursively triggering itself."""
 
-    script = str(pathlib.Path(__file__).resolve())
+    scripts = (
+        (str(pathlib.Path(__file__).resolve()), "--encoded-command"),
+        (
+            str(pathlib.Path(__file__).resolve().with_name(COMMAND_PROBE_NAME)),
+            "--encoded-request",
+        ),
+    )
     interpreters = [sys.executable]
     configured = os.environ.get(PROJECT_PYTHON_ENV)
     if configured and configured not in interpreters:
         interpreters.append(configured)
     for interpreter in interpreters:
-        prefix = (
-            f"& {powershell_quote(interpreter)} {powershell_quote(script)} "
-            "--encoded-command "
-        )
-        if not command.startswith(prefix):
-            continue
-        encoded = command[len(prefix) :]
-        if (
-            len(encoded) < 3
-            or not encoded.startswith("'")
-            or not encoded.endswith("'")
-        ):
-            continue
-        try:
-            base64.b64decode(encoded[1:-1], validate=True)
-        except binascii.Error:
-            continue
-        return True
+        for script, argument in scripts:
+            prefix = (
+                f"& {powershell_quote(interpreter)} {powershell_quote(script)} "
+                f"{argument} "
+            )
+            if not command.startswith(prefix):
+                continue
+            encoded = command[len(prefix) :]
+            if (
+                len(encoded) < 3
+                or not encoded.startswith("'")
+                or not encoded.endswith("'")
+            ):
+                continue
+            try:
+                base64.b64decode(encoded[1:-1], validate=True)
+            except binascii.Error:
+                continue
+            return True
     return False
 
 
@@ -839,16 +1071,43 @@ def run_hook() -> int:
     if is_wrapped_command(command):
         return 0
 
+    probe_request = probe_request_for_command(command)
+    if probe_request is not None:
+        helper = pathlib.Path(__file__).resolve().with_name(COMMAND_PROBE_NAME)
+        if not helper.is_file():
+            print(
+                json.dumps(
+                    hook_payload(
+                        "deny",
+                        permissionDecisionReason=(
+                            f"Windows shell preflight cannot find {helper}."
+                        ),
+                    ),
+                    sort_keys=True,
+                )
+            )
+            return 0
+        updated_input = dict(tool_input)
+        updated_input["command"] = wrapped_probe_request(probe_request)
+        print(
+            json.dumps(
+                hook_payload("allow", updatedInput=updated_input),
+                sort_keys=True,
+            )
+        )
+        return 0
+
+    analysis = analyze_command(command)
     project = target_project_for_cwd(event.get("cwd"))
     pc_python: str | None = None
     python_rewrites: list[Rewrite] = []
     if project is not None:
         try:
-            invocations = python_executable_invocations(command)
+            invocations = python_executable_invocations(analysis.command)
             if invocations:
                 pc_python = canonical_pc_python()
                 python_rewrites = plan_python_redirects(
-                    command,
+                    analysis.command,
                     invocations,
                     pc_python,
                 )
@@ -864,8 +1123,14 @@ def run_hook() -> int:
             )
             return 0
 
-    analysis = analyze_command(command, python_rewrites)
     python_redirected = bool(python_rewrites)
+    if python_redirected:
+        redirected = analyze_command(analysis.command, python_rewrites)
+        analysis = Analysis(
+            command=redirected.command,
+            rewrites=analysis.rewrites + redirected.rewrites,
+            findings=redirected.findings,
+        )
     if python_redirected:
         assert pc_python is not None
         try:
@@ -976,6 +1241,37 @@ def _print_failure_hints(findings: Sequence[dict[str, str]]) -> None:
         print(f"- [{kind}] {item['message']}", file=sys.stderr)
 
 
+def _module_preflight_failure(
+    returncode: int,
+    detail: str,
+) -> int:
+    """Report one compact module-provenance failure before target execution."""
+
+    message = (
+        "Windows PowerShell could not resolve a Desktop-compatible "
+        "Microsoft.PowerShell.Utility\\Get-FileHash after rebuilding "
+        "PSModulePath."
+    )
+    compact = " ".join(detail.split())
+    if compact.startswith("#< CLIXML"):
+        compact = ""
+    if compact:
+        message += f" {compact[:1_000]}"
+    payload = {
+        "ok": False,
+        "blocking_count": 1,
+        "findings": [
+            finding(
+                "powershell_module_provenance",
+                BLOCK,
+                message,
+            )
+        ],
+    }
+    print(json.dumps(payload, sort_keys=True), file=sys.stderr)
+    return returncode if 1 <= returncode <= 255 else 1
+
+
 def execute_powershell(
     command: str,
     cwd: str | None,
@@ -983,6 +1279,53 @@ def execute_powershell(
     annotations: Sequence[dict[str, str]] = (),
 ) -> int:
     """Execute one command and append matched guidance only after failure."""
+
+    environment = windows_powershell_environment(powershell)
+    if requires_utility_module_preflight(command, powershell):
+        preflight = base64.b64encode(
+            POWERSHELL_UTILITY_PREFLIGHT.encode("utf-16le")
+        ).decode("ascii")
+        preflight_args = [
+            powershell,
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-EncodedCommand",
+            preflight,
+        ]
+        try:
+            checked = subprocess.run(
+                preflight_args,
+                cwd=cwd or None,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                check=False,
+                env=environment,
+            )
+        except FileNotFoundError:
+            checked = None
+        if checked is None:
+            payload = {
+                "ok": False,
+                "blocking_count": 1,
+                "findings": [
+                    finding(
+                        "powershell_not_found",
+                        BLOCK,
+                        f"Could not find PowerShell executable: {powershell}",
+                    )
+                ],
+            }
+            print(json.dumps(payload, sort_keys=True), file=sys.stderr)
+            return 127
+        if checked.returncode:
+            return _module_preflight_failure(
+                checked.returncode,
+                checked.stderr or checked.stdout,
+            )
 
     executable = _instrument_for_error_detection(command) if annotations else command
     encoded = base64.b64encode(executable.encode("utf-16le")).decode("ascii")
@@ -995,7 +1338,13 @@ def execute_powershell(
         encoded,
     ]
     try:
-        completed = subprocess.run(args, cwd=cwd or None, check=False)
+        run_arguments: dict[str, object] = {
+            "cwd": cwd or None,
+            "check": False,
+        }
+        if environment is not None:
+            run_arguments["env"] = environment
+        completed = subprocess.run(args, **run_arguments)
     except FileNotFoundError:
         payload = {
             "ok": False,

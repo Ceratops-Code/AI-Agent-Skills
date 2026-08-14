@@ -446,9 +446,8 @@ def credit_analysis_request(
         extra_calls_per_turn=extra_calls_per_turn,
         oversized_user_message_chars=oversized_user_message_chars,
     )
-    task_root = tmp_path / f"analysis-{action}"
-    task_root.mkdir()
-    evidence = tmp_path / f"evidence-{action}.json"
+    task_root = canonical_credit_task_root(tmp_path, f"analysis-{action}")
+    evidence = task_root / "evidence.json"
     request = tmp_path / f"request-{action}.json"
     write_json_file(
         request,
@@ -515,8 +514,7 @@ def credit_analysis_batch_request(
 ) -> pathlib.Path:
     """Create one caller-bounded per-thread batch request."""
 
-    task_root = tmp_path / f"batch-{name}"
-    task_root.mkdir()
+    task_root = canonical_credit_task_root(tmp_path, f"batch-{name}")
     request = tmp_path / f"batch-request-{name}.json"
     write_json_file(
         request,
@@ -527,7 +525,7 @@ def credit_analysis_batch_request(
             "selector": selector,
             "as_of": as_of,
             "task_temp_root": str(task_root),
-            "manifest_output": str(tmp_path / f"batch-manifest-{name}.json"),
+            "manifest_output": str(task_root / "manifest.json"),
             "pricing_profile": None,
             "expected_surface_contract_version": 5,
             "expected_source_selection_contract_version": 1,
@@ -535,6 +533,20 @@ def credit_analysis_batch_request(
         },
     )
     return request
+
+
+def canonical_credit_task_root(
+    base: pathlib.Path,
+    thread_name: str,
+) -> pathlib.Path:
+    """Create the repository-bound task-temp topology required by the controller."""
+
+    repository = base / "credit-analysis-repo"
+    repository.mkdir(exist_ok=True)
+    (repository / ".git").mkdir(exist_ok=True)
+    task_root = base / "tmp" / repository.name / thread_name
+    task_root.mkdir(parents=True)
+    return task_root
 
 
 def finding_record(
@@ -2569,6 +2581,37 @@ def test_credit_analysis_normalizes_sol_transport_without_changing_judgments(
     tmp_path: pathlib.Path,
 ) -> None:
     workflow = load_credit_analysis_workflow_module()
+    normalized_groups, classifications, unassessed = (
+        workflow._holistic_call_classifications(
+            [
+                {
+                    "call_ids": ["call-1", "call-2"],
+                    "classification": "necessary",
+                    "reason_code": "required-workflow",
+                    "rationale": "Both calls complete the selected workflow.",
+                    "evidence_refs": ["evidence://review/test:000001"],
+                    "workstream": "producer",
+                }
+            ],
+            contract=workflow._load_contract(),
+            call_order=["call-1", "call-2"],
+            workstreams={
+                "call-1": "producer",
+                "call-2": "analysis-overhead",
+            },
+        )
+    )
+    assert [group["call_ids"] for group in normalized_groups] == [
+        ["call-1"],
+        ["call-2"],
+    ]
+    assert [group["workstream"] for group in normalized_groups] == [
+        "producer",
+        "analysis-overhead",
+    ]
+    assert classifications == {"call-1": "necessary", "call-2": "necessary"}
+    assert unassessed == 0
+
     request, _, _ = credit_analysis_request(
         tmp_path,
         extra_completed_turns=3,
@@ -2941,6 +2984,49 @@ def test_credit_analysis_workflow_rejects_invalid_and_conflicting_passes(
     tmp_path: pathlib.Path,
 ) -> None:
     workflow = load_credit_analysis_workflow_module()
+    noncanonical_scope = tmp_path / "noncanonical-task-root"
+    noncanonical_scope.mkdir()
+    noncanonical_base = tmp_path / "noncanonical-request"
+    noncanonical_base.mkdir()
+    noncanonical_request, _, _ = credit_analysis_request(
+        noncanonical_base
+    )
+    noncanonical_payload = json.loads(
+        noncanonical_request.read_text(encoding="utf-8")
+    )
+    noncanonical_payload["task_temp_root"] = str(noncanonical_scope)
+    noncanonical_payload["evidence_output"] = str(
+        noncanonical_scope / "evidence.json"
+    )
+    write_json_file(noncanonical_request, noncanonical_payload)
+    with pytest.raises(
+        workflow.CreditAnalysisError,
+        match="must match <repo-parent>/tmp/<repo-name>/<thread-name>",
+    ):
+        workflow.command_plan_orchestration(
+            noncanonical_request,
+            available_models=holistic_model_catalog(),
+        )
+    assert not (noncanonical_scope / "state.json").exists()
+
+    escaped_scope = tmp_path / "escaped-single-output"
+    escaped_scope.mkdir()
+    escaped_request, _, escaped_task_root = credit_analysis_request(escaped_scope)
+    escaped_payload = json.loads(escaped_request.read_text(encoding="utf-8"))
+    escaped_evidence = escaped_scope / "outside-evidence.json"
+    escaped_payload["evidence_output"] = str(escaped_evidence)
+    write_json_file(escaped_request, escaped_payload)
+    with pytest.raises(
+        workflow.CreditAnalysisError,
+        match="evidence output must be inside task_temp_root",
+    ):
+        workflow.command_plan_orchestration(
+            escaped_request,
+            available_models=holistic_model_catalog(),
+        )
+    assert not escaped_evidence.exists()
+    assert not (escaped_task_root / "state.json").exists()
+
     request, _, _ = credit_analysis_request(
         tmp_path,
         extra_completed_turns=2,
@@ -3432,7 +3518,7 @@ def test_credit_analysis_workflow_standalone_zero_findings_is_isolated(
             "action": "synthesis",
             "mode": "standalone",
             "task_temp_root": str(rejected_root),
-            "evidence_output": str(tmp_path / "synthesis-evidence.json"),
+            "evidence_output": str(rejected_root / "evidence.json"),
         },
     )
     rejected_synthesis = run_credit_analysis_workflow(
@@ -3578,8 +3664,7 @@ def test_credit_analysis_workflow_resolves_current_and_named_threads(
     monkeypatch.setenv("CODEX_THREAD_ID", current_id)
 
     def request_for(name: str, source: dict[str, Any]) -> pathlib.Path:
-        root = tmp_path / f"single-{name}"
-        root.mkdir()
+        root = canonical_credit_task_root(tmp_path, f"single-{name}")
         request = tmp_path / f"single-request-{name}.json"
         write_json_file(
             request,
@@ -3594,7 +3679,7 @@ def test_credit_analysis_workflow_resolves_current_and_named_threads(
                     "turn_ids": [],
                 },
                 "task_temp_root": str(root),
-                "evidence_output": str(tmp_path / f"single-evidence-{name}.json"),
+                "evidence_output": str(root / "evidence.json"),
                 "pricing_profile": None,
                 "expected_surface_contract_version": 5,
                 "mutation_authority": False,
@@ -3814,7 +3899,9 @@ def test_credit_analysis_batch_selects_recent_threads_and_projects_once(
             name=name,
         )
         if name == "count-overall":
-            task_root = tmp_path / f"batch-{name}"
+            task_root = pathlib.Path(
+                json.loads(request.read_text(encoding="utf-8"))["task_temp_root"]
+            )
             task_root.rmdir()
         status = workflow.command_prepare_batch(request)
         if name == "count-overall":
@@ -3829,6 +3916,9 @@ def test_credit_analysis_batch_selects_recent_threads_and_projects_once(
             assert len(manifest["items"]) == 7
             assert all(item["source_fingerprint"] for item in manifest["items"])
         for item in manifest["items"]:
+            assert pathlib.Path(item["evidence_path"]).parent == pathlib.Path(
+                item["state_path"]
+            ).parent
             evidence = json.loads(
                 pathlib.Path(item["evidence_path"]).read_text(encoding="utf-8")
             )
@@ -3851,6 +3941,32 @@ def test_credit_analysis_batch_selects_recent_threads_and_projects_once(
             ]
             assert "queue" not in child_state
         assert workflow.command_prepare_batch(request) == status
+
+    escaped_scope = tmp_path / "escaped-batch-output"
+    escaped_scope.mkdir()
+    escaped_request = credit_analysis_batch_request(
+        escaped_scope,
+        selector={
+            "kind": "recent_threads",
+            "count": 1,
+            "days": None,
+            "project": None,
+        },
+        name="escaped",
+    )
+    escaped_payload = json.loads(escaped_request.read_text(encoding="utf-8"))
+    escaped_manifest = escaped_scope / "outside-manifest.json"
+    escaped_payload["manifest_output"] = str(escaped_manifest)
+    write_json_file(escaped_request, escaped_payload)
+    with pytest.raises(
+        workflow.CreditAnalysisError,
+        match="batch manifest escapes task_temp_root",
+    ):
+        workflow.command_prepare_batch(escaped_request)
+    assert not escaped_manifest.exists()
+    assert not (
+        escaped_scope / "batch-escaped" / "batch-state.json"
+    ).exists()
 
     indexed_credit_analysis_session(
         codex_home,
@@ -5879,6 +5995,106 @@ def test_skill_update_workflow_preserves_baseline_runs_checks_once_and_finalizes
     assert evidence["checks"][1]["stdout"] == "מלא\n"
     assert check_log.read_text(encoding="utf-8").splitlines() == ["run"]
     assert baseline.read_text(encoding="utf-8") == "keep me\n"
+
+    unchanged = run_skill_update_workflow(
+        "verify",
+        "--state",
+        str(state_path),
+        "--evidence-output",
+        str(evidence_path),
+    )
+    assert unchanged.returncode == 2
+    assert "has not changed since successful verification" in unchanged.stderr
+    assert check_log.read_text(encoding="utf-8").splitlines() == ["run"]
+
+    outside_scope = worktree / "skills" / "beta-tool" / "notes.txt"
+    outside_scope.write_text("Changed notes\n", encoding="utf-8", newline="\n")
+    assert run_git(worktree, "add", "skills/beta-tool/notes.txt").returncode == 0
+    assert run_git(worktree, "commit", "-m", "outside scope").returncode == 0
+    broadened = run_skill_update_workflow(
+        "verify",
+        "--state",
+        str(state_path),
+        "--evidence-output",
+        str(evidence_path),
+    )
+    assert broadened.returncode == 2
+    assert "committed path is outside prepared scope" in broadened.stderr
+    pending_state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert pending_state["verification"]["status"] == "pending"
+    assert pending_state["verification"]["generation"] == 1
+    assert check_log.read_text(encoding="utf-8").splitlines() == ["run"]
+    blocked_pending = run_skill_update_workflow(
+        "finalize",
+        "--state",
+        str(state_path),
+    )
+    assert blocked_pending.returncode == 2
+    assert "before successful verification" in blocked_pending.stderr
+    assert run_git(worktree, "revert", "--no-edit", "HEAD").returncode == 0
+
+    helper.write_text(
+        "VALUE = 2\n# lint correction\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    assert run_git(
+        worktree,
+        "add",
+        "skills/alpha-tool/scripts/tool.py",
+    ).returncode == 0
+    assert run_git(worktree, "commit", "-m", "lint correction").returncode == 0
+    corrected = run_skill_update_workflow(
+        "verify",
+        "--state",
+        str(state_path),
+        "--evidence-output",
+        str(evidence_path),
+    )
+    assert corrected.returncode == 0, corrected.stderr
+    corrected_state_text = state_path.read_text(encoding="utf-8")
+    corrected_evidence_text = evidence_path.read_text(encoding="utf-8")
+    corrected_state = json.loads(corrected_state_text)
+    assert corrected_state["verification"]["status"] == "passed"
+    assert corrected_state["verification"]["generation"] == 1
+    assert check_log.read_text(encoding="utf-8").splitlines() == ["run", "run"]
+
+    helper.write_text(
+        "VALUE = 2\n# later change\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    exhausted = run_skill_update_workflow(
+        "verify",
+        "--state",
+        str(state_path),
+        "--evidence-output",
+        str(evidence_path),
+    )
+    assert exhausted.returncode == 2
+    assert "changed after the correction generation" in exhausted.stderr
+    assert check_log.read_text(encoding="utf-8").splitlines() == ["run", "run"]
+    blocked_state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert blocked_state["verification"]["status"] == "invalidated"
+    assert blocked_state["verification"]["generation"] == 1
+    blocked_finalize = run_skill_update_workflow(
+        "finalize",
+        "--state",
+        str(state_path),
+    )
+    assert blocked_finalize.returncode == 2
+    assert "before successful verification" in blocked_finalize.stderr
+    helper.write_text(
+        "VALUE = 2\n# lint correction\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    state_path.write_text(corrected_state_text, encoding="utf-8", newline="\n")
+    evidence_path.write_text(
+        corrected_evidence_text,
+        encoding="utf-8",
+        newline="\n",
+    )
 
     undeclared_input = task_temp_root / "user-input.txt"
     undeclared_input.write_text("preserve\n", encoding="utf-8", newline="\n")
@@ -8194,6 +8410,11 @@ def test_integrated_ship_delegates_admin_semantics_to_merge_owner(
                 message=None,
             )
         if command[1:3] == ["run", "view"]:
+            assert command[-2:] == [
+                "--json",
+                "status,conclusion,headSha,url,name,workflowName,jobs",
+            ]
+            assert "--jq" not in command
             return argparse.Namespace(
                 ok=True,
                 data={
@@ -8205,6 +8426,26 @@ def test_integrated_ship_delegates_admin_semantics_to_merge_owner(
                     ),
                     "name": "CI",
                     "workflowName": "CI",
+                    "jobs": [
+                        {
+                            "databaseId": 84,
+                            "name": "validate",
+                            "conclusion": None,
+                            "url": (
+                                "https://github.com/example/repository/"
+                                "actions/runs/42/job/84"
+                            ),
+                        },
+                        {
+                            "databaseId": 85,
+                            "name": "other",
+                            "conclusion": "success",
+                            "url": (
+                                "https://github.com/example/repository/"
+                                "actions/runs/42/job/85"
+                            ),
+                        },
+                    ],
                 },
                 message=None,
             )
@@ -8236,6 +8477,16 @@ def test_integrated_ship_delegates_admin_semantics_to_merge_owner(
         "pending"
     )
     assert ambiguous_payload["diagnostic"]["action_run"]["head_matches"] is True
+    assert ambiguous_payload["diagnostic"]["action_run"]["matching_jobs"] == [
+        {
+            "database_id": 84,
+            "name": "validate",
+            "conclusion": None,
+            "url": (
+                "https://github.com/example/repository/actions/runs/42/job/84"
+            ),
+        }
+    ]
     assert validation_times[:2] == [0.0, 0.0]
     assert validation_times[-1] == 60.0
 
@@ -9707,7 +9958,11 @@ def test_promote_repository_prepare_only_mode_remains_unchanged(
 def test_promote_and_deploy_does_not_inject_base_revision(
     tmp_path: pathlib.Path,
 ) -> None:
-    repo, approved_head, log, environment = prepare_repository_lifecycle_repo(tmp_path)
+    repo, approved_head, log, environment = prepare_repository_lifecycle_repo(
+        tmp_path,
+        managed_skills=True,
+        handoff="ceratops-skill-lifecycle/deploy",
+    )
     first = subprocess.run(
         [
             sys.executable,
@@ -9725,6 +9980,14 @@ def test_promote_and_deploy_does_not_inject_base_revision(
     )
     assert first.returncode == 0, first.stderr
     assert not log.exists()
+
+    retained_worktree = tmp_path / "approved-retained"
+    assert (
+        run_git(repo, "worktree", "add", str(retained_worktree), "approved").returncode
+        == 0
+    )
+    retained_file = retained_worktree / "uncommitted.txt"
+    retained_file.write_text("preserve me\n", encoding="utf-8", newline="\n")
 
     assert run_git(repo, "switch", "-c", "approved-second", "release/local").returncode == 0
     (repo / "README.md").write_text(
@@ -9752,7 +10015,42 @@ def test_promote_and_deploy_does_not_inject_base_revision(
     )
 
     assert second.returncode == 0, second.stderr
-    assert json.loads(second.stdout)["release_start"] == approved_head
+    second_result = json.loads(second.stdout)
+    assert second_result["release_start"] == approved_head
+    assert second_result["handoff"] == "ceratops-skill-lifecycle/deploy"
+    assert second_result["preserved_sources"] == [
+        {
+            "branch": "approved",
+            "findings": [
+                {
+                    "kind": "dirty_worktree",
+                    "subject": "approved",
+                    "detail": "1 status entry",
+                }
+            ],
+        }
+    ]
+    second_head = run_git(repo, "rev-parse", "release/local").stdout.strip()
+    assert json.loads(
+        pathlib.Path(second_result["pending_work_scope"]).read_text(encoding="utf-8")
+    ) == {
+        "sources": [
+            {
+                "branch": "approved",
+                "commit": approved_head,
+                "state": "preserved",
+            },
+            {
+                "branch": "approved-second",
+                "commit": second_head,
+                "state": "retained",
+            },
+        ],
+        "target_branch": "release/local",
+        "target_commit": second_head,
+        "version": 2,
+    }
+    assert retained_file.read_text(encoding="utf-8") == "preserve me\n"
     assert log.read_text(encoding="utf-8") == "no-base\n"
 
     divergent = tmp_path / "automatic-rebase-success"
@@ -10327,6 +10625,21 @@ def test_repository_ship_release_failure_blocks_deployment_and_cleanup(
 
     assert captured.value.payload["phase"] == "release_publication"
     assert captured.value.payload["remote_mutation"] is True
+    assert captured.value.payload["remaining"] == "release_publication"
+    assert list(captured.value.payload["completed"]) == [
+        "merge",
+        "synchronization",
+    ]
+    release_resume = captured.value.payload["resume_action"]
+    assert pathlib.Path(release_resume["cwd"]) == repo.resolve()
+    assert release_resume["argv"][:2] == [
+        sys.executable,
+        str(SHIP_REPOSITORY.resolve()),
+    ]
+    assert release_resume["argv"][
+        release_resume["argv"].index("--commit") + 1
+    ] == "a" * 40
+    assert "--review-replies-request" not in release_resume["argv"]
     assert len(commands) == 4
     assert str(RELEASE_OPERATION) in commands[-1]
     assert "publish" in commands[-1]
@@ -10347,6 +10660,12 @@ def test_repository_ship_release_failure_blocks_deployment_and_cleanup(
         ship_repository(args)
 
     assert captured.value.payload["phase"] == "deployment"
+    assert captured.value.payload["remaining"] == "deployment"
+    assert list(captured.value.payload["completed"]) == [
+        "merge",
+        "synchronization",
+        "release_publication",
+    ]
     release_checkpoint = loaded["_operation_checkpoint_path"](
         repo, "a" * 40, "release_publication"
     )
@@ -10526,6 +10845,24 @@ def test_repository_ship_late_pending_work_reports_remote_mutation(
     assert result["remote_mutation"] is True
     assert result["repository"] == "example/repository"
     assert result["commit"] == "a" * 40
+    assert result["remaining"] == (
+        "selected_work_recheck"
+        if late_phase == "post_sync"
+        else "finalization"
+    )
+    assert list(result["completed"]) == (
+        ["merge", "synchronization"]
+        if late_phase == "post_sync"
+        else [
+            "merge",
+            "synchronization",
+            "release_publication",
+            "deployment",
+        ]
+    )
+    assert result["resume_action"]["argv"][
+        result["resume_action"]["argv"].index("--commit") + 1
+    ] == "a" * 40
     release_runner = str(SHIP_REPOSITORY.parent / "run-release-operation.py")
     deploy_runner = str(SHIP_REPOSITORY.parent / "run-deploy-operation.py")
     assert release_runner in commands[0]
@@ -10567,6 +10904,29 @@ def test_repository_ship_late_pending_work_reports_remote_mutation(
                 (0, prepared),
                 (0, {**shipped, "status": "already_shipped"}),
                 (0, prepared),
+                (1, {"status": "error", "message": "cleanup failed"}),
+            ]
+        )
+
+        with pytest.raises(loaded["RepositoryShipError"]) as captured:
+            ship_repository(args)
+
+        recovery = captured.value.payload
+        assert recovery["phase"] == "finalization"
+        assert recovery["remaining"] == "finalization"
+        assert recovery["completed"]["release_publication"] == published
+        assert recovery["completed"]["deployment"] == deployed
+        assert recovery["resume_action"] == result["resume_action"]
+        assert "--review-replies-request" not in recovery["resume_action"]["argv"]
+        assert release_checkpoint.is_file()
+        assert deployment_checkpoint.is_file()
+
+        responses.extend(
+            [
+                (0, preflight),
+                (0, prepared),
+                (0, {**shipped, "status": "already_shipped"}),
+                (0, prepared),
                 (0, {"status": "finalized"}),
             ]
         )
@@ -10576,8 +10936,15 @@ def test_repository_ship_late_pending_work_reports_remote_mutation(
         assert resumed["status"] == "already_shipped"
         assert resumed["release_publication"] == published
         assert resumed["deployment"] == deployed
-        assert len(commands) == 12
-        assert all(release_runner not in command for command in commands[8:])
+        assert len(commands) == 17
+        retry_release_commands = [
+            command for command in commands[7:] if release_runner in command
+        ]
+        assert len(retry_release_commands) == 2
+        assert all(
+            "preflight" in command and "publish" not in command
+            for command in retry_release_commands
+        )
         assert all(deploy_runner not in command for command in commands[7:])
         assert not release_checkpoint.exists()
         assert not deployment_checkpoint.exists()
@@ -10700,11 +11067,12 @@ def test_repository_ship_blocks_selected_worktree_caller_before_remote_process(
         newline="\n",
     )
     child_calls: list[list[str]] = []
+    selected_path = {"value": selected}
 
     def branch_worktree(repo_root: pathlib.Path, branch: str) -> pathlib.Path:
         assert repo_root == repo
         assert branch == "selected"
-        return selected
+        return selected_path["value"]
 
     def run_json(command: list[str]) -> tuple[int, dict[str, Any]]:
         child_calls.append(command)
@@ -10750,6 +11118,22 @@ def test_repository_ship_blocks_selected_worktree_caller_before_remote_process(
     assert len(child_calls) == 1
     assert "prepare" in child_calls[0]
 
+    preserved = tmp_path / "custom" / "repo" / "thread"
+    preserved.mkdir(parents=True)
+    selected_path["value"] = preserved
+    monkeypatch.chdir(preserved)
+    loaded["_require_cleanup_safe_caller"](
+        repo,
+        scope,
+        [
+            {
+                "branch": "selected",
+                "path": str(preserved.resolve()),
+                "reason": "resolved parent chain has no 'worktrees' directory",
+            }
+        ],
+    )
+
 
 def run_pending_work(
     repo: pathlib.Path,
@@ -10781,6 +11165,9 @@ def test_pending_work_scope_is_selected_generic_and_finalized_late(
     assert run_git(repo, "init", "-b", "main").returncode == 0
     assert run_git(repo, "config", "user.email", "test@example.invalid").returncode == 0
     assert run_git(repo, "config", "user.name", "Test Agent").returncode == 0
+    (repo / ".git" / "info" / "exclude").write_text(
+        ".codex-thread\n", encoding="utf-8", newline="\n"
+    )
     (repo / "README.md").write_text("base\n", encoding="utf-8", newline="\n")
     assert run_git(repo, "add", "README.md").returncode == 0
     assert run_git(repo, "commit", "-m", "base").returncode == 0
@@ -10799,6 +11186,23 @@ def test_pending_work_scope_is_selected_generic_and_finalized_late(
         run_git(repo, "worktree", "add", str(unrelated_worktree), "unrelated").returncode
         == 0
     )
+    thread_id = "019ffd18-edc9-7c81-9a2c-4e07af2b2ca3"
+    (selected_worktree / ".codex-thread").write_text(
+        json.dumps({"name": "Selected work", "id": thread_id}) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    temp_boundary = tmp_path / "tmp"
+    task_temp_root = temp_boundary / repo.name
+    worktree_temp = task_temp_root / "selected"
+    thread_temp = task_temp_root / f"{thread_id}-evidence"
+    ambiguous_temp = task_temp_root / "selected-2-update"
+    unrelated_temp = task_temp_root / "unrelated-task"
+    for directory in (worktree_temp, thread_temp, ambiguous_temp, unrelated_temp):
+        directory.mkdir(parents=True)
+        (directory / "artifact.txt").write_text(
+            "temporary\n", encoding="utf-8", newline="\n"
+        )
     (selected_worktree / "README.md").write_text(
         "base\nselected\n",
         encoding="utf-8",
@@ -10843,6 +11247,28 @@ def test_pending_work_scope_is_selected_generic_and_finalized_late(
         loaded = runpy.run_path(str(MANAGE_PENDING_WORK))
     finally:
         sys.path.remove(lifecycle_scripts)
+    named_temp_boundary = tmp_path / "temp"
+    nested_temp = named_temp_boundary / "project" / "task"
+    nested_temp.mkdir(parents=True)
+    loaded["_remove_empty_parents"](
+        nested_temp,
+        boundary_names={"tmp", "temp"},
+    )
+    assert named_temp_boundary.is_dir()
+    assert not (named_temp_boundary / "project").exists()
+    boundary_free_path = (
+        pathlib.Path(tmp_path.anchor) / "__ceratops_boundary_test__" / "cache" / "task"
+    )
+    with pytest.raises(loaded["PendingWorkError"], match="directory boundary"):
+        loaded["_cleanup_boundary"](
+            boundary_free_path,
+            {"tmp", "temp"},
+        )
+    with pytest.raises(loaded["PendingWorkError"], match="directory boundary"):
+        loaded["_cleanup_boundary"](
+            boundary_free_path,
+            {"worktrees"},
+        )
     ship_module = loaded["ship"]
     unrelated_commit = run_git(repo, "rev-parse", "refs/heads/unrelated").stdout.strip()
     identity_scope = tmp_path / "identity-scope.json"
@@ -11123,6 +11549,12 @@ def test_pending_work_scope_is_selected_generic_and_finalized_late(
     assert unrelated_worktree.is_dir()
     assert run_git(repo, "show-ref", "--verify", "refs/heads/unrelated").returncode == 0
     assert not scope_path.exists()
+    assert not worktree_temp.exists()
+    assert not thread_temp.exists()
+    assert ambiguous_temp.is_dir()
+    assert unrelated_temp.is_dir()
+    assert task_temp_root.is_dir()
+    assert temp_boundary.is_dir()
 
     assert run_git(repo, "branch", "recover-old", target_commit).returncode == 0
     recover_recorded = run_pending_work(
@@ -11243,7 +11675,19 @@ def test_pending_work_scope_is_selected_generic_and_finalized_late(
 
     assert run_git(repo, "branch", "legacy-clean", descendant_target).returncode == 0
     assert run_git(repo, "branch", "legacy-dirty", descendant_target).returncode == 0
+    shutil.rmtree(unrelated_temp)
+    legacy_clean_worktree = worktree_root / "legacy-clean"
     legacy_dirty_worktree = worktree_root / "legacy-dirty"
+    assert (
+        run_git(
+            repo,
+            "worktree",
+            "add",
+            str(legacy_clean_worktree),
+            "legacy-clean",
+        ).returncode
+        == 0
+    )
     assert (
         run_git(
             repo,
@@ -11253,6 +11697,16 @@ def test_pending_work_scope_is_selected_generic_and_finalized_late(
             "legacy-dirty",
         ).returncode
         == 0
+    )
+    (legacy_clean_worktree / ".codex-thread").write_text(
+        json.dumps({"name": "Legacy clean", "id": thread_id}) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    legacy_temp = task_temp_root / "legacy-clean"
+    legacy_temp.mkdir(parents=True)
+    (legacy_temp / "result.json").write_text(
+        "{}\n", encoding="utf-8", newline="\n"
     )
     (legacy_dirty_worktree / "README.md").write_text(
         "base\nselected\nlegacy dirty\n",
@@ -11376,6 +11830,11 @@ def test_pending_work_scope_is_selected_generic_and_finalized_late(
         run_git(repo, "show-ref", "--verify", "refs/heads/legacy-new").returncode
         != 0
     )
+    assert not legacy_clean_worktree.exists()
+    assert not legacy_temp.exists()
+    assert ambiguous_temp.is_dir()
+    assert task_temp_root.is_dir()
+    assert temp_boundary.is_dir()
     assert legacy_dirty_worktree.is_dir()
     assert "legacy dirty" in (legacy_dirty_worktree / "README.md").read_text(
         encoding="utf-8"
@@ -11420,6 +11879,117 @@ def test_pending_work_scope_is_selected_generic_and_finalized_late(
         "source_branches": [],
         "pending_work_scope": "",
     }
+
+    assert run_git(repo, "branch", "external-safe", migration_target).returncode == 0
+    assert (
+        run_git(repo, "branch", "external-preserved", migration_target).returncode
+        == 0
+    )
+    external_safe_root = tmp_path / "alternate" / "worktrees" / repo.name
+    external_safe = external_safe_root / "external-safe"
+    external_preserved = tmp_path / "alternate" / "custom" / "external-preserved"
+    external_safe_root.mkdir(parents=True)
+    external_preserved.parent.mkdir(parents=True)
+    assert (
+        run_git(
+            repo,
+            "worktree",
+            "add",
+            str(external_safe),
+            "external-safe",
+        ).returncode
+        == 0
+    )
+    assert (
+        run_git(
+            repo,
+            "worktree",
+            "add",
+            str(external_preserved),
+            "external-preserved",
+        ).returncode
+        == 0
+    )
+    external_recorded = run_pending_work(
+        repo,
+        "record",
+        "--target-branch",
+        "release/local",
+        "--target-commit",
+        migration_target,
+        "--source-branch",
+        "external-safe",
+        "--source-branch",
+        "external-preserved",
+    )
+    assert external_recorded.returncode == 0, external_recorded.stderr
+    external_scope = pathlib.Path(
+        json.loads(external_recorded.stdout)["pending_work_scope"]
+    )
+
+    external_preflight = run_pending_work(
+        repo,
+        "prepare",
+        "--target-branch",
+        "release/local",
+    )
+    assert external_preflight.returncode == 0, external_preflight.stderr
+    external_preflight_payload = json.loads(external_preflight.stdout)
+    expected_preservation = {
+        "branch": "external-preserved",
+        "path": str(external_preserved.resolve()),
+        "reason": "resolved parent chain has no 'worktrees' directory",
+    }
+    assert external_preflight_payload["preserved_worktrees"] == [
+        expected_preservation
+    ]
+    assert [source["state"] for source in json.loads(
+        external_scope.read_text(encoding="utf-8")
+    )["sources"]] == ["retained", "retained"]
+
+    external_finalized = run_pending_work(
+        repo,
+        "finalize",
+        "--scope",
+        str(external_scope),
+        "--target-branch",
+        "release/local",
+        "--target-commit",
+        migration_target,
+        "--current-branch",
+        "main",
+        "--current-commit",
+        migration_main,
+    )
+    assert external_finalized.returncode == 0, external_finalized.stderr
+    assert json.loads(external_finalized.stdout) == {
+        "status": "finalized",
+        "removed": ["external-safe"],
+        "preserved": ["external-preserved"],
+        "preserved_worktrees": [expected_preservation],
+        "pending_work_scope": "",
+    }
+    assert not external_safe.exists()
+    assert not external_safe_root.exists()
+    assert external_preserved.is_dir()
+    assert (
+        run_git(
+            repo,
+            "show-ref",
+            "--verify",
+            "refs/heads/external-safe",
+        ).returncode
+        != 0
+    )
+    assert (
+        run_git(
+            repo,
+            "show-ref",
+            "--verify",
+            "refs/heads/external-preserved",
+        ).returncode
+        == 0
+    )
 
 
 def test_pending_work_finalization_persists_partial_cleanup_progress(
@@ -11579,7 +12149,7 @@ def test_pending_work_finalization_persists_partial_cleanup_progress(
         repo_root: pathlib.Path,
         record_path: pathlib.Path,
     ) -> None:
-        _, _, worktree, _ = loaded["_read_residual_cleanup_record"](
+        _, _, worktree, _, _, _, _ = loaded["_read_residual_cleanup_record"](
             repo_root, record_path
         )
         residual_cleanup_steps.append("ownership")
@@ -11630,6 +12200,8 @@ def test_pending_work_finalization_persists_partial_cleanup_progress(
     assert resumed["removed"] == ["selected-b"]
     assert not scope_path.exists()
     assert run_git(repo, "show-ref", "--verify", "refs/heads/selected-b").returncode != 0
+    assert not worktree_root.exists()
+    assert (tmp_path / "worktrees").is_dir()
 
     assert run_git(repo, "branch", "crash-delete", target_commit).returncode == 0
     crash_recorded = run_pending_work(

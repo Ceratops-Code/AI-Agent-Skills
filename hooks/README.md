@@ -7,6 +7,8 @@ managed skill runtime:
   replaces oversized successful ripgrep output in `PostToolUse`.
 - `preserve-eol-for-apply-patch-tool.py` records and restores encoding and
   uniform line endings around `apply_patch`.
+- `command-probe.py` returns structured false results for exact read-only
+  ripgrep and Git probes without hiding real command errors.
 - `windows-shell-sanity.py` preflights Windows PowerShell commands.
 
 The source files are not installed automatically. Runtime activation copies
@@ -47,9 +49,12 @@ PowerShell preflight used by Codex shell calls. It can run as a Codex
 `PreToolUse` hook or as a direct wrapper around one PowerShell command.
 
 The helper reduces repeated model correction without hiding native command
-errors. It applies exact rewrites before execution, adds targeted guidance only
-after ordinary failures, and blocks only findings that can produce an
-unreliable result or violate the active structured-command policy.
+errors. It applies closed command-text rewrites before execution, adds targeted
+guidance only after ordinary failures, and blocks only findings that can produce
+an unreliable result or violate the active structured-command policy.
+Model-generated PowerShell text remains subject to this preflight. Helper-owned
+workflows invoke executables with argument arrays and parse structured output in
+their owner; PowerShell scripts and pipelines remain PowerShell.
 
 For `Docs-and-Claims`, `pdf-form-tools`, and `PixelTops-Skills`, hook mode also
 resolves the event `cwd` through Git's common directory and replaces each
@@ -64,8 +69,10 @@ execution with restart guidance.
 ## Ownership And Runtime Boundary
 
 This directory owns user-global operational hooks that are not part of one
-managed skill runtime. Skill-local lifecycle helpers remain under
-`skills/*/scripts/`.
+managed skill runtime. `windows-shell-sanity.py` owns PowerShell preflight and
+execution; `command-probe.py` owns structured negative-result classification
+for the exact static `rg` and Git forms routed by that hook. Skill-local
+lifecycle helpers remain under `skills/*/scripts/`.
 
 The source file is not installed automatically. The active hook normally calls:
 
@@ -79,7 +86,13 @@ installed helper.
 
 ## Decision Model
 
-The helper analyzes one command in this order:
+Hook mode first recognizes only closed, static read-only probe forms. It routes
+standalone `rg`, exact Git ref and ancestor probes, and exact
+`git ls-files | rg` pipelines to `command-probe.py` as encoded structured
+requests. Dynamic, chained, redirected, or unsupported forms continue through
+ordinary shell handling.
+
+All other commands are analyzed in this order:
 
 1. Mask quoted data, here-strings, and comments so embedded examples do not
    become findings.
@@ -94,10 +107,16 @@ Successful annotated commands emit no helper message. When execution fails or
 PowerShell records a new error, the helper preserves the native error and
 appends one compact hint for each matched finding.
 
+When direct mode launches Windows PowerShell, it removes inherited
+`PSModulePath` so that the process reconstructs compatible defaults. Commands
+that use `Get-FileHash` receive a compatible-module preflight before the target
+runs; PowerShell 7 and unrelated commands do not receive that preflight.
+
 ## Finding Behavior
 
 | Finding | Disposition | Behavior |
 | --- | --- | --- |
+| `static_quoted_executable` | Rewrite | Adds PowerShell's call operator only when a single-quoted absolute `.exe`, `.com`, `.cmd`, or `.bat` path exists at a command boundary and is followed by arguments. Dynamic, missing, and data-position paths remain unchanged. |
 | `complex_inline_script` | Annotate on failure | Runs through encoded transport; suggests a named helper only when execution fails. |
 | `structured_powershell_oneliner` | Block | Enforces the active rule against loops combined with parsing, filtering, or aggregation one-liners. |
 | `bash_heredoc` | Annotate on failure | Preserves PowerShell's parser error and explains the PowerShell here-string alternative. |
@@ -195,6 +214,7 @@ Windows shell sanity hints:
 - It does not infer whether a checked file is optional or required.
 - It does not rewrite wildcard-bearing or interpolated `New-Item` paths.
 - It does not suppress native stdout or stderr.
+- It does not reinterpret exit code 1 outside the exact probe modes.
 - It does not create temporary command files.
 - It does not install itself or edit hook configuration.
 - It does not discover interpreters or mutate `CODEX_PC_PYTHON` at hook runtime.

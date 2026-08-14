@@ -2514,14 +2514,24 @@ def command_plan_orchestration(
     request_path: pathlib.Path,
     *,
     available_models: set[str] | Mapping[str, Mapping[str, Any]] | None = None,
+    task_root_boundary: pathlib.Path | None = None,
 ) -> dict[str, Any]:
-    """Collect once and freeze the finite holistic Luna-plus-Sol plan."""
+    """Collect once and freeze the finite holistic Luna-plus-Sol plan.
+
+    ``task_root_boundary`` is an internal batch-owner handoff; public CLI calls
+    omit it and must provide a canonical repository-bound task root directly.
+    """
 
     contract = _load_contract()
     catalog = _codex_model_catalog() if available_models is None else available_models
     model_specs = _holistic_model_specs(contract, catalog)
     ledger = _load_ledger()
-    request = _validate_request(request_path, contract, ledger)
+    request = _validate_request(
+        request_path,
+        contract,
+        ledger,
+        task_root_boundary=task_root_boundary,
+    )
     surface_order = _surface_order_for_request(request, contract)
     analysis_id = secrets.token_hex(12)
     evidence, fingerprint, evidence_sha, path_roots, analysis_call_ids = (
@@ -3985,26 +3995,23 @@ def _holistic_call_classifications(
             raise CreditAnalysisError(f"{label} non-necessary reason must be null")
         if group.get("workstream") not in {"producer", "analysis-overhead"}:
             raise CreditAnalysisError(f"{label} workstream is invalid")
-        observed_workstreams = {workstreams[call_id] for call_id in calls}
-        if len(observed_workstreams) != 1:
-            raise CreditAnalysisError(f"{label} mixes producer and analysis work")
-        workstream = next(iter(observed_workstreams))
         refs = _holistic_result_refs(group.get("evidence_refs"), f"{label} evidence")
         if not isinstance(group.get("rationale"), str) or not group["rationale"].strip():
             raise CreditAnalysisError(f"{label} rationale is empty")
-        detail = {
-            "classification": classification,
-            "reason_code": reason,
-            "rationale": group["rationale"],
-            "evidence_refs": refs,
-            "workstream": workstream,
-        }
         for call_id in calls:
             if call_id in by_call:
                 raise CreditAnalysisError(
                     f"call classification is duplicated: {call_id}"
                 )
-            by_call[call_id] = detail
+            # Grouping is model transport; the frozen call inventory remains the
+            # authority for workstream identity and deterministic split points.
+            by_call[call_id] = {
+                "classification": classification,
+                "reason_code": reason,
+                "rationale": group["rationale"],
+                "evidence_refs": refs,
+                "workstream": workstreams[call_id],
+            }
     if set(by_call) != set(call_order):
         raise CreditAnalysisError("call classifications are missing or cross-analysis")
 

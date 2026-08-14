@@ -49,6 +49,11 @@ what still needs attention.
   underlying option or decision.
 - After semantic discovery, sweep only touched scopes and the verified task temp
   root for plausible task-created residue.
+- Reconcile every material failed command, gate, retry, interruption, and manual
+  recovery in the selected closure window. Classify its cause as target-system,
+  workflow/helper, agent/tool-use, or external interruption; name the earliest
+  deterministic prevention or detection owner. Treat an instruction that did
+  not enforce the behavior in the run as an enforcement gap, not prevention.
 - Separate required work from optional cleanup, intentionally retained state,
   and unverified external state.
 - If external state matters and was not freshly checked, say so.
@@ -147,6 +152,8 @@ what still needs attention.
 - The checked closure scope is clear.
 - Both origin-separated semantic passes and the final internal open-loop
   question are complete.
+- Every material failure in the closure window is classified with its earliest
+  deterministic prevention or detection owner.
 - Every still-relevant user-origin open loop and material assistant-origin open
   loop without a later terminal disposition is reported. Related or partial
   implementation, advisory answers that leave a choice open, silence, and
@@ -173,6 +180,8 @@ Return only relevant concise bullets:
 - stale or out-of-scope state
 - important unverified claims
 - relevant unresolved requests, proposals, questions, warnings, or decisions
+- material failures, their cause class, and their earliest deterministic
+  prevention or detection owner
 - optional cleanup that was unsafe or unauthorized to perform
 - `Credit savings`: the required result, only in `included` mode
 

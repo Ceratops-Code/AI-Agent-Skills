@@ -116,6 +116,34 @@ class BoundedSourceSearchTests(unittest.TestCase):
         self.assertIn("Bounded source-search output", payload["stopReason"])
         self.assertLessEqual(len(payload["stopReason"].encode("utf-8")), 600)
 
+    def test_hook_bounds_successful_command_probe_rg_output(self):
+        lines = [f"src/a.py:{index}:needle {'x' * 100}" for index in range(20)]
+        probe_output = json.dumps(
+            {
+                "schema": "ceratops-command-probe-result.v1",
+                "ok": True,
+                "mode": "search",
+                "matched": True,
+                "tool_returncode": 0,
+                "stdout": "\n".join(lines),
+                "stderr": "",
+            }
+        )
+        event = {
+            "hook_event_name": "PostToolUse",
+            "tool_name": "Bash",
+            "tool_input": {
+                "command": "python C:\\hooks\\command-probe.py --encoded-request x"
+            },
+            "tool_response": {"exit_code": 0, "output": probe_output},
+        }
+
+        payload = self.hook_result(event)
+
+        self.assertIsNotNone(payload)
+        self.assertIn("Bounded source-search output", payload["stopReason"])
+        self.assertLessEqual(len(payload["stopReason"].encode("utf-8")), 600)
+
     def test_hook_leaves_small_non_search_and_failed_output_unchanged(self):
         base = {
             "hook_event_name": "PostToolUse",

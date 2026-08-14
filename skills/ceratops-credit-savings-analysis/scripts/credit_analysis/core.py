@@ -521,14 +521,74 @@ def _existing_directory(value: Any, label: str) -> pathlib.Path:
     return path
 
 
-def _task_directory(value: Any, label: str) -> pathlib.Path:
+def _validate_canonical_task_directory(path: pathlib.Path, label: str) -> None:
+    """Require ``<repo-parent>/tmp/<repo-name>/<thread-name>`` topology.
+
+    The sibling repository marker binds the caller-selected cleanup root to a
+    concrete repository name. This check runs before creating a missing final
+    component so malformed callers cannot create controller state elsewhere.
+    """
+
+    repository_name = path.parent.name
+    temp_root = path.parent.parent
+    repository_root = temp_root.parent / repository_name
+    if temp_root.name.casefold() != "tmp" or not repository_name:
+        raise CreditAnalysisError(
+            f"{label} must match <repo-parent>/tmp/<repo-name>/<thread-name>"
+        )
+    try:
+        resolved_repository = repository_root.resolve(strict=True)
+    except OSError as exc:
+        raise CreditAnalysisError(
+            f"{label} has no matching sibling repository: {repository_root}"
+        ) from exc
+    git_marker = resolved_repository / ".git"
+    if (
+        repository_root.is_symlink()
+        or not resolved_repository.is_dir()
+        or git_marker.is_symlink()
+        or not (git_marker.is_file() or git_marker.is_dir())
+    ):
+        raise CreditAnalysisError(
+            f"{label} has no matching real Git repository: {repository_root}"
+        )
+
+
+def _validate_task_directory_scope(
+    path: pathlib.Path,
+    label: str,
+    canonical_boundary: pathlib.Path | None,
+) -> None:
+    """Validate a public canonical root or one helper-owned nested child root."""
+
+    if canonical_boundary is None:
+        _validate_canonical_task_directory(path, label)
+        return
+    boundary = _existing_directory(str(canonical_boundary), f"{label} boundary")
+    _validate_canonical_task_directory(boundary, f"{label} boundary")
+    try:
+        path.relative_to(boundary)
+    except ValueError as exc:
+        raise CreditAnalysisError(
+            f"{label} must be inside its canonical task root"
+        ) from exc
+
+
+def _task_directory(
+    value: Any,
+    label: str,
+    *,
+    canonical_boundary: pathlib.Path | None = None,
+) -> pathlib.Path:
     """Return the caller-selected directory, creating only its final component."""
 
     if not isinstance(value, str) or not value:
         raise CreditAnalysisError(f"{label} must be nonempty text")
     requested = pathlib.Path(value).expanduser()
     if requested.exists() or requested.is_symlink():
-        return _existing_directory(value, label)
+        existing = _existing_directory(value, label)
+        _validate_task_directory_scope(existing, label, canonical_boundary)
+        return existing
     if requested.name in {"", ".", ".."}:
         raise CreditAnalysisError(f"{label} must name a child directory")
     try:
@@ -538,6 +598,7 @@ def _task_directory(value: Any, label: str) -> pathlib.Path:
     if requested.parent.is_symlink() or not parent.is_dir():
         raise CreditAnalysisError(f"{label} parent must be a real directory")
     path = parent / requested.name
+    _validate_task_directory_scope(path, label, canonical_boundary)
     try:
         path.mkdir()
     except FileExistsError:
@@ -911,6 +972,8 @@ def _validate_request(
     request_path: pathlib.Path,
     contract: dict[str, Any],
     ledger: ModuleType,
+    *,
+    task_root_boundary: pathlib.Path | None = None,
 ) -> dict[str, Any]:
     request = _read_json(request_path, "request")
     _closed(request, REQUEST_FIELDS, "request")
@@ -931,9 +994,19 @@ def _validate_request(
         raise CreditAnalysisError("surface contract version mismatch")
     source, session = _request_source(request.get("source"), ledger)
     window, collector_window = _request_window(request.get("window"))
-    task_root = _task_directory(request.get("task_temp_root"), "task_temp_root")
+    task_root = _task_directory(
+        request.get("task_temp_root"),
+        "task_temp_root",
+        canonical_boundary=task_root_boundary,
+    )
     state_path = task_root / "state.json"
     evidence_path = _new_file(request.get("evidence_output"), "evidence output")
+    try:
+        evidence_path.relative_to(task_root)
+    except ValueError as exc:
+        raise CreditAnalysisError(
+            "evidence output must be inside task_temp_root"
+        ) from exc
     findings_dir = task_root / "findings"
     index_path = task_root / "findings.jsonl"
     context_dir = task_root / "context"
