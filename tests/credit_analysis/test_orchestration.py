@@ -65,7 +65,10 @@ def test_bounded_largest_runs_selection_uses_anchor_size_and_positional_successo
     assert selection["selected_run_ids"] == ["a", "b", "c", "d"]
 
 
-def test_bounded_largest_runs_capacity_skips_any_bundle_and_blocks_when_none_fit() -> None:
+def test_bounded_largest_runs_capacity_skips_any_bundle_and_blocks_when_none_fit(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     workflow = load_credit_analysis_workflow_module()
     inventory = [
         {
@@ -192,11 +195,7 @@ def test_bounded_largest_runs_capacity_skips_any_bundle_and_blocks_when_none_fit
         all_oversized_evaluations.append(list(selected_ids))
         return {"fits": False}
 
-    with pytest.raises(
-        workflow.CreditAnalysisError,
-        match="capacity blocker: no eligible anchor bundle fits",
-    ):
-        workflow._bounded_select_run_bundles(inventory, all_oversized)
+    empty_selection = workflow._bounded_select_run_bundles(inventory, all_oversized)
     assert all_oversized_evaluations == [
         ["a", "b"],
         ["c", "d"],
@@ -204,6 +203,67 @@ def test_bounded_largest_runs_capacity_skips_any_bundle_and_blocks_when_none_fit
         ["b", "c"],
         ["d", "e"],
     ]
+    assert empty_selection["selected_run_ids"] == []
+    assert [row["anchor_turn_id"] for row in empty_selection["skipped_bundles"]] == [
+        "a",
+        "c",
+        "e",
+        "b",
+        "d",
+    ]
+    empty_manifest = workflow._bounded_selection_document(
+        analysis_id="analysis-all-oversized",
+        run_inventory=inventory,
+        selection=empty_selection,
+    )
+    assert empty_manifest["coverage"] == {
+        "selected_anchor_count": 0,
+        "companion_count": 0,
+        "unique_selected_runs": 0,
+        "total_eligible_runs": 5,
+        "selected_evidence_chars": 0,
+        "total_evidence_chars": 194,
+        "coverage_percentage": 0.0,
+    }
+    assert [row["turn_id"] for row in empty_manifest["omitted_runs"]] == [
+        "a",
+        "b",
+        "c",
+        "d",
+        "e",
+    ]
+    assert empty_manifest["budget_proof"]["fits"] is False
+
+    request, _, task_root = credit_analysis_request(
+        tmp_path,
+        action="bounded-largest-runs-analysis",
+    )
+
+    def no_bundle_capacity(**_: Any) -> dict[str, Any]:
+        return {"fits": False, "luna": {"fits": False}, "sol": {"fits": False}}
+
+    monkeypatch.setattr(workflow, "_bounded_budget_projection", no_bundle_capacity)
+    with pytest.raises(
+        workflow.CreditAnalysisError,
+        match="selection manifest retained at",
+    ):
+        workflow.command_plan_orchestration(
+            request,
+            available_models=holistic_model_catalog(),
+        )
+    retained_selection = json.loads(
+        (task_root / "orchestration" / "selection-manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert retained_selection["coverage"]["unique_selected_runs"] == 0
+    assert len(retained_selection["skipped_bundles"]) == retained_selection[
+        "coverage"
+    ]["total_eligible_runs"]
+    assert all(
+        row["reason"] == "capacity"
+        for row in retained_selection["skipped_bundles"]
+    )
 
 
 def test_bounded_largest_runs_plan_reports_coverage_and_resumes_idempotently(

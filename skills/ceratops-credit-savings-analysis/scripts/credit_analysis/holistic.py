@@ -2623,6 +2623,7 @@ def _bounded_select_run_bundles(
     accepted: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
     final_proof: dict[str, Any] | None = None
+    failed_proof: dict[str, Any] | None = None
     for anchor_rank, anchor in enumerate(ranked, start=1):
         position = int(anchor["original_order"])
         companion = original[position] if position < len(original) else None
@@ -2635,6 +2636,7 @@ def _bounded_select_run_bundles(
                 proposed.append(turn_id)
         proof = dict(budget_evaluator(proposed))
         if proof.get("fits") is not True:
+            failed_proof = proof
             skipped.append(
                 {
                     "anchor_rank": anchor_rank,
@@ -2661,10 +2663,9 @@ def _bounded_select_run_bundles(
         )
         final_proof = proof
     if final_proof is None:
-        raise CreditAnalysisError(
-            "bounded largest-runs capacity blocker: no eligible anchor bundle "
-            "fits the planned Luna and Sol budgets"
-        )
+        if failed_proof is None:
+            raise CreditAnalysisError("bounded capacity evaluation produced no proof")
+        final_proof = failed_proof
     return {
         "anchor_order": [
             {
@@ -3301,6 +3302,12 @@ def command_plan_orchestration(
             "sha256": _file_hash(selection_path),
             "schema": BOUNDED_SELECTION_SCHEMA,
         }
+        if not episodes:
+            raise CreditAnalysisError(
+                "bounded largest-runs capacity blocker: no eligible anchor bundle "
+                "fits the planned Luna and Sol budgets; selection manifest retained at "
+                f"{selection_path}"
+            )
         packets = [[dict(episode) for episode in episodes]]
     else:
         bundle = eligible_bundle
