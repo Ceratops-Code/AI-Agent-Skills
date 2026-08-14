@@ -11,7 +11,7 @@ import unittest
 from typing import Any
 from unittest import mock
 
-ROOT = pathlib.Path(__file__).resolve().parents[1]
+ROOT = pathlib.Path(__file__).resolve().parents[2]
 SCRIPTS = ROOT / "skills" / "ceratops-repo-lifecycle" / "scripts"
 REFERENCES = SCRIPTS.parent / "references" / "contracts"
 sys.path.insert(0, str(SCRIPTS))
@@ -1572,7 +1572,7 @@ class GHContractStateEngineTests(unittest.TestCase):
                 "trace": [
                     {
                         "role": "source",
-                        "path": "tests/test_gh_validator_summary.py",
+                        "path": "tests/repository_lifecycle/test_contract_engine.py",
                         "line": 1,
                     },
                     {

@@ -13,7 +13,7 @@ from types import SimpleNamespace
 from typing import Any, ClassVar
 from unittest import mock
 
-ROOT = pathlib.Path(__file__).resolve().parents[1]
+ROOT = pathlib.Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "hooks" / "windows-shell-sanity.py"
 SPEC = importlib.util.spec_from_file_location("windows_shell_sanity", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
