@@ -21,17 +21,17 @@ largest-runs analysis, never a full-thread analysis.
 - Keep the anchor and follower indivisible. If a previously included follower
   later becomes an anchor, evaluate it with its own immediate successor. Store
   each selected run payload once, while preserving event order inside every run.
-- Packing may follow descending anchor size. Skip a later bundle that cannot fit
-  and continue evaluating smaller anchors.
+- Packing follows descending anchor size. Skip any bundle that cannot fit,
+  record it as omitted for capacity, and continue evaluating smaller anchors.
 
 ## End-To-End Budget
 
 - Before the first model call, prove the complete Luna input and projected Sol
   input/output envelope. Include fixed prompts and schemas, selected evidence,
   the maximum accepted Luna output, Sol instructions, and both output reserves.
-- If the largest anchor and its immediate successor cannot fit together, return
-  a deterministic capacity blocker before model execution. Never truncate the
-  bundle or omit its successor.
+- Never truncate a bundle or detach its successor. If no bundle fits after
+  every eligible bundle is evaluated, return a deterministic capacity blocker
+  before model execution.
 - Freeze one Luna task and one dependent Sol task. Do not add bookkeeping,
   grouping, consolidation, or other semantic calls.
 

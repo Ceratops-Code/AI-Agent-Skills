@@ -2635,11 +2635,6 @@ def _bounded_select_run_bundles(
                 proposed.append(turn_id)
         proof = dict(budget_evaluator(proposed))
         if proof.get("fits") is not True:
-            if anchor_rank == 1:
-                raise CreditAnalysisError(
-                    "bounded largest-runs capacity blocker: the largest anchor "
-                    "and its immediate successor cannot fit the planned Luna and Sol budgets"
-                )
             skipped.append(
                 {
                     "anchor_rank": anchor_rank,
@@ -2666,7 +2661,10 @@ def _bounded_select_run_bundles(
         )
         final_proof = proof
     if final_proof is None:
-        raise CreditAnalysisError("bounded largest-runs selection is empty")
+        raise CreditAnalysisError(
+            "bounded largest-runs capacity blocker: no eligible anchor bundle "
+            "fits the planned Luna and Sol budgets"
+        )
     return {
         "anchor_order": [
             {
@@ -2740,7 +2738,7 @@ def _bounded_selection_document(
             "successor_rule": "immediate-next-completed-run-in-frozen-order",
             "bundle_indivisible": True,
             "deduplicate_run_payloads": True,
-            "skip_later_oversized_bundles": True,
+            "skip_oversized_bundles": True,
         },
         "frozen_run_order_sha256": _content_hash(
             [
@@ -2779,7 +2777,7 @@ def _validate_bounded_selection_document(
         "successor_rule": "immediate-next-completed-run-in-frozen-order",
         "bundle_indivisible": True,
         "deduplicate_run_payloads": True,
-        "skip_later_oversized_bundles": True,
+        "skip_oversized_bundles": True,
     }:
         raise CreditAnalysisError("bounded selection algorithm changed")
     selected_runs = selection.get("selected_runs")

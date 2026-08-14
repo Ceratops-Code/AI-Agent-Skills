@@ -65,7 +65,7 @@ def test_bounded_largest_runs_selection_uses_anchor_size_and_positional_successo
     assert selection["selected_run_ids"] == ["a", "b", "c", "d"]
 
 
-def test_bounded_largest_runs_capacity_blocks_initial_bundle_and_skips_later() -> None:
+def test_bounded_largest_runs_capacity_skips_any_bundle_and_blocks_when_none_fit() -> None:
     workflow = load_credit_analysis_workflow_module()
     inventory = [
         {
@@ -143,19 +143,67 @@ def test_bounded_largest_runs_capacity_blocks_initial_bundle_and_skips_later() -
     )
 
     initial_evaluations: list[list[str]] = []
-    model_calls: list[str] = []
 
     def initial_too_large(selected_ids: list[str]) -> dict[str, Any]:
         initial_evaluations.append(list(selected_ids))
+        selected_size = sum(
+            row["evidence_chars"]
+            for row in inventory
+            if row["turn_id"] in set(selected_ids)
+        )
+        fits = selected_size <= 95
+        return {
+            "fits": fits,
+            "luna": {"fits": fits},
+            "sol": {"fits": fits},
+        }
+
+    after_initial_skip = workflow._bounded_select_run_bundles(
+        inventory, initial_too_large
+    )
+    assert initial_evaluations == [
+        ["a", "b"],
+        ["c", "d"],
+        ["c", "d", "e"],
+        ["c", "d", "e", "b"],
+        ["c", "d", "e", "b"],
+    ]
+    assert after_initial_skip["skipped_bundles"] == [
+        {
+            "anchor_rank": 1,
+            "anchor_turn_id": "a",
+            "companion_turn_id": "b",
+            "reason": "capacity",
+        }
+    ]
+    assert after_initial_skip["selected_run_ids"] == ["c", "d", "e", "b"]
+    after_initial_manifest = workflow._bounded_selection_document(
+        analysis_id="analysis-initial-skip",
+        run_inventory=inventory,
+        selection=after_initial_skip,
+    )
+    assert [row["turn_id"] for row in after_initial_manifest["omitted_runs"]] == [
+        "a"
+    ]
+
+    all_oversized_evaluations: list[list[str]] = []
+
+    def all_oversized(selected_ids: list[str]) -> dict[str, Any]:
+        all_oversized_evaluations.append(list(selected_ids))
         return {"fits": False}
 
     with pytest.raises(
         workflow.CreditAnalysisError,
-        match="capacity blocker: the largest anchor and its immediate successor",
+        match="capacity blocker: no eligible anchor bundle fits",
     ):
-        workflow._bounded_select_run_bundles(inventory, initial_too_large)
-    assert initial_evaluations == [["a", "b"]]
-    assert model_calls == []
+        workflow._bounded_select_run_bundles(inventory, all_oversized)
+    assert all_oversized_evaluations == [
+        ["a", "b"],
+        ["c", "d"],
+        ["e"],
+        ["b", "c"],
+        ["d", "e"],
+    ]
 
 
 def test_bounded_largest_runs_plan_reports_coverage_and_resumes_idempotently(
