@@ -12122,6 +12122,62 @@ def test_pending_work_finalization_persists_partial_cleanup_progress(
         },
     ]
 
+    record_scope = loaded["record_scope"]
+    pending_ship = record_scope.__globals__["ship"]
+    original_pending_findings = pending_ship._pending_work_findings
+    original_source_record = record_scope.__globals__["_source_record"]
+
+    def no_pending_findings(
+        repo_root: pathlib.Path,
+        scope: dict[str, Any],
+    ) -> list[dict[str, str]]:
+        return []
+
+    def advanced_source_record(
+        repo_root: pathlib.Path,
+        branch: str,
+    ) -> dict[str, str]:
+        source = original_source_record(repo_root, branch)
+        if branch == "selected-b":
+            source["commit"] = "f" * 40
+        return source
+
+    monkeypatch.setattr(
+        pending_ship,
+        "_pending_work_findings",
+        no_pending_findings,
+    )
+    record_scope.__globals__["_source_record"] = advanced_source_record
+    preservation_blocker = record_scope(
+        repo,
+        target_branch="release/local",
+        target_commit=target_commit,
+        source_branches=["selected-b"],
+    )
+    record_scope.__globals__["_source_record"] = original_source_record
+    monkeypatch.setattr(
+        pending_ship,
+        "_pending_work_findings",
+        original_pending_findings,
+    )
+
+    assert preservation_blocker["findings"] == [
+        {
+            "kind": "incomplete_cleanup",
+            "subject": "selected-a",
+            "detail": "complete prior helper cleanup before recording",
+        }
+    ]
+    assert preservation_blocker["preserved_sources"][0]["branch"] == "selected-b"
+    preserved_scope = json.loads(scope_path.read_text(encoding="utf-8"))
+    assert preserved_scope["sources"][1]["state"] == "preserved"
+    preserved_scope["sources"][1]["state"] = "retained"
+    scope_path.write_text(
+        json.dumps(preserved_scope),
+        encoding="utf-8",
+        newline="\n",
+    )
+
     finalize_scope.__globals__["run_command"] = original_run_command
     finalize_scope.__globals__["_finish_recorded_residual_cleanup"] = (
         original_residual_cleanup
@@ -12270,6 +12326,131 @@ def test_pending_work_finalization_persists_partial_cleanup_progress(
     assert not crash_scope.exists()
     assert not crash_temporary.exists()
     assert unrelated_temporary.is_file()
+
+    assert run_git(repo, "branch", "sharing-locked", target_commit).returncode == 0
+    sharing_worktree = worktree_root / "sharing-locked"
+    worktree_root.mkdir(parents=True, exist_ok=True)
+    assert (
+        run_git(
+            repo,
+            "worktree",
+            "add",
+            str(sharing_worktree),
+            "sharing-locked",
+        ).returncode
+        == 0
+    )
+    sharing_recorded = run_pending_work(
+        repo,
+        "record",
+        "--target-branch",
+        "release/local",
+        "--target-commit",
+        target_commit,
+        "--source-branch",
+        "sharing-locked",
+    )
+    assert sharing_recorded.returncode == 0, sharing_recorded.stderr
+    sharing_scope = pathlib.Path(
+        json.loads(sharing_recorded.stdout)["pending_work_scope"]
+    )
+    sharing_record = loaded["_write_residual_cleanup_record"](
+        repo,
+        sharing_scope,
+        "sharing-locked",
+        sharing_worktree.resolve(),
+        worktree_root.resolve(),
+    )
+    assert (
+        run_git(repo, "worktree", "remove", str(sharing_worktree)).returncode
+        == 0
+    )
+    sharing_worktree.mkdir()
+
+    def sharing_locked_rmtree(
+        path: pathlib.Path,
+        *args: Any,
+        **kwargs: Any,
+    ) -> None:
+        if pathlib.Path(path) == sharing_worktree:
+            error = PermissionError("simulated Windows sharing violation")
+            setattr(error, "winerror", 32)
+            raise error
+        original_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(shutil, "rmtree", sharing_locked_rmtree)
+    original_finalize_require = finalize_scope.__globals__["require_success"]
+    branch_delete_attempts = 0
+
+    def fail_first_sharing_branch_delete(
+        command: list[str],
+        *,
+        cwd: pathlib.Path,
+    ) -> subprocess.CompletedProcess[str]:
+        nonlocal branch_delete_attempts
+        if command[-3:] == ["branch", "-d", "sharing-locked"]:
+            branch_delete_attempts += 1
+            if branch_delete_attempts == 1:
+                raise pending_error("simulated sharing branch deletion failure")
+        return original_finalize_require(command, cwd=cwd)
+
+    finalize_scope.__globals__["require_success"] = fail_first_sharing_branch_delete
+    with pytest.raises(pending_error, match="sharing branch deletion failure"):
+        finalize_scope(
+            repo,
+            sharing_scope,
+            target_branch="release/local",
+            target_commit=target_commit,
+            current_branch="main",
+            current_commit=current_commit,
+        )
+    assert sharing_record.is_file()
+    assert sharing_worktree.is_dir()
+    assert run_git(
+        repo,
+        "show-ref",
+        "--verify",
+        "refs/heads/sharing-locked",
+    ).returncode == 0
+
+    finalize_scope.__globals__["require_success"] = original_finalize_require
+    sharing_finalized = finalize_scope(
+        repo,
+        sharing_scope,
+        target_branch="release/local",
+        target_commit=target_commit,
+        current_branch="main",
+        current_commit=current_commit,
+    )
+    monkeypatch.setattr(shutil, "rmtree", original_rmtree)
+
+    assert sharing_finalized == {
+        "status": "finalized",
+        "removed": ["sharing-locked"],
+        "pending_work_scope": "",
+        "preserved_worktrees": [
+            {
+                "branch": "sharing-locked",
+                "path": str(sharing_worktree),
+                "reason": (
+                    "Windows sharing violation 32 after Git unregistered "
+                    "the worktree"
+                ),
+            }
+        ],
+    }
+    assert sharing_worktree.is_dir()
+    assert not sharing_record.exists()
+    assert not sharing_scope.exists()
+    assert (
+        run_git(
+            repo,
+            "show-ref",
+            "--verify",
+            "refs/heads/sharing-locked",
+        ).returncode
+        != 0
+    )
 
     ownership_target = worktree_root / "ownership-target"
     ownership_target.mkdir(parents=True)

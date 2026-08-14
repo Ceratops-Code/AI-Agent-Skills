@@ -121,8 +121,13 @@ selected merged source branches and worktrees.
    or starts with the thread ID followed by `-`; it preserves every other
    name. It removes empty worktree and task-temp parents
    only up to their nearest `worktrees`, `tmp`, or `temp` boundary and never
-   deletes the boundary itself. The record is removed only after the worktree
-   path and matching task-temp directories are absent. After successful branch
+   deletes the boundary itself. On Windows sharing violation 32,
+   after Git unregisters an eligible worktree, the helper preserves and reports
+   the exact residual path, retains its cleanup record until branch deletion
+   succeeds, and continues merged-branch cleanup. Other residual cleanup errors
+   remain blocking.
+   Otherwise, the record is removed only after the worktree path and matching
+   task-temp directories are absent. After successful branch
    deletion, it atomically removes the source record and deletes the scope after
    the final source is removed.
 8. After declared release publication or deployment succeeds, the helper
