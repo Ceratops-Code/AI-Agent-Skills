@@ -600,7 +600,7 @@ def _finish_recorded_residual_cleanup(
         _,
         branch,
         worktree,
-        _,
+        expected_root,
         worktree_name,
         thread_id,
         task_temp_root,
@@ -622,6 +622,7 @@ def _finish_recorded_residual_cleanup(
         thread_id=thread_id,
     )
     _remove_completed_state_file(record_path)
+    _remove_empty_parents(expected_root, boundary_names={"worktrees"})
 
 
 def _legacy_worktree_is_clean(repo_root: pathlib.Path, branch: str) -> bool:
