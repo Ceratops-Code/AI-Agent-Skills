@@ -83,9 +83,13 @@ confirmed finding and report every capacity omission.
    omit only deterministic overflow, retain its exact run/window/candidate and
    byte inventory, and never claim it was adjudicated.
 6. Persist immutable identities, prompts, results, attempts, latency, and usage.
-   Wait without model polling, terminate the complete child process tree on
-   interruption or timeout, and resume accepted phases idempotently. Run no model
-   bookkeeping calls.
+   Before surfacing one parallel sibling failure, record every already-completed
+   sibling attempt. On resume, revalidate complete task-owned attempt artifacts
+   against the frozen prompt, schema, identity, input hash, and result contract
+   before launching; block incomplete or conflicting artifacts. Wait without
+   model polling, terminate the complete child process tree on interruption or
+   timeout, and resume accepted phases idempotently. Run no model bookkeeping
+   calls.
 
 Every child Codex execution uses an explicit model, a read-only sandbox, no
 approvals, a self-contained no-tools prompt, and controller-owned schema, event,

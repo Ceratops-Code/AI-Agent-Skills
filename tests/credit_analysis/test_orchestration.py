@@ -440,6 +440,62 @@ def test_credit_analysis_workflow_end_to_end_uses_sharded_semantic_calls(
         ]
         for candidate in accepted_luna["candidates"]
     )
+    after_luna_tier = workflow.command_execute_orchestration(
+        state_path,
+        runner=runner,
+        available_models=runner.available_models,
+        task_limit=5,
+    )
+    assert after_luna_tier["next_task"] == "sol.adjudication.0001"
+    orphan_state, orphan_evidence, orphan_contract, orphan_compact = (
+        workflow._holistic_read_state(state_path)
+    )
+    orphan_base_task = workflow._holistic_task_map(orphan_state["manifest"])[
+        "sol.adjudication.0001"
+    ]
+    orphan_routing = json.loads(
+        pathlib.Path(orphan_state["routing"]["path"]).read_text(encoding="utf-8")
+    )
+    orphan_task = {
+        **orphan_base_task,
+        **next(
+            shard
+            for shard in orphan_routing["shards"]
+            if shard["task_id"] == orphan_base_task["task_id"]
+        ),
+    }
+    (
+        orphan_payload,
+        orphan_digest,
+        orphan_prompt,
+        orphan_schema,
+        _,
+    ) = workflow._holistic_prepare_task(
+        orphan_state,
+        orphan_evidence,
+        orphan_contract,
+        orphan_compact,
+        orphan_task,
+    )
+    orphan_raw, _ = workflow._invoke_injected_runner(
+        runner,
+        model=orphan_state["model_specs"]["sol"]["model"],
+        task={
+            **orphan_task,
+            "reasoning_effort": orphan_state["model_specs"]["sol"][
+                "reasoning_effort"
+            ],
+        },
+        prompt_path=orphan_prompt,
+        schema_path=orphan_schema,
+        input_payload=orphan_payload,
+        input_sha256=orphan_digest,
+        attempt_dir=(
+            pathlib.Path(orphan_task["artifacts"]["attempts"]) / "attempt-001"
+        ),
+    )
+    assert orphan_raw is not None
+    assert orphan_state["execution"][orphan_task["task_id"]]["attempts"] == []
     completed = workflow.command_execute_orchestration(
         state_path,
         runner=runner,
@@ -451,6 +507,17 @@ def test_credit_analysis_workflow_end_to_end_uses_sharded_semantic_calls(
     assert sum(call["phase"] == "sol-adjudication" for call in runner.calls) == 3
     assert sum(call["phase"] == "sol-audit" for call in runner.calls) == 1
     assert sum(call["phase"] == "sol-final" for call in runner.calls) == 1
+    assert sum(
+        call["input_sha256"] == orphan_digest for call in runner.calls
+    ) == 1
+    completed_state = json.loads(state_path.read_text(encoding="utf-8"))
+    recovered_execution = completed_state["execution"][orphan_task["task_id"]]
+    assert len(recovered_execution["attempts"]) == 1
+    assert recovered_execution["attempts"][0][
+        "recovered_unrecorded_attempt"
+    ] is True
+    assert recovered_execution["attempts"][0]["duration_ms"] is None
+    assert recovered_execution["result"]["recovered_without_model_call"] is True
     sol_call = next(
         call for call in runner.calls if call["phase"] == "sol-adjudication"
     )
@@ -673,3 +740,51 @@ def test_credit_analysis_workflow_end_to_end_uses_sharded_semantic_calls(
     assert repeated["complete"] is True
     assert len(runner.calls) == call_count
     assert final_path.read_bytes() == final_before
+
+    parallel_failure_root = tmp_path / "parallel-failure"
+    parallel_failure_root.mkdir()
+    failure_request, _, _ = credit_analysis_request(
+        parallel_failure_root,
+        extra_completed_turns=3,
+        extra_calls_per_turn=4,
+    )
+    failure_plan = workflow.command_plan_orchestration(
+        failure_request,
+        available_models=holistic_model_catalog(),
+    )
+
+    class OneInvalidSolRunner(FakeCreditModelRunner):
+        def _sol(
+            self,
+            task: Mapping[str, Any],
+            packet: Mapping[str, Any],
+            digest: str,
+        ) -> dict[str, Any]:
+            result = super()._sol(task, packet, digest)
+            if task["task_id"] == "sol.adjudication.0001":
+                result["candidate_decisions"][0]["reason"] = "x" * 321
+            return result
+
+    failure_runner = OneInvalidSolRunner()
+    failure_state_path = pathlib.Path(failure_plan["state_path"])
+    with pytest.raises(
+        workflow.CreditAnalysisError,
+        match="320-character semantic bound",
+    ):
+        workflow.command_execute_orchestration(
+            failure_state_path,
+            runner=failure_runner,
+            available_models=failure_runner.available_models,
+        )
+    failure_state = json.loads(failure_state_path.read_text(encoding="utf-8"))
+    assert failure_state["execution"]["sol.adjudication.0001"]["attempts"][0][
+        "outcome"
+    ] == "validation-error"
+    assert all(
+        failure_state["execution"][task_id]["status"] == "complete"
+        for task_id in (
+            "sol.adjudication.0002",
+            "sol.adjudication.0003",
+            "sol.audit",
+        )
+    )

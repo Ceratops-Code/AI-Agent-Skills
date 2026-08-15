@@ -6444,6 +6444,91 @@ def _holistic_recoverable_raw(
     return None
 
 
+def _holistic_unrecorded_attempt(
+    state: Mapping[str, Any],
+    task: Mapping[str, Any],
+    input_sha256: str,
+    prompt_path: pathlib.Path,
+    schema_path: pathlib.Path,
+) -> tuple[Mapping[str, Any], dict[str, Any]] | None:
+    """Recover one completed parallel child whose state write was interrupted.
+
+    Recovery is limited to the exact next attempt directory owned by the frozen
+    task. The raw result still passes the ordinary identity, input-hash, schema,
+    and semantic validator before acceptance. Process duration is not derivable
+    from retained files, so the attempt records that telemetry as unavailable.
+    """
+
+    execution = state["execution"][task["task_id"]]
+    attempt_number = len(execution["attempts"]) + 1
+    attempt_dir = (
+        pathlib.Path(str(task["artifacts"]["attempts"]))
+        / f"attempt-{attempt_number:03d}"
+    )
+    if not attempt_dir.exists() and not attempt_dir.is_symlink():
+        return None
+    if not attempt_dir.is_dir() or attempt_dir.is_symlink():
+        raise CreditAnalysisError(
+            f"unrecorded child attempt path is unsafe: {task['task_id']}"
+        )
+    raw_path = attempt_dir / "last-message.json"
+    events_path = attempt_dir / "events.jsonl"
+    stderr_path = attempt_dir / "stderr.log"
+    for label, path in (
+        ("raw output", raw_path),
+        ("events", events_path),
+        ("stderr", stderr_path),
+    ):
+        if not path.is_file() or path.is_symlink():
+            raise CreditAnalysisError(
+                f"unrecorded child attempt {label} is incomplete: {task['task_id']}"
+            )
+    event_summary = _jsonl_event_summary(events_path)
+    event_types = event_summary["event_types"]
+    completed_events = int(event_types.get("turn.completed", 0)) + int(
+        event_types.get("fake.semantic.completed", 0)
+    )
+    if int(event_summary["malformed"]) != 0 or completed_events != 1:
+        raise CreditAnalysisError(
+            f"unrecorded child attempt events are incomplete: {task['task_id']}"
+        )
+    role = _holistic_role(task)
+    model_spec = state["model_specs"][role]
+    runner = (
+        "injected"
+        if int(event_types.get("fake.semantic.completed", 0)) == 1
+        else "codex-cli"
+    )
+    attempt = _bind_attempt_record(
+        {
+            "runner": runner,
+            "model": model_spec["model"],
+            "reasoning_effort": model_spec["reasoning_effort"],
+            "ephemeral": task["phase"] == "luna-discovery",
+            "execution_cwd": str(task["execution_cwd"]),
+            "model_invoked": True,
+            "exit_code": 0,
+            "timed_out": False,
+            "terminated": False,
+            "duration_ms": None,
+            "duration_telemetry": "unavailable-after-state-write-interruption",
+            "prompt_path": str(prompt_path),
+            "schema_path": str(schema_path),
+            "raw_output_path": str(raw_path),
+            "events_path": str(events_path),
+            "stderr_path": str(stderr_path),
+            "event_summary": event_summary,
+            "error": None,
+            "recovered_unrecorded_attempt": True,
+        },
+        state=state,
+        task=task,
+        input_sha256=input_sha256,
+        attempt_number=attempt_number,
+    )
+    return _read_json(raw_path, "unrecorded holistic output"), attempt
+
+
 def _holistic_final(
     state: Mapping[str, Any],
     evidence: Mapping[str, Any],
@@ -7392,6 +7477,81 @@ def command_execute_orchestration(
                     )
                     progressed += 1
                     continue
+            unrecorded = _holistic_unrecorded_attempt(
+                state,
+                task,
+                digest,
+                prompt_path,
+                schema_path,
+            )
+            if unrecorded is not None:
+                raw, attempt = unrecorded
+                role = _holistic_role(task)
+                state["model_attempts"][role] += 1
+                execution = state["execution"][task["task_id"]]
+                try:
+                    if (
+                        task["phase"] == "luna-discovery"
+                        and _json_bytes(raw)
+                        > int(
+                            attempt.get("output_byte_limit")
+                            or task["output_byte_limit"]
+                        )
+                    ):
+                        raise CreditAnalysisError(
+                            "Luna result exceeds its output byte target"
+                        )
+                    validated = _validate_holistic_task_result(
+                        raw,
+                        state=state,
+                        task=task,
+                        input_sha256=digest,
+                        contract=contract,
+                        compact=compact,
+                        luna_candidate_ids=candidate_ids,
+                    )
+                except CreditAnalysisError as error:
+                    execution["attempts"].append(
+                        {
+                            **attempt,
+                            "outcome": "validation-error",
+                            "error": str(error),
+                        }
+                    )
+                    can_retry = (
+                        task["phase"] == "luna-discovery"
+                        and _diagnosed_luna_retry(error)
+                        and len(execution["attempts"]) == 1
+                        and state["model_attempts"]["luna"] < luna_attempt_limit
+                    )
+                    if not can_retry:
+                        if task["phase"] == "luna-discovery":
+                            _omit_luna_task(
+                                state,
+                                task,
+                                reason="luna-invalid-output",
+                                error=str(error),
+                            )
+                            progressed += 1
+                            continue
+                        _holistic_sync_child_lineage(state)
+                        _holistic_save_state(state)
+                        raise
+                    _holistic_sync_child_lineage(state)
+                    _holistic_save_state(state)
+                else:
+                    _holistic_accept_result(
+                        state=state,
+                        task=task,
+                        validated=validated,
+                        input_sha256=digest,
+                        prompt_path=prompt_path,
+                        schema_path=schema_path,
+                        attempt=attempt,
+                        recovered=True,
+                    )
+                    progressed += 1
+                    continue
             prepared.append(
                 (task, payload, digest, prompt_path, schema_path, candidate_ids)
             )
@@ -7419,11 +7579,12 @@ def command_execute_orchestration(
                     attempt_number=attempt_number,
                 )
                 futures[future] = (*item, attempt_number)
-            completed = [
-                (future, futures[future])
-                for future in concurrent.futures.as_completed(futures)
-            ]
+        completed = [
+            (future, futures[future])
+            for future in concurrent.futures.as_completed(futures)
+        ]
         completed.sort(key=lambda item: int(item[1][0]["ordinal"]))
+        fatal_error: CreditAnalysisError | None = None
         for future, item in completed:
             task, _, digest, prompt_path, schema_path, candidate_ids, attempt_number = item
             raw, attempt = future.result()
@@ -7453,9 +7614,14 @@ def command_execute_orchestration(
                     continue
                 _holistic_sync_child_lineage(state)
                 _holistic_save_state(state)
-                raise CreditAnalysisError(
-                    str(attempt.get("error") or "model task produced no result")
-                )
+                if fatal_error is None:
+                    fatal_error = CreditAnalysisError(
+                        str(
+                            attempt.get("error")
+                            or "model task produced no result"
+                        )
+                    )
+                continue
             try:
                 if (
                     task["phase"] == "luna-discovery"
@@ -7504,7 +7670,9 @@ def command_execute_orchestration(
                     continue
                 _holistic_sync_child_lineage(state)
                 _holistic_save_state(state)
-                raise
+                if fatal_error is None:
+                    fatal_error = error
+                continue
             _holistic_accept_result(
                 state=state,
                 task=task,
@@ -7518,6 +7686,8 @@ def command_execute_orchestration(
             progressed += 1
         _holistic_sync_child_lineage(state)
         _holistic_save_state(state)
+        if fatal_error is not None:
+            raise fatal_error
 
     if all(
         state["execution"][task_id]["status"]
