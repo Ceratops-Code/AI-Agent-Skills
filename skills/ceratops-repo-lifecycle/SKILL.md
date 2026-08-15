@@ -10,8 +10,8 @@ description: Route Ceratops repository lifecycle work to action references for r
 Route repository compatibility, local Git, GitHub, release publication, and
 deployment lifecycle work to the narrowest action reference. Keep repository
 state transitions in one skill while each repository owns declared remote
-release publication in `release/release.yml` and local deployment in
-`deploy/deploy.yml`.
+release publication and artifact identity in `release/release.yml`, and local
+deployment in `deploy/deploy.yml`.
 
 ## Context
 
