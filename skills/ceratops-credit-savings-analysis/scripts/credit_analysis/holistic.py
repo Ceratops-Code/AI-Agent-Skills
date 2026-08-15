@@ -4510,7 +4510,16 @@ def _holistic_sol_input(
             "call_ids": list(task["call_ids"]),
         }
     elif task["phase"] == "sol-final":
-        luna_results = list(normalized_luna)
+        routed_luna_task_ids = {
+            task_id
+            for shard in _routing_value(state)["shards"]
+            for task_id in shard["luna_task_ids"]
+        }
+        luna_results = [
+            result
+            for result in normalized_luna
+            if result["task_id"] in routed_luna_task_ids
+        ]
         routed_call_ids = _routed_call_ids(state)
         routed_call_set = set(routed_call_ids)
         routed_records = [

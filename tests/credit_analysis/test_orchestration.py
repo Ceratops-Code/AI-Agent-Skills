@@ -113,6 +113,60 @@ def test_full_analysis_uses_run_windows_parallel_tiers_and_exact_coverage(
     assert "| Completed run | Total model calls |" in report
     assert "| Proposed control | Calls saved per affected run |" in report
 
+    capacity_root = tmp_path / "sol-capacity"
+    capacity_root.mkdir()
+    capacity_request, _, _ = credit_analysis_request(
+        capacity_root,
+        extra_completed_turns=3,
+        extra_calls_per_turn=12,
+    )
+    capacity_catalog = holistic_model_catalog(context_tokens=132_000)
+    capacity_runner = FakeCreditModelRunner()
+    capacity_runner.available_models = capacity_catalog
+    capacity_plan = workflow.command_plan_orchestration(
+        capacity_request,
+        available_models=capacity_catalog,
+    )
+    capacity_completed = workflow.command_execute_orchestration(
+        pathlib.Path(capacity_plan["state_path"]),
+        runner=capacity_runner,
+        available_models=capacity_catalog,
+    )
+    capacity_state = json.loads(
+        pathlib.Path(capacity_plan["state_path"]).read_text(encoding="utf-8")
+    )
+    capacity_final = json.loads(
+        pathlib.Path(capacity_completed["final_result_path"]).read_text(
+            encoding="utf-8"
+        )
+    )
+    sol_capacity_omissions = [
+        omission
+        for omission in capacity_state["omissions"]
+        if omission.get("reason") == "sol-capacity"
+    ]
+    assert capacity_completed["complete"] is True
+    assert sol_capacity_omissions
+    assert sol_capacity_omissions == [
+        omission
+        for omission in capacity_final["omissions"]
+        if omission.get("reason") == "sol-capacity"
+    ]
+    omitted_luna_candidate_ids = {
+        candidate["id"]
+        for omission in sol_capacity_omissions
+        for task_id in omission["task_ids"]
+        for candidate in json.loads(
+            pathlib.Path(
+                capacity_state["execution"][task_id]["result"]["path"]
+            ).read_text(encoding="utf-8")
+        )["candidates"]
+    }
+    assert omitted_luna_candidate_ids.isdisjoint(
+        decision["luna_candidate_id"]
+        for decision in capacity_final["candidate_decisions"]
+    )
+
 
 def test_removed_bounded_action_is_rejected(tmp_path: pathlib.Path) -> None:
     workflow = load_credit_analysis_workflow_module()
