@@ -65,7 +65,12 @@ confirmed finding and report every capacity omission.
 4. Measure the retained Luna reports before Sol assignment. Route every retained
    candidate exactly once to one of three `gpt-5.6-sol` adjudicators at maximum
    effort. Each receives self-contained Luna reports and their embedded evidence
-   references, not the complete source thread. Add a fourth adjudicator only when
+   references, not the complete source thread. A candidate with one or more
+   confirmed subclaims uses `confirmed-finding` and may also link separate
+   plausible risks from the same candidate. Require at least one
+   temporary-control review for every temporary-control candidate; preserve
+   multiple reviews when they describe distinct owner/control pairs.
+   Add a fourth adjudicator only when
    the measured reports cannot fit three. In parallel, run one separate audit Sol
    against one unsurfaced raw window from the largest run and one
    deterministically highest-signal unsurfaced raw window. The three adjudicators

@@ -188,6 +188,7 @@ def test_credit_analysis_normalizes_sol_transport_without_changing_judgments(
             self.colliding_luna_ids: set[str] = set()
             self.reclassified_candidate_id: str | None = None
             self.normalized_review_source: str | None = None
+            self.variation_task_id: str | None = None
             self.expected_unassessed = 0
             self.shard_local_unassessed_limit = 0
 
@@ -300,10 +301,11 @@ def test_credit_analysis_normalizes_sol_transport_without_changing_judgments(
                 self.reclassified_candidate_id = str(
                     packet_candidates[reclassified_candidate_index]["id"]
                 )
+                self.variation_task_id = str(task["task_id"])
             plausible_candidate_id = str(
                 packet_candidates[reclassified_candidate_index]["id"]
             )
-            moved_review = result["temporary_control_reviews"].pop(2)
+            moved_review = result["temporary_control_reviews"][2]
             result["temporary_control_reviews"][0][
                 "source_luna_candidate_ids"
             ].extend(
@@ -311,6 +313,16 @@ def test_credit_analysis_normalizes_sol_transport_without_changing_judgments(
                     plausible_candidate_id,
                     *moved_review["source_luna_candidate_ids"],
                 ]
+            )
+            mixed_decision = next(
+                item
+                for item in result["candidate_decisions"]
+                if item["luna_candidate_id"] == plausible_candidate_id
+            )
+            mixed_decision["disposition"] = "confirmed-finding"
+            mixed_decision["finding_ids"] = [implemented_finding["id"]]
+            mixed_decision["reason"] = (
+                "The candidate has a confirmed subclaim and a separate unresolved risk."
             )
             finding_calls = set(finding["affected_call_ids"])
             finding_calls.add(nonavoidable_call)
@@ -445,14 +457,48 @@ def test_credit_analysis_normalizes_sol_transport_without_changing_judgments(
         if group["classification"] == "unassessed"
     ) == runner.expected_unassessed
     assert runner.expected_unassessed > runner.shard_local_unassessed_limit
+    state = json.loads(pathlib.Path(plan["state_path"]).read_text(encoding="utf-8"))
+    assert runner.variation_task_id is not None
+    shard_record = state["execution"][runner.variation_task_id]["result"]
+    shard = json.loads(
+        pathlib.Path(shard_record["path"]).read_text(encoding="utf-8")
+    )
+    mixed_decision = next(
+        item
+        for item in shard["candidate_decisions"]
+        if "separate unresolved risk" in item["reason"]
+    )
+    assert mixed_decision["disposition"] == "confirmed-finding"
+    assert mixed_decision["finding_ids"]
+    assert mixed_decision["risk_ids"]
+    shard_reviewed_sources = [
+        candidate_id
+        for review in shard["temporary_control_reviews"]
+        for candidate_id in review["source_luna_candidate_ids"]
+    ]
+    assert len(shard_reviewed_sources) > len(set(shard_reviewed_sources))
     reviewed_sources = [
         candidate_id
         for review in final["temporary_control_reviews"]
         for candidate_id in review["source_luna_candidate_ids"]
     ]
-    assert len(reviewed_sources) == len(set(reviewed_sources))
+    duplicate_review_sources = {
+        candidate_id
+        for candidate_id in reviewed_sources
+        if reviewed_sources.count(candidate_id) > 1
+    }
+    assert duplicate_review_sources
+    for candidate_id in duplicate_review_sources:
+        owner_controls = [
+            (review["owning_producer"], review["observed_temporary_control"])
+            for review in final["temporary_control_reviews"]
+            if candidate_id in review["source_luna_candidate_ids"]
+        ]
+        assert len(owner_controls) == len(set(owner_controls))
     assert any(
-        decision["disposition"] == "plausible-risk"
+        decision["disposition"] == "confirmed-finding"
+        and decision["finding_ids"]
+        and decision["risk_ids"]
         and decision["luna_candidate_id"] in reviewed_sources
         for decision in final["candidate_decisions"]
     )

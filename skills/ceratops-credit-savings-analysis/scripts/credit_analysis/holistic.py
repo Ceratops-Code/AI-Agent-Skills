@@ -5525,7 +5525,9 @@ def _validate_holistic_sol_result(
         risk_ids = _result_deduped_strings(decision.get("risk_ids"), f"{label} risks", empty=True)
         if not set(finding_ids) <= set(finding_by_id) or not set(risk_ids) <= set(risk_by_id):
             raise CreditAnalysisError(f"{label} references an unknown outcome")
-        if disposition == "confirmed-finding" and (not finding_ids or risk_ids):
+        # One discovered candidate can contain confirmed and unresolved subclaims.
+        # The confirmed disposition is primary while its separate risks stay linked.
+        if disposition == "confirmed-finding" and not finding_ids:
             raise CreditAnalysisError(f"{label} confirmed outcome is inconsistent")
         if disposition == "plausible-risk" and (not risk_ids or finding_ids):
             raise CreditAnalysisError(f"{label} risk outcome is inconsistent")
@@ -5664,12 +5666,10 @@ def _validate_holistic_sol_result(
             "contributing_surfaces": surfaces,
         }
         review_by_id[review_id] = normalized_review
-    if (
-        len(reviewed_temporary) != len(set(reviewed_temporary))
-        or not set(temporary_candidate_ids) <= set(reviewed_temporary)
-    ):
+    # One candidate can describe multiple distinct owner/control records.
+    if not set(temporary_candidate_ids) <= set(reviewed_temporary):
         raise CreditAnalysisError(
-            "temporary-control review coverage is missing or duplicated"
+            "temporary-control review coverage is missing"
         )
     nonfinding_temporary_sources = {
         candidate_id
