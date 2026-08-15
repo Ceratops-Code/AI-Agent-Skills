@@ -5422,8 +5422,14 @@ def _validate_holistic_sol_result(
     classifications, classification_by_call, unassessed = (
         _holistic_reconcile_orphaned_avoidable_calls(classifications, findings)
     )
+    coverage_call_count = (
+        len(_routed_call_ids(state))
+        if task["phase"] == "sol-adjudication"
+        else len(call_order)
+    )
     maximum_unassessed = math.floor(
-        len(call_order) * float(contract["coverage"]["maximum_unassessed_fraction"])
+        coverage_call_count
+        * float(contract["coverage"]["maximum_unassessed_fraction"])
     )
     if unassessed > maximum_unassessed:
         raise CreditAnalysisError(

@@ -71,8 +71,10 @@ confirmed finding and report every capacity omission.
    deterministically highest-signal unsurfaced raw window. The three adjudicators
    plus audit normally form four concurrent first-stage Sol tasks; overflow uses
    four adjudicators plus audit.
-5. Run one dependent final Sol after all first-stage Sol tasks finish. It merges
-   compact judgments, temporary-control reviews, classifications, risks, and ROI
+5. Apply the unassessed-call ceiling to the complete routed call set, never to
+   one preliminary Sol shard in isolation. Run one dependent final Sol after all
+   first-stage Sol tasks finish. It merges compact judgments, temporary-control
+   reviews, classifications, risks, and ROI
    inputs. Deduplicate likely owner/control identity before ranking, then deeply
    verify and expand the top three findings against exact raw evidence. The final
    Sol does not re-adjudicate every candidate, and the top-three review is not a

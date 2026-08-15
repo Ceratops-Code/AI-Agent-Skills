@@ -188,6 +188,8 @@ def test_credit_analysis_normalizes_sol_transport_without_changing_judgments(
             self.colliding_luna_ids: set[str] = set()
             self.reclassified_candidate_id: str | None = None
             self.normalized_review_source: str | None = None
+            self.expected_unassessed = 0
+            self.shard_local_unassessed_limit = 0
 
         def _luna(
             self,
@@ -224,12 +226,6 @@ def test_credit_analysis_normalizes_sol_transport_without_changing_judgments(
                     for index, candidate in enumerate(packet_candidates)
                     if candidate["kind"] == "plausible-risk"
                 )
-                volume_call = next(
-                    call_id
-                    for item in result["confirmed_findings"]
-                    if item["waste_kind"] == "context-volume"
-                    for call_id in item["affected_call_ids"]
-                )
                 finding = next(
                     item
                     for item in result["confirmed_findings"]
@@ -241,6 +237,19 @@ def test_credit_analysis_normalizes_sol_transport_without_changing_judgments(
                     for item in result["confirmed_findings"]
                     if item["waste_kind"] == "model-calls"
                     and item["implementation_status"] == "implemented"
+                )
+                model_call_finding_calls = {
+                    call_id
+                    for item in result["confirmed_findings"]
+                    if item["waste_kind"] == "model-calls"
+                    for call_id in item["affected_call_ids"]
+                }
+                volume_call = next(
+                    call_id
+                    for item in result["confirmed_findings"]
+                    if item["waste_kind"] == "context-volume"
+                    for call_id in item["affected_call_ids"]
+                    if call_id not in model_call_finding_calls
                 )
                 review = next(
                     item
@@ -258,10 +267,36 @@ def test_credit_analysis_normalizes_sol_transport_without_changing_judgments(
                 return result
             if len(result["temporary_control_reviews"]) < 3:
                 return result
+            classification_by_call = {
+                call_id: group["classification"]
+                for group in result["call_classifications"]
+                for call_id in group["call_ids"]
+            }
+            coverage_fraction = float(
+                workflow._load_contract()["coverage"][
+                    "maximum_unassessed_fraction"
+                ]
+            )
+            shard_local_limit = int(len(call_order) * coverage_fraction)
+            orphan_pool = [
+                volume_call,
+                *[
+                    call_id
+                    for call_id in call_order
+                    if call_id not in model_call_finding_calls
+                    and call_id not in {volume_call, nonavoidable_call}
+                    and not classification_by_call[call_id].startswith("avoidable_")
+                ],
+            ]
+            orphan_calls = orphan_pool[: shard_local_limit + 1]
+            if len(orphan_calls) <= shard_local_limit:
+                return result
             with self.variation_lock:
                 if self.variation_applied:
                     return result
                 self.variation_applied = True
+                self.expected_unassessed = len(orphan_calls)
+                self.shard_local_unassessed_limit = shard_local_limit
                 self.reclassified_candidate_id = str(
                     packet_candidates[reclassified_candidate_index]["id"]
                 )
@@ -308,22 +343,28 @@ def test_credit_analysis_normalizes_sol_transport_without_changing_judgments(
                     }
                 )
             result["call_classifications"] = list(reversed(split_groups))
+            orphan_call_set = set(orphan_calls)
             orphaned_groups: list[dict[str, Any]] = []
             for group in result["call_classifications"]:
-                if volume_call not in group["call_ids"]:
+                selected = [
+                    call_id
+                    for call_id in group["call_ids"]
+                    if call_id in orphan_call_set
+                ]
+                if not selected:
                     orphaned_groups.append(group)
                     continue
                 remaining = [
                     call_id
                     for call_id in group["call_ids"]
-                    if call_id != volume_call
+                    if call_id not in orphan_call_set
                 ]
                 if remaining:
                     orphaned_groups.append({**group, "call_ids": remaining})
                 orphaned_groups.append(
                     {
                         **group,
-                        "call_ids": [volume_call],
+                        "call_ids": selected,
                         "classification": "avoidable_implemented",
                         "reason_code": None,
                     }
@@ -402,7 +443,8 @@ def test_credit_analysis_normalizes_sol_transport_without_changing_judgments(
         len(group["call_ids"])
         for group in final["call_classifications"]
         if group["classification"] == "unassessed"
-    ) == 1
+    ) == runner.expected_unassessed
+    assert runner.expected_unassessed > runner.shard_local_unassessed_limit
     reviewed_sources = [
         candidate_id
         for review in final["temporary_control_reviews"]
