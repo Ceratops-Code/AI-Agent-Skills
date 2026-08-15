@@ -16,6 +16,13 @@
     "kind": {
       "const": "ceratops-release"
     },
+    "artifacts": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/artifact"
+      }
+    },
     "operations": {
       "type": "object",
       "propertyNames": {
@@ -27,6 +34,58 @@
     }
   },
   "$defs": {
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifact_type",
+        "registry",
+        "package_or_image_name",
+        "version_source",
+        "release_policy",
+        "tag_style",
+        "changelog_source",
+        "post_publish_consumer_check"
+      ],
+      "properties": {
+        "artifact_id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9._-]*$"
+        },
+        "artifact_type": {
+          "type": "string",
+          "minLength": 1
+        },
+        "registry": {
+          "type": "string",
+          "minLength": 1
+        },
+        "package_or_image_name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "version_source": {
+          "type": "string",
+          "minLength": 1
+        },
+        "release_policy": {
+          "type": "string",
+          "minLength": 1
+        },
+        "tag_style": {
+          "type": "string",
+          "minLength": 1
+        },
+        "changelog_source": {
+          "type": "string",
+          "minLength": 1
+        },
+        "post_publish_consumer_check": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
     "operation": {
       "type": "object",
       "additionalProperties": false,

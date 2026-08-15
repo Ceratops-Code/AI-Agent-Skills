@@ -56,9 +56,8 @@ def _contract_preflight(
     *,
     label: str,
     default_selection: bool,
-    absent_reason: str,
 ) -> dict[str, Any] | None:
-    """Validate one selected contract or classify its absent default as no-op."""
+    """Validate a selected contract or classify its absent default as safe no-op."""
 
     selected = (
         contract if contract.is_absolute() else repo_root / contract
@@ -80,9 +79,10 @@ def _contract_preflight(
         )
     return {
         "status": "no_op",
+        "configured": False,
         "operation": operation,
         "steps": [],
-        "reason": absent_reason,
+        "reason": "contract_not_configured",
     }
 
 
@@ -669,7 +669,6 @@ def ship_repository(args: argparse.Namespace) -> dict[str, object]:
             args.release_preflight_operation == "preflight"
             and args.release_operation == "publish"
         ),
-        absent_reason="release_contract_absent",
     )
     deployment: dict[str, Any] | None = _contract_preflight(
         repo_root,
@@ -678,7 +677,6 @@ def ship_repository(args: argparse.Namespace) -> dict[str, object]:
         args.deploy_operation,
         label="Deployment",
         default_selection=args.deploy_operation == "deploy",
-        absent_reason="deployment_contract_absent",
     )
     if release_publication is None:
         preflight_code, preflight = _run_json(

@@ -181,6 +181,22 @@ def test_compatibility_materializer_supports_repositories_without_skills(
         encoding="utf-8",
         newline="\n",
     )
+    (repo / "skills").mkdir()
+    (repo / "skills" / "skill-sections.json").write_text(
+        json.dumps(
+            {
+                "runtime_source_id": "example/empty-compatible",
+                "validation_profile": "ceratops-compatible",
+                "sections": {},
+                "maintenance_workflows": {},
+                "runtime_payloads": {},
+                "skills": {},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
 
     result = run_compatibility_engine(
         engine_scripts,
@@ -192,23 +208,14 @@ def test_compatibility_materializer_supports_repositories_without_skills(
     )
 
     assert result.returncode == 0, result.stdout
-    manifest = json.loads(
-        (repo / "skills" / "skill-sections.json").read_text(encoding="utf-8")
-    )
-    contract = yaml.safe_load(
-        (repo / "deploy" / "deploy.yml").read_text(encoding="utf-8")
-    )
-    assert manifest["skills"] == {}
-    assert manifest["sections"] == {}
-    assert json.loads(result.stdout)["bootstrap"] == "skipped"
-    assert contract == {
-        "version": 1,
-        "kind": "ceratops-deploy",
-        "operations": {},
-    }
-    assert not (repo / "skills" / "sections").exists()
-    assert not (repo / "scripts" / "install-skills-bootstrap.py").exists()
     output = json.loads(result.stdout)
+    assert output["bootstrap"] == "skipped"
+    assert output["deploy_contract"] == "not_configured"
+    assert output["runtime_source_id"] is None
+    assert output["skill_manifest"] == "not_configured"
+    assert not (repo / "skills").exists()
+    assert not (repo / "deploy").exists()
+    assert not (repo / "scripts" / "install-skills-bootstrap.py").exists()
     assert output["repository_validation"] == {
         "checks": ["npm-lint"],
         "validator": "materialized",
@@ -241,7 +248,6 @@ def test_compatibility_materializer_supports_repositories_without_skills(
 
     omitted = tmp_path / "empty-without-deploy"
     shutil.copytree(repo, omitted)
-    (omitted / "deploy" / "deploy.yml").unlink()
     omitted_result = run_compatibility_engine(
         engine_scripts,
         "materialize",

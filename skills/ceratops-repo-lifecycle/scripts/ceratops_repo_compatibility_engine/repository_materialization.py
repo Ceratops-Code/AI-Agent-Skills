@@ -75,7 +75,7 @@ class FileSnapshot:
 class MaterializationPlan:
     """Validated target writes ready for rollback-protected application."""
 
-    manifest: dict[str, object]
+    manifest: dict[str, object] | None
     skill_updates: dict[pathlib.Path, tuple[str, str]]
     canonical_sources: dict[str, pathlib.Path]
     deploy_contract: dict[str, object] | None
@@ -568,6 +568,8 @@ def build_deploy_contract_candidate(
     if reusable != expected:
         raise RuntimeError("deploy template is not the empty version 1 skeleton")
     target = repo_root / DEPLOY_RELATIVE
+    if not has_skills and not target.exists():
+        return None
     contract = load_yaml_mapping(target) if target.is_file() else dict(reusable)
     if contract.get("version") != 1:
         raise RuntimeError("existing deploy contract version must remain 1")
@@ -768,7 +770,7 @@ def restore_snapshots(
 
 def plan_materialization(
     repo_root: pathlib.Path,
-    source_id: str,
+    source_id: str | None,
     template: Mapping[str, object],
     existing: Mapping[str, object],
     *,
@@ -778,6 +780,26 @@ def plan_materialization(
 
     skill_paths = sorted((repo_root / "skills").glob("*/SKILL.md"))
     skill_names = {path.parent.name for path in skill_paths}
+    if not skill_names and existing:
+        unknown = sorted(set(existing) - set(template))
+        populated = sorted(
+            name
+            for name in (
+                "sections",
+                "maintenance_workflows",
+                "runtime_payloads",
+                "skills",
+            )
+            if existing.get(name) not in (None, {})
+        )
+        if unknown or populated:
+            detail = unknown + populated
+            raise RuntimeError(
+                "skillless repository has a nonempty skill manifest: "
+                + ", ".join(detail)
+            )
+    if skill_names and source_id is None:
+        raise RuntimeError("skill-bearing repository requires runtime_source_id")
     custom_sections = existing_custom_sections(repo_root, existing)
     prior_assignments = existing_skill_assignments(
         existing,
@@ -871,17 +893,19 @@ def plan_materialization(
         if not source.is_file():
             raise RuntimeError(f"canonical shared section is missing: {source}")
 
-    manifest = dict(template)
-    manifest.update(
-        {
-            "runtime_source_id": source_id,
-            "validation_profile": profile,
-            "sections": sections,
-            "maintenance_workflows": dict(maintenance_workflows),
-            "runtime_payloads": dict(runtime_payloads),
-            "skills": assignments,
-        }
-    )
+    manifest: dict[str, object] | None = None
+    if skill_names:
+        manifest = dict(template)
+        manifest.update(
+            {
+                "runtime_source_id": source_id,
+                "validation_profile": profile,
+                "sections": sections,
+                "maintenance_workflows": dict(maintenance_workflows),
+                "runtime_payloads": dict(runtime_payloads),
+                "skills": assignments,
+            }
+        )
     validator_text, workflow_text, validation_checks = validation_surfaces(repo_root)
     return MaterializationPlan(
         manifest=manifest,
@@ -920,12 +944,20 @@ def apply_materialization(
             newline=newline,
         )
     existing_path = repo_root / MANIFEST_RELATIVE
-    existing_path.parent.mkdir(parents=True, exist_ok=True)
-    existing_path.write_text(
-        json.dumps(plan.manifest, indent=2, sort_keys=False) + "\n",
-        encoding="utf-8",
-        newline="\n",
-    )
+    if plan.manifest is None:
+        if existing_path.is_file():
+            existing_path.unlink()
+        try:
+            existing_path.parent.rmdir()
+        except OSError:
+            pass
+    else:
+        existing_path.parent.mkdir(parents=True, exist_ok=True)
+        existing_path.write_text(
+            json.dumps(plan.manifest, indent=2, sort_keys=False) + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
     if plan.deploy_contract is not None:
         deploy_path = repo_root / DEPLOY_RELATIVE
         deploy_path.parent.mkdir(parents=True, exist_ok=True)
@@ -982,10 +1014,11 @@ def main(argv: list[str] | None = None) -> int:
         validate_template(template)
         existing_path = repo_root / MANIFEST_RELATIVE
         existing = load_mapping(existing_path) if existing_path.is_file() else {}
-        source_id = runtime_source_id(
-            repo_root,
-            args.runtime_source_id,
-            existing,
+        has_source_skills = any((repo_root / "skills").glob("*/SKILL.md"))
+        source_id = (
+            runtime_source_id(repo_root, args.runtime_source_id, existing)
+            if has_source_skills
+            else None
         )
         phase = "materialization_planning"
         plan = plan_materialization(
@@ -1094,6 +1127,8 @@ def main(argv: list[str] | None = None) -> int:
                 "deploy_contract": (
                     "materialized"
                     if plan.deploy_contract is not None
+                    else "not_configured"
+                    if not (repo_root / DEPLOY_RELATIVE).exists()
                     else "unchanged"
                 ),
                 "repository_validation": {
@@ -1112,6 +1147,9 @@ def main(argv: list[str] | None = None) -> int:
                 "markers_removed": plan.updated_markers,
                 "rollback": "not_needed",
                 "runtime_source_id": source_id,
+                "skill_manifest": (
+                    "materialized" if plan.manifest is not None else "not_configured"
+                ),
                 "skills": plan.skills,
                 "status": "ok",
             },

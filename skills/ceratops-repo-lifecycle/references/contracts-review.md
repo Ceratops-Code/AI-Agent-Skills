@@ -102,6 +102,9 @@ applied.
 - Treat artifact surfaces as in scope only when
   `references/contracts/artifact-deterministic-contract.json` or this lifecycle
   action set claims to cover them.
+- Keep repository-specific artifact identity beside its publication operations
+  in that repository's `release/release.yml`; keep only reusable artifact
+  standards in skill-local contracts.
 - Keep durable standards in the skill-local contracts and
   `references/contracts/github-contract-source-docs.json`; do not recreate a
   separate standards checklist file.

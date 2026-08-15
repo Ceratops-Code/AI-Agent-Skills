@@ -128,15 +128,17 @@ def test_repository_ship_absent_default_contract_is_no_op_and_finalizes(
 
     assert result["release_publication"] == {
         "status": "no_op",
+        "configured": False,
         "operation": "publish",
         "steps": [],
-        "reason": "release_contract_absent",
+        "reason": "contract_not_configured",
     }
     assert result["deployment"] == {
         "status": "no_op",
+        "configured": False,
         "operation": "deploy",
         "steps": [],
-        "reason": "deployment_contract_absent",
+        "reason": "contract_not_configured",
     }
     assert result["finalization"] == (
         {"status": "finalized"} if scope_present else None

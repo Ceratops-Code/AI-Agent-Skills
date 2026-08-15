@@ -4,14 +4,15 @@
 
 Make an existing repository satisfy the `ceratops-compatible` repository and
 validation contract without changing any skill's intended behavior. Repositories
-with no skills remain valid and omit canonical shared-section and bootstrap work.
+with no skills remain valid and omit the skill manifest, canonical shared
+sections, bootstrap, and empty deployment contracts.
 
 ## Context
 
 ### Inputs To Capture
 
-- Target repository task worktree, optional source skill inventory, and
-  intended stable `runtime_source_id`.
+- Target repository task worktree, optional source skill inventory, and the
+  intended stable `runtime_source_id` when source skills exist.
 - Existing shared skill rules, metadata, README skill inventory, runtime
   resources, installer, deployment definition, and validation surfaces.
 - Whether compatibility is standalone work or a prerequisite for `create` or
@@ -32,8 +33,9 @@ Infer the source identity from stable repository evidence before asking.
   ceratops_repo_compatibility_engine materialize --target-repo-root
   <task-worktree> [--runtime-source-id <stable-id>]`; it performs the
   compatibility transaction and emits one compact result.
-  Add `--no-deploy-contract` only when the caller chooses to leave
-  `deploy/deploy.yml` absent or unchanged.
+  Add `--no-deploy-contract` when the caller chooses to leave an existing
+  deployment contract unchanged. A repository with no skills and no existing
+  deployment operations leaves `deploy/deploy.yml` absent by default.
 - (D) Bootstrap-only repair: `python -m ceratops_repo_compatibility_engine
   synchronize-bootstrap --target-repo-root <task-worktree>`; it only compares
   parsed installer versions and copies a missing or lower version.
@@ -70,10 +72,13 @@ Infer the source identity from stable repository evidence before asking.
 - Move a rule into a shared section when it is repeated, semantically equivalent,
   or harmless as a common default for every assigned skill; keep only true
   exceptions and skill-specific deltas in source `SKILL.md`.
-- Use one stable `runtime_source_id` unique among repositories sharing an
-  install root and set `validation_profile` to `ceratops-compatible`.
+- For a skill-bearing repository, use one stable `runtime_source_id` unique
+  among repositories sharing an install root and set `validation_profile` to
+  `ceratops-compatible`.
 - Assign every source skill to `core`; when none exist, keep the skill map
-  empty, add no canonical sections, and skip bootstrap materialization.
+  absent by omitting `skills/skill-sections.json`, add no canonical sections,
+  and skip bootstrap materialization. Remove a previously generated empty
+  manifest; block rather than discard a nonempty skill manifest.
   Preserve valid target-owned custom sections and assignments, portable
   runtime payloads, and maintenance commands.
 - Block malformed or unsafe existing declarations before mutation. After the
@@ -99,14 +104,16 @@ Infer the source identity from stable repository evidence before asking.
 - Run the compatibility materializer so it loads the lifecycle-owned
   `references/templates/skill-sections-template.json`, derives or accepts the
   stable source identity, inventories source skills and multi-action markers,
-  writes `skills/skill-sections.json`, and preserves valid target-owned custom
-  sections and assignments. Only when source skills exist, copy canonical
-  shared sections to `skills/sections/` and remove generated section blocks
-  from source skills.
-- Unless omitted, materialize `deploy/deploy.yml` from
+  and preserves valid target-owned custom sections and assignments. Only when
+  source skills exist, write `skills/skill-sections.json`, copy canonical shared
+  sections to `skills/sections/`, and remove generated section blocks from
+  source skills.
+- When skills exist or a deployment contract already exists, materialize or
+  align `deploy/deploy.yml` from
   `references/templates/deploy-template.yml`, preserve target-owned operations,
   and declare the canonical `bootstrap` operation and default
-  `ceratops-skill-lifecycle/deploy` handoff only when skills exist.
+  `ceratops-skill-lifecycle/deploy` handoff only when skills exist. Do not create
+  an empty deployment contract.
 - When skills exist, make every source `SKILL.md` delta-only, add or align
   `skills/<name>/agents/openai.yaml`, and align the README Skills table without
   changing skill behavior.
@@ -138,12 +145,12 @@ Infer the source identity from stable repository evidence before asking.
 
 ### Completion Gate
 
-- The repository has a stable source identity, `ceratops-compatible` manifest,
-  complete optional per-skill assignments, and an optional live deployment
-  definition. Skill-bearing repositories also have target-owned shared
-  sections, aligned source skills, metadata, README inventory, portable
+- Skill-bearing repositories have a stable source identity,
+  `ceratops-compatible` manifest, complete per-skill assignments, target-owned
+  shared sections, aligned source skills, metadata, README inventory, portable
   payload declarations, a default deploy handoff, and a supported versioned
-  bootstrap.
+  bootstrap. Skillless repositories have no generated skill manifest,
+  bootstrap, or empty deployment definition.
 - Every target has repository validation and CI wiring; every applicable
   `check_repository` result is valid with no errors.
 - Any caught blocker after mutation restores the exact prior target files and

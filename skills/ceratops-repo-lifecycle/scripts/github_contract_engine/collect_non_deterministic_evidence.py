@@ -17,6 +17,7 @@ from . import (
 from .compose_desired_state import check_ids
 from .format_report import write_json
 from .github_api import default_contract_path, load_json
+from .repository_artifact_contracts import resolve_repository_artifact_contracts
 
 
 SCRIPTS_DIR = pathlib.Path(__file__).resolve().parent.parent
@@ -115,7 +116,7 @@ def _repo_parameters(
     if not args.repo or "/" not in args.repo:
         raise ValueError("--repo must be OWNER/REPO")
     owner, repo = args.repo.split("/", 1)
-    return _overrides(
+    parameters = _overrides(
         args,
         {
             **_defaults(list(contracts.values())),
@@ -124,6 +125,11 @@ def _repo_parameters(
             "audit_only": True,
         },
     )
+    parameters["artifact_contracts"] = resolve_repository_artifact_contracts(
+        parameters.get("local_repo_path"),
+        parameters.get("artifact_contracts"),
+    )
+    return parameters
 
 
 def repo_or_artifact_evidence(args: argparse.Namespace, surface: str) -> dict[str, Any]:

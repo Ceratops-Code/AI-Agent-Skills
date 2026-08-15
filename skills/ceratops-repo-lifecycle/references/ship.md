@@ -96,8 +96,10 @@ selected merged source branches and worktrees.
    integration branch when selected.
 7. Before remote mutation, the wrapper classifies release publication and
    deployment. An absent default `release/release.yml` makes release preflight
-   and publication explicit no-ops, and an absent default `deploy/deploy.yml`
-   makes `deploy` an explicit no-op; a missing custom contract blocks. Run a
+   and publication successful no-ops, and an absent default
+   `deploy/deploy.yml` makes `deploy` a successful no-op; each result carries
+   `configured: false` and `reason: contract_not_configured`, and shipping
+   continues. A missing explicitly selected custom contract blocks. Run a
    declared release preflight before the first remote mutation. After
    synchronization, recheck the selected scope, run declared release
    publication or record its no-op, then run declared local deployment or
