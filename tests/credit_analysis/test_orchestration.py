@@ -69,6 +69,8 @@ def test_full_analysis_uses_run_windows_parallel_tiers_and_exact_coverage(
     assert phases.count("sol-adjudication") == 3
     assert phases.count("sol-audit") == 1
     assert phases.count("sol-final") == 1
+    final_call = next(call for call in runner.calls if call["phase"] == "sol-final")
+    assert final_call["input_payload"]["canonical_state"] == []
     final = json.loads(
         pathlib.Path(completed["final_result_path"]).read_text(encoding="utf-8")
     )

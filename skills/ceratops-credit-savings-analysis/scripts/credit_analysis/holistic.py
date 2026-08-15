@@ -4677,7 +4677,11 @@ def _holistic_sol_input(
             "rows": inventory,
         },
         "analysis_generated_activity": compact["analysis_generated_activity"],
-        "canonical_state": compact["canonical_state"],
+        "canonical_state": (
+            compact["canonical_state"]
+            if task["phase"] == "sol-adjudication"
+            else []
+        ),
         "deterministic_totals": evidence["totals"],
         "pricing": evidence["pricing"],
         "helper_categories": contract["helper_categories"],
