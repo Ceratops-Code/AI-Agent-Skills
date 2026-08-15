@@ -127,11 +127,11 @@ what still needs attention.
 
 - In `included` mode, invoke `$ceratops-credit-savings-analysis` for the
   current thread and selected closure window using
-  `bounded-largest-runs-analysis`. Run its end-to-end controller once with the
-  request; a fresh run plans and executes one Luna discovery and one Sol
-  adjudication from the immutable selection manifest, while the exact same
-  request resumes accepted state. Include every confirmed finding, bounded
-  coverage, or exact blocker under `Credit savings`.
+  `full-analysis`. Run its end-to-end controller once with the request; a fresh
+  run plans every completed run in the selected window and executes the frozen
+  Luna, Sol-adjudication, audit, and final-merge tasks, while the exact same
+  request resumes accepted state. Include every qualifying confirmed finding,
+  semantic coverage, exact capacity omission, or blocker under `Credit savings`.
 - In `omitted` mode, do not invoke the controller or apply its completion gates
   or output contract.
 

@@ -4,6 +4,7 @@ import json
 import os
 import pathlib
 import subprocess
+import threading
 from typing import Any, Mapping
 
 import pytest
@@ -116,7 +117,7 @@ def test_credit_analysis_recovers_packet_local_luna_evidence_without_a_retry(
         available_models=runner.available_models,
         task_limit=1,
     )
-    assert resumed["next_task"] == "sol.adjudication"
+    assert resumed["next_task"] == "luna.discovery.0002"
     assert len(runner.calls) == calls_before_resume
     recovered_state = json.loads(state_path.read_text(encoding="utf-8"))
     assert recovered_state["model_attempts"] == {"luna": 2, "sol": 0}
@@ -172,7 +173,7 @@ def test_credit_analysis_normalizes_sol_transport_without_changing_judgments(
     request, _, _ = credit_analysis_request(
         tmp_path,
         extra_completed_turns=3,
-        extra_calls_per_turn=4,
+        extra_calls_per_turn=12,
     )
     plan = workflow.command_plan_orchestration(
         request,
@@ -180,6 +181,14 @@ def test_credit_analysis_normalizes_sol_transport_without_changing_judgments(
     )
 
     class TransportVariationRunner(FakeCreditModelRunner):
+        def __init__(self) -> None:
+            super().__init__()
+            self.variation_lock = threading.Lock()
+            self.variation_applied = False
+            self.colliding_luna_ids: set[str] = set()
+            self.reclassified_candidate_id: str | None = None
+            self.normalized_review_source: str | None = None
+
         def _luna(
             self,
             task: Mapping[str, Any],
@@ -187,10 +196,11 @@ def test_credit_analysis_normalizes_sol_transport_without_changing_judgments(
             digest: str,
         ) -> dict[str, Any]:
             result = super()._luna(task, packet, digest)
-            self.colliding_luna_ids = {
-                str(candidate["candidate_ids"][0])
-                for candidate in result["candidates"]
-            }
+            with self.variation_lock:
+                self.colliding_luna_ids.update(
+                    str(candidate["candidate_ids"][0])
+                    for candidate in result["candidates"]
+                )
             for candidate in result["candidates"]:
                 candidate["id"] = str(candidate["candidate_ids"][0])
             return result
@@ -208,13 +218,55 @@ def test_credit_analysis_normalizes_sol_transport_without_changing_judgments(
                 for luna_result in packet["luna_results"]
                 for candidate in luna_result["candidates"]
             ]
-            self.reclassified_candidate_index = next(
-                index
-                for index, candidate in enumerate(packet_candidates)
-                if candidate["kind"] == "plausible-risk"
-            )
+            try:
+                reclassified_candidate_index = next(
+                    index
+                    for index, candidate in enumerate(packet_candidates)
+                    if candidate["kind"] == "plausible-risk"
+                )
+                volume_call = next(
+                    call_id
+                    for item in result["confirmed_findings"]
+                    if item["waste_kind"] == "context-volume"
+                    for call_id in item["affected_call_ids"]
+                )
+                finding = next(
+                    item
+                    for item in result["confirmed_findings"]
+                    if item["waste_kind"] == "model-calls"
+                    and len(item["affected_call_ids"]) > 1
+                )
+                implemented_finding = next(
+                    item
+                    for item in result["confirmed_findings"]
+                    if item["waste_kind"] == "model-calls"
+                    and item["implementation_status"] == "implemented"
+                )
+                review = next(
+                    item
+                    for item in result["temporary_control_reviews"]
+                    if item["disposition"] == "permanently-implemented"
+                )
+                nonavoidable_call = next(
+                    call_id
+                    for group in result["call_classifications"]
+                    if not group["classification"].startswith("avoidable_")
+                    for call_id in group["call_ids"]
+                    if call_id != volume_call
+                )
+            except StopIteration:
+                return result
+            if len(result["temporary_control_reviews"]) < 3:
+                return result
+            with self.variation_lock:
+                if self.variation_applied:
+                    return result
+                self.variation_applied = True
+                self.reclassified_candidate_id = str(
+                    packet_candidates[reclassified_candidate_index]["id"]
+                )
             plausible_candidate_id = str(
-                packet_candidates[self.reclassified_candidate_index]["id"]
+                packet_candidates[reclassified_candidate_index]["id"]
             )
             moved_review = result["temporary_control_reviews"].pop(2)
             result["temporary_control_reviews"][0][
@@ -224,25 +276,6 @@ def test_credit_analysis_normalizes_sol_transport_without_changing_judgments(
                     plausible_candidate_id,
                     *moved_review["source_luna_candidate_ids"],
                 ]
-            )
-            volume_call = next(
-                call_id
-                for item in result["confirmed_findings"]
-                if item["waste_kind"] == "context-volume"
-                for call_id in item["affected_call_ids"]
-            )
-            finding = next(
-                item
-                for item in result["confirmed_findings"]
-                if item["waste_kind"] == "model-calls"
-                and len(item["affected_call_ids"]) > 1
-            )
-            nonavoidable_call = next(
-                call_id
-                for group in result["call_classifications"]
-                if not group["classification"].startswith("avoidable_")
-                for call_id in group["call_ids"]
-                if call_id != volume_call
             )
             finding_calls = set(finding["affected_call_ids"])
             finding_calls.add(nonavoidable_call)
@@ -296,12 +329,6 @@ def test_credit_analysis_normalizes_sol_transport_without_changing_judgments(
                     }
                 )
             result["call_classifications"] = orphaned_groups
-            implemented_finding = next(
-                item
-                for item in result["confirmed_findings"]
-                if item["waste_kind"] == "model-calls"
-                and item["implementation_status"] == "implemented"
-            )
             historical_source = result["temporary_control_reviews"][0][
                 "source_luna_candidate_ids"
             ][0]
@@ -314,14 +341,10 @@ def test_credit_analysis_normalizes_sol_transport_without_changing_judgments(
             historical_decision["finding_ids"] = [implemented_finding["id"]]
             historical_decision["risk_ids"] = []
 
-            review = next(
-                item
-                for item in result["temporary_control_reviews"]
-                if item["disposition"] == "permanently-implemented"
-            )
             review["finding_id"] = finding["id"]
             review["no_finding_reason"] = None
             source_id = review["source_luna_candidate_ids"][0]
+            self.normalized_review_source = source_id
             decision = next(
                 item
                 for item in result["candidate_decisions"]
@@ -347,7 +370,10 @@ def test_credit_analysis_normalizes_sol_transport_without_changing_judgments(
         available_models=runner.available_models,
     )
     assert completed["complete"] is True
-    assert len(runner.calls) == 2
+    assert runner.variation_applied is True
+    assert sum(call["phase"] == "sol-adjudication" for call in runner.calls) == 3
+    assert sum(call["phase"] == "sol-audit" for call in runner.calls) == 1
+    assert sum(call["phase"] == "sol-final" for call in runner.calls) == 1
     final = json.loads(
         pathlib.Path(completed["final_result_path"]).read_text(encoding="utf-8")
     )
@@ -368,7 +394,10 @@ def test_credit_analysis_normalizes_sol_transport_without_changing_judgments(
     manifest = json.loads(
         pathlib.Path(final["manifest"]["path"]).read_text(encoding="utf-8")
     )
-    assert flattened == manifest["call_ids"]
+    assert flattened == [
+        call_id for call_id in manifest["call_ids"] if call_id in set(flattened)
+    ]
+    assert len(flattened) == final["coverage"]["analyzed_calls"]
     assert sum(
         len(group["call_ids"])
         for group in final["call_classifications"]
@@ -379,13 +408,11 @@ def test_credit_analysis_normalizes_sol_transport_without_changing_judgments(
         for review in final["temporary_control_reviews"]
         for candidate_id in review["source_luna_candidate_ids"]
     ]
-    assert len(reviewed_sources) == 7
     assert len(reviewed_sources) == len(set(reviewed_sources))
-    assert (
-        final["candidate_decisions"][runner.reclassified_candidate_index][
-            "luna_candidate_id"
-        ]
-        in reviewed_sources
+    assert any(
+        decision["disposition"] == "plausible-risk"
+        and decision["luna_candidate_id"] in reviewed_sources
+        for decision in final["candidate_decisions"]
     )
     final_findings = {
         finding["id"]: finding for finding in final["confirmed_findings"]
@@ -395,9 +422,9 @@ def test_credit_analysis_normalizes_sol_transport_without_changing_judgments(
         for review in final["temporary_control_reviews"]
         if review["disposition"] == "transient-by-design"
     )
-    assert any(
-        decision["disposition"] == "confirmed-finding"
-        and all(
+    assert all(
+        decision["disposition"] != "confirmed-finding"
+        or all(
             final_findings[finding_id]["implementation_status"] == "implemented"
             for finding_id in decision["finding_ids"]
         )
@@ -465,7 +492,7 @@ def test_credit_analysis_model_catalog_decodes_cli_as_utf8(
     catalog = workflow._codex_model_catalog()
     assert catalog["gpt-5.6-luna"]["effective_context_tokens"] == 258400
     specs = workflow._holistic_model_specs(workflow._load_contract(), catalog)
-    assert specs["luna"]["reasoning_effort"] == "medium"
+    assert specs["luna"]["reasoning_effort"] == "max"
     assert specs["sol"]["reasoning_effort"] == "max"
     assert specs["luna"]["evidence_token_budget"] > 200_000
     assert specs["sol"]["output_reserve_tokens"] == 48_000
@@ -482,13 +509,25 @@ def test_credit_analysis_child_command_places_global_approval_before_exec(
         reasoning_effort="medium",
         schema_path=pathlib.Path("schema.json"),
         raw_output=pathlib.Path("result.json"),
-        orchestration_root=pathlib.Path("."),
+        execution_cwd=pathlib.Path("."),
+        ephemeral=True,
     )
     assert command.index("--ask-for-approval") < command.index("exec")
     assert 'model_reasoning_effort="medium"' in command
     assert "--ephemeral" in command
     assert "--sandbox" in command
     assert command[command.index("--sandbox") + 1] == "read-only"
+    persistent = workflow._codex_child_command(
+        executable="codex",
+        model="gpt-5.6-sol",
+        reasoning_effort="max",
+        schema_path=pathlib.Path("schema.json"),
+        raw_output=pathlib.Path("result.json"),
+        execution_cwd=pathlib.Path("."),
+        ephemeral=False,
+    )
+    assert "--ephemeral" not in persistent
+    assert persistent[persistent.index("--cd") + 1] == "."
 
     calls: list[list[str]] = []
 
@@ -607,34 +646,48 @@ def test_credit_analysis_workflow_rejects_invalid_and_conflicting_passes(
             return result
 
     bad_luna = BadCoverageRunner()
-    with pytest.raises(
-        workflow.CreditAnalysisError,
-        match="coverage attestation",
-    ):
-        workflow.command_execute_orchestration(
-            state_path,
-            runner=bad_luna,
-            available_models=bad_luna.available_models,
-            task_limit=1,
-        )
+    failed = workflow.command_execute_orchestration(
+        state_path,
+        runner=bad_luna,
+        available_models=bad_luna.available_models,
+        task_limit=1,
+    )
+    assert failed["next_task"] == "luna.discovery.0002"
     failed_state = json.loads(state_path.read_text(encoding="utf-8"))
-    assert failed_state["model_attempts"] == {"luna": 1, "sol": 0}
+    assert failed_state["model_attempts"] == {"luna": 2, "sol": 0}
     assert failed_state["model_calls"] == {"luna": 0, "sol": 0}
-    assert failed_state["execution"]["luna.discovery.0001"]["attempts"][0][
-        "outcome"
-    ] == "validation-error"
+    failed_attempts = failed_state["execution"]["luna.discovery.0001"][
+        "attempts"
+    ]
+    assert [attempt["outcome"] for attempt in failed_attempts] == [
+        "validation-error",
+        "validation-error",
+    ]
+    assert failed_attempts[1]["output_byte_limit"] < failed_attempts[0][
+        "output_byte_limit"
+    ]
+    assert failed_state["execution"]["luna.discovery.0001"]["status"] == "omitted"
+    assert any(
+        omission["task_id"] == "luna.discovery.0001"
+        and omission["reason"] == "luna-invalid-output"
+        for omission in failed_state["omissions"]
+    )
 
     good = FakeCreditModelRunner()
+    pending_luna = sum(
+        failed_state["execution"][task["task_id"]]["status"] == "pending"
+        for task in failed_state["manifest"]["luna_tasks"]
+    )
     resumed = workflow.command_execute_orchestration(
         state_path,
         runner=good,
         available_models=good.available_models,
-        task_limit=1,
+        task_limit=pending_luna,
     )
-    assert resumed["next_task"] == "sol.adjudication"
+    assert resumed["next_task"] == "sol.adjudication.0001"
     resumed_state = json.loads(state_path.read_text(encoding="utf-8"))
-    assert resumed_state["model_attempts"]["luna"] == 2
-    assert resumed_state["model_calls"]["luna"] == 1
+    assert resumed_state["model_attempts"]["luna"] == 2 + pending_luna
+    assert resumed_state["model_calls"]["luna"] == pending_luna
 
     class VerboseRationaleRunner(FakeCreditModelRunner):
         def _sol(
@@ -648,14 +701,39 @@ def test_credit_analysis_workflow_rejects_invalid_and_conflicting_passes(
             return result
 
     verbose_sol = VerboseRationaleRunner()
+    active_state, evidence, contract, compact = workflow._holistic_read_state(
+        state_path
+    )
+    base_task = workflow._holistic_task_map(active_state["manifest"])[
+        "sol.adjudication.0001"
+    ]
+    routing = json.loads(
+        pathlib.Path(active_state["routing"]["path"]).read_text(encoding="utf-8")
+    )
+    sol_task = {
+        **base_task,
+        **next(
+            shard
+            for shard in routing["shards"]
+            if shard["task_id"] == base_task["task_id"]
+        ),
+    }
+    payload, digest, _, _, candidate_ids = workflow._holistic_prepare_task(
+        active_state, evidence, contract, compact, sol_task
+    )
+    verbose_raw = verbose_sol._sol(sol_task, payload, digest)
     with pytest.raises(
         workflow.CreditAnalysisError,
         match="320-character semantic bound",
     ):
-        workflow.command_execute_orchestration(
-            state_path,
-            runner=verbose_sol,
-            available_models=verbose_sol.available_models,
+        workflow._validate_holistic_task_result(
+            verbose_raw,
+            state=active_state,
+            task=sol_task,
+            input_sha256=digest,
+            contract=contract,
+            compact=compact,
+            luna_candidate_ids=candidate_ids,
         )
 
     class ExcessiveUnassessedRunner(FakeCreditModelRunner):
@@ -673,18 +751,20 @@ def test_credit_analysis_workflow_rejects_invalid_and_conflicting_passes(
             return result
 
     bad_sol = ExcessiveUnassessedRunner()
+    excessive_raw = bad_sol._sol(sol_task, payload, digest)
     with pytest.raises(
         workflow.CreditAnalysisError,
         match="unassessed calls exceed",
     ):
-        workflow.command_execute_orchestration(
-            state_path,
-            runner=bad_sol,
-            available_models=bad_sol.available_models,
+        workflow._validate_holistic_task_result(
+            excessive_raw,
+            state=active_state,
+            task=sol_task,
+            input_sha256=digest,
+            contract=contract,
+            compact=compact,
+            luna_candidate_ids=candidate_ids,
         )
-    failed_sol_state = json.loads(state_path.read_text(encoding="utf-8"))
-    assert failed_sol_state["model_attempts"]["sol"] == 2
-    assert failed_sol_state["model_calls"]["sol"] == 0
 
     completed = workflow.command_execute_orchestration(
         state_path,
@@ -696,7 +776,10 @@ def test_credit_analysis_workflow_rejects_invalid_and_conflicting_passes(
         pathlib.Path(completed["final_result_path"]).read_text(encoding="utf-8")
     )
     assert final["classification_totals"]["unassessed"] == 0
-    assert final["manifest"]["unclassified_calls"] == 0
+    assert final["manifest"]["unclassified_calls"] == (
+        final["coverage"]["eligible_calls"] - final["coverage"]["analyzed_calls"]
+    )
+    assert final["coverage"]["omitted_runs"] == 1
 
     compact = json.loads(
         pathlib.Path(
@@ -706,7 +789,7 @@ def test_credit_analysis_workflow_rejects_invalid_and_conflicting_passes(
         ).read_text(encoding="utf-8")
     )
     episodes = workflow._holistic_episodes(compact)
-    one_packet_chars = workflow._json_chars(
+    one_packet_bytes = workflow._json_bytes(
         workflow._holistic_luna_payload(
             analysis_id=compact["analysis_id"],
             task_id="luna.discovery.0001",
@@ -719,7 +802,7 @@ def test_credit_analysis_workflow_rejects_invalid_and_conflicting_passes(
         analysis_id=compact["analysis_id"],
         episodes=episodes,
         bundle=compact,
-        budget_chars=max(8_000, one_packet_chars // 2),
+        budget_bytes=max(8_000, one_packet_bytes // 2),
     )
     assert len(packets) >= 2
     assert [
@@ -755,7 +838,7 @@ def test_credit_analysis_workflow_rejects_invalid_and_conflicting_passes(
         for index, candidate_id in enumerate(synthetic_ids, start=1)
     ]
     five_packet_budget = max(
-        workflow._json_chars(
+        workflow._json_bytes(
             workflow._holistic_luna_payload(
                 analysis_id=compact["analysis_id"],
                 task_id="luna.discovery.0001",
@@ -770,7 +853,7 @@ def test_credit_analysis_workflow_rejects_invalid_and_conflicting_passes(
         analysis_id=compact["analysis_id"],
         episodes=synthetic_episodes,
         bundle=synthetic_bundle,
-        budget_chars=five_packet_budget,
+        budget_bytes=five_packet_budget,
     )
     assert len(five_packets) == 5
     assert [
@@ -791,18 +874,19 @@ def test_credit_analysis_workflow_rejects_invalid_and_conflicting_passes(
     manifest["luna_tasks"].insert(1, split)
     manifest["projected_luna_calls"] += 1
     manifest["projected_semantic_calls"] += 1
-    manifest["sol_task"]["dependencies"].insert(1, split["task_id"])
+    for sol_task_record in manifest["sol_tasks"][:-1]:
+        sol_task_record["dependencies"].insert(1, split["task_id"])
     expected_packets = workflow._holistic_partition(
         analysis_id=compact["analysis_id"],
         episodes=episodes,
         bundle=compact,
-        budget_chars=json.loads(state_path.read_text(encoding="utf-8"))[
+        budget_bytes=json.loads(state_path.read_text(encoding="utf-8"))[
             "model_specs"
-        ]["luna"]["evidence_char_budget"],
+        ]["luna"]["evidence_byte_budget"],
     )
     with pytest.raises(
         workflow.CreditAnalysisError,
-        match="minimum ordered partition",
+        match="packet boundaries",
     ):
         workflow._validate_holistic_manifest(
             manifest,

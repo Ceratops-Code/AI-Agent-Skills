@@ -45,7 +45,7 @@ def holistic_model_catalog(context_tokens: int = 258_000) -> dict[str, dict[str,
 
 
 class FakeCreditModelRunner:
-    """Return sparse Luna discovery and one complete Sol adjudication."""
+    """Return sparse Luna discovery and complete sharded Sol synthesis."""
 
     available_models = holistic_model_catalog()
     usage_by_phase = {
@@ -60,6 +60,18 @@ class FakeCreditModelRunner:
             "cached_input_tokens": 0,
             "output_tokens": 360,
             "reasoning_output_tokens": 1_100,
+        },
+        "sol-audit": {
+            "input_tokens": 600,
+            "cached_input_tokens": 0,
+            "output_tokens": 40,
+            "reasoning_output_tokens": 300,
+        },
+        "sol-final": {
+            "input_tokens": 1_000,
+            "cached_input_tokens": 0,
+            "output_tokens": 300,
+            "reasoning_output_tokens": 900,
         },
     }
 
@@ -150,8 +162,25 @@ class FakeCreditModelRunner:
                 ]
                 if selected:
                     add(suffix, "temporary-control", record, selected)
+        elif self.temporary_controls and records:
+            dispositions = [
+                ("temporary.transient", ["rework-validation"]),
+                ("temporary.implemented", ["helper-contracts", "rework-validation"]),
+                ("temporary.run-only", ["rework-validation"]),
+                ("temporary.durable-a", ["helper-contracts", "rework-validation"]),
+                ("temporary.durable-b", ["rework-validation", "tool-flow"]),
+                ("temporary.unclear", ["rework-validation"]),
+            ]
+            suffix, requested_surfaces = dispositions[
+                (int(task["ordinal"]) - 1) % len(dispositions)
+            ]
+            selected = [
+                surface for surface in surfaces if surface in requested_surfaces
+            ]
+            if selected:
+                add(suffix, "temporary-control", records[-1], selected)
         return {
-            "schema": "ceratops-credit-analysis-luna-result.v4",
+            "schema": "ceratops-credit-analysis-luna-result.v5",
             "analysis_id": packet["analysis_id"],
             "task_id": task["task_id"],
             "input_sha256": digest,
@@ -162,6 +191,233 @@ class FakeCreditModelRunner:
                 "last_candidate_id": task["candidate_ids"][-1],
             },
             "candidates": candidates,
+        }
+
+    def _audit(
+        self,
+        task: Mapping[str, Any],
+        packet: Mapping[str, Any],
+        digest: str,
+    ) -> dict[str, Any]:
+        return {
+            "schema": "ceratops-credit-analysis-luna-result.v5",
+            "analysis_id": packet["analysis_id"],
+            "task_id": task["task_id"],
+            "input_sha256": digest,
+            "coverage": {
+                "candidate_count": len(task["candidate_ids"]),
+                "candidate_ids_sha256": task["candidate_ids_sha256"],
+                "first_candidate_id": task["candidate_ids"][0],
+                "last_candidate_id": task["candidate_ids"][-1],
+            },
+            "candidates": [],
+        }
+
+    @staticmethod
+    def _final(packet: Mapping[str, Any]) -> dict[str, Any]:
+        prior = list(packet["prior_adjudication_results"])
+        decisions = [
+            dict(item)
+            for result in prior
+            for item in result["candidate_decisions"]
+        ]
+        decision_order = {
+            candidate_id: index
+            for index, candidate_id in enumerate(packet["luna_candidate_ids"])
+        }
+        decisions.sort(
+            key=lambda item: decision_order[str(item["luna_candidate_id"])]
+        )
+
+        finding_redirects: dict[str, str] = {}
+        risk_redirects: dict[str, str] = {}
+
+        def merge_outcomes(key: str) -> list[dict[str, Any]]:
+            merged: dict[tuple[Any, ...], dict[str, Any]] = {}
+            for result in prior:
+                for item in result[key]:
+                    if key == "confirmed_findings":
+                        identity = (
+                            str(item["producer_owner"]),
+                            str(item["proposed_durable_control"]),
+                            str(item["problem_summary"]),
+                            str(item["waste_kind"]),
+                            str(item["implementation_status"]),
+                            str(item["workstream"]),
+                        )
+                    else:
+                        identity = (
+                            str(item["description"]),
+                            str(item["missing_fact"]),
+                            tuple(item["verification_needed"]),
+                            str(item["workstream"]),
+                        )
+                    if identity not in merged:
+                        merged[identity] = dict(item)
+                        continue
+                    target = merged[identity]
+                    redirects = (
+                        finding_redirects
+                        if key == "confirmed_findings"
+                        else risk_redirects
+                    )
+                    redirects[str(item["id"])] = str(target["id"])
+                    for field in (
+                        "affected_call_ids",
+                        "evidence_refs",
+                        "contributing_surfaces",
+                    ):
+                        if field in target:
+                            target[field] = list(
+                                dict.fromkeys([*target[field], *item[field]])
+                            )
+                    if "observed_avoidable_call_count" in target:
+                        target["observed_avoidable_call_count"] = len(
+                            target["affected_call_ids"]
+                        )
+            return list(merged.values())
+
+        findings = merge_outcomes("confirmed_findings")
+        risks = merge_outcomes("plausible_risks")
+        call_order = {
+            row[1]: index for index, row in enumerate(packet["call_inventory"]["rows"])
+        }
+        for item in [*findings, *risks]:
+            item["affected_call_ids"].sort(key=call_order.__getitem__)
+        finding_fields = {
+            "id", "title", "problem_summary", "waste_kind",
+            "affected_call_ids", "evidence_refs", "producer_type",
+            "producer_owner", "proposed_durable_control",
+            "implementation_status", "targeted_verification", "recurrence",
+            "confidence", "complexity", "one_time_implementation_cost",
+            "helper_categories",
+        }
+        risk_fields = {
+            "id", "description", "affected_call_ids", "evidence_refs",
+            "competing_explanations", "missing_fact", "verification_needed",
+        }
+        findings = [
+            {key: value for key, value in item.items() if key in finding_fields}
+            for item in findings
+        ]
+        for item in findings:
+            item["recurrence"] = {
+                key: value
+                for key, value in item["recurrence"].items()
+                if key != "estimated_calls_saved_per_similar_run"
+            }
+        risks = [
+            {key: value for key, value in item.items() if key in risk_fields}
+            for item in risks
+        ]
+        reviews = [
+            {
+                key: value
+                for key, value in item.items()
+                if key != "contributing_surfaces"
+            }
+            for result in prior
+            for item in result["temporary_control_reviews"]
+        ]
+        merge_index: dict[tuple[str, str], dict[str, Any]] = {}
+        for result in prior:
+            for item in result["temporary_control_merges"]:
+                key = (str(item["owning_producer"]), str(item["control_key"]))
+                if key not in merge_index:
+                    merge_index[key] = {
+                        field: value
+                        for field, value in item.items()
+                        if field != "contributing_surfaces"
+                    }
+                else:
+                    target = merge_index[key]
+                    finding_redirects.setdefault(
+                        str(item["finding_id"]), str(target["finding_id"])
+                    )
+                    target["review_ids"] = list(
+                        dict.fromkeys([*target["review_ids"], *item["review_ids"]])
+                    )
+        if finding_redirects:
+            finding_by_id = {str(item["id"]): item for item in findings}
+            for source_id, target_id in finding_redirects.items():
+                target_id = finding_redirects.get(target_id, target_id)
+                if source_id not in finding_by_id:
+                    continue
+                source = finding_by_id[source_id]
+                target = finding_by_id[target_id]
+                for field in (
+                    "affected_call_ids",
+                    "evidence_refs",
+                    "contributing_surfaces",
+                ):
+                    if field in target:
+                        target[field] = list(
+                            dict.fromkeys([*target[field], *source[field]])
+                        )
+                finding_by_id.pop(source_id)
+            findings = list(finding_by_id.values())
+            for decision in decisions:
+                decision["finding_ids"] = list(
+                    dict.fromkeys(
+                        finding_redirects.get(str(item), str(item))
+                        for item in decision["finding_ids"]
+                    )
+                )
+                decision["risk_ids"] = list(
+                    dict.fromkeys(
+                        risk_redirects.get(str(item), str(item))
+                        for item in decision["risk_ids"]
+                    )
+                )
+            for review in reviews:
+                if review.get("finding_id") is not None:
+                    review["finding_id"] = finding_redirects.get(
+                        str(review["finding_id"]), str(review["finding_id"])
+                    )
+            for finding in findings:
+                finding["affected_call_ids"].sort(key=call_order.__getitem__)
+        elif risk_redirects:
+            for decision in decisions:
+                decision["risk_ids"] = list(
+                    dict.fromkeys(
+                        risk_redirects.get(str(item), str(item))
+                        for item in decision["risk_ids"]
+                    )
+                )
+        for merge in merge_index.values():
+            merge["finding_id"] = finding_redirects.get(
+                str(merge["finding_id"]), str(merge["finding_id"])
+            )
+        classification_by_call = {
+            call_id: dict(group)
+            for result in prior
+            for group in result["call_classifications"]
+            for call_id in group["call_ids"]
+        }
+        classifications: list[dict[str, Any]] = []
+        for row in packet["call_inventory"]["rows"]:
+            call_id = row[1]
+            source = classification_by_call[call_id]
+            detail = {
+                key: value
+                for key, value in source.items()
+                if key not in {"call_ids", "workstream"}
+            }
+            if classifications and all(
+                classifications[-1][key] == value for key, value in detail.items()
+            ):
+                classifications[-1]["call_ids"].append(call_id)
+            else:
+                classifications.append({"call_ids": [call_id], **detail})
+        categories = list(prior[0]["helper_category_reviews"]) if prior else []
+        return {
+            "candidate_decisions": decisions,
+            "confirmed_findings": findings,
+            "plausible_risks": risks,
+            "temporary_control_reviews": reviews,
+            "temporary_control_merges": list(merge_index.values()),
+            "helper_category_reviews": categories,
+            "call_classifications": classifications,
         }
 
     @staticmethod
@@ -494,6 +750,10 @@ class FakeCreditModelRunner:
         )
         if task["phase"] == "luna-discovery":
             return self._luna(task, input_payload, input_sha256)
+        if task["phase"] == "sol-audit":
+            return self._audit(task, input_payload, input_sha256)
+        if task["phase"] == "sol-final":
+            return self._final(input_payload)
         return self._sol(task, input_payload, input_sha256)
 
 
@@ -510,7 +770,8 @@ def complete_holistic_credit_analysis(
         available_models=runner.available_models,
     )
     assert status["complete"] is True
-    assert status["actual_luna_calls"] == 1
-    assert status["actual_sol_calls"] == 1
-    assert len(runner.calls) == 2
+    luna_calls = sum(call["phase"] == "luna-discovery" for call in runner.calls)
+    assert status["actual_luna_calls"] == luna_calls
+    assert status["actual_sol_calls"] == 5
+    assert len(runner.calls) == luna_calls + 5
     return pathlib.Path(status["final_result_path"])

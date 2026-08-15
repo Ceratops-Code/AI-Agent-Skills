@@ -1,6 +1,6 @@
 {
   "schema": "ceratops-credit-analysis-contract.v1",
-  "surface_contract_version": 6,
+  "surface_contract_version": 7,
   "source_selection_contract_version": 1,
   "request_schema": "ceratops-credit-analysis-request.v1",
   "batch_request_schema": "ceratops-credit-analysis-batch-request.v1",
@@ -12,24 +12,27 @@
   "final_result_schema": "ceratops-credit-analysis-final-result.v1",
   "single_controller_commands": ["prepare", "advance", "status", "finalize"],
   "end_to_end_controller_commands": ["run", "plan", "execute"],
-  "orchestration_state_schema": "ceratops-credit-analysis-orchestration-state.v4",
-  "chunk_manifest_schema": "ceratops-credit-analysis-chunk-manifest.v4",
-  "luna_result_schema": "ceratops-credit-analysis-luna-result.v4",
-  "adjudication_result_schema": "ceratops-credit-analysis-adjudication-result.v1",
-  "orchestration_final_schema": "ceratops-credit-analysis-orchestration-final.v4",
-  "selection_manifest_schema": "ceratops-credit-analysis-run-selection.v1",
+  "orchestration_state_schema": "ceratops-credit-analysis-orchestration-state.v5",
+  "chunk_manifest_schema": "ceratops-credit-analysis-chunk-manifest.v5",
+  "luna_result_schema": "ceratops-credit-analysis-luna-result.v5",
+  "adjudication_result_schema": "ceratops-credit-analysis-adjudication-result.v2",
+  "orchestration_final_schema": "ceratops-credit-analysis-orchestration-final.v5",
+  "routing_manifest_schema": "ceratops-credit-analysis-routing-manifest.v1",
   "models": {
     "luna": "gpt-5.6-luna",
     "sol": "gpt-5.6-sol"
   },
   "model_reasoning_effort": {
-    "luna": "medium",
+    "luna": "max",
     "sol": "max"
   },
   "semantic_call_contract": {
-    "normal_luna_calls": 1,
-    "bounded_luna_calls": 1,
-    "sol_calls": 1,
+    "luna_max_attempts": 50,
+    "luna_max_concurrency": 10,
+    "sol_target_calls": 5,
+    "sol_max_calls": 6,
+    "sol_adjudicator_target": 3,
+    "sol_adjudicator_max": 4,
     "bookkeeping_calls": 0
   },
   "analysis_policy": {
@@ -47,9 +50,10 @@
     "outstanding_finding_cap": null
   },
   "context_budget": {
-    "characters_per_token": 2.4,
+    "utf8_bytes_per_token": 3.2,
     "hidden_prompt_reserve_tokens": 28000,
     "safety_margin_tokens": 12000,
+    "visible_task_reserve_bytes": 64000,
     "luna_output_reserve_tokens": 4000,
     "sol_output_reserve_tokens": 48000,
     "minimum_evidence_tokens": 16000
@@ -116,11 +120,6 @@
       "id": "full-analysis",
       "reference": "references/full-analysis.md",
       "mode": "full-analysis"
-    },
-    {
-      "id": "bounded-largest-runs-analysis",
-      "reference": "references/bounded-largest-runs-analysis.md",
-      "mode": "bounded-largest-runs-analysis"
     },
     {
       "id": "helper-contracts",

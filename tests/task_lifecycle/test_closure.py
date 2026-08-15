@@ -17,12 +17,12 @@ CREDIT_CONTRACT = (
     / "scripts"
     / "credit-analysis-contract.json"
 )
-CREDIT_BOUNDED_REFERENCE = (
+CREDIT_FULL_REFERENCE = (
     ROOT
     / "skills"
     / "ceratops-credit-savings-analysis"
     / "references"
-    / "bounded-largest-runs-analysis.md"
+    / "full-analysis.md"
 )
 
 
@@ -136,26 +136,31 @@ def test_closure_snapshot_composes_only_named_local_state(
     assert "must be provided together" in invalid.stderr
 
 
-def test_closure_credit_analysis_defaults_to_bounded_largest_runs() -> None:
+def test_closure_credit_analysis_defaults_to_full_analysis() -> None:
     closure = CLOSURE_REFERENCE.read_text(encoding="utf-8")
     skill = CREDIT_SKILL.read_text(encoding="utf-8")
-    bounded = CREDIT_BOUNDED_REFERENCE.read_text(encoding="utf-8")
+    full = CREDIT_FULL_REFERENCE.read_text(encoding="utf-8")
     contract = json.loads(CREDIT_CONTRACT.read_text(encoding="utf-8"))
     actions = {row["id"]: row for row in contract["public_actions"]}
 
-    assert "using\n  `bounded-largest-runs-analysis`" in closure
-    assert "using `full-analysis`" not in closure
-    assert (
-        "`full-analysis` only for an explicit exhaustive request" in skill
-    )
-    assert actions["bounded-largest-runs-analysis"] == {
-        "id": "bounded-largest-runs-analysis",
-        "reference": "references/bounded-largest-runs-analysis.md",
-        "mode": "bounded-largest-runs-analysis",
+    assert "using\n  `full-analysis`" in closure
+    assert "`full-analysis` for a generic single-thread or closure request" in skill
+    assert actions["full-analysis"] == {
+        "id": "full-analysis",
+        "reference": "references/full-analysis.md",
+        "mode": "full-analysis",
     }
-    assert bounded.startswith("# Bounded Largest Runs Analysis Action\n")
-    assert "one Luna discovery and one Sol adjudication" in bounded
-    assert "never a full-thread analysis" in bounded
+    assert list(actions) == [
+        "full-analysis",
+        "helper-contracts",
+        "context-evidence",
+        "rework-validation",
+        "tool-flow",
+        "instruction-reasoning",
+    ]
+    assert full.startswith("# Full Analysis Action\n")
+    assert "every completed run as one semantic unit" in full
+    assert "Never exceed six." in full
     assert contract["end_to_end_controller_commands"] == [
         "run",
         "plan",

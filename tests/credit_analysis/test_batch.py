@@ -51,19 +51,24 @@ def test_credit_analysis_workflow_each_surface_is_independently_callable(
         pathlib.Path(plan["manifest_path"]).read_text(encoding="utf-8")
     )
     assert manifest["surface_order"] == [action]
-    assert plan["projected_semantic_calls"] == 2
+    assert plan["projected_semantic_calls"] == len(manifest["luna_tasks"]) + 5
     complete = workflow.command_execute_orchestration(
         pathlib.Path(plan["state_path"]),
         runner=runner,
         available_models=runner.available_models,
     )
     assert complete["complete"] is True
-    assert [call["phase"] for call in runner.calls] == [
-        "luna-discovery",
-        "sol-adjudication",
-    ]
-    assert "supplied fixed lenses" in runner.calls[0]["prompt"]
-    assert "every supplied surface section" in runner.calls[1]["prompt"]
+    phases = [call["phase"] for call in runner.calls]
+    assert phases.count("luna-discovery") == len(manifest["luna_tasks"])
+    assert phases.count("sol-adjudication") == 3
+    assert phases.count("sol-audit") == 1
+    assert phases.count("sol-final") == 1
+    assert "supplied fixed lenses" in next(
+        call["prompt"] for call in runner.calls if call["phase"] == "luna-discovery"
+    )
+    assert "every supplied surface section" in next(
+        call["prompt"] for call in runner.calls if call["phase"] == "sol-adjudication"
+    )
     final = json.loads(
         pathlib.Path(complete["final_result_path"]).read_text(encoding="utf-8")
     )
@@ -115,14 +120,14 @@ def test_credit_analysis_workflow_resolves_current_and_named_threads(
                 "task_temp_root": str(root),
                 "evidence_output": str(root / "evidence.json"),
                 "pricing_profile": None,
-                "expected_surface_contract_version": 6,
+                "expected_surface_contract_version": 7,
                 "mutation_authority": False,
             },
         )
         return request
 
     current = run_credit_analysis_workflow(
-        "prepare",
+        "plan",
         "--request",
         str(request_for("current", {"current_thread": True})),
     )
@@ -136,7 +141,7 @@ def test_credit_analysis_workflow_resolves_current_and_named_threads(
     assert current_state["source"]["value"] == current_id
 
     named = run_credit_analysis_workflow(
-        "prepare",
+        "plan",
         "--request",
         str(request_for("named", {"thread_name": "named thread"})),
     )
@@ -159,7 +164,7 @@ def test_credit_analysis_workflow_resolves_current_and_named_threads(
         project_name="beta",
     )
     ambiguous = run_credit_analysis_workflow(
-        "prepare",
+        "plan",
         "--request",
         str(request_for("ambiguous", {"thread_name": "Named Thread"})),
     )
@@ -168,7 +173,7 @@ def test_credit_analysis_workflow_resolves_current_and_named_threads(
 
     monkeypatch.delenv("CODEX_THREAD_ID")
     missing_current = run_credit_analysis_workflow(
-        "prepare",
+        "plan",
         "--request",
         str(request_for("missing-current", {"current_thread": True})),
     )
@@ -366,12 +371,20 @@ def test_credit_analysis_batch_selects_recent_threads_and_projects_once(
                 pathlib.Path(item["state_path"]).read_text(encoding="utf-8")
             )
             assert child_state["schema"] == (
-                "ceratops-credit-analysis-orchestration-state.v4"
+                "ceratops-credit-analysis-orchestration-state.v5"
             )
-            assert child_state["manifest"]["projected_semantic_calls"] == 2
+            assert child_state["manifest"]["projected_semantic_calls"] == (
+                len(child_state["manifest"]["luna_tasks"]) + 5
+            )
             assert child_state["task_order"] == [
-                "luna.discovery.0001",
-                "sol.adjudication",
+                *[
+                    task["task_id"]
+                    for task in child_state["manifest"]["luna_tasks"]
+                ],
+                *[
+                    task["task_id"]
+                    for task in child_state["manifest"]["sol_tasks"]
+                ],
             ]
             assert "queue" not in child_state
         assert workflow.command_prepare_batch(request) == status
@@ -552,11 +565,13 @@ def test_credit_analysis_batch_resumes_and_preserves_every_thread_finding(
     assert summary_path.name == "batch-summary.json"
     context = json.loads(summary_context_path.read_text(encoding="utf-8"))
     batch_finding_ids = [item["batch_finding_id"] for item in context["findings"]]
+    child_finding_ids = [
+        "sol.adjudication.0001.finding-model-1",
+        "sol.adjudication.0001.finding-volume-2",
+    ]
     assert batch_finding_ids == [
-        f"{ids[0]}:finding-model-1",
-        f"{ids[0]}:finding-volume-2",
-        f"{ids[1]}:finding-model-1",
-        f"{ids[1]}:finding-volume-2",
+        *[f"{ids[0]}:{finding_id}" for finding_id in child_finding_ids],
+        *[f"{ids[1]}:{finding_id}" for finding_id in child_finding_ids],
     ]
     assert all(item["problem_summary"] for item in context["findings"])
     assert [item["thread_id"] for item in context["thread_totals"]] == ids
@@ -693,10 +708,8 @@ def test_credit_analysis_batch_resumes_and_preserves_every_thread_finding(
         ids[1],
     ]
     assert [item["finding"]["id"] for item in final["confirmed_findings"]] == [
-        "finding-model-1",
-        "finding-volume-2",
-        "finding-model-1",
-        "finding-volume-2",
+        *child_finding_ids,
+        *child_finding_ids,
     ]
     assert [item["thread_id"] for item in final["per_thread_totals"]] == ids
     assert len(final["summary_groups"]) == 1
@@ -709,11 +722,11 @@ def test_credit_analysis_batch_resumes_and_preserves_every_thread_finding(
     assert group["contributing_surfaces"] == json.loads(
         CREDIT_ANALYSIS_CONTRACT.read_text(encoding="utf-8")
     )["surface_order"]
-    assert group["deduplicated_avoidable_call_count"] == 2
-    assert len(group["affected_calls"]) == 2
+    assert group["deduplicated_avoidable_call_count"] == 6
+    assert len(group["affected_calls"]) == 6
     assert final["totals"]["analyzed_threads"] == 2
     assert final["totals"]["session_collections"] == 2
-    assert final["totals"]["avoidable_calls"] == 2
+    assert final["totals"]["avoidable_calls"] == 6
     assert "grouped only for presentation" in final["scope_limitation"]
     assert len(
         pathlib.Path(state["paths"]["index"]).read_text(encoding="utf-8").splitlines()

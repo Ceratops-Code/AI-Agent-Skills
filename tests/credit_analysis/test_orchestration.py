@@ -3,7 +3,9 @@ from __future__ import annotations
 import hashlib
 import json
 import pathlib
-from typing import Any
+import threading
+import time
+from typing import Any, Mapping
 
 import pytest
 
@@ -24,1072 +26,201 @@ from tests.credit_analysis.sessions import (
 from tests.credit_analysis.workflow import run_credit_analysis_workflow
 
 
-def test_bounded_largest_runs_selection_uses_anchor_size_and_positional_successors() -> None:
-    workflow = load_credit_analysis_workflow_module()
-    inventory = [
-        {"turn_id": "a", "original_order": 1, "evidence_chars": 100},
-        {"turn_id": "b", "original_order": 2, "evidence_chars": 1},
-        {"turn_id": "c", "original_order": 3, "evidence_chars": 90},
-        {"turn_id": "d", "original_order": 4, "evidence_chars": 80},
-    ]
-
-    def fits(_: list[str]) -> dict[str, Any]:
-        return {"fits": True, "luna": {"fits": True}, "sol": {"fits": True}}
-
-    selection = workflow._bounded_select_run_bundles(inventory, fits)
-
-    # Anchor a ranks before c even though c+d is the larger pair. Its tiny
-    # positional follower b remains indivisible from a.
-    assert [row["turn_id"] for row in selection["anchor_order"]] == [
-        "a",
-        "c",
-        "d",
-        "b",
-    ]
-    assert selection["selected_bundles"][0] == {
-        "anchor_rank": 1,
-        "anchor_turn_id": "a",
-        "companion_turn_id": "b",
-    }
-    # Companion b later acts as an anchor and still brings successor c. The
-    # final run d also remains a valid anchor without a successor.
-    assert selection["selected_bundles"][-1] == {
-        "anchor_rank": 4,
-        "anchor_turn_id": "b",
-        "companion_turn_id": "c",
-    }
-    assert any(
-        row["anchor_turn_id"] == "d" and row["companion_turn_id"] is None
-        for row in selection["selected_bundles"]
-    )
-    assert selection["selected_run_ids"] == ["a", "b", "c", "d"]
-
-
-def test_bounded_largest_runs_capacity_skips_any_bundle_and_blocks_when_none_fit(
-    tmp_path: pathlib.Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    workflow = load_credit_analysis_workflow_module()
-    inventory = [
-        {
-            "turn_id": turn_id,
-            "episode_id": f"episode.{turn_id}",
-            "original_order": order,
-            "started_at": f"2026-08-01T00:00:0{order}Z",
-            "evidence_chars": size,
-            "candidate_count": 1,
-        }
-        for order, (turn_id, size) in enumerate(
-            [("a", 100), ("b", 1), ("c", 90), ("d", 1), ("e", 2)],
-            start=1,
-        )
-    ]
-    evaluated: list[list[str]] = []
-
-    def capacity(selected_ids: list[str]) -> dict[str, Any]:
-        evaluated.append(list(selected_ids))
-        selected_size = sum(
-            row["evidence_chars"]
-            for row in inventory
-            if row["turn_id"] in set(selected_ids)
-        )
-        fits = selected_size <= 103
-        return {
-            "fits": fits,
-            "luna": {
-                "fits": fits,
-                "planned_input_chars": selected_size,
-                "input_char_capacity": 103,
-                "output_reserve_tokens": 1,
-            },
-            "sol": {
-                "fits": fits,
-                "planned_input_chars": selected_size,
-                "input_char_capacity": 103,
-                "output_reserve_tokens": 1,
-            },
-        }
-
-    selection = workflow._bounded_select_run_bundles(inventory, capacity)
-    repeated = workflow._bounded_select_run_bundles(inventory, capacity)
-    assert selection == repeated
-    assert [row["anchor_turn_id"] for row in selection["selected_bundles"]] == [
-        "a",
-        "e",
-    ]
-    assert selection["skipped_bundles"][0]["anchor_turn_id"] == "c"
-    assert selection["selected_run_ids"] == ["a", "b", "e"]
-
-    manifest = workflow._bounded_selection_document(
-        analysis_id="analysis-selection",
-        run_inventory=inventory,
-        selection=selection,
-    )
-    assert manifest["coverage"] == {
-        "selected_anchor_count": 2,
-        "companion_count": 1,
-        "unique_selected_runs": 3,
-        "total_eligible_runs": 5,
-        "selected_evidence_chars": 103,
-        "total_evidence_chars": 194,
-        "coverage_percentage": 53.09,
-    }
-    assert [row["turn_id"] for row in manifest["omitted_runs"]] == ["c", "d"]
-    assert all(
-        set(row) == {
-            "turn_id",
-            "original_order",
-            "evidence_chars",
-            "candidate_count",
-        }
-        for row in manifest["omitted_runs"]
-    )
-
-    initial_evaluations: list[list[str]] = []
-
-    def initial_too_large(selected_ids: list[str]) -> dict[str, Any]:
-        initial_evaluations.append(list(selected_ids))
-        selected_size = sum(
-            row["evidence_chars"]
-            for row in inventory
-            if row["turn_id"] in set(selected_ids)
-        )
-        fits = selected_size <= 95
-        return {
-            "fits": fits,
-            "luna": {"fits": fits},
-            "sol": {"fits": fits},
-        }
-
-    after_initial_skip = workflow._bounded_select_run_bundles(
-        inventory, initial_too_large
-    )
-    assert initial_evaluations == [
-        ["a", "b"],
-        ["c", "d"],
-        ["c", "d", "e"],
-        ["c", "d", "e", "b"],
-        ["c", "d", "e", "b"],
-    ]
-    assert after_initial_skip["skipped_bundles"] == [
-        {
-            "anchor_rank": 1,
-            "anchor_turn_id": "a",
-            "companion_turn_id": "b",
-            "reason": "capacity",
-        }
-    ]
-    assert after_initial_skip["selected_run_ids"] == ["c", "d", "e", "b"]
-    after_initial_manifest = workflow._bounded_selection_document(
-        analysis_id="analysis-initial-skip",
-        run_inventory=inventory,
-        selection=after_initial_skip,
-    )
-    assert [row["turn_id"] for row in after_initial_manifest["omitted_runs"]] == [
-        "a"
-    ]
-
-    all_oversized_evaluations: list[list[str]] = []
-
-    def all_oversized(selected_ids: list[str]) -> dict[str, Any]:
-        all_oversized_evaluations.append(list(selected_ids))
-        return {"fits": False}
-
-    empty_selection = workflow._bounded_select_run_bundles(inventory, all_oversized)
-    assert all_oversized_evaluations == [
-        ["a", "b"],
-        ["c", "d"],
-        ["e"],
-        ["b", "c"],
-        ["d", "e"],
-    ]
-    assert empty_selection["selected_run_ids"] == []
-    assert [row["anchor_turn_id"] for row in empty_selection["skipped_bundles"]] == [
-        "a",
-        "c",
-        "e",
-        "b",
-        "d",
-    ]
-    empty_manifest = workflow._bounded_selection_document(
-        analysis_id="analysis-all-oversized",
-        run_inventory=inventory,
-        selection=empty_selection,
-    )
-    assert empty_manifest["coverage"] == {
-        "selected_anchor_count": 0,
-        "companion_count": 0,
-        "unique_selected_runs": 0,
-        "total_eligible_runs": 5,
-        "selected_evidence_chars": 0,
-        "total_evidence_chars": 194,
-        "coverage_percentage": 0.0,
-    }
-    assert [row["turn_id"] for row in empty_manifest["omitted_runs"]] == [
-        "a",
-        "b",
-        "c",
-        "d",
-        "e",
-    ]
-    assert empty_manifest["budget_proof"]["fits"] is False
-
-    request, _, task_root = credit_analysis_request(
-        tmp_path,
-        action="bounded-largest-runs-analysis",
-    )
-
-    def no_bundle_capacity(**_: Any) -> dict[str, Any]:
-        return {"fits": False, "luna": {"fits": False}, "sol": {"fits": False}}
-
-    monkeypatch.setattr(workflow, "_bounded_budget_projection", no_bundle_capacity)
-    with pytest.raises(
-        workflow.CreditAnalysisError,
-        match="selection manifest retained at",
-    ):
-        workflow.command_plan_orchestration(
-            request,
-            available_models=holistic_model_catalog(),
-        )
-    retained_selection = json.loads(
-        (task_root / "orchestration" / "selection-manifest.json").read_text(
-            encoding="utf-8"
-        )
-    )
-    assert retained_selection["coverage"]["unique_selected_runs"] == 0
-    assert len(retained_selection["skipped_bundles"]) == retained_selection[
-        "coverage"
-    ]["total_eligible_runs"]
-    assert all(
-        row["reason"] == "capacity"
-        for row in retained_selection["skipped_bundles"]
-    )
-
-
-def test_bounded_largest_runs_plan_reports_coverage_and_resumes_idempotently(
+def test_full_analysis_uses_run_windows_parallel_tiers_and_exact_coverage(
     tmp_path: pathlib.Path,
 ) -> None:
     workflow = load_credit_analysis_workflow_module()
-    request, session_path, _ = credit_analysis_request(
-        tmp_path,
-        action="bounded-largest-runs-analysis",
-    )
-    catalog = holistic_model_catalog()
-    plan = workflow.command_plan_orchestration(
-        request,
-        available_models=catalog,
-    )
-
-    assert plan["action"] == "bounded-largest-runs-analysis"
-    assert plan["mode"] == "bounded-largest-runs-analysis"
-    assert plan["analysis_scope_label"] == "bounded largest-runs analysis"
-    assert plan["projected_luna_calls"] == 1
-    assert plan["projected_sol_calls"] == 1
-    assert plan["projected_semantic_calls"] == 2
-    manifest = json.loads(
-        pathlib.Path(plan["manifest_path"]).read_text(encoding="utf-8")
-    )
-    selection_path = pathlib.Path(manifest["selection_manifest"]["path"])
-    selection = json.loads(selection_path.read_text(encoding="utf-8"))
-    compact = json.loads(
-        pathlib.Path(manifest["compact_evidence"]["path"]).read_text(
-            encoding="utf-8"
-        )
-    )
-    assert len(manifest["luna_tasks"]) == 1
-    assert selection["coverage"] == plan["selection_coverage"]
-    assert selection["coverage"]["unique_selected_runs"] <= selection["coverage"][
-        "total_eligible_runs"
-    ]
-    assert selection["coverage"]["selected_evidence_chars"] <= selection[
-        "coverage"
-    ]["total_evidence_chars"]
-    for role in ("luna", "sol"):
-        proof = selection["budget_proof"][role]
-        assert proof["fits"] is True
-        assert proof["planned_input_chars"] <= proof["input_char_capacity"]
-        assert proof["output_reserve_tokens"] > 0
-    assert selection["budget_proof"]["sol"][
-        "maximum_accepted_luna_output_chars"
-    ] > 0
-    assert [row["turn_id"] for row in selection["selected_runs"]] == [
-        episode["turn_id"] for episode in compact["episodes"]
-    ]
-    assert [row["started_at"] for row in selection["selected_runs"]] == [
-        episode["started_at"] for episode in compact["episodes"]
-    ]
-    assert all(
-        set(row) == {
-            "turn_id",
-            "original_order",
-            "evidence_chars",
-            "candidate_count",
-        }
-        for row in selection["omitted_runs"]
-    )
-
-    retained_evidence = pathlib.Path(plan["evidence_path"]).read_bytes()
-    session_path.rename(session_path.with_suffix(".collected"))
+    request, _, _ = credit_analysis_request(tmp_path)
     runner = FakeCreditModelRunner(temporary_controls=False)
-    state_path = pathlib.Path(plan["state_path"])
-    after_luna = workflow.command_execute_orchestration(
-        state_path,
-        runner=runner,
-        available_models=runner.available_models,
-        task_limit=1,
+    plan = workflow.command_plan_orchestration(
+        request, available_models=runner.available_models
     )
-    assert after_luna["next_task"] == "sol.adjudication"
+    state = json.loads(pathlib.Path(plan["state_path"]).read_text(encoding="utf-8"))
+    manifest = state["manifest"]
+    assert state["model_specs"]["luna"]["reasoning_effort"] == "max"
+    assert "input_byte_budget" in state["model_specs"]["luna"]
+    assert (
+        state["model_specs"]["luna"]["input_byte_budget"]
+        - state["model_specs"]["luna"]["evidence_byte_budget"]
+        == state["model_specs"]["luna"]["visible_task_reserve_bytes"]
+    )
+    assert len(manifest["sol_tasks"]) == 6
+    assert state["execution_context"]["instruction_chains"]
+    chains_by_cwd = {
+        chain["cwd"]: chain
+        for chain in state["execution_context"]["instruction_chains"]
+    }
+    assert all(
+        task["instruction_chain_sha256"]
+        == chains_by_cwd[task["execution_cwd"]]["chain_sha256"]
+        for task in [*manifest["luna_tasks"], *manifest["sol_tasks"]]
+    )
+    assert all(
+        task["execution_cwd"] == state["execution_context"]["primary_cwd"]
+        for task in manifest["sol_tasks"]
+    )
     completed = workflow.command_execute_orchestration(
-        state_path,
+        pathlib.Path(plan["state_path"]),
         runner=runner,
         available_models=runner.available_models,
     )
+    phases = [call["phase"] for call in runner.calls]
     assert completed["complete"] is True
-    assert len(runner.calls) == 2
-    assert [call["phase"] for call in runner.calls] == [
-        "luna-discovery",
-        "sol-adjudication",
-    ]
-    assert "bounded largest-runs analysis" in runner.calls[-1]["prompt"]
-    assert "selected_original_evidence" in runner.calls[-1]["input_payload"]
-    assert "selection_coverage" in runner.calls[-1]["input_payload"]
-    assert pathlib.Path(plan["evidence_path"]).read_bytes() == retained_evidence
-
+    assert phases.count("sol-adjudication") == 3
+    assert phases.count("sol-audit") == 1
+    assert phases.count("sol-final") == 1
     final = json.loads(
         pathlib.Path(completed["final_result_path"]).read_text(encoding="utf-8")
     )
-    report = pathlib.Path(completed["report_path"]).read_text(encoding="utf-8")
-    assert final["analysis_scope_label"] == "bounded largest-runs analysis"
-    assert final["selection_coverage"] == selection["coverage"]
-    assert final["deterministic_totals"]["model_calls"] == len(
-        manifest["candidate_ids"]
+    completed_state = json.loads(
+        pathlib.Path(plan["state_path"]).read_text(encoding="utf-8")
     )
-    assert report.startswith("Bounded largest-runs analysis.\n")
-    assert "Omitted runs were not reviewed" in report
-    assert "# Selected-call accounting" in report
+    prior_findings = [
+        finding
+        for task in manifest["sol_tasks"][:4]
+        if completed_state["execution"][task["task_id"]]["status"] == "complete"
+        for finding in json.loads(
+            pathlib.Path(
+                completed_state["execution"][task["task_id"]]["result"]["path"]
+            ).read_text(encoding="utf-8")
+        )["confirmed_findings"]
+    ]
+    assert all(
+        any(
+            retained["producer_owner"] == finding["producer_owner"]
+            and retained["proposed_durable_control"]
+            == finding["proposed_durable_control"]
+            and set(finding["affected_call_ids"])
+            <= set(retained["affected_call_ids"])
+            for retained in final["confirmed_findings"]
+        )
+        for finding in prior_findings
+    )
+    task_by_id = {
+        task["task_id"]: task
+        for task in [*manifest["luna_tasks"], *manifest["sol_tasks"]]
+    }
+    assert all(
+        attempt["instruction_chain_sha256"]
+        == task_by_id[task_id]["instruction_chain_sha256"]
+        for task_id, execution in completed_state["execution"].items()
+        for attempt in execution["attempts"]
+    )
+    assert final["coverage"]["analyzed_runs"] == final["coverage"]["eligible_runs"]
+    assert final["omissions"] == []
+    report = pathlib.Path(completed["report_path"]).read_text(encoding="utf-8")
+    assert "| Run | Window | Records | Input bytes |" in report
+    assert "| Completed run | Total model calls |" in report
+    assert "| Proposed control | Calls saved per affected run |" in report
 
-    accepted_call_count = len(runner.calls)
-    repeated_status = workflow.command_execute_orchestration(
-        state_path,
+
+def test_removed_bounded_action_is_rejected(tmp_path: pathlib.Path) -> None:
+    workflow = load_credit_analysis_workflow_module()
+    request, _, _ = credit_analysis_request(
+        tmp_path, action="bounded-largest-" "runs-analysis"
+    )
+    with pytest.raises(workflow.CreditAnalysisError, match="not public"):
+        workflow.command_plan_orchestration(
+            request, available_models=holistic_model_catalog()
+        )
+
+
+def test_luna_admission_caps_at_fifty_attempts_and_ten_workers(
+    tmp_path: pathlib.Path,
+) -> None:
+    workflow = load_credit_analysis_workflow_module()
+    request, _, _ = credit_analysis_request(
+        tmp_path, extra_completed_turns=52, extra_calls_per_turn=1
+    )
+
+    class ConcurrentRunner(FakeCreditModelRunner):
+        def __init__(self) -> None:
+            super().__init__(temporary_controls=False)
+            self.lock = threading.Lock()
+            self.active = 0
+            self.maximum_active = 0
+
+        def _luna(
+            self,
+            task: Mapping[str, Any],
+            packet: Mapping[str, Any],
+            digest: str,
+        ) -> dict[str, Any]:
+            with self.lock:
+                self.active += 1
+                self.maximum_active = max(self.maximum_active, self.active)
+            try:
+                time.sleep(0.01)
+                return super()._luna(task, packet, digest)
+            finally:
+                with self.lock:
+                    self.active -= 1
+
+    runner = ConcurrentRunner()
+    plan = workflow.command_plan_orchestration(
+        request, available_models=runner.available_models
+    )
+    completed = workflow.command_execute_orchestration(
+        pathlib.Path(plan["state_path"]),
         runner=runner,
         available_models=runner.available_models,
     )
-    assert repeated_status["complete"] is True
-    assert len(runner.calls) == accepted_call_count
-    assert pathlib.Path(plan["evidence_path"]).read_bytes() == retained_evidence
-
-    run_base = tmp_path / "end-to-end-run"
-    run_base.mkdir()
-    run_request, run_session, _ = credit_analysis_request(
-        run_base,
-        action="bounded-largest-runs-analysis",
+    assert completed["actual_luna_calls"] == 50
+    assert runner.maximum_active == 10
+    final = json.loads(
+        pathlib.Path(completed["final_result_path"]).read_text(encoding="utf-8")
     )
-    run_runner = FakeCreditModelRunner(temporary_controls=False)
-
-    def unexpected_catalog_read() -> dict[str, dict[str, Any]]:
-        raise AssertionError("injected runner catalog should be reused")
-
-    workflow._codex_model_catalog = unexpected_catalog_read
-    paused = workflow.command_run_orchestration(
-        run_request,
-        runner=run_runner,
-        task_limit=1,
-    )
-    assert paused["next_task"] == "sol.adjudication"
-    assert len(run_runner.calls) == 1
-    run_evidence = pathlib.Path(paused["evidence_path"])
-    retained_run_evidence = run_evidence.read_bytes()
-    run_session.rename(run_session.with_suffix(".collected"))
-
-    run_completed = workflow.command_run_orchestration(
-        run_request,
-        runner=run_runner,
-    )
-    assert run_completed["complete"] is True
-    assert [call["phase"] for call in run_runner.calls] == [
-        "luna-discovery",
-        "sol-adjudication",
+    capped = [
+        item for item in final["omissions"]
+        if item["reason"] == "luna-attempt-cap"
     ]
-    assert run_evidence.read_bytes() == retained_run_evidence
-
-    repeated_run = workflow.command_run_orchestration(
-        run_request,
-        runner=run_runner,
-    )
-    assert repeated_run["complete"] is True
-    assert len(run_runner.calls) == 2
-    assert run_evidence.read_bytes() == retained_run_evidence
-
-    copied_request = run_base / "copied-request.json"
-    write_json_file(
-        copied_request,
-        json.loads(run_request.read_text(encoding="utf-8")),
-    )
-    with pytest.raises(
-        workflow.CreditAnalysisError,
-        match="request does not own the existing orchestration state",
-    ):
-        workflow.command_run_orchestration(
-            copied_request,
-            runner=run_runner,
-        )
-    assert len(run_runner.calls) == 2
-    assert workflow.build_parser().parse_args(
-        ["run", "--request", str(run_request)]
-    ).command == "run"
+    assert len(capped) == 5
+    assert all(item["candidate_ids"] for item in capped)
+    assert final["coverage"]["analyzed_runs"] == 50
+    assert final["coverage"]["eligible_runs"] == 55
 
 
-def test_credit_analysis_workflow_full_analysis_persists_every_finding(
+def test_luna_schema_retry_is_single_and_omission_is_exact(
     tmp_path: pathlib.Path,
 ) -> None:
-    request, session, task_root = credit_analysis_request(tmp_path)
-    prepared = run_credit_analysis_workflow("prepare", "--request", str(request))
-    assert prepared.returncode == 0, prepared.stderr
-    status = json.loads(prepared.stdout)
-    assert status["pending_surface"] == "helper-contracts"
-    state_path = pathlib.Path(status["state_path"])
-    evidence = json.loads(pathlib.Path(status["evidence_path"]).read_text(encoding="utf-8"))
-    collection = evidence["collection"]
-    assert {
-        key: collection[key]
-        for key in (
-            "session_reads",
-            "completed_runs",
-            "model_calls",
-            "user_messages",
-        )
-    } == {
-        "session_reads": 1,
-        "completed_runs": 3,
-        "model_calls": 6,
-        "user_messages": 3,
-    }
-    assert evidence["redaction"] == {
-        "method": "pattern-based-replacement",
-        "targets": [
-            "credential-like-values",
-            "user-profile-roots",
-            "local-paths",
-        ],
-        "complete_secret_detection_guaranteed": False,
-        "semantic_classification": "none",
-    }
-    model_review = evidence["model_review"]
-    assert collection["model_review_records"] == len(model_review["records"])
-    assert model_review["preparation"] == {
-        "name": "prepared-model-review-evidence",
-        "transformations": [
-            "credential-pattern-replacement",
-            "workspace-path-normalization",
-            "external-path-withholding",
-            "binary-body-hashing",
-            "structured-normalization",
-        ],
-        "full_prepared_content_retained": True,
-        "private_reasoning_collected": False,
-        "duplicate_ui_messages_collected": False,
-        "complete_secret_detection_guaranteed": False,
-        "semantic_classification": "none",
-    }
-    record_ids = [record["record_id"] for record in model_review["records"]]
-    assert len(record_ids) == len(set(record_ids))
-    review_text = json.dumps(model_review, sort_keys=True)
-    for sentinel in (
-        "BASE_CONTROL_SENTINEL",
-        "WORLD_STATE_CONTROL_SENTINEL",
-        "COMPACTION_CONTEXT_SENTINEL",
-        "DEVELOPER_CONTROL_SENTINEL",
-        "ASSISTANT_ANSWER_SENTINEL",
-        "TOOL_RESULT_TAIL_SENTINEL",
-    ):
-        assert sentinel in review_text
-    assert "PRIVATE_REASONING_SENTINEL" not in review_text
-    assert "inactive history must not be copied" not in review_text
-    assert model_review["excluded_by_design"] == {
-        "binary_bodies_hashed": 0,
-        "private_reasoning_records_excluded": 1,
-        "duplicate_ui_message_events_excluded": 0,
-        "compaction_history_items_not_copied": 1,
-    }
-    tool_call_record = next(
-        record
-        for record in model_review["records"]
-        if record["kind"] == "tool-call" and record["call_id"] == "read-1"
-    )
-    assert "<workspace:" in json.dumps(tool_call_record["content"])
-    assert any(
-        reference["kind"] == "workspace"
-        and reference["workspace_relative_paths_resolvable"] is True
-        for reference in model_review["canonical_path_references"]
-    )
-    assert "private" in json.dumps(tool_call_record["content"])
-    tool_result_record = next(
-        record
-        for record in model_review["records"]
-        if record["kind"] == "tool-result" and record["call_id"] == "read-1"
-    )
-    assert tool_result_record["available_to_model_call_index"] == 2
-    assert "TOOL_RESULT_TAIL_SENTINEL" in json.dumps(
-        tool_result_record["content"]
-    )
-    assert tool_result_record["preview_truncated"] is True
-    assert "TOOL_RESULT_TAIL_SENTINEL" in tool_result_record["preview"]
-    assert tool_result_record["record_id"] in model_review["call_record_ids"][
-        "turn-1"
-    ]["1"]
-    assert tool_result_record["record_id"] in model_review["call_record_ids"][
-        "turn-1"
-    ]["2"]
-    first_message = evidence["runs"][0]["user_messages"][0]
-    assert "correct the earlier plan" in first_message["text"]
-    assert "apply my approval" in first_message["text"]
-    assert "<local-path>" in first_message["text"]
-    assert "<redacted>" in first_message["text"]
-    assert "kind" not in first_message
-    assert evidence["runs"][0]["calls"][1]["user_message_ids"] == [
-        first_message["message_id"]
-    ]
-    assert evidence["semantic_coverage"]["run_ids"] == [
-        "turn-1",
-        "turn-2",
-        "turn-3",
-    ]
-    assert evidence["semantic_coverage"]["covered_percent"] == 100.0
-    fingerprint = evidence["evidence_fingerprint"]
-    session.rename(tmp_path / "session-collected-once.jsonl")
+    workflow = load_credit_analysis_workflow_module()
+    request, _, _ = credit_analysis_request(tmp_path)
 
-    contract = json.loads(CREDIT_ANALYSIS_CONTRACT.read_text(encoding="utf-8"))
-    helper_categories = contract["helper_categories"]
-    helper_finding = finding_record(
-        "helper-gap",
-        ["turn-1:1", "turn-1:2"],
-        producer_type="script",
-        owner="scripts/run-helper.py",
-        helper_categories=[
-            "missing-dependency-handling",
-            "insufficient-error-handling",
-        ],
-    )
-    context_finding = finding_record(
-        "context-gap",
-        ["turn-1:2"],
-        producer_type="skill",
-        owner="skills/example/SKILL.md",
-        complexity="Minimal",
-    )
-    rework_finding = finding_record(
-        "rework-gap",
-        ["turn-1:1", "turn-1:2"],
-        producer_type="script",
-        owner="scripts/run-helper.py",
-    )
-    instruction_finding = finding_record(
-        "instruction-gap",
-        ["turn-1:3"],
-        producer_type="prompt",
-        owner="request prompt",
-        status="implemented",
-    )
-    volume_finding = finding_record(
-        "oversized-tool-output",
-        ["turn-1:1"],
-        producer_type="tool-choice",
-        owner="synthetic command",
-        waste_kind="context-volume",
-        complexity="Minimal",
-    )
-    expected_order = [
-        "helper-contracts",
-        "context-evidence",
-        "rework-validation",
-        "tool-flow",
-        "instruction-reasoning",
-        "synthesis",
-    ]
-    observed_order: list[str] = []
-    first_result: dict[str, Any] | None = None
-    first_result_path: pathlib.Path | None = None
+    class InvalidFirstWindowRunner(FakeCreditModelRunner):
+        def _luna(
+            self,
+            task: Mapping[str, Any],
+            packet: Mapping[str, Any],
+            digest: str,
+        ) -> dict[str, Any]:
+            result = super()._luna(task, packet, digest)
+            if task["task_id"] == "luna.discovery.0001":
+                result["coverage"]["candidate_count"] -= 1
+            return result
 
-    while status["pending_surface"] != "synthesis":
-        surface = status["pending_surface"]
-        observed_order.append(surface)
-        context = json.loads(pathlib.Path(status["context_path"]).read_text(encoding="utf-8"))
-        assert context["model_review_preparation"] == model_review["preparation"]
-        assert context["model_review_records"]
-        assert all(
-            "content" not in record
-            and record["evidence_ref"].startswith("evidence://review/")
-            and record["full_content_retained"] is True
-            for record in context["model_review_records"]
-        )
-        if surface == "helper-contracts":
-            projected_tool_result = next(
-                record
-                for record in context["model_review_records"]
-                if record["kind"] == "tool-result"
-                and record["call_id"] == "read-1"
-            )
-            assert projected_tool_result["context_content_mode"] == "preview"
-            assert "TOOL_RESULT_TAIL_SENTINEL" in projected_tool_result[
-                "context_content"
-            ]
-        if surface == "instruction-reasoning":
-            assert [
-                message["message_id"] for message in context["user_messages"]
-            ] == [
-                "turn-1:user:1",
-                "turn-2:user:1",
-                "turn-3:user:1",
-            ]
-            assert all("kind" not in message for message in context["user_messages"])
-            assert all(
-                call["user_message_ids"]
-                for call in context["candidate_evidence"]
-            )
-        kwargs: dict[str, Any] = {}
-        if surface == "helper-contracts":
-            reviews = [
-                {
-                    "category": category,
-                    "status": (
-                        "applies"
-                        if category in helper_finding["helper_categories"]
-                        else "not-applicable"
-                    ),
-                    "finding_ids": (
-                        ["helper-gap"]
-                        if category in helper_finding["helper_categories"]
-                        else []
-                    ),
-                    "reason": "reviewed synthetic helper contract",
-                }
-                for category in helper_categories
-            ]
-            kwargs = {
-                "findings": [helper_finding],
-                "exclusions": [
-                    {
-                        "call_id": "turn-2:1",
-                        "reason_code": "protocol-overhead",
-                        "reason": "required wait protocol",
-                    }
-                ],
-                "helper_reviews": reviews,
-                "remediation_groups": [
-                    {
-                        "owner": "scripts/run-helper.py",
-                        "finding_ids": ["helper-gap"],
-                        "proposed_control": "compose dependency and error checks",
-                        "targeted_verification": ["verify-helper-gap"],
-                    }
-                ],
-            }
-        elif surface == "context-evidence":
-            kwargs = {"findings": [context_finding]}
-        elif surface == "rework-validation":
-            kwargs = {"findings": [rework_finding]}
-        elif surface == "tool-flow":
-            kwargs = {
-                "findings": [volume_finding],
-                "risks": [
-                    {
-                        "id": "tool-poll-risk",
-                        "description": "wait may have been avoidable",
-                        "observed_sequence": (
-                            "The workflow waited after the external result was available."
-                        ),
-                        "competing_explanations": [
-                            "The wait was unnecessary because completion was already visible.",
-                            "The wait was required because completion had not propagated yet.",
-                        ],
-                        "missing_fact": (
-                            "The retained timestamps do not show when completion became visible"
-                        ),
-                        "affected_call_ids": ["turn-2:1"],
-                        "evidence_refs": ["evidence://calls/turn-2:1"],
-                        "verification_needed": ["verify external completion timing"],
-                    }
-                ],
-                "exclusions": [
-                    {
-                        "call_id": "turn-2:1",
-                        "reason_code": "protocol-overhead",
-                        "reason": "required conversational wait protocol",
-                    }
-                ],
-            }
-        else:
-            kwargs = {
-                "findings": [instruction_finding],
-                "exclusions": [
-                    {
-                        "call_id": call_id,
-                        "reason_code": "required-workflow",
-                        "reason": "required final answers",
-                    }
-                    for call_id in ("turn-2:2", "turn-3:1")
-                ],
-            }
-        result = surface_result_record(status, context, fingerprint, **kwargs)
-        result_path = pathlib.Path(status["required_result_path"])
-        if surface == "helper-contracts":
-            malformed_finding = dict(helper_finding)
-            malformed_finding.pop("problem_summary")
-            write_json_file(
-                result_path,
-                {**result, "confirmed_findings": [malformed_finding]},
-            )
-            malformed = run_credit_analysis_workflow(
-                "advance",
-                "--state",
-                str(state_path),
-                "--result",
-                str(result_path),
-            )
-            assert malformed.returncode == 2
-            assert "missing problem_summary" in malformed.stderr
-        write_json_file(result_path, result)
-        advanced = run_credit_analysis_workflow(
-            "advance",
-            "--state",
-            str(state_path),
-            "--result",
-            str(result_path),
-        )
-        assert advanced.returncode == 0, advanced.stderr
-        next_status = json.loads(advanced.stdout)
-        resumed = run_credit_analysis_workflow("status", "--state", str(state_path))
-        assert resumed.returncode == 0, resumed.stderr
-        assert json.loads(resumed.stdout) == next_status
-        if surface == "helper-contracts":
-            first_result = result
-            first_result_path = result_path
-            idempotent = run_credit_analysis_workflow(
-                "advance",
-                "--state",
-                str(state_path),
-                "--result",
-                str(result_path),
-            )
-            assert idempotent.returncode == 0, idempotent.stderr
-            assert json.loads(idempotent.stdout) == next_status
-            conflicting = task_root / "conflicting-helper-result.json"
-            conflict_value = {**result, "confirmed_findings": [{**helper_finding, "title": "changed"}]}
-            write_json_file(conflicting, conflict_value)
-            rejected = run_credit_analysis_workflow(
-                "advance",
-                "--state",
-                str(state_path),
-                "--result",
-                str(conflicting),
-            )
-            assert rejected.returncode == 2
-            assert "conflicting resubmission" in rejected.stderr
-        status = next_status
-
-    observed_order.append(status["pending_surface"])
-    assert observed_order == expected_order
-    synthesis_context = json.loads(
-        pathlib.Path(status["context_path"]).read_text(encoding="utf-8")
+    runner = InvalidFirstWindowRunner(temporary_controls=False)
+    plan = workflow.command_plan_orchestration(
+        request, available_models=runner.available_models
     )
-    assert [
-        item["inventory_position"] for item in synthesis_context["call_inventory"]
-    ] == [1, 2, 3, 4, 5, 6]
-    assert synthesis_context["classification_group_contract"] == {
-        "fields": [
-            "classification",
-            "inventory_positions",
-            "primary_finding_id",
-            "reason",
-            "reason_code",
-        ],
-        "position_base": 1,
-        "coverage": "every-inventory-position-once",
-        "semantic_scope": "group-level-approximate",
-        "classifications": [
-            "necessary",
-            "avoidable_implemented",
-            "avoidable_unimplemented",
-            "reviewed_no_confirmed_waste",
-            "unassessed",
-        ],
-        "necessary_reason_codes": contract["necessary_reason_codes"],
-    }
-    assert [
-        item["surface_id"] for item in synthesis_context["accepted_surface_results"]
-    ] == expected_order[:-1]
-    synthesis = {
-        "schema": "ceratops-credit-analysis-synthesis-result.v1",
-        "analysis_id": status["analysis_id"],
-        "pass_id": status["pass_id"],
-        "surface_id": "synthesis",
-        "evidence_fingerprint": fingerprint,
-        "artifact_paths": {
-            "state": status["state_path"],
-            "evidence": status["evidence_path"],
-            "context": status["context_path"],
-            "result": status["required_result_path"],
-        },
-        "finding_order": [
-            "helper-gap",
-            "context-gap",
-            "rework-gap",
-            "instruction-gap",
-            "oversized-tool-output",
-        ],
-        "risk_order": ["tool-poll-risk"],
-        "finding_dispositions": [
-            {
-                "finding_id": "helper-gap",
-                "primary_call_ids": ["turn-1:1"],
-                "secondary_call_ids": ["turn-1:2"],
-            },
-            {
-                "finding_id": "context-gap",
-                "primary_call_ids": ["turn-1:2"],
-                "secondary_call_ids": [],
-            },
-            {
-                "finding_id": "rework-gap",
-                "primary_call_ids": [],
-                "secondary_call_ids": ["turn-1:1", "turn-1:2"],
-            },
-            {
-                "finding_id": "instruction-gap",
-                "primary_call_ids": ["turn-1:3"],
-                "secondary_call_ids": [],
-            },
-            {
-                "finding_id": "oversized-tool-output",
-                "primary_call_ids": [],
-                "secondary_call_ids": [],
-            },
-        ],
-        "classification_groups": [
-            {
-                "classification": "avoidable_unimplemented",
-                "inventory_positions": [1],
-                "primary_finding_id": "helper-gap",
-                "reason_code": None,
-                "reason": "helper producer gap",
-            },
-            {
-                "classification": "avoidable_unimplemented",
-                "inventory_positions": [2],
-                "primary_finding_id": "context-gap",
-                "reason_code": None,
-                "reason": "duplicate evidence read",
-            },
-            {
-                "classification": "avoidable_implemented",
-                "inventory_positions": [3],
-                "primary_finding_id": "instruction-gap",
-                "reason_code": None,
-                "reason": "implemented prompt control",
-            },
-            {
-                "classification": "necessary",
-                "inventory_positions": [4],
-                "primary_finding_id": None,
-                "reason_code": "protocol-overhead",
-                "reason": "required wait protocol",
-            },
-            {
-                "classification": "necessary",
-                "inventory_positions": [5, 6],
-                "primary_finding_id": None,
-                "reason_code": "required-workflow",
-                "reason": "required final answers",
-            },
-        ],
-        "secondary_call_mappings": [
-            {"call_id": "turn-1:1", "finding_ids": ["rework-gap"]},
-            {
-                "call_id": "turn-1:2",
-                "finding_ids": ["helper-gap", "rework-gap"],
-            },
-        ],
-        "producer_groups": [
-            {
-                "id": "helper-owner-group",
-                "producer_type": "script",
-                "owner": "scripts/run-helper.py",
-                "finding_ids": ["helper-gap", "rework-gap"],
-                "recommended_control": "combine helper preflight and validation",
-                "targeted_verification": ["verify-helper-gap", "verify-rework-gap"],
-            },
-            {
-                "id": "context-owner-group",
-                "producer_type": "skill",
-                "owner": "skills/example/SKILL.md",
-                "finding_ids": ["context-gap"],
-                "recommended_control": "reuse the retained evidence boundary",
-                "targeted_verification": ["verify-context-gap"],
-            },
-            {
-                "id": "prompt-owner-group",
-                "producer_type": "prompt",
-                "owner": "request prompt",
-                "finding_ids": ["instruction-gap"],
-                "recommended_control": "retain the implemented prompt control",
-                "targeted_verification": ["verify-instruction-gap"],
-            },
-            {
-                "id": "output-volume-group",
-                "producer_type": "tool-choice",
-                "owner": "synthetic command",
-                "finding_ids": ["oversized-tool-output"],
-                "recommended_control": "bound the synthetic command output",
-                "targeted_verification": ["verify-oversized-tool-output"],
-            },
-        ],
-    }
-    synthesis_path = pathlib.Path(status["required_result_path"])
-    invalid_syntheses = [
-        (
-            {
-                **synthesis,
-                "classification_groups": synthesis["classification_groups"][:-1],
-            },
-            "cover every inventory position",
-        ),
-        (
-            {
-                **synthesis,
-                "classification_groups": [
-                    *synthesis["classification_groups"],
-                    {
-                        "classification": "necessary",
-                        "inventory_positions": [1],
-                        "primary_finding_id": None,
-                        "reason_code": "required-workflow",
-                        "reason": "duplicate accounting group",
-                    },
-                ],
-            },
-            "assigned more than once",
-        ),
-        (
-            {
-                **synthesis,
-                "classification_groups": [
-                    *synthesis["classification_groups"][:-1],
-                    {
-                        **synthesis["classification_groups"][-1],
-                        "inventory_positions": [5, 6, 7],
-                    },
-                ],
-            },
-            "outside the inventory",
-        ),
-    ]
-    for invalid_synthesis, expected_error in invalid_syntheses:
-        write_json_file(synthesis_path, invalid_synthesis)
-        rejected = run_credit_analysis_workflow(
-            "finalize",
-            "--state",
-            str(state_path),
-            "--result",
-            str(synthesis_path),
-        )
-        assert rejected.returncode == 2
-        assert expected_error in rejected.stderr
-    write_json_file(synthesis_path, synthesis)
-    finalized = run_credit_analysis_workflow(
-        "finalize",
-        "--state",
-        str(state_path),
-        "--result",
-        str(synthesis_path),
+    completed = workflow.command_execute_orchestration(
+        pathlib.Path(plan["state_path"]),
+        runner=runner,
+        available_models=runner.available_models,
     )
-    assert finalized.returncode == 0, finalized.stderr
-    assert finalized.stdout.strip() == "OK"
-
-    state = json.loads(state_path.read_text(encoding="utf-8"))
-    assert state["finalized"] is True
-    assert [record["surface_id"] for record in state["completed"]] == expected_order
-    index_records = [
-        json.loads(line)
-        for line in pathlib.Path(state["paths"]["index"]).read_text(encoding="utf-8").splitlines()
-    ]
-    assert [record["surface_id"] for record in index_records] == expected_order
-    assert len(list(pathlib.Path(state["paths"]["findings_dir"]).glob("*.json"))) == 6
-    assert not pathlib.Path(state["paths"]["context_dir"]).exists()
-    assert not pathlib.Path(state["paths"]["pending_dir"]).exists()
-    accepted_synthesis = json.loads(
-        pathlib.Path(state["completed"][-1]["path"]).read_text(encoding="utf-8")
+    state = json.loads(pathlib.Path(plan["state_path"]).read_text(encoding="utf-8"))
+    failed = state["execution"]["luna.discovery.0001"]
+    assert completed["complete"] is True
+    assert failed["status"] == "omitted"
+    assert len(failed["attempts"]) == 2
+    omission = next(
+        item for item in state["omissions"]
+        if item.get("task_id") == "luna.discovery.0001"
     )
-    assert "call_classifications" not in accepted_synthesis
-    assert len(accepted_synthesis["classification_groups"]) == 5
-    final_result = json.loads(
-        pathlib.Path(state["final_result"]["path"]).read_text(encoding="utf-8")
-    )
-    assert [
-        item["call_id"] for item in final_result["primary_call_mappings"]
-    ] == evidence["call_inventory"]
-    assert [item["id"] for item in final_result["confirmed_findings"]] == synthesis[
-        "finding_order"
-    ]
-    assert final_result["totals"] == {
-        "total_model_calls": 6,
-        "necessary_calls": 3,
-        "protocol_overhead_calls": 1,
-        "reviewed_no_confirmed_waste_calls": 0,
-        "unassessed_calls": 0,
-        "avoidable_calls": 3,
-        "avoidable_implemented_calls": 1,
-        "avoidable_unimplemented_calls": 2,
-        "confirmed_findings": 5,
-        "plausible_risks": 1,
-    }
-    assert final_result["helper_category_totals"] == {
-        "insufficient-error-handling": 1,
-        "missing-dependency-handling": 1,
-    }
-    assert next(
-        item for item in final_result["confirmed_findings"] if item["id"] == "rework-gap"
-    )["deduplicated_avoidable_call_count"] == 0
-    context_result = next(
-        item for item in final_result["confirmed_findings"] if item["id"] == "context-gap"
-    )
-    assert context_result["complexity"] == "Minimal"
-    assert context_result["problem_summary"] == context_finding["problem_summary"]
-    volume_result = next(
-        item
-        for item in final_result["confirmed_findings"]
-        if item["id"] == "oversized-tool-output"
-    )
-    assert volume_result["waste_kind"] == "context-volume"
-    assert volume_result["deduplicated_avoidable_call_count"] == 0
-    assert final_result["secondary_call_mappings"] == synthesis[
-        "secondary_call_mappings"
-    ]
-    assert final_result["priced_cost"] is None
-    final_packet = json.loads(
-        run_credit_analysis_workflow(
-            "status", "--state", str(state_path), "--packet"
-        ).stdout
-    )
-    report = final_packet["report_markdown"]
-    assert (
-        "Observed: The workflow waited after the external result was available."
-        in report
-    )
-    assert (
-        "Unknown: The wait was unnecessary because completion was already visible.; "
-        "The wait was required because completion had not propagated yet."
-        in report
-    )
-    assert (
-        "Why not confirmed: The retained timestamps do not show when completion "
-        "became visible; choosing between the competing explanations would be "
-        "speculation."
-        in report
-    )
-    assert first_result is not None and first_result_path is not None
+    assert omission["reason"] == "luna-invalid-output"
+    assert omission["candidate_ids"] == state["manifest"]["luna_tasks"][0]["candidate_ids"]
 
 
-def test_credit_analysis_workflow_end_to_end_uses_two_semantic_calls(
+def test_credit_analysis_workflow_end_to_end_uses_sharded_semantic_calls(
     tmp_path: pathlib.Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1116,6 +247,13 @@ def test_credit_analysis_workflow_end_to_end_uses_two_semantic_calls(
         encoding="utf-8",
         newline="\n",
     )
+    alternate_cwd = tmp_path / "alternate-cwd"
+    alternate_cwd.mkdir()
+    (alternate_cwd / "AGENTS.md").write_text(
+        "RUN_LOCAL_CONTROL_SENTINEL\n",
+        encoding="utf-8",
+        newline="\n",
+    )
     monkeypatch.setenv("CODEX_HOME", str(codex_home))
     request, session_path, task_root = credit_analysis_request(
         tmp_path,
@@ -1137,6 +275,11 @@ def test_credit_analysis_workflow_end_to_end_uses_two_semantic_calls(
                 "\nAutomation ID: credits-saving-analysis\n"
                 "Check $CODEX_HOME/skills/ceratops-credit-savings-analysis/SKILL.md."
             )
+        if (
+            row.get("type") == "turn_context"
+            and payload.get("turn_id") == "turn-extra-3"
+        ):
+            payload["cwd"] = str(alternate_cwd)
         if (
             payload.get("type") == "function_call_output"
             and payload.get("call_id") == "read-1"
@@ -1162,10 +305,10 @@ def test_credit_analysis_workflow_end_to_end_uses_two_semantic_calls(
     assert plan["phase"] == "planned"
     assert plan["action"] == "full-analysis"
     assert plan["mode"] == "full-analysis"
-    assert plan["analysis_scope_label"] == "exhaustive full analysis"
-    assert plan["projected_luna_calls"] == 1
-    assert plan["projected_sol_calls"] == 1
-    assert plan["projected_semantic_calls"] == 2
+    assert plan["analysis_scope_label"] == "full all-run analysis"
+    assert plan["projected_luna_calls"] == 6
+    assert plan["projected_sol_calls"] == 5
+    assert plan["projected_semantic_calls"] == 11
     assert plan["shared_candidate_count"] > 8
     assert len(json.dumps(plan)) < 20_000
 
@@ -1278,9 +421,9 @@ def test_credit_analysis_workflow_end_to_end_uses_two_semantic_calls(
         task_limit=1,
     )
     assert after_luna["completed_tasks"] == 1
-    assert after_luna["next_task"] == "sol.adjudication"
+    assert after_luna["next_task"] == "luna.discovery.0002"
     assert [(call["model"], call["reasoning_effort"]) for call in runner.calls] == [
-        ("gpt-5.6-luna", "medium")
+        ("gpt-5.6-luna", "max")
     ]
     after_luna_state = json.loads(state_path.read_text(encoding="utf-8"))
     accepted_luna = json.loads(
@@ -1303,15 +446,14 @@ def test_credit_analysis_workflow_end_to_end_uses_two_semantic_calls(
         available_models=runner.available_models,
     )
     assert completed["complete"] is True
-    assert [(call["model"], call["reasoning_effort"]) for call in runner.calls] == [
-        ("gpt-5.6-luna", "medium"),
-        ("gpt-5.6-sol", "max"),
-    ]
-    assert [call["phase"] for call in runner.calls] == [
-        "luna-discovery",
-        "sol-adjudication",
-    ]
-    sol_call = runner.calls[-1]
+    assert all(call["reasoning_effort"] == "max" for call in runner.calls)
+    assert sum(call["phase"] == "luna-discovery" for call in runner.calls) == 6
+    assert sum(call["phase"] == "sol-adjudication" for call in runner.calls) == 3
+    assert sum(call["phase"] == "sol-audit" for call in runner.calls) == 1
+    assert sum(call["phase"] == "sol-final" for call in runner.calls) == 1
+    sol_call = next(
+        call for call in runner.calls if call["phase"] == "sol-adjudication"
+    )
     sol_packet_text = json.dumps(sol_call["input_payload"], ensure_ascii=False)
     assert not any(
         candidate_id in sol_packet_text for candidate_id in manifest["candidate_ids"]
@@ -1344,8 +486,12 @@ def test_credit_analysis_workflow_end_to_end_uses_two_semantic_calls(
         and "CERATOPS_CREDIT_ANALYSIS_CHILD" not in call["prompt"]
         for call in runner.calls
     )
-    assert "frozen current canonical state" in runner.calls[-1]["prompt"]
-    assert runner.calls[-1]["input_payload"]["analysis_policy"] == {
+    assert any(
+        "frozen current canonical state" in call["prompt"]
+        for call in runner.calls
+        if call["phase"] == "sol-adjudication"
+    )
+    assert sol_call["input_payload"]["analysis_policy"] == {
         "implementation_status_source": "frozen-current-canonical-state",
         "existing_control_classification": (
             "implemented-compliance-or-runtime-gap"
@@ -1357,14 +503,50 @@ def test_credit_analysis_workflow_end_to_end_uses_two_semantic_calls(
         "mutation_authority": False,
         "outstanding_finding_cap": None,
     }
+    rule_context = sol_call["input_payload"]["execution_rule_context"]
+    assert rule_context["task_chain_sha256"]
+    assert rule_context["primary_chain_sha256"]
+    assert rule_context["source_chains"]
+    assert any(
+        "RUN_LOCAL_CONTROL_SENTINEL" in item["text"]
+        for chain in rule_context["source_chains"]
+        for item in chain["differing_from_primary"]
+    )
     final_path = pathlib.Path(completed["final_result_path"])
     final_before = final_path.read_bytes()
     final = json.loads(final_before)
-    assert final["analysis_scope_label"] == "exhaustive full analysis"
+    assert final["analysis_scope_label"] == "full all-run analysis"
     completed_state = json.loads(state_path.read_text(encoding="utf-8"))
-    sol_result_record = completed_state["execution"]["sol.adjudication"]["result"]
+    frozen_rule_files = [
+        item
+        for chain in completed_state["execution_context"]["instruction_chains"]
+        for item in chain["files"]
+    ]
+    global_rules = codex_home / "AGENTS.md"
+    assert any(
+        pathlib.Path(item["path"]) == global_rules.resolve()
+        and item["sha256"] == hashlib.sha256(global_rules.read_bytes()).hexdigest()
+        for item in frozen_rule_files
+    )
+    tasks_by_id = {
+        item["task_id"]: item
+        for item in [
+            *completed_state["manifest"]["luna_tasks"],
+            *completed_state["manifest"]["sol_tasks"],
+        ]
+    }
+    for task_id, execution in completed_state["execution"].items():
+        task = tasks_by_id[task_id]
+        for attempt in execution["attempts"]:
+            assert attempt["execution_cwd"] == task["execution_cwd"]
+            assert attempt["ephemeral"] is (task["phase"] == "luna-discovery")
+            assert (
+                attempt["instruction_chain_sha256"]
+                == task["instruction_chain_sha256"]
+            )
+    sol_result_record = completed_state["execution"]["sol.adjudication.0001"]["result"]
     aliases_path = pathlib.Path(
-        completed_state["manifest"]["sol_task"]["artifacts"]["aliases"]
+        completed_state["manifest"]["sol_tasks"][0]["artifacts"]["aliases"]
     )
     aliases = json.loads(aliases_path.read_text(encoding="utf-8"))
     assert aliases["input_sha256"] == sol_result_record["input_sha256"]
@@ -1391,7 +573,7 @@ def test_credit_analysis_workflow_end_to_end_uses_two_semantic_calls(
     assert sol_result_record["output_budget_warnings"] == []
     raw_sol = json.loads(
         pathlib.Path(
-            completed_state["execution"]["sol.adjudication"]["attempts"][-1]
+            completed_state["execution"]["sol.adjudication.0001"]["attempts"][-1]
             ["raw_output_path"]
         ).read_text(encoding="utf-8")
     )
@@ -1404,10 +586,10 @@ def test_credit_analysis_workflow_end_to_end_uses_two_semantic_calls(
         for decision in final["candidate_decisions"]
     )
     assert final["model_calls"] == {
-        "actual_luna": 1,
-        "actual_sol": 1,
-        "accepted_luna": 1,
-        "accepted_sol": 1,
+        "actual_luna": 6,
+        "actual_sol": 5,
+        "accepted_luna": 6,
+        "accepted_sol": 5,
         "bookkeeping": 0,
     }
     assert final["manifest"]["unclassified_calls"] == 0
@@ -1463,16 +645,15 @@ def test_credit_analysis_workflow_end_to_end_uses_two_semantic_calls(
         for finding in final["confirmed_findings"]
         if finding["implementation_status"] == "unimplemented"
     ]
-    assert len(implemented_findings) == 1
-    assert len(outstanding_findings) > 5
+    assert implemented_findings
+    assert outstanding_findings
     report = pathlib.Path(completed_state["paths"]["report"]).read_text(
         encoding="utf-8"
     )
-    report_lines = set(report.splitlines())
-    assert "already addressed: 1" in report
-    assert f"## {implemented_findings[0]['title']}" not in report_lines
+    assert "| Completed run | Total model calls |" in report
+    assert "| Proposed control | Calls saved per affected run |" in report
     assert all(
-        f"## {finding['title']}" in report_lines
+        f"| {finding['proposed_durable_control']} |" in report
         for finding in outstanding_findings
     )
     assert len(final["candidate_decisions"]) == final["luna_discovery"][

@@ -3,4 +3,4 @@ interface:
   short_description: "Analyze credit waste in one or recent threads"
   icon_small: "./assets/ceratops-logo-500.png"
   icon_large: "./assets/ceratops-logo-500.png"
-  default_prompt: "Use $ceratops-credit-savings-analysis bounded-largest-runs-analysis for a generic single-thread or closure analysis. Use full-analysis only for an explicit exhaustive request, and use one named surface only when I name it. Present every outstanding finding within the selected scope."
+  default_prompt: "Use $ceratops-credit-savings-analysis full-analysis for a generic single-thread or closure analysis, and use one named surface only when I name it. Analyze every completed run, report exact capacity omissions, and present every qualifying outstanding finding without treating the top-three deep review as an output cap."

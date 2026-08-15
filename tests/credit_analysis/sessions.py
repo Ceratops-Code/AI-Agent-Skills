@@ -361,17 +361,13 @@ def credit_analysis_request(
         {
             "schema": "ceratops-credit-analysis-request.v1",
             "action": action,
-            "mode": (
-                action
-                if action in {"full-analysis", "bounded-largest-runs-analysis"}
-                else "standalone"
-            ),
+            "mode": "full-analysis" if action == "full-analysis" else "standalone",
             "source": {"thread_id": None, "session": str(session)},
             "window": {"mode": "full_thread", "last_runs": None, "turn_ids": []},
             "task_temp_root": str(task_root),
             "evidence_output": str(evidence),
             "pricing_profile": None,
-            "expected_surface_contract_version": 6,
+            "expected_surface_contract_version": 7,
             "mutation_authority": False,
         },
     )
@@ -393,6 +389,7 @@ def indexed_credit_analysis_session(
     session_root.mkdir(parents=True, exist_ok=True)
     session = session_root / f"rollout-2026-08-01T00-00-00-{thread_id}.jsonl"
     project = codex_home / "projects" / project_name
+    project.mkdir(parents=True, exist_ok=True)
     credit_analysis_session(
         session,
         thread_id=thread_id,
@@ -438,7 +435,7 @@ def credit_analysis_batch_request(
             "task_temp_root": str(task_root),
             "manifest_output": str(task_root / "manifest.json"),
             "pricing_profile": None,
-            "expected_surface_contract_version": 6,
+            "expected_surface_contract_version": 7,
             "expected_source_selection_contract_version": 1,
             "mutation_authority": False,
         },
