@@ -133,7 +133,7 @@ class FakeCreditModelRunner:
                 surfaces,
             )
         if self.temporary_controls and len(records) > 8:
-            dispositions = [
+            full_dispositions = [
                 ("temporary.transient", records[3], ["rework-validation"]),
                 (
                     "temporary.implemented",
@@ -154,7 +154,7 @@ class FakeCreditModelRunner:
                 ("temporary.unclear", records[8], ["rework-validation"]),
             ]
             allowed = set(surfaces)
-            for suffix, record, requested_surfaces in dispositions:
+            for suffix, record, requested_surfaces in full_dispositions:
                 selected = [
                     surface
                     for surface in surfaces
@@ -163,7 +163,7 @@ class FakeCreditModelRunner:
                 if selected:
                     add(suffix, "temporary-control", record, selected)
         elif self.temporary_controls and records:
-            dispositions = [
+            fallback_dispositions = [
                 ("temporary.transient", ["rework-validation"]),
                 ("temporary.implemented", ["helper-contracts", "rework-validation"]),
                 ("temporary.run-only", ["rework-validation"]),
@@ -171,8 +171,8 @@ class FakeCreditModelRunner:
                 ("temporary.durable-b", ["rework-validation", "tool-flow"]),
                 ("temporary.unclear", ["rework-validation"]),
             ]
-            suffix, requested_surfaces = dispositions[
-                (int(task["ordinal"]) - 1) % len(dispositions)
+            suffix, requested_surfaces = fallback_dispositions[
+                (int(task["ordinal"]) - 1) % len(fallback_dispositions)
             ]
             selected = [
                 surface for surface in surfaces if surface in requested_surfaces
@@ -236,6 +236,7 @@ class FakeCreditModelRunner:
             merged: dict[tuple[Any, ...], dict[str, Any]] = {}
             for result in prior:
                 for item in result[key]:
+                    identity: tuple[Any, ...]
                     if key == "confirmed_findings":
                         identity = (
                             str(item["producer_owner"]),

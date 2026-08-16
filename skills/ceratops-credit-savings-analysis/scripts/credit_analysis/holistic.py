@@ -2071,7 +2071,7 @@ def _instruction_chain(cwd: pathlib.Path) -> dict[str, Any]:
             resolved_file = local_file.resolve(strict=True)
             if resolved_file not in files:
                 files.append(resolved_file)
-    records = [
+    records: list[dict[str, Any]] = [
         {
             "path": str(path),
             "sha256": _file_hash(path),
@@ -7427,7 +7427,7 @@ def command_execute_orchestration(
         prepared: list[
             tuple[
                 dict[str, Any],
-                Mapping[str, Any],
+                dict[str, Any],
                 str,
                 pathlib.Path,
                 pathlib.Path,
@@ -7490,6 +7490,7 @@ def command_execute_orchestration(
                     )
                     progressed += 1
                     continue
+            raw: Mapping[str, Any] | None
             unrecorded = _holistic_unrecorded_attempt(
                 state,
                 task,
@@ -7575,8 +7576,8 @@ def command_execute_orchestration(
         with concurrent.futures.ThreadPoolExecutor(
             max_workers=max(1, min(concurrency, len(prepared)))
         ) as executor:
-            for item in prepared:
-                task, payload, digest, prompt_path, schema_path, _ = item
+            for prepared_item in prepared:
+                task, payload, digest, prompt_path, schema_path, _ = prepared_item
                 attempt_number = (
                     len(state["execution"][task["task_id"]]["attempts"]) + 1
                 )
@@ -7591,15 +7592,17 @@ def command_execute_orchestration(
                     schema_path=schema_path,
                     attempt_number=attempt_number,
                 )
-                futures[future] = (*item, attempt_number)
+                futures[future] = (*prepared_item, attempt_number)
         completed = [
             (future, futures[future])
             for future in concurrent.futures.as_completed(futures)
         ]
-        completed.sort(key=lambda item: int(item[1][0]["ordinal"]))
+        completed.sort(key=lambda completed_item: int(completed_item[1][0]["ordinal"]))
         fatal_error: CreditAnalysisError | None = None
-        for future, item in completed:
-            task, _, digest, prompt_path, schema_path, candidate_ids, attempt_number = item
+        for future, completed_item in completed:
+            task, _, digest, prompt_path, schema_path, candidate_ids, attempt_number = (
+                completed_item
+            )
             raw, attempt = future.result()
             attempt = _bind_attempt_record(
                 attempt,
