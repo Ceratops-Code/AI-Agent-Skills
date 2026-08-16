@@ -342,6 +342,29 @@ def load_manifest(path: pathlib.Path) -> Manifest:
     )
 
 
+def load_manifest_at_revision(
+    repo_root: pathlib.Path,
+    revision: str,
+    *,
+    runner: TextRunner = run_text,
+) -> Manifest:
+    """Load the impact manifest from one already-resolved Git revision."""
+
+    result = runner(
+        ["git", "show", f"{revision}:tests/test-impact.json"],
+        repo_root,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()
+        raise ImpactError(
+            "cannot load base impact manifest: " + (detail or str(result.returncode))
+        )
+    with tempfile.TemporaryDirectory(prefix="ai-agent-skills-test-impact-") as scope:
+        manifest_path = pathlib.Path(scope) / "test-impact.json"
+        manifest_path.write_text(result.stdout, encoding="utf-8", newline="\n")
+        return load_manifest(manifest_path)
+
+
 def parse_name_status_z(raw: bytes) -> tuple[ChangedFile, ...]:
     """Parse Git's NUL protocol for single-path and copy/rename records."""
 
@@ -948,9 +971,12 @@ def expand_dependencies(
 
 
 def selection_from_changes(
-    manifest: Manifest, changes: Iterable[ChangedFile]
+    manifest: Manifest,
+    changes: Iterable[ChangedFile],
+    *,
+    base_manifest: Manifest | None = None,
 ) -> Selection:
-    """Map every evaluated path, failing closed on overlap or missing ownership."""
+    """Map changed paths, preserving base ownership for removed test sources."""
 
     reasons: set[SelectionReason] = set()
     gaps: list[dict[str, str]] = []
@@ -958,10 +984,22 @@ def selection_from_changes(
     full_suite = False
     fallback = False
     for changed in sorted(changes, key=lambda item: (item.paths, item.status)):
-        for path in changed.paths:
+        for path_index, path in enumerate(changed.paths):
+            removed_test_source = path.startswith("tests/") and (
+                changed.status.startswith("D")
+                or (
+                    changed.status.startswith(("C", "R"))
+                    and path_index == 0
+                )
+            )
+            ownership_manifest = (
+                base_manifest
+                if removed_test_source and base_manifest is not None
+                else manifest
+            )
             full_patterns = sorted(
                 pattern
-                for pattern in manifest.full_suite_paths
+                for pattern in ownership_manifest.full_suite_paths
                 if path_matches(pattern, path)
             )
             if full_patterns:
@@ -975,7 +1013,11 @@ def selection_from_changes(
                     )
                 continue
             if path.startswith("tests/"):
-                owners = owning_suites(manifest, path)
+                owners = tuple(
+                    owner
+                    for owner in owning_suites(ownership_manifest, path)
+                    if owner in manifest.suites
+                )
                 if len(owners) == 1:
                     reasons.add(
                         SelectionReason(owners[0], path, f"test-owner:{owners[0]}")
@@ -1257,6 +1299,9 @@ def execute(
     elif args.worktree:
         try:
             base = resolve_worktree_base(root, runner=text_runner)
+            base_manifest = load_manifest_at_revision(
+                root, base, runner=text_runner
+            )
             changes = worktree_changed_files(root, base, runner=bytes_runner)
         except ImpactError as exc:
             payload["manifest_errors"] = [str(exc)]
@@ -1266,11 +1311,16 @@ def execute(
         payload["base"] = base
         payload["head"] = "WORKTREE"
         payload["changed"] = [item.payload() for item in changes]
-        selection = selection_from_changes(manifest, changes)
+        selection = selection_from_changes(
+            manifest, changes, base_manifest=base_manifest
+        )
     else:
         try:
             base = resolve_revision(root, args.base, runner=text_runner)
             head = resolve_revision(root, args.head, runner=text_runner)
+            base_manifest = load_manifest_at_revision(
+                root, base, runner=text_runner
+            )
             changes = changed_files(root, base, head, runner=bytes_runner)
         except ImpactError as exc:
             payload["manifest_errors"] = [str(exc)]
@@ -1280,7 +1330,9 @@ def execute(
         payload["base"] = base
         payload["head"] = head
         payload["changed"] = [item.payload() for item in changes]
-        selection = selection_from_changes(manifest, changes)
+        selection = selection_from_changes(
+            manifest, changes, base_manifest=base_manifest
+        )
     payload.update(
         {
             "full_suite": selection.full_suite,
