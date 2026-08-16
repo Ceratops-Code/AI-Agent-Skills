@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import pathlib
 from typing import Any
 
@@ -101,6 +102,39 @@ def test_credit_analysis_workflow_resolves_current_and_named_threads(
     )
     monkeypatch.setenv("CODEX_HOME", str(codex_home))
     monkeypatch.setenv("CODEX_THREAD_ID", current_id)
+    catalog = holistic_model_catalog()
+    catalog_json = json.dumps(
+        {
+            "models": [
+                {
+                    "slug": slug,
+                    "supported_reasoning_levels": [
+                        {"effort": effort}
+                        for effort in sorted(spec["reasoning_efforts"])
+                    ],
+                    "context_window": spec["effective_context_tokens"],
+                    "effective_context_window_percent": 100,
+                }
+                for slug, spec in catalog.items()
+            ]
+        },
+        separators=(",", ":"),
+    )
+    fake_bin = tmp_path / "fake-codex-bin"
+    fake_bin.mkdir()
+    if os.name == "nt":
+        fake_codex = fake_bin / "codex.cmd"
+        fake_codex.write_text(f"@echo {catalog_json}\n", encoding="utf-8")
+    else:
+        fake_codex = fake_bin / "codex"
+        fake_codex.write_text(
+            f"#!/bin/sh\nprintf '%s\\n' '{catalog_json}'\n", encoding="utf-8"
+        )
+        fake_codex.chmod(0o755)
+    # pytest's tmp_path fixture owns and removes the fake executable.
+    monkeypatch.setenv(
+        "PATH", f"{fake_bin}{os.pathsep}{os.environ.get('PATH', '')}"
+    )
 
     def request_for(name: str, source: dict[str, Any]) -> pathlib.Path:
         root = canonical_credit_task_root(tmp_path, f"single-{name}")
