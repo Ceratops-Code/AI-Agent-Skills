@@ -22,14 +22,10 @@ class DeterministicExecution:
         diff: bytes,
         *,
         untracked: bytes = b"",
-        base_manifest: str | None = None,
     ) -> None:
         self.runner = runner
         self.diff = diff
         self.untracked = untracked
-        self.base_manifest = base_manifest or (
-            ROOT / "tests" / "test-impact.json"
-        ).read_text(encoding="utf-8")
         self.commands: list[tuple[str, ...]] = []
         self.final_pytest: list[tuple[str, ...]] = []
 
@@ -43,8 +39,6 @@ class DeterministicExecution:
             if revision == "HEAD":
                 revision = BASE
             return subprocess.CompletedProcess(command, 0, revision + "\n", "")
-        if argv[:2] == ("git", "show"):
-            return subprocess.CompletedProcess(command, 0, self.base_manifest, "")
         assert argv[:3] == (sys.executable, "-m", "pytest")
         if "--collect-only" in argv:
             return self.runner.run_text(command, cwd)
@@ -152,25 +146,14 @@ def test_committed_diff_mode_collects_and_invokes_only_selected_suite(
     )
 
 
-def test_committed_diff_preserves_base_ownership_for_removed_test_sources(
+def test_committed_diff_maps_test_rename_source_through_destination(
     test_runner_module: Any, capsys: pytest.CaptureFixture[str]
 ) -> None:
     runner = test_runner_module
-    base_manifest = json.loads(
-        (ROOT / "tests" / "test-impact.json").read_text(encoding="utf-8")
-    )
-    base_manifest["suites"]["credit-analysis"]["pytest"].extend(
-        [
-            "tests/legacy_credit_deleted.py",
-            "tests/legacy_credit_renamed.py",
-        ]
-    )
     execution = DeterministicExecution(
         runner,
-        b"D\0tests/legacy_credit_deleted.py\0"
         b"R100\0tests/legacy_credit_renamed.py\0"
         b"tests/credit_analysis/test_orchestration.py\0",
-        base_manifest=json.dumps(base_manifest),
     )
 
     exit_code = runner.execute(
@@ -187,9 +170,35 @@ def test_committed_diff_preserves_base_ownership_for_removed_test_sources(
     assert result["selected_suites"] == ["credit-analysis"]
     assert {item["path"] for item in result["selections"]} == {
         "tests/credit_analysis/test_orchestration.py",
-        "tests/legacy_credit_deleted.py",
         "tests/legacy_credit_renamed.py",
     }
+
+
+def test_committed_diff_treats_deleted_test_as_intentional_full_suite(
+    test_runner_module: Any, capsys: pytest.CaptureFixture[str]
+) -> None:
+    runner = test_runner_module
+    execution = DeterministicExecution(
+        runner,
+        b"D\0tests/legacy_credit_deleted.py\0",
+    )
+
+    exit_code = runner.execute(
+        ["--base", BASE, "--head", HEAD],
+        repo_root=ROOT,
+        text_runner=execution.text,
+        bytes_runner=execution.bytes,
+    )
+    result = payload(capsys)
+
+    assert exit_code == 0
+    assert result["status"] == "passed"
+    assert result["full_suite"] is True
+    assert result["full_suite_fallback"] is False
+    assert result["mapping_gaps"] == []
+    assert result["selected_suites"] == sorted(
+        runner.load_manifest(ROOT / "tests" / "test-impact.json").suites
+    )
 
 
 def test_mapping_gap_runs_full_suite_and_returns_distinct_status(
