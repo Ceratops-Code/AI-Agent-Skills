@@ -11,7 +11,7 @@ import unittest
 from typing import Any
 from unittest import mock
 
-ROOT = pathlib.Path(__file__).resolve().parents[1]
+ROOT = pathlib.Path(__file__).resolve().parents[2]
 SCRIPTS = ROOT / "skills" / "ceratops-repo-lifecycle" / "scripts"
 REFERENCES = SCRIPTS.parent / "references" / "contracts"
 sys.path.insert(0, str(SCRIPTS))
@@ -23,6 +23,7 @@ from github_contract_engine import (
     github_api,  # noqa: E402
     levels,  # noqa: E402
     organization_validator,  # noqa: E402
+    repository_validator,  # noqa: E402
     schema_validation,  # noqa: E402
 )
 from github_contract_engine.collect_observed_states import (  # noqa: E402
@@ -438,6 +439,52 @@ class GHContractStateEngineTests(unittest.TestCase):
             {check["id"] for check in self.contracts["code"]["checks"]}
             - {"content.repository_validation"},
         )
+
+    def test_repository_release_contract_owns_artifact_identity(self):
+        record = {
+            "artifact_id": "bootstrap-installer",
+            "artifact_type": "installer_or_cli_binary",
+            "registry": "github_release",
+            "package_or_image_name": "Setup.exe",
+            "version_source": "config/profile.json:installer.version",
+            "release_policy": "stable GitHub Release",
+            "tag_style": "v-prefix-semver",
+            "changelog_source": "GitHub release notes",
+            "post_publish_consumer_check": "download and verify SHA-256",
+        }
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            repo_root = pathlib.Path(temporary_directory)
+            release_root = repo_root / "release"
+            release_root.mkdir()
+            (release_root / "release.yml").write_text(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "kind": "ceratops-release",
+                        "artifacts": [record],
+                        "operations": {},
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            args = argparse.Namespace(
+                repo="example/repository",
+                local_repo_path=str(repo_root),
+                evidence_file=None,
+                param=[],
+            )
+
+            parameters = repository_validator._parameters(args, self.contracts)
+            evidence_parameters = collect_non_deterministic_evidence._repo_parameters(
+                args, self.contracts
+            )
+
+            self.assertEqual(parameters["artifact_contracts"], [record])
+            self.assertEqual(evidence_parameters["artifact_contracts"], [record])
+            args.param = ["artifact_contracts=" + json.dumps([record])]
+            with self.assertRaisesRegex(ValueError, "declared both"):
+                repository_validator._parameters(args, self.contracts)
 
     def test_organization_parameter_precedence_is_cli_only(self):
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -1572,7 +1619,7 @@ class GHContractStateEngineTests(unittest.TestCase):
                 "trace": [
                     {
                         "role": "source",
-                        "path": "tests/test_gh_validator_summary.py",
+                        "path": "tests/repository_lifecycle/test_contract_engine.py",
                         "line": 1,
                     },
                     {

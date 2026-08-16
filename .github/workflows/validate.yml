@@ -19,6 +19,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
 
       - name: Install development validators
         run: |
@@ -29,7 +31,19 @@ jobs:
       - name: Validate repository
         run: >-
           python scripts/validate-repository.py
+          --without-tests
           --evidence-file ${{ runner.temp }}/repository-validation.log
+
+      - name: Run pull-request impact tests
+        if: github.event_name == 'pull_request'
+        run: >-
+          python scripts/run-tests.py
+          --base ${{ github.event.pull_request.base.sha }}
+          --head ${{ github.event.pull_request.head.sha }}
+
+      - name: Run full main-branch tests
+        if: github.event_name == 'push'
+        run: python scripts/run-tests.py --all
 
       - name: Upload validation evidence
         if: failure()

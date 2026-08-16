@@ -33,6 +33,7 @@ from .format_report import (
 from .github_api import default_contract_path, load_json
 from .levels import has_blocking_findings, parse_levels
 from .remediations import apply_remediations
+from .repository_artifact_contracts import resolve_repository_artifact_contracts
 
 SURFACE_CHOICES = ("all", *REPO_SURFACES)
 SUBSET_CHOICES = (
@@ -78,6 +79,10 @@ def _parameters(
             parameters[name] = json.loads(raw)
         except json.JSONDecodeError:
             parameters[name] = raw
+    parameters["artifact_contracts"] = resolve_repository_artifact_contracts(
+        parameters.get("local_repo_path"),
+        parameters.get("artifact_contracts"),
+    )
     return parameters
 
 

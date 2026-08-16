@@ -1,6 +1,6 @@
 ---
 name: ceratops-credit-savings-analysis
-description: Analyze one credit-waste surface or run comprehensive per-thread analyses for the current thread, a named thread, or recent threads overall or in one project, preserving every confirmed finding without modifying the analyzed producer or workflow.
+description: Analyze one credit-waste surface or every completed run in one or more threads while preserving every confirmed finding without modifying the analyzed producer or workflow.
 ---
 
 # Ceratops Credit Savings Analysis
@@ -8,7 +8,7 @@ description: Analyze one credit-waste surface or run comprehensive per-thread an
 ## Goal
 
 Analyze completed model-call evidence for avoidable credit spend. Use
-`full-analysis` for a generic or comprehensive request and select one named
+`full-analysis` for a generic single-thread or closure request, and one named
 surface only when the user names it. This skill recommends controls but never
 applies them.
 
@@ -16,7 +16,8 @@ applies them.
 
 ### Action References
 
-- Run the complete fixed-surface analysis: `references/full-analysis.md`
+- Run the all-run fixed-surface analysis:
+  `references/full-analysis.md`
 - Analyze deterministic helper contracts: `references/helper-contracts.md`
 - Analyze context and evidence reuse: `references/context-evidence.md`
 - Analyze rework and validation: `references/rework-validation.md`
@@ -30,9 +31,10 @@ applies them.
   recency. Exact-name and recent-thread selection use the versioned source
   contract. An incremental closure begins strictly after the previous completed
   closure; active runs and the boundary run are excluded.
-- For a single-thread full analysis or standalone surface, run
-  `python scripts/credit-analysis-workflow.py plan --request REQUEST` once.
-  Require mutation authority `false`, current contract versions, and a
+- For a single-thread full or standalone analysis, run
+  `python scripts/credit-analysis-workflow.py run --request REQUEST`. On a fresh
+  request, the controller plans once; rerunning the exact request resumes its
+  state. Require mutation authority `false`, current contract versions, and a
   caller-selected task root under
   `<repo-parent>/tmp/<repo-name>/<thread-name>`. Keep retained evidence inside
   that task root.
@@ -42,44 +44,65 @@ applies them.
   A's retained prompts, model calls, latency, failures, token usage, and
   orchestration while excluding only B's descendants. Keep analysis-generated
   work separate from producer work and savings attribution.
-- Planning retains complete protected evidence and read-only canonical snapshots,
-  builds one compact causal episode stream for every selected call, budgets each
-  model packet from the effective local model context, splits that shared stream
-  only when required, and reports projected Luna and Sol calls before execution.
-- Run `python scripts/credit-analysis-workflow.py execute --state STATE` to
-  execute or resume the frozen plan. Treat controller state, evidence and
-  manifest hashes, task identities, candidate membership, prompts, results,
-  and attempt telemetry as authoritative. Execution never recollects the
-  session. Never skip, repeat, reorder, or add a semantic task outside the
-  manifest.
-- The controller validates `gpt-5.6-luna` at medium effort and
-  `gpt-5.6-sol` at maximum effort from the local Codex catalog. It launches
-  ephemeral, approval-free children and owns waiting, timeout, process-tree
-  termination, non-model progress, prompts, evidence, results, and telemetry.
-  Accepted calls and attempts retain immutable hashes and resumable ledgers.
-- Every selected call appears exactly once in one ordered compact causal packet.
-  Luna receives 100% of those packets and performs high-recall discovery across
-  the five fixed surfaces, returning only plausible findings, risks, and
-  temporary controls with candidate and evidence references. It does not emit a
-  candidate-by-surface dismissal matrix or final savings. Complete oversized
-  payloads remain on disk with length, hash, outcome, and bounded useful excerpts
-  in model evidence; no selected call is silently omitted or truncated away.
-- A normal full analysis runs one Luna discovery and one Sol adjudication. If
-  the dynamically budgeted Luna packet cannot fit, partition the causal episodes
-  once into the minimum ordered shared packets; do not impose a fixed Luna-call
-  cap or create per-surface chunking or consolidation. Run exactly one Sol pass
-  that verifies every Luna candidate against original evidence and returns only
-  bounded semantic judgments through packet-local identifiers. Restore canonical
-  identifiers and derive nonsemantic summaries, ordering, surfaces, workstreams,
-  repeated evidence, and savings arithmetic in code; never bound findings,
-  candidate coverage, or material variants. Sol merges overlaps and temporary
-  controls, applies recurrence and ROI rules, classifies every source call in
-  grouped form, and produces the final synthesis. Persist result-size, duration,
-  visible-token, and reasoning-token telemetry as diagnostics only; treat the
-  output reserve solely as overflow protection. Run no model bookkeeping calls;
-  stop before execution when the finite plan is malformed, changes candidate
-  coverage or order, or contains a packet boundary not required by the frozen
-  evidence volume and effective context budget.
+- Planning retains complete protected evidence and read-only canonical
+  snapshots. Full analysis treats every completed run as one semantic unit,
+  freezes run order and UTF-8 byte counts, and partitions only an oversized run
+  into the minimum ordered transport windows. Never analyze calls independently
+  of their run. Retain the evidence bytes, planned Luna-output bytes, and actual
+  Luna-output bytes for every run and window. Reserve the controller prompt and
+  output schema inside each proven UTF-8 input envelope; do not budget the JSON
+  evidence packet as though it were the child's entire visible input.
+- The end-to-end `run` command executes or resumes the frozen plan. Keep
+  `plan --request` for planning-only inspection and `execute --state` for direct
+  state-path resume. Treat controller state, evidence and manifest hashes, task
+  identities, candidate membership, prompts, results, and attempt telemetry as
+  authoritative. Execution never recollects the session. Never skip, repeat,
+  reorder, or add a semantic task outside the manifest.
+- Before freezing child tasks, resolve and hash the effective global and
+  run-local `AGENTS.md` chain. Launch each Luna task from its run's verified
+  source cwd. Launch Sol from the source's primary cwd and include the effective
+  rule hashes and the text of any differing run-local rules in its retained
+  handoff. Bind the applicable chain hash to every task and attempt. Stop or
+  report the exact rule-evidence omission rather than silently running from the
+  task temporary root without the applicable project rules.
+- The controller validates `gpt-5.6-luna` and `gpt-5.6-sol` at maximum effort
+  from the local Codex catalog. Luna children are ephemeral; Sol children retain
+  native rollout state. Every child is approval-free and read-only. The
+  controller owns waiting, timeout, process-tree termination, non-model progress,
+  prompts, evidence, results, and telemetry, and never spends model calls polling
+  children. Accepted calls and attempts retain immutable hashes and resumable
+  ledgers.
+- Luna performs high-recall discovery across all five fixed surfaces together.
+  Run up to ten Luna children concurrently and admit no more than fifty Luna
+  model-call attempts for one source, including corrective reruns. Queue ordered
+  run windows without a one-window-per-run scheduling barrier. If a Luna result
+  violates its frozen schema or output-byte envelope, rerun that exact task once
+  with a smaller output allowance; if it still cannot fit, record that complete
+  window as omitted and continue within the fifty-attempt cap. Never truncate a
+  result, split a run window, detach calls from their run context, or create
+  per-surface Luna calls.
+- Measure accepted Luna outputs before Sol planning. Route every retained Luna
+  candidate exactly once among three Sol adjudicators; add a fourth only when
+  three cannot fit the measured reports. Run one separate Sol audit against one
+  unsurfaced raw window from the largest run and one deterministically
+  highest-signal unsurfaced raw window. Run those four or five first-stage Sol
+  tasks concurrently, then one dependent final Sol to merge their compact
+  judgments, produce the report, and deeply verify the top three deduplicated
+  owner/control findings against exact raw evidence. A normal plan uses five Sol
+  calls and the overflow plan uses six; never exceed six. The final Sol does not
+  re-adjudicate every candidate or receive the full source evidence.
+- Restore canonical identifiers and derive nonsemantic summaries, ordering,
+  surfaces, workstreams, repeated evidence, and savings arithmetic in code. Sol
+  adjudicators merge overlaps and temporary controls, apply recurrence and ROI
+  rules, and classify source calls in grouped form. Persist result-size,
+  duration, visible-token, and reasoning-token telemetry as diagnostics. Run no
+  model bookkeeping calls; stop before execution when the finite plan is
+  malformed or changes admitted run, window, or candidate coverage.
+- The planner attempts every completed run. If the fifty-Luna or six-Sol hard
+  cap still prevents transport after the allowed Luna correction, retain exact
+  capacity omissions by run and window identity, record count, evidence bytes,
+  candidate count, and output bytes. Continue with every fitting task and never
+  imply that omitted evidence or candidates were semantically reviewed.
 - Keep session evidence, accepted surface results, the append-only index, and
   the final machine result at their controller-retained paths. Do not echo raw
   session material or caller-local paths unnecessarily.
@@ -137,17 +160,20 @@ applies them.
 
 ### Completion Gate
 
-- A surface is complete only when Luna has received every applicable causal
-  episode, Sol has adjudicated every surfaced candidate against original
-  evidence, and all confirmed findings and plausible risks for that lens remain
-  in the final result. Do not require a semantic dismissal record for every
+- A surface is complete only when Luna has received every admitted run window,
+  each retained candidate has one Sol adjudication, every confirmed finding and
+  plausible risk for that lens remains in the final result, and every capacity
+  omission is explicit. Do not require a semantic dismissal record for every
   call-surface pair.
-- `full-analysis` is complete only after the frozen manifest proves complete,
-  ordered, non-overlapping call coverage; every Luna task and the single Sol task
-  have immutable identity and content hashes; temporary-control contributions
-  are merged once by owner/control; every confirmed finding remains; every source
-  call has one primary grouped classification; unassessed calls stay within the
-  contract limit; overlaps do not double-count savings; and finalization succeeds.
+- `full-analysis` is complete only after the frozen manifest accounts for every
+  completed run as reviewed or exactly omitted, proves ordered non-overlapping
+  windows and candidate routing, and records immutable Luna, Sol-adjudicator,
+  audit, and final-task identities and hashes. Temporary-control contributions
+  are merged once by owner/control; every retained candidate has one disposition;
+  every confirmed finding remains; every reviewed source call has one primary
+  grouped classification; capacity-omitted calls are excluded from semantic
+  classification; overlaps do not double-count savings; and finalization
+  succeeds idempotently.
 - A standalone action is complete only after the selected surface result is
   accepted and controller finalization succeeds.
 
@@ -180,9 +206,11 @@ applies them.
   hides a distinct unknown or evidence source, and do not include a risk in
   confirmed savings. For standalone actions, state that the conclusion is
   limited to the selected surface and is not a whole-thread reconciliation.
-- Report necessary, protocol-overhead, avoidable,
-  reviewed-no-confirmed-waste, and unassessed call totals separately. Never
-  describe reviewed or unassessed calls as necessary.
+- For full analysis, report necessary, protocol-overhead, avoidable,
+  reviewed-no-confirmed-waste, and unassessed totals separately. Report completed
+  runs, every admitted or omitted window's record count, input bytes, output
+  allowance, actual output bytes, evidence and output totals, and semantic
+  coverage. Never imply that omitted runs, windows, calls, or candidates were reviewed.
 
 ## Analysis-Only Boundaries
 

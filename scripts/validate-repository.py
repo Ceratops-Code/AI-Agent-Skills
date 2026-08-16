@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""Run the complete repository-owned local and CI validation sequence.
+"""Run the complete repository-owned local validation sequence.
 
 ``--evidence-file`` selects first-failure evidence. Child output is suppressed
 on success and written in full only for the first failed check. A successful
 run removes stale evidence at that exact path and prunes only the dedicated
 default evidence directory when empty. Commands use argv lists, and managed
-runtime installation remains outside this aggregate.
+runtime installation remains outside this aggregate. Tests delegate to
+``scripts/run-tests.py --all``; CI may use ``--without-tests`` only when a
+separate explicit invocation of that same runner owns the job's test phase.
 """
 
 from __future__ import annotations
@@ -68,12 +70,13 @@ def build_checks(
     *,
     python_executable: str | None = None,
     npm_executable: str | None = None,
+    include_tests: bool = True,
 ) -> tuple[Check, ...]:
     """Build the single canonical repository-validation sequence."""
 
     python = python_executable or sys.executable
     npm = npm_executable or ("npm.cmd" if sys.platform == "win32" else "npm")
-    return (
+    checks: tuple[Check, ...] = (
         Check("markdown-lint", (npm, "run", "lint:markdown"), repo_root),
         Check(
             "yaml-lint",
@@ -105,8 +108,16 @@ def build_checks(
             repo_root,
             "win32",
         ),
-        Check("pytest", (python, "-m", "pytest", "-q"), repo_root),
     )
+    if include_tests:
+        checks += (
+            Check(
+                "pytest",
+                (python, "scripts/run-tests.py", "--all"),
+                repo_root,
+            ),
+        )
+    return checks
 
 
 def evidence_text(
@@ -224,6 +235,7 @@ def main(
     repo_root = pathlib.Path(__file__).resolve().parents[1]
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--evidence-file", type=pathlib.Path)
+    parser.add_argument("--without-tests", action="store_true")
     parsed, unexpected = parser.parse_known_args(arguments)
     evidence_file = (
         parsed.evidence_file.expanduser().resolve()
@@ -244,7 +256,7 @@ def main(
         return 2
 
     failure = run_checks(
-        build_checks(repo_root),
+        build_checks(repo_root, include_tests=not parsed.without_tests),
         evidence_file,
         process_runner=process_runner,
     )

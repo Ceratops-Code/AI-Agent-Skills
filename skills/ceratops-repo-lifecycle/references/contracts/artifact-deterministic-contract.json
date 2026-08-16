@@ -40,7 +40,7 @@
     "artifact_contracts": {
       "type": "array",
       "required": false,
-      "description": "Optional explicit external-artifact identity records. Every non-no_artifact record confirms publication even when no workflow is present.",
+      "description": "External-artifact identity records loaded from local release/release.yml when declared, otherwise supplied explicitly. Every non-no_artifact record confirms publication even when no workflow is present.",
       "item_shape": {
         "artifact_id": "stable local contract id",
         "artifact_type": "one artifact_type_system.artifact_types value",
