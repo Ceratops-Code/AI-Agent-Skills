@@ -18,11 +18,17 @@ Create a tool's editable source and a reproducible release in its owning repo.
    `ready: true`; check required dependencies without modifying user data.
 4. Add focused behavioral tests and usage documentation in the owning repo.
    Validate package readiness and failure behavior before registering a release.
-5. From the active AI-Agent-Skills source checkout, run
-   `python scripts/package-tool-release.py --source <tool-source> --lock` to
-   record dependency artifacts, then review the lock and run the same command
-   without `--lock` to build and register the exact release. Source maintenance
-   runs from `scripts/`; these commands are not manager or MCP operations.
+5. Use the installed manager's public CLI:
+
+   ```powershell
+   C:\AI-Agents-Tools\ceratops-tool-manager\bin\ceratops-tool-manager.cmd package --source <tool-source> --lock
+   C:\AI-Agents-Tools\ceratops-tool-manager\bin\ceratops-tool-manager.cmd package --source <tool-source>
+   ```
+
+   Review `pylock.toml` between these commands. The first records locked
+   dependencies; the second builds and registers that exact package without
+   activating it. An AI-Agent-Skills checkout is not required. If the manager
+   is absent, use bootstrap only when first installation is authorized.
 6. Hand authorized deployment to this skill's install action. Use a new version
    when artifact contents change; a published identity/version is immutable.
 
