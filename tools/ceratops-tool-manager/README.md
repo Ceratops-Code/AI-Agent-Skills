@@ -6,32 +6,34 @@ The manager makes no model/API calls and has no UI.
 
 ## Layout and supported runtime
 
-Editable source belongs in the tool's owning repository. All deployed
-executables and dependencies, including this manager and managed CPython,
-live under `C:\AI-Agents-Tools`. Skills and Codex configuration stay in `.codex`.
-The tool lifecycle skill ships through the existing skill installer and does
-not contain a second executable deployment.
+Editable source belongs in the tool's owning repository. Each tool owns a
+separate directory under `C:\AI-Agents-Tools`, including its packages,
+environments, version selection, registry, cache, and locks. The manager's
+directory is `C:\AI-Agents-Tools\ceratops-tool-manager`. Skills and Codex
+configuration stay in `.codex`; the skill installer owns skill deployment.
 
 ```text
-C:\AI-Agents-Tools\
-  bin\                     stable CLI and MCP launchers
-  runtime\                 pinned uv and CPython 3.13.12
-  artifacts\<tool>\<version>\<manifest-sha256>\
-  installations\<tool>\<instance>\environment\
-  active\<tool>.json        selected complete installation receipt
-  registry.json            exact version-to-manifest mapping
-  staging\                 bootstrap and packaging scratch
-  cache\                   package/build cache
-  locks\                   kernel-released deployment and registry locks
+C:\AI-Agents-Tools\<tool-id>\
+  bin\                              stable launchers (manager)
+  artifacts\<version>\<manifest-sha256>\
+  versions\<version>\<instance>\environment\
+  current.json                      selected complete installation
+  registry.json                     exact version-to-manifest mapping
+  staging\                          packaging scratch, removed on return
+  cache\                            this tool's package/build cache
+  locks\                            this tool's kernel-released locks
 ```
 
-Version 1 of the contract supports Windows x64 CPython 3.13 wheel packages.
-The bootstrap pins uv's artifact and Python version in `bootstrap-lock.json`;
-the pinned uv release verifies its managed Python download. `pylock.toml`
-records exact runtime dependency versions and artifact hashes. Wheels are
-installed offline with uv's hash enforcement, followed by dependency and
-package readiness checks. Updating a manager release updates its wheel
-dependencies; the bootstrap interpreter and launcher ABI remain fixed.
+Deployment uses existing global Windows x64 CPython 3.14.x and uv 0.12.10 or
+newer 0.12.x. Both are validated outside the tool store before creating an
+installation; the manager never downloads its own Python or uv. Each installed
+version has a separate virtual environment for dependencies. Global Python
+must remain available and compatible while these environments are used.
+
+`pylock.toml` records exact dependency versions and artifact hashes. Wheels
+are installed offline with uv's hash enforcement, followed by dependency and
+package readiness checks. A manager update changes its wheel dependencies;
+global Python and uv remain independently maintained prerequisites.
 
 ## First installation and use
 
@@ -39,13 +41,14 @@ From an active AI-Agent-Skills source checkout:
 
 ```powershell
 python scripts/bootstrap-tool-manager.py
-C:\AI-Agents-Tools\bin\ceratops-tool-manager.cmd versions
+C:\AI-Agents-Tools\ceratops-tool-manager\bin\ceratops-tool-manager.cmd versions
 ```
 
-Bootstrap is a first-install development command. It provisions the pinned
-runtime, builds and registers the source release, and calls the same engine
-used after installation. `--prepare-runtime` provisions only that prerequisite
-for development. Bootstrap does not change Codex configuration.
+Bootstrap is a first-install development command. It validates global
+prerequisites, builds and registers the source release, prepares the launchers,
+and calls the same engine used after installation. It changes no Codex
+configuration. An incompatible or missing prerequisite fails before bootstrap
+writes installation files.
 
 | CLI command | MCP tool | Inputs |
 | --- | --- | --- |
@@ -95,9 +98,8 @@ is `python -I -B -m <module> --deployment-check`. It must return exactly:
 ```
 
 Readiness checks dependencies and necessary local prerequisites without
-modifying user data. The harmless project under `tools/fixtures/harmless-tool`
-is a complete minimal example. Create and test new tools in the ordinary
-development environment; tool creation never runs through this manager.
+modifying user data. Create and test tools in their owning development
+repositories; tool creation never runs through this manager.
 
 From the active AI-Agent-Skills source checkout, use its maintenance command:
 
@@ -116,8 +118,9 @@ The release manifest is a closed JSON object containing `schema`, `tool_id`,
 `version`, `distribution`, `module`, and `wheels`. Each wheel has exactly a
 `filename` and `sha256`. The engine validates every field, digest, wheel
 archive, and the tool's distribution metadata before execution. All artifact
-paths are derived from validated identities. The registry has only `schema`
-and `tools`; its mapping is `tools[tool_id][version] = manifest_sha256`.
+paths are derived from validated identities. Each tool's registry has only
+`schema`, its matching `tool_id`, and `versions`; its mapping is
+`versions[version] = manifest_sha256`.
 An existing identity/version cannot be reassigned to different artifact bytes.
 Use a new version for changed releases.
 
@@ -126,13 +129,16 @@ Use a new version for changed releases.
 The engine creates a unique candidate directory at its final immutable path,
 installs its environment, checks dependencies, and runs readiness. Virtual
 environments are never moved after creation. Only then does an atomic JSON
-replacement select the candidate. A failure removes that candidate and leaves
-the prior selection intact. Per-tool operating-system locks serialize writes
+replacement of that tool's `current.json` select the candidate. This file
+records the exact version and installation folder to launch. A failed candidate
+is removed and the prior selection stays
+intact. Per-tool operating-system locks serialize writes
 and are released when the owning process exits, including a crash.
 
 Self-update uses this same sequence. The current process completes its request
 from its existing directory; its files are never overwritten. The stable
-launcher reads the active receipt at the next launch, so a new CLI process or
+launcher reads its own `current.json` at the next launch, so a new CLI
+process or
 MCP reconnection uses the selected version. Already running versions continue
 to work. Completed inactive environments are intentionally retained for those
 processes; no automated deletion or process-supervision subsystem is included.
@@ -142,10 +148,12 @@ maintenance; it cannot activate an incomplete candidate.
 ## Codex registration and Forms boundary
 
 The repository's `.codex/config.toml` registers only this service for trusted
-development checkouts. It uses the fixed Python runtime, installed launcher,
-and `--mcp`, with the exact three-tool allowlist. It does not modify the user
-global configuration or another project's configuration. Reconnect or open a
-new development task to load it; this setup does not restart the desktop app.
+development checkouts. It uses global `python`, the manager folder's installed
+launcher, and `--mcp`, with the exact
+three-tool allowlist. It does not modify the user
+global configuration or another project's configuration. Registration alone
+does not prove the current Codex task has loaded the connection. Verify callable
+tools in that task separately; this setup does not restart the desktop app.
 
 Keep the restricted Forms agent in its separate restricted configuration,
 without this service or shell/development capabilities. MCP stdio inherits
@@ -163,19 +171,20 @@ self-update state. The normal repository validator selects it through
 `tests/test-impact.json`. Development dependencies are in
 `requirements-dev.txt`.
 
-For explicit acceptance against a bootstrapped local installation, first
-register the harmless fixture and a different manager release, then run:
+For explicit acceptance against a bootstrapped local installation, register
+two compatible manager releases, select the earlier release, then run:
 
 ```powershell
 python scripts/check-tool-manager.py --scratch <task-temp-root> --self-update-version <version>
 ```
 
-This runs real fixture installation/update/previous-version selection and an
-intentional failed readiness candidate. It keeps one MCP connection alive
-during manager self-update, verifies the old running version can still answer,
-and verifies the new version after reconnection. The selected manager version
-is the final installed state. Fixture versions and inactive installations are
-retained for repeatable local checks; temporary source copies are removed.
+This checks real manager installation/update/previous-version selection and
+rejection of an unregistered release. It keeps one MCP connection alive during
+self-update, verifies the old version can still answer, and verifies the new
+version after reconnection. The requested manager version is the final installed
+state. The check installs no sample tool. Inactive manager environments remain
+available for running processes. Unit tests create temporary wheel inputs and
+cover candidate failures without installing a test project on the machine.
 Evidence is written as `tool-deployment-check.json` in the supplied scratch
 directory. This explicit acceptance command is not run by ordinary CI.
 

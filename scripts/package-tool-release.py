@@ -32,7 +32,7 @@ from ceratops_tool_manager.contracts import (
     schema,
     token,
 )
-from ceratops_tool_manager.engine import run, wheel_metadata
+from ceratops_tool_manager.engine import global_runtime, run, wheel_metadata
 from ceratops_tool_manager.storage import Layout
 from packaging.markers import Marker
 from packaging.tags import compatible_tags, cpython_tags
@@ -40,7 +40,6 @@ from packaging.utils import parse_wheel_filename
 
 
 def package(source: Path, *, lock_only: bool = False) -> dict:
-    layout = Layout()
     config = fields(read_json(source / "tool.json"), {"schema", "tool_id", "distribution", "module"})
     schema(config)
     for key in ("tool_id", "distribution"):
@@ -50,11 +49,10 @@ def package(source: Path, *, lock_only: bool = False) -> dict:
     version = token(project["version"], "version")
     if project["name"] != config["distribution"]:
         raise DeploymentError("source distribution identity mismatch")
-    runtime = read_json(layout.path("runtime", "runtime.json"))
-    python = layout.path("runtime", "python", "python.exe")
-    uv = layout.path("runtime", "uv", "uv.exe")
-    if not python.is_file() or not uv.is_file():
-        raise DeploymentError("run bootstrap --prepare-runtime first")
+    identity = config["tool_id"]
+    layout = Layout(identity)
+    runtime = global_runtime()
+    python, uv = runtime.python, runtime.uv
     layout.directory("staging")
     with tempfile.TemporaryDirectory(prefix="package-", dir=layout.path("staging")) as work:
         temporary = Path(work)
@@ -70,12 +68,12 @@ def package(source: Path, *, lock_only: bool = False) -> dict:
         wheels = list(temporary.glob("*.whl"))
         if len(wheels) != 1 or wheel_metadata(wheels[0]) != (config["distribution"], version):
             raise DeploymentError("built wheel does not match source identity and version")
-        supported = list(cpython_tags((3, 13), ["cp313"], ["win_amd64"])) + list(compatible_tags((3, 13), "cp313", ["win_amd64"]))
+        supported = list(cpython_tags((3, 14), ["cp314"], ["win_amd64"])) + list(compatible_tags((3, 14), "cp314", ["win_amd64"]))
         ranks = {tag: index for index, tag in enumerate(supported)}
-        marker_environment = {"implementation_name": "cpython", "implementation_version": runtime["python_version"],
+        marker_environment = {"implementation_name": "cpython", "implementation_version": runtime.python_version,
                               "os_name": "nt", "platform_machine": "AMD64", "platform_python_implementation": "CPython",
-                              "platform_system": "Windows", "python_full_version": runtime["python_version"],
-                              "python_version": "3.13", "sys_platform": "win32", "extra": ""}
+                              "platform_system": "Windows", "python_full_version": runtime.python_version,
+                              "python_version": "3.14", "sys_platform": "win32", "extra": ""}
         for dependency in locked.get("packages", []):
             if dependency.get("marker") and not Marker(dependency["marker"]).evaluate(marker_environment):
                 continue
@@ -107,16 +105,15 @@ def package(source: Path, *, lock_only: bool = False) -> dict:
         manifest_path = temporary / "manifest.json"
         manifest_path.write_text(json.dumps(release, sort_keys=True, indent=2) + "\n", encoding="utf-8")
         release_hash = digest(manifest_path)
-        identity = config["tool_id"]
         with layout.lock("registry"):
             catalog_path = layout.path("registry.json")
-            catalog = registry(read_json(catalog_path)) if catalog_path.exists() else {"schema": 1, "tools": {}}
-            versions = catalog["tools"].setdefault(identity, {})
+            catalog = registry(read_json(catalog_path), identity) if catalog_path.exists() else {"schema": 1, "tool_id": identity, "versions": {}}
+            versions = catalog["versions"]
             if version in versions and versions[version] != release_hash:
                 raise DeploymentError("version already identifies another artifact; publish a new version")
-            target = layout.path("artifacts", identity, version, release_hash)
+            target = layout.path("artifacts", version, release_hash)
             if not target.exists():
-                layout.directory("artifacts", identity, version)
+                layout.directory("artifacts", version)
                 # Source is the verified temporary root; destination cannot be
                 # caller-selected and the registry is committed only afterwards.
                 staged = temporary / "release"
@@ -125,10 +122,10 @@ def package(source: Path, *, lock_only: bool = False) -> dict:
                     shutil.copyfile(file, staged / file.name)
                 os.replace(staged, target)
             for file in [*wheels, manifest_path]:
-                if digest(layout.path("artifacts", identity, version, release_hash, file.name)) != digest(file):
+                if digest(layout.path("artifacts", version, release_hash, file.name)) != digest(file):
                     raise DeploymentError("existing immutable artifact is incomplete or changed")
             versions[version] = release_hash
-            layout.atomic_json(catalog_path, registry(catalog))
+            layout.atomic_json(catalog_path, registry(catalog, identity))
         return {"tool_id": identity, "version": version, "manifest_sha256": release_hash}
 
 

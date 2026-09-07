@@ -377,6 +377,37 @@ def _assert_execution_outcome_boundaries() -> None:
     assert outcomes.failure_details(mixed) == ["actual rejection"]
     assert collector.failure_reason_label(mixed) == "actual rejection"
 
+    for diagnostic, category in (
+        ("An empty pipe element is not allowed.", "powershell_empty_pipe"),
+        ("UnicodeEncodeError: cannot encode character", "python_output_encoding"),
+    ):
+        for newline in ("\n", "\r\n"):
+            text = newline.join([
+                "Script failed", "Wall time 0.0 seconds", "Output:",
+                "Script error:", diagnostic,
+            ])
+            payload = {"type": "custom_tool_call_output", "output": text}
+            assert outcomes.failure_details(payload) == [text]
+            action = {"nested_calls": [], **outcomes.response_outcomes(payload)}
+            provenance = collector.result_failure_provenance(payload, action)
+            assert provenance is not None
+            assert provenance["category"] == category
+            assert provenance["semantic_failure"]
+            assert diagnostic in provenance["reason_label"]
+
+    payload = {
+        "type": "custom_tool_call_output",
+        "output": "Script failed\nWall time 0s\nOutput:\n"
+        "UnicodeEncodeError: Bearer synthetic-test-credential; "
+        + "x" * collector.FAILURE_REASON_LABEL_LIMIT,
+    }
+    label = collector.failure_reason_label(payload)
+    assert "synthetic-test-credential" not in label
+    assert collector.REDACTED in label
+    assert "UnicodeEncodeError" in label
+    assert len(label) == collector.FAILURE_REASON_LABEL_LIMIT
+    assert label.endswith("...")
+
 
 def test_model_call_ledger_usage_summary_is_ranked_and_evidence_based(
     tmp_path: pathlib.Path,

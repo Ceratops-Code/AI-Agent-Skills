@@ -65,7 +65,8 @@
     {
       "id": "credit-analysis-source",
       "paths": [
-        "skills/ceratops-credit-savings-analysis/**"
+        "skills/ceratops-credit-savings-analysis/**",
+        "skills/ceratops-misunderstanding-audit/**"
       ],
       "suites": [
         "credit-analysis"

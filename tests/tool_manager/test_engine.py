@@ -21,7 +21,7 @@ contracts = importlib.import_module("ceratops_tool_manager.contracts")
 cli = importlib.import_module("ceratops_tool_manager.cli")
 
 
-def make_release(root, version, *, tool="fixture", ready=True, dependency=False):
+def make_release(root, version, *, tool="fixture", dependency=False):
     """Create a harmless wheel envelope and register its exact artifact digest."""
     temporary = root / "build"
     temporary.mkdir(exist_ok=True)
@@ -35,13 +35,13 @@ def make_release(root, version, *, tool="fixture", ready=True, dependency=False)
                 "wheels": [{"filename": wheel.name, "sha256": hashlib.sha256(wheel.read_bytes()).hexdigest()}]}
     raw = (json.dumps(manifest) + "\n").encode()
     sha = hashlib.sha256(raw).hexdigest()
-    bundle = root / "artifacts" / tool / version / sha
+    bundle = root / tool / "artifacts" / version / sha
     bundle.mkdir(parents=True)
     (bundle / "manifest.json").write_bytes(raw)
     (bundle / wheel.name).write_bytes(wheel.read_bytes())
-    catalog_path = root / "registry.json"
-    catalog: dict[str, Any] = json.loads(catalog_path.read_text()) if catalog_path.exists() else {"schema": 1, "tools": {}}
-    catalog["tools"].setdefault(tool, {})[version] = sha
+    catalog_path = root / tool / "registry.json"
+    catalog: dict[str, Any] = json.loads(catalog_path.read_text()) if catalog_path.exists() else {"schema": 1, "tool_id": tool, "versions": {}}
+    catalog["versions"][version] = sha
     catalog_path.write_text(json.dumps(catalog))
     return bundle
 
@@ -51,11 +51,8 @@ def deployment(tmp_path, monkeypatch):
     monkeypatch.setattr(storage, "INSTALL_ROOT", tmp_path)
     engine = engine_module.Engine()
     engine.running_version = "0.1.0"
-    for part in ("python/python.exe", "uv/uv.exe"):
-        target = tmp_path / "runtime" / part
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(b"fixture")
-    (tmp_path / "runtime/runtime.json").write_text(json.dumps({"python": "python", "uv": "uv", "python_version": "3.13.12", "uv_version": "0.12.10"}))
+    runtime = engine_module.Runtime(tmp_path.parent / "python.exe", tmp_path.parent / "uv.exe", "3.14.7", "0.12.10")
+    monkeypatch.setattr(engine_module, "global_runtime", lambda: runtime)
     calls = []
     failure = {"phase": None}
 
@@ -68,9 +65,7 @@ def deployment(tmp_path, monkeypatch):
         if failure["phase"] in command:
             raise contracts.DeploymentError("injected candidate failure")
         if "--deployment-check" in command:
-            requirements = (cwd / "requirements.txt").read_text()
-            version = next(v for v in ("0.1.0", "0.2.0", "1.0.0", "2.0.0", "3.0.0") if f"/{v}/" in requirements)
-            tool = "ceratops-tool-manager" if "ceratops_tool_manager" in command else "fixture"
+            version, tool = cwd.parent.name, cwd.parents[2].name
             return json.dumps({"tool_id": tool, "version": version, "ready": True})
         return ""
 
@@ -88,10 +83,20 @@ def test_install_update_previous_and_versions(deployment, tmp_path):
     assert engine.update("fixture", "2.0.0")["installed_version"] == "2.0.0"
     assert engine.install("fixture", "1.0.0")["installed_version"] == "1.0.0"
     assert engine.selected("fixture")["instance"] != first["instance"]
-    assert (tmp_path / "installations/fixture" / first["instance"]).is_dir()
+    assert (tmp_path / "fixture/versions/1.0.0" / first["instance"]).is_dir()
     assert engine.versions("fixture")["available_versions"] == ["1.0.0", "2.0.0"]
     assert engine.versions("fixture")["running_version"] is None
     assert any("check" in command for command in calls)
+    assert not list((tmp_path / "fixture/versions").glob("*/*/tmp"))
+    make_release(tmp_path, "1.0.0", tool="independent")
+    own_selection = (tmp_path / "fixture/current.json").read_bytes()
+    own_registry = (tmp_path / "fixture/registry.json").read_bytes()
+    with storage.Layout("fixture").lock("deployment"):
+        assert engine.install("independent", "1.0.0")["installed_version"] == "1.0.0"
+    assert (tmp_path / "fixture/current.json").read_bytes() == own_selection
+    assert (tmp_path / "fixture/registry.json").read_bytes() == own_registry
+    assert engine.versions("independent")["available_versions"] == ["1.0.0"]
+    assert not (tmp_path / "registry.json").exists()
 
 
 @pytest.mark.parametrize("phase", ["venv", "sync", "check", "--deployment-check"])
@@ -100,13 +105,13 @@ def test_failed_candidate_preserves_active_and_cleans_stage(deployment, tmp_path
     make_release(tmp_path, "1.0.0")
     make_release(tmp_path, "2.0.0", dependency=True)
     engine.install("fixture", "1.0.0")
-    before = (tmp_path / "active/fixture.json").read_bytes()
-    retained = sorted((tmp_path / "installations/fixture").iterdir())
+    before = (tmp_path / "fixture/current.json").read_bytes()
+    retained = sorted((tmp_path / "fixture/versions").iterdir())
     failure["phase"] = phase
     with pytest.raises(contracts.DeploymentError):
         engine.update("fixture", "2.0.0")
-    assert (tmp_path / "active/fixture.json").read_bytes() == before
-    assert sorted((tmp_path / "installations/fixture").iterdir()) == retained
+    assert (tmp_path / "fixture/current.json").read_bytes() == before
+    assert sorted((tmp_path / "fixture/versions").iterdir()) == retained
 
 
 def test_failed_first_install_does_not_select_anything(deployment, tmp_path):
@@ -116,7 +121,7 @@ def test_failed_first_install_does_not_select_anything(deployment, tmp_path):
     with pytest.raises(contracts.DeploymentError):
         engine.install("fixture", "1.0.0")
     assert engine.selected("fixture") is None
-    assert not list((tmp_path / "installations/fixture").iterdir())
+    assert not list((tmp_path / "fixture/versions").iterdir())
 
 
 def test_self_update_completes_old_process_then_new_launch_selects_version(deployment, tmp_path):
@@ -130,7 +135,7 @@ def test_self_update_completes_old_process_then_new_launch_selects_version(deplo
     assert result["installed_version"] == "0.2.0"
     assert result["reconnection_required"] is True
     assert engine.versions()["running_version"] == "0.1.0"
-    assert (tmp_path / "installations/ceratops-tool-manager" / previous["instance"]).is_dir()
+    assert (tmp_path / "ceratops-tool-manager/versions/0.1.0" / previous["instance"]).is_dir()
     engine.running_version = "0.2.0"
     assert engine.versions()["reconnection_required"] is False
     assert engine.update("ceratops-tool-manager", "0.1.0")["reconnection_required"] is True
@@ -142,7 +147,7 @@ def test_identity_escapes_fail_before_writes(deployment, tmp_path, identity):
     with pytest.raises(contracts.DeploymentError):
         engine.install(identity, "1.0.0")
     assert not calls
-    assert not (tmp_path / "locks").exists()
+    assert not list(tmp_path.iterdir())
 
 
 @pytest.mark.parametrize("version", ["latest", "1", "1.0", "01.0.0", "../x", "1.0.0;whoami", True, None])
@@ -182,7 +187,9 @@ def test_strict_manifest_rejects_commands_extra_fields_and_wheel_paths(tmp_path)
     with pytest.raises(contracts.DeploymentError):
         contracts.manifest(value)
     with pytest.raises(contracts.DeploymentError):
-        contracts.registry({"schema": True, "tools": {}})
+        contracts.registry({"schema": True, "tool_id": "fixture", "versions": {}})
+    with pytest.raises(contracts.DeploymentError):
+        contracts.registry({"schema": 1, "tool_id": "fixture", "versions": {}}, "independent")
 
 
 def test_duplicate_json_keys_rejected(tmp_path):
@@ -208,25 +215,25 @@ def test_atomic_activation_failure_preserves_previous(deployment, tmp_path, monk
     make_release(tmp_path, "1.0.0")
     make_release(tmp_path, "2.0.0")
     engine.install("fixture", "1.0.0")
-    before = (tmp_path / "active/fixture.json").read_bytes()
+    before = (tmp_path / "fixture/current.json").read_bytes()
     replace = os.replace
 
     def fail_selection(source, destination):
-        if Path(destination).name == "fixture.json":
+        if Path(destination).name == "current.json":
             raise OSError("injected selection write failure")
         return replace(source, destination)
 
     monkeypatch.setattr(storage.os, "replace", fail_selection)
     with pytest.raises(OSError):
         engine.update("fixture", "2.0.0")
-    assert (tmp_path / "active/fixture.json").read_bytes() == before
-    assert not list((tmp_path / "active").glob("*.tmp"))
+    assert (tmp_path / "fixture/current.json").read_bytes() == before
+    assert not list((tmp_path / "fixture").glob("*.tmp"))
 
 
 def test_lock_prevents_concurrent_deployment_and_releases(deployment, tmp_path):
     engine, _, _ = deployment
     make_release(tmp_path, "1.0.0")
-    with engine.layout.lock("fixture"):
+    with storage.Layout("fixture").lock("deployment"):
         with pytest.raises(contracts.DeploymentError, match="lock"):
             engine.install("fixture", "1.0.0")
     assert engine.install("fixture", "1.0.0")["installed_version"] == "1.0.0"
@@ -252,4 +259,4 @@ def test_linked_root_is_rejected(tmp_path, monkeypatch):
         pytest.skip("OS denied symlink creation")
     monkeypatch.setattr(storage, "INSTALL_ROOT", alias)
     with pytest.raises(contracts.DeploymentError, match="links"):
-        storage.Layout().directory("active")
+        storage.Layout().directory("versions")

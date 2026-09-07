@@ -1374,11 +1374,12 @@ def command_finalize(state_path: pathlib.Path) -> None:
         raise UpdateExecutionError("state repo_root must be absolute")
     lexical_repo = _absolute(repo_path)
     _reject_link_chain(lexical_repo, "state repo_root")
-    if lexical_repo.exists():
-        if not lexical_repo.is_dir():
-            raise UpdateExecutionError("state repo_root must be a directory")
+    if lexical_repo.exists() and not lexical_repo.is_dir():
+        raise UpdateExecutionError("state repo_root must be a directory")
+    if lexical_repo.is_dir() and any(lexical_repo.iterdir()):
         repo_root = lexical_repo.resolve(strict=True)
     else:
+        # Git may unregister a worktree while Windows retains its empty directory.
         repo_root = _finalize_primary_root(raw["cleanup"])
     cleanup = _validated_cleanup(
         raw["cleanup"],

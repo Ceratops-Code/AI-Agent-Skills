@@ -1,7 +1,7 @@
 """Stable bootstrap ABI: select a complete manager environment on each launch.
 
-The interpreter and this tiny launcher are bootstrap infrastructure. Tool
-updates only replace active JSON, leaving every running process's files alone.
+The launcher uses global Python to select the manager's own environment. Tool
+updates only replace current.json, leaving running processes' files alone.
 This launcher is installed once, and validates the selected receipt before
 passing through the original CLI/transport arguments.
 """
@@ -16,7 +16,7 @@ from pathlib import Path
 
 
 def main() -> int:
-    root = Path("C:/AI-Agents-Tools")
+    root = Path("C:/AI-Agents-Tools/ceratops-tool-manager")
 
     def checked(path: Path) -> Path:
         if not path.is_relative_to(root):
@@ -27,12 +27,14 @@ def main() -> int:
                 raise ValueError("launcher rejects links and reparse points")
         return path
 
-    selected = json.loads(checked(root / "active" / "ceratops-tool-manager.json").read_text())
+    selected = json.loads(checked(root / "current.json").read_text())
     if set(selected) != {"schema", "tool_id", "version", "manifest_sha256", "instance", "module"} or selected["schema"] != 1 or selected["tool_id"] != "ceratops-tool-manager" or selected["module"] != "ceratops_tool_manager":
         raise ValueError("invalid manager selection")
     if not isinstance(selected["instance"], str) or not re.fullmatch("[0-9a-f]{32}", selected["instance"]):
         raise ValueError("invalid installation identity")
-    directory = root / "installations" / "ceratops-tool-manager" / selected["instance"]
+    if not isinstance(selected["version"], str) or not re.fullmatch(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)", selected["version"]):
+        raise ValueError("invalid selected version")
+    directory = root / "versions" / selected["version"] / selected["instance"]
     if json.loads(checked(directory / "receipt.json").read_text()) != selected:
         raise ValueError("manager receipt mismatch")
     python = checked(directory / "environment" / "Scripts" / "python.exe")

@@ -8,13 +8,18 @@ Install the first manager using the same engine as its CLI and MCP interfaces.
 
 1. Require first-install authorization and an active AI-Agent-Skills source
    checkout. From that checkout run `python scripts/bootstrap-tool-manager.py`.
-   This provisions the pinned runtime and dependencies under the fixed tool
-   root, packages the first release, and stages and validates its installation.
-2. Inspect the manager with
-   `C:\AI-Agents-Tools\bin\ceratops-tool-manager.cmd versions`.
+   This validates existing global CPython 3.14 and uv 0.12.10 or newer 0.12.x,
+   packages the first release, and validates its isolated installation inside
+   `C:\AI-Agents-Tools\ceratops-tool-manager`. It installs no Python or uv copy.
+2. Inspect the manager with its CLI:
+
+   ```powershell
+   C:\AI-Agents-Tools\ceratops-tool-manager\bin\ceratops-tool-manager.cmd versions
+   ```
+
 3. When registration is requested, register only this stdio service in the
-   intended coding agent's Codex configuration. Use the fixed runtime Python
-   with `-I -B`, the installed `bin/ceratops-tool-manager.py` launcher, and
+   intended coding agent's Codex configuration. Use global `python` with
+   `-I -B`, the manager folder's `bin/ceratops-tool-manager.py` launcher, and
    `--mcp`; set the tool allowlist to `install`, `update`, and `versions`.
    Verify the restricted Forms agent cannot inherit this service before
    enabling any shared registration. Do not restart the desktop app.

@@ -55,6 +55,10 @@
       "core",
       "multi-action-skill"
     ],
+    "ceratops-misunderstanding-audit": [
+      "core",
+      "evidence-analysis"
+    ],
     "openai-docs-managed": [
       "core",
       "bounded-model-analysis"

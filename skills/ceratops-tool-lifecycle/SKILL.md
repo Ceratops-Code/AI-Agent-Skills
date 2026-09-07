@@ -29,8 +29,9 @@ Guide tool development and exact local release deployment through one manager.
 
 ### Skill-Specific Rules
 
-- Keep editable tool source in its owning repository and executable
-  installations with their dependencies under `C:\AI-Agents-Tools`.
+- Keep editable source in its owning repository and each tool's deployments
+  and state in `C:\AI-Agents-Tools\<tool-id>`. Use validated global Python and
+  uv with dependencies isolated in each installed version's environment.
 - Keep skills and Codex registration under `.codex`; deploy this skill through
   `ceratops-skill-lifecycle` without copying tool executables into skill
   folders.
@@ -67,4 +68,4 @@ unresolved blocker, or unverified agent exposure.
 
 ### Example Invocation
 
-`Use $ceratops-tool-lifecycle to install the registered fixture version 1.0.0.`
+`Use $ceratops-tool-lifecycle to inspect the manager's installed version.`

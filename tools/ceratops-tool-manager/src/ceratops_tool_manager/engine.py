@@ -9,10 +9,13 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import shutil
 import subprocess
 import sys
 import uuid
 import zipfile
+from dataclasses import dataclass
 from email.parser import BytesParser
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -27,7 +30,7 @@ from .contracts import (
     registry,
     token,
 )
-from .storage import Layout
+from .storage import INSTALL_ROOT, Layout
 
 
 def child_environment(layout: Layout, temporary: Path) -> dict[str, str]:
@@ -54,6 +57,50 @@ def run(command: list[str], *, cwd: Path, env: dict[str, str], timeout: int = 12
     if result.returncode:
         raise DeploymentError(f"candidate validation failed: {result.stderr[-1800:].strip()}")
     return result.stdout
+
+
+@dataclass(frozen=True)
+class Runtime:
+    """Validated existing global prerequisites; deployment never provisions them."""
+
+    python: Path
+    uv: Path
+    python_version: str
+    uv_version: str
+
+
+def global_runtime() -> Runtime:
+    """Resolve global CPython and uv without using a tool's private environment.
+
+    A virtual environment records its base interpreter in sys.base_prefix.
+    Both prerequisites must remain outside the deployment store. Probes are
+    fixed commands, take no caller paths, and run before candidate creation.
+    """
+    if os.name != "nt":
+        raise DeploymentError("deployment supports Windows x64")
+    python = Path(sys.base_prefix) / "python.exe"
+    selected_uv = shutil.which("uv")
+    if not python.is_file() or selected_uv is None:
+        raise DeploymentError("install global CPython 3.14 and uv 0.12.10 or newer 0.12.x first")
+    python, uv = python.resolve(), Path(selected_uv).resolve()
+    if any(path.is_relative_to(INSTALL_ROOT.resolve()) for path in (python, uv)) or not uv.is_file():
+        raise DeploymentError("Python and uv must be global installations outside the tool store")
+    env = {key: value for key, value in os.environ.items() if not key.upper().startswith(("PYTHON", "PIP_", "UV_"))}
+    probe = "import json,struct,sys; print(json.dumps([sys.implementation.name,list(sys.version_info[:3]),struct.calcsize('P')*8]))"
+    try:
+        implementation, version, bits = json.loads(run([str(python), "-I", "-B", "-c", probe], cwd=python.parent, env=env, timeout=15))
+        valid_version = isinstance(version, list) and len(version) == 3 and all(type(part) is int for part in version)
+        if implementation != "cpython" or not valid_version or version[:2] != [3, 14] or bits != 64:
+            raise DeploymentError("global Python must be 64-bit CPython 3.14.x")
+        output = run([str(uv), "--version"], cwd=uv.parent, env=env, timeout=15)
+        match = re.match(r"uv (0\.12\.([0-9]+))(?:\s|$)", output)
+        if match is None or int(match[2]) < 10:
+            raise DeploymentError("global uv must be 0.12.10 or a newer 0.12.x release")
+    except (TypeError, ValueError) as exc:
+        if isinstance(exc, DeploymentError):
+            raise
+        raise DeploymentError("invalid global prerequisite probe") from exc
+    return Runtime(python, uv, ".".join(map(str, version)), match[1])
 
 
 def wheel_metadata(path: Path) -> tuple[str, str]:
@@ -92,16 +139,17 @@ class Engine:
 
     def selected(self, identity: str) -> dict[str, Any] | None:
         token(identity)
-        path = self.layout.path("active", identity + ".json")
+        layout = Layout(identity)
+        path = layout.path("current.json")
         if not path.exists():
             return None
         value = active(read_json(path), identity)
-        directory = self.layout.path("installations", identity, value["instance"])
+        directory = layout.path("versions", value["version"], value["instance"])
         if not directory.is_dir():
             raise DeploymentError("selected installation is missing")
-        if not self.layout.path("installations", identity, value["instance"], "environment", "Scripts", "python.exe").is_file():
+        if not layout.path("versions", value["version"], value["instance"], "environment", "Scripts", "python.exe").is_file():
             raise DeploymentError("selected installation interpreter is missing")
-        receipt = active(read_json(self.layout.path("installations", identity, value["instance"], "receipt.json")), identity)
+        receipt = active(read_json(layout.path("versions", value["version"], value["instance"], "receipt.json")), identity)
         if receipt != value:
             raise DeploymentError("selected installation receipt mismatch")
         return value
@@ -110,9 +158,9 @@ class Engine:
         """Inspect registry selections and this process without launching a tool."""
         token(tool_id)
         selected = self.selected(tool_id)
-        registry_path = self.layout.path("registry.json")
-        catalog = registry(read_json(registry_path)) if registry_path.exists() else {"tools": {}}
-        available = sorted(catalog["tools"].get(tool_id, {}), key=lambda v: tuple(map(int, v.split("."))))
+        registry_path = Layout(tool_id).path("registry.json")
+        catalog = registry(read_json(registry_path), tool_id) if registry_path.exists() else {"versions": {}}
+        available = sorted(catalog["versions"], key=lambda v: tuple(map(int, v.split("."))))
         installed = selected["version"] if selected else None
         running = self.running_version if tool_id == TOOL_ID else None
         return {"tool_id": tool_id, "installed_version": installed,
@@ -129,16 +177,16 @@ class Engine:
     def _deploy(self, tool_id: str, version: str, *, require_installed: bool) -> dict[str, Any]:
         token(tool_id)
         token(version, "version")
-        layout = self.layout
-        with layout.lock(tool_id):
+        layout = Layout(tool_id)
+        with layout.lock("deployment"):
             previous = self.selected(tool_id)
             if require_installed and previous is None:
                 raise DeploymentError("update requires an installed tool; use install first")
-            catalog = registry(read_json(layout.path("registry.json")))
-            sha256 = catalog["tools"].get(tool_id, {}).get(version)
+            catalog = registry(read_json(layout.path("registry.json")), tool_id)
+            sha256 = catalog["versions"].get(version)
             if sha256 is None:
                 raise DeploymentError("exact tool version is not registered")
-            manifest_path = layout.path("artifacts", tool_id, version, sha256, "manifest.json")
+            manifest_path = layout.path("artifacts", version, sha256, "manifest.json")
             if digest(manifest_path) != sha256:
                 raise DeploymentError("manifest digest mismatch")
             release = manifest(read_json(manifest_path))
@@ -149,7 +197,7 @@ class Engine:
             requirements = []
             distributions: dict[str, str] = {}
             for wheel in release["wheels"]:
-                path = layout.path("artifacts", tool_id, version, sha256, wheel["filename"])
+                path = layout.path("artifacts", version, sha256, wheel["filename"])
                 if digest(path) != wheel["sha256"]:
                     raise DeploymentError("wheel digest mismatch")
                 name, wheel_version = wheel_metadata(path)
@@ -159,16 +207,10 @@ class Engine:
                 requirements.append(f"{path.as_uri()} --hash=sha256:{wheel['sha256']}")
             if distributions.get(release["distribution"]) != version:
                 raise DeploymentError("tool distribution version mismatch")
-            # Runtime is bootstrap-owned data, never an agent-selected path.
-            runtime = read_json(layout.path("runtime", "runtime.json"))
-            if set(runtime) != {"python", "uv", "python_version", "uv_version"}:
-                raise DeploymentError("invalid bootstrap runtime")
-            python = layout.path("runtime", token(runtime["python"], "identity"), "python.exe")
-            uv = layout.path("runtime", "uv", "uv.exe")
-            if runtime["uv"] != "uv" or not python.is_file() or not uv.is_file():
-                raise DeploymentError("bootstrap runtime is not ready")
+            runtime = global_runtime()
+            python, uv = runtime.python, runtime.uv
             instance = uuid.uuid4().hex
-            candidate = layout.directory("installations", tool_id, instance)
+            candidate = layout.directory("versions", version, instance)
             committed = False
             try:
                 temporary = candidate / "tmp"
@@ -189,16 +231,16 @@ class Engine:
                     raise DeploymentError("invalid readiness response") from exc
                 if ready != {"tool_id": tool_id, "version": version, "ready": True}:
                     raise DeploymentError("tool readiness failed")
+                layout.remove_scratch(temporary)
                 selection = {"schema": 1, "tool_id": tool_id, "version": version, "manifest_sha256": sha256,
                              "instance": instance, "module": release["module"]}
                 layout.atomic_json(candidate / "receipt.json", selection)
-                layout.directory("active")
-                layout.atomic_json(layout.path("active", tool_id + ".json"), selection)
+                layout.atomic_json(layout.path("current.json"), selection)
                 committed = True
             finally:
                 if not committed:
                     layout.remove_candidate(candidate)
-            # No fallible post-commit registry reads: a successful activation is success.
+            # No fallible post-commit registry reads:  a successful activation is success.
             running = self.running_version if tool_id == TOOL_ID else None
             return {"tool_id": tool_id, "installed_version": version, "running_version": running,
                     "manifest_sha256": sha256, "reconnection_required": bool(running and running != version)}

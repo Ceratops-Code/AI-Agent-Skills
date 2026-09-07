@@ -17,7 +17,8 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from .contracts import DeploymentError
+from . import TOOL_ID
+from .contracts import DeploymentError, token
 
 INSTALL_ROOT = Path("C:/AI-Agents-Tools")
 
@@ -25,8 +26,8 @@ INSTALL_ROOT = Path("C:/AI-Agents-Tools")
 class Layout:
     """The internal root seam exists for isolated tests, never public inputs."""
 
-    def __init__(self) -> None:
-        self.root = INSTALL_ROOT
+    def __init__(self, tool_id: str = TOOL_ID) -> None:
+        self.root = INSTALL_ROOT / token(tool_id)
 
     def path(self, *parts: str) -> Path:
         target = self.root.joinpath(*parts)
@@ -65,16 +66,28 @@ class Layout:
         finally:
             temporary.unlink(missing_ok=True)
 
-    def remove_candidate(self, path: Path) -> None:
-        parts = path.relative_to(self.root).parts
-        if len(parts) != 3 or parts[0] != "installations":
-            raise DeploymentError("invalid candidate cleanup target")
-        self.path(*parts)
-        # Refuse a linked descendant before recursive cleanup.
+    def _remove_tree(self, path: Path) -> None:
+        self.path(*path.relative_to(self.root).parts)
+        # Refuse linked descendants before deleting transaction-owned files.
         for current, directories, files in os.walk(path, followlinks=False):
             for name in directories + files:
                 self.path(*(Path(current) / name).relative_to(self.root).parts)
         shutil.rmtree(path)
+
+    def remove_candidate(self, path: Path) -> None:
+        parts = path.relative_to(self.root).parts
+        if len(parts) != 3 or parts[0] != "versions":
+            raise DeploymentError("invalid candidate cleanup target")
+        self._remove_tree(path)
+        if not any(path.parent.iterdir()):
+            path.parent.rmdir()
+
+    def remove_scratch(self, path: Path) -> None:
+        """Remove this transaction's scratch before selecting its installation."""
+        parts = path.relative_to(self.root).parts
+        if len(parts) != 4 or parts[0] != "versions" or parts[-1] != "tmp":
+            raise DeploymentError("invalid scratch cleanup target")
+        self._remove_tree(path)
 
     @contextlib.contextmanager
     def lock(self, name: str):

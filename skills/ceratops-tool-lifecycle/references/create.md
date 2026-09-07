@@ -11,9 +11,8 @@ Create a tool's editable source and a reproducible release in its owning repo.
    or Git release work in `ceratops-repo-lifecycle` when required.
 2. Build a Python wheel project with an exact numeric `major.minor.patch`
    version and pinned build backend. Add the `tool.json` identity contract
-   documented in the manager's source README. The initial supported runtime
-   is Windows x64 CPython 3.13; other runtime formats require manager
-   development.
+   documented in the manager's source README. The supported runtime is global
+   Windows x64 CPython 3.14; other runtime formats require manager development.
 3. Implement the module's fixed `--deployment-check` readiness protocol. Its
    JSON must report exact tool identity and installed package version with
    `ready: true`; check required dependencies without modifying user data.

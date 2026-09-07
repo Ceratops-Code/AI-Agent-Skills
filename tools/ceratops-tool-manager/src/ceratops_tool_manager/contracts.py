@@ -74,18 +74,19 @@ def digest(path: Path) -> str:
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
-def registry(value: Any) -> dict[str, Any]:
-    value = fields(value, {"schema", "tools"})
+def registry(value: Any, identity: str | None = None) -> dict[str, Any]:
+    """Validate the release catalogue owned by exactly one tool directory."""
+    value = fields(value, {"schema", "tool_id", "versions"})
     schema(value)
-    if not isinstance(value["tools"], dict) or len(value["tools"]) > 1000:
-        raise DeploymentError("invalid registry tools")
-    for identity, versions in value["tools"].items():
-        token(identity)
-        if not isinstance(versions, dict) or len(versions) > 1000:
-            raise DeploymentError("invalid release map")
-        for version, sha256 in versions.items():
-            token(version, "version")
-            token(sha256, "sha256")
+    token(value["tool_id"])
+    if identity is not None and value["tool_id"] != identity:
+        raise DeploymentError("registry identity mismatch")
+    versions = value["versions"]
+    if not isinstance(versions, dict) or len(versions) > 1000:
+        raise DeploymentError("invalid release map")
+    for version, sha256 in versions.items():
+        token(version, "version")
+        token(sha256, "sha256")
     return value
 
 

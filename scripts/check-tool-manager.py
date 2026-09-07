@@ -1,26 +1,25 @@
 #!/usr/bin/env python3
-"""Run explicit Windows acceptance against the installed manager and harmless tool.
+"""Validate two registered manager releases through CLI and persistent stdio MCP.
 
-This maintenance command exercises real wheel installs and a persistent stdio
-connection. It retains the harmless fixture's exact releases for repeatable
-checks; source copies are removed on exit. Self-update is explicit and ends at
-the requested version, after also testing ordinary previous-version selection.
-No model calls, Codex registration, desktop restarts, or user data are involved.
+The check uses real manager installations, selects a previous version through
+the normal install operation, and ends at the requested release. It verifies
+that self-update completes while the old process remains usable. It creates
+no sample tools and does not edit Codex registration or restart the desktop.
+The caller owns the scratch directory and resulting evidence file.
 """
 
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import json
-import shutil
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
+from typing import Any
 
 from tool_manager_support import REPOSITORY  # isort: skip
 from ceratops_tool_manager.contracts import DeploymentError, token
+from ceratops_tool_manager.engine import global_runtime
 from ceratops_tool_manager.storage import Layout
 
 sys.path.insert(0, str(REPOSITORY))
@@ -43,35 +42,20 @@ def main() -> int:
     scratch = args.scratch.resolve(strict=True)
     evidence = scratch / "tool-deployment-check.json"
     root = Layout().root
-    command = [str(root / "runtime/python/python.exe"), "-I", "-B", str(root / "bin/ceratops-tool-manager.py")]
-    result = {"status": "pending", "checks": []}
+    command = [str(global_runtime().python), "-I", "-B", str(root / "bin/ceratops-tool-manager.py")]
+    result: dict[str, Any] = {"status": "pending", "checks": []}
     try:
-        spec = importlib.util.spec_from_file_location("package_tool_release", Path(__file__).with_name("package-tool-release.py"))
-        packager = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(packager)
-        with tempfile.TemporaryDirectory(prefix="fixture-sources-", dir=scratch) as work:
-            for version in ("2.0.0", "3.0.0"):
-                source = Path(work) / version
-                shutil.copytree(REPOSITORY / "tools/fixtures/harmless-tool", source, ignore=shutil.ignore_patterns("__pycache__", "*.egg-info", "build", "dist"))
-                project = source / "pyproject.toml"
-                project.write_text(project.read_text().replace('version = "1.0.0"', f'version = "{version}"'))
-                if version == "3.0.0":
-                    (source / "src/ceratops_deployment_fixture/__main__.py").write_text('raise SystemExit("Intentional readiness failure for deployment acceptance.")\n')
-                packager.package(source)
-        fixture = "ceratops-deployment-fixture"
         with WireClient([*command, "--mcp"]) as client:
             tools = client.request("tools/list")["result"]["tools"]
             assert {tool["name"] for tool in tools} == {"install", "update", "versions"}
             current = data(client.request("tools/call", {"name": "versions", "arguments": {}}))
             previous = current["installed_version"]
             assert previous != args.self_update_version, "self-update acceptance requires a different selected version"
-            for operation, version in (("install", "1.0.0"), ("update", "2.0.0"), ("install", "1.0.0")):
-                outcome = data(client.request("tools/call", {"name": operation, "arguments": {"tool_id": fixture, "version": version}}))
-                assert outcome["installed_version"] == version
-            before = (root / "active" / (fixture + ".json")).read_bytes()
-            failure = client.request("tools/call", {"name": "update", "arguments": {"tool_id": fixture, "version": "3.0.0"}})
+            assert "0.0.0" not in current["available_versions"], "failure check requires an unregistered version"
+            before = (root / "current.json").read_bytes()
+            failure = client.request("tools/call", {"name": "update", "arguments": {"tool_id": "ceratops-tool-manager", "version": "0.0.0"}})
             assert failure.get("error") or failure["result"].get("isError")
-            assert (root / "active" / (fixture + ".json")).read_bytes() == before
+            assert (root / "current.json").read_bytes() == before
             outcome = data(client.request("tools/call", {"name": "update", "arguments": {"tool_id": "ceratops-tool-manager", "version": args.self_update_version}}))
             assert outcome["installed_version"] == args.self_update_version
             assert outcome["running_version"] == previous and outcome["reconnection_required"]
@@ -81,7 +65,7 @@ def main() -> int:
             assert selected["running_version"] == previous
             data(client.request("tools/call", {"name": "install", "arguments": {"tool_id": "ceratops-tool-manager", "version": previous}}))
             data(client.request("tools/call", {"name": "update", "arguments": {"tool_id": "ceratops-tool-manager", "version": args.self_update_version}}))
-            result["checks"].extend(["real dependency readiness", "fixture update", "previous-version installation", "failed candidate preserves selection", "self-update completes current request", "old process still serves"])
+            result["checks"].extend(["real dependency readiness", "previous-version installation", "unregistered release preserves selection", "self-update completes current request", "old process still serves"])
         with WireClient([*command, "--mcp"]) as client:
             current = data(client.request("tools/call", {"name": "versions", "arguments": {}}))
             assert current["installed_version"] == current["running_version"] == args.self_update_version

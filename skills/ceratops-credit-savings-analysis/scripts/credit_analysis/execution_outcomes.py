@@ -70,7 +70,9 @@ def _output_items(value: Any, depth: int) -> Iterator[Mapping[str, Any]]:
                 "status": "timeout"
                 if header["kind"].casefold() == "timed out"
                 else "failed",
-                "_runtime_header": header.group(),
+                # The header establishes failure; retain its diagnostics for
+                # the collector's bounded, redacted excerpt.
+                "_runtime_header": value,
             }
             return
         try:

@@ -9,9 +9,12 @@ Select an exact release for an already installed tool.
 1. Capture the installed tool and selected exact release. If absent, use the
    install action. If the release is unregistered, package its reviewed source
    through the create workflow before updating.
-2. Call MCP `update` with `tool_id` and `version`, or run
-   `C:\AI-Agents-Tools\bin\ceratops-tool-manager.cmd update <tool-id> <version>`
-   .
+2. Call MCP `update` with `tool_id` and `version`, or run:
+
+   ```powershell
+   C:\AI-Agents-Tools\ceratops-tool-manager\bin\ceratops-tool-manager.cmd update <tool-id> <version>
+   ```
+
    Explicitly selecting a previous release uses this same operation.
 3. On failure, report the error and leave the active selection intact. On
    success, inspect versions. Existing process files remain available in their

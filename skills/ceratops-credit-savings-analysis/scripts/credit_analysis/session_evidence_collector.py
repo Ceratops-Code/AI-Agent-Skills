@@ -35,9 +35,9 @@ import re
 import sys
 import uuid
 from collections import Counter
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-if __package__:
+if TYPE_CHECKING or __package__:
     from .execution_outcomes import (
         empty_outcomes,
         failure_details,
