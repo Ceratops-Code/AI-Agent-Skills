@@ -136,6 +136,25 @@ def test_agents_history_selects_full_suite_from_repository_manifest(
     }
 
 
+@pytest.mark.parametrize("path", [
+    "tools/ceratops_tool_manager/packaging.py",
+    "scripts/deploy_tool_manager.py",
+    "scripts/check_tool_manager.py",
+])
+def test_tool_manager_paths_select_their_underscore_named_suite(
+    test_runner_module: Any, path: str,
+) -> None:
+    runner = test_runner_module
+    root = pathlib.Path(__file__).resolve().parents[2]
+    manifest = runner.load_manifest(root / "tests" / "test-impact.json")
+    selection = runner.selection_from_changes(
+        manifest, (runner.ChangedFile("M", (path,)),),
+    )
+    assert selection.suites == ("tool_manager",)
+    assert selection.pytest_targets == ("tests/tool_manager",)
+    assert not selection.mapping_gaps
+
+
 def test_changed_test_file_selects_its_single_owner(test_runner_module: Any) -> None:
     runner = test_runner_module
     selection = runner.selection_from_changes(

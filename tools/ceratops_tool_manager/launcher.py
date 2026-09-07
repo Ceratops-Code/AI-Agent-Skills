@@ -16,7 +16,7 @@ from pathlib import Path
 
 
 def main() -> int:
-    root = Path("C:/AI-Agents-Tools/ceratops-tool-manager")
+    root = Path("C:/AI-Agents-Tools/ceratops_tool_manager")
 
     def checked(path: Path) -> Path:
         if not path.is_relative_to(root):
@@ -28,7 +28,7 @@ def main() -> int:
         return path
 
     selected = json.loads(checked(root / "current.json").read_text())
-    if set(selected) != {"schema", "tool_id", "version", "manifest_sha256", "instance", "module"} or selected["schema"] != 1 or selected["tool_id"] != "ceratops-tool-manager" or selected["module"] != "ceratops_tool_manager":
+    if set(selected) != {"schema", "tool_id", "version", "manifest_sha256", "instance", "module"} or selected["schema"] != 1 or selected["tool_id"] != "ceratops_tool_manager" or selected["module"] != "ceratops_tool_manager":
         raise ValueError("invalid manager selection")
     if not isinstance(selected["instance"], str) or not re.fullmatch("[0-9a-f]{32}", selected["instance"]):
         raise ValueError("invalid installation identity")

@@ -8,5 +8,5 @@ import sys
 from pathlib import Path
 
 REPOSITORY = Path(__file__).resolve().parents[1]
-SOURCE = REPOSITORY / "tools" / "ceratops-tool-manager"
-sys.path.insert(0, str(SOURCE / "src"))
+SOURCE = REPOSITORY / "tools" / "ceratops_tool_manager"
+sys.path.insert(0, str(SOURCE.parent))

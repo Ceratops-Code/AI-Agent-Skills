@@ -5,7 +5,7 @@ import importlib
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tools/ceratops-tool-manager/src"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tools"))
 server_module = importlib.import_module("ceratops_tool_manager.server")
 
 
@@ -30,7 +30,7 @@ def test_mcp_has_exact_operations_and_rejects_unknown_inputs(monkeypatch):
             response = await service.call_tool(name, {"tool_id": "fixture", "version": "1.0.0"})
             assert response.structured_content == {"installed_version": "1.0.0", "tool_id": "fixture"}
         response = await service.call_tool("versions", {})
-        assert response.structured_content["tool_id"] == "ceratops-tool-manager"
+        assert response.structured_content["tool_id"] == "ceratops_tool_manager"
         assert (await service.call_tool("versions", {"root": "C:/escape"})).is_error
         assert (await service.call_tool("create-tool", {})).is_error
         assert (await service.call_tool("package", {"source": "reviewed-source"})).is_error

@@ -40,9 +40,9 @@ def main() -> int:
     args = parser.parse_args()
     token(args.self_update_version, "version")
     scratch = args.scratch.resolve(strict=True)
-    evidence = scratch / "tool-deployment-check.json"
+    evidence = scratch / "tool_deployment_check.json"
     root = Layout().root
-    command = [str(global_runtime().python), "-I", "-B", str(root / "bin/ceratops-tool-manager.py")]
+    command = [str(global_runtime().python), "-I", "-B", str(root / "bin/ceratops_tool_manager.py")]
     result: dict[str, Any] = {"status": "pending", "checks": []}
     try:
         with WireClient([*command, "--mcp"]) as client:
@@ -53,18 +53,18 @@ def main() -> int:
             assert previous != args.self_update_version, "self-update acceptance requires a different selected version"
             assert "0.0.0" not in current["available_versions"], "failure check requires an unregistered version"
             before = (root / "current.json").read_bytes()
-            failure = client.request("tools/call", {"name": "update", "arguments": {"tool_id": "ceratops-tool-manager", "version": "0.0.0"}})
+            failure = client.request("tools/call", {"name": "update", "arguments": {"tool_id": "ceratops_tool_manager", "version": "0.0.0"}})
             assert failure.get("error") or failure["result"].get("isError")
             assert (root / "current.json").read_bytes() == before
-            outcome = data(client.request("tools/call", {"name": "update", "arguments": {"tool_id": "ceratops-tool-manager", "version": args.self_update_version}}))
+            outcome = data(client.request("tools/call", {"name": "update", "arguments": {"tool_id": "ceratops_tool_manager", "version": args.self_update_version}}))
             assert outcome["installed_version"] == args.self_update_version
             assert outcome["running_version"] == previous and outcome["reconnection_required"]
             # The same old connection remains usable after self-update.
             selected = data(client.request("tools/call", {"name": "versions", "arguments": {}}))
             assert selected["installed_version"] == args.self_update_version
             assert selected["running_version"] == previous
-            data(client.request("tools/call", {"name": "install", "arguments": {"tool_id": "ceratops-tool-manager", "version": previous}}))
-            data(client.request("tools/call", {"name": "update", "arguments": {"tool_id": "ceratops-tool-manager", "version": args.self_update_version}}))
+            data(client.request("tools/call", {"name": "install", "arguments": {"tool_id": "ceratops_tool_manager", "version": previous}}))
+            data(client.request("tools/call", {"name": "update", "arguments": {"tool_id": "ceratops_tool_manager", "version": args.self_update_version}}))
             result["checks"].extend(["real dependency readiness", "previous-version installation", "unregistered release preserves selection", "self-update completes current request", "old process still serves"])
         with WireClient([*command, "--mcp"]) as client:
             current = data(client.request("tools/call", {"name": "versions", "arguments": {}}))

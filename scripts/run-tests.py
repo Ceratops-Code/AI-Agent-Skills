@@ -43,7 +43,7 @@ MAPPING_GAP_EXIT_CODE = 3
 COLLECTION_MISMATCH_EXIT_CODE = 4
 CONFIGURATION_EXIT_CODE = 2
 FULL_SHA = re.compile(r"[0-9a-fA-F]{40}")
-STABLE_ID = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
+STABLE_ID = re.compile(r"[a-z0-9]+(?:[-_][a-z0-9]+)*")
 
 
 class ImpactError(RuntimeError):

@@ -19,7 +19,7 @@ Reusable Ceratops skills for Codex and other agents compatible with `SKILL.md`.
 
 ## Layout
 
-The independent [tool deployment manager](tools/ceratops-tool-manager/README.md)
+The independent [tool deployment manager](tools/ceratops_tool_manager/README.md)
 keeps its editable source under `tools/`. Every deployed tool owns
 `C:\AI-Agents-Tools\<tool-id>` with its packages, environments, and state;
 Python and uv are validated global
@@ -115,8 +115,8 @@ without repository deduplication.
 | `hooks/windows-shell-sanity.py` | Repository-owned source for the user-global Windows PowerShell preflight; rewrites exact command defects, annotates ordinary failures, and blocks unreliable or policy-prohibited forms. |
 | `scripts/install-skills-bootstrap.py` | Independent installation and updates; renders selected skills and overlays their files without validation, retirement, or lifecycle runtime calls. |
 | `scripts/deploy-hooks.py` | Independent hook installation and updates; copies the repository hook payloads and merges their registrations while preserving unrelated files and configuration. Does not grant trust or restart Codex. |
-| `scripts/deploy-tool-manager.py` | Standalone first tool-manager installation using global Python and uv, temporary locked libraries, and the manager's own packaging and deployment code; never changes Codex settings. |
-| `scripts/check-tool-manager.py` | Explicit acceptance using real manager releases and a persistent MCP connection across a selected self-update. |
+| `scripts/deploy_tool_manager.py` | Standalone first tool-manager installation using global Python and uv, temporary locked libraries, and the manager's own packaging and deployment code; never changes Codex settings. |
+| `scripts/check_tool_manager.py` | Explicit acceptance using real manager releases and a persistent MCP connection across a selected self-update. |
 | `scripts/tool_manager_support.py` | Imports the authoritative tool-manager source for repository maintenance without duplicating deployment logic. |
 | `scripts/run-tests.py` | Sole test-selection, collection-reconciliation, and pytest-execution owner; validates `tests/test-impact.json`, explains deterministic Git-diff selection, rejects mapping gaps before pytest collection or execution, supports explicit committed-diff, worktree, collection, and `--all` modes, and writes complete failed-pytest streams to a diagnostic file while returning only bounded failure evidence. |
 | `scripts/pytest_diagnostics.py` | Extracts bounded failure summaries using exact pytest identities and source-file evidence; ambiguous or missing tracebacks use only that test's summary reason. Full diagnostic files remain owned by the runner. |

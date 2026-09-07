@@ -32,12 +32,12 @@ def ensure_launchers(layout: Layout) -> None:
     """Provision the stable launcher after validating global prerequisites."""
     global_runtime()
     layout.directory("bin")
-    launcher = layout.path("bin", "ceratops-tool-manager.py")
+    launcher = layout.path("bin", "ceratops_tool_manager.py")
     if not launcher.exists():
         shutil.copyfile(SOURCE / "launcher.py", launcher)
-    command = layout.path("bin", "ceratops-tool-manager.cmd")
+    command = layout.path("bin", "ceratops_tool_manager.cmd")
     if not command.exists():
-        command.write_text('@echo off\r\npython -I -B "%~dp0ceratops-tool-manager.py" %*\r\n', encoding="utf-8", newline="")
+        command.write_text('@echo off\r\npython -I -B "%~dp0ceratops_tool_manager.py" %*\r\n', encoding="utf-8", newline="")
 
 
 def package_manager(engine: Engine, runtime: Runtime) -> dict:
@@ -47,7 +47,7 @@ def package_manager(engine: Engine, runtime: Runtime) -> dict:
     The first-install script owns its cleanup on every return path; the manager
     owns the resulting immutable package and its ordinary build scratch.
     """
-    with tempfile.TemporaryDirectory(prefix="bootstrap-", dir=engine.layout.directory("staging")) as work:
+    with tempfile.TemporaryDirectory(prefix="bootstrap_", dir=engine.layout.directory("staging")) as work:
         temporary = Path(work)
         libraries = temporary / "libraries"
         run([str(runtime.uv), "pip", "sync", str(SOURCE / "pylock.toml"), "--python", str(runtime.python),
@@ -66,11 +66,11 @@ def main() -> int:
     try:
         runtime = global_runtime()
         engine = Engine()
-        if engine.selected("ceratops-tool-manager") is not None:
+        if engine.selected("ceratops_tool_manager") is not None:
             raise DeploymentError("manager is already installed; use its install or update command")
         result = package_manager(engine, runtime)
         ensure_launchers(engine.layout)
-        outcome = engine.install("ceratops-tool-manager", result["version"])
+        outcome = engine.install("ceratops_tool_manager", result["version"])
         print(json.dumps(outcome, sort_keys=True))
         return 0
     except (DeploymentError, OSError, ValueError, KeyError, subprocess.TimeoutExpired) as exc:

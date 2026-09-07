@@ -54,7 +54,7 @@ def package(source: Path, *, lock_only: bool = False) -> dict:
     runtime = global_runtime()
     python, uv = runtime.python, runtime.uv
     layout.directory("staging")
-    with tempfile.TemporaryDirectory(prefix="package-", dir=layout.path("staging")) as work:
+    with tempfile.TemporaryDirectory(prefix="package_", dir=layout.path("staging")) as work:
         temporary = Path(work)
         env = {k: v for k, v in os.environ.items() if not k.upper().startswith(("UV_", "PIP_", "PYTHON"))}
         env.update({"UV_CACHE_DIR": str(layout.directory("cache")), "UV_NO_CONFIG": "1", "UV_PYTHON_DOWNLOADS": "never", "TEMP": work, "TMP": work})

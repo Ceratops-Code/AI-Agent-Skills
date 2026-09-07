@@ -44,7 +44,7 @@ def build_server() -> MCPServer:
         return result(engine.update(tool_id, version))
 
     @server.tool(annotations=ToolAnnotations(read_only_hint=True, destructive_hint=False, open_world_hint=False))
-    def versions(tool_id: str = "ceratops-tool-manager") -> CallToolResult:
+    def versions(tool_id: str = "ceratops_tool_manager") -> CallToolResult:
         """Inspect installed, available, and this manager process's running versions."""
         return result(engine.versions(tool_id))
 

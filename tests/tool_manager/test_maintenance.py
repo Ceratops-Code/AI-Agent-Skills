@@ -25,7 +25,7 @@ package_module = importlib.import_module("ceratops_tool_manager.packaging")
 
 
 def load(name):
-    spec = importlib.util.spec_from_file_location(name.replace("-", "_"), ROOT / "scripts" / (name + ".py"))
+    spec = importlib.util.spec_from_file_location(name, ROOT / "scripts" / (name + ".py"))
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -36,7 +36,7 @@ def load(name):
 @pytest.mark.parametrize("case", ["valid", "missing-python", "missing-uv", "private-runtime", "old-python", "old-uv", "invalid-probe"])
 def test_deploy_completes_launchers_after_runtime_record(tmp_path, monkeypatch, case):
     """Validate the global Runtime record before provisioning either launcher."""
-    module = load("deploy-tool-manager")
+    module = load("deploy_tool_manager")
     store = tmp_path / "installed"
     monkeypatch.setattr(storage, "INSTALL_ROOT", store)
     monkeypatch.setattr(engine_module, "INSTALL_ROOT", store)
@@ -65,11 +65,11 @@ def test_deploy_completes_launchers_after_runtime_record(tmp_path, monkeypatch, 
     runtime = module.global_runtime()
     assert runtime.python == python and runtime.uv == uv
     module.ensure_launchers(layout)
-    assert layout.path("bin", "ceratops-tool-manager.py").is_file()
-    assert layout.path("bin", "ceratops-tool-manager.cmd").is_file()
-    layout.path("bin", "ceratops-tool-manager.py").write_text("retained launcher")
+    assert layout.path("bin", "ceratops_tool_manager.py").is_file()
+    assert layout.path("bin", "ceratops_tool_manager.cmd").is_file()
+    layout.path("bin", "ceratops_tool_manager.py").write_text("retained launcher")
     module.ensure_launchers(layout)
-    assert layout.path("bin", "ceratops-tool-manager.py").read_text() == "retained launcher"
+    assert layout.path("bin", "ceratops_tool_manager.py").read_text() == "retained launcher"
 
 
 @pytest.fixture
@@ -168,7 +168,7 @@ def test_cli_package_failure_keeps_bounded_diagnostics(monkeypatch, capsys):
 
 @pytest.mark.parametrize("failure", [None, "libraries", "package"])
 def test_first_install_uses_manager_packaging_and_cleans_temporary_libraries(tmp_path, monkeypatch, failure):
-    module = load("deploy-tool-manager")
+    module = load("deploy_tool_manager")
     monkeypatch.setattr(storage, "INSTALL_ROOT", tmp_path / "installed")
     engine = engine_module.Engine()
     runtime = engine_module.Runtime(tmp_path / "python.exe", tmp_path / "uv.exe", "3.14.7", "0.12.10")
@@ -190,7 +190,7 @@ def test_first_install_uses_manager_packaging_and_cleans_temporary_libraries(tmp
         assert sys.path[0] == str(calls[0])
         if failure == "package":
             raise contracts.DeploymentError("package failed")
-        return {"tool_id": "ceratops-tool-manager", "version": "0.2.3"}
+        return {"tool_id": "ceratops_tool_manager", "version": "0.2.3"}
 
     monkeypatch.setattr(module, "run", provision)
     monkeypatch.setattr(package_module, "package", package)
@@ -206,7 +206,7 @@ def test_first_install_uses_manager_packaging_and_cleans_temporary_libraries(tmp
 
 @pytest.mark.parametrize("state", ["first-install", "already-installed", "packaging-failed"])
 def test_first_install_stops_before_later_mutation_on_failure(monkeypatch, capsys, state):
-    module = load("deploy-tool-manager")
+    module = load("deploy_tool_manager")
     events = []
     runtime = object()
 
@@ -242,7 +242,7 @@ def test_first_install_stops_before_later_mutation_on_failure(monkeypatch, capsy
 
 
 def test_first_install_import_needs_no_third_party_site_packages(tmp_path):
-    script = ROOT / "scripts/deploy-tool-manager.py"
+    script = ROOT / "scripts/deploy_tool_manager.py"
     code = "import runpy,sys; sys.path.insert(0,sys.argv[1]); module=runpy.run_path(sys.argv[2]); assert callable(module['package_manager'])"
     result = subprocess.run([sys.executable, "-S", "-B", "-c", code, str(script.parent), str(script)],
                             cwd=tmp_path, capture_output=True, text=True, check=False)
@@ -253,7 +253,7 @@ def test_packaging_cli_needs_only_tool_package_not_repository_scripts(tmp_path):
     """Exercise the public command with only the tool package on its import path."""
     isolated = tmp_path / "standalone"
     isolated.mkdir()
-    package_root = ROOT / "tools/ceratops-tool-manager/src/ceratops_tool_manager"
+    package_root = ROOT / "tools/ceratops_tool_manager"
     shutil.copytree(package_root, isolated / "ceratops_tool_manager", ignore=shutil.ignore_patterns("__pycache__"))
     seed = tmp_path / "seed"
     seed.mkdir()

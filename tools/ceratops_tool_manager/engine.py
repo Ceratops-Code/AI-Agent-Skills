@@ -127,7 +127,10 @@ def wheel_metadata(path: Path) -> tuple[str, str]:
             if len(metadata) != 1:
                 raise DeploymentError("wheel must contain one distribution metadata record")
             data = BytesParser().parsebytes(archive.read(metadata[0]))
-            return str(data["Name"]).lower().replace("_", "-"), str(data["Version"])
+            # Wheel metadata uses packaging separator normalization, while tool
+            # identities stay exact underscore-separated names. Keep this
+            # bootstrap path standard-library-only.
+            return re.sub(r"[-_.]+", "_", str(data["Name"]).lower()), str(data["Version"])
     except (OSError, zipfile.BadZipFile) as exc:
         raise DeploymentError("invalid wheel") from exc
 

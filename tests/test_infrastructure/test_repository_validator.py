@@ -423,7 +423,7 @@ def test_repository_setup_has_one_python_selection_and_no_interpreter_downloads(
     assert "python_version" not in metadata["tool"]["mypy"]
     assert "target-version" not in metadata["tool"].get("ruff", {})
     tool_metadata = tomllib.loads(
-        (ROOT / "tools" / "ceratops-tool-manager" / "pyproject.toml").read_text(encoding="utf-8")
+        (ROOT / "tools" / "ceratops_tool_manager" / "pyproject.toml").read_text(encoding="utf-8")
     )
     assert metadata["project"]["requires-python"] == tool_metadata["project"]["requires-python"]
 

@@ -2,7 +2,7 @@
 
 from importlib.metadata import PackageNotFoundError, version
 
-TOOL_ID = "ceratops-tool-manager"
+TOOL_ID = "ceratops_tool_manager"
 try:
     __version__ = version(TOOL_ID)
 except PackageNotFoundError:
