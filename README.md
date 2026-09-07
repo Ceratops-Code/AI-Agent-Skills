@@ -120,7 +120,7 @@ without repository deduplication.
 | `scripts/check-tool-manager.py` | Explicit acceptance using real manager releases and a persistent MCP connection across a selected self-update. |
 | `scripts/tool_manager_support.py` | Imports the authoritative tool-manager source for repository maintenance without duplicating deployment logic. |
 | `scripts/run-tests.py` | Sole test-selection, collection-reconciliation, and pytest-execution owner; validates `tests/test-impact.json`, explains deterministic Git-diff selection, rejects mapping gaps before pytest collection or execution, supports explicit committed-diff, worktree, collection, and `--all` modes, and writes complete failed-pytest streams to a diagnostic file while returning only bounded failure evidence. |
-| `scripts/validate-repository.py` | Local validation coordinator; captures first-failure evidence, delegates its default full test phase to `scripts/run-tests.py --all`, and supports CI's separate runner-owned test phase. |
+| `scripts/validate-repository.py` | Local validation coordinator; checks the running Python against `pyproject.toml`, captures first-failure evidence, delegates its default full test phase to `scripts/run-tests.py --all`, and supports CI's separate runner-owned test phase. |
 | `skills/ceratops-repo-lifecycle/references/templates/install-skills-bootstrap-template.py` | Authoritative standard-library-only bootstrap copied into compatible skill repositories as `scripts/install-skills-bootstrap.py`. |
 | `skills/ceratops-repo-lifecycle/references/repository-validation-catalog.json` | Closed catalog of repository checks that compatibility materialization may select without additional approval. |
 | `skills/ceratops-repo-lifecycle/references/templates/validate-repository.py.tmpl` and `validate.yml.tmpl` | Repository-neutral validator and CI templates materialized only when their target files are absent. |
@@ -367,13 +367,19 @@ Codex discovers personal skills from:
 $CODEX_HOME/skills/<skill-name>/SKILL.md
 ```
 
+Use an installed global Python matching `project.requires-python` in
+`pyproject.toml`. Local setup uses uv to read that requirement and select the
+existing global interpreter; it does not download another Python installation.
+The root project is a non-packaged development workspace, not a release artifact.
 Install the runtime dependencies, then use the independent installer:
 
 ```powershell
-python -m pip install -r requirements-runtime.txt
-python .\scripts\install-skills-bootstrap.py
+$repoPython = uv python find --system
+& $repoPython -m pip install -r requirements-runtime.txt
+& $repoPython .\scripts\install-skills-bootstrap.py
 ```
 
+Runtime requirements include timezone data for date-based skills on Windows.
 The installer is self-contained and never calls installed lifecycle code. It
 renders the selected batch in a hidden staging directory and copies its files
 over existing installations without source or staged-content validation.
@@ -444,10 +450,17 @@ CI:
 
 ```powershell
 npm ci
-python -m pip install -r requirements-dev.txt
+$repoPython = uv python find --system
+& $repoPython -m pip install -r requirements-dev.txt
 $validationEvidence = Join-Path $env:TEMP "repository-validation.log"
-python scripts/validate-repository.py --evidence-file $validationEvidence
+& $repoPython scripts/validate-repository.py --evidence-file $validationEvidence
 ```
+
+CI selects Python from the same `pyproject.toml` requirement. The validator
+checks its running interpreter against that requirement before starting any
+repository checks. Ruff infers its target from the requirement; mypy uses the
+checked running interpreter. On POSIX, likewise run the interpreter path
+returned by `uv python find --system`.
 
 Without the flag, evidence defaults to
 `build/deploy-validation/repository-validation.log`.
