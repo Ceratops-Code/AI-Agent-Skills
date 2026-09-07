@@ -31,6 +31,7 @@ def sample_manifest(
         full_suite_paths=(
             "pyproject.toml",
             "scripts/run-tests.py",
+            "scripts/pytest_diagnostics.py",
             "tests/conftest.py",
             "tests/support/**",
             "tests/test-impact.json",
@@ -98,6 +99,7 @@ def test_multiple_domains_produce_sorted_deterministic_union(
         "tests/conftest.py",
         "tests/test-impact.json",
         "scripts/run-tests.py",
+        "scripts/pytest_diagnostics.py",
         "pyproject.toml",
     ],
 )

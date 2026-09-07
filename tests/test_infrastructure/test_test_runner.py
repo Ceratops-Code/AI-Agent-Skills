@@ -158,6 +158,103 @@ def test_committed_diff_mode_collects_and_invokes_only_selected_suite(
     )
 
 
+def test_failure_summary_matches_real_long_pytest_titles(
+    test_runner_module: Any, tmp_path: pathlib.Path
+) -> None:
+    names = ["test_before", "test_" + "long_name_" * 12, "test_after"]
+    path = tmp_path / "test_failures.py"
+    path.write_text(
+        "\n".join(
+            f"def {name}():\n    raise AssertionError('{index}-only')\n"
+            for index, name in enumerate(names)
+        ),
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        [sys.executable, "-m", "pytest", "-q", "--color=no", "-o", "addopts=", path.name],
+        cwd=tmp_path, capture_output=True, text=True, check=False,
+    )
+    assert result.returncode == 1, result.stderr
+    summary = test_runner_module.pytest_diagnostics.pytest_failure_summary(result.stdout, result.stderr)
+    assert summary["failed_tests"] == [f"{path.name}::{name}" for name in names]
+    for index, failure in enumerate(summary["failures"]):
+        assert failure["source_location"] == f"{path.name}:{index * 3 + 2}"
+        assert f"{index}-only" in failure["excerpt"]
+        assert all(f"{other}-only" not in failure["excerpt"] for other in range(3) if other != index)
+
+
+@pytest.mark.parametrize(
+    ("title", "identity"),
+    [
+        ("test_prefix_longer", "tests/test_a.py::test_prefix_longer"),
+        ("TestExample.test_same[a::b]", "tests/test_a.py::TestExample::test_same[a::b]"),
+        ("ERROR at setup of TestExample.test_same[value]", "tests/test_a.py::TestExample::test_same[value]"),
+        ("ERROR at teardown of test_same", "tests/test_a.py::test_same"),
+        ("ERROR collecting tests/test_a.py", "tests/test_a.py"),
+    ],
+)
+def test_failure_summary_matches_exact_identities_without_order_fallback(
+    test_runner_module: Any, title: str, identity: str
+) -> None:
+    output = (
+        "___ test_prefix ___\nE       wrong-prefix\ntests/test_a.py:10: AssertionError\n"
+        "___ TestOther.test_same[a::b] ___\nE       wrong-class\ntests/test_a.py:20: AssertionError\n"
+        "___ TestExample.test_same[other] ___\nE       wrong-parameter\ntests/test_a.py:30: AssertionError\n"
+        f"_ {title} _\nE       exact-match\ntests/test_a.py:40: AssertionError\n"
+        "=== short test summary info ===\n"
+        "FAILED tests/test_a.py::test_missing - missing-reason\n"
+        f"FAILED {identity} - exact-reason\n"
+        "FAILED tests/test_a.py::test_prefix - prefix-reason\n"
+    )
+    summary = test_runner_module.pytest_diagnostics.pytest_failure_summary(output, "")
+    assert summary["failures"] == [
+        {"test": "tests/test_a.py::test_missing", "source_location": None, "excerpt": "missing-reason"},
+        {"test": identity, "source_location": "tests/test_a.py:40", "excerpt": "E       exact-match"},
+        {"test": "tests/test_a.py::test_prefix", "source_location": "tests/test_a.py:10", "excerpt": "E       wrong-prefix"},
+    ]
+
+
+@pytest.mark.parametrize("with_locations", [True, False])
+@pytest.mark.parametrize("reported_sections", [("b", "a"), ("b",)])
+def test_failure_summary_requires_evidence_for_duplicate_titles(
+    test_runner_module: Any, with_locations: bool, reported_sections: tuple[str, ...]
+) -> None:
+    output = ""
+    for module in reported_sections:
+        output += f"_ test_same _\nE       failure-{module}\n"
+        if with_locations:
+            output += f"tests/test_{module}.py:10: AssertionError\n"
+    output += "=== short test summary info ===\n"
+    for module in ("a", "b"):
+        output += f"FAILED tests/test_{module}.py::test_same - reason-{module}\n"
+    summary = test_runner_module.pytest_diagnostics.pytest_failure_summary(output, "")
+    assert summary["failures"] == [
+        {
+            "test": f"tests/test_{module}.py::test_same",
+            "source_location": f"tests/test_{module}.py:10" if with_locations and module in reported_sections else None,
+            "excerpt": f"E       failure-{module}" if with_locations and module in reported_sections else f"reason-{module}",
+        }
+        for module in ("a", "b")
+    ]
+
+
+def test_failure_summary_bounds_multibyte_fields(test_runner_module: Any) -> None:
+    diagnostics = test_runner_module.pytest_diagnostics
+    identity = "tests/" + "界" * 250 + ".py::test_long"
+    output = (
+        "_ test_long _\nE       " + "界" * 1_000 + "\n"
+        + identity.partition("::")[0] + ":10: AssertionError\n"
+        + "=== short test summary info ===\nFAILED " + identity + "\n"
+    )
+    summary = diagnostics.pytest_failure_summary(output, "")
+    failure = summary["failures"][0]
+    for field, limit in (("test", 400), ("source_location", 500), ("excerpt", 800)):
+        assert len(failure[field].encode("utf-8")) <= limit
+        assert failure[field].endswith("...")
+    assert len(summary["decisive_excerpt"].encode("utf-8")) <= 2_000
+    assert len(summary["context_excerpt"].encode("utf-8")) <= 2_000
+
+
 def test_pytest_failure_writes_full_diagnostic_and_emits_bounded_summary(
     test_runner_module: Any,
     tmp_path: pathlib.Path,
@@ -244,7 +341,7 @@ def test_pytest_failure_writes_full_diagnostic_and_emits_bounded_summary(
         "sha256": hashlib.sha256(content).hexdigest(),
     }
 
-    overflow = runner.pytest_failure_summary(
+    overflow = runner.pytest_diagnostics.pytest_failure_summary(
         "\n".join(
             f"FAILED tests/test_many.py::test_{index} - failure {index}"
             for index in range(12)

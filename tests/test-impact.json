@@ -142,6 +142,7 @@
     "requirements-dev.txt",
     "requirements-runtime.txt",
     "scripts/run-tests.py",
+    "scripts/pytest_diagnostics.py",
     "scripts/validate-repository.py",
     "skills/ceratops-automation-run/**",
     "skills/ceratops-code-consistency-audit/**",

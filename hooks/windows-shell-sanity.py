@@ -1272,6 +1272,22 @@ def _module_preflight_failure(
     return returncode if 1 <= returncode <= 255 else 1
 
 
+def _without_progress(command: str) -> str:
+    """Suppress progress in this child only, without filtering any output stream.
+
+    A dot-sourced script block preserves top-level ``using``/``param`` syntax
+    while the preference is set before module autoloading or command execution.
+    Single-quote escaping keeps the supplied command literal until PowerShell
+    parses it; no command text or error preference is changed.
+    """
+
+    literal = command.replace("'", "''")
+    return (
+        "$ProgressPreference = 'SilentlyContinue'\n. ([scriptblock]::Create('"
+        + literal + "'))"
+    )
+
+
 def execute_powershell(
     command: str,
     cwd: str | None,
@@ -1283,7 +1299,7 @@ def execute_powershell(
     environment = windows_powershell_environment(powershell)
     if requires_utility_module_preflight(command, powershell):
         preflight = base64.b64encode(
-            POWERSHELL_UTILITY_PREFLIGHT.encode("utf-16le")
+            _without_progress(POWERSHELL_UTILITY_PREFLIGHT).encode("utf-16le")
         ).decode("ascii")
         preflight_args = [
             powershell,
@@ -1328,7 +1344,9 @@ def execute_powershell(
             )
 
     executable = _instrument_for_error_detection(command) if annotations else command
-    encoded = base64.b64encode(executable.encode("utf-16le")).decode("ascii")
+    encoded = base64.b64encode(
+        _without_progress(executable).encode("utf-16le")
+    ).decode("ascii")
     args = [
         powershell,
         "-NoProfile",

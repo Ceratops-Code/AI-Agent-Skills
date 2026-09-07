@@ -360,7 +360,7 @@ class WindowsShellSanityTests(unittest.TestCase):
         self.assertIn("Get-FileHash", preflight)
         self.assertIn("$commands[0]", preflight)
         self.assertIn("CompatiblePSEditions", preflight)
-        self.assertEqual(target, "Get-FileHash -LiteralPath file.txt")
+        self.assertIn("Get-FileHash -LiteralPath file.txt", target)
 
     def test_pwsh_preserves_environment_without_module_preflight(self):
         completed = SimpleNamespace(returncode=0)
@@ -405,6 +405,51 @@ class WindowsShellSanityTests(unittest.TestCase):
             payload["findings"][0]["kind"],
             "powershell_module_provenance",
         )
+
+
+@pytest.mark.parametrize("shell", ["powershell", "pwsh"])
+@pytest.mark.parametrize(
+    "preamble",
+    ["param([string]$message = 'kept')\n", "using namespace System\n$message = 'kept'\n"],
+)
+def test_real_shell_suppresses_progress_without_losing_output_or_exit_code(
+    shell: str, preamble: str
+) -> None:
+    executable = shutil.which(shell)
+    if executable is None:
+        pytest.skip(f"{shell} is not installed")
+    command = preamble + '''
+1..100 | ForEach-Object { Write-Progress -Activity progress-only -PercentComplete $_ }
+Write-Output $message
+Write-Warning 'warning-only'
+[Console]::Error.WriteLine('native-error-only')
+exit 7
+'''
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT), "--powershell", executable, "--command", command],
+        capture_output=True, text=True, check=False,
+    )
+    assert result.returncode == 7
+    assert "kept" in result.stdout
+    assert "warning-only" in result.stdout + result.stderr
+    assert "native-error-only" in result.stderr
+    assert "progress-only" not in result.stdout + result.stderr
+    assert "Preparing modules for first use" not in result.stdout + result.stderr
+    assert len(result.stdout + result.stderr) < 2_000
+
+
+@pytest.mark.parametrize("shell", ["powershell", "pwsh"])
+@pytest.mark.parametrize("command", ["Write-Error 'error-only'; exit 9", "throw 'error-only'"])
+def test_real_shell_preserves_powershell_errors(shell: str, command: str) -> None:
+    executable = shutil.which(shell)
+    if executable is None:
+        pytest.skip(f"{shell} is not installed")
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT), "--powershell", executable, "--command", command],
+        capture_output=True, text=True, check=False,
+    )
+    assert result.returncode == (9 if "exit 9" in command else 1)
+    assert "error-only" in result.stderr
 
 
 class CommandProbeTests(unittest.TestCase):

@@ -29,6 +29,8 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+import pytest_diagnostics
+
 SCHEMA = "ai-agent-skills-test-impact-result.v1"
 COLLECTION_SCHEMA = "ai-agent-skills-pytest-collection.v1"
 NODE_MAP_SCHEMA = "ai-agent-skills-pytest-node-map.v1"
@@ -42,14 +44,6 @@ COLLECTION_MISMATCH_EXIT_CODE = 4
 CONFIGURATION_EXIT_CODE = 2
 FULL_SHA = re.compile(r"[0-9a-fA-F]{40}")
 STABLE_ID = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
-PYTEST_SECTION_HEADER = re.compile(r"^_{3,}\s*(?P<title>.+?)\s*_{3,}$")
-PYTHON_SOURCE_LOCATION = re.compile(
-    r"^(?P<path>.+?\.py):(?P<line>[1-9][0-9]*)(?::.*)?$"
-)
-MAX_PYTEST_FAILURES = 10
-PYTEST_IDENTITY_BYTES = 400
-PYTEST_LOCATION_BYTES = 500
-PYTEST_FAILURE_EXCERPT_BYTES = 800
 
 
 class ImpactError(RuntimeError):
@@ -750,156 +744,6 @@ def write_json_atomic(path: pathlib.Path, payload: Mapping[str, object]) -> None
             temporary.unlink(missing_ok=True)
 
 
-def _utf8_prefix(value: str, limit: int) -> str:
-    """Return a valid UTF-8 prefix whose encoded representation fits ``limit``."""
-
-    encoded = value.encode("utf-8")
-    if len(encoded) <= limit:
-        return value
-    if limit <= 3:
-        return "." * limit
-    prefix = encoded[: limit - 3].decode("utf-8", errors="ignore").rstrip()
-    return prefix + "..."
-
-
-def _stable_unique(values: Iterable[str]) -> list[str]:
-    """Return nonempty values once while preserving their source order."""
-
-    return list(dict.fromkeys(value for value in values if value))
-
-
-def _pytest_failure_sections(lines: Sequence[str]) -> list[tuple[str, list[str]]]:
-    """Return ordered pytest failure/error sections without summary output."""
-
-    sections: list[tuple[str, list[str]]] = []
-    title: str | None = None
-    content: list[str] = []
-    for raw_line in lines:
-        line = raw_line.strip()
-        header = PYTEST_SECTION_HEADER.fullmatch(line)
-        if header is not None:
-            if title is not None:
-                sections.append((title, content))
-            title = header.group("title").strip()
-            content = []
-            continue
-        if title is None:
-            continue
-        if line.startswith("==="):
-            sections.append((title, content))
-            title = None
-            content = []
-            continue
-        if line:
-            content.append(line)
-    if title is not None:
-        sections.append((title, content))
-    return sections
-
-
-def _pytest_section_for_identity(
-    identity: str,
-    sections: Sequence[tuple[str, list[str]]],
-    used_sections: set[int],
-) -> list[str]:
-    """Match one pytest node to its ordered failure section when available."""
-
-    leaf = identity.rsplit("::", 1)[-1].split("[", 1)[0]
-    for index, (title, content) in enumerate(sections):
-        if index not in used_sections and leaf and leaf in title:
-            used_sections.add(index)
-            return content
-    for index, (_, content) in enumerate(sections):
-        if index not in used_sections:
-            used_sections.add(index)
-            return content
-    return []
-
-
-def _pytest_source_location(identity: str, section: Sequence[str]) -> str | None:
-    """Return the most relevant bounded Python location in one failure section."""
-
-    expected_path = identity.split("::", 1)[0].replace("\\", "/").lstrip("./")
-    locations: list[tuple[str, str]] = []
-    for line in section:
-        match = PYTHON_SOURCE_LOCATION.fullmatch(line)
-        if match is None:
-            continue
-        path = match.group("path")
-        rendered = f"{path}:{match.group('line')}"
-        locations.append((path.replace("\\", "/").lstrip("./"), rendered))
-    preferred = [
-        rendered for path, rendered in locations if path.endswith(expected_path)
-    ]
-    if preferred:
-        return _utf8_prefix(preferred[-1], PYTEST_LOCATION_BYTES)
-    if locations:
-        return _utf8_prefix(locations[-1][1], PYTEST_LOCATION_BYTES)
-    return None
-
-
-def _pytest_failure_excerpt(section: Sequence[str], fallback: str) -> str:
-    """Return bounded decisive lines for one failure, or its summary reason."""
-
-    decisive = _stable_unique(
-        line
-        for line in section
-        if line.startswith(("E ", "AssertionError", "assert ", "> "))
-    )
-    return _utf8_prefix(
-        "\n".join(decisive[:6]) if decisive else fallback,
-        PYTEST_FAILURE_EXCERPT_BYTES,
-    )
-
-
-def pytest_failure_summary(stdout: str, stderr: str) -> dict[str, object]:
-    """Extract bounded per-failure actions plus compact global context."""
-
-    raw_lines = [
-        line for stream in (stdout, stderr) for line in stream.splitlines()
-    ]
-    lines = [line.strip() for line in raw_lines if line.strip()]
-    summaries: list[tuple[str, str]] = []
-    seen_identities: set[str] = set()
-    decisive: list[str] = []
-    for line in lines:
-        if line.startswith(("FAILED ", "ERROR ")):
-            summary = line.split(maxsplit=1)
-            if len(summary) == 2:
-                identity, separator, reason = summary[1].partition(" - ")
-                if identity and identity not in seen_identities:
-                    summaries.append((identity, reason if separator else ""))
-                    seen_identities.add(identity)
-        if line.startswith(("E ", "AssertionError", "assert ")):
-            decisive.append(_utf8_prefix(line, 500))
-
-    sections = _pytest_failure_sections(raw_lines)
-    used_sections: set[int] = set()
-    failures: list[dict[str, object]] = []
-    for identity, reason in summaries[:MAX_PYTEST_FAILURES]:
-        section = _pytest_section_for_identity(identity, sections, used_sections)
-        failures.append(
-            {
-                "test": _utf8_prefix(identity, PYTEST_IDENTITY_BYTES),
-                "source_location": _pytest_source_location(identity, section),
-                "excerpt": _pytest_failure_excerpt(section, reason),
-            }
-        )
-    return {
-        "failure_count": len(summaries),
-        "omitted_failure_count": max(0, len(summaries) - len(failures)),
-        "failures": failures,
-        "failed_tests": [failure["test"] for failure in failures],
-        "decisive_excerpt": _utf8_prefix(
-            "\n".join(_stable_unique(decisive)[:8]), 2_000
-        ),
-        "context_excerpt": _utf8_prefix(
-            "\n".join(_utf8_prefix(line, 200) for line in lines[-8:]),
-            2_000,
-        ),
-    }
-
-
 def write_pytest_diagnostic(
     path: pathlib.Path,
     *,
@@ -1562,7 +1406,9 @@ def execute(
         "outcome": outcome_name(result.returncode),
     }
     if result.returncode != 0:
-        pytest_payload.update(pytest_failure_summary(result.stdout, result.stderr))
+        pytest_payload.update(
+            pytest_diagnostics.pytest_failure_summary(result.stdout, result.stderr)
+        )
         try:
             pytest_payload["diagnostic"] = write_pytest_diagnostic(
                 diagnostic_path,
