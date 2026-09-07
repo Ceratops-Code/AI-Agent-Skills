@@ -55,8 +55,6 @@
         ".codex/config.toml",
         "tools/**",
         "scripts/deploy-tool-manager.py",
-        "scripts/check-tool-manager.py",
-        "scripts/tool-manager-support.py",
         "skills/ceratops-tool-lifecycle/**"
       ],
       "suites": ["tool_manager"]
@@ -140,8 +138,8 @@
     "pyproject.toml",
     "requirements-dev.txt",
     "requirements-runtime.txt",
-    "scripts/run-tests.py",
-    "scripts/pytest-diagnostics.py",
+    "scripts/testing/run-tests.py",
+    "scripts/testing/pytest-diagnostics.py",
     "scripts/validate-repository.py",
     "skills/ceratops-automation-run/**",
     "skills/ceratops-code-consistency-audit/**",

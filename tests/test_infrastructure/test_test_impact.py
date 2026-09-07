@@ -30,8 +30,8 @@ def sample_manifest(
         ),
         full_suite_paths=(
             "pyproject.toml",
-            "scripts/run-tests.py",
-            "scripts/pytest-diagnostics.py",
+            "scripts/testing/run-tests.py",
+            "scripts/testing/pytest-diagnostics.py",
             "tests/conftest.py",
             "tests/support/**",
             "tests/test-impact.json",
@@ -98,8 +98,8 @@ def test_multiple_domains_produce_sorted_deterministic_union(
         "tests/support/repositories.py",
         "tests/conftest.py",
         "tests/test-impact.json",
-        "scripts/run-tests.py",
-        "scripts/pytest-diagnostics.py",
+        "scripts/testing/run-tests.py",
+        "scripts/testing/pytest-diagnostics.py",
         "pyproject.toml",
     ],
 )
@@ -139,7 +139,6 @@ def test_agents_history_selects_full_suite_from_repository_manifest(
 @pytest.mark.parametrize("path", [
     "tools/ceratops_tool_manager/packaging.py",
     "scripts/deploy-tool-manager.py",
-    "scripts/check-tool-manager.py",
 ])
 def test_tool_manager_paths_select_their_underscore_named_suite(
     test_runner_module: Any, path: str,
@@ -293,7 +292,7 @@ def test_stale_rule_globs_are_rejected(test_runner_module: Any, tmp_path: pathli
         full_suite_paths=(
             ".github/workflows/**",
             "pyproject.toml",
-            "scripts/run-tests.py",
+            "scripts/testing/run-tests.py",
             "scripts/validate-repository.py",
             "tests/__init__.py",
             "tests/support/**",
@@ -328,7 +327,7 @@ def test_worktree_manifest_validation_includes_untracked_paths(
         full_suite_paths=(
             ".github/workflows/**",
             "pyproject.toml",
-            "scripts/run-tests.py",
+            "scripts/testing/run-tests.py",
             "scripts/validate-repository.py",
             "tests/__init__.py",
             "tests/support/**",

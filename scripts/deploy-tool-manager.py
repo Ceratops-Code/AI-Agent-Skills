@@ -9,7 +9,6 @@ never installs global prerequisites, edits Codex settings, or restarts apps.
 
 from __future__ import annotations
 
-import importlib
 import json
 import shutil
 import subprocess
@@ -17,7 +16,10 @@ import sys
 import tempfile
 from pathlib import Path
 
-SOURCE = importlib.import_module("tool-manager-support").SOURCE
+# First installation imports the manager's authoritative source without a
+# preinstalled manager or any skill-private helper.
+SOURCE = Path(__file__).resolve().parents[1] / "tools" / "ceratops_tool_manager"
+sys.path.insert(0, str(SOURCE.parent))
 from ceratops_tool_manager.contracts import DeploymentError  # noqa: E402
 from ceratops_tool_manager.engine import (  # noqa: E402
     Engine,

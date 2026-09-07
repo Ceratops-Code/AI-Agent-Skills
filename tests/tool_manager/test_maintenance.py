@@ -20,7 +20,6 @@ from tests.tool_manager.test_engine import (
 )
 
 ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / "scripts"))
 package_module = importlib.import_module("ceratops_tool_manager.packaging")
 
 

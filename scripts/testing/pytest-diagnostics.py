@@ -1,4 +1,4 @@
-"""Bounded pytest failure summaries; the runner owns full diagnostic files.
+"""Bounded pytest failure summaries for the adjacent repository test runner.
 
 Console sections are evidence only when matched to a reported test identity.
 Raw stdout and stderr remain available in the runner-owned diagnostic artifact.

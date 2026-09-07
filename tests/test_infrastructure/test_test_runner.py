@@ -562,14 +562,19 @@ def test_revision_mode_requires_two_full_commit_shas(
 
 
 def test_manifest_validation_mode_collects_every_declared_target(
-    test_runner_module: Any, capsys: pytest.CaptureFixture[str]
+    tmp_path: pathlib.Path,
 ) -> None:
-    runner = test_runner_module
+    """The nested entrypoint resolves its repository and adjacent diagnostics."""
+    process = subprocess.run(
+        [sys.executable, str(ROOT / "scripts" / "testing" / "run-tests.py"), "--validate-manifest"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
 
-    exit_code = runner.execute(["--validate-manifest"], repo_root=ROOT)
-    result = payload(capsys)
-
-    assert exit_code == 0
+    assert process.returncode == 0, process.stdout + process.stderr
+    result = json.loads(process.stdout)
     assert result["status"] == "manifest-valid"
     assert result["pytest"]["outcome"] == "not-run"
 

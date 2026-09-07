@@ -955,7 +955,7 @@ def validate_manifest(
     required_full = {
         ".github/workflows/validate.yml",
         "pyproject.toml",
-        "scripts/run-tests.py",
+        "scripts/testing/run-tests.py",
         "scripts/validate-repository.py",
         "tests/__init__.py",
         "tests/support/example.py",
@@ -1222,7 +1222,7 @@ def execute(
 ) -> int:
     """Execute one explicit mode and emit exactly one stable JSON result."""
 
-    root = (repo_root or pathlib.Path(__file__).resolve().parents[1]).resolve()
+    root = (repo_root or pathlib.Path(__file__).resolve().parents[2]).resolve()
     parser = argparse.ArgumentParser()
     parser.add_argument("--all", action="store_true")
     parser.add_argument("--base")

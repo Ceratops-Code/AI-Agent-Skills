@@ -188,22 +188,10 @@ self-update state. The normal repository validator selects it through
 `tests/test-impact.json`. Development dependencies are in
 `requirements-dev.txt`.
 
-For explicit acceptance against a bootstrapped local installation, register
-two compatible manager releases, select the earlier release, then run:
-
-```powershell
-python scripts/check-tool-manager.py --scratch <task-temp-root> --self-update-version <version>
-```
-
-This checks real manager installation/update/previous-version selection and
-rejection of an unregistered release. It keeps one MCP connection alive during
-self-update, verifies the old version can still answer, and verifies the new
-version after reconnection. The requested manager version is the final installed
-state. The check installs no sample tool. Inactive manager environments remain
-available for running processes. Unit tests create temporary wheel inputs and
-cover candidate failures without installing a test project on the machine.
-Evidence is written as `tool_deployment_check.json` in the supplied scratch
-directory. This explicit acceptance command is not run by ordinary CI.
+Unit tests use temporary wheel inputs and simulated deployment commands; they
+do not install test versions of the manager. Real self-update and reconnection
+are verified only during an explicitly requested manager update. Repository
+validation does not change the installed manager or switch versions for tests.
 
 Packaging uses [uv](https://docs.astral.sh/uv/pip/compile/) and the
 [official Python MCP SDK](https://github.com/modelcontextprotocol/python-sdk).

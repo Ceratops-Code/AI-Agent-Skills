@@ -284,7 +284,7 @@ Windows shell sanity hints:
 Run deterministic tests for the current worktree from the repository root:
 
 ```powershell
-python scripts/run-tests.py --worktree
+python scripts/testing/run-tests.py --worktree
 ```
 
 Smoke-test the command interface with:

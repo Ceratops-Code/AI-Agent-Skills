@@ -116,11 +116,9 @@ without repository deduplication.
 | `scripts/deploy-skills.py` | Independent installation and updates; renders selected skills and overlays their files without validation, retirement, or lifecycle runtime calls. |
 | `scripts/deploy-hooks.py` | Independent hook installation and updates; copies the repository hook payloads and merges their registrations while preserving unrelated files and configuration. Does not grant trust or restart Codex. |
 | `scripts/deploy-tool-manager.py` | Standalone first tool-manager installation using global Python and uv, temporary locked libraries, and the manager's own packaging and deployment code; never changes Codex settings. |
-| `scripts/check-tool-manager.py` | Explicit acceptance using real manager releases and a persistent MCP connection across a selected self-update. |
-| `scripts/tool-manager-support.py` | Imports the authoritative tool-manager source for repository maintenance without duplicating deployment logic. |
-| `scripts/run-tests.py` | Sole test-selection, collection-reconciliation, and pytest-execution owner; validates `tests/test-impact.json`, explains deterministic Git-diff selection, rejects mapping gaps before pytest collection or execution, supports explicit committed-diff, worktree, collection, and `--all` modes, and writes complete failed-pytest streams to a diagnostic file while returning only bounded failure evidence. |
-| `scripts/pytest-diagnostics.py` | Extracts bounded failure summaries using exact pytest identities and source-file evidence; ambiguous or missing tracebacks use only that test's summary reason. Full diagnostic files remain owned by the runner. |
-| `scripts/validate-repository.py` | Local validation coordinator; checks the running Python against `pyproject.toml`, captures first-failure evidence, delegates its default full test phase to `scripts/run-tests.py --all`, and supports CI's separate runner-owned test phase. |
+| `scripts/testing/run-tests.py` | Sole test-selection, collection-reconciliation, and pytest-execution owner; validates `tests/test-impact.json`, explains deterministic Git-diff selection, rejects mapping gaps before pytest collection or execution, supports explicit committed-diff, worktree, collection, and `--all` modes, and writes complete failed-pytest streams to a diagnostic file while returning only bounded failure evidence. |
+| `scripts/testing/pytest-diagnostics.py` | Extracts bounded failure summaries using exact pytest identities and source-file evidence; ambiguous or missing tracebacks use only that test's summary reason. Full diagnostic files remain owned by the runner. |
+| `scripts/validate-repository.py` | Local validation coordinator; checks the running Python against `pyproject.toml`, captures first-failure evidence, delegates its default full test phase to `scripts/testing/run-tests.py --all`, and supports CI's separate runner-owned test phase. |
 | `skills/ceratops-repo-lifecycle/references/templates/deploy-skills-template.py` | Authoritative standard-library-only bootstrap copied into compatible skill repositories as `scripts/deploy-skills.py`. |
 | `skills/ceratops-repo-lifecycle/references/repository-validation-catalog.json` | Closed catalog of repository checks that compatibility materialization may select without additional approval. |
 | `skills/ceratops-repo-lifecycle/references/templates/validate-repository.py.tmpl` and `validate.yml.tmpl` | Repository-neutral validator and CI templates materialized only when their target files are absent. |
@@ -468,10 +466,10 @@ Failure evidence remains available for diagnosis until the next successful run,
 which removes the selected evidence file and prunes the dedicated default
 directory when it is empty.
 The validator runs Markdown and YAML lint, Ruff, mypy for Linux and Win32, and
-`scripts/run-tests.py --all`. Pull-request CI calls the same runner with exact
+`scripts/testing/run-tests.py --all`. Pull-request CI calls the same runner with exact
 base and head commit SHAs. Local uncommitted selection is explicit through
-`python scripts/run-tests.py --worktree`, and manifest validation is available
-through `python scripts/run-tests.py --validate-manifest`. The validator does
+`python scripts/testing/run-tests.py --worktree`, and manifest validation is available
+through `python scripts/testing/run-tests.py --validate-manifest`. The validator does
 not invoke skill-local validators. Generic compatibility and
 health validate lifecycle definitions through the repository-lifecycle
 `ceratops_repo_compatibility_engine.sdlc_contract_validation` module. Runtime
@@ -489,8 +487,8 @@ reconcile it after moving tests:
 
 ```powershell
 $collection = Join-Path $env:TEMP "pytest-collection.json"
-python scripts/run-tests.py --write-collection $collection
-python scripts/run-tests.py --reconcile-collection $collection
+python scripts/testing/run-tests.py --write-collection $collection
+python scripts/testing/run-tests.py --reconcile-collection $collection
 ```
 
 Reconciliation preserves complete pytest identities, including parameter IDs,

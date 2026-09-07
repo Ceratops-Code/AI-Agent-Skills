@@ -6,7 +6,7 @@ on success and written in full only for the first failed check. A successful
 run removes stale evidence at that exact path and prunes only the dedicated
 default evidence directory when empty. Commands use argv lists, and managed
 runtime installation remains outside this aggregate. Tests delegate to
-``scripts/run-tests.py --all`` with a complete failure-diagnostic destination;
+``scripts/testing/run-tests.py --all`` with a complete failure-diagnostic destination;
 CI may use ``--without-tests`` only when a separate explicit invocation of that
 same runner owns the job's test phase.
 """
@@ -152,7 +152,7 @@ def build_checks(
                 "pytest",
                 (
                     python,
-                    "scripts/run-tests.py",
+                    "scripts/testing/run-tests.py",
                     "--all",
                     "--diagnostic-output",
                     str(pytest_diagnostic),

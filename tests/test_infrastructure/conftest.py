@@ -13,7 +13,7 @@ def test_runner_module() -> Any:
     """Load the hyphenated repository runner as one shared infrastructure module."""
 
     root = pathlib.Path(__file__).resolve().parents[2]
-    path = root / "scripts" / "run-tests.py"
+    path = root / "scripts" / "testing" / "run-tests.py"
     spec = importlib.util.spec_from_file_location("repository_test_runner", path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)

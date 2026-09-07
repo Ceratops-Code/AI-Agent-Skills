@@ -65,7 +65,7 @@ def test_build_checks_owns_order_both_platforms_and_space_safe_paths(
     diagnostic = repo_root / "build" / "test-diagnostics" / "pytest-failure.json"
     assert checks[5].command == (
         "python executable",
-        "scripts/run-tests.py",
+        "scripts/testing/run-tests.py",
         "--all",
         "--diagnostic-output",
         str(diagnostic),
@@ -107,7 +107,7 @@ def test_ci_runs_repository_validator_that_owns_both_mypy_platforms() -> None:
     )
     pull_request_command = " ".join(pull_request_step["run"].split())
     assert pull_request_command.startswith(
-        "python scripts/run-tests.py --base "
+        "python scripts/testing/run-tests.py --base "
     )
     assert " --head " in pull_request_command
     assert (
@@ -115,7 +115,7 @@ def test_ci_runs_repository_validator_that_owns_both_mypy_platforms() -> None:
         in pull_request_command
     )
     assert " ".join(full_step["run"].split()) == (
-        "python scripts/run-tests.py --all "
+        "python scripts/testing/run-tests.py --all "
         "--diagnostic-output ${{ runner.temp }}/pytest-failure.json"
     )
     upload_step = next(
@@ -138,7 +138,7 @@ def test_ci_runs_repository_validator_that_owns_both_mypy_platforms() -> None:
     ] == ["linux", "win32"]
     assert next(check for check in checks if check.name == "pytest").command == (
         "python",
-        "scripts/run-tests.py",
+        "scripts/testing/run-tests.py",
         "--all",
         "--diagnostic-output",
         str(ROOT / "build" / "test-diagnostics" / "pytest-failure.json"),
