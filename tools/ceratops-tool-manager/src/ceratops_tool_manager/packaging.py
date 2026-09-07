@@ -1,28 +1,29 @@
-#!/usr/bin/env python3
-"""Build and register one reviewed Python tool release from its owning source.
+"""Build and register exact local tool packages for the manager's public CLI.
 
-This development command is intentionally outside the deployment manager's
-CLI/MCP operation set. The only outputs are the source lock (with --lock) and
-immutable artifacts/registry records under the fixed installation root.
+Packaging is explicit and never activates an installation. It writes the source
+lock (with lock_only) or immutable artifacts and registry records in the tool
+store. This capability is not exposed over the deployment-only MCP interface.
 Ordinary PEP 517 tooling executes reviewed source during a build. Build scratch
-is owned by this command and is removed on success or failure.
+is owned here and removed on success or failure. Nothing requires a skills
+directory or an AI-Agent-Skills checkout after the manager is installed.
 """
 
 from __future__ import annotations
 
-import argparse
 import json
 import os
 import shutil
-import sys
 import tempfile
 import tomllib
 import urllib.parse
 import urllib.request
 from pathlib import Path
 
-from tool_manager_support import SOURCE  # isort: skip
-from ceratops_tool_manager.contracts import (
+from packaging.markers import Marker
+from packaging.tags import compatible_tags, cpython_tags
+from packaging.utils import parse_wheel_filename
+
+from .contracts import (
     DeploymentError,
     digest,
     fields,
@@ -32,14 +33,13 @@ from ceratops_tool_manager.contracts import (
     schema,
     token,
 )
-from ceratops_tool_manager.engine import global_runtime, run, wheel_metadata
-from ceratops_tool_manager.storage import Layout
-from packaging.markers import Marker
-from packaging.tags import compatible_tags, cpython_tags
-from packaging.utils import parse_wheel_filename
+from .engine import global_runtime, run, wheel_metadata
+from .storage import Layout
 
 
 def package(source: Path, *, lock_only: bool = False) -> dict:
+    """Prepare reviewed source without changing any tool's active selection."""
+    source = source.resolve(strict=True)
     config = fields(read_json(source / "tool.json"), {"schema", "tool_id", "distribution", "module"})
     schema(config)
     for key in ("tool_id", "distribution"):
@@ -127,20 +127,3 @@ def package(source: Path, *, lock_only: bool = False) -> dict:
             versions[version] = release_hash
             layout.atomic_json(catalog_path, registry(catalog, identity))
         return {"tool_id": identity, "version": version, "manifest_sha256": release_hash}
-
-
-def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--source", type=Path, default=SOURCE)
-    parser.add_argument("--lock", action="store_true", help="refresh the source dependency lock instead of publishing")
-    args = parser.parse_args()
-    try:
-        print(json.dumps(package(args.source.resolve(), lock_only=args.lock), sort_keys=True))
-        return 0
-    except (DeploymentError, OSError, ValueError, KeyError) as exc:
-        print(str(exc), file=sys.stderr)
-        return 2
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

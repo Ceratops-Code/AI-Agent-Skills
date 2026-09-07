@@ -33,5 +33,6 @@ def test_mcp_has_exact_operations_and_rejects_unknown_inputs(monkeypatch):
         assert response.structured_content["tool_id"] == "ceratops-tool-manager"
         assert (await service.call_tool("versions", {"root": "C:/escape"})).is_error
         assert (await service.call_tool("create-tool", {})).is_error
+        assert (await service.call_tool("package", {"source": "reviewed-source"})).is_error
 
     asyncio.run(exercise())

@@ -1,6 +1,6 @@
 """Source-maintenance imports; installed agents use the installed CLI or MCP.
 
-This module contains no deployment implementation. Build/bootstrap maintenance
+This module contains no deployment implementation. First-install maintenance
 imports the same packaged engine from its authoritative editable source.
 """
 

@@ -2,7 +2,8 @@
 
 One deterministic engine installs exact local Python tool releases, updates
 installed tools, and inspects versions. CLI and stdio MCP use that same engine.
-The manager makes no model/API calls and has no UI.
+The manager also owns explicit source packaging through its CLI. It makes no
+model/API calls and has no UI.
 
 ## Layout and supported runtime
 
@@ -40,18 +41,22 @@ global Python and uv remain independently maintained prerequisites.
 From an active AI-Agent-Skills source checkout:
 
 ```powershell
-python scripts/bootstrap-tool-manager.py
+python scripts/deploy-tool-manager.py
 C:\AI-Agents-Tools\ceratops-tool-manager\bin\ceratops-tool-manager.cmd versions
 ```
 
-Bootstrap is a first-install development command. It validates global
+The deployment script is a first-install development command. It validates global
 prerequisites, builds and registers the source release, prepares the launchers,
-and calls the same engine used after installation. It changes no Codex
-configuration. An incompatible or missing prerequisite fails before bootstrap
+and calls the same packaging and deployment code used after installation. It
+provisions hash-locked Python libraries in temporary storage and removes that
+storage on success or failure; no libraries need to be installed globally.
+It changes no Codex
+configuration. An incompatible or missing prerequisite fails before deployment
 writes installation files.
 
 | CLI command | MCP tool | Inputs |
 | --- | --- | --- |
+| `package --source <directory> [--lock]` | Not exposed | Reviewed tool source; optional lock refresh |
 | `install <tool-id> <version>` | `install` | `tool_id`, `version` |
 | `update <tool-id> <version>` | `update` | `tool_id`, `version` |
 | `versions [tool-id]` | `versions` | optional `tool_id` |
@@ -61,6 +66,8 @@ Update requires an existing installation. Both modifying operations accept an
 explicitly selected previous version through the same installation mechanism.
 There is no separate rollback operation, automatic rollback subsystem,
 create-tool endpoint, shell/script input, or installation/output path input.
+The source directory accepted by `package` is a reviewed build input, not an
+installation destination. Packaging never runs implicitly during `install`.
 
 MCP returns structured result data and a compact equivalent JSON text block.
 CLI writes JSON to stdout and returns exit code 2 with a diagnostic on stderr
@@ -101,18 +108,23 @@ Readiness checks dependencies and necessary local prerequisites without
 modifying user data. Create and test tools in their owning development
 repositories; tool creation never runs through this manager.
 
-From the active AI-Agent-Skills source checkout, use its maintenance command:
+After the manager's first installation, use its public launcher from any
+directory; an AI-Agent-Skills checkout is not required:
 
 ```powershell
-python scripts/package-tool-release.py --source <tool-source> --lock
-python scripts/package-tool-release.py --source <tool-source>
+C:\AI-Agents-Tools\ceratops-tool-manager\bin\ceratops-tool-manager.cmd package --source <tool-source> --lock
+C:\AI-Agents-Tools\ceratops-tool-manager\bin\ceratops-tool-manager.cmd package --source <tool-source>
 ```
 
 The first command writes a standard `pylock.toml` for review and commit. The
 second builds the wheel, fetches compatible hash-locked PyPI dependency wheels,
-and publishes one immutable local artifact record. These are development
-operations with access to reviewed source; they are outside the deployment
-manager interface. No tool registration is accepted over MCP.
+and registers one immutable local artifact record without installing or
+activating it. Both commands are implemented inside the installed manager.
+Packaging executes reviewed build code and downloads dependencies; it is an
+explicit CLI capability, not an MCP operation or public-repository upload.
+The standalone installer reuses this implementation from source only for the
+first manager installation. Manager self-updates use the installed CLI to
+package a new source version, followed by ordinary `install` and reconnection.
 
 The release manifest is a closed JSON object containing `schema`, `tool_id`,
 `version`, `distribution`, `module`, and `wheels`. Each wheel has exactly a
@@ -166,7 +178,8 @@ readiness execution is not a sandbox for untrusted wheels.
 ## Validation
 
 `tests/tool_manager` covers the shared engine, CLI, actual SDK dispatch,
-bootstrap and packaging boundaries, failures, locks, path rejection, and
+first-install and packaging boundaries, checkout-independent packaging,
+failures, locks, path rejection, and
 self-update state. The normal repository validator selects it through
 `tests/test-impact.json`. Development dependencies are in
 `requirements-dev.txt`.
