@@ -2,14 +2,10 @@
 
 ## Goal
 
-Fast-forward selected committed task branches into `release/local`. For
-`promote-and-deploy`, run explicitly selected repository deploy operations in
-order, execute their returned handoffs in that order when managed skills exist,
-and report missing handoffs without blocking completed repository deployment.
-For composed shipping,
-suppress promotion deployment and return only the sibling ship helper's
-terminal release-publication, local-deployment, finalization, and cleanup
-result.
+Fast-forward selected committed task branches into `release/local` and validate
+the assembled commit. For `promote-and-deploy`, run selected `deploy-local`
+entries in order. Composed shipping validates again at its own boundary and
+owns selected post-merge publication, deployment and cleanup.
 
 ## Context
 
@@ -49,9 +45,11 @@ result.
   `release/local`, and remote.
 - Whether the selected action is `promote`, `promote-and-deploy`, or composed
   promotion and shipping.
-- Ordered deploy operation IDs for `promote-and-deploy`, or ordered release
-  preflight, release publication, and deploy operation IDs for composed
-  shipping. An explicit list replaces that phase's default.
+- Ordered complete `deploy-local` locations for `promote-and-deploy`, and
+  optional `publish` and `deploy-local` locations for composed shipping.
+- Optional ordered `--validation-operation LOCATION` flags replace validation
+  discovery for this invocation; otherwise use repository validation and
+  validation of selected deliverables in declaration order.
 
 ## Constraints
 
@@ -62,31 +60,26 @@ result.
 - Before promotion, automatically rebase a selected clean, unpublished,
   linear-history task branch onto current `release/local`. If rebasing fails,
   abort it, verify the original head and clean worktree were restored, and
-  block with the conflicting paths. Stop for other source mutation, review, or
-  commit work.
+  block with the conflicting paths. Apply the parent's local repair/retry rule
+  to ordinary check failures; keep unrelated source edits outside this action.
 
 ### Workflow
 
 1. Require clean selected worktrees. Through the promotion helper, establish
    Git ancestry with the eligible automatic rebase and run `git diff --check`.
 2. For `promote`, run the helper with `--no-run-operation`.
-3. For `promote-and-deploy`, repeat `--run-operation ID` in the requested
-   order. The helper prevalidates the complete selection before executing the
-   first operation. An absent `deploy` section is an explicit no-op; a selected
-   ID missing from an existing operations map blocks before execution.
-4. For composed promotion and shipping, run it with
-   `--ship-after-promotion` and, when explicitly selected, repeat
-   `--release-preflight-operation ID`, `--release-operation ID`, and
-   `--deploy-operation ID`; use one optional `--sdlc-contract PATH`. The helper
-   suppresses promotion deployment, records the exact head and canonical scope,
-   then invokes the sibling ship helper after successful promotion with the
-   same ordered selections, `release/local`, main, the remote, and exact commit.
-   Return only its terminal shipping result or one closed blocker; reject
-   unknown or incomplete responses.
-5. Use the helper's `managed_skills` and ordered `handoffs` result after all
-   selected repository operations succeed or no-op. Execute each returned
-   handoff against `release/local`; when managed skills exist without one,
-   report them as not deployed and continue.
+3. For `promote-and-deploy`, repeat `--run-operation LOCATION` in order.
+   The helper accepts only `deliverables.<name>.deploy-local.<operation>`,
+   validates the entire selection before commands, and reruns validation before
+   deployment. Explicit missing locations are errors; absent validation is a
+   successful no-op.
+4. For composed shipping, use `--ship-after-promotion`, one optional
+   `--sdlc-contract PATH`, and repeated `--publish-operation LOCATION` or
+   `--deploy-operation LOCATION` for requested post-merge work. Omitted mutation
+   selections do nothing. The helper records the exact head and scope, runs
+   promotion validation, then invokes shipping with the same inputs.
+5. Use advisory handoffs returned by selected operations within the requested
+   scope. The helper does not invoke skills or claim those handoffs completed.
 6. Atomically normalize an exact version-1 pending-work scope to version 2
    before reuse. Retire a missing legacy source, keep a clean source contained
    in the legacy target as `retained`, and mark a dirty, unavailable, or
@@ -108,16 +101,13 @@ missing. When release `HEAD` is not an ancestor, it rebases only an unpublished,
 linear selected branch in its existing clean worktree. It refuses published or
 nonlinear history. A failed attempt must restore the original branch head and
 clean worktree before it reports the failure and conflicting paths. The helper
-then runs `git diff --check`, fast-forwards each branch, records the exact
-generic scope, and optionally executes the ordered structured deployment
-selection. In composed mode it skips those operations and invokes
-`ship-repository.py` once,
-pinned to the promoted head and canonical scope. The sibling helper preserves
-its CI and review waits and owns merge, post-merge release publication, local
-deployment, finalization, and
-cleanup. An incomplete or blocked ship result stops without promotion cleanup.
-Lifecycle deployment treats an absent `deploy` section as a no-op; a selected
-ID missing from an existing operations map is strict.
+then runs `git diff --check`, fast-forwards each selected branch, records the
+scope and validates the final commit. A failed check returns its YAML location,
+checked commit and bounded diagnostics while preserving the scope for repair.
+In composed mode, shipping repeats validation before remote mutation; successful
+promotion checks never suppress that boundary. Check results cannot authorize a
+different or dirty commit. Deployment and publication commands come only from
+the repository's declared entries, not from helper-selected script names.
 Preparation-only requires a clean `main` checkout and exits immediately after
 `release/local` is ready, before source preflight, promotion, scope records,
 or deployment.
@@ -130,11 +120,10 @@ or deployment.
 - Every selected branch is contained in the reported release commit.
 - Every attempted automatic rebase either completed and reported both heads or
   restored the original clean source state before blocking.
-- Repository deployment ran during promotion only when `promote-and-deploy`
-  was selected; every selected operation ran in order, any returned handoffs
-  completed in order, and managed skills without one were reported as not
-  deployed. In composed mode, shipping ran every selected publication and
-  deployment operation at its lifecycle-owned phase after merge.
+- The final assembled commit passed selected validation before continuation;
+  deployment ran during promotion only when requested. In composed mode,
+  shipping repeated its validation and ran only the selected post-merge work.
+  Advisory routing alone was never reported as completed domain work.
 - The exact pending-work scope is retained for standalone promotion or a
   shipping blocker; successful composed shipping finalizes it, cleans selected
   sources, and reports any preserved legacy sources or non-cleanup-eligible
@@ -145,6 +134,6 @@ or deployment.
 Report only:
 
 - `release/local`, exact head, promoted branches, and automatic rebase results
-- ordered operation outcomes and returned or missing handoffs when selected
+- ordered operation outcomes and advisory handoffs when selected
 - pending-work scope
 - blockers or intentionally retained state

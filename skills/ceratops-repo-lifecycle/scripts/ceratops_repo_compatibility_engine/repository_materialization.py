@@ -24,7 +24,7 @@ from dataclasses import dataclass
 import yaml
 
 from .compatibility_check import check_repository
-from .sdlc_contract_validation import SdlcContractError, validation_errors
+from .sdlc_contract_validation import load_contract, validation_errors
 
 BUNDLE_ROOT = pathlib.Path(__file__).resolve().parents[2]
 TEMPLATE = BUNDLE_ROOT / "references" / "templates" / "skill-sections-template.json"
@@ -555,88 +555,46 @@ def build_sdlc_contract_candidate(
     has_skills: bool,
     materialize: bool,
 ) -> dict[str, object] | None:
-    """Preserve the SDLC contract and own managed-skill deployment entries."""
+    """Preserve target capabilities and materialize repository validation.
 
-    # Refuse omitted operation sources before every early return or target write.
-    retired_contracts = [
-        relative
-        for relative in ("deploy/deploy.yml", "release/release.yml")
-        if (repo_root / relative).exists() or (repo_root / relative).is_symlink()
-    ]
-    if retired_contracts:
-        raise RuntimeError(
-            "retired lifecycle contracts require migration: "
-            + ", ".join(retired_contracts)
-            + "; move every operation into sdlc/sdlc.yml and remove the retired "
-            "files before compatibility materialization"
-        )
+    The template owns the compatible repository's aggregate command. Managed
+    and standalone skill deployment are alternatives, never implicit defaults.
+    """
+
     if not materialize:
         return None
-    reusable = load_yaml_mapping(SDLC_TEMPLATE)
-    expected = {
-        "version": 1,
-        "kind": "ceratops-sdlc",
-        "deploy": {"operations": {}},
-    }
-    if reusable != expected:
-        raise RuntimeError("SDLC template is not the empty version 1 skeleton")
+    reusable = load_contract(SDLC_TEMPLATE)
     target = repo_root / SDLC_RELATIVE
-    if not has_skills and not target.exists():
-        return None
-    contract = load_yaml_mapping(target) if target.is_file() else dict(reusable)
-    if contract.get("version") != 1:
-        raise RuntimeError("existing SDLC contract version must remain 1")
-    if contract.get("kind") != "ceratops-sdlc":
-        raise RuntimeError("existing SDLC contract kind must be ceratops-sdlc")
-    deploy = contract.get("deploy")
-    if deploy is None:
-        deploy = {"operations": {}}
-    if not isinstance(deploy, Mapping):
-        raise RuntimeError("existing SDLC deploy section must be an object")
-    operations = deploy.get("operations")
-    if not isinstance(operations, Mapping) or not all(
-        isinstance(name, str) and isinstance(operation, Mapping)
-        for name, operation in operations.items()
-    ):
-        raise RuntimeError("existing SDLC deploy operations must be objects")
-    updated_operations = dict(operations)
-    if has_skills:
-        existing_deploy = updated_operations.get("deploy")
-        updated_deploy = (
-            dict(existing_deploy)
-            if isinstance(existing_deploy, Mapping)
-            else {}
-        )
-        updated_deploy.setdefault("handoff", MANAGED_SKILL_HANDOFF)
-        updated_operations["deploy"] = updated_deploy
-        updated_operations["bootstrap"] = {
-            "steps": [
-                {
-                    "id": "bootstrap-skills",
-                    "run": ["python", "scripts/deploy-skills.py"],
-                }
-            ]
-        }
-    else:
-        updated_operations.pop("bootstrap", None)
-        existing_deploy = updated_operations.get("deploy")
-        if (
-            isinstance(existing_deploy, Mapping)
-            and existing_deploy.get("handoff") == MANAGED_SKILL_HANDOFF
-        ):
-            updated_deploy = dict(existing_deploy)
-            updated_deploy.pop("handoff")
-            if updated_deploy:
-                updated_operations["deploy"] = updated_deploy
-            else:
-                updated_operations.pop("deploy")
+    contract = load_contract(target) if target.is_file() else dict(reusable)
     candidate = dict(contract)
-    if has_skills or "deploy" in contract:
-        candidate["deploy"] = {"operations": updated_operations}
-    try:
-        errors = validation_errors(candidate)
-    except SdlcContractError as exc:
-        raise RuntimeError(str(exc)) from exc
+    repository = dict(candidate.get("repository", {}))
+    repository.setdefault("validate", reusable["repository"]["validate"])
+    candidate["repository"] = repository
+    deliverables = dict(candidate.get("deliverables", {}))
+    skills = dict(deliverables.get("skills", {}))
+    deployment = dict(skills.get("deploy-local", {}))
+    managed = {"handoff": MANAGED_SKILL_HANDOFF}
+    standalone = {"steps": [{"run": ["python", "scripts/deploy-skills.py"]}]}
+    if has_skills:
+        deployment.setdefault("managed", managed)
+        deployment.setdefault("standalone", standalone)
+    else:
+        for name, owned in (("managed", managed), ("standalone", standalone)):
+            if deployment.get(name) == owned:
+                deployment.pop(name)
+    if deployment:
+        skills["deploy-local"] = deployment
+    else:
+        skills.pop("deploy-local", None)
+    if skills:
+        deliverables["skills"] = skills
+    else:
+        deliverables.pop("skills", None)
+    if deliverables:
+        candidate["deliverables"] = deliverables
+    else:
+        candidate.pop("deliverables", None)
+    errors = validation_errors(candidate)
     if errors:
         raise RuntimeError(f"invalid SDLC contract: {errors[0]}")
     return candidate

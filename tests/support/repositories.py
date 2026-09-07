@@ -23,33 +23,21 @@ def run_git(repo: pathlib.Path, *args: str) -> subprocess.CompletedProcess[str]:
 def write_sdlc_contract(
     repo: pathlib.Path,
     *,
-    deploy_operations: dict[str, object] | None = None,
-    release_operations: dict[str, object] | None = None,
-    artifacts: list[dict[str, object]] | None = None,
+    repository: dict[str, object] | None = None,
+    deliverables: dict[str, object] | None = None,
 ) -> pathlib.Path:
-    """Write or extend one JSON-compatible unified SDLC contract."""
+    """Write or extend the current capability contract without format conversion."""
 
     contract = repo / "sdlc" / "sdlc.yml"
     contract.parent.mkdir(parents=True, exist_ok=True)
-    document: dict[str, object] = {
-        "version": 1,
-        "kind": "ceratops-sdlc",
-    }
+    document: dict[str, object] = {"version": 2, "kind": "ceratops-sdlc"}
     if contract.exists():
         document = json.loads(contract.read_text(encoding="utf-8"))
-    if deploy_operations is not None:
-        document["deploy"] = {"operations": deploy_operations}
-    if release_operations is not None or artifacts is not None:
-        release = document.setdefault("release", {})
-        assert isinstance(release, dict)
-        if release_operations is not None:
-            release["operations"] = release_operations
-        if artifacts is not None:
-            release["artifacts"] = artifacts
+    for name, group in (("repository", repository), ("deliverables", deliverables)):
+        if group is not None:
+            document[name] = group
     contract.write_text(
-        json.dumps(document, indent=2) + "\n",
-        encoding="utf-8",
-        newline="\n",
+        json.dumps(document, indent=2) + "\n", encoding="utf-8", newline="\n",
     )
     return contract
 
@@ -113,22 +101,10 @@ def create_compatible_repo(repo: pathlib.Path, source_id: str, skill_names: list
     )
     write_sdlc_contract(
         repo,
-        deploy_operations={
-            "deploy": {
-                "handoff": "ceratops-skill-lifecycle/deploy",
-            },
-            "bootstrap": {
-                "steps": [
-                    {
-                        "id": "bootstrap-skills",
-                        "run": [
-                            "python",
-                            "scripts/deploy-skills.py",
-                        ],
-                    }
-                ]
-            }
-        },
+        deliverables={"skills": {"deploy-local": {
+            "managed": {"handoff": "ceratops-skill-lifecycle/deploy"},
+            "standalone": {"steps": [{"run": ["python", "scripts/deploy-skills.py"]}]},
+        }}},
     )
     (repo / "scripts").mkdir()
     shutil.copy2(

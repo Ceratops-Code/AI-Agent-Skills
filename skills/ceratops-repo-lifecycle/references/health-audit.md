@@ -29,7 +29,7 @@ credential-bound fixes precisely.
   unchanged. It also runs a present `scripts/validate-repository.py` once with
   `--evidence-file` outside the target; a missing validator or CI validation
   workflow is a finding. External-only health runs no local validator.
-- (D) When the local repository declares `release.artifacts` in
+- When the local repository declares `deliverables.<name>.artifacts` in
   `sdlc/sdlc.yml`, the repo checker validates that SDLC contract and uses its
   artifact identities automatically. Caller-supplied
   `artifact_contracts` remain only for repositories without local declarations.

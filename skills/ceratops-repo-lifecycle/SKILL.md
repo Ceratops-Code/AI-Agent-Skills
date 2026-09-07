@@ -9,9 +9,8 @@ description: Route Ceratops repository lifecycle work to action references for r
 
 Route repository compatibility, local Git, GitHub, release publication, and
 deployment lifecycle work to the narrowest action reference. Keep repository
-state transitions in one skill while each repository owns declared remote
-release publication, artifact identity, and local deployment in
-`sdlc/sdlc.yml`.
+state transitions in the skill while `sdlc/sdlc.yml` describes repository
+setup and validation, plus deliverable validation, deployment and publication.
 
 ## Context
 
@@ -37,10 +36,9 @@ release publication, artifact identity, and local deployment in
 - Target repository, checkout, task worktree, branch, selected source branches,
   PR, artifact, dependency queue, compatibility gap, or creation request that
   identifies the action.
-- Whether promotion should stop after assembling `release/local`, run an
-  explicit ordered selection of `deploy.operations`, or continue directly
-  into terminal shipping with selected release and deployment operations only
-  at their lifecycle-owned phases.
+- Whether promotion stops at `release/local`, deploys selected deliverables,
+  or continues into shipping; capture ordered complete YAML operation locations
+  and keep these flow decisions outside the contract.
 - Required live GitHub, local repository, CI, artifact, credential, and
   deployment context named by the selected action reference.
 
@@ -51,9 +49,20 @@ release publication, artifact identity, and local deployment in
 - Keep local promotion, GitHub publication, guarded merge, synchronization,
   deployment routing, repository compatibility, and selected-source cleanup in
   this skill.
-- Execute only named structured operations from the `release` and `deploy`
-  sections of `sdlc/sdlc.yml` through the operation runner. Do not interpret
-  prose as executable commands.
+- Execute named SDLC entries through `scripts/repository_operation.py` with
+  `--repo-root PATH --sdlc-contract PATH --operation LOCATION`; repeat the last
+  flag in order. Locations follow the YAML hierarchy, such as
+  `repository.bootstrap.runtime` or `deliverables.skills.deploy-local.managed`.
+- Read declared prerequisite metadata before setup; run only explicitly chosen
+  bootstrap operations. Prerequisites and artifact identity are annotations,
+  not inferred check or installation commands.
+- Treat handoffs as advisory routing within the requested action, not executable
+  prose, proof of deployment, or a completion-receipt protocol.
+- Keep ordinary repository-check failures, including `validation_failed`,
+  inside the active action: diagnose and repair in the selected task worktree,
+  commit, then repeat promotion or restart shipping for the new commit. Do not
+  perform later deployment or remote mutation before successful validation.
+  Stop only when safe authorized repair cannot proceed, naming the exact cause.
 - Use `references/merge-pr.md` for standalone PR finalization. Integrated ship
   must preserve every readiness, CI, Codex-review, and exact-head gate before
   its final admin merge.
@@ -81,16 +90,13 @@ release publication, artifact identity, and local deployment in
   named repository surfaces.
 - Use `promote` when selected committed branches should join a local
   `release/local` branch without deployment.
-- Use `promote-and-deploy` when the same promotion should run explicitly
-  selected repository operations in order, execute returned handoffs in that
-  order, and report managed skills when no handoff is declared.
+- Use `promote-and-deploy` when promotion should run explicitly selected
+  `deploy-local` entries and use their advisory routing for domain work.
 - Use composed promotion and shipping when selected committed branches should
   enter the complete ship workflow immediately after promotion; only shipping
   may publish a release or deploy in this mode.
-- Use `ship` for the complete staged-branch PR, gate, merge, main sync,
-  ordered remote release publication, ordered local repository deployment,
-  returned handoff handling, late recheck, and selected-source cleanup
-  workflow.
+- Use `ship` for staged-branch GitHub delivery and selected-source cleanup;
+  publication and local deployment run only when their operations are selected.
 - Use `merge-pr` only when standalone PR finalization is the whole task.
 
 #### 2. Close from action evidence

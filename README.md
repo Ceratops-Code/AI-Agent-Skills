@@ -74,8 +74,8 @@ assigned to skills whose primary output is evidence-backed findings, while
 `bounded-model-analysis` is assigned to skills that invoke bounded
 analysis-only child models.
 The `skills/` tree is authoritative skill source for this repository.
-`sdlc/sdlc.yml` is its authoritative structured deployment and release
-publication definition.
+`sdlc/sdlc.yml` declares repository setup and validation, plus capabilities
+of each deliverable. Lifecycle actions decide when those capabilities run.
 The repository-compatibility templates under
 `skills/ceratops-repo-lifecycle/references/templates/` are reusable skeletons
 to copy into other repositories, not live configuration.
@@ -143,9 +143,7 @@ without repository deduplication.
 | `skills/ceratops-repo-lifecycle/scripts/github_pr_workflow/` | Package CLI for individual PR operations, one-call retry-safe review replies and resolutions, decision-complete gate blockers, single-snapshot terminal Actions outage detection, exact-commit checkpointed shipping, four-proof obsolete-prepared-checkpoint cleanup before automatic resume, scoped pending-work checks, concurrent gates, integrated admin merge, reusable-branch restoration, and terminal cleanup. |
 | `skills/ceratops-repo-lifecycle/scripts/promote-repository.py` | Prepares `release/local`; promotes selected branches with no deployment or an explicit ordered operation selection; or composes promotion into exact-head shipping with ordered release and deploy selections, finalization, and cleanup. |
 | `skills/ceratops-repo-lifecycle/scripts/manage-pending-work.py` | Records, checks, automatically resumes the retained target commit, and progressively finalizes the exact selected scope; preflight preserves and reports non-cleanup-eligible worktrees, while eligible residual-worktree and identity-matched task-temp cleanup stays within validated named directory boundaries and preserves active skill-update state for post-deployment finalization. |
-| `skills/ceratops-repo-lifecycle/scripts/repository_operation.py` | Prepares complete ordered operation sequences before execution and shares exact argv handling, strict parameters, repository path boundaries, compact results, and bounded structured failures. |
-| `skills/ceratops-repo-lifecycle/scripts/run-deploy-operation.py` | Prevalidates and executes ordered named local operations from the `deploy` section of `sdlc/sdlc.yml`, returning optional declarative agent handoffs per operation. |
-| `skills/ceratops-repo-lifecycle/scripts/run-release-operation.py` | Prevalidates and executes ordered named remote publication operations from the `release` section of `sdlc/sdlc.yml`. |
+| `skills/ceratops-repo-lifecycle/scripts/repository_operation.py` | Single capability runner: resolves complete YAML locations, prevalidates ordered argv/parameters/cwd, runs declared validation before deployment or publication, and returns compact results, bounded failures and advisory handoffs. |
 | `skills/ceratops-repo-lifecycle/scripts/ship-repository.py` | Prevalidates one SDLC contract and ordered phase selections before orchestrating guarded GitHub shipping, main synchronization, per-operation publication and deployment checkpoints, and resumable selected-source cleanup. |
 | `skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py` | Skill-lifecycle-owned source, metadata, runtime-input, contract, and portability validator used only by explicit skill workflows. |
 | `skills/ceratops-skill-lifecycle/scripts/fast-change.py` | Classifies exact structured replacements, generates their diff, and owns the eligible direct-release change through declared Markdown lint, exact helper tests, targeted installation, commit, and failure compensation. |
@@ -163,17 +161,23 @@ scope before mutation and owns exact-match validation, diff generation,
 application, repository-declared Markdown lint, exact helper tests when
 required, targeted installation, staging, commit, and compensation.
 
-Promotion and deployment are separate repository actions. `promote` assembles
-the selected branches into `release/local` without deployment;
-`promote-and-deploy` additionally prevalidates and runs explicitly selected
-`deploy.operations` in order and executes their returned handoffs in the same
-order when the promoted manifest has managed skills. Managed skills without a
-declared handoff are reported as not deployed without changing the repository
-deployment result.
-The runner never converts prose instructions into commands.
+Promotion validates the assembled `release/local` commit.
+`promote-and-deploy` additionally runs explicitly selected `deploy-local`
+entries, with validation before deployment. Shipping validates again before
+remote changes, and validates the synchronized commit before pending publication
+or deployment. Successful earlier checks do not suppress a later lifecycle
+boundary. The agent repairs ordinary failures in the selected task worktree,
+commits and retries; a failed check never permits later mutation.
 
-`ship` takes either an exact pending-work scope or an explicit disabled-check
-mode. When enabled, the same generic scope is checked before the first remote
+Operations are identified by their YAML location, such as
+`repository.bootstrap.runtime` or `deliverables.skills.deploy-local.managed`.
+There are no extra IDs, defaults or full flows in the contract. Prerequisites
+are setup metadata; only explicitly declared bootstrap commands install
+dependencies. Handoffs are advisory routing, not executable prose or proof of
+completed domain work. The runner never calls another skill automatically.
+
+`ship` derives its optional pending-work scope from the staged branch. When
+present, the same generic scope is checked before the first remote
 push, after synchronization before release publication and local deployment,
 and again before cleanup because local state can change while CI or operations
 run. Pre-push detection returns compact `pending_work` output with
@@ -187,9 +191,10 @@ behavior remains unchanged.
 
 Each repository owns one lifecycle contract:
 
-- `sdlc/sdlc.yml` keeps the former contract structures unchanged under
-  `release` and `deploy`; it declares remote publication operations, artifact
-  identity, and local deployment operations and is validated against
+- `sdlc/sdlc.yml` version 2 groups global prerequisites, bootstrap and validation
+  under `repository`, and validation, local deployment and optional publication
+  under `deliverables`. Optional artifact identities live under their owning
+  deliverable; this repository declares no public artifacts. It is validated against
   `skills/ceratops-repo-lifecycle/references/schemas/sdlc.yml.schema.json`.
 - `skills/ceratops-repo-lifecycle/references/contracts/github-contract-source-docs.json`
   records official source documents and reference repositories used by GitHub,

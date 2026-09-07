@@ -13,23 +13,31 @@ import argparse
 import json
 import os
 import pathlib
-import re
 import subprocess
 import sys
 from typing import Any
 
 from github_pr_workflow import ship as github_ship
+from repository_operation import (
+    FAILED_STATUSES,
+    OperationError,
+    OperationRequest,
+    execute_prepared_operation,
+    execute_prepared_operations,
+    operation_category,
+    prepare_operations,
+    repository_commit,
+    require_clean_commit,
+)
+from repository_operation import (
+    validation_operations as resolve_validations,
+)
 
 SCRIPT_ROOT = pathlib.Path(__file__).resolve().parent
-DEPLOY_RUNNER = SCRIPT_ROOT / "run-deploy-operation.py"
-RELEASE_RUNNER = SCRIPT_ROOT / "run-release-operation.py"
+OPERATION_RUNNER = SCRIPT_ROOT / "repository_operation.py"
 PENDING_MANAGER = SCRIPT_ROOT / "manage-pending-work.py"
 DEFAULT_SDLC_CONTRACT = pathlib.Path("sdlc/sdlc.yml")
-DEFAULT_RELEASE_PREFLIGHT_OPERATIONS = ("preflight",)
-DEFAULT_RELEASE_OPERATIONS = ("publish",)
-DEFAULT_DEPLOY_OPERATIONS = ("deploy",)
 RELEASE_BRANCH = "release/local"
-OPERATION_ID_RE = re.compile(r"^[a-z][a-z0-9_-]*$")
 
 
 class RepositoryShipError(RuntimeError):
@@ -44,58 +52,15 @@ class RepositoryShipError(RuntimeError):
         self.payload = {"status": "error", "message": message, **(payload or {})}
 
 
-def _inside(path: pathlib.Path, parent: pathlib.Path) -> bool:
-    try:
-        path.relative_to(parent)
-    except ValueError:
-        return False
-    return True
+def _operation_ids(value: object, category: str) -> list[str]:
+    """Require complete YAML locations; omitted mutation selections do no work."""
 
-
-def _contract_preflight(
-    repo_root: pathlib.Path,
-    contract: pathlib.Path,
-    default_contract: pathlib.Path,
-    *,
-    default_selection: bool,
-) -> bool:
-    """Validate one selected SDLC path or allow its absent default."""
-
-    selected = (
-        contract if contract.is_absolute() else repo_root / contract
-    ).resolve()
-    default = (repo_root / default_contract).resolve()
-    if not _inside(selected, repo_root):
-        raise RepositoryShipError("SDLC contract must be inside the repository.")
-    if selected.exists():
-        if not selected.is_file():
-            raise RepositoryShipError("SDLC contract must be a repository file.")
-        return True
-    if selected != default or not default_selection:
-        raise RepositoryShipError(
-            "Selected SDLC contract does not exist before shipping."
-        )
-    return False
-
-
-def _operation_ids(
-    value: object,
-    default: tuple[str, ...],
-    label: str,
-) -> list[str]:
-    """Resolve an explicit ordered selection or its lifecycle default."""
-
-    selected = list(default) if value is None else value
-    if (
-        not isinstance(selected, list)
-        or not selected
-        or not all(
-            isinstance(operation, str)
-            and OPERATION_ID_RE.fullmatch(operation) is not None
-            for operation in selected
-        )
-    ):
-        raise RepositoryShipError(f"{label} operations must be valid IDs.")
+    selected = [] if value is None else value
+    if not isinstance(selected, list):
+        raise RepositoryShipError("SDLC operations must be an ordered list.")
+    for operation in selected:
+        if operation_category(operation) != category:
+            raise RepositoryShipError(f"Expected {category} operation: {operation}")
     return list(selected)
 
 
@@ -123,7 +88,6 @@ def _no_op_operations(
 
 
 def _operation_command(
-    runner: pathlib.Path,
     *,
     repo_root: pathlib.Path,
     contract: pathlib.Path,
@@ -134,10 +98,10 @@ def _operation_command(
 
     command = [
         sys.executable,
-        str(runner),
+        str(OPERATION_RUNNER),
         "--repo-root",
         str(repo_root),
-        "--contract",
+        "--sdlc-contract",
         str(contract),
     ]
     for operation in operations:
@@ -168,23 +132,23 @@ def _run_json(
 
 
 def _prepare_operation_batch(
-    runner: pathlib.Path,
     *,
     repo_root: pathlib.Path,
     contract: pathlib.Path,
     operations: list[str],
+    validation_operations: list[str] | None = None,
 ) -> None:
     """Validate a complete ordered selection before lifecycle side effects."""
 
-    code, result = _run_json(
-        _operation_command(
-            runner,
-            repo_root=repo_root,
-            contract=contract,
-            operations=operations,
-            prepare_only=True,
-        )
+    command = _operation_command(
+        repo_root=repo_root,
+        contract=contract,
+        operations=operations,
+        prepare_only=True,
     )
+    for operation in validation_operations or []:
+        command.extend(("--validation-operation", operation))
+    code, result = _run_json(command)
     if code:
         raise RepositoryShipError(
             str(result.get("message", "Operation preparation failed.")),
@@ -194,7 +158,7 @@ def _prepare_operation_batch(
                 "remote_mutation": False,
             },
         )
-    if result != {"status": "prepared", "operations": operations}:
+    if result.get("status") != "prepared" or result.get("operations") != operations:
         raise RepositoryShipError("Operation preparation returned an invalid result.")
 
 
@@ -252,8 +216,7 @@ def _operation_checkpoint_path(
         phase_name = phase_names[phase]
     except KeyError as exc:
         raise RepositoryShipError(f"Unknown checkpoint phase: {phase}") from exc
-    if OPERATION_ID_RE.fullmatch(operation) is None:
-        raise RepositoryShipError("Operation checkpoint requires a valid operation ID.")
+    operation_category(operation)
     if position < 1:
         raise RepositoryShipError("Operation checkpoint position must be positive.")
     normalized_commit = target_commit.lower()
@@ -383,7 +346,6 @@ def _operation_identity(
     repo_root: pathlib.Path,
     *,
     phase: str,
-    section: str,
     target_branch: str,
     target_commit: str,
     synchronized_commit: str,
@@ -397,9 +359,8 @@ def _operation_identity(
         contract if contract.is_absolute() else repo_root / contract
     ).resolve(strict=True)
     return {
-        "version": 1,
+        "version": 2,
         "phase": phase,
-        "section": section,
         "target_branch": target_branch,
         "target_commit": target_commit,
         "synchronized_commit": synchronized_commit,
@@ -426,12 +387,11 @@ def _read_operation_checkpoint(
     if (
         not isinstance(value, dict)
         or set(value) != {*identity, "result"}
-        or value.get("version") != 1
+        or value.get("version") != 2
         or any(
             not isinstance(value.get(key), str)
             for key in (
                 "phase",
-                "section",
                 "target_branch",
                 "target_commit",
                 "synchronized_commit",
@@ -485,14 +445,13 @@ def _completed_operation_batch(
 def _checkpointed_operation_batch(
     *,
     repo_root: pathlib.Path,
-    runner: pathlib.Path,
     contract: pathlib.Path,
     operations: list[str],
     phase: str,
-    section: str,
     target_branch: str,
     target_commit: str,
     synchronized_commit: str,
+    validation_operations: list[str] | None = None,
 ) -> tuple[int, dict[str, Any], list[pathlib.Path]]:
     """Resume one ordered phase and checkpoint each completed operation."""
 
@@ -511,7 +470,6 @@ def _checkpointed_operation_batch(
         identity = _operation_identity(
             repo_root,
             phase=phase,
-            section=section,
             target_branch=target_branch,
             target_commit=target_commit,
             synchronized_commit=synchronized_commit,
@@ -534,61 +492,50 @@ def _checkpointed_operation_batch(
     if first_pending == len(operations):
         return 0, _completed_operation_batch(operations, completed_results), checkpoints
 
-    pending = operations[first_pending:]
-    code, batch = _run_json(
-        _operation_command(
-            runner,
-            repo_root=repo_root,
-            contract=contract,
-            operations=pending,
+    try:
+        pending = operations[first_pending:]
+        prepared = prepare_operations(
+            repo_root, [OperationRequest(operation) for operation in pending], contract,
         )
-    )
-    batch_results = batch.get("results")
-    batch_completed = batch.get("completed_operations")
-    batch_pending = batch.get("pending_operations")
-    if (
-        not isinstance(batch_results, list)
-        or not all(isinstance(result, dict) for result in batch_results)
-        or not isinstance(batch_completed, list)
-        or not all(isinstance(operation, str) for operation in batch_completed)
-        or not isinstance(batch_pending, list)
-        or not all(isinstance(operation, str) for operation in batch_pending)
-        or batch_completed != pending[: len(batch_completed)]
-        or batch_pending != pending[len(batch_completed) :]
-        or len(batch_results) < len(batch_completed)
-    ):
-        raise RepositoryShipError("Operation runner returned an invalid ordered result.")
-    if code == 0 and (
-        batch.get("status") != "completed"
-        or batch_completed != pending
-        or batch_pending
-        or len(batch_results) != len(batch_completed)
-    ):
-        raise RepositoryShipError("Operation runner returned a non-terminal result.")
-    if code != 0 and (
-        batch.get("status") != "operation_failed"
-        or len(batch_results) != len(batch_completed) + 1
-    ):
-        raise RepositoryShipError("Operation runner returned an invalid failure result.")
-    for offset, result in enumerate(batch_results[: len(batch_completed)]):
-        index = first_pending + offset
-        _write_operation_checkpoint(checkpoints[index], identities[index], result)
-        completed_results.append(result)
-
-    combined_completed = operations[: first_pending + len(batch_completed)]
-    combined_results = [*completed_results, *batch_results[len(batch_completed) :]]
-    if code:
-        return (
-            code,
-            {
-                **batch,
-                "completed_operations": combined_completed,
-                "pending_operations": operations[len(combined_completed) :],
-                "results": combined_results,
-            },
-            checkpoints,
+        checks = prepare_operations(
+            repo_root,
+            [OperationRequest(operation) for operation in resolve_validations(
+                repo_root, operations, validation_operations, contract,
+            )],
+            contract,
         )
-    return 0, _completed_operation_batch(operations, completed_results), checkpoints
+        require_clean_commit(repo_root, synchronized_commit)
+        checked = execute_prepared_operations(checks)
+        if checked["status"] in FAILED_STATUSES:
+            return 1, {
+                **checked, "completed_operations": operations[:first_pending],
+                "pending_operations": pending,
+            }, checkpoints
+        require_clean_commit(repo_root, synchronized_commit)
+        for offset, prepared_operation in enumerate(prepared):
+            result = execute_prepared_operation(prepared_operation)
+            index = first_pending + offset
+            if result["status"] in FAILED_STATUSES:
+                return 1, {
+                    **result, "completed_operations": operations[:index],
+                    "pending_operations": operations[index:],
+                    "results": [*completed_results, result],
+                }, checkpoints
+            # Persist before the next side effect, not after the entire batch returns.
+            _write_operation_checkpoint(checkpoints[index], identities[index], result)
+            completed_results.append(result)
+            require_clean_commit(repo_root, synchronized_commit)
+        return 0, _completed_operation_batch(operations, completed_results), checkpoints
+    except (OperationError, OSError, ValueError) as exc:
+        # Keep post-remote failure and completed-operation recovery visible.
+        return 1, {
+            "status": "state_changed" if isinstance(exc, OperationError) else "operation_failed",
+            "message": str(exc)[:4096],
+            "commit": synchronized_commit,
+            "completed_operations": operations[:len(completed_results)],
+            "pending_operations": operations[len(completed_results):],
+            "results": completed_results,
+        }, checkpoints
 
 
 def _ship_command(
@@ -834,28 +781,16 @@ def _resume_ship_command(
     )
     for flag, operations in (
         (
-            "--release-preflight-operation",
-            _operation_ids(
-                args.release_preflight_operation,
-                DEFAULT_RELEASE_PREFLIGHT_OPERATIONS,
-                "Release preflight",
-            ),
+            "--validation-operation",
+            _operation_ids(args.validation_operation, "validate"),
         ),
         (
-            "--release-operation",
-            _operation_ids(
-                args.release_operation,
-                DEFAULT_RELEASE_OPERATIONS,
-                "Release publication",
-            ),
+            "--publish-operation",
+            _operation_ids(args.publish_operation, "publish"),
         ),
         (
             "--deploy-operation",
-            _operation_ids(
-                args.deploy_operation,
-                DEFAULT_DEPLOY_OPERATIONS,
-                "Deployment",
-            ),
+            _operation_ids(args.deploy_operation, "deploy-local"),
         ),
     ):
         for operation in operations:
@@ -897,23 +832,13 @@ def _phase_recovery(
         completed["deployment"] = deployment
     completed_operations: list[dict[str, object]] = []
     pending_operations: list[dict[str, object]] = []
-    for section, operations, result in (
+    for operations, result in (
         (
-            "release",
-            _operation_ids(
-                args.release_operation,
-                DEFAULT_RELEASE_OPERATIONS,
-                "Release publication",
-            ),
+            _operation_ids(args.publish_operation, "publish"),
             release_publication,
         ),
         (
-            "deploy",
-            _operation_ids(
-                args.deploy_operation,
-                DEFAULT_DEPLOY_OPERATIONS,
-                "Deployment",
-            ),
+            _operation_ids(args.deploy_operation, "deploy-local"),
             deployment,
         ),
     ):
@@ -925,7 +850,6 @@ def _phase_recovery(
         )
         for position, operation in enumerate(operations, start=1):
             reference = {
-                "section": section,
                 "operation": operation,
                 "position": position,
             }
@@ -949,81 +873,62 @@ def _phase_recovery(
     }
 
 
+def _validate_phase(
+    args: argparse.Namespace,
+    repo_root: pathlib.Path,
+    operations: list[str],
+    *,
+    phase: str,
+    remote_mutation: bool,
+) -> dict[str, Any]:
+    """Recheck the current committed checkout at each safe lifecycle boundary.
+
+    No validation checkpoint is reusable across boundaries or repaired commits.
+    The calling agent repairs ordinary failures and restarts the lifecycle.
+    """
+
+    command = _operation_command(
+        repo_root=repo_root, contract=args.sdlc_contract,
+        operations=operations,
+    )
+    command.append("--validate")
+    commit = repository_commit(repo_root)
+    if commit:
+        command.extend(("--commit", commit))
+    for operation in args.validation_operation or []:
+        command.extend(("--validation-operation", operation))
+    code, result = _run_json(command)
+    if code:
+        raise RepositoryShipError(
+            str(result.get("message", "Repository validation failed.")),
+            {**result, "phase": phase, "remote_mutation": remote_mutation},
+        )
+    if result.get("status") != "completed":
+        raise RepositoryShipError("Validation runner returned an incomplete result.")
+    return result
+
+
 def ship_repository(args: argparse.Namespace) -> dict[str, object]:
     """Run complete shipping, release publication, deployment, and cleanup."""
 
     if args.head_branch != RELEASE_BRANCH:
         raise RepositoryShipError(f"Head branch must be {RELEASE_BRANCH}.")
     repo_root = args.repo_root.expanduser().resolve(strict=True)
-    release_preflight_operations = _operation_ids(
-        args.release_preflight_operation,
-        DEFAULT_RELEASE_PREFLIGHT_OPERATIONS,
-        "Release preflight",
+    _operation_ids(args.validation_operation, "validate")
+    release_operations = _operation_ids(args.publish_operation, "publish")
+    deploy_operations = _operation_ids(args.deploy_operation, "deploy-local")
+    _prepare_operation_batch(
+        repo_root=repo_root, contract=args.sdlc_contract,
+        operations=[*release_operations, *deploy_operations,
+                    *(args.validation_operation or [])],
+        validation_operations=args.validation_operation,
     )
-    release_operations = _operation_ids(
-        args.release_operation,
-        DEFAULT_RELEASE_OPERATIONS,
-        "Release publication",
+    release_publication: dict[str, Any] | None = (
+        None if release_operations else _no_op_operations([], "not_selected")
     )
-    deploy_operations = _operation_ids(
-        args.deploy_operation,
-        DEFAULT_DEPLOY_OPERATIONS,
-        "Deployment",
+    deployment: dict[str, Any] | None = (
+        None if deploy_operations else _no_op_operations([], "not_selected")
     )
-    contract_configured = _contract_preflight(
-        repo_root,
-        args.sdlc_contract,
-        DEFAULT_SDLC_CONTRACT,
-        default_selection=(
-            release_preflight_operations
-            == list(DEFAULT_RELEASE_PREFLIGHT_OPERATIONS)
-            and release_operations == list(DEFAULT_RELEASE_OPERATIONS)
-            and deploy_operations == list(DEFAULT_DEPLOY_OPERATIONS)
-        ),
-    )
-    release_publication: dict[str, Any] | None = None
-    deployment: dict[str, Any] | None = None
-    if contract_configured:
-        _prepare_operation_batch(
-            RELEASE_RUNNER,
-            repo_root=repo_root,
-            contract=args.sdlc_contract,
-            operations=[*release_preflight_operations, *release_operations],
-        )
-        _prepare_operation_batch(
-            DEPLOY_RUNNER,
-            repo_root=repo_root,
-            contract=args.sdlc_contract,
-            operations=deploy_operations,
-        )
-        preflight_code, preflight = _run_json(
-            _operation_command(
-                RELEASE_RUNNER,
-                repo_root=repo_root,
-                contract=args.sdlc_contract,
-                operations=release_preflight_operations,
-            )
-        )
-        if preflight_code:
-            raise RepositoryShipError(
-                str(preflight.get("message", "Release preflight failed.")),
-                {
-                    **preflight,
-                    "phase": "release_preflight",
-                    "remote_mutation": False,
-                },
-            )
-        if preflight.get("status") != "completed":
-            raise RepositoryShipError("Release preflight returned a non-terminal result.")
-    else:
-        release_publication = _no_op_operations(
-            release_operations,
-            "contract_not_configured",
-        )
-        deployment = _no_op_operations(
-            deploy_operations,
-            "contract_not_configured",
-        )
     prepare_code, prepared = _run_json(
         _prepare_pending_command(
             repo_root=repo_root,
@@ -1049,6 +954,10 @@ def ship_repository(args: argparse.Namespace) -> dict[str, object]:
         repo_root,
         pending_scope,
         preserved_worktrees,
+    )
+    validation = _validate_phase(
+        args, repo_root, [*release_operations, *deploy_operations],
+        phase="before_remote", remote_mutation=False,
     )
     ship_code, shipped = _run_json(
         _ship_command(
@@ -1121,14 +1030,13 @@ def ship_repository(args: argparse.Namespace) -> dict[str, object]:
         release_code, release_publication, release_checkpoints = (
             _checkpointed_operation_batch(
                 repo_root=repo_root,
-                runner=RELEASE_RUNNER,
                 contract=args.sdlc_contract,
                 operations=release_operations,
                 phase="release_publication",
-                section="release",
                 target_branch=args.head_branch,
                 target_commit=target_commit,
                 synchronized_commit=synchronized_head,
+                validation_operations=args.validation_operation,
             )
         )
         operation_checkpoints.extend(release_checkpoints)
@@ -1160,14 +1068,13 @@ def ship_repository(args: argparse.Namespace) -> dict[str, object]:
         deploy_code, deployment, deployment_checkpoints = (
             _checkpointed_operation_batch(
                 repo_root=repo_root,
-                runner=DEPLOY_RUNNER,
                 contract=args.sdlc_contract,
                 operations=deploy_operations,
                 phase="deployment",
-                section="deploy",
                 target_branch=args.head_branch,
                 target_commit=target_commit,
                 synchronized_commit=synchronized_head,
+                validation_operations=args.validation_operation,
             )
         )
         operation_checkpoints.extend(deployment_checkpoints)
@@ -1267,6 +1174,9 @@ def ship_repository(args: argparse.Namespace) -> dict[str, object]:
         "deployment": deployment,
         "finalization": finalized,
     }
+    validation_handoffs = [item for item in validation["results"] if item.get("handoff")]
+    if validation_handoffs:
+        result["validation_handoffs"] = validation_handoffs
     return _with_preserved_worktrees(result, preserved_worktrees)
 
 
@@ -1302,32 +1212,28 @@ def build_parser() -> argparse.ArgumentParser:
         type=pathlib.Path,
         default=DEFAULT_SDLC_CONTRACT,
         help=(
-            "Repository SDLC contract. An absent default sdlc/sdlc.yml or "
-            "section makes its operation phase an explicit no-op."
+            "Repository capability contract; an absent default declares no operations."
         ),
     )
     parser.add_argument(
-        "--release-preflight-operation",
+        "--validation-operation",
         action="append",
         help=(
-            "Release operation ID to run before remote mutation; repeat to "
-            "replace the ordered default selection."
+            "Complete validate location; repeats replace repository check discovery."
         ),
     )
     parser.add_argument(
-        "--release-operation",
+        "--publish-operation",
         action="append",
         help=(
-            "Release operation ID to run after merge; repeat to replace the "
-            "ordered default selection."
+            "Complete publish location to run after merge; repeat in order."
         ),
     )
     parser.add_argument(
         "--deploy-operation",
         action="append",
         help=(
-            "Deploy operation ID to run after publication; repeat to replace "
-            "the ordered default selection."
+            "Complete deploy-local location to run after publication; repeat in order."
         ),
     )
     parser.add_argument("--ci-wait-seconds", type=int, default=900)
@@ -1349,7 +1255,7 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 1
-    except (OSError, ValueError) as exc:
+    except (OperationError, OSError, ValueError) as exc:
         print(
             json.dumps(
                 {"status": "error", "message": str(exc)},

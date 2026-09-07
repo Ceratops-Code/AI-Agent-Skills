@@ -7,7 +7,6 @@ import shutil
 import subprocess
 import sys
 
-import pytest
 import yaml
 
 from tests.repository_lifecycle.support import (
@@ -30,11 +29,9 @@ def test_compatibility_materializer_supplies_target_identity_and_assignments(
     create_compatible_repo(repo, "stale/source", ["alpha-tool", "beta-tool"])
     write_sdlc_contract(
         repo,
-        release_operations={
-            "publish": {
-                "steps": [{"id": "publish", "run": [sys.executable, "-V"]}]
-            }
-        },
+        deliverables={"tools": {"publish": {
+            "public": {"steps": [{"run": [sys.executable, "-V"]}]}
+        }}},
     )
     (repo / ".git").write_text("gitdir: test\n", encoding="utf-8", newline="\n")
     shutil.rmtree(repo / "skills" / "sections")
@@ -106,20 +103,19 @@ def test_compatibility_materializer_supplies_target_identity_and_assignments(
         (repo / "sdlc" / "sdlc.yml").read_text(encoding="utf-8")
     )
     assert contract["kind"] == "ceratops-sdlc"
-    assert contract["deploy"]["operations"]["deploy"] == {
+    assert contract["deliverables"]["skills"]["deploy-local"]["managed"] == {
         "handoff": "ceratops-skill-lifecycle/deploy"
     }
-    assert contract["deploy"]["operations"]["bootstrap"] == {
+    assert contract["deliverables"]["skills"]["deploy-local"]["standalone"] == {
         "steps": [
             {
-                "id": "bootstrap-skills",
                 "run": ["python", "scripts/deploy-skills.py"],
             }
         ]
     }
-    assert contract["release"]["operations"] == {
-        "publish": {
-            "steps": [{"id": "publish", "run": [sys.executable, "-V"]}]
+    assert contract["deliverables"]["tools"]["publish"] == {
+        "public": {
+            "steps": [{"run": [sys.executable, "-V"]}]
         }
     }
     assert (repo / "scripts" / "deploy-skills.py").is_file()
@@ -259,11 +255,15 @@ def test_compatibility_materializer_supports_repositories_without_skills(
     assert result.returncode == 0, result.stdout
     output = json.loads(result.stdout)
     assert output["bootstrap"] == "skipped"
-    assert output["sdlc_contract"] == "not_configured"
+    assert output["sdlc_contract"] == "materialized"
     assert output["runtime_source_id"] is None
     assert output["skill_manifest"] == "not_configured"
     assert not (repo / "skills").exists()
-    assert not (repo / "sdlc").exists()
+    contract = yaml.safe_load((repo / "sdlc" / "sdlc.yml").read_text())
+    assert contract["repository"]["validate"]["repository"]["steps"] == [
+        {"run": ["python", "scripts/validate-repository.py"]}
+    ]
+    assert "deliverables" not in contract
     assert not (repo / "scripts" / "deploy-skills.py").exists()
     assert output["repository_validation"] == {
         "checks": ["npm-lint", "unittest"],
@@ -306,7 +306,7 @@ def test_compatibility_materializer_supports_repositories_without_skills(
         "--no-sdlc-contract",
     )
     assert omitted_result.returncode == 0, omitted_result.stdout
-    assert not (omitted / "sdlc" / "sdlc.yml").exists()
+    assert (omitted / "sdlc" / "sdlc.yml").read_bytes() == (repo / "sdlc" / "sdlc.yml").read_bytes()
     assert json.loads(omitted_result.stdout)["repository_validation"] == {
         "checks": [],
         "validator": "preserved",
@@ -721,74 +721,6 @@ def test_compatibility_materializer_rolls_back_every_target_write_on_blocker(
     assert {path: path.read_bytes() for path in changed_paths} == original
     assert not (repo / "scripts" / "validate-repository.py").exists()
     assert not (repo / ".github" / "workflows" / "validate.yml").exists()
-
-
-@pytest.mark.parametrize(
-    "retired_contracts",
-    [
-        ("deploy/deploy.yml",),
-        ("release/release.yml",),
-        ("deploy/deploy.yml", "release/release.yml"),
-    ],
-)
-@pytest.mark.parametrize("has_skills", [False, True])
-@pytest.mark.parametrize("has_sdlc_contract", [False, True])
-@pytest.mark.parametrize("omit_sdlc_contract", [False, True])
-def test_compatibility_materializer_rejects_retired_lifecycle_contracts_before_writes(
-    tmp_path: pathlib.Path,
-    retired_contracts: tuple[str, ...],
-    has_skills: bool,
-    has_sdlc_contract: bool,
-    omit_sdlc_contract: bool,
-) -> None:
-    repo = tmp_path / "compatible"
-    create_compatible_repo(repo, "preserved/source", ["alpha-tool"] if has_skills else [])
-    if not has_skills:
-        (repo / "skills" / "skill-sections.json").unlink()
-    (repo / ".git").write_text("gitdir: test\n", encoding="utf-8", newline="\n")
-    if not has_sdlc_contract:
-        (repo / "sdlc" / "sdlc.yml").unlink()
-    for relative in retired_contracts:
-        path = repo / relative
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            "version: 1\noperations:\n  custom:\n    steps:\n"
-            "      - id: preserve\n        run: [python, -V]\n",
-            encoding="utf-8",
-            newline="\n",
-        )
-    before = {
-        path.relative_to(repo): (path.read_bytes(), path.stat().st_mtime_ns)
-        for path in repo.rglob("*")
-        if path.is_file()
-    }
-
-    result = run_compatibility_engine(
-        REPOSITORY_LIFECYCLE_SCRIPTS,
-        "materialize",
-        "--target-repo-root",
-        str(repo),
-        *(["--no-sdlc-contract"] if omit_sdlc_contract else []),
-    )
-
-    assert result.returncode == 1, result.stdout
-    output = json.loads(result.stdout)
-    assert output == {
-        "phase": "materialization_planning",
-        "reason": (
-            "retired lifecycle contracts require migration: "
-            + ", ".join(retired_contracts)
-            + "; move every operation into sdlc/sdlc.yml and remove the retired "
-            "files before compatibility materialization"
-        ),
-        "rollback": "not_started",
-        "status": "blocked",
-    }
-    assert {
-        path.relative_to(repo): (path.read_bytes(), path.stat().st_mtime_ns)
-        for path in repo.rglob("*")
-        if path.is_file()
-    } == before
 
 
 def test_compatibility_materializer_blocks_invalid_assignments_before_writes(

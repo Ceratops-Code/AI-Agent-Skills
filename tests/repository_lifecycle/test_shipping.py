@@ -9,47 +9,155 @@ from typing import Any
 
 import pytest
 
-from tests.repository_lifecycle.support import (
-    DEPLOY_OPERATION,
-    RELEASE_OPERATION,
-    SHIP_REPOSITORY,
-)
-from tests.support.repositories import (
-    run_git,
-    write_sdlc_contract,
-)
+from tests.repository_lifecycle.support import OPERATION_RUNNER, SHIP_REPOSITORY
+from tests.support.repositories import run_git, write_sdlc_contract
+
+LOCAL = "deliverables.tools.deploy-local.standalone"
+PUBLIC = "deliverables.tools.publish.public"
 
 
-def _completed_batch(*results: dict[str, Any]) -> dict[str, Any]:
-    operations = [str(result["operation"]) for result in results]
-    return {
-        "status": "completed",
-        "completed_operations": operations,
-        "pending_operations": [],
-        "results": list(results),
+def _commit(repo: pathlib.Path) -> str:
+    assert run_git(repo, "add", ".").returncode == 0
+    assert run_git(repo, "commit", "--allow-empty", "-m", "test state").returncode == 0
+    return run_git(repo, "rev-parse", "HEAD").stdout.strip()
+
+
+def _setup(tmp_path: pathlib.Path, *, contract: bool = True) -> tuple[Any, ...]:
+    """Use real SDLC execution and Git identity, simulating only GitHub and cleanup."""
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    log = tmp_path / "order.txt"
+    external_failure = tmp_path / "publication-unavailable"
+    assert run_git(repo, "init", "-b", "release/local").returncode == 0
+    assert run_git(repo, "config", "user.name", "Tests").returncode == 0
+    assert (
+        run_git(repo, "config", "user.email", "tests@example.invalid").returncode == 0
+    )
+    (repo / "code.txt").write_text("good", encoding="utf-8")
+    for script, label in (
+        ("quality-check.py", "check"),
+        ("publish-package.py", "publish"),
+        ("install-local.py", "deploy"),
+    ):
+        (repo / script).write_text(
+            "import pathlib, sys\n"
+            f"label = {label!r}\n"
+            f"log = pathlib.Path({str(log)!r})\n"
+            "with log.open('a') as out: out.write(label + '\\n')\n"
+            "if label == 'check' and pathlib.Path('code.txt').read_text() != 'good':\n"
+            "    print('ordinary check failure', file=sys.stderr)\n"
+            "    raise SystemExit(7)\n"
+            f"if label == 'publish' and pathlib.Path({str(external_failure)!r}).exists():\n"
+            "    print('publication unavailable', file=sys.stderr)\n"
+            "    raise SystemExit(8)\n",
+            encoding="utf-8",
+        )
+    if contract:
+        write_sdlc_contract(
+            repo,
+            repository={
+                "validate": {
+                    "repository": {
+                        "steps": [{"run": [sys.executable, "quality-check.py"]}]
+                    },
+                }
+            },
+            deliverables={
+                "tools": {
+                    "publish": {
+                        "public": {
+                            "steps": [{"run": [sys.executable, "publish-package.py"]}]
+                        }
+                    },
+                    "deploy-local": {
+                        "standalone": {
+                            "steps": [{"run": [sys.executable, "install-local.py"]}]
+                        }
+                    },
+                }
+            },
+        )
+    _commit(repo)
+    loaded = runpy.run_path(str(SHIP_REPOSITORY))
+    original = loaded["_run_json"]
+    commands: list[list[str]] = []
+    scope = tmp_path / "scope.json"
+    state: dict[str, Any] = {
+        "scope": False,
+        "late_block": None,
+        "remote_error": None,
+        "calls": 0,
+        "break_after_remote": False,
+        "external_failure": external_failure,
     }
 
+    def run_json(command: list[str], **kwargs: Any) -> tuple[int, dict[str, Any]]:
+        commands.append(command)
+        if len(command) > 1 and pathlib.Path(command[1]) == OPERATION_RUNNER:
+            return original(command, **kwargs)
+        head = run_git(repo, "rev-parse", "HEAD").stdout.strip()
+        prepared = {
+            "status": "ready",
+            "source_branches": ["selected"] if state["scope"] else [],
+            "pending_work_scope": str(scope) if state["scope"] else "",
+            "target_commit": head,
+        }
+        if "github_pr_workflow" in command:
+            if state["remote_error"]:
+                return 1, state["remote_error"]
+            assert not log.exists() or log.read_text().splitlines()[-1] == "check"
+            with log.open("a") as out:
+                out.write("remote\n")
+            state["calls"] += 1
+            if state["break_after_remote"]:
+                (repo / "code.txt").write_text("broken", encoding="utf-8")
+                if state["break_after_remote"] != "dirty":
+                    head = _commit(repo)
+            return 0, {
+                "status": "shipped" if state["calls"] == 1 else "already_shipped",
+                "repository": "example/repository",
+                "commit": head,
+                "synchronized_head": head,
+                "merge_commit": head,
+                "pr": 24,
+                "url": "https://example.invalid/pull/24",
+            }
+        if "prepare" in command:
+            return 0, prepared
+        if "check" in command:
+            if state["late_block"] == "post_sync":
+                return 2, {"status": "pending_work", "findings": ["advanced source"]}
+            return 0, prepared
+        if "finalize" in command:
+            if state["late_block"] == "post_finalize":
+                return 2, {"status": "pending_work", "findings": ["advanced source"]}
+            with log.open("a") as out:
+                out.write("finalize\n")
+            return 0, {"status": "finalized"}
+        raise AssertionError(command)
 
-def _prepared_batch(*operations: str) -> dict[str, Any]:
-    return {"status": "prepared", "operations": list(operations)}
-
-
-def _failed_batch(
-    failure: dict[str, Any],
-    *,
-    completed: tuple[dict[str, Any], ...] = (),
-    pending: tuple[str, ...] = (),
-) -> dict[str, Any]:
-    failed_operation = str(failure["operation"])
-    return {
-        **failure,
-        "status": "operation_failed",
-        "completed_operations": [
-            str(result["operation"]) for result in completed
-        ],
-        "pending_operations": [failed_operation, *pending],
-        "results": [*completed, failure],
-    }
+    loaded["ship_repository"].__globals__["_run_json"] = run_json
+    loaded["ship_repository"].__globals__["_branch_worktree"] = lambda *args: None
+    # Cleanup path eligibility itself has separate real-path coverage below.
+    loaded["ship_repository"].__globals__["_require_cleanup_safe_caller"] = (
+        lambda *args: None
+    )
+    args = loaded["build_parser"]().parse_args(
+        [
+            "--repo-root",
+            str(repo),
+            "--head-branch",
+            "release/local",
+            "--reusable-head",
+            *(
+                ["--publish-operation", PUBLIC, "--deploy-operation", LOCAL]
+                if contract
+                else []
+            ),
+        ]
+    )
+    return repo, loaded, args, log, state, commands
 
 
 @pytest.mark.parametrize("scope_present", [False, True])
@@ -57,944 +165,249 @@ def test_repository_ship_absent_default_contract_is_no_op_and_finalizes(
     tmp_path: pathlib.Path,
     scope_present: bool,
 ) -> None:
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    scope = tmp_path / "scope.json"
-    scope.write_text(
-        json.dumps(
-            {
-                "version": 2,
-                "target_branch": "release/local",
-                "target_commit": "a" * 40,
-                "sources": [
-                    {
-                        "branch": "selected",
-                        "commit": "a" * 40,
-                        "state": "retained",
-                    }
-                ],
-            }
-        ),
-        encoding="utf-8",
-        newline="\n",
-    )
-    shipped = {
-        "status": "shipped",
-        "repository": "example/repository",
-        "commit": "a" * 40,
-        "pr": 24,
-        "url": "https://example.invalid/pull/24",
-        "merge_commit": "c" * 40,
-        "synchronized_head": "b" * 40,
-    }
-    prepared = {
-        "status": "ready",
-        "source_branches": [] if not scope_present else ["selected"],
-        "pending_work_scope": str(scope) if scope_present else "",
-        **({"target_commit": "a" * 40} if scope_present else {}),
-    }
-    responses: list[tuple[int, dict[str, Any]]] = [
-        (0, prepared),
-        (0, shipped),
-    ]
-    if scope_present:
-        responses.extend(
-            [
-                (0, prepared),
-                (0, {"status": "finalized"}),
-            ]
-        )
-    commands: list[list[str]] = []
-
-    def run_json(
-        command: list[str], *, cwd: pathlib.Path | None = None
-    ) -> tuple[int, dict[str, Any]]:
-        if cwd is not None:
-            assert cwd == repo
-        commands.append(command)
-        return responses[len(commands) - 1]
-
-    loaded = runpy.run_path(str(SHIP_REPOSITORY))
-    review_request = tmp_path / "review-replies.json"
-    parsed = loaded["build_parser"]().parse_args(
-        [
-            "--head-branch",
-            "release/local",
-            "--review-replies-request",
-            str(review_request),
-        ]
-    )
-    assert not hasattr(parsed, "pending_work_scope")
-    assert not hasattr(parsed, "no_pending_work_check")
-    assert parsed.repo is None
-    assert parsed.review_replies_request == review_request
-    inferred_repository_command = loaded["_ship_command"](
-        parsed,
-        repo,
-        None,
-        None,
-    )
-    assert "--repo" not in inferred_repository_command
-    assert inferred_repository_command[
-        inferred_repository_command.index("--repo-root") + 1
-    ] == str(repo)
-    ship_repository = loaded["ship_repository"]
-    ship_repository.__globals__["_run_json"] = run_json
-    ship_repository.__globals__["_branch_worktree"] = (
-        lambda repo_root, branch: None
-    )
-    result = ship_repository(
-        argparse.Namespace(
-            repo_root=repo,
-            repo="example/repository",
-            head_branch="release/local",
-            base_branch="main",
-            remote_name="origin",
-            commit=None if scope_present else "a" * 40,
-            title=None,
-            body=None,
-            merge_method="merge",
-            delete_branch=False,
-            reusable_head=True,
-            sdlc_contract=pathlib.Path("sdlc/sdlc.yml"),
-            release_preflight_operation=["preflight"],
-            release_operation=["publish"],
-            deploy_operation=["deploy"],
-            ci_wait_seconds=1,
-            review_wait_seconds=1,
-            review_replies_request=review_request,
-            interval_seconds=1,
-        )
-    )
-
-    assert result["release_publication"] == {
-        "status": "completed",
-        "completed_operations": ["publish"],
-        "pending_operations": [],
-        "results": [
-            {
-                "status": "no_op",
-                "configured": False,
-                "operation": "publish",
-                "steps": [],
-                "reason": "contract_not_configured",
-            }
-        ],
-    }
-    assert result["deployment"] == {
-        "status": "completed",
-        "completed_operations": ["deploy"],
-        "pending_operations": [],
-        "results": [
-            {
-                "status": "no_op",
-                "configured": False,
-                "operation": "deploy",
-                "steps": [],
-                "reason": "contract_not_configured",
-            }
-        ],
-    }
+    repo, loaded, args, log, state, commands = _setup(tmp_path, contract=False)
+    state["scope"] = scope_present
+    result = loaded["ship_repository"](args)
+    assert result["status"] == "shipped"
+    for phase in ("release_publication", "deployment"):
+        assert result[phase] == {
+            "status": "completed",
+            "completed_operations": [],
+            "pending_operations": [],
+            "results": [],
+        }
     assert result["finalization"] == (
         {"status": "finalized"} if scope_present else None
     )
-    assert "prepare" in commands[0]
-    if scope_present:
-        assert "--target-commit" not in commands[0]
-    else:
-        assert commands[0][-2:] == ["--target-commit", "a" * 40]
-    assert commands[1][commands[1].index("--commit") + 1] == "a" * 40
-    assert commands[1][commands[1].index("--review-replies-request") + 1] == str(
-        review_request
+    assert log.read_text().splitlines() == (
+        ["remote", "finalize"] if scope_present else ["remote"]
     )
-    if scope_present:
-        assert len(commands) == 4
-        assert "--pending-work-check" in commands[1]
-        assert str(scope.resolve()) in commands[1]
-        assert "check" in commands[2]
-        assert "finalize" in commands[3]
-    else:
-        assert len(commands) == 2
-        assert "--no-pending-work-check" in commands[1]
-    deploy_runner = str(SHIP_REPOSITORY.parent / "run-deploy-operation.py")
-    assert all(deploy_runner not in command for command in commands)
-
-    blocker = {
-        "status": "blocked",
-        "message": "Codex review gate found one active thread.",
-        "phase": "gates",
-        "blocker": {
-            "kind": "review_threads",
-            "head_oid": "a" * 40,
-            "threads": [{"thread_id": "PRRT_1", "body": "Fix this."}],
-        },
-    }
-    blocked_responses: list[tuple[int, dict[str, Any]]] = [
-        (
-            0,
-            {
-                "status": "ready",
-                "source_branches": [],
-                "pending_work_scope": "",
-            },
-        ),
-        (1, blocker),
-    ]
-
-    def blocked_run_json(
-        command: list[str], *, cwd: pathlib.Path | None = None
-    ) -> tuple[int, dict[str, Any]]:
-        return blocked_responses.pop(0)
-
-    ship_repository.__globals__["_run_json"] = blocked_run_json
-    with pytest.raises(loaded["RepositoryShipError"]) as captured:
-        ship_repository(
-            argparse.Namespace(
-                repo_root=repo,
-                repo="example/repository",
-                head_branch="release/local",
-                base_branch="main",
-                remote_name="origin",
-                commit="a" * 40,
-                title=None,
-                body=None,
-                merge_method="merge",
-                delete_branch=False,
-                reusable_head=True,
-                sdlc_contract=pathlib.Path("sdlc/sdlc.yml"),
-                release_preflight_operation=["preflight"],
-                release_operation=["publish"],
-                deploy_operation=["deploy"],
-                ci_wait_seconds=1,
-                review_wait_seconds=1,
-                review_replies_request=None,
-                interval_seconds=1,
-            )
-        )
-    assert captured.value.payload == blocker
+    remote = next(command for command in commands if "github_pr_workflow" in command)
+    assert ("--pending-work-check" in remote) is scope_present
+    assert ("--no-pending-work-check" in remote) is not scope_present
+    args.review_replies_request = tmp_path / "review-replies.json"
+    forwarded = loaded["_ship_command"](args, repo, None, None)
+    assert forwarded[forwarded.index("--review-replies-request") + 1] == str(
+        args.review_replies_request
+    )
 
 
 def test_repository_ship_missing_custom_contract_blocks_before_remote_mutation(
     tmp_path: pathlib.Path,
 ) -> None:
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    loaded = runpy.run_path(str(SHIP_REPOSITORY))
-    ship_repository = loaded["ship_repository"]
-    commands: list[list[str]] = []
-    def unexpected_run(command: list[str]) -> tuple[int, dict[str, Any]]:
-        commands.append(command)
-        return 0, {}
-
-    ship_repository.__globals__["_run_json"] = unexpected_run
-
-    with pytest.raises(
-        loaded["RepositoryShipError"],
-        match="does not exist before shipping",
-    ):
-        ship_repository(
-            argparse.Namespace(
-                repo_root=repo,
-                repo="example/repository",
-                head_branch="release/local",
-                base_branch="main",
-                remote_name="origin",
-                commit="a" * 40,
-                title=None,
-                body=None,
-                merge_method="merge",
-                delete_branch=False,
-                reusable_head=False,
-                sdlc_contract=pathlib.Path("sdlc/custom.yml"),
-                release_preflight_operation=["preflight"],
-                release_operation=["publish"],
-                deploy_operation=["deploy"],
-                ci_wait_seconds=1,
-                review_wait_seconds=1,
-                interval_seconds=1,
-            )
-        )
-
-    assert commands == []
+    _, loaded, args, log, state, _ = _setup(tmp_path)
+    args.sdlc_contract = pathlib.Path("sdlc/missing.yml")
+    with pytest.raises(loaded["RepositoryShipError"], match="repository file"):
+        loaded["ship_repository"](args)
+    assert state["calls"] == 0 and not log.exists()
 
 
 def test_repository_ship_prevalidates_and_executes_ordered_phase_selections(
     tmp_path: pathlib.Path,
 ) -> None:
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    assert run_git(repo, "init").returncode == 0
-    write_sdlc_contract(
-        repo,
-        release_operations={
-            operation: {"steps": [{"id": operation, "run": ["python", "-V"]}]}
-            for operation in ("check-a", "check-b", "publish-a")
-        },
-        deploy_operations={
-            operation: {"steps": [{"id": operation, "run": ["python", "-V"]}]}
-            for operation in ("deploy-a", "deploy-b")
-        },
-    )
-    preflight_results = tuple(
-        {"status": "completed", "operation": operation, "steps": [operation]}
-        for operation in ("check-a", "check-b")
-    )
-    publication_results = tuple(
-        {"status": "published", "operation": "publish-a", "steps": ["publish-a"]}
-        for _ in range(2)
-    )
-    deployment_results = tuple(
-        {"status": "deployed", "operation": operation, "steps": [operation]}
-        for operation in ("deploy-a", "deploy-b")
-    )
-    shipped = {
-        "status": "shipped",
-        "repository": "example/repository",
-        "commit": "a" * 40,
-        "pr": 7,
-        "url": "https://example.invalid/pull/7",
-        "merge_commit": "c" * 40,
-        "synchronized_head": "b" * 40,
-    }
-    responses = [
-        (0, _prepared_batch("check-a", "check-b", "publish-a", "publish-a")),
-        (0, _prepared_batch("deploy-a", "deploy-b")),
-        (0, _completed_batch(*preflight_results)),
-        (
-            0,
-            {
-                "status": "ready",
-                "source_branches": [],
-                "pending_work_scope": "",
-            },
-        ),
-        (0, shipped),
-        (0, _completed_batch(*publication_results)),
-        (0, _completed_batch(*deployment_results)),
+    _, loaded, args, log, _, commands = _setup(tmp_path)
+    args.publish_operation = [PUBLIC, PUBLIC]
+    result = loaded["ship_repository"](args)
+    assert log.read_text().splitlines() == [
+        "check",
+        "remote",
+        "check",
+        "publish",
+        "publish",
+        "check",
+        "deploy",
     ]
-    commands: list[list[str]] = []
-
-    def run_json(command: list[str], **_: object) -> tuple[int, dict[str, Any]]:
-        commands.append(command)
-        return responses[len(commands) - 1]
-
-    loaded = runpy.run_path(str(SHIP_REPOSITORY))
-    ship_repository = loaded["ship_repository"]
-    ship_repository.__globals__["_run_json"] = run_json
-    ship_repository.__globals__["_branch_worktree"] = (
-        lambda repo_root, branch: None
-    )
-    result = ship_repository(
-        argparse.Namespace(
-            repo_root=repo,
-            repo="example/repository",
-            head_branch="release/local",
-            base_branch="main",
-            remote_name="origin",
-            commit="a" * 40,
-            title=None,
-            body=None,
-            merge_method="merge",
-            delete_branch=False,
-            reusable_head=True,
-            sdlc_contract=pathlib.Path("sdlc/sdlc.yml"),
-            release_preflight_operation=["check-a", "check-b"],
-            release_operation=["publish-a", "publish-a"],
-            deploy_operation=["deploy-a", "deploy-b"],
-            ci_wait_seconds=1,
-            review_wait_seconds=1,
-            review_replies_request=None,
-            interval_seconds=1,
-        )
-    )
-
-    def selected(command: list[str]) -> list[str]:
-        return [
-            command[index + 1]
-            for index, value in enumerate(command)
-            if value == "--operation"
-        ]
-
-    assert len(commands) == 7
-    assert selected(commands[0]) == [
-        "check-a",
-        "check-b",
-        "publish-a",
-        "publish-a",
-    ]
+    assert result["release_publication"]["completed_operations"] == [PUBLIC, PUBLIC]
+    assert result["deployment"]["completed_operations"] == [LOCAL]
     assert "--prepare-only" in commands[0]
-    assert selected(commands[1]) == ["deploy-a", "deploy-b"]
-    assert "--prepare-only" in commands[1]
-    assert selected(commands[2]) == ["check-a", "check-b"]
-    assert "prepare" in commands[3]
-    assert "github_pr_workflow" in commands[4]
-    assert selected(commands[5]) == ["publish-a", "publish-a"]
-    assert selected(commands[6]) == ["deploy-a", "deploy-b"]
-    assert result["release_publication"] == _completed_batch(*publication_results)
-    assert result["deployment"] == _completed_batch(*deployment_results)
+    assert "--validate" in next(
+        command for command in commands if "--validate" in command
+    )
+
+
+def test_failed_checks_prevent_remote_work_and_succeed_after_committed_repair(
+    tmp_path: pathlib.Path,
+) -> None:
+    repo, loaded, args, log, state, _ = _setup(tmp_path)
+    (repo / "code.txt").write_text("broken", encoding="utf-8")
+    broken = _commit(repo)
+    with pytest.raises(loaded["RepositoryShipError"]) as failure:
+        loaded["ship_repository"](args)
+    assert failure.value.payload["status"] == "validation_failed"
+    assert failure.value.payload["phase"] == "before_remote"
+    assert failure.value.payload["commit"] == broken
+    assert failure.value.payload["diagnostic"]["stderr_tail"] == [
+        "ordinary check failure"
+    ]
+    assert failure.value.payload["remote_mutation"] is False
+    assert state["calls"] == 0 and log.read_text().splitlines() == ["check"]
+    (repo / "code.txt").write_text("good", encoding="utf-8")
+    repaired = _commit(repo)
+    result = loaded["ship_repository"](args)
+    assert result["commit"] == repaired != broken
+    assert result["status"] == "shipped"
+    assert log.read_text().splitlines()[-1] == "deploy"
 
 
 def test_repository_ship_release_failure_blocks_deployment_and_cleanup(
     tmp_path: pathlib.Path,
 ) -> None:
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    assert run_git(repo, "init").returncode == 0
-    write_sdlc_contract(
-        repo,
-        release_operations={
-            "preflight": {
-                "steps": [{"id": "check", "run": ["python", "check.py"]}]
-            },
-            "publish": {
-                "steps": [{"id": "publish", "run": ["python", "publish.py"]}]
-            },
-        },
-    )
-    write_sdlc_contract(
-        repo,
-        deploy_operations={
-            "deploy": {
-                "steps": [
-                    {"id": "deploy", "run": ["python", "deploy.py"]}
-                ]
-            }
-        },
-    )
-    prepared = {
-        "status": "ready",
-        "source_branches": [],
-        "pending_work_scope": "",
-    }
-    shipped = {
-        "status": "shipped",
-        "repository": "example/repository",
-        "commit": "a" * 40,
-        "pr": 17,
-        "url": "https://example.invalid/pull/17",
-        "merge_commit": "c" * 40,
-        "synchronized_head": "b" * 40,
-    }
-    release_error = {
-        "status": "operation_failed",
-        "message": "Release step failed: publish",
-        "operation": "publish",
-        "commit": "a" * 40,
-        "steps": [],
-        "failed_step": "publish",
-        "diagnostic": {
-            "exit_code": 7,
-            "stdout_tail": [],
-            "stderr_tail": ["workflow failed"],
-        },
-    }
-    responses: list[tuple[int, dict[str, Any]]] = [
-        (
-            0,
-            _completed_batch(
-                {
-                    "status": "checked",
-                    "operation": "preflight",
-                    "steps": ["check"],
-                }
-            ),
-        ),
-        (0, prepared),
-        (0, shipped),
-        (1, _failed_batch(release_error)),
-    ]
-    commands: list[list[str]] = []
+    repo, loaded, args, log, state, _ = _setup(tmp_path)
+    state["scope"] = True
+    state["external_failure"].touch()
+    with pytest.raises(loaded["RepositoryShipError"]) as failure:
+        loaded["ship_repository"](args)
+    payload = failure.value.payload
+    assert payload["phase"] == "release_publication"
+    assert payload["diagnostic"]["stderr_tail"] == ["publication unavailable"]
+    assert payload["remote_mutation"] is True
+    assert "deploy" not in log.read_text() and "finalize" not in log.read_text()
+    assert pathlib.Path(payload["resume_action"]["cwd"]) == repo
+    assert "--review-replies-request" not in payload["resume_action"]["argv"]
+    state["external_failure"].unlink()
+    result = loaded["ship_repository"](args)
+    assert result["status"] == "already_shipped"
+    assert log.read_text().splitlines()[-2:] == ["deploy", "finalize"]
 
-    def run_json(command: list[str]) -> tuple[int, dict[str, Any]]:
-        commands.append(command)
-        return responses[len(commands) - 1]
 
-    loaded = runpy.run_path(str(SHIP_REPOSITORY))
-    ship_repository = loaded["ship_repository"]
-    ship_repository.__globals__["_run_json"] = run_json
-    ship_repository.__globals__["_prepare_operation_batch"] = (
-        lambda *args, **kwargs: None
-    )
-    args = argparse.Namespace(
-        repo_root=repo,
-        repo="example/repository",
-        head_branch="release/local",
-        base_branch="main",
-        remote_name="origin",
-        commit="a" * 40,
-        title=None,
-        body=None,
-        merge_method="merge",
-        delete_branch=False,
-        reusable_head=True,
-        sdlc_contract=pathlib.Path("sdlc/sdlc.yml"),
-        release_preflight_operation=["preflight"],
-        release_operation=["publish"],
-        deploy_operation=["deploy"],
-        ci_wait_seconds=1,
-        review_wait_seconds=1,
-        review_replies_request=None,
-        interval_seconds=1,
-    )
-    with pytest.raises(loaded["RepositoryShipError"]) as captured:
-        ship_repository(args)
+def test_synchronized_source_is_checked_before_publication_or_deployment(
+    tmp_path: pathlib.Path,
+) -> None:
+    repo, loaded, args, log, state, _ = _setup(tmp_path)
+    state["break_after_remote"] = True
+    with pytest.raises(loaded["RepositoryShipError"]) as failure:
+        loaded["ship_repository"](args)
+    payload = failure.value.payload
+    assert payload["status"] == "validation_failed"
+    assert payload["phase"] == "release_publication"
+    assert payload["remote_mutation"] is True
+    assert payload["commit"] == run_git(repo, "rev-parse", "HEAD").stdout.strip()
+    assert log.read_text().splitlines() == ["check", "remote", "check"]
+    state["break_after_remote"] = False
+    (repo / "code.txt").write_text("good", encoding="utf-8")
+    _commit(repo)
+    result = loaded["ship_repository"](args)
+    assert result["status"] == "already_shipped"
+    assert log.read_text().splitlines()[-1] == "deploy"
 
-    assert captured.value.payload["phase"] == "release_publication"
-    assert captured.value.payload["status"] == "operation_failed"
-    assert captured.value.payload["diagnostic"] == release_error["diagnostic"]
-    assert captured.value.payload["remote_mutation"] is True
-    assert captured.value.payload["remaining"] == "release_publication"
-    assert list(captured.value.payload["completed"]) == [
-        "merge",
-        "synchronization",
-    ]
-    assert captured.value.payload["operation_ledger"] == {
-        "completed": [],
-        "pending": [
-            {"section": "release", "operation": "publish", "position": 1},
-            {"section": "deploy", "operation": "deploy", "position": 1},
-        ],
-    }
-    release_resume = captured.value.payload["resume_action"]
-    assert pathlib.Path(release_resume["cwd"]) == repo.resolve()
-    assert release_resume["argv"][:2] == [
-        sys.executable,
-        str(SHIP_REPOSITORY.resolve()),
-    ]
-    assert release_resume["argv"][
-        release_resume["argv"].index("--commit") + 1
-    ] == "a" * 40
-    assert "--review-replies-request" not in release_resume["argv"]
-    assert len(commands) == 4
-    assert str(RELEASE_OPERATION) in commands[-1]
-    assert "publish" in commands[-1]
-    assert all(str(DEPLOY_OPERATION) not in command for command in commands)
 
-    published = {"status": "published", "operation": "publish", "steps": []}
-    deploy_error = {
-        "status": "operation_failed",
-        "message": "Deployment step failed: deploy",
-        "operation": "deploy",
-        "commit": "a" * 40,
-        "steps": [],
-        "failed_step": "deploy",
-        "diagnostic": {
-            "exit_code": 8,
-            "stdout_tail": [],
-            "stderr_tail": ["deployment failed"],
-        },
-    }
-    preflight = {"status": "checked", "operation": "preflight", "steps": []}
-    responses = [
-        (0, _completed_batch(preflight)),
-        (0, prepared),
-        (0, shipped),
-        (0, _completed_batch(published)),
-        (1, _failed_batch(deploy_error)),
-    ]
-    commands.clear()
-    with pytest.raises(loaded["RepositoryShipError"]) as captured:
-        ship_repository(args)
-
-    assert captured.value.payload["phase"] == "deployment"
-    assert captured.value.payload["status"] == "operation_failed"
-    assert captured.value.payload["diagnostic"] == deploy_error["diagnostic"]
-    assert captured.value.payload["remaining"] == "deployment"
-    assert list(captured.value.payload["completed"]) == [
-        "merge",
-        "synchronization",
-        "release_publication",
-    ]
-    assert captured.value.payload["operation_ledger"] == {
-        "completed": [
-            {"section": "release", "operation": "publish", "position": 1}
-        ],
-        "pending": [
-            {"section": "deploy", "operation": "deploy", "position": 1}
-        ],
-    }
-    release_checkpoint = loaded["_operation_checkpoint_path"](
-        repo, "a" * 40, "release_publication", "publish", 1
-    )
-    assert release_checkpoint.is_file()
-
-    deployed = {"status": "deployed", "operation": "deploy", "steps": []}
-    responses = [
-        (0, _completed_batch(preflight)),
-        (0, prepared),
-        (0, {**shipped, "status": "already_shipped"}),
-        (0, _completed_batch(deployed)),
-    ]
-    commands.clear()
-    resumed = ship_repository(args)
-
-    assert resumed["release_publication"] == _completed_batch(published)
-    assert resumed["deployment"] == _completed_batch(deployed)
-    assert all("publish" not in command for command in commands)
-    assert not release_checkpoint.exists()
+def test_synchronized_dirty_state_preserves_remote_recovery(
+    tmp_path: pathlib.Path,
+) -> None:
+    repo, loaded, args, log, state, _ = _setup(tmp_path)
+    state["break_after_remote"] = "dirty"
+    with pytest.raises(loaded["RepositoryShipError"]) as failure:
+        loaded["ship_repository"](args)
+    payload = failure.value.payload
+    assert payload["status"] == "state_changed"
+    assert payload["remote_mutation"] is True
+    assert payload["phase"] == "release_publication"
+    assert pathlib.Path(payload["resume_action"]["cwd"]) == repo
+    assert log.read_text().splitlines() == ["check", "remote"]
 
 
 @pytest.mark.parametrize("late_phase", ["post_sync", "post_finalize"])
-@pytest.mark.parametrize("relative_scope", [False, True])
 def test_repository_ship_late_pending_work_reports_remote_mutation(
     tmp_path: pathlib.Path,
     late_phase: str,
-    relative_scope: bool,
 ) -> None:
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    assert run_git(repo, "init").returncode == 0
-    write_sdlc_contract(repo, deploy_operations={})
-    write_sdlc_contract(
-        repo,
-        release_operations={
-            "preflight": {
-                "steps": [{"id": "check", "run": ["python", "check.py"]}]
-            },
-            "publish": {
-                "steps": [{"id": "publish", "run": ["python", "publish.py"]}]
-            },
-        },
-    )
-    scope = repo / "scope.json" if relative_scope else tmp_path / "scope.json"
-    scope.write_text(
-        json.dumps(
-            {
-                "version": 2,
-                "target_branch": "release/local",
-                "target_commit": "a" * 40,
-                "sources": [
-                    {
-                        "branch": "selected",
-                        "commit": "a" * 40,
-                        "state": "retained",
-                    }
-                ],
-            }
-        ),
-        encoding="utf-8",
-        newline="\n",
-    )
-    shipped = {
-        "status": "shipped",
-        "repository": "example/repository",
-        "commit": "a" * 40,
-        "pr": 17,
-        "url": "https://example.invalid/pull/17",
-        "merge_commit": "c" * 40,
-        "synchronized_head": "b" * 40,
-    }
-    pending = {
-        "status": "pending_work",
-        "remote_mutation": False,
-        "findings": [
-            {
-                "kind": "dirty_worktree",
-                "subject": "selected",
-                "detail": "1 status entry",
-            }
-        ],
-    }
-    deployed = {
-        "status": "deployed",
-        "operation": "deploy",
-        "steps": ["install"],
-    }
-    preflight = {
-        "status": "checked",
-        "operation": "preflight",
-        "steps": ["check"],
-    }
-    published = {
-        "status": "published",
-        "operation": "publish",
-        "steps": ["publish"],
-    }
-    prepared = {
-        "status": "ready",
-        "source_branches": ["selected"],
-        "pending_work_scope": str(scope.resolve()),
-    }
-    responses: list[tuple[int, dict[str, Any]]] = (
-        [
-            (0, _completed_batch(preflight)),
-            (0, prepared),
-            (0, shipped),
-            (2, pending),
-        ]
-        if late_phase == "post_sync"
-        else [
-            (0, _completed_batch(preflight)),
-            (0, prepared),
-            (0, shipped),
-            (0, prepared),
-            (0, _completed_batch(published)),
-            (0, _completed_batch(deployed)),
-            (2, pending),
-        ]
-    )
-    commands: list[list[str]] = []
-
-    def run_json(
-        command: list[str], *, cwd: pathlib.Path | None = None
-    ) -> tuple[int, dict[str, Any]]:
-        commands.append(command)
-        return responses[len(commands) - 1]
-
-    loaded = runpy.run_path(str(SHIP_REPOSITORY))
-    ship_repository = loaded["ship_repository"]
-    ship_repository.__globals__["_run_json"] = run_json
-    ship_repository.__globals__["_prepare_operation_batch"] = (
-        lambda *args, **kwargs: None
-    )
-    ship_repository.__globals__["_branch_worktree"] = (
-        lambda repo_root, branch: None
-    )
-    args = argparse.Namespace(
-        repo_root=repo,
-        repo="example/repository",
-        head_branch="release/local",
-        base_branch="main",
-        remote_name="origin",
-        commit="a" * 40,
-        title=None,
-        body=None,
-        merge_method="merge",
-        delete_branch=False,
-        reusable_head=True,
-        sdlc_contract=pathlib.Path("sdlc/sdlc.yml"),
-        release_preflight_operation=["preflight"],
-        release_operation=["publish"],
-        deploy_operation=["deploy"],
-        ci_wait_seconds=1,
-        review_wait_seconds=1,
-        interval_seconds=1,
-    )
-    if late_phase == "post_finalize":
-        stale_identity = loaded["_operation_identity"](
-            repo,
-            phase="deployment",
-            section="deploy",
-            target_branch="release/local",
-            target_commit="d" * 40,
-            synchronized_commit="b" * 40,
-            contract=args.sdlc_contract,
-            operation="deploy",
-            position=1,
-        )
-        loaded["_write_operation_checkpoint"](
-            loaded["_operation_checkpoint_path"](
-                repo, "a" * 40, "deployment", "deploy", 1
-            ),
-            stale_identity,
-            {"status": "deployed", "operation": "deploy", "steps": ["old"]},
-        )
-
-    result = ship_repository(args)
-
+    repo, loaded, args, log, state, _ = _setup(tmp_path)
+    state["scope"] = True
+    state["late_block"] = late_phase
+    result = loaded["ship_repository"](args)
     assert result["status"] == "pending_work"
     assert result["remote_mutation"] is True
-    assert result["repository"] == "example/repository"
-    assert result["commit"] == "a" * 40
     assert result["remaining"] == (
-        "selected_work_recheck"
-        if late_phase == "post_sync"
-        else "finalization"
+        "selected_work_recheck" if late_phase == "post_sync" else "finalization"
     )
-    assert list(result["completed"]) == (
-        ["merge", "synchronization"]
-        if late_phase == "post_sync"
-        else [
-            "merge",
-            "synchronization",
-            "release_publication",
-            "deployment",
-        ]
-    )
-    assert result["operation_ledger"] == (
-        {
-            "completed": [],
-            "pending": [
-                {"section": "release", "operation": "publish", "position": 1},
-                {"section": "deploy", "operation": "deploy", "position": 1},
-            ],
-        }
-        if late_phase == "post_sync"
-        else {
-            "completed": [
-                {"section": "release", "operation": "publish", "position": 1},
-                {"section": "deploy", "operation": "deploy", "position": 1},
-            ],
-            "pending": [],
-        }
-    )
-    assert result["resume_action"]["argv"][
-        result["resume_action"]["argv"].index("--commit") + 1
-    ] == "a" * 40
-    release_runner = str(SHIP_REPOSITORY.parent / "run-release-operation.py")
-    deploy_runner = str(SHIP_REPOSITORY.parent / "run-deploy-operation.py")
-    assert release_runner in commands[0]
-    assert "preflight" in commands[0]
-    assert "prepare" in commands[1]
-    assert "check" in commands[3]
+    assert result["resume_action"]["argv"][:2] == [sys.executable, str(SHIP_REPOSITORY)]
     if late_phase == "post_sync":
-        assert len(commands) == 4
-        assert "deployment" not in result
+        assert "publish" not in log.read_text()
     else:
-        assert len(commands) == 7
-        assert release_runner in commands[4]
-        assert "publish" in commands[4]
-        assert deploy_runner in commands[5]
-        assert "finalize" in commands[6]
-        assert result["release_publication"] == _completed_batch(published)
-        assert result["deployment"] == _completed_batch(deployed)
-        release_checkpoint = loaded["_operation_checkpoint_path"](
-            repo, "a" * 40, "release_publication", "publish", 1
-        )
-        deployment_checkpoint = loaded["_operation_checkpoint_path"](
-            repo, "a" * 40, "deployment", "deploy", 1
-        )
-        assert release_checkpoint.is_file()
-        assert deployment_checkpoint.is_file()
-        release_temporary = release_checkpoint.with_suffix(
-            release_checkpoint.suffix + ".tmp"
-        )
-        deployment_temporary = deployment_checkpoint.with_suffix(
-            deployment_checkpoint.suffix + ".tmp"
-        )
-        release_temporary.write_text("stale", encoding="utf-8", newline="\n")
-        deployment_temporary.write_text("stale", encoding="utf-8", newline="\n")
-        unrelated_temporary = scope.with_name("unrelated.tmp")
-        unrelated_temporary.write_text("retained", encoding="utf-8", newline="\n")
-        responses.extend(
-            [
-                (0, _completed_batch(preflight)),
-                (0, prepared),
-                (0, {**shipped, "status": "already_shipped"}),
-                (0, prepared),
-                (1, {"status": "error", "message": "cleanup failed"}),
-            ]
-        )
+        assert log.read_text().splitlines().count("publish") == 1
+        assert loaded["_operation_checkpoint_directory"](repo).is_dir()
+    state["late_block"] = None
+    resumed = loaded["ship_repository"](args)
+    assert resumed["status"] == "already_shipped"
+    assert log.read_text().splitlines().count("publish") == 1
+    assert log.read_text().splitlines().count("deploy") == 1
+    assert not list(loaded["_operation_checkpoint_directory"](repo).glob("*.json"))
 
-        with pytest.raises(loaded["RepositoryShipError"]) as captured:
-            ship_repository(args)
 
-        recovery = captured.value.payload
-        assert recovery["phase"] == "finalization"
-        assert recovery["remaining"] == "finalization"
-        assert recovery["completed"]["release_publication"] == _completed_batch(
-            published
-        )
-        assert recovery["completed"]["deployment"] == _completed_batch(deployed)
-        assert recovery["resume_action"] == result["resume_action"]
-        assert "--review-replies-request" not in recovery["resume_action"]["argv"]
-        assert release_checkpoint.is_file()
-        assert deployment_checkpoint.is_file()
+def test_repository_ship_checkpoints_each_operation_before_the_next(
+    tmp_path: pathlib.Path,
+) -> None:
+    repo, loaded, args, log, state, _ = _setup(tmp_path)
+    args.publish_operation = [PUBLIC, PUBLIC]
+    original = loaded["execute_prepared_operation"]
+    count = 0
 
-        responses.extend(
-            [
-                (0, _completed_batch(preflight)),
-                (0, prepared),
-                (0, {**shipped, "status": "already_shipped"}),
-                (0, prepared),
-                (0, {"status": "finalized"}),
-            ]
-        )
+    def execute(prepared: Any) -> dict[str, Any]:
+        nonlocal count
+        if prepared.category == "publish":
+            count += 1
+            if count == 2:
+                files = list(
+                    loaded["_operation_checkpoint_directory"](repo).glob("*.json")
+                )
+                assert len(files) == 1
+                assert json.loads(files[0].read_text())["position"] == 1
+                raise RuntimeError("interrupted between operations")
+        return original(prepared)
 
-        resumed = ship_repository(args)
-
-        assert resumed["status"] == "already_shipped"
-        assert resumed["release_publication"] == _completed_batch(published)
-        assert resumed["deployment"] == _completed_batch(deployed)
-        assert len(commands) == 17
-        retry_release_commands = [
-            command for command in commands[7:] if release_runner in command
-        ]
-        assert len(retry_release_commands) == 2
-        assert all(
-            "preflight" in command and "publish" not in command
-            for command in retry_release_commands
-        )
-        assert all(deploy_runner not in command for command in commands[7:])
-        assert not release_checkpoint.exists()
-        assert not deployment_checkpoint.exists()
-        assert not release_temporary.exists()
-        assert not deployment_temporary.exists()
-        assert unrelated_temporary.is_file()
+    loaded["_checkpointed_operation_batch"].__globals__[
+        "execute_prepared_operation"
+    ] = execute
+    with pytest.raises(RuntimeError, match="interrupted"):
+        loaded["ship_repository"](args)
+    assert log.read_text().splitlines().count("publish") == 1
+    loaded["_checkpointed_operation_batch"].__globals__[
+        "execute_prepared_operation"
+    ] = original
+    resumed = loaded["ship_repository"](args)
+    assert resumed["status"] == "already_shipped"
+    assert log.read_text().splitlines().count("publish") == 2
+    assert log.read_text().splitlines().count("deploy") == 1
 
 
 def test_repository_ship_rejects_malformed_deployment_checkpoint(
     tmp_path: pathlib.Path,
 ) -> None:
-    loaded = runpy.run_path(str(SHIP_REPOSITORY))
-    checkpoint = tmp_path / "scope.deployment.json"
-    checkpoint.write_text("{}", encoding="utf-8", newline="\n")
-    identity = {
-        "version": 1,
-        "phase": "deployment",
-        "section": "deploy",
-        "target_branch": "release/local",
-        "target_commit": "a" * 40,
-        "synchronized_commit": "b" * 40,
-        "contract": str(tmp_path / "sdlc.yml"),
-        "operation": "deploy",
-        "position": 1,
-    }
-
-    with pytest.raises(
-        loaded["RepositoryShipError"],
-        match="invalid structure",
-    ):
-        loaded["_read_operation_checkpoint"](checkpoint, identity)
-
-
-def test_repository_ship_checkpoints_each_operation_separately(
-    tmp_path: pathlib.Path,
-) -> None:
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    assert run_git(repo, "init").returncode == 0
-    loaded = runpy.run_path(str(SHIP_REPOSITORY))
-
-    first = loaded["_operation_checkpoint_path"](
-        repo, "a" * 40, "deployment", "skills-deploy", 1
-    )
-    second = loaded["_operation_checkpoint_path"](
-        repo, "a" * 40, "deployment", "imaging-tool-deploy", 2
-    )
-
-    assert first != second
-    assert first.name.endswith(".deployment.001-skills-deploy.json")
-    assert second.name.endswith(".deployment.002-imaging-tool-deploy.json")
+    _, loaded, _, _, _, _ = _setup(tmp_path)
+    path = tmp_path / "checkpoint.json"
+    path.write_text("{}", encoding="utf-8")
+    with pytest.raises(loaded["RepositoryShipError"], match="invalid structure"):
+        loaded["_read_operation_checkpoint"](
+            path, {"version": 2, "phase": "deployment"}
+        )
 
 
 def test_repository_ship_rejects_noncanonical_release_branch_before_remote_process(
     tmp_path: pathlib.Path,
 ) -> None:
-    loaded = runpy.run_path(str(SHIP_REPOSITORY))
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    child_calls: list[list[str]] = []
-
-    def run_json(command: list[str]) -> tuple[int, dict[str, Any]]:
-        child_calls.append(command)
-        return 0, {}
-
-    ship_repository = loaded["ship_repository"]
-    ship_repository.__globals__["_run_json"] = run_json
-
+    _, loaded, args, log, state, _ = _setup(tmp_path)
+    args.head_branch = "release/task"
     with pytest.raises(
-        loaded["RepositoryShipError"],
-        match="Head branch must be release/local",
+        loaded["RepositoryShipError"], match="Head branch must be release/local"
     ):
-        ship_repository(
-            argparse.Namespace(
-                repo_root=repo,
-                head_branch="release/task",
-            )
-        )
+        loaded["ship_repository"](args)
+    assert state["calls"] == 0 and not log.exists()
 
-    assert child_calls == []
+
+def test_remote_gate_failure_remains_a_terminal_external_blocker(
+    tmp_path: pathlib.Path,
+) -> None:
+    _, loaded, args, log, state, _ = _setup(tmp_path)
+    blocker = {
+        "status": "blocked",
+        "message": "Code review needs authorization",
+        "phase": "gates",
+    }
+    state["remote_error"] = blocker
+    with pytest.raises(loaded["RepositoryShipError"]) as failure:
+        loaded["ship_repository"](args)
+    assert failure.value.payload == blocker
+    assert log.read_text().splitlines() == ["check"]
 
 
 def test_repository_ship_finalization_runs_outside_selected_worktree(
@@ -1077,6 +490,9 @@ def test_repository_ship_blocks_selected_worktree_caller_before_remote_process(
     ship_repository = loaded["ship_repository"]
     ship_repository.__globals__["_branch_worktree"] = branch_worktree
     ship_repository.__globals__["_run_json"] = run_json
+    ship_repository.__globals__["_prepare_operation_batch"] = lambda *args, **kwargs: (
+        None
+    )
     monkeypatch.chdir(selected)
 
     with pytest.raises(
@@ -1097,9 +513,9 @@ def test_repository_ship_blocks_selected_worktree_caller_before_remote_process(
                 delete_branch=False,
                 reusable_head=True,
                 sdlc_contract=pathlib.Path("sdlc/sdlc.yml"),
-                release_preflight_operation=["preflight"],
-                release_operation=["publish"],
-                deploy_operation=["deploy"],
+                validation_operation=None,
+                publish_operation=None,
+                deploy_operation=None,
                 ci_wait_seconds=1,
                 review_wait_seconds=1,
                 interval_seconds=1,

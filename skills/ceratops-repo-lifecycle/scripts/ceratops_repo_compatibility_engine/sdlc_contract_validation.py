@@ -18,10 +18,54 @@ import yaml
 
 SKILL_ROOT = pathlib.Path(__file__).resolve().parents[2]
 SCHEMA = SKILL_ROOT / "references" / "schemas" / "sdlc.yml.schema.json"
+OPERATION_CATEGORIES = frozenset({"bootstrap", "validate", "deploy-local", "publish"})
 
 
 class SdlcContractError(RuntimeError):
     """Raised when an SDLC contract or its schema is invalid."""
+
+
+class _ContractLoader(yaml.SafeLoader):
+    """Reject duplicate declarations instead of silently replacing their commands."""
+
+    def construct_mapping(self, node: yaml.MappingNode, deep: bool = False) -> dict[Any, Any]:
+        self.flatten_mapping(node)
+        result: dict[Any, Any] = {}
+        for key_node, value_node in node.value:
+            key = self.construct_object(key_node, deep=deep)
+            if not isinstance(key, str) or key in result:
+                raise yaml.constructor.ConstructorError(
+                    None, None, "SDLC mapping keys must be unique strings", key_node.start_mark,
+                )
+            result[key] = self.construct_object(value_node, deep=deep)
+        return result
+
+
+def operation_entries(contract: Mapping[str, Any]) -> dict[str, Mapping[str, Any]]:
+    """Index validated entries by their YAML location, preserving declaration order."""
+
+    entries: dict[str, Mapping[str, Any]] = {}
+    groups = [("repository", contract.get("repository", {}))]
+    groups.extend(
+        (f"deliverables.{name}", value)
+        for name, value in contract.get("deliverables", {}).items()
+    )
+    for prefix, group in groups:
+        for category, operations in group.items():
+            if category in OPERATION_CATEGORIES:
+                for name, operation in operations.items():
+                    entries[f"{prefix}.{category}.{name}"] = operation
+    return entries
+
+
+def _relative_path(value: str) -> bool:
+    """Keep metadata file references portable and lexically repository-bounded."""
+
+    path = pathlib.PurePosixPath(value)
+    windows = pathlib.PureWindowsPath(value)
+    return not (
+        path.is_absolute() or windows.drive or "\\" in value or ".." in path.parts
+    )
 
 
 def _schema_validator(
@@ -58,6 +102,19 @@ def validation_errors(
         location = ".".join(str(part) for part in error.absolute_path)
         suffix = f" at {location}" if location else ""
         errors.append(f"schema validation failed{suffix}: {error.message}")
+    if errors or not isinstance(value, Mapping):
+        return errors
+    prerequisites = value.get("repository", {}).get("prerequisites", {})
+    for name, requirement in prerequisites.items():
+        version_source = requirement.get("version-from")
+        if version_source and not _relative_path(version_source["file"]):
+            errors.append(f"prerequisite {name} version-from.file must be repository-relative")
+        if sum(key in requirement for key in ("version", "version-from", "channel")) > 1:
+            errors.append(f"prerequisite {name} has multiple version authorities")
+    for location, operation in operation_entries(value).items():
+        for name in operation.get("prerequisites", []):
+            if name not in prerequisites:
+                errors.append(f"unknown prerequisite {name} at {location}")
     return errors
 
 
@@ -69,7 +126,7 @@ def read_contract(
     """Read one YAML contract and return its mapping plus compact errors."""
 
     try:
-        value = yaml.safe_load(path.read_text(encoding="utf-8"))
+        value = yaml.load(path.read_text(encoding="utf-8"), Loader=_ContractLoader)
     except (OSError, UnicodeError, yaml.YAMLError) as exc:
         return None, [f"invalid YAML: {exc}"]
     try:
@@ -92,5 +149,5 @@ def load_contract(
 
     value, errors = read_contract(path, schema_path=schema_path)
     if errors or value is None:
-        raise SdlcContractError("; ".join(errors) or "invalid SDLC contract")
+        raise SdlcContractError(("; ".join(errors[:8]) or "invalid SDLC contract")[:4096])
     return value

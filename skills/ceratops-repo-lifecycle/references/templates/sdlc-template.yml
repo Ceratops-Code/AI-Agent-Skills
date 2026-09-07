@@ -1,4 +1,7 @@
-version: 1
+version: 2
 kind: ceratops-sdlc
-deploy:
-  operations: {}
+repository:
+  validate:
+    repository:
+      steps:
+        - run: [python, scripts/validate-repository.py]

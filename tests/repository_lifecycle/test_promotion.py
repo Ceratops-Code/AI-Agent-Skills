@@ -12,6 +12,7 @@ import pytest
 
 from tests.repository_lifecycle.support import (
     MANAGE_PENDING_WORK,
+    OPERATION_RUNNER,
     PROMOTE_REPOSITORY,
     SHIP_REPOSITORY,
     prepare_divergent_promotion_repo,
@@ -37,42 +38,42 @@ from tests.support.repositories import (
     [
         (["--no-run-operation"], False, False, None, None, None, None, None),
         (
-            ["--run-operation", "deploy"],
+            ["--run-operation", "deliverables.sample.deploy-local.deploy"],
             False,
             False,
             None,
             {
-                "status": "deployed",
-                "operation": "deploy",
-                "steps": ["record"],
+                "status": "completed",
+                "operation": "deliverables.sample.deploy-local.deploy",
+                "steps": [1],
             },
             False,
             None,
             False,
         ),
         (
-            ["--run-operation", "deploy"],
+            ["--run-operation", "deliverables.sample.deploy-local.deploy"],
             False,
             True,
             None,
             {
-                "status": "deployed",
-                "operation": "deploy",
-                "steps": ["record"],
+                "status": "completed",
+                "operation": "deliverables.sample.deploy-local.deploy",
+                "steps": [1],
             },
             True,
             None,
             False,
         ),
         (
-            ["--run-operation", "deploy"],
+            ["--run-operation", "deliverables.sample.deploy-local.deploy"],
             False,
             True,
             "ceratops-skill-lifecycle/deploy",
             {
-                "status": "deployed",
-                "operation": "deploy",
-                "steps": ["record"],
+                "status": "completed",
+                "operation": "deliverables.sample.deploy-local.deploy",
+                "steps": [1],
                 "handoff": "ceratops-skill-lifecycle/deploy",
             },
             True,
@@ -128,7 +129,7 @@ def test_promote_repository_requires_an_explicit_deployment_choice(
     else:
         assert result["operations"] == {
             "status": "completed",
-            "completed_operations": ["deploy"],
+            "completed_operations": ["deliverables.sample.deploy-local.deploy"],
             "pending_operations": [],
             "results": [
                 {
@@ -137,16 +138,11 @@ def test_promote_repository_requires_an_explicit_deployment_choice(
                 }
             ],
         }
-    if expected_managed_skills is None:
-        assert "managed_skills" not in result
-        assert "handoffs" not in result
-    else:
-        assert result["managed_skills"] is expected_managed_skills
-        assert result["handoffs"] == (
-            []
-            if expected_handoff is None
-            else [{"operation": "deploy", "handoff": expected_handoff}]
-        )
+    assert "managed_skills" not in result
+    assert result.get("handoffs", []) == (
+        [] if expected_handoff is None
+        else [{"operation": "deliverables.sample.deploy-local.deploy", "handoff": expected_handoff}]
+    )
     scope_path = pathlib.Path(result["pending_work_scope"])
     assert json.loads(scope_path.read_text(encoding="utf-8")) == {
         "sources": [
@@ -184,11 +180,10 @@ def test_promote_repository_runs_explicit_operation_ids_in_order(
     )
     write_sdlc_contract(
         repo,
-        deploy_operations={
+        deliverables={"sample": {"deploy-local": {
             operation: {
                 "steps": [
                     {
-                        "id": operation,
                         "run": [
                             sys.executable,
                             "ordered-operation.py",
@@ -199,7 +194,7 @@ def test_promote_repository_runs_explicit_operation_ids_in_order(
                 ]
             }
             for operation in ("promotion-check", "custom-deploy")
-        },
+        }}},
     )
     assert run_git(repo, "add", ".").returncode == 0
     assert run_git(repo, "commit", "-m", "add ordered operations").returncode == 0
@@ -213,9 +208,9 @@ def test_promote_repository_runs_explicit_operation_ids_in_order(
             "--source-branch",
             "approved",
             "--run-operation",
-            "promotion-check",
+            "deliverables.sample.deploy-local.promotion-check",
             "--run-operation",
-            "custom-deploy",
+            "deliverables.sample.deploy-local.custom-deploy",
         ],
         capture_output=True,
         text=True,
@@ -226,8 +221,8 @@ def test_promote_repository_runs_explicit_operation_ids_in_order(
     assert promoted.returncode == 0, promoted.stderr
     result = json.loads(promoted.stdout)
     assert result["operations"]["completed_operations"] == [
-        "promotion-check",
-        "custom-deploy",
+        "deliverables.sample.deploy-local.promotion-check",
+        "deliverables.sample.deploy-local.custom-deploy",
     ]
     assert log.read_text(encoding="utf-8") == "promotion-check\ncustom-deploy\n"
 
@@ -256,7 +251,7 @@ def test_promote_repository_ship_after_promotion_composes_terminal_workflow(
     assert parsed.run_operation is None
     assert parsed.no_run_operation is False
     for conflicting in (
-        ["--run-operation", "deploy"],
+        ["--run-operation", "deliverables.sample.deploy-local.deploy"],
         ["--no-run-operation"],
     ):
         with pytest.raises(SystemExit):
@@ -276,8 +271,8 @@ def test_promote_repository_ship_after_promotion_composes_terminal_workflow(
             "steps": ["publish"],
         },
         "deployment": {
-            "status": "deployed",
-            "operation": "deploy",
+            "status": "completed",
+            "operation": "deliverables.sample.deploy-local.deploy",
             "steps": ["install"],
         },
         "finalization": {"status": "finalized"},
@@ -291,6 +286,9 @@ def test_promote_repository_ship_after_promotion_composes_terminal_workflow(
     def run_json(
         command: list[str], cwd: pathlib.Path
     ) -> tuple[int, dict[str, Any]]:
+        if pathlib.Path(command[1]) == OPERATION_RUNNER:
+            assert "--validate" in command
+            return original_run_json(command, cwd)
         commands.append(command)
         if pathlib.Path(command[1]) == MANAGE_PENDING_WORK:
             code, result = original_run_json(command, cwd)
@@ -342,13 +340,11 @@ def test_promote_repository_ship_after_promotion_composes_terminal_workflow(
     assert pathlib.Path(
         ship_command[ship_command.index("--sdlc-contract") + 1]
     ) == pathlib.Path("sdlc/sdlc.yml")
-    assert ship_command[
-        ship_command.index("--release-preflight-operation") + 1
-    ] == "preflight"
-    assert ship_command[ship_command.index("--release-operation") + 1] == "publish"
-    assert ship_command[ship_command.index("--deploy-operation") + 1] == "deploy"
+    assert "--publish-operation" not in ship_command
+    assert "--deploy-operation" not in ship_command
+    assert "--validation-operation" not in ship_command
     assert "--reusable-head" in ship_command
-    assert str(PROMOTE_REPOSITORY.parent / "run-deploy-operation.py") not in (
+    assert str(OPERATION_RUNNER) not in (
         command[1] for command in commands
     )
     assert captured_handoff == {
@@ -386,6 +382,9 @@ def test_promote_repository_ship_after_promotion_preserves_blocked_state(
     def run_json(
         command: list[str], cwd: pathlib.Path
     ) -> tuple[int, dict[str, Any]]:
+        if pathlib.Path(command[1]) == OPERATION_RUNNER:
+            assert "--validate" in command
+            return original_run_json(command, cwd)
         commands.append(command)
         if pathlib.Path(command[1]) == MANAGE_PENDING_WORK:
             code, result = original_run_json(command, cwd)
@@ -558,7 +557,7 @@ def test_promote_and_deploy_does_not_inject_base_revision(
             "--source-branch",
             "approved-second",
             "--run-operation",
-            "deploy",
+            "deliverables.sample.deploy-local.deploy",
         ],
         capture_output=True,
         text=True,
@@ -571,7 +570,7 @@ def test_promote_and_deploy_does_not_inject_base_revision(
     assert second_result["release_start"] == approved_head
     assert second_result["handoffs"] == [
         {
-            "operation": "deploy",
+            "operation": "deliverables.sample.deploy-local.deploy",
             "handoff": "ceratops-skill-lifecycle/deploy",
         }
     ]
@@ -824,7 +823,7 @@ def test_promote_preserves_structured_operation_failure_evidence(
             "--source-branch",
             "approved",
             "--run-operation",
-            "deploy",
+            "deliverables.sample.deploy-local.deploy",
         ],
         capture_output=True,
         text=True,
@@ -835,9 +834,9 @@ def test_promote_preserves_structured_operation_failure_evidence(
     assert promoted.returncode == 1
     result = json.loads(promoted.stderr)
     assert result["status"] == "operation_failed"
-    assert result["operation"] == "deploy"
+    assert result["operation"] == "deliverables.sample.deploy-local.deploy"
     assert result["commit"] == target_commit
-    assert result["failed_step"] == "record"
+    assert result["failed_step"] == 1
     assert result["diagnostic"] == {
         "exit_code": 6,
         "stdout_tail": [],
@@ -869,7 +868,7 @@ def test_promote_and_deploy_rejects_operation_created_repository_work(
             "--source-branch",
             "approved",
             "--run-operation",
-            "deploy",
+            "deliverables.sample.deploy-local.deploy",
         ],
         capture_output=True,
         text=True,
@@ -883,3 +882,93 @@ def test_promote_and_deploy_rejects_operation_created_repository_work(
     assert "dirty" in result["message"].lower()
     assert "ready" in result["message"].lower()
     assert (repo / "generated-by-deploy.txt").is_file()
+
+
+def test_promotion_repairs_and_revalidates_the_final_commit_before_deployment(
+    tmp_path: pathlib.Path,
+) -> None:
+    repo, _, deployment_log, environment = prepare_repository_lifecycle_repo(tmp_path)
+    checks = tmp_path / "checks.txt"
+    (repo / "quality.txt").write_text("broken", encoding="utf-8")
+    (repo / "custom-quality.py").write_text(
+        "import pathlib, subprocess, sys\n"
+        "head = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()\n"
+        f"with pathlib.Path({str(checks)!r}).open('a') as out: out.write(head + '\\n')\n"
+        "raise SystemExit(0 if pathlib.Path('quality.txt').read_text() == 'good' else 7)\n",
+        encoding="utf-8",
+    )
+    write_sdlc_contract(repo, repository={"validate": {
+        "custom": {"steps": [{"run": [sys.executable, "custom-quality.py"]}]},
+    }})
+    assert run_git(repo, "add", ".").returncode == 0
+    assert run_git(repo, "commit", "-m", "failing validation").returncode == 0
+    broken = run_git(repo, "rev-parse", "HEAD").stdout.strip()
+    command = [
+        sys.executable, str(PROMOTE_REPOSITORY), "--repo-root", str(repo),
+        "--source-branch", "approved", "--run-operation",
+        "deliverables.sample.deploy-local.deploy",
+    ]
+    failed = subprocess.run(command, env=environment, capture_output=True, text=True, check=False)
+    evidence = json.loads(failed.stderr)
+    assert failed.returncode == 1
+    assert evidence["status"] == "validation_failed"
+    assert evidence["phase"] == "promotion_validation"
+    assert evidence["commit"] == broken
+    assert pathlib.Path(evidence["pending_work_scope"]).is_file()
+    assert not deployment_log.exists()
+
+    assert run_git(repo, "switch", "approved").returncode == 0
+    (repo / "quality.txt").write_text("good", encoding="utf-8")
+    assert run_git(repo, "add", "quality.txt").returncode == 0
+    assert run_git(repo, "commit", "-m", "repair").returncode == 0
+    repaired = run_git(repo, "rev-parse", "HEAD").stdout.strip()
+    succeeded = subprocess.run(command, env=environment, capture_output=True, text=True, check=False)
+    assert succeeded.returncode == 0, succeeded.stderr
+    assert checks.read_text().splitlines() == [broken, repaired, repaired]
+    assert deployment_log.read_text() == "no-base\n"
+
+
+def test_composed_promotion_and_shipping_each_run_their_validation_boundary(
+    tmp_path: pathlib.Path,
+) -> None:
+    repo, _, _, _ = prepare_repository_lifecycle_repo(tmp_path)
+    log = tmp_path / "validation.txt"
+    (repo / "other-verifier.py").write_text(
+        f"import pathlib\nwith pathlib.Path({str(log)!r}).open('a') as out: out.write('checked\\n')\n",
+        encoding="utf-8",
+    )
+    write_sdlc_contract(repo, repository={"validate": {
+        "custom": {"steps": [{"run": [sys.executable, "other-verifier.py"]}]},
+    }})
+    assert run_git(repo, "add", ".").returncode == 0
+    assert run_git(repo, "commit", "-m", "alternate validator").returncode == 0
+    head = run_git(repo, "rev-parse", "HEAD").stdout.strip()
+    promotion = runpy.run_path(str(PROMOTE_REPOSITORY))
+    shipping = runpy.run_path(str(SHIP_REPOSITORY))
+    original_promotion = promotion["_run_json"]
+    original_shipping = shipping["_run_json"]
+
+    def ship_json(command: list[str], **kwargs: Any) -> tuple[int, dict[str, Any]]:
+        if pathlib.Path(command[1]) == OPERATION_RUNNER:
+            return original_shipping(command, **kwargs)
+        if "prepare" in command:
+            return 0, {"status": "ready", "pending_work_scope": "", "source_branches": []}
+        assert "github_pr_workflow" in command
+        assert log.read_text().splitlines() == ["checked", "checked"]
+        return 0, {"status": "shipped", "commit": head, "synchronized_head": head}
+
+    shipping["ship_repository"].__globals__["_run_json"] = ship_json
+
+    def promote_json(command: list[str], cwd: pathlib.Path) -> tuple[int, dict[str, Any]]:
+        if pathlib.Path(command[1]) == SHIP_REPOSITORY:
+            args = shipping["build_parser"]().parse_args(command[2:])
+            return 0, shipping["ship_repository"](args)
+        return original_promotion(command, cwd)
+
+    promotion["promote"].__globals__["_run_json"] = promote_json
+    args = promotion["build_parser"]().parse_args([
+        "--repo-root", str(repo), "--source-branch", "approved", "--ship-after-promotion",
+    ])
+    result = promotion["promote"](args)
+    assert result["status"] == "shipped"
+    assert log.read_text().splitlines() == ["checked", "checked"]

@@ -4,8 +4,8 @@
 
 Make an existing repository satisfy the `ceratops-compatible` repository and
 validation contract without changing any skill's intended behavior. Repositories
-with no skills remain valid and omit the skill manifest, canonical shared
-sections, bootstrap, and empty SDLC contracts.
+with no skills omit skill-specific surfaces but still declare repository
+validation in their SDLC contract.
 
 ## Context
 
@@ -34,8 +34,8 @@ Infer the source identity from stable repository evidence before asking.
   <task-worktree> [--runtime-source-id <stable-id>]`; it performs the
   compatibility transaction and emits one compact result.
   Add `--no-sdlc-contract` when the caller chooses to leave an existing SDLC
-  contract unchanged. A repository with no skills and no existing deployment
-  operations leaves `sdlc/sdlc.yml` absent by default.
+  contract unchanged or absent. Otherwise every repository receives the
+  template's repository validation capability.
 - (D) Bootstrap-only repair: `python -m ceratops_repo_compatibility_engine
   synchronize-bootstrap --target-repo-root <task-worktree>`; it only compares
   parsed installer versions and copies a missing or lower version.
@@ -81,9 +81,8 @@ Infer the source identity from stable repository evidence before asking.
   manifest; block rather than discard a nonempty skill manifest.
   Preserve valid target-owned custom sections and assignments, portable
   runtime payloads, and maintenance commands.
-- Before any compatibility writes, reject `deploy/deploy.yml` and
-  `release/release.yml`, including with `--no-sdlc-contract`; require their
-  operations in `sdlc/sdlc.yml` and removal of the retired files.
+- Validate only the current version-2 SDLC structure; do not add format
+  conversion, compatibility aliases or retired-file migration detectors.
 - Block malformed or unsafe existing declarations before mutation. After the
   first write, restore every changed target file after any caught blocker and
   report the failed phase and rollback state.
@@ -111,11 +110,10 @@ Infer the source identity from stable repository evidence before asking.
   source skills exist, write `skills/skill-sections.json`, copy canonical shared
   sections to `skills/sections/`, and remove generated section blocks from
   source skills.
-- When skills exist or an SDLC contract already exists, materialize or align
-  `sdlc/sdlc.yml` from `references/templates/sdlc-template.yml`, preserve every
-  target-owned section and operation, and declare the canonical `bootstrap`
-  operation and default `ceratops-skill-lifecycle/deploy` handoff only when
-  skills exist. Do not create an empty SDLC contract.
+- Materialize `sdlc/sdlc.yml` from the owned template, preserving target
+  capabilities. Supply repository validation when undeclared. For source
+  skills, add `deliverables.skills.deploy-local.managed` advisory routing and
+  `standalone` deployment; these alternatives are not automatic defaults.
 - When skills exist, make every source `SKILL.md` delta-only, add or align
   `skills/<name>/agents/openai.yaml`, and align the README Skills table without
   changing skill behavior.
@@ -150,9 +148,9 @@ Infer the source identity from stable repository evidence before asking.
 - Skill-bearing repositories have a stable source identity,
   `ceratops-compatible` manifest, complete per-skill assignments, target-owned
   shared sections, aligned source skills, metadata, README inventory, portable
-  payload declarations, a default deploy handoff, and a supported versioned
-  bootstrap. Skillless repositories have no generated skill manifest,
-  bootstrap, or empty deployment definition.
+  payload declarations, managed deployment routing and a supported standalone
+  installer. Skillless repositories retain only repository capabilities and
+  target-owned deliverables.
 - Every target has repository validation and CI wiring; every applicable
   `check_repository` result is valid with no errors.
 - Any caught blocker after mutation restores the exact prior target files and
