@@ -126,7 +126,7 @@ Infer the source identity from stable repository evidence before asking.
   `.github/workflows/validate.yml` for every repository, including repositories
   with no skills. CI calls the repository-owned validator.
 - When skills exist, the compatibility materializer synchronizes the
-  first-install-only `scripts/install-skills-bootstrap.py`. Retain a same- or
+  independent `scripts/install-skills-bootstrap.py`. Retain a same- or
   higher-version bootstrap and replace only a missing or lower version.
 - When no skills exist, do not add a bootstrap script or bootstrap deployment
   operation.

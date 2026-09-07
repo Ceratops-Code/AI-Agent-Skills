@@ -120,11 +120,8 @@ repo docs, then update the narrowest correct source that exists.
 
 - Change both explicit `INSTALLER_VERSION` values together and reuse an
   unpublished bump when replacing its architecture. Run both public CLI
-  behavior tests. AI-Agent-Skills executes a temporary snapshot of its
-  installed lifecycle outside the managed destination and uses its independent
-  installer once when that path is unavailable or unsuccessful;
-  compatible-repository installers remain self-contained and
-  Ceratops-independent.
+  behavior tests. Repository and compatible-repository bootstrap installers
+  remain self-contained and never invoke installed lifecycle code.
 - If shared section files or `skills/skill-sections.json` changed, run the
   manifest's shared-source check path.
 - Do not run validation solely because skill-local text, metadata, or docs

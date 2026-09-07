@@ -3,7 +3,7 @@
 ## Goal
 
 Deploy the exact manifest-managed skill batch without invoking repository
-deployment operations or the first-install bootstrap.
+deployment operations or the independent bootstrap installer.
 
 ## Context
 

@@ -109,7 +109,7 @@ without repository deduplication.
 | `hooks/bounded-source-search.py` | Runs bounded two-phase ripgrep searches and replaces oversized successful ripgrep hook output with a compact per-file projection. |
 | `hooks/preserve-eol-for-apply-patch-tool.py` | Preserves each updated text file's existing encoding and uniform line-ending convention around `apply_patch`. |
 | `hooks/windows-shell-sanity.py` | Repository-owned source for the user-global Windows PowerShell preflight; rewrites exact command defects, annotates ordinary failures, and blocks unreliable or policy-prohibited forms. |
-| `scripts/install-skills-bootstrap.py` | Self-contained first-install bootstrap; stages and validates one complete selected batch under the install root and never calls lifecycle runtime code. |
+| `scripts/install-skills-bootstrap.py` | Independent installation and updates; renders selected skills and overlays their files without validation, retirement, or lifecycle runtime calls. |
 | `scripts/bootstrap-tool-manager.py` | First tool-manager installation with pinned uv and managed Python; invokes the shared deployment engine and never changes Codex settings. |
 | `scripts/package-tool-release.py` | Development-only wheel build and exact local release registration from reviewed source, with source dependency lock generation. |
 | `scripts/check-tool-manager.py` | Explicit installed-runtime acceptance with a harmless fixture and a persistent MCP connection across a selected self-update. |
@@ -361,20 +361,21 @@ Codex discovers personal skills from:
 $CODEX_HOME/skills/<skill-name>/SKILL.md
 ```
 
-Install the runtime dependency, then use the bootstrap only for the first
-installation:
+Install the runtime dependencies, then use the independent installer:
 
 ```powershell
 python -m pip install -r requirements-runtime.txt
 python .\scripts\install-skills-bootstrap.py
 ```
 
-The bootstrap is self-contained and never calls installed lifecycle code. It
-stages the complete selected batch in a uniquely named hidden directory under
-the install root, validates it, refuses existing destinations, activates it,
-and cleans only bootstrap-owned state. For every later deployment, use
-`$ceratops-skill-lifecycle` `deploy`, which invokes the managed runtime
-transaction directly.
+The installer is self-contained and never calls installed lifecycle code. It
+renders the selected batch in a hidden staging directory and copies its files
+over existing installations without source or staged-content validation.
+Destination-only files and unselected or retired skills remain untouched.
+Input parsing and path-safety checks remain necessary for copying. Copy errors
+can leave partial updates; staging and locks created by this run are cleaned.
+For validated deployment with managed retirement and rollback, use
+`$ceratops-skill-lifecycle` `deploy`.
 
 For another Ceratops-compatible repo, run its versioned repository installer:
 
@@ -384,9 +385,10 @@ python <target-repo>\scripts\install-skills-bootstrap.py --repo-root <target-rep
 
 An external repository's copied bootstrap is independent: it uses only the
 Python standard library, reads declared skills, resolves shared sections and
-payloads, fully stages the requested output under the install root, and refuses
-existing destinations. It does not locate or run Ceratops, validate repository
-lifecycle policy, negotiate compatibility, or fall back after an error.
+payloads, and overlays the requested output under the install root. It retains
+destination-only files and other skills. It does not locate or run Ceratops,
+validate skill or repository content, negotiate compatibility, or fall back
+after an error.
 
 For report-only global routing, the runtime installer can write direct managed
 manifest entries and malformed-entry blockers without comparing runtime files
@@ -401,7 +403,8 @@ local skills repo checkout used as the input path for the runtime installer.
 The active branch only selects which repo snapshot is installed: synced `main`
 for normal use, or `release/local` for an active unpublished preview.
 After changing the installed source snapshot, use the installed lifecycle
-skill's `deploy` action to refresh it; never use bootstrap as a reinstall path.
+skill's `deploy` action for managed updates or the independent installer for
+an explicit overlay without validation or retirement.
 When shipping a staged batch, reuse the same `release/local` branch name locally
 and remotely by default. Use `$ceratops-repo-lifecycle` `promote` to assemble
 selected reviewed branches without installation, or `promote-and-deploy` to run

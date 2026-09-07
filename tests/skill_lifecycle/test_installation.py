@@ -8,6 +8,8 @@ import shutil
 import subprocess
 import sys
 
+import pytest
+
 from tests.skill_lifecycle.support import (
     BOOTSTRAP,
     INSTALLER_TEMPLATE,
@@ -136,7 +138,7 @@ def test_bootstrap_never_calls_installed_lifecycle(
     ) == "Ceratops-Code/AI-Agent-Skills"
 
 
-def test_bootstrap_is_first_install_only_and_cleans_owned_state(
+def test_bootstrap_updates_existing_installations_and_cleans_owned_state(
     tmp_path: pathlib.Path,
 ) -> None:
     codex_home = tmp_path / "codex-home"
@@ -173,6 +175,11 @@ def test_bootstrap_is_first_install_only_and_cleans_owned_state(
     assert runtime_owner(install_root, "ceratops-skill-lifecycle") == (
         "Ceratops-Code/AI-Agent-Skills"
     )
+    installed_skill = install_root / "ceratops-skill-lifecycle"
+    skill_text = (installed_skill / "SKILL.md").read_text(encoding="utf-8")
+    (installed_skill / "SKILL.md").write_text("old installation\n", encoding="utf-8")
+    retained = installed_skill / "local-notes.txt"
+    retained.write_text("keep this\n", encoding="utf-8")
     repeated = subprocess.run(
         [
             sys.executable,
@@ -189,8 +196,113 @@ def test_bootstrap_is_first_install_only_and_cleans_owned_state(
         check=False,
         env={**os.environ, "CODEX_HOME": str(codex_home)},
     )
-    assert repeated.returncode == 1
-    assert "bootstrap is first-install-only" in repeated.stderr
+    assert repeated.returncode == 0, repeated.stderr
+    assert repeated.stdout.strip() == "OK"
+    assert (installed_skill / "SKILL.md").read_text(encoding="utf-8") == skill_text
+    assert retained.read_text(encoding="utf-8") == "keep this\n"
+    assert not list(install_root.glob(".ceratops-bootstrap*"))
+
+
+@pytest.mark.parametrize("installer", [BOOTSTRAP, INSTALLER_TEMPLATE])
+def test_bootstrap_retains_retired_skills_without_content_validation(
+    tmp_path: pathlib.Path,
+    installer: pathlib.Path,
+) -> None:
+    repo = tmp_path / "compatible"
+    install_root = tmp_path / "installed"
+    create_compatible_repo(repo, "example/external", ["alpha-tool"])
+    manifest = json.loads((repo / "skills" / "skill-sections.json").read_text())
+    section = repo / next(iter(manifest["sections"].values()))
+    marker = "<!-- CERATOPS_SHARED_SECTIONS_START -->"
+    section.write_text(marker + "\nUnchecked shared content\n", encoding="utf-8")
+    undeclared = repo / "skills" / "unselected-source"
+    undeclared.mkdir()
+    (undeclared / "SKILL.md").write_text("invalid source\n", encoding="utf-8")
+    retired = install_root / "retired-skill"
+    retired.mkdir(parents=True)
+    (retired / "SKILL.md").write_text("retain retired skill\n", encoding="utf-8")
+    target = install_root / "alpha-tool"
+    target.mkdir()
+    (target / RUNTIME_MANIFEST).write_text("invalid installed metadata\n", encoding="utf-8")
+    (target / "retired-file.txt").write_text("retain old file\n", encoding="utf-8")
+    command = [
+        sys.executable, str(installer), "--repo-root", str(repo),
+        "--install-root", str(install_root),
+    ]
+    for _ in range(2):
+        result = subprocess.run(command, capture_output=True, text=True, check=False)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == "OK"
+        assert (target / "SKILL.md").read_text(encoding="utf-8").count(marker) == 2
+        assert (target / "retired-file.txt").read_text(encoding="utf-8") == "retain old file\n"
+        assert (retired / "SKILL.md").read_text(encoding="utf-8") == "retain retired skill\n"
+        assert not (install_root / "unselected-source").exists()
+        assert not list(install_root.glob(".ceratops-bootstrap*"))
+
+
+@pytest.mark.parametrize("installer", [BOOTSTRAP, INSTALLER_TEMPLATE])
+def test_bootstrap_does_not_follow_existing_destination_links(
+    tmp_path: pathlib.Path,
+    installer: pathlib.Path,
+) -> None:
+    repo = tmp_path / "compatible"
+    create_compatible_repo(repo, "example/external", ["alpha-tool"])
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    sentinel = outside / "SKILL.md"
+    sentinel.write_text("untouched\n", encoding="utf-8")
+    install_root = tmp_path / "installed"
+    install_root.mkdir()
+    target = install_root / "alpha-tool"
+    try:
+        target.symlink_to(outside, target_is_directory=True)
+    except OSError:
+        pytest.skip("creating symbolic links is unavailable")
+    result = subprocess.run(
+        [
+            sys.executable, str(installer), "--repo-root", str(repo),
+            "--install-root", str(install_root),
+        ],
+        capture_output=True, text=True, check=False,
+    )
+    assert result.returncode == 1
+    assert sentinel.read_text(encoding="utf-8") == "untouched\n"
+    assert target.is_symlink()
+    assert not list(install_root.glob(".ceratops-bootstrap*"))
+
+
+def test_bootstrap_cleans_owned_state_after_copy_failure(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    repo = tmp_path / "compatible"
+    create_compatible_repo(repo, "example/external", ["alpha-tool"])
+    install_root = tmp_path / "installed"
+    target = install_root / "alpha-tool"
+    target.mkdir(parents=True)
+    retained = target / "SKILL.md"
+    retained.write_text("prior installation\n", encoding="utf-8")
+    installer = runpy.run_path(str(BOOTSTRAP))
+    copytree = shutil.copytree
+
+    def fail_overlay(
+        source: str | os.PathLike[str],
+        destination: str | os.PathLike[str],
+        *args: object,
+        **kwargs: object,
+    ) -> object:
+        if pathlib.Path(destination) == target:
+            raise OSError("copy failed")
+        return copytree(source, destination, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(shutil, "copytree", fail_overlay)
+    monkeypatch.setattr(sys, "argv", [
+        str(BOOTSTRAP), "--repo-root", str(repo), "--install-root", str(install_root),
+    ])
+    assert installer["main"]() == 1
+    assert "copy failed" in capsys.readouterr().err
+    assert retained.read_text(encoding="utf-8") == "prior installation\n"
     assert not list(install_root.glob(".ceratops-bootstrap*"))
 
 

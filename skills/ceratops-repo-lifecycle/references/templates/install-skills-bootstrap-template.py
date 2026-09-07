@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Bootstrap this repository's declared skills without lifecycle dependencies.
 
-This first-install-only helper stages one complete selected batch in a uniquely
-named hidden directory under the install root. It validates that batch before
-activation, never replaces an existing skill, and cleans only staging and lock
-paths that it created.
+This independent installer renders selected skills in a temporary staging
+directory, then copies them over existing installations. It runs no skill or
+repository validation and retains destination-only files and unselected skills.
+Only input parsing and path safety constrain copying. A copy failure can leave
+partial updates; this helper cleans only its own staging directory and lock.
 """
 
 from __future__ import annotations
@@ -21,7 +22,7 @@ import uuid
 from collections.abc import Mapping, Sequence
 from typing import cast
 
-INSTALLER_VERSION = 11
+INSTALLER_VERSION = 12
 MANIFEST_NAME = ".runtime-manifest.json"
 RUNTIME_MANIFEST_SCHEMA = "ceratops-runtime-skill.v3"
 START = "<!-- CERATOPS_SHARED_SECTIONS_START -->"
@@ -123,12 +124,6 @@ def read_manifest(repo_root: pathlib.Path) -> dict[str, object]:
         raise ValueError("skills must map names to section lists")
     if not isinstance(payloads, dict):
         raise ValueError("runtime_payloads must be an object")
-    source_names = {
-        skill.parent.name
-        for skill in (repo_root / "skills").glob("*/SKILL.md")
-    }
-    if set(skills) != source_names:
-        raise ValueError("skill assignments must match source SKILL.md folders")
     return value
 
 
@@ -349,43 +344,6 @@ def build_skill(
     )
 
 
-def validate_staged_batch(
-    staging: pathlib.Path,
-    manifest: Mapping[str, object],
-    skills: Sequence[str],
-) -> None:
-    """Validate every staged tree and runtime identity before activation."""
-
-    expected_source = manifest["runtime_source_id"]
-    staged_names = sorted(
-        path.name for path in staging.iterdir() if path.is_dir()
-    )
-    if staged_names != sorted(skills):
-        raise ValueError("staged skill batch does not match the selection")
-    for skill in skills:
-        target = staging / skill
-        validate_tree(target)
-        skill_text = (target / "SKILL.md").read_text(encoding="utf-8")
-        if skill_text.count(START) != 1 or skill_text.count(END) != 1:
-            raise ValueError(f"{skill}: staged shared sections are invalid")
-        metadata = json.loads(
-            (target / MANIFEST_NAME).read_text(encoding="utf-8")
-        )
-        if not isinstance(metadata, dict):
-            raise ValueError(f"{skill}: staged runtime manifest is invalid")
-        expected = {
-            "schema": RUNTIME_MANIFEST_SCHEMA,
-            "skill": skill,
-            "runtime_source_id": expected_source,
-        }
-        if any(metadata.get(key) != value for key, value in expected.items()):
-            raise ValueError(f"{skill}: staged runtime identity is invalid")
-        if "installer_version" in metadata:
-            raise ValueError(
-                f"{skill}: staged runtime manifest has obsolete installer_version"
-            )
-
-
 def remove_stage(staging: pathlib.Path, install_root: pathlib.Path) -> None:
     """Remove only the uniquely named bootstrap staging tree we created."""
 
@@ -398,99 +356,45 @@ def remove_stage(staging: pathlib.Path, install_root: pathlib.Path) -> None:
         shutil.rmtree(staging)
 
 
-def rollback_activation(
-    staging: pathlib.Path,
-    install_root: pathlib.Path,
-    activated: Sequence[str],
-) -> list[str]:
-    """Move this run's activated skills back into staging before cleanup."""
-
-    errors: list[str] = []
-    for skill in reversed(activated):
-        target = install_root / skill
-        restored = staging / skill
-        try:
-            if restored.exists() or not target.is_dir() or unsafe_link(target):
-                raise ValueError("activated path cannot be safely rolled back")
-            target.rename(restored)
-        except (OSError, ValueError) as exc:
-            errors.append(f"{skill}: {exc}")
-    return errors
-
-
 def install_batch(
     repo_root: pathlib.Path,
     install_root: pathlib.Path,
     skills: Sequence[str],
     manifest: Mapping[str, object],
 ) -> None:
-    """Stage, validate, and atomically activate one first-install batch."""
+    """Render and overlay selected skills, preserving all destination-only data."""
 
     install_root.mkdir(parents=True, exist_ok=True)
     lock = install_root / LOCK_NAME
     staging = install_root / f".ceratops-bootstrap-stage-{uuid.uuid4().hex}"
     lock_created = False
-    activated: list[str] = []
     try:
         lock.mkdir()
         lock_created = True
-        existing = [
-            skill
-            for skill in skills
-            if (install_root / skill).exists()
-            or (install_root / skill).is_symlink()
-        ]
-        if existing:
-            raise ValueError(
-                "bootstrap is first-install-only; destinations already exist: "
-                + ", ".join(sorted(existing))
-            )
         staging.mkdir()
         for skill in skills:
             build_skill(repo_root, staging, manifest, skill)
-        validate_staged_batch(staging, manifest, skills)
+        # Inspect only paths being written; retained files are not audited.
+        for source in staging.rglob("*"):
+            target = install_root / source.relative_to(staging)
+            require_inside(target, install_root)
+            if target.is_symlink() or (target.exists() and unsafe_link(target)):
+                raise ValueError(f"bootstrap destination cannot be a link: {target}")
         for skill in skills:
-            target = install_root / skill
-            if target.exists() or target.is_symlink():
-                raise ValueError(
-                    f"bootstrap destination appeared during activation: {target}"
-                )
-            (staging / skill).rename(target)
-            activated.append(skill)
-    except Exception as activation_error:
-        rollback_errors = rollback_activation(
-            staging, install_root, activated
-        )
-        cleanup_error = ""
-        try:
-            remove_stage(staging, install_root)
-        except (OSError, ValueError) as exc:
-            cleanup_error = str(exc)
-        if rollback_errors or cleanup_error:
-            details = [*rollback_errors]
-            if cleanup_error:
-                details.append(cleanup_error)
-            raise RuntimeError(
-                "bootstrap rollback or cleanup failed: " + "; ".join(details)
-            ) from activation_error
-        raise
-    else:
-        remove_stage(staging, install_root)
+            shutil.copytree(staging / skill, install_root / skill, dirs_exist_ok=True)
     finally:
         if lock_created:
             try:
+                remove_stage(staging, install_root)
+            finally:
                 lock.rmdir()
-            except OSError as exc:
-                raise RuntimeError(
-                    f"bootstrap lock cleanup failed: {exc}"
-                ) from exc
 
 
 def main() -> int:
-    """Install a complete selected batch only when every target is absent."""
+    """Install or update selected skills without validation or retirement."""
 
     parser = argparse.ArgumentParser(
-        description="Bootstrap declared repository skills."
+        description="Independently install or update declared repository skills."
     )
     parser.add_argument(
         "--repo-root",
@@ -506,7 +410,7 @@ def main() -> int:
         "--skill",
         action="append",
         default=[],
-        help="Bootstrap only this declared skill; repeat as needed.",
+        help="Install only this declared skill; repeat as needed.",
     )
     args = parser.parse_args()
     repo_root = (
