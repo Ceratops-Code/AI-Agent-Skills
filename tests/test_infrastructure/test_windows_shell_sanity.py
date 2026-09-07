@@ -3,7 +3,10 @@ import contextlib
 import importlib.util
 import io
 import json
+import os
 import pathlib
+import runpy
+import shlex
 import shutil
 import subprocess
 import sys
@@ -12,6 +15,8 @@ import unittest
 from types import SimpleNamespace
 from typing import Any, ClassVar
 from unittest import mock
+
+import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "hooks" / "windows-shell-sanity.py"
@@ -823,6 +828,234 @@ class ProjectPythonRedirectionTests(unittest.TestCase):
             )
 
         self.assertIsNone(payload)
+
+
+class TestHookDeployment:
+    """Exercise the hook distribution boundary without using the live profile."""
+
+    installer = ROOT / "scripts" / "deploy-hooks.py"
+
+    @classmethod
+    def deploy(cls, destination: pathlib.Path, *, repo: pathlib.Path = ROOT):
+        return subprocess.run(
+            [sys.executable, str(cls.installer), "--repo-root", str(repo),
+             "--codex-home", str(destination)],
+            capture_output=True, text=True, check=False,
+        )
+
+    @staticmethod
+    def run_handler(handler: dict[str, Any], event: dict[str, Any], temporary: pathlib.Path):
+        if os.name == "nt":
+            command = ["powershell", "-NoProfile", "-NonInteractive", "-Command", handler["commandWindows"]]
+        else:
+            command = shlex.split(handler["command"])
+        return subprocess.run(
+            command, input=json.dumps(event), capture_output=True, text=True, check=False,
+            cwd=temporary,
+            env={**os.environ, "TMP": str(temporary), "TEMP": str(temporary)},
+        )
+
+    def test_installs_and_runs_registered_hooks_from_another_cwd(self, tmp_path: pathlib.Path):
+        destination = tmp_path / "codex home"
+        result = self.deploy(destination)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "OK\n"
+        config = json.loads((destination / "hooks.json").read_text())
+        registered = 0
+        for name, groups in config["hooks"].items():
+            for group in groups:
+                tool = "Bash" if group["matcher"] == "^Bash$" else "apply_patch"
+                event = {
+                    "hook_event_name": name, "tool_name": tool, "cwd": str(tmp_path),
+                    "session_id": "deployment-test", "tool_use_id": "one-edit",
+                    "tool_input": {"command": "Write-Output hello" if tool == "Bash" else "*** Begin Patch\n*** End Patch\n"},
+                    "tool_response": {"exit_code": 0, "output": "small output"},
+                }
+                for handler in group["hooks"]:
+                    executed = self.run_handler(handler, event, tmp_path)
+                    assert executed.returncode == 0, executed.stderr
+                    assert executed.stdout.strip() in {"", "OK"}
+                    registered += 1
+        assert registered == (4 if os.name == "nt" else 3)
+        probe = subprocess.run(
+            [sys.executable, str(destination / "hooks" / "command-probe.py"), "--help"],
+            capture_output=True, text=True, check=False,
+        )
+        assert probe.returncode == 0, probe.stderr
+        assert len(list((destination / "hooks").glob("*.py"))) == 4
+        assert not list(destination.glob(".deploy-hooks*"))
+
+    def test_updates_without_duplicates_and_retains_unrelated_content(self, tmp_path: pathlib.Path):
+        destination = tmp_path / "profile"
+        assert self.deploy(destination).returncode == 0
+        path = destination / "hooks.json"
+        config = json.loads(path.read_text())
+        config["description"] = "user description"
+        config["hooks"]["Stop"] = [{"hooks": [{"type": "command", "command": "echo user-stop"}]}]
+        group = config["hooks"]["PreToolUse"][0]
+        group["hooks"][0]["timeout"] = 77
+        owned = dict(group["hooks"][0])
+        other = {"type": "command", "command": "python other/windows-shell-sanity.py --hook", "timeout": 15}
+        group["hooks"].extend([other, dict(owned)])
+        path.write_text(json.dumps(config), encoding="utf-8")
+        retained = destination / "hooks" / "retired-hook.py"
+        retained.write_text("print('retained')\n", encoding="utf-8")
+        installed = destination / "hooks" / "bounded-source-search.py"
+        installed.write_text("raise SystemExit(17)\n", encoding="utf-8")
+        refreshed = self.deploy(destination)
+        assert refreshed.returncode == 0, refreshed.stderr
+        updated = json.loads(path.read_text())
+        assert updated["description"] == "user description"
+        assert updated["hooks"]["Stop"] == config["hooks"]["Stop"]
+        assert updated["hooks"]["PreToolUse"][0]["hooks"] == [owned, other]
+        assert retained.exists()
+        runnable = subprocess.run([sys.executable, str(installed), "--help"], capture_output=True, check=False)
+        assert runnable.returncode == 0
+        saved = path.read_bytes()
+        assert self.deploy(destination).returncode == 0
+        assert path.read_bytes() == saved
+        assert not list(destination.glob(".deploy-hooks*"))
+
+    @pytest.mark.parametrize("raw", [b"not JSON", b"[]", b'{"hooks":[]}', b'{"hooks":{"PreToolUse":[{}]}}', b'{"hooks":{},"hooks":{}}'])
+    def test_invalid_configuration_is_not_replaced(self, tmp_path: pathlib.Path, raw: bytes):
+        destination = tmp_path / "profile"
+        destination.mkdir()
+        config = destination / "hooks.json"
+        config.write_bytes(raw)
+        result = self.deploy(destination)
+        assert result.returncode == 1
+        assert result.stdout == ""
+        assert 0 < len(result.stderr) < 1100
+        assert config.read_bytes() == raw
+        assert not (destination / "hooks").exists()
+        assert not list(destination.glob(".deploy-hooks*"))
+
+    def test_preserves_configuration_bom_and_crlf(self, tmp_path: pathlib.Path):
+        destination = tmp_path / "profile"
+        destination.mkdir()
+        path = destination / "hooks.json"
+        path.write_bytes(b'\xef\xbb\xbf{\r\n  "description": "keep"\r\n}\r\n')
+        result = self.deploy(destination)
+        assert result.returncode == 0, result.stderr
+        raw = path.read_bytes()
+        assert raw.startswith(b"\xef\xbb\xbf")
+        assert b"\r\n" in raw
+        assert b"\n" not in raw.replace(b"\r\n", b"")
+        assert json.loads(raw.decode("utf-8-sig"))["description"] == "keep"
+
+    def test_foreign_lock_is_preserved(self, tmp_path: pathlib.Path):
+        destination = tmp_path / "profile"
+        destination.mkdir()
+        lock = destination / ".deploy-hooks.lock"
+        lock.write_text("other deployment", encoding="utf-8")
+        assert self.deploy(destination).returncode == 1
+        assert lock.read_text() == "other deployment"
+        assert not (destination / "hooks").exists()
+        assert not (destination / "hooks.json").exists()
+
+    def test_uses_codex_home_environment(self, tmp_path: pathlib.Path):
+        destination = tmp_path / "environment profile"
+        result = subprocess.run(
+            [sys.executable, str(self.installer)], capture_output=True, text=True, check=False,
+            env={**os.environ, "CODEX_HOME": str(destination)}, cwd=tmp_path,
+        )
+        assert result.returncode == 0, result.stderr
+        assert (destination / "hooks.json").is_file()
+
+    def test_source_destination_overlap_is_rejected(self, tmp_path: pathlib.Path):
+        source = tmp_path / "source"
+        source.mkdir()
+        destination = source / "profile"
+        assert self.deploy(destination, repo=source).returncode == 1
+        assert not destination.exists()
+
+    @pytest.mark.skipif(os.name != "nt", reason="Windows command quoting")
+    def test_shell_expansion_in_windows_destination_is_rejected(self, tmp_path: pathlib.Path):
+        destination = tmp_path / "profile$expansion"
+        result = self.deploy(destination)
+        assert result.returncode == 1
+        assert not destination.exists()
+
+    @pytest.mark.parametrize("target", ["hooks", "hooks.json", "hooks/bounded-source-search.py"])
+    def test_destination_links_are_rejected(self, tmp_path: pathlib.Path, target: str):
+        destination = tmp_path / "profile"
+        destination.mkdir()
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        sentinel = outside / "sentinel"
+        sentinel.write_text("untouched", encoding="utf-8")
+        link = destination / target
+        link.parent.mkdir(exist_ok=True)
+        try:
+            link.symlink_to(outside if target == "hooks" else sentinel, target_is_directory=target == "hooks")
+        except OSError:
+            pytest.skip("creating symbolic links is unavailable")
+        result = self.deploy(destination)
+        assert result.returncode == 1
+        assert sentinel.read_text() == "untouched"
+        assert link.is_symlink()
+        assert not list(destination.glob(".deploy-hooks*"))
+
+    def test_missing_or_linked_source_is_rejected_before_deployment(self, tmp_path: pathlib.Path):
+        source = tmp_path / "source"
+        (source / "hooks").mkdir(parents=True)
+        destination = tmp_path / "profile"
+        result = self.deploy(destination, repo=source)
+        assert result.returncode == 1
+        assert not destination.exists()
+        try:
+            (source / "hooks" / "bounded-source-search.py").symlink_to(ROOT / "hooks" / "bounded-source-search.py")
+        except OSError:
+            pytest.skip("creating symbolic links is unavailable")
+        assert self.deploy(destination, repo=source).returncode == 1
+        assert not destination.exists()
+
+    @pytest.mark.parametrize("change", ["timing", "options"])
+    def test_ambiguous_registration_is_not_changed(self, tmp_path: pathlib.Path, change: str):
+        destination = tmp_path / "profile"
+        assert self.deploy(destination).returncode == 0
+        path = destination / "hooks.json"
+        config = json.loads(path.read_text())
+        group = config["hooks"]["PreToolUse"][0]
+        if change == "timing":
+            group["matcher"] = "different-tool"
+        else:
+            group["hooks"].append({**group["hooks"][0], "timeout": 99})
+        path.write_text(json.dumps(config), encoding="utf-8")
+        original = path.read_bytes()
+        assert self.deploy(destination).returncode == 1
+        assert path.read_bytes() == original
+        assert not list(destination.glob(".deploy-hooks*"))
+
+    @pytest.mark.parametrize("concurrent_edit", [False, True])
+    def test_failed_publication_restores_files_and_preserves_configuration(
+        self, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, concurrent_edit: bool,
+    ):
+        destination = tmp_path / "profile"
+        (destination / "hooks").mkdir(parents=True)
+        old_hook = destination / "hooks" / "bounded-source-search.py"
+        old_hook.write_text("raise SystemExit(17)\n", encoding="utf-8")
+        config_path = destination / "hooks.json"
+        original = b'{"description":"original"}\n'
+        edited = b'{"description":"concurrent user edit"}\n'
+        config_path.write_bytes(original)
+        deployer = runpy.run_path(str(self.installer))
+        replace = os.replace
+
+        def fail_publication(source, target):
+            if pathlib.Path(target) == config_path:
+                raise OSError("configuration replacement failed")
+            replace(source, target)
+            if concurrent_edit:
+                config_path.write_bytes(edited)
+
+        monkeypatch.setattr(os, "replace", fail_publication)
+        assert deployer["main"](["--repo-root", str(ROOT), "--codex-home", str(destination)]) == 1
+        assert config_path.read_bytes() == (edited if concurrent_edit else original)
+        check = subprocess.run([sys.executable, str(old_hook)], capture_output=True, check=False)
+        assert check.returncode == 17
+        assert list((destination / "hooks").iterdir()) == [old_hook]
+        assert not list(destination.glob(".deploy-hooks*"))
 
 
 if __name__ == "__main__":

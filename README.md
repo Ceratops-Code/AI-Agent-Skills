@@ -50,6 +50,7 @@ skills/ceratops-skill-lifecycle/references/templates/
   ceratops-logo-500.png
 hooks/
   bounded-source-search.py
+  command-probe.py
   preserve-eol-for-apply-patch-tool.py
   windows-shell-sanity.py
   README.md
@@ -110,6 +111,7 @@ without repository deduplication.
 | `hooks/preserve-eol-for-apply-patch-tool.py` | Preserves each updated text file's existing encoding and uniform line-ending convention around `apply_patch`. |
 | `hooks/windows-shell-sanity.py` | Repository-owned source for the user-global Windows PowerShell preflight; rewrites exact command defects, annotates ordinary failures, and blocks unreliable or policy-prohibited forms. |
 | `scripts/install-skills-bootstrap.py` | Independent installation and updates; renders selected skills and overlays their files without validation, retirement, or lifecycle runtime calls. |
+| `scripts/deploy-hooks.py` | Independent hook installation and updates; copies the repository hook payloads and merges their registrations while preserving unrelated files and configuration. Does not grant trust or restart Codex. |
 | `scripts/bootstrap-tool-manager.py` | First tool-manager installation with pinned uv and managed Python; invokes the shared deployment engine and never changes Codex settings. |
 | `scripts/package-tool-release.py` | Development-only wheel build and exact local release registration from reviewed source, with source dependency lock generation. |
 | `scripts/check-tool-manager.py` | Explicit installed-runtime acceptance with a harmless fixture and a persistent MCP connection across a selected self-update. |
