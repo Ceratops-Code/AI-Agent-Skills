@@ -466,10 +466,11 @@ Failure evidence remains available for diagnosis until the next successful run,
 which removes the selected evidence file and prunes the dedicated default
 directory when it is empty.
 The validator runs Markdown and YAML lint, Ruff, mypy for Linux and Win32, and
-`scripts/testing/run-tests.py --all`. Pull-request CI calls the same runner with exact
-base and head commit SHAs. Local uncommitted selection is explicit through
-`python scripts/testing/run-tests.py --worktree`, and manifest validation is available
-through `python scripts/testing/run-tests.py --validate-manifest`. The validator does
+`scripts/testing/run-tests.py --all`. Pull-request CI calls the same runner
+with exact base and head commit SHAs. Local uncommitted selection is explicit
+through `python scripts/testing/run-tests.py --worktree`. Manifest validation
+is available through
+`python scripts/testing/run-tests.py --validate-manifest`. The validator does
 not invoke skill-local validators. Generic compatibility and
 health validate lifecycle definitions through the repository-lifecycle
 `ceratops_repo_compatibility_engine.sdlc_contract_validation` module. Runtime
