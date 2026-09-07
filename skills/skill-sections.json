@@ -17,7 +17,7 @@
     ],
     "runtime_generation_changes": [
       "python scripts/run-tests.py --worktree",
-      "python scripts/install-skills-bootstrap.py --install-root <task-temp-root>"
+      "python scripts/deploy-skills.py --install-root <task-temp-root>"
     ],
     "contract_checker_changes": [
       "python scripts/run-tests.py --worktree"

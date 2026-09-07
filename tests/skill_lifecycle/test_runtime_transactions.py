@@ -573,7 +573,7 @@ def test_base_revision_resolves_payload_global_and_ambiguous_changes(
     assert run_git(global_repo, "add", ".").returncode == 0
     assert run_git(global_repo, "commit", "-m", "base").returncode == 0
     global_base = run_git(global_repo, "rev-parse", "HEAD").stdout.strip()
-    bootstrap = global_repo / "scripts" / "install-skills-bootstrap.py"
+    bootstrap = global_repo / "scripts" / "deploy-skills.py"
     bootstrap.write_text(
         bootstrap.read_text(encoding="utf-8") + "\n# changed generator\n",
         encoding="utf-8",
@@ -583,7 +583,7 @@ def test_base_revision_resolves_payload_global_and_ambiguous_changes(
         run_git(
             global_repo,
             "add",
-            "scripts/install-skills-bootstrap.py",
+            "scripts/deploy-skills.py",
         ).returncode
         == 0
     )

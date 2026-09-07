@@ -32,7 +32,7 @@ PROFILE_CERATOPS = "ceratops"
 PROFILE_COMPATIBLE = "ceratops-compatible"
 VALIDATION_PROFILES = {PROFILE_CERATOPS, PROFILE_COMPATIBLE}
 ALLOWED_EXTERNAL_PYTHON_MODULES = {"mypy", "pytest", "yamllint"}
-BOOTSTRAP_INSTALLER = ROOT / "scripts" / "install-skills-bootstrap.py"
+BOOTSTRAP_INSTALLER = ROOT / "scripts" / "deploy-skills.py"
 SOURCE_CANONICAL_SECTIONS = (
     LIFECYCLE_BUNDLE_ROOT.parents[1] / "skills" / "sections"
 )
@@ -198,7 +198,7 @@ def check_source_installer() -> list[str]:
     source_version = installer_version(BOOTSTRAP_INSTALLER)
     if source_version is None:
         errors.append(
-            "scripts/install-skills-bootstrap.py must declare one positive "
+            "scripts/deploy-skills.py must declare one positive "
             "integer INSTALLER_VERSION"
         )
     return errors
@@ -1225,7 +1225,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             / "templates"
             / "ceratops-logo-500.png"
         )
-        BOOTSTRAP_INSTALLER = ROOT / "scripts" / "install-skills-bootstrap.py"
+        BOOTSTRAP_INSTALLER = ROOT / "scripts" / "deploy-skills.py"
 
     errors: list[str] = []
     if not SKILLS_DIR.is_dir():

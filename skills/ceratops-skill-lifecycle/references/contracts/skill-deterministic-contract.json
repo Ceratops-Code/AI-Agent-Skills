@@ -25,7 +25,7 @@
       "lines": "selected-batch staging, activation, rollback, locking, ownership, and stale cleanup"
     },
     {
-      "path": "$AI_AGENT_SKILLS_ROOT/scripts/install-skills-bootstrap.py",
+      "path": "$AI_AGENT_SKILLS_ROOT/scripts/deploy-skills.py",
       "lines": "versioned independent skill installer"
     },
     {
@@ -109,7 +109,7 @@
       "id": "skill.bootstrap_version_consistency",
       "category": "runtime",
       "deterministic_evidence": [
-        "scripts/install-skills-bootstrap.py INSTALLER_VERSION",
+        "scripts/deploy-skills.py INSTALLER_VERSION",
         "bootstrap installer CLI behavior tests"
       ],
       "pass_condition": "A skill-bearing source repository bootstrap declares one positive internal INSTALLER_VERSION. The bootstrap is standard-library-only, renders selected skills and overlays their files without content validation, retirement, or lifecycle runtime calls, retains destination-only files and other skills, exposes only repo-root, install-root, and skill inputs, preserves input parsing and path safety, and cleans only bootstrap-owned staging and locks. Copy failures may leave partial updates. Managed runtime CLI and manifests contain no installer-version field."

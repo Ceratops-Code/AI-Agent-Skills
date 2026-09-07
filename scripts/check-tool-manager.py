@@ -11,16 +11,17 @@ The caller owns the scratch directory and resulting evidence file.
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any
 
-from tool_manager_support import REPOSITORY  # isort: skip
-from ceratops_tool_manager.contracts import DeploymentError, token
-from ceratops_tool_manager.engine import global_runtime
-from ceratops_tool_manager.storage import Layout
+REPOSITORY = importlib.import_module("tool-manager-support").REPOSITORY
+from ceratops_tool_manager.contracts import DeploymentError, token  # noqa: E402
+from ceratops_tool_manager.engine import global_runtime  # noqa: E402
+from ceratops_tool_manager.storage import Layout  # noqa: E402
 
 sys.path.insert(0, str(REPOSITORY))
 from tests.tool_manager.mcp_client import WireClient  # noqa: E402

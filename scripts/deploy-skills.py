@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bootstrap this repository's declared skills without lifecycle dependencies.
+"""Deploy this repository's declared skills without lifecycle dependencies.
 
 This independent installer renders selected skills in a temporary staging
 directory, then copies them over existing installations. It runs no skill or

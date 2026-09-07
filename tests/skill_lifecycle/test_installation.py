@@ -42,7 +42,7 @@ def test_external_installer_needs_no_ceratops_bundle(tmp_path: pathlib.Path) -> 
     result = subprocess.run(
         [
             sys.executable,
-            str(repo / "scripts" / "install-skills-bootstrap.py"),
+            str(repo / "scripts" / "deploy-skills.py"),
             "--repo-root",
             str(repo),
             "--install-root",
@@ -78,7 +78,7 @@ def test_external_installer_rejects_unresolved_or_malformed_input_without_fallba
     manifest["skills"]["alpha-tool"] = ["missing-section"]
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8", newline="\n")
     unresolved = subprocess.run(
-        [sys.executable, str(repo / "scripts" / "install-skills-bootstrap.py"), "--repo-root", str(repo), "--install-root", str(install_root)],
+        [sys.executable, str(repo / "scripts" / "deploy-skills.py"), "--repo-root", str(repo), "--install-root", str(install_root)],
         capture_output=True, text=True, check=False, env=environment,
     )
     assert unresolved.returncode != 0
@@ -88,7 +88,7 @@ def test_external_installer_rejects_unresolved_or_malformed_input_without_fallba
 
     manifest_path.write_text("[]\n", encoding="utf-8", newline="\n")
     malformed = subprocess.run(
-        [sys.executable, str(repo / "scripts" / "install-skills-bootstrap.py"), "--repo-root", str(repo), "--install-root", str(install_root)],
+        [sys.executable, str(repo / "scripts" / "deploy-skills.py"), "--repo-root", str(repo), "--install-root", str(install_root)],
         capture_output=True, text=True, check=False, env=environment,
     )
     assert malformed.returncode != 0
@@ -494,7 +494,7 @@ def test_bootstrap_ignores_stale_broken_installed_bundle(
     result = subprocess.run(
         [
             sys.executable,
-            str(repo / "scripts" / "install-skills-bootstrap.py"),
+            str(repo / "scripts" / "deploy-skills.py"),
             "--repo-root",
             str(repo),
             "--install-root",
@@ -567,7 +567,7 @@ def test_runtime_manifest_uses_schema_without_installer_version(
     bootstrap = subprocess.run(
         [
             sys.executable,
-            str(repo / "scripts" / "install-skills-bootstrap.py"),
+            str(repo / "scripts" / "deploy-skills.py"),
             "--repo-root",
             str(repo),
             "--install-root",
@@ -611,7 +611,7 @@ def test_full_install_does_not_run_source_validation(tmp_path: pathlib.Path) -> 
     result = subprocess.run(
         [
             sys.executable,
-            str(repo / "scripts" / "install-skills-bootstrap.py"),
+            str(repo / "scripts" / "deploy-skills.py"),
             "--repo-root",
             str(repo),
             "--install-root",
@@ -646,7 +646,7 @@ def test_targeted_install_checks_only_selected_rendering_inputs(
     result = subprocess.run(
         [
             sys.executable,
-            str(repo / "scripts" / "install-skills-bootstrap.py"),
+            str(repo / "scripts" / "deploy-skills.py"),
             "--repo-root",
             str(repo),
             "--install-root",
@@ -668,7 +668,7 @@ def test_targeted_install_checks_only_selected_rendering_inputs(
     invalid_selected = subprocess.run(
         [
             sys.executable,
-            str(repo / "scripts" / "install-skills-bootstrap.py"),
+            str(repo / "scripts" / "deploy-skills.py"),
             "--repo-root",
             str(repo),
             "--install-root",
@@ -694,7 +694,7 @@ def test_bootstrap_synchronization_compares_only_version(
     repo.mkdir()
     (repo / ".git").write_text("gitdir: test\n", encoding="utf-8", newline="\n")
     (repo / "scripts").mkdir()
-    target = repo / "scripts" / "install-skills-bootstrap.py"
+    target = repo / "scripts" / "deploy-skills.py"
     shutil.copy2(INSTALLER_TEMPLATE, target)
     custom = target.read_text(encoding="utf-8") + "\n# same-version local difference\n"
     target.write_text(custom, encoding="utf-8", newline="\n")
@@ -743,7 +743,7 @@ def test_bootstrap_copies_declare_the_same_explicit_version(
 ) -> None:
     validator = runpy.run_path(str(VALIDATOR))
     parse_version = validator["installer_version"]
-    template = tmp_path / "install-skills-bootstrap-template.py"
+    template = tmp_path / "deploy-skills-template.py"
     template.write_text(
         "INSTALLER_VERSION = 11\nprint('authoritative')\n",
         encoding="utf-8",

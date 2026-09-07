@@ -54,9 +54,9 @@
       "paths": [
         ".codex/config.toml",
         "tools/**",
-        "scripts/deploy_tool_manager.py",
-        "scripts/check_tool_manager.py",
-        "scripts/tool_manager_support.py",
+        "scripts/deploy-tool-manager.py",
+        "scripts/check-tool-manager.py",
+        "scripts/tool-manager-support.py",
         "skills/ceratops-tool-lifecycle/**"
       ],
       "suites": ["tool_manager"]
@@ -102,7 +102,7 @@
     {
       "id": "skill-lifecycle-source",
       "paths": [
-        "scripts/install-skills-bootstrap.py",
+        "scripts/deploy-skills.py",
         "skills/ceratops-skill-lifecycle/**"
       ],
       "suites": [
@@ -141,7 +141,7 @@
     "requirements-dev.txt",
     "requirements-runtime.txt",
     "scripts/run-tests.py",
-    "scripts/pytest_diagnostics.py",
+    "scripts/pytest-diagnostics.py",
     "scripts/validate-repository.py",
     "skills/ceratops-automation-run/**",
     "skills/ceratops-code-consistency-audit/**",

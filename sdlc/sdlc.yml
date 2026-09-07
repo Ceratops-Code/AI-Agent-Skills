@@ -9,4 +9,4 @@ deploy:
         - id: bootstrap-skills
           run:
             - python
-            - scripts/install-skills-bootstrap.py
+            - scripts/deploy-skills.py

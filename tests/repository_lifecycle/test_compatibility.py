@@ -113,7 +113,7 @@ def test_compatibility_materializer_supplies_target_identity_and_assignments(
         "steps": [
             {
                 "id": "bootstrap-skills",
-                "run": ["python", "scripts/install-skills-bootstrap.py"],
+                "run": ["python", "scripts/deploy-skills.py"],
             }
         ]
     }
@@ -122,7 +122,7 @@ def test_compatibility_materializer_supplies_target_identity_and_assignments(
             "steps": [{"id": "publish", "run": [sys.executable, "-V"]}]
         }
     }
-    assert (repo / "scripts" / "install-skills-bootstrap.py").is_file()
+    assert (repo / "scripts" / "deploy-skills.py").is_file()
     assert (repo / "scripts" / "validate-repository.py").is_file()
     assert (repo / ".github" / "workflows" / "validate.yml").is_file()
     assert output["repository_validation"] == {
@@ -264,7 +264,7 @@ def test_compatibility_materializer_supports_repositories_without_skills(
     assert output["skill_manifest"] == "not_configured"
     assert not (repo / "skills").exists()
     assert not (repo / "sdlc").exists()
-    assert not (repo / "scripts" / "install-skills-bootstrap.py").exists()
+    assert not (repo / "scripts" / "deploy-skills.py").exists()
     assert output["repository_validation"] == {
         "checks": ["npm-lint", "unittest"],
         "validator": "materialized",
@@ -701,7 +701,7 @@ def test_compatibility_materializer_rolls_back_every_target_write_on_blocker(
         skill_md,
         repo / "skills" / "sections" / "core.md",
         repo / "skills" / "skill-sections.json",
-        repo / "scripts" / "install-skills-bootstrap.py",
+        repo / "scripts" / "deploy-skills.py",
         repo / "sdlc" / "sdlc.yml",
     )
     original = {path: path.read_bytes() for path in changed_paths}
@@ -809,7 +809,7 @@ def test_compatibility_materializer_blocks_invalid_assignments_before_writes(
         repo / "skills" / "alpha-tool" / "SKILL.md",
         repo / "skills" / "sections" / "core.md",
         manifest_path,
-        repo / "scripts" / "install-skills-bootstrap.py",
+        repo / "scripts" / "deploy-skills.py",
         repo / "sdlc" / "sdlc.yml",
     )
     original = {

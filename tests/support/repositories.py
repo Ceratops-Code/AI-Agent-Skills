@@ -6,7 +6,7 @@ import shutil
 import subprocess
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
-INSTALLER_TEMPLATE = ROOT / "skills" / "ceratops-repo-lifecycle" / "references" / "templates" / "install-skills-bootstrap-template.py"
+INSTALLER_TEMPLATE = ROOT / "skills" / "ceratops-repo-lifecycle" / "references" / "templates" / "deploy-skills-template.py"
 
 
 def run_git(repo: pathlib.Path, *args: str) -> subprocess.CompletedProcess[str]:
@@ -123,7 +123,7 @@ def create_compatible_repo(repo: pathlib.Path, source_id: str, skill_names: list
                         "id": "bootstrap-skills",
                         "run": [
                             "python",
-                            "scripts/install-skills-bootstrap.py",
+                            "scripts/deploy-skills.py",
                         ],
                     }
                 ]
@@ -133,7 +133,7 @@ def create_compatible_repo(repo: pathlib.Path, source_id: str, skill_names: list
     (repo / "scripts").mkdir()
     shutil.copy2(
         INSTALLER_TEMPLATE,
-        repo / "scripts" / "install-skills-bootstrap.py",
+        repo / "scripts" / "deploy-skills.py",
     )
     for skill_name in skill_names:
         add_skill(repo, skill_name)

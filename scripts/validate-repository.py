@@ -129,7 +129,7 @@ def build_checks(
                 "scripts",
                 "tools",
                 "skills/ceratops-repo-lifecycle/references/templates/"
-                "install-skills-bootstrap-template.py",
+                "deploy-skills-template.py",
             ),
             repo_root,
         ),

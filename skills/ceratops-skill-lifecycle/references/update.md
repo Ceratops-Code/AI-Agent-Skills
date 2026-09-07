@@ -16,7 +16,7 @@ repo docs, then update the narrowest correct source that exists.
   `skills/skill-sections.json`, `skills/sections/`,
   `skills/ceratops-skill-lifecycle/references/templates/ceratops-logo-500.png`,
   repository-lifecycle compatibility templates,
-  `scripts/install-skills-bootstrap.py`,
+  `scripts/deploy-skills.py`,
   `skills/ceratops-skill-lifecycle/scripts/runtime/managed_runtime_builder.py`,
   installer resolution, synchronization, and repository-consistency helpers,
   `skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py`,

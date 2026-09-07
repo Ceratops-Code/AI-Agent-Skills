@@ -36,7 +36,7 @@ def load(name):
 @pytest.mark.parametrize("case", ["valid", "missing-python", "missing-uv", "private-runtime", "old-python", "old-uv", "invalid-probe"])
 def test_deploy_completes_launchers_after_runtime_record(tmp_path, monkeypatch, case):
     """Validate the global Runtime record before provisioning either launcher."""
-    module = load("deploy_tool_manager")
+    module = load("deploy-tool-manager")
     store = tmp_path / "installed"
     monkeypatch.setattr(storage, "INSTALL_ROOT", store)
     monkeypatch.setattr(engine_module, "INSTALL_ROOT", store)
@@ -168,7 +168,7 @@ def test_cli_package_failure_keeps_bounded_diagnostics(monkeypatch, capsys):
 
 @pytest.mark.parametrize("failure", [None, "libraries", "package"])
 def test_first_install_uses_manager_packaging_and_cleans_temporary_libraries(tmp_path, monkeypatch, failure):
-    module = load("deploy_tool_manager")
+    module = load("deploy-tool-manager")
     monkeypatch.setattr(storage, "INSTALL_ROOT", tmp_path / "installed")
     engine = engine_module.Engine()
     runtime = engine_module.Runtime(tmp_path / "python.exe", tmp_path / "uv.exe", "3.14.7", "0.12.10")
@@ -206,7 +206,7 @@ def test_first_install_uses_manager_packaging_and_cleans_temporary_libraries(tmp
 
 @pytest.mark.parametrize("state", ["first-install", "already-installed", "packaging-failed"])
 def test_first_install_stops_before_later_mutation_on_failure(monkeypatch, capsys, state):
-    module = load("deploy_tool_manager")
+    module = load("deploy-tool-manager")
     events = []
     runtime = object()
 
@@ -242,7 +242,7 @@ def test_first_install_stops_before_later_mutation_on_failure(monkeypatch, capsy
 
 
 def test_first_install_import_needs_no_third_party_site_packages(tmp_path):
-    script = ROOT / "scripts/deploy_tool_manager.py"
+    script = ROOT / "scripts/deploy-tool-manager.py"
     code = "import runpy,sys; sys.path.insert(0,sys.argv[1]); module=runpy.run_path(sys.argv[2]); assert callable(module['package_manager'])"
     result = subprocess.run([sys.executable, "-S", "-B", "-c", code, str(script.parent), str(script)],
                             cwd=tmp_path, capture_output=True, text=True, check=False)

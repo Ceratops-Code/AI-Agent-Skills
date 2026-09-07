@@ -31,7 +31,7 @@ def sample_manifest(
         full_suite_paths=(
             "pyproject.toml",
             "scripts/run-tests.py",
-            "scripts/pytest_diagnostics.py",
+            "scripts/pytest-diagnostics.py",
             "tests/conftest.py",
             "tests/support/**",
             "tests/test-impact.json",
@@ -99,7 +99,7 @@ def test_multiple_domains_produce_sorted_deterministic_union(
         "tests/conftest.py",
         "tests/test-impact.json",
         "scripts/run-tests.py",
-        "scripts/pytest_diagnostics.py",
+        "scripts/pytest-diagnostics.py",
         "pyproject.toml",
     ],
 )
@@ -138,8 +138,8 @@ def test_agents_history_selects_full_suite_from_repository_manifest(
 
 @pytest.mark.parametrize("path", [
     "tools/ceratops_tool_manager/packaging.py",
-    "scripts/deploy_tool_manager.py",
-    "scripts/check_tool_manager.py",
+    "scripts/deploy-tool-manager.py",
+    "scripts/check-tool-manager.py",
 ])
 def test_tool_manager_paths_select_their_underscore_named_suite(
     test_runner_module: Any, path: str,

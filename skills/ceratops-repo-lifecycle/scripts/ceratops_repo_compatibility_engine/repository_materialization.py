@@ -36,7 +36,7 @@ VALIDATION_CATALOG = BUNDLE_ROOT / "references" / "repository-validation-catalog
 VALIDATOR_TEMPLATE = BUNDLE_ROOT / "references" / "templates" / "validate-repository.py.tmpl"
 WORKFLOW_TEMPLATE = BUNDLE_ROOT / "references" / "templates" / "validate.yml.tmpl"
 MANIFEST_RELATIVE = pathlib.Path("skills/skill-sections.json")
-INSTALLER_RELATIVE = pathlib.Path("scripts/install-skills-bootstrap.py")
+INSTALLER_RELATIVE = pathlib.Path("scripts/deploy-skills.py")
 SDLC_RELATIVE = pathlib.Path("sdlc/sdlc.yml")
 VALIDATOR_RELATIVE = pathlib.Path("scripts/validate-repository.py")
 WORKFLOW_RELATIVE = pathlib.Path(".github/workflows/validate.yml")
@@ -613,7 +613,7 @@ def build_sdlc_contract_candidate(
             "steps": [
                 {
                     "id": "bootstrap-skills",
-                    "run": ["python", "scripts/install-skills-bootstrap.py"],
+                    "run": ["python", "scripts/deploy-skills.py"],
                 }
             ]
         }

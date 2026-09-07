@@ -45,7 +45,7 @@ global Python and uv remain independently maintained prerequisites.
 From an active AI-Agent-Skills source checkout:
 
 ```powershell
-python scripts/deploy_tool_manager.py
+python scripts/deploy-tool-manager.py
 C:\AI-Agents-Tools\ceratops_tool_manager\bin\ceratops_tool_manager.cmd versions
 ```
 
@@ -192,7 +192,7 @@ For explicit acceptance against a bootstrapped local installation, register
 two compatible manager releases, select the earlier release, then run:
 
 ```powershell
-python scripts/check_tool_manager.py --scratch <task-temp-root> --self-update-version <version>
+python scripts/check-tool-manager.py --scratch <task-temp-root> --self-update-version <version>
 ```
 
 This checks real manager installation/update/previous-version selection and

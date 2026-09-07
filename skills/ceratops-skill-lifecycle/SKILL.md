@@ -61,7 +61,7 @@ surface for standards refresh, repository consistency, creation, and mutation.
   assignment for every source skill, and shared sections when source skills
   exist. Skill names need not use a Ceratops prefix.
 - Use the managed runtime installer for ordinary skill deployment. Use
-  `scripts/install-skills-bootstrap.py` for explicitly requested independent
+  `scripts/deploy-skills.py` for explicitly requested independent
   installation or updates; it overlays selected files without content validation
   or retirement and never dispatches to lifecycle runtime code.
 - Use `fast-change` directly on verified primary `release/local` whenever

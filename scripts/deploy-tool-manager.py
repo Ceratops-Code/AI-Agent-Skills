@@ -9,6 +9,7 @@ never installs global prerequisites, edits Codex settings, or restarts apps.
 
 from __future__ import annotations
 
+import importlib
 import json
 import shutil
 import subprocess
@@ -16,16 +17,16 @@ import sys
 import tempfile
 from pathlib import Path
 
-from tool_manager_support import SOURCE  # isort: skip
-from ceratops_tool_manager.contracts import DeploymentError
-from ceratops_tool_manager.engine import (
+SOURCE = importlib.import_module("tool-manager-support").SOURCE
+from ceratops_tool_manager.contracts import DeploymentError  # noqa: E402
+from ceratops_tool_manager.engine import (  # noqa: E402
     Engine,
     Runtime,
     child_environment,
     global_runtime,
     run,
 )
-from ceratops_tool_manager.storage import Layout
+from ceratops_tool_manager.storage import Layout  # noqa: E402
 
 
 def ensure_launchers(layout: Layout) -> None:

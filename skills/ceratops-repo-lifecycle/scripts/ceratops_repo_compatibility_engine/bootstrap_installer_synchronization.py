@@ -21,9 +21,9 @@ TEMPLATE = (
     BUNDLE_ROOT
     / "references"
     / "templates"
-    / "install-skills-bootstrap-template.py"
+    / "deploy-skills-template.py"
 )
-TARGET_RELATIVE = pathlib.Path("scripts/install-skills-bootstrap.py")
+TARGET_RELATIVE = pathlib.Path("scripts/deploy-skills.py")
 INSTALLER_VERSION_RE = re.compile(
     r"^[ \t]*INSTALLER_VERSION[ \t]*=[ \t]*"
     r"(?P<version>[1-9][0-9]*)[ \t]*(?:#.*)?$",

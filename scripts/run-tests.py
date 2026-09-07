@@ -18,6 +18,7 @@ import argparse
 import fnmatch
 import functools
 import hashlib
+import importlib
 import json
 import os
 import pathlib
@@ -29,7 +30,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-import pytest_diagnostics
+pytest_diagnostics = importlib.import_module("pytest-diagnostics")
 
 SCHEMA = "ai-agent-skills-test-impact-result.v1"
 COLLECTION_SCHEMA = "ai-agent-skills-pytest-collection.v1"

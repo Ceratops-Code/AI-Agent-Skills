@@ -58,7 +58,7 @@ def test_build_checks_owns_order_both_platforms_and_space_safe_paths(
         "scripts",
         "tools",
         "skills/ceratops-repo-lifecycle/references/templates/"
-        "install-skills-bootstrap-template.py",
+        "deploy-skills-template.py",
     )
     assert checks[3].command[-2:] == ("--platform", "linux")
     assert checks[4].command[-2:] == ("--platform", "win32")
