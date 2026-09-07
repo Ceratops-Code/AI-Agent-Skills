@@ -21,8 +21,8 @@ Create a tool's editable source and a reproducible release in its owning repo.
 5. Use the installed manager's public CLI:
 
    ```powershell
-   C:\AI-Agents-Tools\ceratops-tool-manager\bin\ceratops-tool-manager.cmd package --source <tool-source> --lock
-   C:\AI-Agents-Tools\ceratops-tool-manager\bin\ceratops-tool-manager.cmd package --source <tool-source>
+   C:\AI-Agents-Tools\ceratops_tool_manager\bin\ceratops_tool_manager.cmd package --source <tool-source> --lock
+   C:\AI-Agents-Tools\ceratops_tool_manager\bin\ceratops_tool_manager.cmd package --source <tool-source>
    ```
 
    Review `pylock.toml` between these commands. The first records locked

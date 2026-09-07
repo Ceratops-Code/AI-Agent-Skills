@@ -12,7 +12,7 @@ Activate one exact registered release after candidate validation.
 2. Call MCP `install` with `tool_id` and `version`, or run:
 
    ```powershell
-   C:\AI-Agents-Tools\ceratops-tool-manager\bin\ceratops-tool-manager.cmd install <tool-id> <version>
+   C:\AI-Agents-Tools\ceratops_tool_manager\bin\ceratops_tool_manager.cmd install <tool-id> <version>
    ```
 
    The installation operation accepts no command, script, artifact URL, or
