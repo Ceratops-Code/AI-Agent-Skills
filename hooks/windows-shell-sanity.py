@@ -1278,10 +1278,12 @@ def _without_progress(command: str) -> str:
     A dot-sourced script block preserves top-level ``using``/``param`` syntax
     while the preference is set before module autoloading or command execution.
     Single-quote escaping keeps the supplied command literal until PowerShell
-    parses it; no command text or error preference is changed.
+    parses it. Capture failure inside the block: Windows PowerShell can reset
+    ``$?`` when the block returns. Match ``-Command`` failure semantics without
+    letting a stale ``$LASTEXITCODE`` override a handled failure or explicit exit.
     """
 
-    literal = command.replace("'", "''")
+    literal = (command + "\nif (-not $?) { exit 1 }").replace("'", "''")
     return (
         "$ProgressPreference = 'SilentlyContinue'\n. ([scriptblock]::Create('"
         + literal + "'))"

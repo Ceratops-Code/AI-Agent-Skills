@@ -452,6 +452,38 @@ def test_real_shell_preserves_powershell_errors(shell: str, command: str) -> Non
     assert "error-only" in result.stderr
 
 
+@pytest.mark.parametrize("shell", ["powershell", "pwsh"])
+@pytest.mark.parametrize("preamble", ["", "param()\n", "using namespace System\n"])
+@pytest.mark.parametrize(
+    ("tail", "expected_exit"),
+    [
+        ("", 1),
+        ("\n# trailing comment", 1),
+        ("\nWrite-Output 'recovered'", 0),
+        ("\nWrite-Error 'powershell-error'", 1),
+        ("\nexit 0", 0),
+        ("\nexit 9", 9),
+    ],
+)
+def test_real_shell_preserves_native_failure_and_explicit_recovery(
+    shell: str, preamble: str, tail: str, expected_exit: int,
+) -> None:
+    executable = shutil.which(shell)
+    if executable is None:
+        pytest.skip(f"{shell} is not installed")
+    python = sys.executable.replace("'", "''")
+    command = preamble + f"& '{python}' -c 'raise SystemExit(7)'" + tail
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT), "--powershell", executable, "--command", command],
+        capture_output=True, text=True, check=False,
+    )
+    assert result.returncode == expected_exit, result.stdout + result.stderr
+    if "recovered" in tail:
+        assert "recovered" in result.stdout
+    if "powershell-error" in tail:
+        assert "powershell-error" in result.stderr
+
+
 class CommandProbeTests(unittest.TestCase):
     @staticmethod
     def completed(
