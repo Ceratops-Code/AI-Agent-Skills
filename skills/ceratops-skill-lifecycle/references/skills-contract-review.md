@@ -35,8 +35,8 @@ best practices from
 - Do not audit whether any source or installed skill satisfies the contracts;
   use `skills-consistency-review` for manifest-backed installed-skill
   compliance.
-- Do not run `skills-consistency-source-validator.py`; targeted skill
-  validation belongs to `skills-consistency-review`.
+- Do not run `skills-consistency-source-validator.py`; deterministic source
+  validation belongs to `source-validate`.
 - Do not inspect unrelated metadata, shared sections, runtime payloads,
   automation prompts, helpers, installers, or installed runtime copies.
 

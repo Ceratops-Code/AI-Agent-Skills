@@ -1,6 +1,6 @@
 ---
 name: ceratops-skill-lifecycle
-description: Route Ceratops or compatible skill lifecycle work to action references for create, deploy, fast-change, update, skills-contract-review, and skills-consistency-review work. Use when Codex should create or deploy managed skills, apply an eligible direct-release skill change with targeted installation, update skill source or shared governance surfaces, refresh Ceratops skill-design contracts, or audit one manifest-backed installed skill and its coupled source.
+description: Route Ceratops or compatible skill lifecycle work to action references for create, source-validate, deploy, fast-change, update, skills-contract-review, and skills-consistency-review work. Use when Codex should create or deploy managed skills, validate skill sources deterministically, apply an eligible direct-release skill change with targeted installation, update skill source or shared governance surfaces, refresh Ceratops skill-design contracts, or audit one manifest-backed installed skill and its coupled source.
 ---
 
 # Ceratops Skill Lifecycle
@@ -16,6 +16,7 @@ surface for standards refresh, repository consistency, creation, and mutation.
 ### Action References
 
 - Create a new skill: `references/create.md`
+- Validate skill sources deterministically: `references/source-validate.md`
 - Deploy manifest-managed skills: `references/deploy.md`
 - Apply an eligible direct-release skill change: `references/fast-change.md`
 - Update an existing skill or shared maintenance surface: `references/update.md`
@@ -42,9 +43,9 @@ surface for standards refresh, repository consistency, creation, and mutation.
 
 ### Skill-Specific Rules
 
-- Keep skill creation, fast change, update, contract review, and repository
-  consistency review inside this multi-action skill and its `references/`
-  files.
+- Keep skill creation, source validation, deployment, fast change, update,
+  contract review, and consistency review inside this multi-action skill and
+  its `references/` files.
 - For skill-source mutation in this repo, treat source skill text, metadata,
   shared sections, `skills/skill-sections.json`, runtime payloads,
   validators, contracts, helper scripts, and docs as one coupled maintenance
@@ -74,11 +75,13 @@ surface for standards refresh, repository consistency, creation, and mutation.
 
 ### Boundaries
 
-- Use this skill for creating or deploying managed skills, eligible
-  direct-release changes, updating existing skills, consistency audits, and
-  skill-design contract upkeep.
+- Use this skill for creating or deploying managed skills, deterministic
+  source validation, eligible direct-release changes, updating existing skills,
+  consistency audits, and skill-design contract upkeep.
 - If the task is advisory-only skill optimization, use
   `$ceratops-governance-lifecycle` action `optimize-skill`.
+- If the task is deterministic validation of skill source or shared sections,
+  use `references/source-validate.md`.
 - If the task is Ceratops skill-contract standards upkeep, use
   `references/skills-contract-review.md`.
 - If the task is manifest-backed installed-skill consistency and contract
@@ -97,6 +100,8 @@ surface for standards refresh, repository consistency, creation, and mutation.
 
 - Use `create` when a brand-new skill must be added and integrated with
   available repo governance surfaces.
+- Use `source-validate` for deterministic source checks requested directly or
+  through a repository validation handoff; it does not perform a semantic audit.
 - Use `deploy` for the managed-skill phase after repository-specific deployment
   work has completed or explicitly no-oped.
 - Use `fast-change` whenever the request is exact and its complete selected

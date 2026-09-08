@@ -15,7 +15,7 @@ from tests.repository_lifecycle.support import (
     SDLC_CONTRACT_TEMPLATE,
     run_operation_cli,
 )
-from tests.support.repositories import run_git, write_sdlc_contract
+from tests.support.repositories import ROOT, run_git, write_sdlc_contract
 
 runner = importlib.import_module("repository_operation")
 contracts = importlib.import_module(
@@ -49,6 +49,19 @@ def test_sdlc_template_is_a_schema_valid_empty_skeleton(tmp_path: pathlib.Path) 
         {"run": ["python", "scripts/validate-repository.py"]}
     ]
     assert "deliverables" not in document
+    live = contracts.load_contract(ROOT / "sdlc" / "sdlc.yml")
+    entries = contracts.operation_entries(live)
+    expected = {
+        "deliverables.skills.validate.ceratops-managed":
+            "ceratops-skill-lifecycle/source-validate",
+        "deliverables.skills.deploy-local.ceratops-managed":
+            "ceratops-skill-lifecycle/deploy",
+        "deliverables.tools.deploy-local.ceratops-managed":
+            "ceratops-tool-lifecycle/install",
+    }
+    for location, handoff in expected.items():
+        assert entries[location] == {"handoff": handoff}
+    assert set(live["deliverables"]["skills"]["validate"]) == {"ceratops-managed"}
 
 
 def test_absent_sdlc_section_is_a_successful_no_op(tmp_path: pathlib.Path) -> None:
@@ -413,14 +426,20 @@ def test_bootstrap_and_advisory_handoffs_need_no_skill_runtime(
             },
         },
         deliverables={
-            "tools": {
+            "skills": {
                 "validate": {
-                    "review": {
-                        "handoff": "ceratops-skill-lifecycle/skills-consistency-review"
+                    "ceratops-managed": {
+                        "handoff": "ceratops-skill-lifecycle/source-validate"
                     }
                 },
                 "deploy-local": {
-                    "managed": {"handoff": "ceratops-tool-lifecycle/install"}
+                    "ceratops-managed": {"handoff": "ceratops-skill-lifecycle/deploy"}
+                },
+            },
+            "tools": {
+                "validate": {"custom-check": {"handoff": "target-owned/check"}},
+                "deploy-local": {
+                    "ceratops-managed": {"handoff": "ceratops-tool-lifecycle/install"}
                 },
                 "publish": {
                     "workflow": {
@@ -437,16 +456,31 @@ def test_bootstrap_and_advisory_handoffs_need_no_skill_runtime(
     assert "python" in json.loads(result.stdout)["prerequisites"]
     result = run_operation_cli(tmp_path, "repository.bootstrap.runtime")
     assert result.returncode == 0, result.stderr
-    for name in (
-        "deliverables.tools.deploy-local.managed",
-        "deliverables.tools.publish.workflow",
+    source_check = "deliverables.skills.validate.ceratops-managed"
+    tool_check = "deliverables.tools.validate.custom-check"
+    for name, check, handoff in (
+        ("deliverables.skills.deploy-local.ceratops-managed", source_check,
+         "ceratops-skill-lifecycle/source-validate"),
+        ("deliverables.tools.deploy-local.ceratops-managed", tool_check,
+         "target-owned/check"),
+        ("deliverables.tools.publish.workflow", tool_check, "target-owned/check"),
     ):
+        assert runner.validation_operations(tmp_path, [name]) == [check]
+        assert runner.validation_operations(tmp_path, [name], [source_check]) == [
+            source_check
+        ]
         result = run_operation_cli(tmp_path, name)
         assert result.returncode == 0, result.stderr
         payload = json.loads(result.stdout)
         assert payload["results"][0]["status"] == "advisory"
         assert payload["results"][0]["handoff"]
-        assert payload["validation_handoffs"][0]["handoff"]
+        assert payload["validation_handoffs"] == [{
+            "operation": check, "commit": None, "steps": [],
+            "status": "advisory", "handoff": handoff,
+        }]
+    result = run_operation_cli(tmp_path, source_check)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["results"][0]["status"] == "advisory"
 
 
 def test_duplicate_yaml_operations_are_rejected_before_execution(

@@ -41,6 +41,7 @@ SDLC_RELATIVE = pathlib.Path("sdlc/sdlc.yml")
 VALIDATOR_RELATIVE = pathlib.Path("scripts/validate-repository.py")
 WORKFLOW_RELATIVE = pathlib.Path(".github/workflows/validate.yml")
 MANAGED_SKILL_HANDOFF = "ceratops-skill-lifecycle/deploy"
+SKILL_VALIDATION_HANDOFF = "ceratops-skill-lifecycle/source-validate"
 START = "<!-- CERATOPS_SHARED_SECTIONS_START -->"
 END = "<!-- CERATOPS_SHARED_SECTIONS_END -->"
 SOURCE_RE = re.compile(r"<!-- SECTION SOURCE: skills/sections/([^ ]+) -->")
@@ -557,8 +558,9 @@ def build_sdlc_contract_candidate(
 ) -> dict[str, object] | None:
     """Preserve target capabilities and materialize repository validation.
 
-    The template owns the compatible repository's aggregate command. Managed
-    and standalone skill deployment are alternatives, never implicit defaults.
+    The template owns repository validation; this producer owns skill action
+    routing. Existing operations retain their definitions. Skillless targets
+    lose only exact producer-owned entries. Deployment is never implicit.
     """
 
     if not materialize:
@@ -576,20 +578,28 @@ def build_sdlc_contract_candidate(
     candidate["repository"] = repository
     deliverables = dict(candidate.get("deliverables", {}))
     skills = dict(deliverables.get("skills", {}))
-    deployment = dict(skills.get("deploy-local", {}))
-    managed = {"handoff": MANAGED_SKILL_HANDOFF}
-    standalone = {"steps": [{"run": ["python", "scripts/deploy-skills.py"]}]}
-    if has_skills:
-        deployment.setdefault("managed", managed)
-        deployment.setdefault("standalone", standalone)
-    else:
-        for name, owned in (("managed", managed), ("standalone", standalone)):
-            if deployment.get(name) == owned:
-                deployment.pop(name)
-    if deployment:
-        skills["deploy-local"] = deployment
-    else:
-        skills.pop("deploy-local", None)
+    owned_operations = {
+        "validate": {
+            "ceratops-managed": {"handoff": SKILL_VALIDATION_HANDOFF},
+        },
+        "deploy-local": {
+            "ceratops-managed": {"handoff": MANAGED_SKILL_HANDOFF},
+            "standalone": {
+                "steps": [{"run": ["python", "scripts/deploy-skills.py"]}],
+            },
+        },
+    }
+    for category, owned_entries in owned_operations.items():
+        operations = dict(skills.get(category, {}))
+        for name, owned in owned_entries.items():
+            if has_skills:
+                operations.setdefault(name, owned)
+            elif operations.get(name) == owned:
+                operations.pop(name)
+        if operations:
+            skills[category] = operations
+        else:
+            skills.pop(category, None)
     if skills:
         deliverables["skills"] = skills
     else:

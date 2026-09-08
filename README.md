@@ -11,7 +11,7 @@ Reusable Ceratops skills for Codex and other agents compatible with `SKILL.md`.
 | `ceratops-governance-lifecycle` | Route prompt optimization, advisory skill optimization, regression-safe instruction updates, and cross-scope governance consistency audits across action references. |
 | `ceratops-credit-savings-analysis` | Analyze one credit-waste surface or run fixed per-thread analyses for the current, named, or recent project-filtered threads while preserving every confirmed finding. |
 | `ceratops-misunderstanding-audit` | Audit N days of misunderstandings or one exchange, preserve exact evidence and repeated clarifications, and propose targeted communication or workflow repairs without applying them. |
-| `ceratops-skill-lifecycle` | Route skill-domain work across create, deploy, preferred eligible fast-change, update, skills-contract-review, and skills-consistency-review actions. |
+| `ceratops-skill-lifecycle` | Route skill-domain work across create, source-validate, deploy, preferred eligible fast-change, update, skills-contract-review, and skills-consistency-review actions. |
 | `ceratops-tool-lifecycle` | Create and package local Python tools, bootstrap the deployment manager, install exact releases, update tools, and inspect versions. |
 | `ceratops-automation-run` | Run recurring automations with shared Ceratops alert, memory, and completion policy. |
 | `ceratops-task-lifecycle` | Route failed-fix-loop breaks, same-thread task resume, whole-task handoff, and closure checks across action references. |
@@ -95,7 +95,11 @@ contracts. `skills/ceratops-skill-lifecycle/references/` owns
 skill-design contracts and skill source-doc tracking. The
 `skills-contract-review` action refreshes those contracts against registered
 best-practice evidence; it does not audit skills or run the source validator.
-The `skills-consistency-review` action audits one direct manifest-backed
+The `source-validate` action owns deterministic source validation through the
+existing validator in its skill bundle, with `full`, selected `skill`, and
+shared `sections` modes. Deployment requires its passing `full` result for
+unchanged source inputs. The separate `skills-consistency-review` action audits
+one direct manifest-backed
 installed skill, regardless of its name, against the contracts and checks its
 coupled metadata, action references, automation consumers, helpers, installer,
 generated runtime, source, and docs. Each runtime manifest records schema,
@@ -148,7 +152,7 @@ without repository deduplication.
 | `skills/ceratops-repo-lifecycle/scripts/manage-pending-work.py` | Records, checks, automatically resumes the retained target commit, and progressively finalizes the exact selected scope; preflight preserves and reports non-cleanup-eligible worktrees, while eligible residual-worktree and identity-matched task-temp cleanup stays within validated named directory boundaries and preserves active skill-update state for post-deployment finalization. |
 | `skills/ceratops-repo-lifecycle/scripts/repository_operation.py` | Single capability runner: resolves complete YAML locations, prevalidates ordered argv/parameters/cwd, runs declared validation before deployment or publication, and returns compact results, bounded failures and advisory handoffs. |
 | `skills/ceratops-repo-lifecycle/scripts/ship-repository.py` | Prevalidates one SDLC contract and ordered phase selections before orchestrating guarded GitHub shipping, main synchronization, per-operation publication and deployment checkpoints, and resumable selected-source cleanup. |
-| `skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py` | Skill-lifecycle-owned source, metadata, runtime-input, contract, and portability validator used only by explicit skill workflows. |
+| `skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py` | Existing source, metadata, runtime-input, contract, and portability validator invoked by source-validate and explicit skill workflows. |
 | `skills/ceratops-skill-lifecycle/scripts/fast-change.py` | Classifies exact structured replacements, generates their diff, and owns the eligible direct-release change through declared Markdown lint, exact helper tests, targeted installation, commit, and failure compensation. |
 
 Lifecycle helpers suppress successful subcommand output and print only compact
@@ -182,11 +186,19 @@ boundary. The agent repairs ordinary failures in the selected task worktree,
 commits and retries; a failed check never permits later mutation.
 
 Operations are identified by their YAML location, such as
-`repository.bootstrap.runtime` or `deliverables.skills.deploy-local.managed`.
+`repository.bootstrap.runtime` or
+`deliverables.skills.deploy-local.ceratops-managed`.
 There are no extra IDs, defaults or full flows in the contract. Prerequisites
 are setup metadata; only explicitly declared bootstrap commands install
 dependencies. Handoffs are advisory routing, not executable prose or proof of
 completed domain work. The runner never calls another skill automatically.
+Ceratops skill handoffs use the operation name `ceratops-managed`, including
+skill and tool deployment. Skill source validation stays under the generic
+`validate` category: `deliverables.skills.validate.ceratops-managed` hands off
+to `ceratops-skill-lifecycle/source-validate`; the calling action must fulfill
+that handoff before claiming validation. The compatible-repository producer
+adds these skill operations only for source skills in current-format contracts;
+the generic template retains repository validation alone.
 
 `ship` derives its optional pending-work scope from the staged branch. When
 present, the same generic scope is checked before the first remote
@@ -541,8 +553,10 @@ The map format is:
 }
 ```
 
-Run full skill-source validation explicitly when that source surface is in
-scope:
+Use `ceratops-skill-lifecycle/source-validate` for deterministic source
+validation. Its bundle owns the helper invocation and requires an explicit
+source repository. During source maintenance, the equivalent full-mode command
+from the source checkout is:
 
 ```powershell
 python .\skills\ceratops-skill-lifecycle\scripts\skills-consistency-source-validator.py --mode full

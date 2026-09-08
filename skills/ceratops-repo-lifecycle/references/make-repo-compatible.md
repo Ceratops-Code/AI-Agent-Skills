@@ -81,8 +81,9 @@ Infer the source identity from stable repository evidence before asking.
   manifest; block rather than discard a nonempty skill manifest.
   Preserve valid target-owned custom sections and assignments, portable
   runtime payloads, and maintenance commands.
-- Validate only the current version-2 SDLC structure; do not add format
-  conversion, compatibility aliases or retired-file migration detectors.
+- Validate supported SDLC formats through the shared loader and preserve
+  existing versions. Materialize missing contracts in the current format
+  without format conversion, aliases, or retired-file migration detectors.
 - Block malformed or unsafe existing declarations before mutation. After the
   first write, restore every changed target file after any caught blocker and
   report the failed phase and rollback state.
@@ -111,9 +112,13 @@ Infer the source identity from stable repository evidence before asking.
   sections to `skills/sections/`, and remove generated section blocks from
   source skills.
 - Materialize `sdlc/sdlc.yml` from the owned template, preserving target
-  capabilities. Supply repository validation when undeclared. For source
-  skills, add `deliverables.skills.deploy-local.managed` advisory routing and
-  `standalone` deployment; these alternatives are not automatic defaults.
+  capabilities and supported existing versions. In the current format, supply
+  repository validation when undeclared. For source skills, add
+  `deliverables.skills.validate.ceratops-managed` routing to
+  `ceratops-skill-lifecycle/source-validate` and
+  `deliverables.skills.deploy-local.ceratops-managed` routing to
+  `ceratops-skill-lifecycle/deploy`, plus `standalone` deployment. Preserve
+  target-owned entries; deployment alternatives are not automatic defaults.
 - When skills exist, make every source `SKILL.md` delta-only, add or align
   `skills/<name>/agents/openai.yaml`, and align the README Skills table without
   changing skill behavior.
@@ -148,7 +153,8 @@ Infer the source identity from stable repository evidence before asking.
 - Skill-bearing repositories have a stable source identity,
   `ceratops-compatible` manifest, complete per-skill assignments, target-owned
   shared sections, aligned source skills, metadata, README inventory, portable
-  payload declarations, managed deployment routing and a supported standalone
+  payload declarations, source-validation and deployment routing in current
+  SDLC contracts, and a supported standalone
   installer. Skillless repositories retain only repository capabilities and
   target-owned deliverables.
 - Every target has repository validation and CI wiring; every applicable

@@ -49,11 +49,11 @@ repository:
 deliverables:
   skills:
     validate:
-      consistency:
-        handoff: ceratops-skill-lifecycle/skills-consistency-review
+      ceratops-managed:
+        handoff: ceratops-skill-lifecycle/source-validate
 
     deploy-local:
-      managed:
+      ceratops-managed:
         handoff: ceratops-skill-lifecycle/deploy
 
       standalone:
@@ -68,7 +68,7 @@ deliverables:
 
   tools:
     deploy-local:
-      managed:
+      ceratops-managed:
         handoff: ceratops-tool-lifecycle/install
 
       standalone:

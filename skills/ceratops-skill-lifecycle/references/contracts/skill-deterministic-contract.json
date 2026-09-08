@@ -208,10 +208,11 @@
         "skills/ceratops-skill-lifecycle/references/contracts/skill-nondeterministic-contract.json",
         "skill-contract-source-docs.json",
         "skills/ceratops-skill-lifecycle/references/skills-contract-review.md",
+        "skills/ceratops-skill-lifecycle/references/source-validate.md",
         "skills/ceratops-skill-lifecycle/references/skills-consistency-review.md",
         "README.md"
       ],
-      "pass_condition": "The source-doc registry and contract-review action own skill-design standards refresh, the validator owns deterministic compliance, and the repository consistency action owns manual non-deterministic compliance without silently changing the contracts."
+      "pass_condition": "The source-doc registry and contract-review action own skill-design standards refresh. The source-validate action invokes the existing bundle-owned validator in full, selected-skill, or sections mode; deployment requires its passing full result for unchanged source inputs. The separate skills-consistency-review action owns manual non-deterministic compliance without silently changing the contracts."
     },
     {
       "id": "skill.governance_consistency_audit",

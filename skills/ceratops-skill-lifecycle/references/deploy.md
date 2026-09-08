@@ -9,16 +9,13 @@ deployment operations or the independent bootstrap installer.
 
 ### Script Bundle
 
-- (D) Invocation contract: bind `<skill-root>` to the directory containing this
-  action's parent `SKILL.md`; require
-  `<skill-root>/scripts/skills-consistency-source-validator.py` and
-  `<skill-root>/scripts/runtime/install-managed-skills.py` once before the first
-  call. Invoke those exact paths with the working directory equal to their
-  `--repo-root` value; stop if either is absent and never resolve them relative
+- Bind `<skill-root>` to the directory containing this action's parent
+  `SKILL.md`; require `<skill-root>/scripts/runtime/install-managed-skills.py`
+  before the first call. Invoke that exact path with the working directory
+  equal to its `--repo-root` value; stop if absent and never resolve it relative
   to that repository.
-- (D) Source validation: `python
-  "<skill-root>/scripts/skills-consistency-source-validator.py" --repo-root <repo-root>
-  --mode full`.
+- Source-validation handoff: `references/source-validate.md` with the same
+  source checkout and `full` mode.
 - (D) Managed runtime transaction: `python
   "<skill-root>/scripts/runtime/install-managed-skills.py" --repo-root <repo-root>
   [--install-root <skills-root>] [--skill <name>...]
@@ -47,8 +44,8 @@ deployment operations or the independent bootstrap installer.
 
 ## Workflow
 
-1. Run full source validation from the skill-lifecycle bundle. Do not run the
-   repository aggregate validator here.
+1. Follow `source-validate` in `full` mode for the exact source checkout.
+   Reuse its passing result only while those source inputs remain unchanged.
 2. Select exactly one runtime mode: all-managed by default, explicit selected
    and removed skills, or affected-set deployment from one full base revision.
 3. Run the managed runtime installer once and treat cleanup-blocked output as a

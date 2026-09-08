@@ -103,7 +103,10 @@ def test_compatibility_materializer_supplies_target_identity_and_assignments(
         (repo / "sdlc" / "sdlc.yml").read_text(encoding="utf-8")
     )
     assert contract["kind"] == "ceratops-sdlc"
-    assert contract["deliverables"]["skills"]["deploy-local"]["managed"] == {
+    assert contract["deliverables"]["skills"]["validate"] == {
+        "ceratops-managed": {"handoff": "ceratops-skill-lifecycle/source-validate"}
+    }
+    assert contract["deliverables"]["skills"]["deploy-local"]["ceratops-managed"] == {
         "handoff": "ceratops-skill-lifecycle/deploy"
     }
     assert contract["deliverables"]["skills"]["deploy-local"]["standalone"] == {
@@ -117,6 +120,38 @@ def test_compatibility_materializer_supplies_target_identity_and_assignments(
         "public": {
             "steps": [{"run": [sys.executable, "-V"]}]
         }
+    }
+    materializer = importlib.import_module(
+        "ceratops_repo_compatibility_engine.repository_materialization"
+    )
+    # Current generated entries are idempotent and retire with their skill source.
+    assert materializer.build_sdlc_contract_candidate(
+        repo, has_skills=True, materialize=True,
+    ) == contract
+    skillless = materializer.build_sdlc_contract_candidate(
+        repo, has_skills=False, materialize=True,
+    )
+    assert skillless["deliverables"] == {"tools": contract["deliverables"]["tools"]}
+
+    # A target's custom definitions survive even under a producer-owned name.
+    custom = {"handoff": "target-owned/validation"}
+    contract["deliverables"]["skills"]["validate"] = {
+        "ceratops-managed": custom, "custom-check": custom,
+    }
+    contract["deliverables"]["skills"]["deploy-local"]["ceratops-managed"] = {
+        "handoff": "target-owned/deployment"
+    }
+    sdlc = repo / "sdlc" / "sdlc.yml"
+    sdlc.write_text(yaml.safe_dump(contract, sort_keys=False), encoding="utf-8")
+    assert materializer.build_sdlc_contract_candidate(
+        repo, has_skills=True, materialize=True,
+    ) == contract
+    skillless = materializer.build_sdlc_contract_candidate(
+        repo, has_skills=False, materialize=True,
+    )
+    assert skillless["deliverables"]["skills"] == {
+        "validate": {"ceratops-managed": custom, "custom-check": custom},
+        "deploy-local": {"ceratops-managed": {"handoff": "target-owned/deployment"}},
     }
     assert (repo / "scripts" / "deploy-skills.py").is_file()
     assert (repo / "scripts" / "validate-repository.py").is_file()

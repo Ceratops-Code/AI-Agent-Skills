@@ -56,7 +56,8 @@ setup and validation, plus deliverable validation, deployment and publication.
 - Execute named SDLC entries through `scripts/repository_operation.py` with
   `--repo-root PATH --sdlc-contract PATH --operation LOCATION`; repeat the last
   flag in order. Locations follow the YAML hierarchy, such as
-  `repository.bootstrap.runtime` or `deliverables.skills.deploy-local.managed`.
+  `repository.bootstrap.runtime` or
+  `deliverables.skills.deploy-local.ceratops-managed`.
   Version 1 locations use `deploy.operations.NAME` or `release.operations.NAME`.
 - Use supported SDLC formats through the shared loader without migration.
   Require an upgrade only when the requested operation cannot run safely;
@@ -83,9 +84,9 @@ setup and validation, plus deliverable validation, deployment and publication.
 - Use this skill for repository creation, compatibility, local Git promotion,
   GitHub lifecycle work, deterministic deployment, dependency maintenance,
   CodeQL disposition, and PR merge decisions.
-- Use `$ceratops-skill-lifecycle` for skill-domain creation, mutation, managed
-  deployment, contract review, or consistency review; accept its promotion or
-  shipping handoff and return the managed-skill phase.
+- Use `$ceratops-skill-lifecycle` for skill-domain creation, mutation, source
+  validation, managed deployment, contract review, or consistency review; accept
+  its promotion or shipping handoff and return the selected skill action.
 - Use `references/contracts-review.md` for contract review rather than
   lifecycle execution.
 - Use a generic GitHub capability only when no Ceratops repository action fits
