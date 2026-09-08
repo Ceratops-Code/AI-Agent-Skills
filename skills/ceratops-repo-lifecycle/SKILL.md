@@ -1,6 +1,6 @@
 ---
 name: ceratops-repo-lifecycle
-description: Route Ceratops repository lifecycle work to action references for repository creation, compatibility, contracts, health, dependencies, local promotion, remote release publication, deterministic local deployment, GitHub shipping, and PR merge. Use when Codex should create or harden a repository, make it Ceratops-compatible, review its contracts, disposition CodeQL, maintain dependencies, promote selected task branches into a local release branch with or without deployment, ship a staged branch through guarded GitHub merge, post-merge release publication, and local deployment, or finalize an already-ready PR.
+description: Route Ceratops repository lifecycle work to action references for repository creation, compatibility, contracts, health, dependencies, local promotion, remote release publication, deterministic local deployment, GitHub shipping, and PR merge. Use when Codex should create or harden a repository, make it Ceratops-compatible, review its contracts, disposition CodeQL, maintain dependencies, promote selected task branches into a local release branch with or without deployment, ship a staged branch through guarded GitHub merge, post-merge release publication, and local deployment, or finalize an already-ready PR. Also use for scoped GitHub item inspection and requested item changes, standalone PR publication or review follow-up, or GitHub Actions diagnosis and repair.
 ---
 
 # Ceratops Repository Lifecycle
@@ -30,6 +30,10 @@ setup and validation, plus deliverable validation, deployment and publication.
 - Ship, synchronize, publish, deploy, and finalize selected work:
   `references/ship.md`
 - Finalize an already-ready PR: `references/merge-pr.md`
+- Inspect GitHub repositories, PRs, and issues: `references/github-triage.md`
+- Publish selected changes as an open PR: `references/publish-pr.md`
+- Address selected PR review feedback: `references/address-review.md`
+- Diagnose and repair GitHub Actions checks: `references/fix-ci.md`
 
 ### Inputs To Capture
 
@@ -85,6 +89,10 @@ setup and validation, plus deliverable validation, deployment and publication.
 
 #### 1. Classify the action
 
+- Use `github-triage` for general GitHub inspection and explicitly requested
+  item changes; route review feedback and Actions failures to `address-review`
+  and `fix-ci`, respectively, within the granted scope.
+
 - Use `create-or-publish`, `make-repo-compatible`, `contracts-review`,
   `codeql-disposition`, `health-audit`, or `dependency-maintenance` for their
   named repository surfaces.
@@ -98,6 +106,9 @@ setup and validation, plus deliverable validation, deployment and publication.
 - Use `ship` for staged-branch GitHub delivery and selected-source cleanup;
   publication and local deployment run only when their operations are selected.
 - Use `merge-pr` only when standalone PR finalization is the whole task.
+- Use `publish-pr` when explicitly asked to publish selected changes as a PR;
+  preserve repository branch and promotion policies, and stop after verifying
+  the PR without merging or deploying.
 
 #### 2. Close from action evidence
 

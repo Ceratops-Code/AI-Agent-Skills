@@ -30,17 +30,6 @@ FULL_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 PENDING_WORK_SCOPE_VERSION = 2
 PENDING_SOURCE_STATES = {"retained", "preserved", "deleting"}
-ACTION_LINK_RE = re.compile(
-    r"/actions/runs/(?P<run>\d+)(?:/job/(?P<job>\d+))?"
-)
-FAILING_CHECK_STATES = {
-    "ACTION_REQUIRED",
-    "CANCELLED",
-    "FAILURE",
-    "STALE",
-    "STARTUP_FAILURE",
-    "TIMED_OUT",
-}
 CHECK_UNCERTAINTY_GRACE_SECONDS = 60
 
 
@@ -882,138 +871,6 @@ def _short_check_uncertainty(finding: readiness.Finding) -> bool:
     )
 
 
-def _compact_failed_log(value: str, *, limit: int = 2_000) -> str | None:
-    """Keep decisive failure lines plus recent context within a UTF-8 byte bound."""
-
-    lines = [line.strip() for line in value.splitlines() if line.strip()]
-    if not lines:
-        return None
-    decisive = [
-        index
-        for index, line in enumerate(lines)
-        if line.startswith(("FAILED ", "ERROR ", "E ", "AssertionError", "assert "))
-        or "AssertionError" in line
-    ][:6]
-    recent = list(range(max(0, len(lines) - 8), len(lines)))
-    selected: dict[int, str] = {}
-    used = 0
-    for index in [*decisive, *reversed(recent)]:
-        if index in selected:
-            continue
-        separator = 1 if selected else 0
-        remaining = limit - used - separator
-        if remaining <= 0:
-            break
-        line_limit = min(350 if index in decisive else 220, remaining)
-        encoded = lines[index].encode("utf-8")
-        if len(encoded) > line_limit:
-            if line_limit <= 3:
-                compact = "." * line_limit
-            else:
-                compact = (
-                    encoded[: line_limit - 3]
-                    .decode("utf-8", errors="ignore")
-                    .rstrip()
-                    + "..."
-                )
-        else:
-            compact = lines[index]
-        selected[index] = compact
-        used += separator + len(compact.encode("utf-8"))
-    return "\n".join(selected[index] for index in sorted(selected)) or None
-
-
-def _read_pr_checks(
-    pr: str,
-    repository: str,
-    repo_root: pathlib.Path,
-) -> tuple[list[dict[str, Any]], str | None]:
-    """Return normalized PR checks plus one compact query diagnostic."""
-
-    result = run_json_command(
-        [
-            "gh",
-            "pr",
-            "checks",
-            pr,
-            "--repo",
-            repository,
-            "--json",
-            "name,state,bucket,link,workflow",
-        ],
-        "gh pr checks",
-        cwd=repo_root,
-    )
-    if not result.ok:
-        return [], result.message or "could not read PR checks"
-    if not isinstance(result.data, list):
-        return [], "gh pr checks returned an invalid response"
-    checks = [check for check in result.data if isinstance(check, dict)]
-    diagnostic = (
-        None
-        if len(checks) == len(result.data)
-        else "gh pr checks returned one or more invalid entries"
-    )
-    return checks, diagnostic
-
-
-def _failed_check_detail(
-    pr: str,
-    repository: str,
-    repo_root: pathlib.Path,
-    fallback_names: list[str],
-) -> dict[str, Any]:
-    """Read the first failing check and its compact failed-log context."""
-
-    raw_checks, checks_diagnostic = _read_pr_checks(
-        pr,
-        repository,
-        repo_root,
-    )
-    failing = [
-        check
-        for check in raw_checks
-        if isinstance(check, dict)
-        and (
-            str(check.get("bucket") or "").lower() == "fail"
-            or str(check.get("state") or "").upper() in FAILING_CHECK_STATES
-        )
-    ]
-    selected = failing[0] if failing else {}
-    link = selected.get("link")
-    match = ACTION_LINK_RE.search(link) if isinstance(link, str) else None
-    run_id = match.group("run") if match else None
-    job_id = match.group("job") if match else None
-    excerpt: str | None = None
-    if run_id is not None:
-        command = ["gh", "run", "view", run_id, "--repo", repository]
-        if job_id is not None:
-            command.extend(("--job", job_id))
-        command.append("--log-failed")
-        log = run_command(command, cwd=repo_root)
-        if log.returncode == 0:
-            excerpt = _compact_failed_log(log.stdout)
-    name = selected.get("name")
-    return {
-        "name": (
-            name
-            if isinstance(name, str) and name
-            else (fallback_names[0] if fallback_names else None)
-        ),
-        "state": selected.get("state"),
-        "workflow": selected.get("workflow"),
-        "url": link if isinstance(link, str) else None,
-        "run_id": run_id,
-        "job_id": job_id,
-        "failed_log_excerpt": excerpt,
-        "failing_names": [
-            str(check.get("name"))
-            for check in failing
-            if isinstance(check.get("name"), str)
-        ]
-        or fallback_names,
-        "diagnostic": checks_diagnostic,
-    }
 
 
 def _check_uncertainty_detail(
@@ -1025,7 +882,7 @@ def _check_uncertainty_detail(
 ) -> dict[str, Any]:
     """Collect bounded evidence for one persistent status-check uncertainty."""
 
-    raw_checks, checks_diagnostic = _read_pr_checks(
+    raw_checks, checks_diagnostic = readiness.read_pr_checks(
         pr,
         repository,
         repo_root,
@@ -1068,7 +925,7 @@ def _check_uncertainty_detail(
             {},
         )
     link = selected.get("link")
-    match = ACTION_LINK_RE.search(link) if isinstance(link, str) else None
+    match = readiness.ACTION_LINK_RE.search(link) if isinstance(link, str) else None
     run_id = match.group("run") if match else None
     action_run: dict[str, Any] | None = None
     action_diagnostic: str | None = None
@@ -1226,7 +1083,7 @@ def _ci_blocker(
                 "pr": summary.get("number"),
                 "url": summary.get("url"),
                 "head_oid": summary.get("head_oid"),
-                "check": _failed_check_detail(
+                "check": readiness.failed_check_detail(
                     pr,
                     repository,
                     repo_root,

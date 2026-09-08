@@ -1,9 +1,13 @@
-"""Validate the deterministic GitHub pull-request readiness contract.
+"""Inspect CI evidence and validate the deterministic PR readiness contract.
 
 This script is intentionally narrow. Repository health, repo contents, and
 artifact posture are owned by the other contract validators; this validator
 answers the merge-decision contract that needs fresh PR state close to the final
 action.
+
+The standalone CI inspector and shipping diagnostics share read-only check and
+log collection here. Inspection does not run merge policy, repair code, or retry
+workflows; merge/readiness contracts and release orchestration remain unchanged.
 
 Called by merge, ship, dependency-maintenance, and create/publish workflows when a PR
 merge decision is in scope. It reads GitHub PR metadata, applicable branch
@@ -15,12 +19,14 @@ from __future__ import annotations
 import argparse
 import json
 import pathlib
+import re
 import subprocess
 import sys
 from dataclasses import asdict, dataclass
 from typing import Any
+from urllib.parse import urlsplit
 
-from github_contract_engine.github_api import run_gh_graphql
+from github_contract_engine.github_api import run_gh_graphql, run_json_command
 from github_contract_engine.levels import ERROR, count_by_level
 from github_contract_engine.schema_validation import validate_contract_document
 
@@ -160,6 +166,23 @@ SHORT_STATUS_CHECK_UNCERTAINTY_MESSAGES = frozenset(
         UNKNOWN_STATUS_CHECK_MESSAGE,
         INCOMPLETE_STATUS_CHECK_MESSAGE,
     }
+)
+
+
+ACTION_LINK_RE = re.compile(
+    r"/actions/runs/(?P<run>\d+)(?:/job/(?P<job>\d+))?"
+)
+FAILING_CHECK_STATES = {
+    "ACTION_REQUIRED",
+    "CANCELLED",
+    "FAILURE",
+    "STALE",
+    "STARTUP_FAILURE",
+    "TIMED_OUT",
+}
+FAILURE_LINE_RE = re.compile(
+    r"\b(?:fail(?:ed|ure)?|error|traceback|exception|panic|fatal|timeout|segmentation fault)\b",
+    re.IGNORECASE,
 )
 
 
@@ -873,6 +896,306 @@ def emit(summary: dict[str, object], findings: list[Finding], *, as_json: bool, 
             if finding.expected is not None:
                 print(f"  expected: {json.dumps(finding.expected, sort_keys=True)}")
     return 1 if counts.get(ERROR, 0) else 0
+
+
+def compact_failed_log(value: str, *, limit: int = 2_000) -> str | None:
+    """Keep decisive failure lines plus recent context within a UTF-8 byte bound."""
+
+    lines = [line.strip() for line in value.splitlines() if line.strip()]
+    if not lines:
+        return None
+    decisive = [
+        index
+        for index, line in enumerate(lines)
+        if line.startswith(("FAILED ", "ERROR ", "E ", "AssertionError", "assert "))
+        or "AssertionError" in line
+        or FAILURE_LINE_RE.search(line)
+    ][:6]
+    recent = list(range(max(0, len(lines) - 8), len(lines)))
+    selected: dict[int, str] = {}
+    used = 0
+    for index in [*decisive, *reversed(recent)]:
+        if index in selected:
+            continue
+        separator = 1 if selected else 0
+        remaining = limit - used - separator
+        if remaining <= 0:
+            break
+        line_limit = min(350 if index in decisive else 220, remaining)
+        encoded = lines[index].encode("utf-8")
+        if len(encoded) > line_limit:
+            if line_limit <= 3:
+                compact = "." * line_limit
+            else:
+                compact = (
+                    encoded[: line_limit - 3]
+                    .decode("utf-8", errors="ignore")
+                    .rstrip()
+                    + "..."
+                )
+        else:
+            compact = lines[index]
+        selected[index] = compact
+        used += separator + len(compact.encode("utf-8"))
+    return "\n".join(selected[index] for index in sorted(selected)) or None
+
+
+def read_pr_checks(
+    pr: str,
+    repository: str,
+    repo_root: pathlib.Path,
+) -> tuple[list[dict[str, Any]], str | None]:
+    """Read checks, accepting gh's valid failure (1) and pending (8) JSON."""
+
+    result = run_command(
+        ["gh", "pr", "checks", pr, "--repo", repository,
+         "--json", "name,state,bucket,link,workflow"],
+        cwd=repo_root,
+    )
+    if result.returncode not in {0, 1, 8}:
+        return [], (result.stderr.strip() or "could not read PR checks")[:500]
+    try:
+        checks = json.loads(result.stdout)
+    except (TypeError, json.JSONDecodeError):
+        return [], (result.stderr.strip() or "gh pr checks returned invalid JSON")[:500]
+    if not isinstance(checks, list) or any(
+        not isinstance(check, dict) or not isinstance(check.get("name"), str)
+        for check in checks
+    ):
+        return [], "gh pr checks returned an invalid response"
+    return checks, None
+
+
+def check_state(check: dict[str, Any]) -> str:
+    """Classify an observed check without treating unknown or missing as green."""
+
+    bucket = str(check.get("bucket") or "").lower()
+    state = str(check.get("state") or "").upper()
+    if bucket in {"fail", "cancel"} or state in FAILING_CHECK_STATES | {"ERROR"}:
+        return "failed"
+    if bucket == "pending" or state in PENDING_CHECK_STATUSES | {"EXPECTED"}:
+        return "pending"
+    if bucket in {"pass", "skipping"} or state in PASSING_CHECK_CONCLUSIONS:
+        return "passed"
+    return "unknown"
+
+
+def check_log_detail(
+    check: dict[str, Any],
+    repository: str,
+    repo_root: pathlib.Path,
+    run_cache: dict[str, Any],
+) -> dict[str, Any]:
+    """Collect bounded Actions evidence; never fetch a third-party check URL.
+
+    Run metadata is cached per inspection. A completed job in a running workflow
+    uses GitHub's plain-text job-log endpoint; unfinished jobs are reported as
+    pending instead of provoking and retrying a predictable CLI failure.
+    """
+
+    detail: dict[str, Any] = {
+        "name": check.get("name"),
+        "state": check.get("state"),
+        "workflow": check.get("workflow"),
+        "url": check.get("link"),
+        "run_id": None,
+        "job_id": None,
+        "failed_log_excerpt": None,
+        "diagnostic": None,
+        "log_status": "external",
+    }
+    link = check.get("link")
+    try:
+        parsed = urlsplit(link) if isinstance(link, str) else None
+    except ValueError:
+        parsed = None
+    match = (
+        re.fullmatch(
+            re.escape("/" + repository) + ACTION_LINK_RE.pattern,
+            parsed.path.rstrip("/"),
+            flags=re.IGNORECASE,
+        )
+        if parsed and parsed.scheme == "https" and parsed.hostname == "github.com"
+        else None
+    )
+    if match is None:
+        detail["diagnostic"] = "No recognized Actions run in this repository; inspect the reported URL separately."
+        return detail
+    run_id, job_id = match.group("run"), match.group("job")
+    detail.update(run_id=run_id, job_id=job_id, log_status="unavailable")
+    if run_id not in run_cache:
+        run_cache[run_id] = run_json_command(
+            ["gh", "run", "view", run_id, "--repo", repository, "--json",
+             "databaseId,headSha,event,status,conclusion,url,workflowName,jobs"],
+            "gh run view",
+            cwd=repo_root,
+        )
+    result = run_cache[run_id]
+    if not result.ok or not isinstance(result.data, dict):
+        detail["diagnostic"] = (result.message or "Actions run metadata unavailable")[:500]
+        return detail
+    run = result.data
+    detail["run"] = run
+    jobs = run.get("jobs")
+    if not isinstance(jobs, list):
+        detail["diagnostic"] = "Actions run job metadata is incomplete."
+        return detail
+    job = next(
+        (item for item in jobs if isinstance(item, dict)
+         and str(item.get("databaseId")) == job_id),
+        None,
+    )
+    if job_id is not None and job is None:
+        detail["diagnostic"] = "Selected job is absent from the current run attempt."
+        return detail
+    selected = job if job is not None else run
+    status = str(selected.get("status") or "").lower()
+    if status in {"queued", "in_progress", "waiting", "pending", "requested"}:
+        detail.update(log_status="pending", diagnostic="Selected Actions job or run has not completed.")
+        return detail
+    if status != "completed":
+        detail["diagnostic"] = "Selected Actions job or run status is unavailable."
+        return detail
+    command = ["gh", "run", "view", run_id, "--repo", repository]
+    if job_id and str(run.get("status") or "").lower() != "completed":
+        command = ["gh", "api", f"repos/{repository}/actions/jobs/{job_id}/logs"]
+    else:
+        if job_id:
+            command.extend(("--job", job_id))
+        command.append("--log-failed")
+    log = run_command(command, cwd=repo_root)
+    if log.returncode != 0:
+        detail["diagnostic"] = (log.stderr.strip() or "Actions logs unavailable")[:500]
+        return detail
+    excerpt = compact_failed_log(log.stdout)
+    detail.update(failed_log_excerpt=excerpt, log_status="available" if excerpt else "empty")
+    return detail
+
+
+def failed_check_detail(
+    pr: str,
+    repository: str,
+    repo_root: pathlib.Path,
+    fallback_names: list[str],
+) -> dict[str, Any]:
+    """Preserve shipping's first-failure payload using the shared CI collector."""
+
+    checks, diagnostic = read_pr_checks(pr, repository, repo_root)
+    failing = [check for check in checks if check_state(check) == "failed"]
+    selected = failing[0] if failing else {"name": fallback_names[0] if fallback_names else None}
+    detail = check_log_detail(selected, repository, repo_root, {})
+    detail["failing_names"] = [check["name"] for check in failing] or fallback_names
+    if diagnostic:
+        detail["diagnostic"] = diagnostic
+    # Shipping's public blocker contract remains compact and unchanged.
+    return {key: detail[key] for key in (
+        "name", "state", "workflow", "url", "run_id", "job_id",
+        "failed_log_excerpt", "failing_names", "diagnostic",
+    )}
+
+
+def inspect_ci(
+    pr: str | None,
+    repository: str | None,
+    repo_root: pathlib.Path,
+    selected_names: list[str],
+) -> dict[str, Any]:
+    """Inspect selected checks at one observed PR head, without repair or polling."""
+
+    command = ["gh", "pr", "view"]
+    if pr:
+        command.append(pr)
+    if repository:
+        command.extend(("--repo", repository))
+    command.extend(("--json", "number,url,headRefOid"))
+    initial = run_json_command(command, "PR CI identity", cwd=repo_root)
+    if not initial.ok or not isinstance(initial.data, dict):
+        raise CommandError(initial.message or "PR identity unavailable")
+    identity = initial.data
+    # The base PR URL, not a fork's head repository, owns checks and Actions runs.
+    match = re.fullmatch(r"https://github\.com/([^/]+/[^/]+)/pull/(\d+)/?", str(identity.get("url")))
+    if not match or not identity.get("headRefOid"):
+        raise CommandError("PR URL or head is unavailable")
+    actual_repo, number = match.groups()
+    if repository and repository.lower() != actual_repo.lower():
+        raise CommandError("--repo does not match the PR URL repository")
+    checks, diagnostic = read_pr_checks(number, actual_repo, repo_root)
+    missing = sorted(set(selected_names) - {check["name"] for check in checks})
+    if selected_names:
+        checks = [check for check in checks if check["name"] in selected_names]
+    if missing:
+        diagnostic = "Requested checks are absent: " + ", ".join(missing)
+    states = [check_state(check) for check in checks]
+    status = (
+        "blocked" if diagnostic else
+        "no_checks" if not checks else
+        "failed" if "failed" in states else
+        "pending" if "pending" in states else
+        "unknown" if "unknown" in states else "passed"
+    )
+    cache: dict[str, Any] = {}
+    failures = [
+        check_log_detail(check, actual_repo, repo_root, cache)
+        for check in checks if check_state(check) == "failed"
+    ]
+    # Bind the evidence to the same head. A push invalidates the report; an
+    # automatic retry would hide a moving target and download logs again.
+    latest = run_json_command(
+        ["gh", "pr", "view", number, "--repo", actual_repo, "--json", "headRefOid"],
+        "PR CI final identity",
+        cwd=repo_root,
+    )
+    if not latest.ok or not isinstance(latest.data, dict) or not latest.data.get("headRefOid"):
+        status, diagnostic = "blocked", latest.message or "could not verify the final PR head"
+    elif latest.data["headRefOid"] != identity["headRefOid"]:
+        status, diagnostic = "stale", "PR head changed during CI inspection; inspect again"
+    return {
+        "schema": "ceratops-pr-ci-evidence.v1",
+        "status": status,
+        "repo": actual_repo,
+        "pr": int(number),
+        "url": identity["url"],
+        "head_oid": identity["headRefOid"],
+        "selected_names": selected_names,
+        "checks": checks,
+        "failures": failures,
+        "diagnostic": diagnostic,
+    }
+
+
+def inspect_ci_main(argv: list[str] | None = None) -> int:
+    """Emit a compact result and a new caller-owned CI evidence file.
+
+    Exit zero means selected checks passed. Every other status exits one; the
+    report distinguishes failures, pending checks, and incomplete evidence.
+    """
+
+    parser = argparse.ArgumentParser(description=inspect_ci.__doc__)
+    parser.add_argument("--pr", help="PR URL or number; defaults to the current branch PR")
+    parser.add_argument("--repo", help="base repository in OWNER/REPO form")
+    parser.add_argument("--cwd", type=pathlib.Path, default=pathlib.Path.cwd())
+    parser.add_argument("--check", action="append", default=[], help="select an exact check name; repeatable")
+    parser.add_argument("--evidence-file", required=True, type=pathlib.Path)
+    args = parser.parse_args(argv)
+    try:
+        report = inspect_ci(args.pr, args.repo, args.cwd, args.check)
+        with args.evidence_file.expanduser().open("x", encoding="utf-8") as stream:
+            json.dump(report, stream, indent=2, ensure_ascii=True)
+            stream.write("\n")
+        print(json.dumps({
+            "status": report["status"],
+            "repo": report["repo"],
+            "pr": report["pr"],
+            "head_oid": report["head_oid"],
+            "check_count": len(report["checks"]),
+            "failure_count": len(report["failures"]),
+            "diagnostic": report["diagnostic"],
+            "evidence_file": str(args.evidence_file.expanduser().resolve()),
+        }, ensure_ascii=True))
+        return int(report["status"] != "passed")
+    except (CommandError, OSError, ValueError) as exc:
+        print(json.dumps({"status": "error", "message": str(exc)}), file=sys.stderr)
+        return 1
 
 
 def build_parser() -> argparse.ArgumentParser:

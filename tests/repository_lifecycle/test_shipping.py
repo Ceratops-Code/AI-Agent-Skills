@@ -594,3 +594,309 @@ def test_repository_ship_blocks_selected_worktree_caller_before_remote_process(
             }
         ],
     )
+
+
+def _publish_pr_setup(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Any, ...]:
+    """Exercise real Git preparation/push, replacing only remote GitHub responses."""
+
+    module = load_pr_workflow_module(monkeypatch, "ensure_pr")
+    repo, remote = tmp_path / "repo", tmp_path / "remote.git"
+    repo.mkdir()
+    remote.mkdir()
+    assert run_git(repo, "init", "-b", "main").returncode == 0
+    assert run_git(remote, "init", "--bare", "-b", "main").returncode == 0
+    for key, value in (("user.name", "Tests"), ("user.email", "tests@example.invalid"), ("core.autocrlf", "false")):
+        assert run_git(repo, "config", key, value).returncode == 0
+    (repo / "code.txt").write_text("before\n", encoding="utf-8")
+    (repo / "removed.txt").write_text("old\n", encoding="utf-8")
+    _commit(repo)
+    assert run_git(repo, "remote", "add", "origin", str(remote)).returncode == 0
+    assert run_git(repo, "push", "origin", "main").returncode == 0
+    args = module.build_parser().parse_args([
+        "--repo-root", str(repo), "--head-branch", "codex/publish", "--prepare",
+        "--path", "code.txt", "--commit-message", "Publish selected change", "--draft",
+    ])
+    state: dict[str, Any] = {
+        "commands": [], "api": [], "pr": None, "creates": 0, "fail": None,
+        "urls": {}, "repo": "example/repository", "push_repo": "example/repository",
+        "extra_records": [],
+    }
+    original = module.require_output
+
+    def pr_record() -> dict[str, Any]:
+        assert state["pr"] is not None
+        head = run_git(remote, "rev-parse", f"refs/heads/{args.head_branch}")
+        assert head.returncode == 0
+        return {
+            "number": 24, "url": "https://github.com/example/repository/pull/24",
+            "headRefOid": state.get("head_override", head.stdout.strip()),
+            "changedFiles": 1, "state": state.get("pr_state", "OPEN"),
+            "isDraft": state["pr"]["draft"], "statusCheckRollup": [],
+        }
+
+    def create(metadata: dict[str, Any]) -> None:
+        if state["fail"] == "create":
+            raise module.EnsurePrError("simulated PR creation failure")
+        state["pr"] = metadata
+        state["creates"] += 1
+        if state["fail"] == "create-after-write":
+            raise module.EnsurePrError("simulated lost response after PR creation")
+
+    def output(command: list[str], *, cwd: pathlib.Path) -> str:
+        state["commands"].append(command)
+        if command[0] == "git":
+            git_args = command[3:]
+            if git_args[:2] == ["remote", "get-url"] and state["urls"]:
+                return state["urls"][git_args[-1]]
+            if git_args[0] in {"commit", "push"} and state["fail"] == git_args[0]:
+                raise module.CommandError("simulated " + git_args[0] + " failure")
+        if command[:3] == ["gh", "auth", "status"]:
+            if state["fail"] == "auth":
+                raise module.CommandError("simulated authentication failure")
+            return ""
+        if command[:3] == ["gh", "pr", "list"]:
+            return json.dumps([pr_record()] if state["pr"] else [])
+        if command[:3] == ["gh", "pr", "view"]:
+            return json.dumps(pr_record())
+        if command[:3] in (["gh", "pr", "create"], ["gh", "pr", "edit"]):
+            metadata = {}
+            if "--title" in command:
+                metadata["title"] = command[command.index("--title") + 1]
+            if "--body-file" in command:
+                metadata["body"] = pathlib.Path(command[command.index("--body-file") + 1]).read_text(encoding="utf-8")
+            if command[2] == "create":
+                create({**metadata, "draft": "--draft" in command})
+            else:
+                state["pr"].update(metadata)
+            return ""
+        assert command[0] != "gh", command
+        return original(command, cwd=cwd)
+
+    def api(method: str, endpoint: str, body: Any = None, **kwargs: Any) -> argparse.Namespace:
+        state["api"].append((method, endpoint, body))
+        if method == "POST":
+            create(body)
+            data: Any = {"number": 24}
+        elif "/pulls?" in endpoint:
+            data = list(state["extra_records"])
+            if state["pr"]:
+                data.append({
+                    "number": 24,
+                    "head": {"ref": args.head_branch, "repo": {"full_name": state["push_repo"]}},
+                    "base": {"ref": args.base_branch, "repo": {"full_name": state["repo"]}},
+                })
+        else:
+            data = {"full_name": state["repo"]}
+        return argparse.Namespace(ok=True, data=data, message=None)
+
+    monkeypatch.setattr(module, "require_output", output)
+    monkeypatch.setattr(module, "require_success", lambda command, **kwargs: output(command, **kwargs))
+    monkeypatch.setattr(module, "run_gh_api", api)
+    monkeypatch.setattr(module.time, "sleep", lambda seconds: None)
+    return module, args, repo, remote, state
+
+
+def test_publish_pr_prepares_literal_files_validates_and_reuses_draft(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module, args, repo, remote, state = _publish_pr_setup(tmp_path, monkeypatch)
+    (repo / "code.txt").write_text("after\n", encoding="utf-8")
+    (repo / "removed.txt").rename(repo / " [new].txt")
+    args.path += ["removed.txt", " [new].txt"]
+    args.title, args.body = "Selected change", "Why it matters.\n\nChecked locally.\n"
+    args.check_command = [[sys.executable, "-c", "from pathlib import Path; assert Path('code.txt').read_text() == 'after\\n'"]]
+    result = module.ensure_pr(args)
+    head = run_git(repo, "rev-parse", "HEAD").stdout.strip()
+    assert result["status"] == "pr_ready" and result["head"] == head and result["draft"] is True
+    assert run_git(remote, "rev-parse", args.head_branch).stdout.strip() == head
+    assert run_git(repo, "status", "--porcelain").stdout == ""
+    assert run_git(repo, "rev-list", "--count", "main..HEAD").stdout.strip() == "1"
+    assert state["pr"] == {"title": args.title, "body": args.body, "draft": True}
+    check = next(i for i, command in enumerate(state["commands"]) if command == args.check_command[0])
+    push = next(i for i, command in enumerate(state["commands"]) if command[3:4] == ["push"])
+    assert check < push
+    args.title = args.body = None
+    # Retrying with the original deleted filename must not create another commit.
+    assert module.ensure_pr(args)["head"] == head
+    assert state["creates"] == 1
+    assert run_git(repo, "rev-list", "--count", "main..HEAD").stdout.strip() == "1"
+
+
+@pytest.mark.parametrize("kind", ["dirty", "staged", "unknown", "directory", "escape", "ignored", "message", "base", "detached", "operation", "existing", "auth"])
+def test_publish_pr_rejects_unsafe_preparation_before_local_writes(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, kind: str,
+) -> None:
+    module, args, repo, remote, state = _publish_pr_setup(tmp_path, monkeypatch)
+    (repo / "code.txt").write_text("after\n", encoding="utf-8")
+    if kind in {"dirty", "staged"}:
+        (repo / "unrelated.txt").write_text("keep", encoding="utf-8")
+        if kind == "staged":
+            assert run_git(repo, "add", "unrelated.txt").returncode == 0
+    elif kind == "unknown":
+        args.path.append("missing.txt")
+    elif kind == "directory":
+        args.path = ["."]
+    elif kind == "escape":
+        args.path.append("../outside.txt")
+    elif kind == "ignored":
+        (repo / ".git" / "info" / "exclude").write_text("ignored.txt\n", encoding="utf-8")
+        (repo / "ignored.txt").write_text("keep", encoding="utf-8")
+        args.path.append("ignored.txt")
+    elif kind == "message":
+        args.commit_message = " "
+    elif kind == "base":
+        args.head_branch = "main"
+    elif kind == "detached":
+        assert run_git(repo, "checkout", "--detach").returncode == 0
+    elif kind == "operation":
+        (repo / ".git" / "CHERRY_PICK_HEAD").write_text(run_git(repo, "rev-parse", "HEAD").stdout, encoding="utf-8")
+    elif kind == "existing":
+        assert run_git(repo, "branch", args.head_branch).returncode == 0
+    elif kind == "auth":
+        state["fail"] = "auth"
+    before = [run_git(repo, *command).stdout for command in (
+        ("rev-parse", "HEAD"), ("branch", "--show-current"), ("status", "--porcelain"), ("diff", "--cached"),
+    )]
+    with pytest.raises((module.EnsurePrError, module.CommandError)):
+        module.ensure_pr(args)
+    after = [run_git(repo, *command).stdout for command in (
+        ("rev-parse", "HEAD"), ("branch", "--show-current"), ("status", "--porcelain"), ("diff", "--cached"),
+    )]
+    assert before == after
+    assert run_git(remote, "show-ref", "--verify", f"refs/heads/{args.head_branch}").returncode != 0 or kind == "base"
+    assert not any(command[3:4] in (["switch"], ["commit"], ["push"]) for command in state["commands"])
+    assert state["creates"] == 0
+
+
+@pytest.mark.parametrize("failure,phase", [("commit", "preparation_pending"), ("validation", "prepared"), ("push", "validated"), ("create", "pushed"), ("create-after-write", "pushed")])
+def test_publish_pr_failure_retains_work_and_retry_does_not_duplicate(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, failure: str, phase: str,
+) -> None:
+    module, args, repo, remote, state = _publish_pr_setup(tmp_path, monkeypatch)
+    (repo / "code.txt").write_text("after\n", encoding="utf-8")
+    state["fail"] = failure
+    if failure == "validation":
+        args.check_command = [[sys.executable, "-c", "raise SystemExit(7)"]]
+    with pytest.raises((module.EnsurePrError, module.CommandError)):
+        module.ensure_pr(args)
+    assert args.publication_phase == phase
+    assert (repo / "code.txt").read_text() == "after\n"
+    assert run_git(repo, "branch", "--show-current").stdout.strip() == args.head_branch
+    if failure == "commit":
+        assert run_git(repo, "diff", "--cached", "--name-only").stdout.strip() == "code.txt"
+        assert run_git(repo, "rev-list", "--count", "main..HEAD").stdout.strip() == "0"
+    else:
+        assert run_git(repo, "rev-list", "--count", "main..HEAD").stdout.strip() == "1"
+    if failure in {"commit", "validation", "push"}:
+        assert run_git(remote, "show-ref", "--verify", f"refs/heads/{args.head_branch}").returncode != 0
+    state["fail"] = None
+    args.check_command = []
+    assert module.ensure_pr(args)["status"] == "pr_ready"
+    assert run_git(repo, "rev-list", "--count", "main..HEAD").stdout.strip() == "1"
+    assert state["creates"] == 1
+
+
+@pytest.mark.parametrize("mutation", ["worktree", "head", "branch"])
+def test_publish_pr_validation_drift_blocks_push(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, mutation: str,
+) -> None:
+    module, args, repo, remote, _ = _publish_pr_setup(tmp_path, monkeypatch)
+    (repo / "code.txt").write_text("after\n", encoding="utf-8")
+    args.check_command = {
+        "worktree": [[sys.executable, "-c", "from pathlib import Path; Path('code.txt').write_text('drift')"]],
+        "head": [["git", "commit", "--allow-empty", "-m", "Drift"]],
+        "branch": [["git", "switch", "-c", "other"]],
+    }[mutation]
+    with pytest.raises(module.EnsurePrError, match="Validation changed"):
+        module.ensure_pr(args)
+    assert run_git(remote, "show-ref", "--verify", f"refs/heads/{args.head_branch}").returncode != 0
+
+
+@pytest.mark.parametrize("fork", [False, True])
+def test_publish_pr_explicit_target_and_organization_fork_identity(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, fork: bool,
+) -> None:
+    module, args, repo, remote, state = _publish_pr_setup(tmp_path, monkeypatch)
+    (repo / "code.txt").write_text("after\n", encoding="utf-8")
+    args.repo = state["repo"]
+    state["urls"] = {"origin": "git@github.com:example/repository.git"}
+    if fork:
+        assert run_git(repo, "remote", "add", "upstream", str(remote)).returncode == 0
+        args.base_remote = "upstream"
+        state["push_repo"] = "example/fork"
+        state["urls"] = {"origin": "https://github.com/example/fork.git", "upstream": "git@github.com:example/repository.git"}
+        state["extra_records"] = [{
+            "number": 19,
+            "head": {"ref": args.head_branch, "repo": {"full_name": "example/other-fork"}},
+            "base": {"ref": args.base_branch, "repo": {"full_name": args.repo}},
+        }]
+    result = module.ensure_pr(args)
+    assert result["status"] == "pr_ready"
+    post = next(call for call in state["api"] if call[0] == "POST")
+    assert post[1] == "/repos/example/repository/pulls"
+    assert post[2]["head"] == "example:codex/publish" and post[2]["draft"] is True
+    assert post[2].get("head_repo") == ("fork" if fork else None)
+    assert module.ensure_pr(args)["head"] == result["head"]
+    assert state["creates"] == 1
+    assert all("--repo" in command for command in state["commands"] if command[:3] == ["gh", "pr", "view"])
+
+
+def test_publish_pr_target_mismatch_blocks_before_preparation(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module, args, repo, _, state = _publish_pr_setup(tmp_path, monkeypatch)
+    (repo / "code.txt").write_text("after\n", encoding="utf-8")
+    args.repo = "expected/repository"
+    state["urls"] = {"origin": "https://github.com/wrong/repository.git"}
+    with pytest.raises(module.EnsurePrError, match="base remote does not match"):
+        module.ensure_pr(args)
+    assert run_git(repo, "branch", "--show-current").stdout.strip() == "main"
+    assert state["api"] == [] and state["creates"] == 0
+
+
+def test_publish_pr_existing_ready_pr_is_not_downgraded_or_rewritten(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module, args, repo, _, state = _publish_pr_setup(tmp_path, monkeypatch)
+    (repo / "code.txt").write_text("after\n", encoding="utf-8")
+    state["pr"] = {"draft": False, "title": "Keep title", "body": "Keep body"}
+    result = module.ensure_pr(args)
+    assert result["draft"] is False and state["creates"] == 0
+    assert state["pr"] == {"draft": False, "title": "Keep title", "body": "Keep body"}
+
+
+def test_publish_pr_head_readback_failure_reports_retained_push(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    module, args, repo, remote, state = _publish_pr_setup(tmp_path, monkeypatch)
+    (repo / "code.txt").write_text("after\n", encoding="utf-8")
+    state["head_override"] = "0" * 40
+    assert module.main([
+        "--repo-root", str(repo), "--head-branch", args.head_branch,
+        "--prepare", "--path", "code.txt", "--commit-message", "Change", "--draft",
+    ]) == 1
+    result = json.loads(capsys.readouterr().err)
+    assert result["status"] == "error" and result["phase"] == "pushed"
+    assert result["head"] == run_git(remote, "rev-parse", args.head_branch).stdout.strip()
+    assert state["creates"] == 1
+
+
+@pytest.mark.parametrize("value", ["not-json", "[]", '[""]', '["git", 2]', '{}'])
+def test_publish_pr_validation_requires_shell_free_argv(
+    monkeypatch: pytest.MonkeyPatch, value: str,
+) -> None:
+    module = load_pr_workflow_module(monkeypatch, "ensure_pr")
+    with pytest.raises(argparse.ArgumentTypeError):
+        module._check_argv(value)
+    assert module._check_argv('["python", "check.py", "two words"]') == ["python", "check.py", "two words"]
+
+
+def test_publish_pr_preparation_flags_are_opt_in(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module, args, repo, _, state = _publish_pr_setup(tmp_path, monkeypatch)
+    args.prepare = False
+    with pytest.raises(module.EnsurePrError, match="require --prepare"):
+        module.ensure_pr(args)
+    assert run_git(repo, "branch", "--show-current").stdout.strip() == "main"
+    assert state["creates"] == 0
