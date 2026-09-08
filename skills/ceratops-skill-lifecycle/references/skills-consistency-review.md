@@ -75,7 +75,7 @@ installed-runtime surface.
   require a best-practice refresh.
 - Exclude GitHub organization, repository, code, PR, artifact, registry, and
   release contracts; route those to `$ceratops-repo-lifecycle`
-  `contracts-review`.
+  `repo-contracts-review`.
 - Keep report-only as the default. Apply source, installer, runtime, or
   automation changes only when the user approved that exact scope.
 - Update source repositories only through task worktrees and regenerate runtime

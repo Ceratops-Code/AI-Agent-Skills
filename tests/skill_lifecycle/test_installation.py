@@ -413,7 +413,7 @@ def test_bootstrap_full_install_materializes_self_contained_lifecycle_bundle(
         installed_lifecycle
         / "references"
         / "templates"
-        / "skill-sections-template.json"
+        / "skill-sections.json.tmpl"
     ).is_file()
     assert (installed_lifecycle / "skills" / "sections" / "core.md").is_file()
     assert (
@@ -784,7 +784,7 @@ def test_bootstrap_copies_declare_the_same_explicit_version(
 ) -> None:
     validator = runpy.run_path(str(VALIDATOR))
     parse_version = validator["installer_version"]
-    template = tmp_path / "deploy-skills-template.py"
+    template = tmp_path / "deploy-skills.py.tmpl"
     template.write_text(
         "INSTALLER_VERSION = 11\nprint('authoritative')\n",
         encoding="utf-8",

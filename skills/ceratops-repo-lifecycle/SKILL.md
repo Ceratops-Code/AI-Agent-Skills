@@ -20,7 +20,7 @@ setup and validation, plus deliverable validation, deployment and publication.
 - Make an existing repository Ceratops-compatible:
   `references/make-repo-compatible.md`
 - Review GitHub, code, PR, artifact, registry, and release contracts:
-  `references/contracts-review.md`
+  `references/repo-contracts-review.md`
 - Validate or apply a CodeQL alert disposition:
   `references/codeql-disposition.md`
 - Audit or repair repository health: `references/health-audit.md`
@@ -87,7 +87,7 @@ setup and validation, plus deliverable validation, deployment and publication.
 - Use `$ceratops-skill-lifecycle` for skill-domain creation, mutation, source
   validation, managed deployment, contract review, or consistency review; accept
   its promotion or shipping handoff and return the selected skill action.
-- Use `references/contracts-review.md` for contract review rather than
+- Use `references/repo-contracts-review.md` for contract review rather than
   lifecycle execution.
 - Use a generic GitHub capability only when no Ceratops repository action fits
   or the selected reference explicitly requires it.
@@ -100,7 +100,7 @@ setup and validation, plus deliverable validation, deployment and publication.
   item changes; route review feedback and Actions failures to `address-review`
   and `fix-ci`, respectively, within the granted scope.
 
-- Use `create-or-publish`, `make-repo-compatible`, `contracts-review`,
+- Use `create-or-publish`, `make-repo-compatible`, `repo-contracts-review`,
   `codeql-disposition`, `health-audit`, or `dependency-maintenance` for their
   named repository surfaces.
 - Use `promote` when selected committed branches should join a local

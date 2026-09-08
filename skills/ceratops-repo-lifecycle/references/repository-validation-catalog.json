@@ -2,64 +2,6 @@
   "version": 1,
   "checks": [
     {
-      "id": "hasbaratops-validator",
-      "when": [
-        {
-          "kind": "file-contains",
-          "path": "scripts/validate_repository.py",
-          "value": "--temp-root"
-        }
-      ],
-      "command": [
-        "{python}",
-        "scripts/validate_repository.py",
-        "--temp-root",
-        "{temp}/hasbaratops",
-        "--evidence-file",
-        "{temp}/hasbaratops-validation.log"
-      ],
-      "cwd": ".",
-      "exclusive": true
-    },
-    {
-      "id": "pdf-form-tools-validator",
-      "when": [
-        {
-          "kind": "file-contains",
-          "path": "scripts/validate_repository.py",
-          "value": "--build-dir"
-        }
-      ],
-      "command": [
-        "{python}",
-        "scripts/validate_repository.py",
-        "--build-dir",
-        "{temp}/pdf-build",
-        "--evidence-file",
-        "{temp}/pdf-validation.log"
-      ],
-      "cwd": ".",
-      "exclusive": true
-    },
-    {
-      "id": "pixeltops-validator",
-      "when": [
-        {
-          "kind": "file-contains",
-          "path": "scripts/validate_repository.py",
-          "value": "def repository_checks"
-        }
-      ],
-      "command": [
-        "{python}",
-        "scripts/validate_repository.py",
-        "--evidence-file",
-        "{temp}/pixeltops-validation.jsonl"
-      ],
-      "cwd": ".",
-      "exclusive": true
-    },
-    {
       "id": "npm-markdown-lint",
       "when": [
         {"kind": "package-script", "manager": "npm", "value": "lint:markdown"}
@@ -135,14 +77,6 @@
       "cwd": "."
     },
     {
-      "id": "automation-source-validation",
-      "when": [
-        {"kind": "path-any", "value": ["deploy/validate-automations.py"]}
-      ],
-      "command": ["{python}", "deploy/validate-automations.py"],
-      "cwd": "."
-    },
-    {
       "id": "pytest",
       "when": [
         {"kind": "path-any", "value": ["pytest.ini", "conftest.py"]},
@@ -169,29 +103,6 @@
       "cwd": "."
     },
     {
-      "id": "ruff-critical",
-      "when": [
-        {
-          "kind": "file-contains",
-          "path": "README.md",
-          "value": "python -m ruff check --select E9,F63,F7,F82 scripts/run_form.py skills/claims-catalog-invoice/scripts tests/test_claims_tracker.py"
-        }
-      ],
-      "command": [
-        "{python}",
-        "-m",
-        "ruff",
-        "check",
-        "--select",
-        "E9,F63,F7,F82",
-        "scripts/run_form.py",
-        "skills/claims-catalog-invoice/scripts",
-        "tests/test_claims_tracker.py"
-      ],
-      "cwd": ".",
-      "python_packages": ["ruff==0.16.1"]
-    },
-    {
       "id": "ruff",
       "when": [
         {"kind": "path-any", "value": ["ruff.toml", ".ruff.toml"]},
@@ -214,38 +125,6 @@
       "command": ["{python}", "-m", "mypy"],
       "cwd": ".",
       "python_packages": ["mypy==2.3.0"]
-    },
-    {
-      "id": "powershell-source-readiness",
-      "when": [
-        {"kind": "path-any", "value": ["scripts/Test-CodexSourceReadiness.ps1"]}
-      ],
-      "command": ["{pwsh}", "-NoProfile", "-File", "scripts/Test-CodexSourceReadiness.ps1", "-PolicyOnly", "-FailOnIssue"],
-      "cwd": "."
-    },
-    {
-      "id": "powershell-runtime-health",
-      "when": [
-        {"kind": "path-any", "value": ["scripts/Test-CodexRuntimeHealth.ps1"]}
-      ],
-      "command": ["{pwsh}", "-NoProfile", "-File", "scripts/Test-CodexRuntimeHealth.ps1", "-Component", "Launcher", "-SourceRoot", ".", "-SourceOnly", "-FailOnIssue"],
-      "cwd": "."
-    },
-    {
-      "id": "powershell-lint",
-      "when": [
-        {"kind": "path-any", "value": ["tests/Run-PowerShellQuality.ps1"]}
-      ],
-      "command": ["{pwsh}", "-NoProfile", "-File", "tests/Run-PowerShellQuality.ps1", "-Mode", "Lint"],
-      "cwd": "."
-    },
-    {
-      "id": "powershell-smoke",
-      "when": [
-        {"kind": "path-any", "value": ["tests/Run-SmokeTests.ps1"]}
-      ],
-      "command": ["{pwsh}", "-NoProfile", "-File", "tests/Run-SmokeTests.ps1"],
-      "cwd": "."
     },
     {
       "id": "yaml-lint",

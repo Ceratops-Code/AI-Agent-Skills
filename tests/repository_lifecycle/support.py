@@ -17,8 +17,8 @@ REPOSITORY_LIFECYCLE_SOURCE = ROOT / "skills" / "ceratops-repo-lifecycle"
 REPOSITORY_LIFECYCLE_SCRIPTS = REPOSITORY_LIFECYCLE_SOURCE / "scripts"
 if str(REPOSITORY_LIFECYCLE_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_LIFECYCLE_SCRIPTS))
-SDLC_CONTRACT_TEMPLATE = REPOSITORY_LIFECYCLE_SOURCE / "references" / "templates" / "sdlc-template.yml"
-SECTION_MANIFEST_TEMPLATE = REPOSITORY_LIFECYCLE_SOURCE / "references" / "templates" / "skill-sections-template.json"
+SDLC_CONTRACT_TEMPLATE = REPOSITORY_LIFECYCLE_SOURCE / "references" / "templates" / "sdlc.yml.tmpl"
+SECTION_MANIFEST_TEMPLATE = REPOSITORY_LIFECYCLE_SOURCE / "references" / "templates" / "skill-sections.json.tmpl"
 OPERATION_RUNNER = REPOSITORY_LIFECYCLE_SCRIPTS / "repository_operation.py"
 PROMOTE_REPOSITORY = REPOSITORY_LIFECYCLE_SOURCE / "scripts" / "promote-repository.py"
 MANAGE_PENDING_WORK = REPOSITORY_LIFECYCLE_SOURCE / "scripts" / "manage-pending-work.py"

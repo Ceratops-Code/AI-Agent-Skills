@@ -284,6 +284,14 @@
       "decision": "Require each executable deterministic-contract field to have an exact runtime or validator consumer while keeping non-executable fields explicitly annotation-only and structurally validated.",
       "reason": "The contract audit found schema-valid fields that looked executable but were absent from the Python verification graph.",
       "regression": "Preserve detailed human explanations as annotations and do not mistake structural validation for semantic execution."
+    },
+    {
+      "rules": [
+        "SKILLS-SECTIONS-01"
+      ],
+      "decision": "Name the reusable manifest template skill-sections.json.tmpl and update its active references together.",
+      "reason": "The explicit template suffix identifies reusable inputs consistently while retaining repository-lifecycle ownership.",
+      "regression": "Keep skills/skill-sections.json as the live manifest, skills/sections/ as its source directory, and never use the reusable template as a live manifest."
     }
   ]
 }

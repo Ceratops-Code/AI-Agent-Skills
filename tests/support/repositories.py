@@ -6,7 +6,7 @@ import shutil
 import subprocess
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
-INSTALLER_TEMPLATE = ROOT / "skills" / "ceratops-repo-lifecycle" / "references" / "templates" / "deploy-skills-template.py"
+INSTALLER_TEMPLATE = ROOT / "skills" / "ceratops-repo-lifecycle" / "references" / "templates" / "deploy-skills.py.tmpl"
 
 
 def run_git(repo: pathlib.Path, *args: str) -> subprocess.CompletedProcess[str]:

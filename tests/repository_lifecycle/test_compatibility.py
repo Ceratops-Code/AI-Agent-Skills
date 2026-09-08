@@ -441,13 +441,34 @@ def test_compatibility_materializer_supports_repositories_without_skills(
     assert "uv sync --extra dev --frozen" in uv_workflow
     assert "uv run --no-sync python scripts/validate-repository.py" in uv_workflow
 
+    # Synthetic recipes exercise extension behavior without coupling the shipped
+    # catalog to any repository's private check names or command conventions.
+    catalog_path = lifecycle_bundle / "references" / "repository-validation-catalog.json"
+    catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+    catalog["checks"].extend(
+        [
+            {
+                "id": "powershell-lint",
+                "when": [{"kind": "path-any", "value": ["tools/quality.ps1"]}],
+                "command": ["{pwsh}", "-NoProfile", "-File", "tools/quality.ps1"],
+                "cwd": ".",
+            },
+            {
+                "id": "custom-validator",
+                "when": [{"kind": "path-any", "value": ["scripts/check_project.py"]}],
+                "command": [
+                    "{python}", "scripts/check_project.py", "--temp-root", "{temp}/custom",
+                    "--evidence-file", "{temp}/custom-validation.log",
+                ],
+                "cwd": ".",
+                "exclusive": True,
+            },
+        ]
+    )
+    catalog_path.write_text(json.dumps(catalog) + "\n", encoding="utf-8")
+
     powershell_repo = empty_repository("powershell-compatible")
-    for relative in (
-        "scripts/Test-CodexSourceReadiness.ps1",
-        "scripts/Test-CodexRuntimeHealth.ps1",
-        "tests/Run-PowerShellQuality.ps1",
-        "tests/Run-SmokeTests.ps1",
-    ):
+    for relative in ("tools/quality.ps1",):
         path = powershell_repo / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("exit 0\n", encoding="utf-8", newline="\n")
@@ -461,10 +482,7 @@ def test_compatibility_materializer_supports_repositories_without_skills(
     )
     assert powershell_result.returncode == 0, powershell_result.stdout
     assert json.loads(powershell_result.stdout)["repository_validation"]["checks"] == [
-        "powershell-source-readiness",
-        "powershell-runtime-health",
         "powershell-lint",
-        "powershell-smoke",
     ]
     powershell_workflow = (
         powershell_repo / ".github" / "workflows" / "validate.yml"
@@ -473,9 +491,13 @@ def test_compatibility_materializer_supports_repositories_without_skills(
     assert "Install-Module PSScriptAnalyzer" in powershell_workflow
 
     unittest_repo = empty_repository("unittest-compatible")
-    (unittest_repo / "deploy").mkdir()
-    (unittest_repo / "deploy" / "validate-automations.py").write_text(
-        "print('OK')\n", encoding="utf-8", newline="\n"
+    (unittest_repo / "scripts").mkdir()
+    (unittest_repo / "scripts" / "validate_repository.py").write_text(
+        "# --temp-root --build-dir\n"
+        "def repository_checks():\n"
+        "    raise AssertionError('Undeclared helper must not run')\n",
+        encoding="utf-8",
+        newline="\n",
     )
     (unittest_repo / "tests").mkdir()
     (unittest_repo / "tests" / "test_example.py").write_text(
@@ -491,32 +513,18 @@ def test_compatibility_materializer_supports_repositories_without_skills(
     )
     assert unittest_result.returncode == 0, unittest_result.stdout
     assert json.loads(unittest_result.stdout)["repository_validation"]["checks"] == [
-        "automation-source-validation",
         "unittest",
     ]
 
     docs_repo = empty_repository("docs-compatible")
     (docs_repo / "README.md").write_text(
-        "python -m ruff check --select E9,F63,F7,F82 scripts/run_form.py "
-        "skills/claims-catalog-invoice/scripts tests/test_claims_tracker.py\n",
-        encoding="utf-8",
-        newline="\n",
+        "python -m ruff check tools/source.py\n", encoding="utf-8", newline="\n"
     )
-    (docs_repo / "requirements.txt").write_text(
-        "python-docx==1.2.0\n", encoding="utf-8", newline="\n"
-    )
-    (docs_repo / "scripts").mkdir()
-    (docs_repo / "scripts" / "run_form.py").write_text(
-        "print('OK')\n", encoding="utf-8", newline="\n"
-    )
-    (docs_repo / "skills" / "claims-catalog-invoice" / "scripts").mkdir(
-        parents=True
-    )
-    (docs_repo / "skills" / "claims-catalog-invoice" / "scripts" / "claim.py").write_text(
-        "CLAIM = True\n", encoding="utf-8", newline="\n"
+    (docs_repo / "pyproject.toml").write_text(
+        "[tool.ruff]\n", encoding="utf-8", newline="\n"
     )
     (docs_repo / "tests").mkdir()
-    (docs_repo / "tests" / "test_claims_tracker.py").write_text(
+    (docs_repo / "tests" / "test_example.py").write_text(
         "import unittest\n", encoding="utf-8", newline="\n"
     )
     docs_result = run_compatibility_engine(
@@ -530,7 +538,7 @@ def test_compatibility_materializer_supports_repositories_without_skills(
     assert docs_result.returncode == 0, docs_result.stdout
     assert json.loads(docs_result.stdout)["repository_validation"]["checks"] == [
         "unittest",
-        "ruff-critical",
+        "ruff",
     ]
     docs_workflow = (
         docs_repo / ".github" / "workflows" / "validate.yml"
@@ -539,7 +547,7 @@ def test_compatibility_materializer_supports_repositories_without_skills(
 
     authoritative_repo = empty_repository("authoritative-compatible")
     (authoritative_repo / "scripts").mkdir()
-    (authoritative_repo / "scripts" / "validate_repository.py").write_text(
+    (authoritative_repo / "scripts" / "check_project.py").write_text(
         "import argparse\n"
         "import pathlib\n"
         "parser = argparse.ArgumentParser()\n"
@@ -569,12 +577,11 @@ def test_compatibility_materializer_supports_repositories_without_skills(
     )
     assert authoritative_result.returncode == 0, authoritative_result.stdout
     assert json.loads(authoritative_result.stdout)["repository_validation"]["checks"] == [
-        "hasbaratops-validator"
+        "custom-validator"
     ]
     authoritative_validator = (
         authoritative_repo / "scripts" / "validate-repository.py"
     ).read_text(encoding="utf-8")
-    assert "{temp}/hasbaratops" in authoritative_validator
     assert max(len(line) for line in authoritative_validator.splitlines()) <= 100
     authoritative_evidence = tmp_path / "authoritative-validation.log"
     authoritative_validation = subprocess.run(
@@ -591,7 +598,7 @@ def test_compatibility_materializer_supports_repositories_without_skills(
     )
     assert authoritative_validation.returncode == 1
     retained_evidence = authoritative_evidence.read_text(encoding="utf-8")
-    assert "child_evidence: hasbaratops-validation.log" in retained_evidence
+    assert "child_evidence: custom-validation.log" in retained_evidence
     assert "inner diagnostic" in retained_evidence
 
 

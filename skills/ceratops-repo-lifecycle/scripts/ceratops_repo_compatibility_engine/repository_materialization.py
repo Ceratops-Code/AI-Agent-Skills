@@ -27,8 +27,8 @@ from .compatibility_check import check_repository
 from .sdlc_contract_validation import load_contract, validation_errors
 
 BUNDLE_ROOT = pathlib.Path(__file__).resolve().parents[2]
-TEMPLATE = BUNDLE_ROOT / "references" / "templates" / "skill-sections-template.json"
-SDLC_TEMPLATE = BUNDLE_ROOT / "references" / "templates" / "sdlc-template.yml"
+TEMPLATE = BUNDLE_ROOT / "references" / "templates" / "skill-sections.json.tmpl"
+SDLC_TEMPLATE = BUNDLE_ROOT / "references" / "templates" / "sdlc.yml.tmpl"
 SOURCE_REPO_ROOT = BUNDLE_ROOT.parents[1]
 SOURCE_CANONICAL_SECTIONS = SOURCE_REPO_ROOT / "skills" / "sections"
 INSTALLED_CANONICAL_SECTIONS = BUNDLE_ROOT / "skills" / "sections"

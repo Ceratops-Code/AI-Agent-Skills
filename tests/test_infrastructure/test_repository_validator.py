@@ -50,6 +50,19 @@ def test_build_checks_owns_order_both_platforms_and_space_safe_paths(
         ("mypy", "win32"),
         ("pytest", None),
     ]
+    yaml_check = VALIDATOR.build_checks(ROOT, python_executable=sys.executable)[1]
+    yaml_inventory = subprocess.run(
+        [*yaml_check.command[:3], "--list-files", *yaml_check.command[3:]],
+        cwd=ROOT, capture_output=True, text=True, check=False,
+    )
+    assert yaml_inventory.returncode == 0, yaml_inventory.stderr
+    yaml_paths = {
+        (ROOT / line).resolve() for line in yaml_inventory.stdout.splitlines()
+    }
+    assert (
+        ROOT / "skills/ceratops-repo-lifecycle/references/templates/sdlc.yml.tmpl"
+    ).resolve() in yaml_paths
+    assert (ROOT / "sdlc/sdlc.yml").resolve() in yaml_paths
     assert checks[2].command == (
         "python executable",
         "-m",
@@ -58,7 +71,7 @@ def test_build_checks_owns_order_both_platforms_and_space_safe_paths(
         "scripts",
         "tools",
         "skills/ceratops-repo-lifecycle/references/templates/"
-        "deploy-skills-template.py",
+        "deploy-skills.py.tmpl",
     )
     assert checks[3].command[-2:] == ("--platform", "linux")
     assert checks[4].command[-2:] == ("--platform", "win32")

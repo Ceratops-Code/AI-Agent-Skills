@@ -65,7 +65,8 @@
   and external artifact registries.
 - Split contract review by lifecycle owner: GitHub, code, repo, PR, org, and
   artifact contracts now live under `ceratops-repo-lifecycle` as
-  `contracts-review`; skill consistency, governance, and skill-design contracts
+  `repo-contracts-review`; skill consistency, governance, and skill-design
+  contracts
   now live under `ceratops-skill-lifecycle` as
   `skills-consistency-review`.
 - Retired the standalone `ceratops-contract-review` and

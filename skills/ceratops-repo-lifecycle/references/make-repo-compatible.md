@@ -105,7 +105,7 @@ Infer the source identity from stable repository evidence before asking.
 ### 2. Establish compatible source surfaces
 
 - Run the compatibility materializer so it loads the lifecycle-owned
-  `references/templates/skill-sections-template.json`, derives or accepts the
+  `references/templates/skill-sections.json.tmpl`, derives or accepts the
   stable source identity, inventories source skills and multi-action markers,
   and preserves valid target-owned custom sections and assignments. Only when
   source skills exist, write `skills/skill-sections.json`, copy canonical shared

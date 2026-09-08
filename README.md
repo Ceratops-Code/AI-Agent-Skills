@@ -47,9 +47,9 @@ skills/
 sdlc/
   sdlc.yml
 skills/ceratops-repo-lifecycle/references/templates/
-  sdlc-template.yml
-  deploy-skills-template.py
-  skill-sections-template.json
+  sdlc.yml.tmpl
+  deploy-skills.py.tmpl
+  skill-sections.json.tmpl
 skills/ceratops-skill-lifecycle/references/templates/
   ceratops-logo-500.png
 hooks/
@@ -126,11 +126,11 @@ without repository deduplication.
 | `scripts/testing/run-tests.py` | Sole test-selection, collection-reconciliation, and pytest-execution owner; validates `tests/test-impact.json`, explains deterministic Git-diff selection, rejects mapping gaps before pytest collection or execution, supports explicit committed-diff, worktree, collection, and `--all` modes, and writes complete failed-pytest streams to a diagnostic file while returning only bounded failure evidence. |
 | `scripts/testing/pytest-diagnostics.py` | Extracts bounded failure summaries using exact pytest identities and source-file evidence; ambiguous or missing tracebacks use only that test's summary reason. Full diagnostic files remain owned by the runner. |
 | `scripts/validate-repository.py` | Local validation coordinator; checks the running Python against `pyproject.toml`, captures first-failure evidence, delegates its default full test phase to `scripts/testing/run-tests.py --all`, and supports CI's separate runner-owned test phase. |
-| `skills/ceratops-repo-lifecycle/references/templates/deploy-skills-template.py` | Authoritative standard-library-only bootstrap copied into compatible skill repositories as `scripts/deploy-skills.py`. |
+| `skills/ceratops-repo-lifecycle/references/templates/deploy-skills.py.tmpl` | Authoritative standard-library-only bootstrap copied into compatible skill repositories as `scripts/deploy-skills.py`. |
 | `skills/ceratops-repo-lifecycle/references/repository-validation-catalog.json` | Closed catalog of repository checks that compatibility materialization may select without additional approval. |
 | `skills/ceratops-repo-lifecycle/references/templates/validate-repository.py.tmpl` and `validate.yml.tmpl` | Repository-neutral validator and CI templates materialized only when their target files are absent. |
 | `skills/ceratops-repo-lifecycle/scripts/ceratops_repo_compatibility_engine/` | Skill-owned package for read-only compatibility checks, SDLC-contract validation, rollback-protected repository materialization, and version-only bootstrap synchronization; it operates on explicit target repositories and is never copied into them. |
-| `skills/ceratops-repo-lifecycle/references/templates/skill-sections-template.json` | Repository-neutral template for materializing a target repository's live `skills/skill-sections.json`; never a live manifest. |
+| `skills/ceratops-repo-lifecycle/references/templates/skill-sections.json.tmpl` | Repository-neutral template for materializing a target repository's live `skills/skill-sections.json`; never a live manifest. |
 | `skills/ceratops-skill-lifecycle/scripts/runtime/install-managed-skills.py` | Classifies explicit, promotion-relative, or all-managed affected sets; owns direct-manifest inventory; and invokes one runtime transaction without source validation. |
 | `skills/ceratops-skill-lifecycle/scripts/runtime/managed_runtime_builder.py` | Stages, activates, rolls back, recovers, and cleans one locked selected-skill runtime transaction. |
 | `skills/ceratops-skill-lifecycle/scripts/skill-update-workflow.py` | Prepares and verifies declared cohesive skill updates, preserves unrelated dirty state, records exact task-temp ownership plus an active-update retention marker, finalizes owned request, state, evidence, and marker files, and removes the verified task-temp root only when empty after completed caller use. |
@@ -368,17 +368,17 @@ Common intended combinations:
 
 | Command Surface | Command Subset | Who Runs It |
 | --- | --- | --- |
-| org validator, implicit org surface | `settings` | `$ceratops-repo-lifecycle` contracts-review for contract governance; health-audit only when org posture is part of a live health audit. |
-| org validator, implicit org surface | `actions` | `$ceratops-repo-lifecycle` contracts-review for contract governance; health-audit only when org Actions posture is part of a live health audit. |
-| org validator, implicit org surface | `dependabot` | `$ceratops-repo-lifecycle` contracts-review for contract governance; health-audit only when org Dependabot posture is part of a live health audit. |
-| org validator, implicit org surface | `security` | `$ceratops-repo-lifecycle` contracts-review for contract governance; health-audit only when org security posture is part of a live health audit. |
-| org validator, implicit org surface | `all` | `$ceratops-repo-lifecycle` contracts-review for contract governance; health-audit only for explicit broad org health. |
-| `repo` | `settings` | `$ceratops-repo-lifecycle` contracts-review for contract governance; health-audit when live repo state is part of the task. |
+| org validator, implicit org surface | `settings` | `$ceratops-repo-lifecycle` repo-contracts-review for contract governance; health-audit only when org posture is part of a live health audit. |
+| org validator, implicit org surface | `actions` | `$ceratops-repo-lifecycle` repo-contracts-review for contract governance; health-audit only when org Actions posture is part of a live health audit. |
+| org validator, implicit org surface | `dependabot` | `$ceratops-repo-lifecycle` repo-contracts-review for contract governance; health-audit only when org Dependabot posture is part of a live health audit. |
+| org validator, implicit org surface | `security` | `$ceratops-repo-lifecycle` repo-contracts-review for contract governance; health-audit only when org security posture is part of a live health audit. |
+| org validator, implicit org surface | `all` | `$ceratops-repo-lifecycle` repo-contracts-review for contract governance; health-audit only for explicit broad org health. |
+| `repo` | `settings` | `$ceratops-repo-lifecycle` repo-contracts-review for contract governance; health-audit when live repo state is part of the task. |
 | `repo` + `code` via `--select repo:dependency --select code:dependency` | `dependency` | `$ceratops-repo-lifecycle` dependency-maintenance action when both live GitHub dependency/security posture and repo-content dependency posture are in scope; health-audit action for dependency posture audits. |
-| `code` | `content` | `$ceratops-repo-lifecycle` contracts-review for contract governance; health-audit or create-or-publish when repo contents are part of the task. |
-| `artifact` | `artifact` | `$ceratops-repo-lifecycle` contracts-review for contract governance; health-audit or create-or-publish when a published artifact is part of the task. |
+| `code` | `content` | `$ceratops-repo-lifecycle` repo-contracts-review for contract governance; health-audit or create-or-publish when repo contents are part of the task. |
+| `artifact` | `artifact` | `$ceratops-repo-lifecycle` repo-contracts-review for contract governance; health-audit or create-or-publish when a published artifact is part of the task. |
 | `all` | `create` | `$ceratops-repo-lifecycle` create-or-publish action. |
-| `all` | `health` | `$ceratops-repo-lifecycle` health-audit action; contracts-review only for broad contract governance. |
+| `all` | `health` | `$ceratops-repo-lifecycle` health-audit action; repo-contracts-review only for broad contract governance. |
 | PR validator, implicit PR surface | none | `$ceratops-repo-lifecycle` ship, merge-pr, or dependency-maintenance action before merge or auto-merge decisions. |
 
 A successful mutation command is enough evidence for that exact mutation. Re-run

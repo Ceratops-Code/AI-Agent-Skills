@@ -21,7 +21,7 @@ TEMPLATE = (
     BUNDLE_ROOT
     / "references"
     / "templates"
-    / "deploy-skills-template.py"
+    / "deploy-skills.py.tmpl"
 )
 TARGET_RELATIVE = pathlib.Path("scripts/deploy-skills.py")
 INSTALLER_VERSION_RE = re.compile(

@@ -1,4 +1,4 @@
-# Contracts Review Action
+# Repo Contracts Review Action
 
 ## Goal
 

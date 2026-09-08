@@ -18,6 +18,7 @@ files = [
   "skills",
   "tests",
   "tools",
+  "skills/ceratops-repo-lifecycle/references/templates/deploy-skills.py.tmpl",
 ]
 ignore_missing_imports = true
 check_untyped_defs = true

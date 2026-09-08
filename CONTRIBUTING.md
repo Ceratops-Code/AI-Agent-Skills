@@ -16,7 +16,7 @@ Contributions should keep skills practical, current, and safe.
   `skills/skill-sections.json`; keep the universal `core` section focused,
   keep GH-only wording in GH-only sections, keep GH org/repo/PR/code/artifact
   contract review in
-  `skills/ceratops-repo-lifecycle/references/contracts-review.md`, keep
+  `skills/ceratops-repo-lifecycle/references/repo-contracts-review.md`, keep
   repository skill consistency and contract compliance in
   `skills/ceratops-skill-lifecycle/references/skills-consistency-review.md`, and
   keep skill-design standards refresh in

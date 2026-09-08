@@ -116,7 +116,13 @@ def build_checks(
         Check("markdown-lint", (npm, "run", "lint:markdown"), repo_root),
         Check(
             "yaml-lint",
-            (python, "-m", "yamllint", "."),
+            (
+                python,
+                "-m",
+                "yamllint",
+                ".",
+                "skills/ceratops-repo-lifecycle/references/templates/sdlc.yml.tmpl",
+            ),
             repo_root,
         ),
         Check(
@@ -129,7 +135,7 @@ def build_checks(
                 "scripts",
                 "tools",
                 "skills/ceratops-repo-lifecycle/references/templates/"
-                "deploy-skills-template.py",
+                "deploy-skills.py.tmpl",
             ),
             repo_root,
         ),
