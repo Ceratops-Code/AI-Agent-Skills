@@ -503,6 +503,14 @@ health validate lifecycle definitions through the repository-lifecycle
 rendering is owned only by bootstrap and managed deployment under the selected
 install root.
 
+Each pytest subprocess gets temporary-directory defaults in its own disposable
+directory beneath `PYTEST_DEBUG_TEMPROOT` when set, otherwise the system
+temporary directory. The runner removes it when the subprocess exits and
+keeps failure diagnostics at the selected output path. On Windows it enables
+Git long-path handling for the child process and repositories initialized
+from a private copy of Git's selected template, preserving the template's
+other files and configuration.
+
 Failed pytest runs write complete stdout and stderr to
 `build/test-diagnostics/pytest-failure.json` by default. Use
 `--diagnostic-output PATH` to select another file; the terminal JSON contains a

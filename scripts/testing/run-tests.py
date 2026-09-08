@@ -27,10 +27,12 @@ import subprocess
 import sys
 import tempfile
 from collections.abc import Callable, Iterable, Mapping, Sequence
+from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Any
 
 pytest_diagnostics = importlib.import_module("pytest-diagnostics")
+pytest_environment = importlib.import_module("pytest-environment")
 
 SCHEMA = "ai-agent-skills-test-impact-result.v1"
 COLLECTION_SCHEMA = "ai-agent-skills-pytest-collection.v1"
@@ -164,17 +166,29 @@ BytesRunner = Callable[
 def run_text(
     command: Sequence[str], cwd: pathlib.Path
 ) -> subprocess.CompletedProcess[str]:
-    """Run one local argv command and capture UTF-8 diagnostics without a shell."""
-
-    return subprocess.run(
-        list(command),
-        cwd=cwd,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        check=False,
-    )
+    """Run argv without a shell, isolating every pytest collection or execution."""
+    is_pytest = tuple(command[:3]) == (sys.executable, "-m", "pytest")
+    result: subprocess.CompletedProcess[str] | None = None
+    try:
+        context = (
+            pytest_environment.isolated_environment(cwd) if is_pytest else nullcontext(None)
+        )
+        with context as environ:
+            result = subprocess.run(
+                list(command), cwd=cwd, env=environ, capture_output=True,
+                text=True, encoding="utf-8", errors="replace", check=False,
+            )
+    except (OSError, pytest_environment.PytestEnvironmentError) as exc:
+        if not is_pytest:
+            raise
+        # Cleanup must not discard a failed test's exit code or captured evidence.
+        return subprocess.CompletedProcess(
+            command,
+            result.returncode or CONFIGURATION_EXIT_CODE if result else CONFIGURATION_EXIT_CODE,
+            result.stdout if result else "",
+            (result.stderr if result else "") + f"\npytest environment: {exc}\n",
+        )
+    return result
 
 
 def run_bytes(
