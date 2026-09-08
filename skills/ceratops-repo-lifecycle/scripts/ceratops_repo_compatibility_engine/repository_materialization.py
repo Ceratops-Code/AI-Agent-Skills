@@ -578,7 +578,7 @@ def build_sdlc_contract_candidate(
     candidate["repository"] = repository
     deliverables = dict(candidate.get("deliverables", {}))
     skills = dict(deliverables.get("skills", {}))
-    owned_operations = {
+    owned_operations: dict[str, dict[str, dict[str, object]]] = {
         "validate": {
             "ceratops-managed": {"handoff": SKILL_VALIDATION_HANDOFF},
         },
