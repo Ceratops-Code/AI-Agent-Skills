@@ -1286,7 +1286,7 @@ def test_review_inspector_rejects_incomplete_activity(
         nonlocal count
         count += 1
         assert count <= 2
-        pr = {"headRefOid": ("b" if failure == "head" else "a") * 40}
+        pr: dict[str, Any] = {"headRefOid": ("b" if failure == "head" else "a") * 40}
         if failure != "shape":
             pr["comments"] = {"nodes": [], "pageInfo": {"hasNextPage": True, "endCursor": "stuck"}}
         return {"data": {"repository": {"pullRequest": pr}}}

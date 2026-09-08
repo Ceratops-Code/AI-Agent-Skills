@@ -509,7 +509,7 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(ensure_pr(args), separators=(",", ":"), ensure_ascii=True))
         return 0
     except (CommandError, EnsurePrError, OSError, ValueError, json.JSONDecodeError) as exc:
-        failure = {"status": "error", "message": str(exc)}
+        failure: dict[str, object] = {"status": "error", "message": str(exc)}
         if args.prepare or args.repo or args.draft or args.check_command:
             failure["phase"] = getattr(args, "publication_phase", "preflight")
             failure["branch"] = args.head_branch
