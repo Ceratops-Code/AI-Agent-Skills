@@ -16,6 +16,7 @@ from ceratops_repo_compatibility_engine.compatibility_check import (
     check_repository,
 )
 from ceratops_repo_compatibility_engine.sdlc_contract_validation import (
+    migration_proposal,
     read_contract,
 )
 
@@ -837,11 +838,16 @@ def _sdlc_contract_facts(local: dict[str, Any]) -> dict[str, Any]:
             "errors": ["sdlc/sdlc.yml must be a regular file"],
         }
     contract, errors = read_contract(path)
-    return {
+    facts: dict[str, Any] = {
         "present": True,
         "valid": contract is not None and not errors,
         "errors": errors,
     }
+    if contract is not None:
+        proposal = migration_proposal(contract, local["root"])
+        if proposal is not None:
+            facts["migration_proposal"] = proposal
+    return facts
 
 
 def _compatibility_facts(local: dict[str, Any]) -> CompatibilityResult:

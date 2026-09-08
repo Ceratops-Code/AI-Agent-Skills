@@ -1,4 +1,4 @@
-"""Load and validate repository SDLC contracts against the owned schema.
+"""Validate versioned SDLC data and adapt its structure for shared consumers.
 
 This module is the single schema-validation owner for operation execution,
 repository compatibility, artifact identity, and health collection. It reads
@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+import re
 from collections.abc import Mapping
 from typing import Any, cast
 
@@ -18,7 +19,15 @@ import yaml
 
 SKILL_ROOT = pathlib.Path(__file__).resolve().parents[2]
 SCHEMA = SKILL_ROOT / "references" / "schemas" / "sdlc.yml.schema.json"
+CURRENT_VERSION = 2
+VERSION_SCHEMAS = {1: SCHEMA.with_name("sdlc.v1.schema.json"), 2: SCHEMA}
 OPERATION_CATEGORIES = frozenset({"bootstrap", "validate", "deploy-local", "publish"})
+NAME = r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*"
+CURRENT_OPERATION_RE = re.compile(
+    rf"^(?:repository\.(?P<repository>bootstrap|validate)|"
+    rf"deliverables\.{NAME}\.(?P<deliverable>validate|deploy-local|publish))\.{NAME}$"
+)
+V1_OPERATION_RE = re.compile(r"^(deploy|release)\.operations\.[a-z][a-z0-9_-]*$")
 
 
 class SdlcContractError(RuntimeError):
@@ -42,9 +51,20 @@ class _ContractLoader(yaml.SafeLoader):
 
 
 def operation_entries(contract: Mapping[str, Any]) -> dict[str, Mapping[str, Any]]:
-    """Index validated entries by their YAML location, preserving declaration order."""
+    """Adapt validated version-specific groups to the executor's operation index.
+
+    Locations stay native to the declared version. Version 1 has no category
+    metadata: names such as bootstrap or preflight must never imply validation
+    or setup. Operation bodies, including step IDs, remain unchanged.
+    """
 
     entries: dict[str, Mapping[str, Any]] = {}
+    if contract.get("version") == 1:
+        for section, group in contract.items():
+            if section in {"deploy", "release"}:
+                for name, operation in group["operations"].items():
+                    entries[f"{section}.operations.{name}"] = operation
+        return entries
     groups = [("repository", contract.get("repository", {}))]
     groups.extend(
         (f"deliverables.{name}", value)
@@ -56,6 +76,51 @@ def operation_entries(contract: Mapping[str, Any]) -> dict[str, Mapping[str, Any
                 for name, operation in operations.items():
                     entries[f"{prefix}.{category}.{name}"] = operation
     return entries
+
+
+def operation_category(location: str) -> str:
+    """Classify a native versioned location without guessing from operation names."""
+
+    if isinstance(location, str):
+        if match := CURRENT_OPERATION_RE.fullmatch(location):
+            return match.group("repository") or match.group("deliverable")
+        if match := V1_OPERATION_RE.fullmatch(location):
+            return {"deploy": "deploy-local", "release": "publish"}[match.group(1)]
+    raise SdlcContractError(f"Invalid SDLC operation location: {location}")
+
+
+def artifact_entries(contract: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Adapt versioned artifact ownership without changing records or precedence."""
+
+    groups = (
+        [contract.get("release", {})]
+        if contract.get("version") == 1
+        else contract.get("deliverables", {}).values()
+    )
+    return [dict(record) for group in groups for record in group.get("artifacts", [])]
+
+
+def migration_proposal(
+    contract: Mapping[str, Any], repository: str,
+) -> dict[str, Any] | None:
+    """Describe an optional upgrade for already-validated supported older data.
+
+    This is health-report annotation only. Execution and materialization never
+    consume it, and installer release numbers are deliberately unrelated.
+    """
+
+    version = contract["version"]
+    if version == CURRENT_VERSION:
+        return None
+    return {
+        "repository": repository,
+        "current_version": version,
+        "recommended_version": CURRENT_VERSION,
+        "reason": (
+            "Version 2 explicitly groups repository validation and deliverable "
+            "capabilities; version 1 remains supported without migration."
+        ),
+    }
 
 
 def _relative_path(value: str) -> bool:
@@ -89,11 +154,19 @@ def _schema_validator(
 def validation_errors(
     value: object,
     *,
-    schema_path: pathlib.Path = SCHEMA,
+    schema_path: pathlib.Path | None = None,
 ) -> list[str]:
     """Return stable schema errors for one already-loaded contract value."""
 
-    validator = _schema_validator(schema_path)
+    if not isinstance(value, Mapping):
+        return ["SDLC contract must be a mapping"]
+    version = value.get("version")
+    if type(version) is not int or version not in VERSION_SCHEMAS:
+        return [f"unsupported SDLC version: {version!r}; supported versions: 1, 2"]
+    selected_schema = (
+        VERSION_SCHEMAS[version] if schema_path in (None, SCHEMA) else schema_path
+    )
+    validator = _schema_validator(selected_schema)
     errors: list[str] = []
     for error in sorted(
         validator.iter_errors(value),
@@ -102,7 +175,7 @@ def validation_errors(
         location = ".".join(str(part) for part in error.absolute_path)
         suffix = f" at {location}" if location else ""
         errors.append(f"schema validation failed{suffix}: {error.message}")
-    if errors or not isinstance(value, Mapping):
+    if errors or version == 1:
         return errors
     prerequisites = value.get("repository", {}).get("prerequisites", {})
     for name, requirement in prerequisites.items():
@@ -121,9 +194,9 @@ def validation_errors(
 def read_contract(
     path: pathlib.Path,
     *,
-    schema_path: pathlib.Path = SCHEMA,
+    schema_path: pathlib.Path | None = None,
 ) -> tuple[dict[str, Any] | None, list[str]]:
-    """Read one YAML contract and return its mapping plus compact errors."""
+    """Validate one YAML contract, retaining its version and data without writes."""
 
     try:
         value = yaml.load(path.read_text(encoding="utf-8"), Loader=_ContractLoader)
@@ -143,7 +216,7 @@ def read_contract(
 def load_contract(
     path: pathlib.Path,
     *,
-    schema_path: pathlib.Path = SCHEMA,
+    schema_path: pathlib.Path | None = None,
 ) -> Mapping[str, Any]:
     """Load one valid contract or raise one compact deterministic error."""
 

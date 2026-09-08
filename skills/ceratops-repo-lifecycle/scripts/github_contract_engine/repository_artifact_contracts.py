@@ -14,6 +14,7 @@ from typing import Any
 
 from ceratops_repo_compatibility_engine.sdlc_contract_validation import (
     SdlcContractError,
+    artifact_entries,
     load_contract,
     validation_errors,
 )
@@ -80,11 +81,7 @@ def resolve_repository_artifact_contracts(
         contract = load_contract(contract_path, schema_path=SDLC_SCHEMA)
     except SdlcContractError as exc:
         raise ValueError(f"invalid sdlc/sdlc.yml: {exc}") from exc
-    repository_contracts = [
-        record
-        for deliverable in contract.get("deliverables", {}).values()
-        for record in _records(deliverable.get("artifacts", []))
-    ]
+    repository_contracts = artifact_entries(contract)
     if not repository_contracts:
         return explicit
     if explicit:

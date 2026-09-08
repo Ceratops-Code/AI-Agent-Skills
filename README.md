@@ -203,11 +203,19 @@ behavior remains unchanged.
 
 Each repository owns one lifecycle contract:
 
-- `sdlc/sdlc.yml` version 2 groups global prerequisites, bootstrap and validation
-  under `repository`, and validation, local deployment and optional publication
-  under `deliverables`. Optional artifact identities live under their owning
-  deliverable; this repository declares no public artifacts. It is validated against
-  `skills/ceratops-repo-lifecycle/references/schemas/sdlc.yml.schema.json`.
+- Newly materialized `sdlc/sdlc.yml` contracts use version 2: `repository`
+  owns prerequisites, bootstrap and validation; `deliverables` owns validation,
+  deployment, publication and artifact identities. Existing version 1 contracts
+  remain supported without migration. The shared loader validates each version
+  against its owned schema and indexes both formats for the same executor.
+  Version 1 uses `deploy.operations.NAME` and `release.operations.NAME`;
+  commands, parameters, step IDs and advisory handoffs retain their
+  declarations.
+  It has no validation category: operation names never imply checks or setup.
+  Its schema is recovered from repository commit `f49e575`; version 2 was
+  introduced in `97fb65b` . Materialization preserves supported existing
+  contracts.
+  Installer release-number differences alone do not require an upgrade.
 - `skills/ceratops-repo-lifecycle/references/contracts/github-contract-source-docs.json`
   records official source documents and reference repositories used by GitHub,
   repo, PR readiness, code, and artifact contracts.
@@ -286,12 +294,13 @@ classify before closure. Repo-health summary JSON includes compact stale-state
 inventory counts and samples for PRs, branches, tags, releases, and local path
 references when present. It also reports the observed community-profile health
 percentage and its 100% contract target; inventory alone is not a finding.
-Local health collection validates every present `sdlc/sdlc.yml` with the
-repository-lifecycle schema and runs the generic compatibility postcondition
-checker whenever a manifest, source skill, SDLC definition, or repository
-validation surface is present. Ship validates the selected contract's
-`release` section before remote mutation. Local health does not run skill-source
-validation.
+Local health validates each present `sdlc/sdlc.yml` against its version's schema
+and checks generic repository compatibility. Supported older formats produce
+advisory migration proposals with the repository, current and recommended
+versions, and reason. The existing Global Repo Health Consistency automation
+receives these through its health findings; proposals neither block execution
+nor migrate files. Ship validates selected publication operations before remote
+mutation. Local health does not run skill-source validation.
 
 Collect review evidence for non-deterministic checks with:
 

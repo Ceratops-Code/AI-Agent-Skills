@@ -566,6 +566,10 @@ def build_sdlc_contract_candidate(
     reusable = load_contract(SDLC_TEMPLATE)
     target = repo_root / SDLC_RELATIVE
     contract = load_contract(target) if target.is_file() else dict(reusable)
+    if contract["version"] != reusable["version"]:
+        # Compatibility work must not turn a supported contract into a migration.
+        # Returning no candidate leaves its exact bytes and operation locations.
+        return None
     candidate = dict(contract)
     repository = dict(candidate.get("repository", {}))
     repository.setdefault("validate", reusable["repository"]["validate"])

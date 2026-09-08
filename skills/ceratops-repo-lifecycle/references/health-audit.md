@@ -29,10 +29,13 @@ credential-bound fixes precisely.
   unchanged. It also runs a present `scripts/validate-repository.py` once with
   `--evidence-file` outside the target; a missing validator or CI validation
   workflow is a finding. External-only health runs no local validator.
-- When the local repository declares `deliverables.<name>.artifacts` in
-  `sdlc/sdlc.yml`, the repo checker validates that SDLC contract and uses its
+- When the local repository declares artifact identities in a supported
+  `sdlc/sdlc.yml`, the repo checker validates that contract and uses its
   artifact identities automatically. Caller-supplied
   `artifact_contracts` remain only for repositories without local declarations.
+- Report each `content.sdlc_migration` finding as an advisory proposal naming
+  the repository, current and recommended SDLC versions, and reason.
+  Supported contracts remain usable; automatic migration is outside this action.
 - (D) Organization parameters resolve in this order: contract defaults,
   `--params-file`, named flags, then `--param`. The parameter file defaults to
   `$CODEX_HOME/gh-contract-params.json`.

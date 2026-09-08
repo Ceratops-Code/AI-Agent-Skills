@@ -203,7 +203,7 @@ def test_deploy_runs_repository_command_once_from_repository_directory(
 @pytest.mark.parametrize(
     "invalid",
     [
-        {"version": 1, "kind": "ceratops-sdlc", "deploy": {"operations": {}}},
+        {"version": 3, "kind": "ceratops-sdlc", "deploy": {"operations": {}}},
         {
             "version": 2,
             "kind": "ceratops-sdlc",
@@ -624,3 +624,339 @@ def test_repository_bootstrap_resolves_platform_npm_and_preserves_failure(
     assert "SDLC-npm-ci" in result.stdout
     if exit_code:
         assert str(exit_code) in result.stderr
+
+
+# Version 1 is the historical f49e575/f671d9b SDLC schema, not a guessed
+# compatibility surface. Its operation and step identifiers permit underscores.
+def _write_v1(
+    root: pathlib.Path, *, deploy: object = None, release: object = None,
+) -> pathlib.Path:
+    import yaml
+
+    payload: dict[str, object] = {"version": 1, "kind": "ceratops-sdlc"}
+    for section, operations in (("deploy", deploy), ("release", release)):
+        if operations is not None:
+            payload[section] = {"operations": operations}
+    path = root / "sdlc/sdlc.yml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+    return path
+
+
+def test_historical_sdlc_contract_preserves_native_locations(tmp_path: pathlib.Path) -> None:
+    path = tmp_path / "sdlc/sdlc.yml"
+    path.parent.mkdir()
+    # Actual repository contract at f671d9b, before the deliverables refactor.
+    original = (
+        "version: 1\nkind: ceratops-sdlc\ndeploy:\n  operations:\n"
+        "    deploy:\n      handoff: ceratops-skill-lifecycle/deploy\n"
+        "    bootstrap:\n      steps:\n        - id: bootstrap-skills\n"
+        "          run:\n            - python\n"
+        "            - scripts/install-skills-bootstrap.py\n"
+    )
+    path.write_text(original, encoding="utf-8")
+    before = path.read_bytes()
+    contract, errors = contracts.read_contract(path)
+    assert errors == []
+    assert contract is not None and contract["version"] == 1
+    assert list(contracts.operation_entries(contract)) == [
+        "deploy.operations.deploy", "deploy.operations.bootstrap",
+    ]
+    prepared = runner.prepare_operations(
+        tmp_path,
+        [runner.OperationRequest("deploy.operations.bootstrap"),
+         runner.OperationRequest("deploy.operations.deploy")],
+    )
+    assert prepared[0].steps[0].argv == (
+        "python", "scripts/install-skills-bootstrap.py",
+    )
+    assert prepared[0].steps[0].position == "bootstrap-skills"
+    assert prepared[1].handoff == "ceratops-skill-lifecycle/deploy"
+    assert runner.validation_operations(tmp_path) == []
+    assert path.read_bytes() == before
+
+
+def test_v1_execution_preserves_order_argv_parameters_cwd_and_handoff(
+    tmp_path: pathlib.Path,
+) -> None:
+    (tmp_path / "nested").mkdir()
+    (tmp_path / "record.py").write_text(
+        "import json, pathlib, sys\n"
+        "path = pathlib.Path(__file__).resolve().parent / 'calls.json'\n"
+        "calls = json.loads(path.read_text()) if path.exists() else []\n"
+        "calls.append({'argv': sys.argv[1:], 'cwd': str(pathlib.Path.cwd())})\n"
+        "path.write_text(json.dumps(calls), encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    path = _write_v1(
+        tmp_path,
+        deploy={
+            "preflight": {"steps": [{"id": "not_implicit", "run": [
+                sys.executable, "-c", "raise SystemExit(99)",
+            ]}]},
+            "deploy_one": {
+                "parameters": ["value"],
+                "steps": [
+                    {"id": "first_step", "run": [
+                        sys.executable, "record.py", "{value}", "prefix={value}",
+                    ]},
+                    {"id": "second_step", "cwd": "nested", "run": [
+                        sys.executable, "../record.py", "last",
+                    ]},
+                ],
+                "handoff": "ceratops-skill-lifecycle/deploy",
+            },
+        },
+        release={
+            "publish_one": {"parameters": ["value"], "steps": [
+                {"id": "publish_step", "run": [
+                    sys.executable, "record.py", "published", "{value}",
+                ]},
+            ]},
+        },
+    )
+    original = path.read_bytes()
+    literal = "spaces; $(write-file injected.txt)\n" + chr(96) + "literal"
+    result = subprocess.run(
+        [sys.executable, str(OPERATION_RUNNER), "--repo-root", str(tmp_path),
+         "--operation", "release.operations.publish_one",
+         "--operation", "deploy.operations.deploy_one",
+         "--parameter", "value=" + literal],
+        capture_output=True, text=True, check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["completed_operations"] == [
+        "release.operations.publish_one", "deploy.operations.deploy_one",
+    ]
+    assert payload["results"][0]["steps"] == ["publish_step"]
+    assert payload["results"][1]["steps"] == ["first_step", "second_step"]
+    assert payload["results"][1]["handoff"] == "ceratops-skill-lifecycle/deploy"
+    calls = json.loads((tmp_path / "calls.json").read_text(encoding="utf-8"))
+    assert calls == [
+        {"argv": ["published", literal], "cwd": str(tmp_path.resolve())},
+        {"argv": [literal, "prefix={value}"], "cwd": str(tmp_path.resolve())},
+        {"argv": ["last"], "cwd": str((tmp_path / "nested").resolve())},
+    ]
+    assert runner.validation_operations(tmp_path, payload["completed_operations"]) == []
+    assert path.read_bytes() == original
+    assert not (tmp_path / "injected.txt").exists()
+
+
+@pytest.mark.parametrize("failure", ["parameter", "cwd", "undeclared", "schema"])
+def test_v1_prepares_entire_batch_before_side_effects(
+    tmp_path: pathlib.Path, failure: str,
+) -> None:
+    marker = tmp_path / "executed.txt"
+    safe = {"steps": [{"id": "safe", "run": [
+        sys.executable, "-c", "import pathlib; pathlib.Path('executed.txt').touch()",
+    ]}]}
+    unsafe: dict[str, object] = {
+        "steps": [{"id": "next", "run": [sys.executable, "-c", "pass"]}],
+    }
+    if failure == "parameter":
+        unsafe["parameters"] = ["required_value"]
+    elif failure == "cwd":
+        unsafe["steps"] = [{"id": "next", "cwd": "..", "run": [
+            sys.executable, "-c", "pass",
+        ]}]
+    elif failure == "schema":
+        unsafe["steps"] = [{"run": [sys.executable, "-c", "pass"]}]
+    _write_v1(tmp_path, deploy={"safe": safe, "unsafe": unsafe})
+    result = subprocess.run(
+        [sys.executable, str(OPERATION_RUNNER), "--repo-root", str(tmp_path),
+         "--operation", "deploy.operations.safe", "--operation",
+         "deploy.operations.missing" if failure == "undeclared" else "deploy.operations.unsafe"],
+        capture_output=True, text=True, check=False,
+    )
+    assert result.returncode == 1
+    assert json.loads(result.stderr)["status"] == "error"
+    assert not marker.exists()
+
+
+def test_v1_failure_stops_batch_with_original_step_ids(tmp_path: pathlib.Path) -> None:
+    _write_v1(tmp_path, release={
+        "first": {"steps": [
+            {"id": "before", "run": [sys.executable, "-c", "pass"]},
+            {"id": "failed_step", "run": [sys.executable, "-c", "raise SystemExit(7)"]},
+            {"id": "unreachable", "run": [sys.executable, "-c", "pass"]},
+        ]},
+        "second": {"steps": [{"id": "pending", "run": [sys.executable, "-c", "pass"]}]},
+    })
+    prepared = runner.prepare_operations(tmp_path, [
+        runner.OperationRequest("release.operations.first"),
+        runner.OperationRequest("release.operations.second"),
+    ])
+    result = runner.execute_prepared_operations(prepared)
+    assert result["status"] == "operation_failed"
+    assert result["failed_step"] == "failed_step"
+    assert result["steps"] == ["before"]
+    assert result["diagnostic"]["exit_code"] == 7
+    assert result["pending_operations"] == ["release.operations.first", "release.operations.second"]
+
+
+def test_v1_absent_section_and_optional_operation_remain_no_ops(tmp_path: pathlib.Path) -> None:
+    _write_v1(tmp_path, deploy={})
+    prepared = runner.prepare_operations(tmp_path, [
+        runner.OperationRequest("release.operations.publish"),
+        runner.OperationRequest("deploy.operations.absent", if_declared=True),
+    ])
+    result = runner.execute_prepared_operations(prepared)
+    assert [item["reason"] for item in result["results"]] == [
+        "contract_section_not_declared", "operation_not_declared",
+    ]
+    assert all(item["status"] == "no_op" for item in result["results"])
+    with pytest.raises(runner.OperationError, match="not declared"):
+        runner.prepare_operations(tmp_path, [runner.OperationRequest("deploy.operations.absent")])
+
+
+@pytest.mark.parametrize("version", [None, True, 1.0, "1", 0, 3, [], {}])
+def test_loader_rejects_unsupported_or_unversioned_contracts(
+    tmp_path: pathlib.Path, version: object,
+) -> None:
+    import yaml
+
+    path = tmp_path / "invalid.yml"
+    path.write_text(yaml.safe_dump({
+        "version": version, "kind": "ceratops-sdlc", "deploy": {"operations": {}},
+    }), encoding="utf-8")
+    document, errors = contracts.read_contract(path)
+    assert document is None and errors
+    assert "unsupported SDLC version" in errors[0]
+    with pytest.raises(contracts.SdlcContractError, match="unsupported SDLC version"):
+        contracts.load_contract(path)
+
+
+@pytest.mark.parametrize("invalid", [
+    {"version": 1, "kind": "ceratops-sdlc"},
+    {"version": 1, "kind": "wrong", "deploy": {"operations": {}}},
+    {"version": 1, "kind": "ceratops-sdlc", "repository": {}},
+    {"version": 1, "kind": "ceratops-sdlc", "deploy": {"operations": {
+        "test": {"steps": [{"run": ["python"]}]},
+    }}},
+    {"version": 1, "kind": "ceratops-sdlc", "release": {"operations": {
+        "test": {"handoff": "ceratops-skill-lifecycle/deploy"},
+    }}},
+    {"version": 1, "kind": "ceratops-sdlc", "deploy": {"operations": {
+        "test": {"steps": [{"id": "a", "run": "python"}]},
+    }}},
+    {"version": 2, "kind": "ceratops-sdlc", "deploy": {"operations": {}}},
+    {"version": 2, "kind": "ceratops-sdlc", "repository": {"validate": {
+        "test": {"steps": [{"id": "a", "run": ["python"]}]},
+    }}},
+    [],
+])
+def test_version_specific_schema_rejects_invalid_data(
+    tmp_path: pathlib.Path, invalid: object,
+) -> None:
+    path = tmp_path / "invalid.yml"
+    path.write_text(json.dumps(invalid), encoding="utf-8")
+    assert contracts.validation_errors(invalid)
+    assert contracts.read_contract(path)[0] is None
+    with pytest.raises(contracts.SdlcContractError):
+        contracts.load_contract(path)
+
+
+def test_v1_duplicate_yaml_keys_and_invalid_schema_are_rejected(tmp_path: pathlib.Path) -> None:
+    path = tmp_path / "contract.yml"
+    path.write_text(
+        "version: 1\nkind: ceratops-sdlc\ndeploy:\n  operations:\n"
+        "    a:\n      handoff: skill/deploy\n    a:\n      handoff: skill/deploy\n",
+        encoding="utf-8",
+    )
+    assert "unique strings" in contracts.read_contract(path)[1][0]
+    path = _write_v1(tmp_path, deploy={})
+    schema = tmp_path / "broken.json"
+    schema.write_text("{", encoding="utf-8")
+    assert "invalid SDLC schema" in contracts.read_contract(path, schema_path=schema)[1][0]
+    assert contracts.read_contract(path, schema_path=contracts.SCHEMA)[1] == []
+
+
+@pytest.mark.parametrize("installer_version", [1, 12, 1000])
+def test_supported_v1_compatibility_is_independent_of_installer_release(
+    tmp_path: pathlib.Path, installer_version: int,
+) -> None:
+    checker = importlib.import_module("ceratops_repo_compatibility_engine.compatibility_check")
+    _write_v1(tmp_path, deploy={})
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    (scripts / "deploy-skills.py").write_text(
+        f"INSTALLER_VERSION = {installer_version}\n", encoding="utf-8",
+    )
+    (scripts / "validate-repository.py").write_text("raise SystemExit(0)\n", encoding="utf-8")
+    workflow = tmp_path / ".github/workflows/validate.yml"
+    workflow.parent.mkdir(parents=True)
+    workflow.write_text(
+        "jobs:\n  validate:\n    steps:\n"
+        "      - run: python scripts/validate-repository.py --evidence-file evidence.log\n",
+        encoding="utf-8",
+    )
+    assert checker.check_repository(tmp_path) == {
+        "applicable": True, "valid": True, "errors": [],
+    }
+
+
+def test_materialization_preserves_supported_v1_without_migration(tmp_path: pathlib.Path) -> None:
+    materializer = importlib.import_module("ceratops_repo_compatibility_engine.repository_materialization")
+    path = _write_v1(tmp_path, deploy={"deploy": {"handoff": "ceratops-skill-lifecycle/deploy"}})
+    original = path.read_bytes()
+    for has_skills in (True, False):
+        assert materializer.build_sdlc_contract_candidate(
+            tmp_path, has_skills=has_skills, materialize=True,
+        ) is None
+    assert path.read_bytes() == original
+
+
+def test_v1_artifact_identity_keeps_repository_precedence(tmp_path: pathlib.Path) -> None:
+    import yaml
+    resolver = importlib.import_module("github_contract_engine.repository_artifact_contracts")
+    record = {
+        "artifact_type": "python_package", "registry": "pypi",
+        "package_or_image_name": "historical-package", "version_source": "pyproject.toml",
+        "release_policy": "manual", "tag_style": "semver",
+        "changelog_source": "CHANGELOG.md", "post_publish_consumer_check": "pip download historical-package",
+    }
+    path = _write_v1(tmp_path, release={})
+    contract = yaml.safe_load(path.read_text(encoding="utf-8"))
+    contract["release"]["artifacts"] = [record]
+    path.write_text(yaml.safe_dump(contract, sort_keys=False), encoding="utf-8")
+    assert resolver.resolve_repository_artifact_contracts(str(tmp_path), None) == [record]
+    with pytest.raises(ValueError, match="declared both"):
+        resolver.resolve_repository_artifact_contracts(str(tmp_path), [record])
+
+
+@pytest.mark.parametrize("version", [1, 2, 3])
+def test_health_migration_proposal_is_advisory_and_reaches_automation_summary(
+    tmp_path: pathlib.Path, version: int,
+) -> None:
+    collector = importlib.import_module("github_contract_engine.collectors.local_repository")
+    reports = importlib.import_module("github_contract_engine.format_report")
+    levels = importlib.import_module("github_contract_engine.levels")
+    path = _write_v1(tmp_path, deploy={}) if version == 1 else write_sdlc_contract(tmp_path)
+    if version == 3:
+        path.write_text("version: 3\nkind: ceratops-sdlc\n", encoding="utf-8")
+    original = path.read_bytes()
+    facts = collector._sdlc_contract_facts({"available": True, "root": str(tmp_path)})
+    assert facts["valid"] is (version in (1, 2))
+    desired = {
+        "parameters": {"owner": "owner", "repo": "sample"}, "contract_paths": {},
+        "selected_ids": {"repo": ["content.sdlc_contract"]},
+        "rules": [{"id": "content.sdlc_contract"}],
+    }
+    comparison: dict[str, list[dict[str, object]]] = {"findings": [], "approved_drift": []}
+    report = reports.build_report(desired, {"local": {"sdlc_contract": facts}}, comparison)
+    # These are the exact levels requested by Global Repo Health Consistency.
+    summary = reports.build_summary_report(report, ["ERROR", "WARN", "NEEDS_AI_AGENT_REVIEW"])
+    proposals = [f for f in summary["findings"] if f["check_id"] == "content.sdlc_migration"]
+    assert len(proposals) == (1 if version == 1 else 0)
+    if proposals:
+        assert proposals[0]["actual"] == {
+            "repository": "owner/sample", "current_version": 1, "recommended_version": 2,
+            "reason": facts["migration_proposal"]["reason"],
+        }
+        assert "owner/sample" in proposals[0]["message"]
+        assert "version 1 to 2" in proposals[0]["message"]
+        assert "do not automatically migrate" in proposals[0]["message"]
+        assert not levels.has_blocking_findings(proposals)
+    assert comparison == {"findings": [], "approved_drift": []}
+    assert path.read_bytes() == original

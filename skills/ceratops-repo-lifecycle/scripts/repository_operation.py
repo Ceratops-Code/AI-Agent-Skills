@@ -25,13 +25,11 @@ from ceratops_repo_compatibility_engine.sdlc_contract_validation import (
     load_contract,
     operation_entries,
 )
+from ceratops_repo_compatibility_engine.sdlc_contract_validation import (
+    operation_category as contract_operation_category,
+)
 
 DEFAULT_CONTRACT = pathlib.Path("sdlc/sdlc.yml")
-NAME = r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*"
-OPERATION_ID_RE = re.compile(
-    rf"^(?:repository\.(?:bootstrap|validate)|"
-    rf"deliverables\.{NAME}\.(?:validate|deploy-local|publish))\.{NAME}$"
-)
 PARAMETER_NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 PLACEHOLDER_RE = re.compile(r"^\{(?P<name>[a-z][a-z0-9_]*)\}$")
 FAILURE_TAIL_LINES = 8
@@ -51,9 +49,9 @@ class OperationRequest:
 
 @dataclass(frozen=True)
 class PreparedStep:
-    """One repository-bounded command, numbered by its YAML position."""
+    """One bounded command identified by its v1 step ID or v2 YAML position."""
 
-    position: int
+    position: int | str
     argv: tuple[str, ...]
     cwd: pathlib.Path
 
@@ -79,9 +77,10 @@ class OperationError(RuntimeError):
 def operation_category(operation: str) -> str:
     """Validate a complete YAML location and return its structural category."""
 
-    if not isinstance(operation, str) or OPERATION_ID_RE.fullmatch(operation) is None:
-        raise OperationError(f"Invalid SDLC operation location: {operation}")
-    return operation.split(".")[-2]
+    try:
+        return contract_operation_category(operation)
+    except SdlcContractError as exc:
+        raise OperationError(str(exc)) from exc
 
 
 def read_repository_contract(
@@ -219,7 +218,12 @@ def prepare_operations(
         category = operation_category(request.operation)
         selected = entries.get(request.operation)
         if selected is None:
-            if not request.if_declared:
+            absent_v1_section = (
+                contract.get("version") == 1
+                and request.operation.split(".")[0] in {"deploy", "release"}
+                and request.operation.split(".")[0] not in contract
+            )
+            if not request.if_declared and not absent_v1_section:
                 raise OperationError(
                     f"SDLC operation is not declared: {request.operation}"
                 )
@@ -232,14 +236,15 @@ def prepare_operations(
                     (),
                     None,
                     {},
-                    "operation_not_declared",
+                    "contract_section_not_declared"
+                    if absent_v1_section else "operation_not_declared",
                 )
             )
             continue
         parameters = _parameters(selected, request)
         steps = tuple(
             PreparedStep(
-                position,
+                step.get("id", position),
                 _expanded_argv(step["run"], parameters),
                 _working_directory(root, step.get("cwd", ".")),
             )
@@ -318,7 +323,7 @@ def execute_prepared_operation(prepared: PreparedOperation) -> dict[str, object]
             "status": "state_changed",
             "message": "HEAD changed after preparation.",
         }
-    completed: list[int] = []
+    completed: list[int | str] = []
     for step in prepared.steps:
         if prepared.commit and prepared.category in {"deploy-local", "publish"}:
             try:

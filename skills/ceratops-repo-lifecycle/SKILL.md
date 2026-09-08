@@ -57,6 +57,12 @@ setup and validation, plus deliverable validation, deployment and publication.
   `--repo-root PATH --sdlc-contract PATH --operation LOCATION`; repeat the last
   flag in order. Locations follow the YAML hierarchy, such as
   `repository.bootstrap.runtime` or `deliverables.skills.deploy-local.managed`.
+  Version 1 locations use `deploy.operations.NAME` or `release.operations.NAME`.
+- Use supported SDLC formats through the shared loader without migration.
+  Require an upgrade only when the requested operation cannot run safely;
+  installer release-number differences alone do not establish incompatibility.
+- Materialize new SDLC contracts in the current format and preserve supported
+  existing contracts.
 - Read declared prerequisite metadata before setup; run only explicitly chosen
   bootstrap operations. Prerequisites and artifact identity are annotations,
   not inferred check or installation commands.
