@@ -43,7 +43,7 @@ Infer the source identity from stable repository evidence before asking.
   validates SDLC contracts for materialization, execution, and health; it never
   creates or modifies them.
 - (D) Missing repository-validation surfaces come from
-  `references/repository-validation-catalog.json` and the templates under
+  `references/contracts/repository-validation-contract.json` and the templates under
   `references/templates/`.
 
 ## Constraints
@@ -87,8 +87,9 @@ Infer the source identity from stable repository evidence before asking.
 - Block malformed or unsafe existing declarations before mutation. After the
   first write, restore every changed target file after any caught blocker and
   report the failed phase and rollback state.
-- Generate a missing validator and CI workflow only from catalogued checks;
-  obtain approval before adding a check absent from the catalog.
+- Generate a missing validator and CI workflow only from checks declared in
+  `references/contracts/repository-validation-contract.json`; obtain approval
+  before adding an undeclared check.
 - Keep source skill folders portable and keep generated shared-section blocks
   out of source `SKILL.md` files.
 

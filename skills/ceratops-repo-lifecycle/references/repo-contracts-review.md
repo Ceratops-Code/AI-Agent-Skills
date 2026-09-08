@@ -2,12 +2,12 @@
 
 ## Goal
 
-Review GitHub org, GitHub repo, PR readiness, repo-code, artifact registry, and
-release contract surfaces owned by `ceratops-repo-lifecycle`. Compare
-skill-local contract references, checker scripts, current official docs, local
-repo evidence, live GitHub evidence, and registry metadata, then report proposed
-contract or checker updates for explicit approval before repo changes are
-applied.
+Review repository-validation, GitHub org, GitHub repo, PR readiness, repo-code,
+artifact registry, and release contracts owned by `ceratops-repo-lifecycle`.
+Compare skill-local contract references, checker scripts, current official docs,
+local repo evidence, live GitHub evidence, and registry metadata, then report
+proposed contract or checker updates for explicit approval before repo changes
+are applied.
 
 ## Context
 
@@ -36,6 +36,9 @@ applied.
 
 - Contract source-doc registry:
   `references/contracts/github-contract-source-docs.json`
+- Repository-validation contract and schema:
+  `references/contracts/repository-validation-contract.json` and
+  `references/schemas/repository-validation-contract.schema.json`
 - Org deterministic contract:
   `references/contracts/github-org-deterministic-contract.json`
 - GitHub repo deterministic contract:
@@ -57,8 +60,8 @@ applied.
   contract refresh.
 - Which contract surfaces are actually in scope: GitHub org settings, live
   GitHub repo state, repo-content expectations, workflow hardening, release
-  posture, artifact types supported by this lifecycle action set, or a
-  documented no-artifact posture.
+  posture, repository-validation coverage, artifact types supported by this
+  lifecycle action set, or a documented no-artifact posture.
 - The official docs, live API evidence, package metadata, registry metadata, or
   reference repositories used for standards comparison and which concrete
   standards question each one informed.
@@ -69,8 +72,8 @@ applied.
 
 ### Boundaries
 
-- Use this action when the task is GitHub, code, PR readiness, artifact,
-  registry, release, or org contract review rather than lifecycle execution.
+- Use this action for repository-validation, GitHub, code, PR readiness,
+  artifact, registry, release, or org contract review.
 - Do not use this action to audit or repair the health of a specific repository.
   Use live GitHub, registry, official-doc, or reference-repo evidence only when
   needed to decide whether a contract claim is current.
@@ -88,14 +91,15 @@ applied.
 
 ### Skill-Specific Rules
 
-- Routine runs must perform a bounded contract review across GitHub org, GitHub
+- Routine runs must review repository-validation coverage and the GitHub org,
   repo state, repo-content, workflow, security, artifact-publishing, and release
-  surfaces already represented in this action's `references/`.
+  surfaces represented in this action's `references/`.
 - Review current official docs, live product behavior, official API or registry
   metadata, and at most 2-3 current public third-party GitHub reference
   repositories only for a concrete standards question surfaced by local
   contract, checker, source-registry, live API, or approval-relevant ambiguity
-  evidence.
+  evidence. Missing validator coverage is a standing standards question during
+  repository-validation review.
 - Use reference repositories only as pattern examples, not as health-audit
   targets, and separate no-extra-cost defaults from paid GitHub Code Security or
   Secret Protection features.
@@ -149,11 +153,24 @@ applied.
   them.
 - Check current official Docker, GHCR, PyPI, npm, or Python packaging docs only
   for artifact surfaces that are actually in scope.
+- For repository validation, read the registered `repository_validation`
+  sources. Use tool documentation to check detection, invocation, and
+  dependency assumptions; use the registered discovery indexes to find
+  candidates across languages, file formats, and build systems.
+- Run one batch of at most four web discovery queries per routine review,
+  including ecosystems absent from the contract. Compare candidates with
+  declared checks and package-script coverage, then verify relevant gaps
+  against each project's official documentation. Follow up only for a
+  concrete candidate decision.
+- Record discovery queries, consulted sources, coverage limitations, and
+  candidate dispositions with reasons: covered, proposed addition, deferred,
+  or rejected. Discovery does not establish exhaustive coverage or authorize
+  new checks; retain the explicit approval requirement.
 
 ### 3. Audit The Contracts
 
-- Review this action's `references/` and checker scripts only where a contract
-  claim depends on them.
+- Review this action's `references/` and checker scripts where a contract
+  claim or uncovered-validator candidate depends on them.
 - Look for duplicate guidance, contradictory defaults, stale GitHub setting
   names, stale required-file assumptions, stale repository-health expectations,
   stale workflow hardening guidance, stale artifact-publishing guidance,
@@ -168,7 +185,7 @@ applied.
 ### 4. Prepare Approval Request
 
 - Prepare exact proposed contract or checker updates that align behavior with
-  current official GitHub or registry terms.
+  current official project, GitHub, or registry evidence.
 - Prepare exact proposed file-reference updates when standard repo files, GitHub
   settings, workflow surfaces, or artifact-publish expectations were added,
   removed, or renamed.
@@ -199,6 +216,8 @@ applied.
 
 - Verify every changed in-scope contract artifact has targeted same-surface
   evidence.
+- Repository-validation review includes documented discovery and a disposition
+  for each relevant coverage gap, with its limitations preserved.
 - Verify repo changes remain in the worktree unless this contract-review task
   explicitly included another approved local mutation.
 - Verify changed contracts, checker scripts, source-doc registry, and

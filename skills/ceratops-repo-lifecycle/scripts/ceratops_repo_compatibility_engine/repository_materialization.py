@@ -24,6 +24,7 @@ from dataclasses import dataclass
 import yaml
 
 from .compatibility_check import check_repository
+from .repository_validation_contract import load_validation_contract
 from .sdlc_contract_validation import load_contract, validation_errors
 
 BUNDLE_ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -32,7 +33,6 @@ SDLC_TEMPLATE = BUNDLE_ROOT / "references" / "templates" / "sdlc.yml.tmpl"
 SOURCE_REPO_ROOT = BUNDLE_ROOT.parents[1]
 SOURCE_CANONICAL_SECTIONS = SOURCE_REPO_ROOT / "skills" / "sections"
 INSTALLED_CANONICAL_SECTIONS = BUNDLE_ROOT / "skills" / "sections"
-VALIDATION_CATALOG = BUNDLE_ROOT / "references" / "repository-validation-catalog.json"
 VALIDATOR_TEMPLATE = BUNDLE_ROOT / "references" / "templates" / "validate-repository.py.tmpl"
 WORKFLOW_TEMPLATE = BUNDLE_ROOT / "references" / "templates" / "validate.yml.tmpl"
 MANIFEST_RELATIVE = pathlib.Path("skills/skill-sections.json")
@@ -129,7 +129,7 @@ def load_mapping(path: pathlib.Path) -> dict[str, object]:
     return value
 
 
-def _safe_catalog_path(value: object, label: str) -> pathlib.PurePosixPath:
+def _safe_validation_path(value: object, label: str) -> pathlib.PurePosixPath:
     if not isinstance(value, str) or not value:
         raise RuntimeError(f"{label} must be a nonempty relative path")
     path = pathlib.PurePosixPath(value)
@@ -214,7 +214,7 @@ def _declared_python_dependencies(repo_root: pathlib.Path) -> str:
     return "\n".join(declared).lower()
 
 
-def _catalog_condition_matches(
+def _validation_condition_matches(
     repo_root: pathlib.Path,
     condition: Mapping[str, object],
     package_scripts: set[str],
@@ -227,10 +227,10 @@ def _catalog_condition_matches(
     ):
         value = condition["value"]
         if not isinstance(value, str) or not value:
-            raise RuntimeError("catalog package-script value must be text")
+            raise RuntimeError("repository-validation contract package-script value must be text")
         manager = condition.get("manager")
         if manager is not None and manager not in {"npm", "pnpm"}:
-            raise RuntimeError("catalog package-script manager is unsupported")
+            raise RuntimeError("repository-validation contract package-script manager is unsupported")
         return value in package_scripts and (manager is None or manager == package_manager)
     if kind == "path-any" and set(condition) == {"kind", "value"}:
         patterns = condition["value"]
@@ -239,17 +239,17 @@ def _catalog_condition_matches(
             or not patterns
             or not all(isinstance(pattern, str) and pattern for pattern in patterns)
         ):
-            raise RuntimeError("catalog path-any value must be a string list")
+            raise RuntimeError("repository-validation contract path-any value must be a string list")
         return any(
             candidate.is_file() and not candidate.is_symlink()
             for pattern in patterns
             for candidate in repo_root.glob(pattern)
         )
     if kind == "file-contains" and set(condition) == {"kind", "path", "value"}:
-        relative = _safe_catalog_path(condition["path"], "catalog condition path")
+        relative = _safe_validation_path(condition["path"], "repository-validation contract condition path")
         value = condition["value"]
         if not isinstance(value, str) or not value:
-            raise RuntimeError("catalog file-contains value must be text")
+            raise RuntimeError("repository-validation contract file-contains value must be text")
         path = repo_root.joinpath(*relative.parts)
         return (
             path.is_file()
@@ -259,76 +259,29 @@ def _catalog_condition_matches(
     raise RuntimeError(f"unsupported repository-validation condition: {kind!r}")
 
 
-def catalog_checks(repo_root: pathlib.Path) -> list[dict[str, object]]:
-    """Select fully declared checks from the closed lifecycle catalog."""
+def contract_checks(repo_root: pathlib.Path) -> list[dict[str, object]]:
+    """Select checks only after validating the complete shared contract."""
 
-    catalog = load_mapping(VALIDATION_CATALOG)
-    if set(catalog) != {"version", "checks"} or catalog.get("version") != 1:
-        raise RuntimeError("repository-validation catalog must be version 1")
-    entries = catalog.get("checks")
-    if not isinstance(entries, list):
-        raise RuntimeError("repository-validation catalog checks must be a list")
+    contract = load_validation_contract()
     package = _package_manifest(repo_root)
     scripts = _package_scripts(package)
     package_manager, _ = _package_manager(repo_root, package)
     selected: list[dict[str, object]] = []
-    seen: set[str] = set()
-    for raw in entries:
-        required_fields = {"id", "when", "command", "cwd"}
-        optional_fields = {"exclusive", "python_packages", "unless"}
-        if (
-            not isinstance(raw, Mapping)
-            or not required_fields.issubset(raw)
-            or not set(raw).issubset(required_fields | optional_fields)
-        ):
-            raise RuntimeError("repository-validation catalog entry is invalid")
-        check_id = raw["id"]
-        conditions = raw["when"]
-        command = raw["command"]
-        if (
-            not isinstance(check_id, str)
-            or re.fullmatch(r"[a-z0-9][a-z0-9-]*", check_id) is None
-            or check_id in seen
-        ):
-            raise RuntimeError(f"invalid or duplicate catalog check id: {check_id!r}")
-        if not isinstance(conditions, list) or not conditions or not all(
-            isinstance(condition, Mapping) for condition in conditions
-        ):
-            raise RuntimeError(f"catalog check {check_id} has invalid conditions")
-        if not isinstance(command, list) or not command or not all(
-            isinstance(value, str) and value for value in command
-        ):
-            raise RuntimeError(f"catalog check {check_id} has invalid command")
-        cwd = _safe_catalog_path(raw["cwd"], f"catalog check {check_id} cwd")
-        unless = raw.get("unless", [])
-        if not isinstance(unless, list) or not all(
-            isinstance(condition, Mapping) for condition in unless
-        ):
-            raise RuntimeError(f"catalog check {check_id} unless must be a condition list")
-        exclusive = raw.get("exclusive", False)
-        if not isinstance(exclusive, bool):
-            raise RuntimeError(f"catalog check {check_id} exclusive must be boolean")
-        python_packages = raw.get("python_packages", [])
-        if (
-            not isinstance(python_packages, list)
-            or not all(isinstance(value, str) and value for value in python_packages)
-        ):
-            raise RuntimeError(f"catalog check {check_id} python_packages must be text")
-        seen.add(check_id)
+    for check in contract["checks"]:
         if any(
-            _catalog_condition_matches(repo_root, condition, scripts, package_manager)
-            for condition in conditions
+            _validation_condition_matches(repo_root, condition, scripts, package_manager)
+            for condition in check["when"]
         ) and not any(
-            _catalog_condition_matches(repo_root, condition, scripts, package_manager)
-            for condition in unless
+            _validation_condition_matches(repo_root, condition, scripts, package_manager)
+            for condition in check.get("unless", [])
         ):
             selected.append(
                 {
-                    "id": check_id,
-                    "command": list(command),
-                    "cwd": cwd.as_posix(),
-                    "exclusive": exclusive,
-                    "python_packages": list(python_packages),
+                    "id": check["id"],
+                    "command": list(check["command"]),
+                    "cwd": _safe_validation_path(check["cwd"], "validation check cwd").as_posix(),
+                    "exclusive": check.get("exclusive", False),
+                    "python_packages": list(check.get("python_packages", [])),
                 }
             )
     exclusive_checks = [check for check in selected if check["exclusive"]]
@@ -346,10 +299,10 @@ def _validation_workflow(
     for check in checks:
         command = check["command"]
         if not isinstance(command, list):
-            raise RuntimeError("catalog check command must be a list")
+            raise RuntimeError("repository-validation contract check command must be a list")
         for value in command:
             if not isinstance(value, str):
-                raise RuntimeError("catalog check command values must be text")
+                raise RuntimeError("repository-validation contract check command values must be text")
             commands.append(value)
     pyproject = _pyproject(repo_root)
     project = pyproject.get("project", {})
@@ -498,7 +451,7 @@ def validation_surfaces(
     if validator.is_file() and workflow.is_file():
         return None, None, []
 
-    checks = catalog_checks(repo_root)
+    checks = contract_checks(repo_root)
     validator_text = None
     if not validator.is_file():
         template = VALIDATOR_TEMPLATE.read_text(encoding="utf-8")

@@ -442,10 +442,10 @@ def test_compatibility_materializer_supports_repositories_without_skills(
     assert "uv run --no-sync python scripts/validate-repository.py" in uv_workflow
 
     # Synthetic recipes exercise extension behavior without coupling the shipped
-    # catalog to any repository's private check names or command conventions.
-    catalog_path = lifecycle_bundle / "references" / "repository-validation-catalog.json"
-    catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
-    catalog["checks"].extend(
+    # contract to any repository's private check names or command conventions.
+    contract_path = (lifecycle_bundle / "references" / "contracts" / "repository-validation-contract.json")
+    contract = json.loads(contract_path.read_text(encoding="utf-8"))
+    contract["checks"].extend(
         [
             {
                 "id": "powershell-lint",
@@ -465,7 +465,7 @@ def test_compatibility_materializer_supports_repositories_without_skills(
             },
         ]
     )
-    catalog_path.write_text(json.dumps(catalog) + "\n", encoding="utf-8")
+    contract_path.write_text(json.dumps(contract) + "\n", encoding="utf-8")
 
     powershell_repo = empty_repository("powershell-compatible")
     for relative in ("tools/quality.ps1",):
@@ -600,6 +600,75 @@ def test_compatibility_materializer_supports_repositories_without_skills(
     retained_evidence = authoritative_evidence.read_text(encoding="utf-8")
     assert "child_evidence: custom-validation.log" in retained_evidence
     assert "inner diagnostic" in retained_evidence
+
+    # Every documented pytest configuration form selects pytest and suppresses
+    # unittest, even when the target only declares the tool through its config.
+    for index, (config, contents) in enumerate([
+        ("pytest.toml", "[pytest]\n"),
+        (".pytest.toml", "[pytest]\n"),
+        (".pytest.ini", "[pytest]\n"),
+        ("tox.ini", "[pytest]\n"),
+        ("setup.cfg", "[tool:pytest]\n"),
+    ]):
+        config_repo = empty_repository(f"pytest-config-{index}")
+        (config_repo / config).write_text(contents, encoding="utf-8")
+        (config_repo / "tests").mkdir()
+        (config_repo / "tests" / "test_probe.py").write_text(
+            "def test_probe(): pass\n", encoding="utf-8"
+        )
+        configured = run_compatibility_engine(
+            engine_scripts, "materialize", "--target-repo-root", str(config_repo)
+        )
+        assert configured.returncode == 0, configured.stdout
+        assert json.loads(configured.stdout)["repository_validation"]["checks"] == ["pytest"]
+
+    # Contract validation covers entries which do not match the target and
+    # rejects broken metadata or evidence links before target mutation.
+    valid_contract = json.loads(contract_path.read_text(encoding="utf-8"))
+    broken_contracts = []
+    for field, value in (
+        ("contract_format_version", 2),
+        ("captured_on", False),
+        ("source_doc_scopes", ["missing-evidence-scope"]),
+        ("unknown_policy", True),
+    ):
+        candidate = json.loads(json.dumps(valid_contract))
+        candidate[field] = value
+        broken_contracts.append(candidate)
+    duplicate = json.loads(json.dumps(valid_contract))
+    duplicate["checks"].append(duplicate["checks"][0])
+    broken_contracts.append(duplicate)
+    for condition in (
+        {"kind": "unknown", "value": "unmatched"},
+        {"kind": "path-any", "value": ["../outside"]},
+    ):
+        candidate = json.loads(json.dumps(valid_contract))
+        candidate["checks"][0]["when"] = [condition]
+        broken_contracts.append(candidate)
+    for index, candidate in enumerate(broken_contracts):
+        contract_path.write_text(json.dumps(candidate) + "\n", encoding="utf-8")
+        invalid_repo = empty_repository(f"invalid-contract-{index}")
+        invalid = run_compatibility_engine(
+            engine_scripts, "materialize", "--target-repo-root", str(invalid_repo)
+        )
+        assert invalid.returncode == 1, invalid.stdout
+        assert json.loads(invalid.stdout)["rollback"] == "not_started"
+        assert not (invalid_repo / "scripts").exists()
+        assert not (invalid_repo / "sdlc").exists()
+    contract_path.write_text(json.dumps(valid_contract) + "\n", encoding="utf-8")
+
+    # The contract-review checker also rejects new schema fields which lack
+    # a declared executable consumer or an explicit annotation role.
+    schema_path = lifecycle_bundle / "references" / "schemas" / "repository-validation-contract.schema.json"
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    schema["properties"]["unconsumed_policy"] = {"type": "string"}
+    schema_path.write_text(json.dumps(schema) + "\n", encoding="utf-8")
+    consistency_result = subprocess.run(
+        [sys.executable, "-m", "github_contract_engine", "validate", "consistency"],
+        cwd=engine_scripts, capture_output=True, text=True, check=False,
+    )
+    assert consistency_result.returncode == 1
+    assert "unclassified contract field root.unconsumed_policy" in consistency_result.stdout
 
 
 def test_compatibility_materializer_preserves_existing_validator_and_ci(

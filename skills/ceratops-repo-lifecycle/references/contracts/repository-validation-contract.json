@@ -1,5 +1,10 @@
 {
-  "version": 1,
+  "contract_format_version": 1,
+  "kind": "repository_validation_contract",
+  "name": "ceratops_repository_validation_contract",
+  "captured_on": "2026-09-09",
+  "source_docs_ref": "github-contract-source-docs.json",
+  "source_doc_scopes": ["repository_validation"],
   "checks": [
     {
       "id": "npm-markdown-lint",
@@ -79,7 +84,9 @@
     {
       "id": "pytest",
       "when": [
-        {"kind": "path-any", "value": ["pytest.ini", "conftest.py"]},
+        {"kind": "path-any", "value": ["pytest.toml", ".pytest.toml", "pytest.ini", ".pytest.ini", "conftest.py"]},
+        {"kind": "file-contains", "path": "tox.ini", "value": "[pytest]"},
+        {"kind": "file-contains", "path": "setup.cfg", "value": "[tool:pytest]"},
         {"kind": "file-contains", "path": "pyproject.toml", "value": "[tool.pytest"},
         {"kind": "file-contains", "path": "requirements-dev.txt", "value": "pytest"},
         {"kind": "file-contains", "path": "requirements.txt", "value": "pytest"}
@@ -94,7 +101,9 @@
         {"kind": "path-any", "value": ["tests/test_*.py"]}
       ],
       "unless": [
-        {"kind": "path-any", "value": ["pytest.ini", "conftest.py"]},
+        {"kind": "path-any", "value": ["pytest.toml", ".pytest.toml", "pytest.ini", ".pytest.ini", "conftest.py"]},
+        {"kind": "file-contains", "path": "tox.ini", "value": "[pytest]"},
+        {"kind": "file-contains", "path": "setup.cfg", "value": "[tool:pytest]"},
         {"kind": "file-contains", "path": "pyproject.toml", "value": "[tool.pytest"},
         {"kind": "file-contains", "path": "requirements-dev.txt", "value": "pytest"},
         {"kind": "file-contains", "path": "requirements.txt", "value": "pytest"}

@@ -1,7 +1,7 @@
 {
   "source_docs_version": 1,
   "name": "ceratops_github_contract_source_docs",
-  "captured_on": "2026-09-07",
+  "captured_on": "2026-09-09",
   "policy": {
     "use_order": [
       "official_docs",
@@ -621,6 +621,83 @@
         "artifact"
       ],
       "url": "https://learn.microsoft.com/en-us/powershell/gallery/faqs?view=powershellget-2.x"
+    },
+    {
+      "id": "validation.npm.scripts",
+      "scope": [
+        "repository_validation"
+      ],
+      "url": "https://docs.npmjs.com/cli/v11/using-npm/scripts/"
+    },
+    {
+      "id": "validation.pnpm.run",
+      "scope": [
+        "repository_validation"
+      ],
+      "url": "https://pnpm.io/cli/run"
+    },
+    {
+      "id": "validation.pytest.configuration",
+      "scope": [
+        "repository_validation"
+      ],
+      "url": "https://docs.pytest.org/en/stable/reference/customize.html"
+    },
+    {
+      "id": "validation.unittest.discovery",
+      "scope": [
+        "repository_validation"
+      ],
+      "url": "https://docs.python.org/3/library/unittest.html#test-discovery"
+    },
+    {
+      "id": "validation.ruff.configuration",
+      "scope": [
+        "repository_validation"
+      ],
+      "url": "https://docs.astral.sh/ruff/configuration/"
+    },
+    {
+      "id": "validation.mypy.configuration",
+      "scope": [
+        "repository_validation"
+      ],
+      "url": "https://mypy.readthedocs.io/en/stable/config_file.html"
+    },
+    {
+      "id": "validation.yamllint.configuration",
+      "scope": [
+        "repository_validation"
+      ],
+      "url": "https://yamllint.readthedocs.io/en/stable/configuration.html"
+    },
+    {
+      "id": "validation.go.test",
+      "scope": [
+        "repository_validation"
+      ],
+      "url": "https://pkg.go.dev/cmd/go#hdr-Test_packages"
+    },
+    {
+      "id": "validation.cargo.test",
+      "scope": [
+        "repository_validation"
+      ],
+      "url": "https://doc.rust-lang.org/cargo/commands/cargo-test.html"
+    },
+    {
+      "id": "validation.discovery.megalinter",
+      "scope": [
+        "repository_validation"
+      ],
+      "url": "https://megalinter.io/latest/supported-linters/"
+    },
+    {
+      "id": "validation.discovery.static_analysis",
+      "scope": [
+        "repository_validation"
+      ],
+      "url": "https://github.com/analysis-tools-dev/static-analysis"
     }
   ],
   "reference_repos": [

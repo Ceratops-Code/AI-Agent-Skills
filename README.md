@@ -127,7 +127,7 @@ without repository deduplication.
 | `scripts/testing/pytest-diagnostics.py` | Extracts bounded failure summaries using exact pytest identities and source-file evidence; ambiguous or missing tracebacks use only that test's summary reason. Full diagnostic files remain owned by the runner. |
 | `scripts/validate-repository.py` | Local validation coordinator; checks the running Python against `pyproject.toml`, captures first-failure evidence, delegates its default full test phase to `scripts/testing/run-tests.py --all`, and supports CI's separate runner-owned test phase. |
 | `skills/ceratops-repo-lifecycle/references/templates/deploy-skills.py.tmpl` | Authoritative standard-library-only bootstrap copied into compatible skill repositories as `scripts/deploy-skills.py`. |
-| `skills/ceratops-repo-lifecycle/references/repository-validation-catalog.json` | Closed catalog of repository checks that compatibility materialization may select without additional approval. |
+| `skills/ceratops-repo-lifecycle/references/contracts/repository-validation-contract.json` | Schema-validated repository checks used by compatibility generation and included in repository contract review and validator discovery. |
 | `skills/ceratops-repo-lifecycle/references/templates/validate-repository.py.tmpl` and `validate.yml.tmpl` | Repository-neutral validator and CI templates materialized only when their target files are absent. |
 | `skills/ceratops-repo-lifecycle/scripts/ceratops_repo_compatibility_engine/` | Skill-owned package for read-only compatibility checks, SDLC-contract validation, rollback-protected repository materialization, and version-only bootstrap synchronization; it operates on explicit target repositories and is never copied into them. |
 | `skills/ceratops-repo-lifecycle/references/templates/skill-sections.json.tmpl` | Repository-neutral template for materializing a target repository's live `skills/skill-sections.json`; never a live manifest. |
@@ -230,7 +230,14 @@ Each repository owns one lifecycle contract:
   Installer release-number differences alone do not require an upgrade.
 - `skills/ceratops-repo-lifecycle/references/contracts/github-contract-source-docs.json`
   records official source documents and reference repositories used by GitHub,
-  repo, PR readiness, code, and artifact contracts.
+  repo, PR readiness, code, artifact, and repository-validation contracts. Its
+  `repository_validation` scope includes tool documentation and discovery
+  indexes; contract review also performs bounded web searches for missing tools.
+- `skills/ceratops-repo-lifecycle/references/contracts/repository-validation-contract.json`
+  owns the conditional checks used to generate missing repository validators
+  and CI workflows. Its closed schema and loader validate all entries and
+  evidence scopes before selection. Fallback package requirements apply only
+  when the target repository does not declare the selected tool.
 - `skills/ceratops-repo-lifecycle/references/contracts/github-org-deterministic-contract.json`
   defines deterministic organization settings, policy, identity, security,
   Dependabot, and default-logo/custom-logo checks.

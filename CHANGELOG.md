@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Formalized repository validation as a schema-validated contract shared by
+  compatibility generation and contract review. Registered tool documentation
+  and cross-ecosystem discovery sources, and corrected pytest configuration
+  detection together with unittest exclusions.
 - Unified repository setup and validation with deliverable capabilities in
   version-2 `sdlc/sdlc.yml`. Lifecycle actions retain flow ownership; one runner
   executes ordered operations and advisory handoffs, blocks later mutations on

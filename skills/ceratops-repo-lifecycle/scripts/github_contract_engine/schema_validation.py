@@ -13,7 +13,6 @@ from typing import Any
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError
 
-
 SKILL_DIR = pathlib.Path(__file__).resolve().parents[2]
 REFERENCES = SKILL_DIR / "references"
 CONTRACTS = REFERENCES / "contracts"
@@ -39,6 +38,9 @@ SCHEMA_ASSIGNMENTS = {
     ),
     SCHEMAS / "github-contract-source-docs.schema.json": (
         CONTRACTS / "github-contract-source-docs.json",
+    ),
+    SCHEMAS / "repository-validation-contract.schema.json": (
+        CONTRACTS / "repository-validation-contract.json",
     ),
     SCHEMAS / "sdlc.yml.schema.json": (),
 }

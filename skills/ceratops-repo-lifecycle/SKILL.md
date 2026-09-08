@@ -19,7 +19,8 @@ setup and validation, plus deliverable validation, deployment and publication.
 - Create or publish a repository: `references/create-or-publish.md`
 - Make an existing repository Ceratops-compatible:
   `references/make-repo-compatible.md`
-- Review GitHub, code, PR, artifact, registry, and release contracts:
+- Review repository-validation, GitHub, code, PR, artifact, registry,
+  and release contracts:
   `references/repo-contracts-review.md`
 - Validate or apply a CodeQL alert disposition:
   `references/codeql-disposition.md`
