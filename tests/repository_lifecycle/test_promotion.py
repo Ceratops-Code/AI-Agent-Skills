@@ -227,8 +227,20 @@ def test_promote_repository_runs_explicit_operation_ids_in_order(
     assert log.read_text(encoding="utf-8") == "promotion-check\ncustom-deploy\n"
 
 
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        [],
+        ["--title", "Complete Dev Tools catalog"],
+        ["--body", "Use explicit exclusions.\n\nPreserve deployment.\n"],
+        ["--title", "Complete Dev Tools catalog", "--body", "Exact description"],
+        ["--body", ""],
+    ],
+    ids=["defaults", "title", "body", "both", "empty-body"],
+)
 def test_promote_repository_ship_after_promotion_composes_terminal_workflow(
     tmp_path: pathlib.Path,
+    metadata: list[str],
 ) -> None:
     repo, approved_head, log, _ = prepare_repository_lifecycle_repo(tmp_path)
     loaded = runpy.run_path(str(PROMOTE_REPOSITORY))
@@ -245,6 +257,7 @@ def test_promote_repository_ship_after_promotion_composes_terminal_workflow(
         "--remote-name",
         "origin",
         "--ship-after-promotion",
+        *metadata,
     ]
     parsed = parser.parse_args(arguments)
     assert parsed.ship_after_promotion is True
@@ -344,6 +357,11 @@ def test_promote_repository_ship_after_promotion_composes_terminal_workflow(
     assert "--deploy-operation" not in ship_command
     assert "--validation-operation" not in ship_command
     assert "--reusable-head" in ship_command
+    for flag in ("--title", "--body"):
+        if flag in metadata:
+            assert ship_command[ship_command.index(flag) + 1] == metadata[metadata.index(flag) + 1]
+        else:
+            assert flag not in ship_command
     assert str(OPERATION_RUNNER) not in (
         command[1] for command in commands
     )
@@ -352,6 +370,26 @@ def test_promote_repository_ship_after_promotion_composes_terminal_workflow(
         "pending_work_scope": recorded["pending_work_scope"],
     }
     assert not log.exists()
+
+
+@pytest.mark.parametrize("mode", ["--prepare-release-only", "--no-run-operation"])
+@pytest.mark.parametrize("metadata", [["--title", "Custom title"], ["--body", ""]])
+def test_promote_repository_metadata_requires_composed_shipping_before_mutation(
+    tmp_path: pathlib.Path, mode: str, metadata: list[str],
+) -> None:
+    loaded = runpy.run_path(str(PROMOTE_REPOSITORY))
+    args = loaded["build_parser"]().parse_args(
+        ["--repo-root", str(tmp_path), mode, *metadata]
+    )
+
+    def unexpected(*args: object, **kwargs: object) -> None:
+        pytest.fail("metadata misuse must block before repository commands")
+
+    promote = loaded["promote"]
+    for name in ("require_output", "require_success", "_run_json"):
+        promote.__globals__[name] = unexpected
+    with pytest.raises(loaded["PromotionError"], match="PR metadata requires --ship-after-promotion"):
+        promote(args)
 
 
 def test_promote_repository_ship_after_promotion_preserves_blocked_state(
@@ -763,6 +801,28 @@ def test_promote_repository_rejects_noncanonical_release_branch_before_mutation(
         published_source_head
     )
     assert run_git(published_worktree, "status", "--porcelain").stdout == ""
+
+    assert run_git(published_repo, "merge", "--no-edit", "approved").returncode == 0
+    included_release_head = run_git(published_repo, "rev-parse", "HEAD").stdout.strip()
+    for keep_worktree in (True, False):
+        if not keep_worktree:
+            assert run_git(published_repo, "worktree", "remove", str(published_worktree)).returncode == 0
+        included = subprocess.run(
+            [
+                sys.executable, str(PROMOTE_REPOSITORY),
+                "--repo-root", str(published_repo),
+                "--source-branch", "approved", "--no-run-operation",
+            ],
+            capture_output=True, text=True, check=False, env=published_environment,
+        )
+        assert included.returncode == 0, included.stderr
+        included_result = json.loads(included.stdout)
+        assert included_result["head"] == included_release_head
+        assert included_result["rebased_branches"] == []
+        assert run_git(published_repo, "rev-parse", "approved").stdout.strip() == published_source_head
+        assert run_git(published_repo, "status", "--porcelain").stdout == ""
+        if keep_worktree:
+            assert run_git(published_worktree, "status", "--porcelain").stdout == ""
 
     nonlinear_root = tmp_path / "automatic-rebase-nonlinear"
     (

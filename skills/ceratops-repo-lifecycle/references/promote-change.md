@@ -45,6 +45,8 @@ owns selected post-merge publication, deployment and cleanup.
   `release/local`, and remote.
 - Whether the selected action is `promote`, `promote-and-deploy`, or composed
   promotion and shipping.
+- Optional PR `--title` and `--body` require `--ship-after-promotion` and pass
+  unchanged to shipping.
 - Ordered complete `deploy-local` locations for `promote-and-deploy`, and
   optional `publish` and `deploy-local` locations for composed shipping.
 - Optional ordered `--validation-operation LOCATION` flags replace validation

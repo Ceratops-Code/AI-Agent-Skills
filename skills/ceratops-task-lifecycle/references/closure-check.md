@@ -18,22 +18,16 @@ what still needs attention.
   generated or runtime artifacts, active goals, failed commands, and warnings.
 - User requests, preferences, corrections, questions, and desired behavior, plus
   assistant proposals, questions, warnings, and next steps that may remain open.
-- Credit mode: `included` by default or `omitted` when the invocation requests
-  closure without credit analysis.
 
 ## Constraints
 
 ### Skill-Specific Rules
 
-- Closure invocation authorizes credit-controller state, retained machine
-  evidence, and transient artifacts only inside the verified task temp root.
-  Finalization must remove only controller-owned transients; report retained
-  evidence for later owning-task cleanup. Remain advisory and ask before any
-  other mutation.
-- For an `incremental closure`, scope new work and credit analysis to completed
-  runs after the previous completed closure and carry forward only unresolved
-  or intentionally retained boundary state; otherwise scope from the beginning
-  of the thread.
+- Remain advisory and ask before any mutation outside the exact task-temp
+  cleanup authorized below.
+- For an `incremental closure`, scope new work to completed runs after the
+  previous completed closure and carry forward only unresolved or intentionally
+  retained boundary state; otherwise scope from the beginning of the thread.
 - When closure follows a mutating or multi-entity task, classify touched,
   discovered, or plausibly affected artifacts, external entities, and side
   effects as active, intentionally retained, stale-in-scope, stale-out-of-scope,
@@ -123,25 +117,13 @@ what still needs attention.
   same-thread evidence shows a goal was created or active, and run additional
   diagnostics only for snapshot state that remains unresolved.
 
-#### 5. Include Credit-Saving Analysis
-
-- In `included` mode, invoke `$ceratops-credit-savings-analysis` for the
-  current thread and selected closure window using
-  `full-analysis`. Run its end-to-end controller once with the request; a fresh
-  run plans every completed run in the selected window and executes the frozen
-  Luna, Sol-adjudication, audit, and final-merge tasks, while the exact same
-  request resumes accepted state. Include every qualifying confirmed finding,
-  semantic coverage, exact capacity omission, or blocker under `Credit savings`.
-- In `omitted` mode, do not invoke the controller or apply its completion gates
-  or output contract.
-
-#### 6. Classify Closure State
+#### 5. Classify Closure State
 
 - Classify relevant state as required remaining work, blocker, intentionally
   retained, optional cleanup, stale or out-of-scope, unverified, or no longer
   relevant.
 
-#### 7. Answer From Checked Evidence
+#### 6. Answer From Checked Evidence
 
 - Keep the answer concise and omit routine command logs, process narration, and
   ignored or generated validation artifacts unless they failed, are stale in
@@ -165,9 +147,7 @@ what still needs attention.
   classified and reported when unresolved. Fresh deterministic evidence was not
   redundantly revalidated.
 - A response that reports no unresolved items is supported by checked evidence.
-- In `included` mode, credit analysis completed and finalized the exact selected
-  window; an incomplete included analysis is a blocker.
-- No mutation occurred outside the action-authorized task-temp lifecycle.
+- No mutation occurred outside the exact task-temp cleanup authorized above.
 
 ### Output Contract
 
@@ -185,7 +165,6 @@ Return only relevant concise bullets:
 - material failures, their cause class, and their earliest deterministic
   prevention or detection owner
 - optional cleanup that was unsafe or unauthorized to perform
-- `Credit savings`: the required result, only in `included` mode
 
 If no listed item applies, return only `- No unresolved items.`
 

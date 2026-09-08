@@ -570,9 +570,9 @@ def _ship_command(
         command.extend(("--repo", args.repo))
     if target_commit:
         command.extend(("--commit", target_commit))
-    if args.title:
+    if args.title is not None:
         command.extend(("--title", args.title))
-    if args.body:
+    if args.body is not None:
         command.extend(("--body", args.body))
     review_request = getattr(args, "review_replies_request", None)
     if review_request is not None:

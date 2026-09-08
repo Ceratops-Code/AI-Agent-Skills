@@ -9,7 +9,11 @@ from typing import Any
 
 import pytest
 
-from tests.repository_lifecycle.support import OPERATION_RUNNER, SHIP_REPOSITORY
+from tests.repository_lifecycle.support import (
+    OPERATION_RUNNER,
+    SHIP_REPOSITORY,
+    load_pr_workflow_module,
+)
 from tests.support.repositories import run_git, write_sdlc_contract
 
 LOCAL = "deliverables.tools.deploy-local.standalone"
@@ -158,6 +162,56 @@ def _setup(tmp_path: pathlib.Path, *, contract: bool = True) -> tuple[Any, ...]:
         ]
     )
     return repo, loaded, args, log, state, commands
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        [],
+        ["--title", "Complete Dev Tools catalog"],
+        ["--body", "Collection policy.\n\nDeploy configuration.\n"],
+        ["--title", "Caller title", "--body", "Exact description"],
+        ["--body", ""],
+    ],
+)
+def test_repository_ship_metadata_reaches_shared_pr_producer(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, metadata: list[str],
+) -> None:
+    loaded = runpy.run_path(str(SHIP_REPOSITORY))
+    ship = load_pr_workflow_module(monkeypatch, "ship")
+    args = loaded["build_parser"]().parse_args(
+        ["--repo-root", str(tmp_path), "--head-branch", "release/local", *metadata]
+    )
+    command = loaded["_ship_command"](args, tmp_path, None, "a" * 40)
+    parsed = ship.build_parser().parse_args(command[4:])
+    events: list[str] = []
+    monkeypatch.setattr(ship.merge, "restore_unfinished_checkpoints", lambda root: None)
+    monkeypatch.setattr(ship, "_repository_name", lambda *args: "example/repository")
+    monkeypatch.setattr(ship, "_resolve_commit", lambda *args: "a" * 40)
+    monkeypatch.setattr(ship, "_load_pending_work_scope", lambda *args: (None, None))
+    monkeypatch.setattr(
+        ship, "_load_or_create_checkpoint",
+        lambda *args: (tmp_path / "checkpoint.json", {"phase": "prepared"}),
+    )
+    monkeypatch.setattr(ship, "_enforce_actions_availability", lambda *args: events.append("availability"))
+
+    class ProducerReached(Exception):
+        pass
+
+    def ensure(arguments: argparse.Namespace) -> None:
+        assert events == ["availability"]
+        assert arguments.title == args.title
+        assert arguments.body == args.body
+        assert arguments.head_branch == "release/local"
+        assert arguments.base_branch == "main"
+        assert arguments.remote_name == "origin"
+        events.append("producer")
+        raise ProducerReached
+
+    monkeypatch.setattr(ship.ensure_pr, "ensure_pr", ensure)
+    with pytest.raises(ProducerReached):
+        ship.ship(parsed)
+    assert events == ["availability", "producer"]
 
 
 @pytest.mark.parametrize("scope_present", [False, True])

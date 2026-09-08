@@ -382,6 +382,16 @@ def _prepare_source_for_fast_forward(
     if ancestor.returncode != 1:
         raise PromotionError(f"Could not compare source branch: {branch}")
 
+    contained = run_command(
+        _git(repo_root, "merge-base", "--is-ancestor", state.head, release_head),
+        cwd=repo_root,
+    )
+    if contained.returncode == 0:
+        # Re-promoting included work must not rewrite its published history.
+        return None
+    if contained.returncode != 1:
+        raise PromotionError(f"Could not compare source branch: {branch}")
+
     worktree = state.worktree
     if worktree is None or not worktree.is_dir():
         raise PromotionError(
@@ -509,6 +519,10 @@ def _ship_after_promotion(
         "--sdlc-contract",
         str(args.sdlc_contract),
     ]
+    for field in ("title", "body"):
+        value = getattr(args, field, None)
+        if value is not None:
+            command.extend((f"--{field}", value))
     for flag, operations in (
         ("--validation-operation", args.validation_operation or []),
         ("--publish-operation", _operation_ids(args.publish_operation, "publish")),
@@ -551,6 +565,10 @@ def promote(args: argparse.Namespace) -> dict[str, object]:
         raise PromotionError("Repository root is not a directory.")
     branches = list(dict.fromkeys(args.source_branch or []))
     ship_after_promotion = bool(getattr(args, "ship_after_promotion", False))
+    if not ship_after_promotion and any(
+        getattr(args, field, None) is not None for field in ("title", "body")
+    ):
+        raise PromotionError("PR metadata requires --ship-after-promotion.")
     shipping_operations_selected = any(
         value is not None
         for value in (
@@ -780,6 +798,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="must be release/local",
     )
     parser.add_argument("--remote-name", default="origin")
+    parser.add_argument("--title", help="PR title override for composed shipping.")
+    parser.add_argument("--body", help="PR body override for composed shipping.")
     parser.add_argument(
         "--prepare-release-only",
         action="store_true",

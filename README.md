@@ -153,6 +153,15 @@ Lifecycle helpers suppress successful subcommand output and print only compact
 JSON on success. This repo keeps scripts only where they add reusable safety
 logic or bundle nontrivial evidence collection.
 
+New shipping PRs use non-merge commit subjects from the base-to-head range for
+their title, shortened to 120 characters, and all those commit messages for
+their description. Both direct shipping and promotion with
+`--ship-after-promotion` accept independent `--title` and `--body` overrides.
+Supplied text, including an empty body, is preserved; existing PR fields change
+only when explicitly supplied. A range without change commits requires both
+fields. The PR helper owns its temporary UTF-8 body file and removes it after
+the GitHub command succeeds or fails.
+
 `fast-change` is the preferred skill-maintenance path whenever one exact
 coherent change stays within declared files under existing selected skills,
 preserves helper boundaries, and has sufficient targeted checks. It may cover

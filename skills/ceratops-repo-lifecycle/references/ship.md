@@ -40,8 +40,11 @@ selected-source cleanup. YAML declares capabilities; this action owns timing.
 
 ### Inputs To Capture
 
-- Repository checkout, staged `release/local`, base branch, remote, merge method,
-  and PR title/body.
+- Repository checkout, staged `release/local` , base branch, remote, merge
+  method,
+  and optional PR `--title`/`--body` overrides.
+- New PRs derive omitted metadata from the staged commits relative to the base.
+  Preserve supplied fields exactly and existing PR fields without overrides.
 - Whether the head is reusable after merge.
 - Optional SDLC path and ordered complete YAML locations for requested work.
   Without explicit validation locations, run repository validation and

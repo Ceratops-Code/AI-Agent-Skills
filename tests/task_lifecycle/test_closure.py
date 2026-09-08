@@ -8,7 +8,6 @@ import sys
 from tests.support.repositories import ROOT, run_git
 
 CLOSURE_SNAPSHOT = ROOT / "skills" / "ceratops-task-lifecycle" / "scripts" / "closure_snapshot.py"
-CLOSURE_REFERENCE = ROOT / "skills" / "ceratops-task-lifecycle" / "references" / "closure-check.md"
 CREDIT_SKILL = ROOT / "skills" / "ceratops-credit-savings-analysis" / "SKILL.md"
 CREDIT_CONTRACT = (
     ROOT
@@ -136,14 +135,12 @@ def test_closure_snapshot_composes_only_named_local_state(
     assert "must be provided together" in invalid.stderr
 
 
-def test_closure_credit_analysis_defaults_to_full_analysis() -> None:
-    closure = CLOSURE_REFERENCE.read_text(encoding="utf-8")
+def test_explicit_credit_analysis_defaults_to_full_analysis() -> None:
     skill = CREDIT_SKILL.read_text(encoding="utf-8")
     full = CREDIT_FULL_REFERENCE.read_text(encoding="utf-8")
     contract = json.loads(CREDIT_CONTRACT.read_text(encoding="utf-8"))
     actions = {row["id"]: row for row in contract["public_actions"]}
 
-    assert "using\n  `full-analysis`" in closure
     assert "`full-analysis` for a generic single-thread or closure request" in skill
     assert actions["full-analysis"] == {
         "id": "full-analysis",
@@ -170,4 +167,3 @@ def test_closure_credit_analysis_defaults_to_full_analysis() -> None:
         "plan",
         "execute",
     ]
-    assert "Run its end-to-end controller once" in closure

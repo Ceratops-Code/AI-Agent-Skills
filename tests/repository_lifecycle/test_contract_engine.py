@@ -16,16 +16,16 @@ SCRIPTS = ROOT / "skills" / "ceratops-repo-lifecycle" / "scripts"
 REFERENCES = SCRIPTS.parent / "references" / "contracts"
 sys.path.insert(0, str(SCRIPTS))
 
-from github_contract_engine import (
-    audit_snapshot,  # noqa: E402
-    codeql_disposition,  # noqa: E402
-    collect_non_deterministic_evidence,  # noqa: E402
-    consistency,  # noqa: E402
-    github_api,  # noqa: E402
-    levels,  # noqa: E402
-    organization_validator,  # noqa: E402
-    repository_validator,  # noqa: E402
-    schema_validation,  # noqa: E402
+from github_contract_engine import (  # noqa: E402
+    audit_snapshot,
+    codeql_disposition,
+    collect_non_deterministic_evidence,
+    consistency,
+    github_api,
+    levels,
+    organization_validator,
+    repository_validator,
+    schema_validation,
 )
 from github_contract_engine.collect_observed_states import (  # noqa: E402
     _artifact_categories,
@@ -1074,7 +1074,7 @@ class GHContractStateEngineTests(unittest.TestCase):
         for visibility, owner_plan, expected_call_count in cases:
             calls: list[str] = []
 
-            def fake_run_gh_api(method, endpoint, *, paginate=False):
+            def fake_run_gh_api(method, endpoint, *, paginate=False, calls=calls, visibility=visibility, owner_plan=owner_plan):
                 calls.append(endpoint)
                 if endpoint == "/repos/owner/repo":
                     return ApiResult(

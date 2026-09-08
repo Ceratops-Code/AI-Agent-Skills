@@ -11,6 +11,192 @@ import pytest
 from tests.repository_lifecycle.support import (
     load_pr_workflow_module,
 )
+from tests.support.repositories import run_git
+
+
+@pytest.fixture
+def metadata_repo(tmp_path: pathlib.Path) -> pathlib.Path:
+    """Use real commits while tests intercept every GitHub side effect."""
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    remote = tmp_path / "remote.git"
+    assert run_git(tmp_path, "init", "--bare", str(remote)).returncode == 0
+    for arguments in (
+        ("init", "-b", "main"),
+        ("config", "user.email", "test@example.invalid"),
+        ("config", "user.name", "Test Agent"),
+        ("commit", "--allow-empty", "-m", "Already released baseline"),
+        ("remote", "add", "origin", str(remote)),
+        ("push", "-u", "origin", "main"),
+        ("switch", "-c", "release/local"),
+    ):
+        result = run_git(repo, *arguments)
+        assert result.returncode == 0, result.stderr
+    return repo
+
+
+@pytest.mark.parametrize("multiple", [False, True])
+def test_ensure_pr_metadata_describes_only_selected_change_commits(
+    metadata_repo: pathlib.Path, monkeypatch: pytest.MonkeyPatch, multiple: bool,
+) -> None:
+    ensure_pr = load_pr_workflow_module(monkeypatch, "ensure_pr")
+    repo = metadata_repo
+    assert run_git(
+        repo, "commit", "--allow-empty", "-m", "Complete Dev Tools catalog",
+        "-m", "Collect registered tools and their configuration.",
+    ).returncode == 0
+    if multiple:
+        assert run_git(repo, "switch", "-c", "collection-policy").returncode == 0
+        assert run_git(
+            repo, "commit", "--allow-empty", "-m", "Use explicit exclusions",
+            "-m", "Preserve configured deployment behavior.",
+        ).returncode == 0
+        assert run_git(repo, "switch", "release/local").returncode == 0
+        assert run_git(
+            repo, "merge", "--no-ff", "collection-policy", "-m", "Merge collection-policy",
+        ).returncode == 0
+    head = run_git(repo, "rev-parse", "HEAD").stdout.strip()
+    title, body = ensure_pr._default_metadata(repo, "main", head)
+    expected_title = "Complete Dev Tools catalog"
+    if multiple:
+        expected_title += "; Use explicit exclusions"
+        assert "Preserve configured deployment behavior." in body
+    assert title == expected_title
+    assert "Collect registered tools and their configuration." in body
+    assert "Already released baseline" not in body
+    assert "Merge collection-policy" not in body
+    # A later local commit must not leak into metadata for the pinned head.
+    assert run_git(repo, "commit", "--allow-empty", "-m", "Later work").returncode == 0
+    assert ensure_pr._default_metadata(repo, "main", head) == (title, body)
+
+
+def test_ensure_pr_metadata_bounds_title_without_dropping_description(
+    metadata_repo: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ensure_pr = load_pr_workflow_module(monkeypatch, "ensure_pr")
+    subject = "Complete catalog coverage for " + "collection policy " * 12
+    assert run_git(
+        metadata_repo, "commit", "--allow-empty", "-m", subject,
+        "-m", "Retain the complete explanation in the PR body.",
+    ).returncode == 0
+    title, body = ensure_pr._default_metadata(metadata_repo, "main", "HEAD")
+    assert len(title) <= 120
+    assert title.endswith("...")
+    assert subject.strip() in body
+    assert "Retain the complete explanation in the PR body." in body
+    with pytest.raises(ensure_pr.EnsurePrError, match="supply --title and --body"):
+        ensure_pr._default_metadata(metadata_repo, "HEAD", "HEAD")
+
+
+@pytest.mark.parametrize("existing", [False, True])
+@pytest.mark.parametrize(
+    ("title", "body"),
+    [
+        (None, None),
+        ("Caller title", None),
+        (None, "# Caller body\r\n\r\nKeep `code`, $(literal), café.\r\n"),
+        ("Caller title", "Caller body\n\nWith details.\n"),
+        (None, ""),
+    ],
+)
+def test_ensure_pr_metadata_preserves_overrides_and_existing_fields(
+    metadata_repo: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
+    existing: bool, title: str | None, body: str | None,
+) -> None:
+    ensure_pr = load_pr_workflow_module(monkeypatch, "ensure_pr")
+    repo = metadata_repo
+    local_base = run_git(repo, "rev-parse", "main").stdout.strip()
+    assert run_git(repo, "commit", "--allow-empty", "-m", "Already merged remote change").returncode == 0
+    remote_base = run_git(repo, "rev-parse", "HEAD").stdout.strip()
+    assert run_git(repo, "push", "origin", "HEAD:main").returncode == 0
+    # Keep both local main and its cached remote ref behind the actual remote.
+    assert run_git(repo, "update-ref", "refs/remotes/origin/main", local_base).returncode == 0
+    assert run_git(
+        repo, "commit", "--allow-empty", "-m", "Complete Dev Tools catalog",
+        "-m", "Use explicit collection exclusions.",
+    ).returncode == 0
+    head = run_git(repo, "rev-parse", "HEAD").stdout.strip()
+    pr = {"number": 66, "headRefOid": head, "state": "OPEN"}
+    responses = iter([pr if existing else None, pr])
+    monkeypatch.setattr(ensure_pr, "_open_pr", lambda args: next(responses))
+    original_output = ensure_pr.require_output
+    original_success = ensure_pr.require_success
+    git_reads: list[list[str]] = []
+    published: list[tuple[list[str], bytes | None]] = []
+    body_files: list[pathlib.Path] = []
+    pushes: list[list[str]] = []
+
+    def output(command: list[str], *, cwd: pathlib.Path) -> str:
+        git_reads.append(command)
+        return original_output(command, cwd=cwd)
+
+    def publish(command: list[str], *, cwd: pathlib.Path) -> None:
+        assert cwd == repo
+        if command[0] == "git":
+            if command[3] == "fetch":
+                original_success(command, cwd=cwd)
+                return
+            assert command[3:] == ["push", "-u", "origin", "release/local:release/local"]
+            pushes.append(command)
+            return
+        captured_body = None
+        if "--body-file" in command:
+            path = pathlib.Path(command[command.index("--body-file") + 1])
+            captured_body = path.read_bytes()
+            body_files.append(path)
+        published.append((command, captured_body))
+
+    monkeypatch.setattr(ensure_pr, "require_output", output)
+    monkeypatch.setattr(ensure_pr, "require_success", publish)
+    arguments = ensure_pr.build_parser().parse_args(
+        ["--repo-root", str(repo), "--head-branch", "release/local"]
+    )
+    arguments.title, arguments.body = title, body
+    assert ensure_pr.ensure_pr(arguments)["status"] == "pr_ready"
+    assert run_git(repo, "rev-parse", "main").stdout.strip() == local_base
+    assert run_git(repo, "rev-parse", "origin/main").stdout.strip() == remote_base
+    assert len(pushes) == 1
+    needs_defaults = not existing and (title is None or body is None)
+    assert any("log" in command for command in git_reads) == needs_defaults
+    if existing and title is None and body is None:
+        assert published == []
+        return
+    assert len(published) == 1
+    command, captured_body = published[0]
+    assert command[:3] == ["gh", "pr", "edit" if existing else "create"]
+    expected_title = title if existing or title is not None else "Complete Dev Tools catalog"
+    if expected_title is None:
+        assert "--title" not in command
+    else:
+        assert command[command.index("--title") + 1] == expected_title
+    expected_body = body
+    if not existing and body is None:
+        expected_body = "- Complete Dev Tools catalog\n  \n  Use explicit collection exclusions."
+    assert captured_body == (expected_body.encode("utf-8") if expected_body is not None else None)
+    assert all(not path.parent.exists() for path in body_files)
+
+
+def test_ensure_pr_metadata_body_file_is_removed_after_publish_failure(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ensure_pr = load_pr_workflow_module(monkeypatch, "ensure_pr")
+    body_files: list[pathlib.Path] = []
+
+    def fail(command: list[str], *, cwd: pathlib.Path) -> None:
+        path = pathlib.Path(command[command.index("--body-file") + 1])
+        assert path.read_text(encoding="utf-8") == "Exact body\n"
+        body_files.append(path)
+        raise ensure_pr.CommandError("GitHub unavailable")
+
+    monkeypatch.setattr(ensure_pr, "require_success", fail)
+    with pytest.raises(ensure_pr.CommandError, match="GitHub unavailable"):
+        ensure_pr._publish_metadata(
+            ["gh", "pr", "create"], repo_root=tmp_path,
+            title="Caller title", body="Exact body\n",
+        )
+    assert len(body_files) == 1
+    assert not body_files[0].parent.exists()
 
 
 def test_failed_log_excerpt_retains_decisive_lines_before_long_tail(
