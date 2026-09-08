@@ -38,6 +38,10 @@
     ]
   },
   "skills": {
+    "design-document-lifecycle": [
+      "core",
+      "multi-action-skill"
+    ],
     "ceratops-automation-run": [
       "core"
     ],

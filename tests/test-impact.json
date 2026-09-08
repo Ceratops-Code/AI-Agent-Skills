@@ -1,6 +1,10 @@
 {
   "version": 1,
   "suites": {
+    "design-document-lifecycle": {
+      "pytest": ["tests/design_document_lifecycle"],
+      "depends_on": []
+    },
     "tool_manager": {
       "pytest": ["tests/tool_manager"],
       "depends_on": []
@@ -49,6 +53,11 @@
     }
   },
   "rules": [
+    {
+      "id": "design-document-lifecycle-source",
+      "paths": ["skills/design-document-lifecycle/**"],
+      "suites": ["design-document-lifecycle"]
+    },
     {
       "id": "tool_manager_source",
       "paths": [
