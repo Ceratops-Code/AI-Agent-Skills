@@ -274,7 +274,12 @@ def rendered_sections_block(skill_name: str, manifest: dict[str, object]) -> str
     for section_name in section_names:
         rel_path = sections[section_name]
         raw_lines = (ROOT / rel_path).read_text(encoding="utf-8").splitlines()
-        body = "\n".join(line for line in raw_lines if not re.fullmatch(r"\s*<!--\s*INTERNAL:.*?-->\s*", line)).strip("\n")
+        # Match runtime rendering for standalone, possibly multiline author notes.
+        body = re.sub(
+            r"(?ms)^[ \t]*<!--[ \t]*INTERNAL:(?:(?!-->).)*-->[ \t]*(?:\n|$)",
+            "",
+            "\n".join(raw_lines),
+        ).strip("\n")
         rendered.append(f"<!-- SECTION SOURCE: {rel_path} -->")
         rendered.append(body)
     joined = "\n\n".join(rendered)

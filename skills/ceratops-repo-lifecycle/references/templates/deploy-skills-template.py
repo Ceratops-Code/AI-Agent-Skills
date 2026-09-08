@@ -168,10 +168,11 @@ def section_block(
         if not path.is_file() or unsafe_link(path):
             raise ValueError(f"{skill}: unavailable section {relative}")
         lines = path.read_text(encoding="utf-8").splitlines()
-        text = "\n".join(
-            line
-            for line in lines
-            if not line.strip().startswith("<!-- INTERNAL:")
+        # Remove complete standalone author notes, including multiline comments.
+        text = re.sub(
+            r"(?ms)^[ \t]*<!--[ \t]*INTERNAL:(?:(?!-->).)*-->[ \t]*(?:\n|$)",
+            "",
+            "\n".join(lines),
         ).strip("\n")
         rendered.extend((f"{SOURCE_PREFIX}{relative}{SOURCE_SUFFIX}", text))
     return f"{START}\n" + "\n\n".join(rendered) + f"\n{END}"

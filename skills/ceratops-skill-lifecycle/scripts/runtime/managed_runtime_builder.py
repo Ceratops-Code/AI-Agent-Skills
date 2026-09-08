@@ -33,7 +33,6 @@ from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, cast
 
-
 ROOT = pathlib.Path(__file__).resolve().parents[4]
 SECTION_MANIFEST = ROOT / "skills" / "skill-sections.json"
 SKILLS = ROOT / "skills"
@@ -265,10 +264,12 @@ def section_text(rel_path: str) -> str:
     """Read one shared section and strip internal-only comments."""
 
     lines = (ROOT / rel_path).read_text(encoding="utf-8").splitlines()
-    visible = [
-        line for line in lines if not line.strip().startswith("<!-- INTERNAL:")
-    ]
-    return "\n".join(visible).strip("\n")
+    # Strip whole author-only blocks without leaving multiline comment tails.
+    return re.sub(
+        r"(?ms)^[ \t]*<!--[ \t]*INTERNAL:(?:(?!-->).)*-->[ \t]*(?:\n|$)",
+        "",
+        "\n".join(lines),
+    ).strip("\n")
 
 
 def rendered_sections_block(
@@ -780,7 +781,7 @@ def recover_interrupted(
                 else:
                     _remove_tree(paths["retired"], install_root)
             continue
-        for skill, paths in skills.items():
+        for paths in skills.values():
             _remove_tree(paths["retired"], install_root)
 
 

@@ -61,7 +61,8 @@ hooks/
 
 Source `SKILL.md` files are portable, delta-only skill definitions. Runtime
 `SKILL.md` files are generated during install by expanding the shared section
-assignments from `skills/skill-sections.json`.
+assignments from `skills/skill-sections.json`. Rendering removes complete
+internal author comments, including multiline notes.
 That manifest also declares a stable `runtime_source_id`, unique among source
 repos that share an install root, and a
 `validation_profile`. Compatible external repos use `ceratops-compatible`;
@@ -519,8 +520,8 @@ scope:
 python .\skills\ceratops-skill-lifecycle\scripts\skills-consistency-source-validator.py --mode full
 ```
 
-Targeted installation validates only explicitly selected skills and their
-rendering inputs:
+To explicitly validate selected skill sources and their rendering inputs,
+run the source validator separately from installation:
 
 ```powershell
 python .\skills\ceratops-skill-lifecycle\scripts\skills-consistency-source-validator.py --mode skill --skill <skill-name>

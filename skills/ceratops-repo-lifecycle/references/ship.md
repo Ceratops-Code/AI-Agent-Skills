@@ -81,6 +81,11 @@ selected-source cleanup. YAML declares capabilities; this action owns timing.
    the exact commit already selected by the wrapper.
 3. Before the first remote push, the scope manager atomically normalizes an
    exact version-1 record, then the helper checks the canonical version-2 scope.
+   Prevalidate all selected entries, parameters, exact argv and
+   repository-bounded working directories from `sdlc/sdlc.yml`, then run
+   selected validation. An absent default contract or validation category is a
+   no-op; explicitly missing locations are errors. Only `validate` entries may
+   be selected as checks.
    During the same preflight it validates every registered selected worktree's
    resolved path. A worktree is cleanup-eligible only when its parent chain
    contains a case-insensitive `worktrees` directory component; otherwise the
@@ -101,12 +106,8 @@ selected-source cleanup. YAML declares capabilities; this action owns timing.
    and critical recovery semantics; ship contains no independent toggle logic.
 6. After merge, the helper synchronizes local main and restores a reusable
    integration branch when selected.
-7. Before remote mutation, prevalidate all selected entries, parameters, exact
-   argv and repository-bounded working directories from `sdlc/sdlc.yml`, then
-   run selected validation. An absent default contract or validation category
-   is a no-op; explicitly missing locations are errors. Only `validate`
-   entries may be selected as checks. After synchronization and selected-work
-   recheck, validate before each pending publication or deployment batch.
+7. After synchronization and selected-work recheck, validate before each pending
+   publication or deployment batch.
    Failed checks stop the batch before any later side effect. Keep the action
    active for repair and a fresh committed attempt; repository scripts need
    only normal exit codes and diagnostics, not special JSON.
@@ -167,7 +168,7 @@ selected-source cleanup. YAML declares capabilities; this action owns timing.
   deterministic operations completed in order; advisory routing was not treated
   as proof of completed domain work.
 - Every existing cleanup-selected source branch passed pending-work checks; an
-  or proven-empty scope completed as a cleanup no-op.
+  absent or proven-empty scope completed as a cleanup no-op.
 - Only an evidence-proven interrupted `deleting` record was recovered
   automatically; every missing `retained` source remained blocking.
 - Dirty, unavailable, or advanced legacy sources were preserved, excluded from

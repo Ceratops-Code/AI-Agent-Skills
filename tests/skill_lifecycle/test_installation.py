@@ -12,6 +12,7 @@ import pytest
 
 from tests.skill_lifecycle.support import (
     BOOTSTRAP,
+    BUILDER,
     INSTALLER_TEMPLATE,
     INSTALLER_VERSION,
     LIFECYCLE_SOURCE,
@@ -30,6 +31,46 @@ from tests.support.repositories import (
     ROOT,
     create_compatible_repo,
 )
+
+
+@pytest.mark.parametrize("renderer", [BOOTSTRAP, INSTALLER_TEMPLATE, BUILDER, VALIDATOR], ids=["repository", "compatible", "managed", "validator"])
+@pytest.mark.parametrize("newline", ["\n", "\r\n"], ids=["lf", "crlf"])
+def test_section_renderers_remove_complete_internal_comments(
+    tmp_path: pathlib.Path, renderer: pathlib.Path, newline: str,
+) -> None:
+    """Exercise shared-section rendering without installing any runtime copies."""
+
+    section = tmp_path / "sections" / "shared.md"
+    section.parent.mkdir()
+    section.write_text(
+        "<!-- INTERNAL: single-line author note -->\n"
+        "  <!-- INTERNAL: multiline author\n"
+        "note ending -->  \n\n"
+        "## Public guidance\n\n"
+        "Keep this instruction.\n"
+        "<!-- Keep this public comment. -->\n",
+        encoding="utf-8", newline=newline,
+    )
+    manifest = {
+        "sections": {"shared": "sections/shared.md"},
+        "skills": {"example": ["shared"]},
+    }
+    module = runpy.run_path(str(renderer))
+    if renderer in (BOOTSTRAP, INSTALLER_TEMPLATE):
+        rendered = module["section_block"](tmp_path, manifest, "example")
+    else:
+        render = module["rendered_sections_block"]
+        render.__globals__["ROOT"] = tmp_path
+        rendered = render("example", manifest)
+
+    assert rendered == (
+        "<!-- CERATOPS_SHARED_SECTIONS_START -->\n"
+        "<!-- SECTION SOURCE: sections/shared.md -->\n\n"
+        "## Public guidance\n\n"
+        "Keep this instruction.\n"
+        "<!-- Keep this public comment. -->\n"
+        "<!-- CERATOPS_SHARED_SECTIONS_END -->"
+    )
 
 
 def test_external_installer_needs_no_ceratops_bundle(tmp_path: pathlib.Path) -> None:
