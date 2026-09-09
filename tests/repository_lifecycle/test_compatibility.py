@@ -906,7 +906,7 @@ def test_compatibility_materializes_action_assignments(tmp_path: pathlib.Path, i
         manifest["actions"]["alpha-tool"]["references/notes.md"] = ["review-policy"]
         (repo / "skills/skill-sections.json").write_text(json.dumps(manifest), encoding="utf-8")
     before = {p.relative_to(repo): p.read_bytes() for p in repo.rglob("*") if p.is_file()}
-    result = run_compatibility_engine(REPOSITORY_LIFECYCLE_SCRIPTS, "materialize", "--target-repo-root", str(repo))
+    result = run_compatibility_engine(REPOSITORY_LIFECYCLE_SCRIPTS, "apply", "--target-repo-root", str(repo))
     if invalid:
         assert result.returncode != 0
         assert "routed exactly once" in result.stdout
