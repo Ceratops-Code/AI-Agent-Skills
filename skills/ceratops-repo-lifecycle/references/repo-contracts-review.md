@@ -109,9 +109,7 @@ are applied.
 - Keep artifact identity in `deliverables.<name>.artifacts`, beside optional
   `publish` operations in `sdlc/sdlc.yml`; keep reusable artifact standards in
   skill-local contracts. Omit undeclared publication and identity sections.
-- Keep durable standards in the skill-local contracts and
-  `references/contracts/github-contract-source-docs.json`; do not recreate a
-  separate standards checklist file.
+- Do not recreate a separate standards checklist file.
 - If a recommendation would widen contract scope beyond supported GH lifecycle
   surfaces, change default GitHub policy, change merge or review posture, change
   security posture, add mandatory paid features, or materially alter checker
@@ -138,9 +136,8 @@ are applied.
 
 ### 2. Refresh Current Source Evidence
 
-- Read `references/contracts/github-contract-source-docs.json` and the affected
-  contract files at the start of the audit and use them as the bounded
-  checklist for the next evidence-gathering steps.
+- Use the registered GitHub and artifact sources as the bounded checklist for
+  the next evidence-gathering steps.
 - Run `python -m github_contract_engine check-source-docs --json` before ad hoc
   source-doc URL checks;
   treat fallback-only transport failures as execution-context evidence.
@@ -207,8 +204,6 @@ are applied.
 - If explicitly approved changes alter copied helper scripts or helper-runtime
   claims, run only the touched helper's own smoke command when that helper
   supports one.
-- Verify changed contracts, contract checker scripts, source-doc registry, and
-  contract-structure docs point at the current source of truth.
 
 ## Done When
 
@@ -220,8 +215,6 @@ are applied.
   for each relevant coverage gap, with its limitations preserved.
 - Verify repo changes remain in the worktree unless this contract-review task
   explicitly included another approved local mutation.
-- Verify changed contracts, checker scripts, source-doc registry, and
-  contract-structure docs remain aligned.
 
 ### Output Contract
 

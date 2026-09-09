@@ -36,6 +36,7 @@ KNOWN_MANIFEST_FIELDS = {
     "maintenance_workflows",
     "runtime_payloads",
     "skills",
+    "actions",
 }
 GLOBAL_RUNTIME_PATHS = {
     "scripts/deploy-skills.py",
@@ -217,6 +218,38 @@ def _assignments(
     return result
 
 
+def _action_assignments(
+    manifest: Mapping[str, object], label: str
+) -> dict[str, dict[str, tuple[str, ...]]]:
+    """Read historical action assignments without consulting current files."""
+
+    raw = _mapping(manifest.get("actions", {}), f"{label} actions")
+    skills = _assignments(manifest, label)
+    sections = _string_mapping(manifest.get("sections"), f"{label} sections")
+    result: dict[str, dict[str, tuple[str, ...]]] = {}
+    for skill, value in raw.items():
+        if skill not in skills:
+            raise DecisionRequired(f"{label}: unknown action assignment skill {skill}")
+        actions = _mapping(value, f"{label} actions.{skill}")
+        if not actions:
+            raise DecisionRequired(f"{label}: empty action assignments for {skill}")
+        resolved: dict[str, tuple[str, ...]] = {}
+        for path, names in actions.items():
+            if re.fullmatch(r"references/[a-z0-9]+(?:-[a-z0-9]+)*\.md", path) is None:
+                raise DecisionRequired(f"{label}: invalid action reference {path}")
+            if not isinstance(names, list) or not names or not all(isinstance(name, str) for name in names):
+                raise DecisionRequired(f"{label}: invalid action section list for {skill}: {path}")
+            if any(name not in sections for name in names):
+                raise DecisionRequired(f"{label}: unknown action section for {skill}: {path}")
+            paths = [sections[name] for name in names]
+            inherited = {sections[name] for name in skills[skill] if name in sections}
+            if len(set(paths)) != len(paths) or inherited.intersection(paths):
+                raise DecisionRequired(f"{label}: duplicate or inherited action section for {skill}: {path}")
+            resolved[path] = tuple(names)
+        result[skill] = resolved
+    return result
+
+
 def _string_mapping(
     value: object, label: str
 ) -> dict[str, str]:
@@ -368,6 +401,14 @@ def affected_from_base(
     )
     base_assignments = _assignments(base_manifest, "base")
     current_assignments = _assignments(current_manifest, "current")
+    base_actions = _action_assignments(base_manifest, "base")
+    current_actions = _action_assignments(current_manifest, "current")
+    for assignments, actions in ((base_assignments, base_actions), (current_assignments, current_actions)):
+        for skill, references in actions.items():
+            assignments[skill] += tuple(name for names in references.values() for name in names)
+    for skill in set(base_actions) | set(current_actions):
+        if base_actions.get(skill) != current_actions.get(skill) and skill in current_names:
+            deploy.add(skill)
     changed_sections = {
         section
         for section in set(base_sections) | set(current_sections)

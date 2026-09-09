@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import pathlib
 import re
+import runpy
 from collections.abc import Mapping
 from typing import TypedDict
 
@@ -117,6 +118,24 @@ def _runtime_payload_list_errors(value: object, label: str) -> list[str]:
     return errors
 
 
+def action_assignment_errors(
+    root: pathlib.Path, manifest: Mapping[str, object],
+) -> list[str]:
+    """Use this bundle's standalone parser without importing another skill.
+
+    The template is trusted bundle code, never executable input from the target
+    repository. Parsing has no installation or target mutation side effects.
+    """
+
+    template = pathlib.Path(__file__).resolve().parents[2] / "references/templates/deploy-skills.py.tmpl"
+    bootstrap = runpy.run_path(str(template))
+    try:
+        bootstrap["action_assignments"](root, manifest)
+    except (OSError, ValueError) as exc:
+        return [str(exc)]
+    return []
+
+
 def _manifest_errors(
     root: pathlib.Path,
     path: pathlib.Path,
@@ -195,6 +214,7 @@ def _manifest_errors(
         for section_name in selected:
             if section_name not in sections:
                 errors.append(f"{skill_name}: unknown section assignment {section_name}")
+    errors.extend(action_assignment_errors(root, manifest))
     for skill_name in sorted(source_skills - set(assignments)):
         errors.append(f"{skill_name}: missing section assignment in manifest")
     return errors

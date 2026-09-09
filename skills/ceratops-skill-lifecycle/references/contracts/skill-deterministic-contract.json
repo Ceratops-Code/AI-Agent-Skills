@@ -140,9 +140,11 @@
       "deterministic_evidence": [
         "skills/skill-sections.json",
         "skills/sections/*",
-        "source SKILL.md"
+        "source SKILL.md",
+        "source action references",
+        "managed and standalone installation behavior tests"
       ],
-      "pass_condition": "Every source skill has a manifest assignment including core, source SKILL.md files remain delta-only, assigned shared sections render from skill-lifecycle-owned canonical inputs, and source files do not contain generated runtime shared-section blocks. A repository with no source skills has empty assignment and canonical-section maps."
+      "pass_condition": "Every source skill has a manifest assignment including core. Optional actions maps skill names to uniquely routed direct references/*.md action paths and nonempty section-ID lists; missing skills, unknown sections, unsafe paths, non-action targets, repeated sections, inherited skill sections, and generated markers in source actions are rejected. Skill-level assignments and canonical shared-section inputs are preserved. Each action's ordered shared content is inserted exactly once after its H1 only in installed copies, consistently across managed and independent installers. Source SKILL.md and action files remain delta-only. A repository with no source skills has empty skill, action, and canonical-section maps."
     },
     {
       "id": "skill.multi_action_contract",

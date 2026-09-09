@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 
+import pytest
 import yaml
 
 from tests.repository_lifecycle.support import (
@@ -14,6 +15,7 @@ from tests.repository_lifecycle.support import (
     REPOSITORY_LIFECYCLE_SOURCE,
     SECTION_MANIFEST_TEMPLATE,
 )
+from tests.skill_lifecycle.support import add_action_sections
 from tests.support.processes import COMPATIBILITY_ENGINE, run_compatibility_engine
 from tests.support.repositories import (
     ROOT,
@@ -875,3 +877,27 @@ def test_compatibility_materializer_blocks_invalid_assignments_before_writes(
         path: (path.read_bytes(), path.stat().st_mtime_ns)
         for path in observed_paths
     } == original
+
+
+@pytest.mark.parametrize("invalid", [False, True])
+def test_compatibility_materializes_action_assignments(tmp_path: pathlib.Path, invalid: bool) -> None:
+    repo = tmp_path / "compatible"
+    create_compatible_repo(repo, "example/actions", ["alpha-tool"])
+    (repo / ".git").write_text("gitdir: test\n", encoding="utf-8")
+    manifest = add_action_sections(repo)
+    if invalid:
+        manifest["actions"]["alpha-tool"]["references/notes.md"] = ["review-policy"]
+        (repo / "skills/skill-sections.json").write_text(json.dumps(manifest), encoding="utf-8")
+    before = {p.relative_to(repo): p.read_bytes() for p in repo.rglob("*") if p.is_file()}
+    result = run_compatibility_engine(REPOSITORY_LIFECYCLE_SCRIPTS, "materialize", "--target-repo-root", str(repo))
+    if invalid:
+        assert result.returncode != 0
+        assert "routed exactly once" in result.stdout
+        assert before == {p.relative_to(repo): p.read_bytes() for p in repo.rglob("*") if p.is_file()}
+    else:
+        assert result.returncode == 0, result.stdout
+        updated = json.loads((repo / "skills/skill-sections.json").read_text(encoding="utf-8"))
+        assert updated["actions"] == manifest["actions"]
+        assert updated["skills"] == manifest["skills"]
+        for relative in manifest["actions"]["alpha-tool"]:
+            assert (repo / "skills/alpha-tool" / relative).read_bytes() == before[pathlib.Path("skills/alpha-tool") / relative]

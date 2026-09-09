@@ -23,7 +23,7 @@ from dataclasses import dataclass
 
 import yaml
 
-from .compatibility_check import check_repository
+from .compatibility_check import action_assignment_errors, check_repository
 from .repository_validation_contract import load_validation_contract
 from .sdlc_contract_validation import load_contract, validation_errors
 
@@ -498,6 +498,7 @@ def validate_template(template: Mapping[str, object]) -> None:
         "maintenance_workflows": {},
         "runtime_payloads": {},
         "skills": {},
+        "actions": {},
     }
     if template != expected:
         raise RuntimeError("skill-sections template is not repository-neutral")
@@ -730,6 +731,7 @@ def plan_materialization(
                 "maintenance_workflows",
                 "runtime_payloads",
                 "skills",
+                "actions",
             )
             if existing.get(name) not in (None, {})
         )
@@ -845,8 +847,13 @@ def plan_materialization(
                 "maintenance_workflows": dict(maintenance_workflows),
                 "runtime_payloads": dict(runtime_payloads),
                 "skills": assignments,
+                "actions": existing.get("actions", {}),
             }
         )
+    if manifest is not None:
+        action_errors = action_assignment_errors(repo_root, manifest)
+        if action_errors:
+            raise RuntimeError("; ".join(action_errors))
     validator_text, workflow_text, validation_checks = validation_surfaces(repo_root)
     return MaterializationPlan(
         manifest=manifest,

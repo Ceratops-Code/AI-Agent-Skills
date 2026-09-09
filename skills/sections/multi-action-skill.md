@@ -11,9 +11,13 @@
   cannot decide.
 - Load only the selected action reference. Follow another action only through an
   explicit handoff from the current action.
-- Treat the selected action reference as the source of truth for its inputs,
-  constraints, helper contracts, workflow, completion gate, and output contract;
-  keep only cross-action invariants in the parent.
+- Treat the selected action reference, including its manifest-assigned shared
+  sections, as the source of truth for its inputs, constraints, helper
+  contracts, workflow, completion gate, and output contract; keep only
+  cross-action invariants in the parent.
+- Declare action-specific shared sections in the manifest's `actions` map by
+  skill and direct action-reference path. Keep source action files delta-only;
+  installation inserts each assigned section once after the action's H1.
 - Completion requires the selected action's completion gate or an explicit
   blocker.
 - Keep public actions and cross-action handoffs inside the parent skill; do not

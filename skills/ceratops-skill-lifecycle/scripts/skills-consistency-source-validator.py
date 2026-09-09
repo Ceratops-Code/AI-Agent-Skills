@@ -15,6 +15,7 @@ import argparse
 import json
 import pathlib
 import re
+import runpy
 import subprocess
 import sys
 from collections.abc import Mapping, Sequence
@@ -456,7 +457,10 @@ def manifest_runtime_input_paths(
             section_names = assignments.get(skill_name, [])
             if not isinstance(section_names, list):
                 continue
-            for section_name in section_names:
+            action_map = manifest.get("actions", {})
+            actions = action_map.get(skill_name, {}) if isinstance(action_map, dict) else {}
+            action_sections = [name for names in actions.values() if isinstance(names, list) for name in names if isinstance(name, str)] if isinstance(actions, dict) else []
+            for section_name in [*section_names, *action_sections]:
                 rel_path = sections.get(section_name)
                 if not isinstance(rel_path, str):
                     continue
@@ -833,6 +837,8 @@ def check_multi_action_skill_contract(
                 errors.append(f"{skill_name}: missing action reference {action_reference}")
                 continue
             action_text = action_path.read_text(encoding="utf-8")
+            if any(marker in action_text for marker in (SECTIONS_START, SECTIONS_END, "<!-- SECTION SOURCE: ")):
+                errors.append(f"{skill_name}: {action_reference}: source action must be delta-only")
             if action_text.startswith("---"):
                 errors.append(
                     f"{skill_name}: {action_reference} still looks like a standalone skill"
@@ -865,6 +871,7 @@ def check_source_governance_consistency(
     errors: list[str] = []
     errors.extend(check_repo_skill_refs(skill_names))
     errors.extend(check_multi_action_skill_contract(manifest))
+    errors.extend(check_action_sections(manifest))
     if profile == PROFILE_CERATOPS:
         errors.extend(check_skill_contract_remediation_policy())
         errors.extend(check_skill_nondeterministic_contract())
@@ -885,10 +892,29 @@ def check_source_governance_consistency(
     return errors
 
 
+def check_action_sections(
+    manifest: Mapping[str, object], selected: set[str] | None = None,
+) -> list[str]:
+    """Exercise the owning renderer for selected action declarations."""
+
+    builder = runpy.run_path(str(LIFECYCLE_BUNDLE_ROOT / "scripts/runtime/managed_runtime_builder.py"))
+    builder["configure_repo"](ROOT)
+    try:
+        assignments = builder["action_assignments"](ROOT, manifest, selected)
+        for skill, actions in assignments.items():
+            for relative, names in actions.items():
+                block = builder["rendered_sections_block"](skill, manifest, names)
+                source = (SKILLS_DIR / skill / relative).read_text(encoding="utf-8")
+                builder["render_action"](source, block, f"{skill}: {relative}")
+    except (OSError, ValueError) as exc:
+        return [str(exc)]
+    return []
+
+
 def check_section_sources(manifest: dict[str, object], skill_dirs: list[pathlib.Path]) -> list[str]:
     """Run only shared-section checks needed after template or manifest edits."""
 
-    errors: list[str] = []
+    errors = check_action_sections(manifest)
     sections = manifest.get("sections", {})
     assignments = manifest.get("skills", {})
     skill_names = {skill_dir.name for skill_dir in skill_dirs}
@@ -1031,6 +1057,7 @@ def check_selected_skills(
 
     errors.extend(check_runtime_payloads(manifest, skill_names, selected_skill_names))
     errors.extend(check_multi_action_skill_contract(manifest, selected_skill_names))
+    errors.extend(check_action_sections(manifest, selected_skill_names))
     runtime_inputs = manifest_runtime_input_paths(
         manifest,
         skill_dirs,

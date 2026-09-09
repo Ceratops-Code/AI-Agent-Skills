@@ -11,6 +11,7 @@ from tests.skill_lifecycle.support import (
     LIVE_SECTION_MANIFEST,
     SECTION_MANIFEST_TEMPLATE,
     VALIDATOR,
+    add_action_sections,
     load_source_validator,
     write_multi_action_skill,
 )
@@ -61,6 +62,7 @@ def test_skill_sections_template_contains_no_live_repository_inventory() -> None
         "maintenance_workflows": {},
         "runtime_payloads": {},
         "skills": {},
+        "actions": {},
     }
     assert live["runtime_source_id"]
     assert live["skills"]
@@ -320,3 +322,26 @@ def test_full_validation_scans_manifest_runtime_inputs_only(tmp_path: pathlib.Pa
 
     assert listed.returncode == 1
     assert "runtime-note.md: high-confidence secret or private path pattern" in listed.stderr
+
+
+@pytest.mark.parametrize("mode", ["sections", "skill", "full"])
+def test_source_validation_covers_action_assignments(tmp_path: pathlib.Path, mode: str) -> None:
+    repo = tmp_path / "compatible"
+    create_compatible_repo(repo, "example/actions", ["alpha-tool", "beta-tool"])
+    manifest = add_action_sections(repo)
+    command = [sys.executable, str(VALIDATOR), "--repo-root", str(repo), "--mode", mode]
+    if mode == "skill":
+        command.extend(["--skill", "alpha-tool"])
+    valid = subprocess.run(command, capture_output=True, text=True, check=False)
+    assert valid.returncode == 0, valid.stderr
+    manifest["actions"]["alpha-tool"]["references/review.md"] = ["missing"]
+    (repo / "skills/skill-sections.json").write_text(json.dumps(manifest), encoding="utf-8")
+    invalid = subprocess.run(command, capture_output=True, text=True, check=False)
+    assert invalid.returncode != 0
+    assert "unknown section assignment" in invalid.stderr
+    validator = load_source_validator(repo / "skills")
+    manifest["actions"]["alpha-tool"]["references/review.md"] = ["review-policy"]
+    validator["manifest_runtime_input_paths"].__globals__["ROOT"] = repo
+    inputs = validator["manifest_runtime_input_paths"](manifest, [repo / "skills/alpha-tool", repo / "skills/beta-tool"], {"alpha-tool"})
+    assert repo / "skills/sections/review-policy.md" in inputs
+    assert repo / "skills/sections/review-extra.md" not in inputs

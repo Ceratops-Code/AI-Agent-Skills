@@ -5,7 +5,8 @@
     "core": "skills/sections/core.md",
     "multi-action-skill": "skills/sections/multi-action-skill.md",
     "evidence-analysis": "skills/sections/evidence-analysis.md",
-    "bounded-model-analysis": "skills/sections/bounded-model-analysis.md"
+    "bounded-model-analysis": "skills/sections/bounded-model-analysis.md",
+    "contract-review": "skills/sections/contract-review.md"
   },
   "maintenance_workflows": {
     "shared_source_changes": [
@@ -83,5 +84,17 @@
       "core",
       "multi-action-skill"
     ]
+  },
+  "actions": {
+    "ceratops-repo-lifecycle": {
+      "references/repo-contracts-review.md": [
+        "contract-review"
+      ]
+    },
+    "ceratops-skill-lifecycle": {
+      "references/skills-contract-review.md": [
+        "contract-review"
+      ]
+    }
   }
 }

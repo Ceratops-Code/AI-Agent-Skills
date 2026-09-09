@@ -60,9 +60,9 @@ hooks/
   README.md
 ```
 
-Source `SKILL.md` files are portable, delta-only skill definitions. Runtime
-`SKILL.md` files are generated during install by expanding the shared section
-assignments from `skills/skill-sections.json`. Rendering removes complete
+Source `SKILL.md` and action-reference files are portable, delta-only
+definitions. Their installed copies expand the shared section assignments from
+`skills/skill-sections.json`. Rendering removes complete
 internal author comments, including multiline notes.
 That manifest also declares a stable `runtime_source_id`, unique among source
 repos that share an install root, and a
@@ -591,8 +591,50 @@ by each maintenance workflow.
 The runtime builder composes each runtime skill's shared block from
 `skills/skill-sections.json` and `skills/sections/`, and each generated
 runtime `SKILL.md` block includes section-source comments so the origin of every
-shared section stays visible in the installed skill copy. Runtime payload
-strings preserve their repository-relative installed paths; an exact
+shared section stays visible in the installed skill copy.
+
+The optional `actions` object maps skill names to direct action-reference paths
+and ordered section-ID lists, independently of existing `skills` assignments:
+
+```json
+{
+  "actions": {
+    "ceratops-repo-lifecycle": {
+      "references/repo-contracts-review.md": ["contract-review"]
+    }
+  }
+}
+```
+
+Each target must exist, have an H1 of `# <Action Name> Action`, and appear once
+in its parent's `### Action References` index. Installation inserts one shared
+block immediately after that H1; unassigned actions remain unchanged. Unknown
+skills or sections, unsafe or unrouted paths, malformed or empty assignments,
+repeated sections (including source aliases), inherited skill-level sections,
+and generated markers in source actions are rejected. An absent or empty
+`actions` object preserves existing skill-only manifests. The reusable template
+starts with an empty action map.
+
+`skills/sections/contract-review.md` is assigned only to
+`ceratops-repo-lifecycle: repo-contracts-review` and
+`ceratops-skill-lifecycle: skills-contract-review`. Routing and instruction
+inspection identifies these as the contract-standards review actions.
+`skills-consistency-review` and design-document `review` check compliance;
+credit-savings helper-contract analysis reviews execution costs. Those actions
+do not receive the section. Core rules remain in `core.md`; domain-specific
+requirements, including repository validator discovery, remain in their action
+references. Scripts, checkers, contracts, and evidence registries retain their
+owning skill paths and remain available to other actions.
+
+The managed renderer and standalone bootstrap produce identical action content;
+the bootstrap and its template remain independent of installed lifecycle code.
+The compatibility checker uses its own bundled bootstrap parser and preserves
+action assignments during materialization. Source validation checks action
+assignments in skill, sections, and full modes. Changes to an action assignment
+or its section source select its skill in both the old and new manifest; they
+do not select unrelated skills.
+
+Runtime payload strings preserve their repository-relative installed paths; an exact
 `{"source": "...", "target": "..."}` entry maps one shared source file to
 an installed-skill-relative target. Single-skill executable sources belong to
 that skill, while multi-skill executable sources belong under
