@@ -6,7 +6,8 @@ then verifies that only declared paths changed and that undeclared dirty state
 was preserved. One changed in-scope snapshot may start a correction generation
 after success; it invalidates the earlier success before checks and cannot be
 reopened after passing. Prepare collects declared pytest nodes without running
-tests. Checks use closed structured forms and run without a shell.
+tests. Git whitespace preflight includes tracked and new files before declared
+checks, which use closed structured forms and run without a shell.
 Source files are never patched, staged, committed, installed, promoted, or
 rolled back. Prepare records exact cleanup ownership and an active-update
 retention marker beneath the verified task temp root, verify retains detailed
@@ -1145,6 +1146,26 @@ def _verification_input(
     return _verification_surface_sha256(state), changed, groups
 
 
+def _check_whitespace(
+    repo_root: pathlib.Path, prepared_head: str, changed: Sequence[str],
+) -> None:
+    """Check Git whitespace before tests, without staging or rewriting files."""
+
+    for options in ([], ["--cached"]):
+        _git(repo_root, "diff", "--check", *options, prepared_head, "--", *changed)
+    # Ordinary diffs omit new files. Git's no-index check preserves its native
+    # whitespace policy; exit 1 denotes a clean difference, while errors use 2+.
+    untracked = _git(repo_root, "ls-files", "--others", "-z", "--", *changed)
+    for path in filter(None, untracked.split("\0")):
+        result = _run(
+            ["git", "diff", "--no-index", "--check", "--", "/dev/null", path],
+            cwd=repo_root,
+        )
+        if result.returncode not in (0, 1):
+            detail = (result.stdout or result.stderr).strip()
+            raise UpdateExecutionError(f"Git whitespace check failed for {path}: {detail}")
+
+
 def _bounded(value: str) -> str:
     return value if len(value) <= MAX_CAPTURE else value[:MAX_CAPTURE] + "\n[truncated]"
 
@@ -1295,6 +1316,8 @@ def command_verify(state_path: pathlib.Path, evidence_path: pathlib.Path) -> Non
             validated_input, changed, groups = _verification_input(state)
             if validated_input != input_sha256:
                 failures.append("prepared scope changed before checks started")
+            else:
+                _check_whitespace(repo_root, str(state["head"]), changed)
         except UpdateExecutionError as exc:
             failures.append(str(exc))
     checks = state["checks"]

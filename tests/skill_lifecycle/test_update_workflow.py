@@ -83,10 +83,32 @@ def test_skill_update_workflow_accepts_new_shared_section_source(
     assert retention_record["path"] == str(retention_marker.resolve())
     assert len(retention_record["sha256"]) == 64
     shared_source.write_text(
-        "SHARED_PAYLOAD = True\n",
+        "SHARED_PAYLOAD = True\n\n",
         encoding="utf-8",
         newline="\n",
     )
+    for placement in ("untracked", "staged"):
+        if placement == "staged":
+            assert run_git(worktree, "add", str(shared_source)).returncode == 0
+        rejected = run_skill_update_workflow(
+            "verify", "--state", str(state_path),
+            "--evidence-output", str(evidence_path),
+        )
+        assert rejected.returncode == 2, (placement, rejected.stderr)
+        assert "new blank line at EOF" in rejected.stderr
+        failed = json.loads(evidence_path.read_text(encoding="utf-8"))
+        assert failed["status"] == "failed"
+        assert failed["checks"] == []
+        assert shared_source.read_text(encoding="utf-8") == "SHARED_PAYLOAD = True\n\n"
+    shared_source.write_text("SHARED_PAYLOAD = True\n", encoding="utf-8", newline="\n")
+    staged_failure = run_skill_update_workflow(
+        "verify", "--state", str(state_path),
+        "--evidence-output", str(evidence_path),
+    )
+    assert staged_failure.returncode == 2
+    assert "new blank line at EOF" in staged_failure.stderr
+    assert json.loads(evidence_path.read_text(encoding="utf-8"))["checks"] == []
+    assert run_git(worktree, "add", str(shared_source)).returncode == 0
     verified = run_skill_update_workflow(
         "verify",
         "--state",
@@ -99,6 +121,24 @@ def test_skill_update_workflow_accepts_new_shared_section_source(
     assert evidence["changed_paths"] == [
         "skills/sections/scripts/shared-helper.py"
     ]
+    shared_source.write_text("SHARED_PAYLOAD = True\n\n", encoding="utf-8", newline="\n")
+    assert run_git(worktree, "add", str(shared_source)).returncode == 0
+    assert run_git(worktree, "commit", "-m", "new helper").returncode == 0
+    committed_failure = run_skill_update_workflow(
+        "verify", "--state", str(state_path),
+        "--evidence-output", str(evidence_path),
+    )
+    assert committed_failure.returncode == 2
+    assert "new blank line at EOF" in committed_failure.stderr
+    assert json.loads(evidence_path.read_text(encoding="utf-8"))["checks"] == []
+    assert json.loads(state_path.read_text(encoding="utf-8"))["verification"]["status"] == "pending"
+    shared_source.write_text("SHARED_PAYLOAD = True\n", encoding="utf-8", newline="\n")
+    assert run_git(worktree, "add", str(shared_source)).returncode == 0
+    corrected = run_skill_update_workflow(
+        "verify", "--state", str(state_path),
+        "--evidence-output", str(evidence_path),
+    )
+    assert corrected.returncode == 0, corrected.stderr
     finalized = run_skill_update_workflow(
         "finalize",
         "--state",
@@ -245,6 +285,17 @@ def test_skill_update_workflow_preserves_baseline_runs_checks_once_and_finalizes
     assert request_path.is_file() and state_path.is_file() and evidence_path.is_file()
     assert not check_log.exists()
     rogue_path.unlink()
+
+    helper.write_text("VALUE = 2 \n", encoding="utf-8", newline="\n")
+    whitespace_failure = run_skill_update_workflow(
+        "verify", "--state", str(state_path),
+        "--evidence-output", str(evidence_path),
+    )
+    assert whitespace_failure.returncode == 2
+    assert "trailing whitespace" in whitespace_failure.stderr
+    assert json.loads(evidence_path.read_text(encoding="utf-8"))["checks"] == []
+    assert not check_log.exists()
+    helper.write_text("VALUE = 2\n", encoding="utf-8", newline="\n")
 
     verified = run_skill_update_workflow(
         "verify",

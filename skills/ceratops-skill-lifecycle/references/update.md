@@ -89,8 +89,9 @@ repo docs, then update the narrowest correct source that exists.
   verify --state STATE --evidence-output EVIDENCE`. The helper must preserve the
   recorded pre-existing worktree baseline, reject undeclared new changes or
   source drift, collect every declared pytest node before edits without
-  executing tests, run the declared checks once, treat declared zero-match
-  searches as success, write detailed evidence, and emit only `OK` or one
+  executing tests, reject Git whitespace errors in changed tracked and new files
+  before running the declared checks once, treat declared zero-match searches as
+  success, write detailed evidence, and emit only `OK` or one
   compact actionable error. After a passed verification, `verify` may start one
   correction generation only when the current task HEAD or complete prepared
   scope snapshot differs from the passed evidence. It must atomically make the
