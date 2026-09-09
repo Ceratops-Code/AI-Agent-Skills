@@ -1,4 +1,4 @@
-# Make Repository Compatible Action
+# Apply Ceratops Compatibility Action
 
 ## Goal
 
@@ -24,13 +24,13 @@ Infer the source identity from stable repository evidence before asking.
 
 - (D) Run the skill-owned compatibility engine from the repository-lifecycle
   bundle's `scripts` folder. The engine operates on `--target-repo-root` and is
-  never materialized into the target repository.
-- (D) `ceratops_repo_compatibility_engine.compatibility_check.check_repository`
-  exposes `check_repository(repo_root) -> {applicable, valid, errors}` and
-  performs read-only manifest, deployment, and validation-wiring checks. It
-  never runs skill-source validation.
-- (D) Compatibility materialization: `python -m
-  ceratops_repo_compatibility_engine materialize --target-repo-root
+  never copied into the target repository.
+- (D) `ceratops_repo_compatibility_engine.validate_ceratops_compatibility`
+  exposes `validate_ceratops_compatibility(repo_root)` returning
+  `{applicable, valid, errors}`. It performs read-only manifest, deployment,
+  and validation-wiring checks. It never runs skill-source validation.
+- (D) Apply Ceratops compatibility: `python -m
+  ceratops_repo_compatibility_engine apply --target-repo-root
   <task-worktree> [--runtime-source-id <stable-id>]`; it performs the
   compatibility transaction and emits one compact result.
   Add `--no-sdlc-contract` when the caller chooses to leave an existing SDLC
@@ -40,11 +40,11 @@ Infer the source identity from stable repository evidence before asking.
   synchronize-bootstrap --target-repo-root <task-worktree>`; it only compares
   parsed installer versions and copies a missing or lower version.
 - (D) `ceratops_repo_compatibility_engine.sdlc_contract_validation` reads and
-  validates SDLC contracts for materialization, execution, and health; it never
-  creates or modifies them.
+  validates SDLC contracts for compatibility application, execution, and
+  health; it never creates or modifies them.
 - (D) Missing repository-validation surfaces come from
-  `references/contracts/repository-validation-contract.json` and the templates under
-  `references/templates/`.
+  `references/contracts/repository-validation-contract.json` and the templates
+  under `references/templates/`.
 
 ## Constraints
 
@@ -69,15 +69,15 @@ Infer the source identity from stable repository evidence before asking.
 
 - Preserve each existing skill's purpose, trigger, workflow, constraints, and
   output contract.
-- Move a rule into a shared section when it is repeated, semantically equivalent,
-  or harmless as a common default for every assigned skill; keep only true
-  exceptions and skill-specific deltas in source `SKILL.md`.
+- Move a rule into a shared section when it is repeated, semantically
+  equivalent, or harmless as a common default for every assigned skill; keep
+  only true exceptions and skill-specific deltas in source `SKILL.md`.
 - For a skill-bearing repository, use one stable `runtime_source_id` unique
   among repositories sharing an install root and set `validation_profile` to
   `ceratops-compatible`.
 - Assign every source skill to `core`; when none exist, keep the skill map
   absent by omitting `skills/skill-sections.json`, add no canonical sections,
-  and skip bootstrap materialization. Remove a previously generated empty
+  and skip bootstrap creation. Remove a previously generated empty
   manifest; block rather than discard a nonempty skill manifest.
   Preserve valid target-owned custom sections and assignments, portable
   runtime payloads, and maintenance commands.
@@ -90,6 +90,8 @@ Infer the source identity from stable repository evidence before asking.
 - Generate a missing validator and CI workflow only from checks declared in
   `references/contracts/repository-validation-contract.json`; obtain approval
   before adding an undeclared check.
+- Generated CI uses target-owned dependency setup; the validation contract
+  supplies no package installation requirements.
 - Keep source skill folders portable and keep generated shared-section blocks
   out of source `SKILL.md` files.
 
@@ -105,14 +107,14 @@ Infer the source identity from stable repository evidence before asking.
 
 ### 2. Establish compatible source surfaces
 
-- Run the compatibility materializer so it loads the lifecycle-owned
+- Run the compatibility apply helper so it loads the lifecycle-owned
   `references/templates/skill-sections.json.tmpl`, derives or accepts the
   stable source identity, inventories source skills and multi-action markers,
   and preserves valid target-owned custom sections and assignments. Only when
   source skills exist, write `skills/skill-sections.json`, copy canonical shared
   sections to `skills/sections/`, and remove generated section blocks from
   source skills.
-- Materialize `sdlc/sdlc.yml` from the owned template, preserving target
+- Create `sdlc/sdlc.yml` from the owned template, preserving target
   capabilities and supported existing versions. In the current format, supply
   repository validation when undeclared. For source skills, add
   `deliverables.skills.validate.ceratops-managed` routing to
@@ -124,12 +126,12 @@ Infer the source identity from stable repository evidence before asking.
   `skills/<name>/agents/openai.yaml`, and align the README Skills table without
   changing skill behavior.
 
-### 3. Materialize repository validation and bootstrap
+### 3. Create repository validation and bootstrap
 
-- Materialize a missing `scripts/validate-repository.py` and
+- Create a missing `scripts/validate-repository.py` and
   `.github/workflows/validate.yml` for every repository, including repositories
   with no skills. CI calls the repository-owned validator.
-- When skills exist, the compatibility materializer synchronizes the
+- When skills exist, the compatibility apply helper synchronizes the
   independent `scripts/deploy-skills.py`. Retain a same- or
   higher-version bootstrap and replace only a missing or lower version.
 - When no skills exist, do not add a bootstrap script or bootstrap deployment
@@ -137,9 +139,9 @@ Infer the source identity from stable repository evidence before asking.
 
 ### 4. Validate and hand off
 
-- After every materialization, including zero-skill repositories, call
-  `check_repository` inside the rollback boundary and require every applicable
-  result to be valid with no errors.
+- After every compatibility application, including zero-skill repositories, call
+  `validate_ceratops_compatibility` inside the rollback boundary and require
+  every applicable result to be valid with no errors.
 - Commit the validated compatibility change in the task worktree.
 - If only local release staging was requested, return to the parent skill and
   select `promote`; if deployment was requested, select `promote-and-deploy`;
@@ -159,7 +161,7 @@ Infer the source identity from stable repository evidence before asking.
   installer. Skillless repositories retain only repository capabilities and
   target-owned deliverables.
 - Every target has repository validation and CI wiring; every applicable
-  `check_repository` result is valid with no errors.
+  `validate_ceratops_compatibility` result is valid with no errors.
 - Any caught blocker after mutation restores the exact prior target files and
   reports completed or failed rollback state.
 - Any requested repository-lifecycle handoff completed or its blocker is

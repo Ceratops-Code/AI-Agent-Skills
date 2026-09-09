@@ -86,7 +86,7 @@ def test_source_validator_rejects_section_drift_and_empty_source_identity(
         check=False,
     )
     assert drifted.returncode == 1
-    assert "canonical materialized section differs" in drifted.stderr
+    assert "canonical shared section differs" in drifted.stderr
 
     manifest_path = repo / "skills" / "skill-sections.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))

@@ -220,7 +220,7 @@ def _manifest_errors(
     return errors
 
 
-def check_repository(repo_root: pathlib.Path) -> CompatibilityResult:
+def validate_ceratops_compatibility(repo_root: pathlib.Path) -> CompatibilityResult:
     """Return read-only compatibility status for one repository root."""
 
     root = repo_root.resolve()

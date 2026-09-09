@@ -1,9 +1,9 @@
 """Read the shared repository-validation generation contract without mutation.
 
-Materialization and contract review use this same loader. It validates every
-entry before repository-specific selection, including unmatched conditions and
-source-registry references. Commands and fallback package requirements remain
-data until the materializer renders the target validator and CI workflow.
+Compatibility application and contract review use this same loader. It validates
+every entry before repository-specific selection, including unmatched conditions
+and source-registry references. Commands remain data until the compatibility
+apply helper renders the target validator and CI workflow.
 """
 
 from __future__ import annotations

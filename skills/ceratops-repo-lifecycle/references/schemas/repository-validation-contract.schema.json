@@ -23,7 +23,7 @@
       "items": {"type": "string", "minLength": 1}
     },
     "checks": {
-      "description": "Executable check selection and command data consumed by repository_materialization.contract_checks, its CI setup, and the generated repository validator.",
+      "description": "Executable check selection and command data consumed by apply_ceratops_compatibility.contract_checks and the generated repository validator.",
       "type": "array",
       "minItems": 1,
       "items": {"$ref": "#/$defs/check"}
@@ -31,7 +31,6 @@
   },
   "$defs": {
     "text": {"type": "string", "minLength": 1},
-    "texts": {"type": "array", "items": {"$ref": "#/$defs/text"}},
     "path": {
       "description": "Repository-relative path or glob; the contract loader also rejects absolute paths, drives, and parent traversal.",
       "type": "string",
@@ -67,7 +66,7 @@
       }
     },
     "condition": {
-      "description": "Executable predicates consumed by repository_materialization._validation_condition_matches.",
+      "description": "Executable predicates consumed by apply_ceratops_compatibility._validation_condition_matches.",
       "oneOf": [
         {"$ref": "#/$defs/packageScript"},
         {"$ref": "#/$defs/pathAny"},
@@ -84,11 +83,7 @@
         "unless": {"type": "array", "items": {"$ref": "#/$defs/condition"}},
         "command": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/text"}},
         "cwd": {"$ref": "#/$defs/path"},
-        "exclusive": {"type": "boolean"},
-        "python_packages": {
-          "description": "Executable fallback install requirements consumed by repository_materialization._validation_workflow only when the target does not declare the package.",
-          "$ref": "#/$defs/texts"
-        }
+        "exclusive": {"type": "boolean"}
       }
     }
   }

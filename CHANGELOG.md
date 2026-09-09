@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Renamed compatibility application and validation interfaces, and removed
+  validation-contract package requirements and fallback installation.
+
 - Formalized repository validation as a schema-validated contract shared by
   compatibility generation and contract review. Registered tool documentation
   and cross-ecosystem discovery sources, and corrected pytest configuration
@@ -61,7 +64,7 @@
   SDLC contract, moved the reusable section-manifest template
   into the repository-lifecycle bundle, and kept the reusable SDLC-contract
   skeleton under repository-lifecycle references.
-- Made compatibility materialization preserve target identity and custom
+- Made compatibility application preserve target identity and custom
   section assignments, roll back blocker paths, and run from a self-contained
   lifecycle-only installed bundle.
 - Split health policy into deterministic and non-deterministic contracts for

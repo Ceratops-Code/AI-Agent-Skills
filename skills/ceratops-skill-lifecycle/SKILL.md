@@ -91,8 +91,8 @@ surface for standards refresh, repository consistency, creation, and mutation.
   GitHub lifecycle operation, enter through `$ceratops-repo-lifecycle`; its
   declared managed-skill handoff may route to this skill's `deploy` action.
 - If the repository itself needs the `ceratops-compatible` surfaces, use
-  `$ceratops-repo-lifecycle` action `make-repo-compatible`, then resume the
-  owning skill action when required.
+  `$ceratops-repo-lifecycle` action `apply-ceratops-compatibility`, then resume
+  the owning skill action when required.
 
 ### Workflow
 

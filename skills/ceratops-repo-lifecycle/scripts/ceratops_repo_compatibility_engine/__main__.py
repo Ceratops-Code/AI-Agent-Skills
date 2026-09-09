@@ -9,11 +9,11 @@ from collections.abc import Sequence
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Validate or materialize Ceratops repository compatibility."
+        description="Apply Ceratops repository compatibility or synchronize its bootstrap."
     )
     parser.add_argument(
         "command",
-        choices=("materialize", "synchronize-bootstrap"),
+        choices=("apply", "synchronize-bootstrap"),
         help="Compatibility operation to run.",
     )
     return parser
@@ -23,10 +23,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     """Dispatch one active package command without loading unrelated helpers."""
 
     args = list(sys.argv[1:] if argv is None else argv)
-    if args and args[0] == "materialize":
-        from .repository_materialization import main as materialize
+    if args and args[0] == "apply":
+        from .apply_ceratops_compatibility import main as apply_compatibility
 
-        return materialize(args[1:])
+        return apply_compatibility(args[1:])
     if args and args[0] == "synchronize-bootstrap":
         from .bootstrap_installer_synchronization import main as synchronize
 

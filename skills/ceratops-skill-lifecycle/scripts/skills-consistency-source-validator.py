@@ -963,11 +963,11 @@ def check_section_sources(manifest: dict[str, object], skill_dirs: list[pathlib.
     return errors
 
 
-def check_materialized_canonical_sections(
+def check_canonical_sections(
     manifest: Mapping[str, object],
     skill_dirs: Sequence[pathlib.Path],
 ) -> list[str]:
-    """Verify the canonical section bytes established by materialization."""
+    """Verify the canonical section bytes established by compatibility application."""
 
     sections = manifest.get("sections")
     assignments = manifest.get("skills")
@@ -1013,7 +1013,7 @@ def check_materialized_canonical_sections(
         target = ROOT / relative
         if source.is_file() and target.is_file() and target.read_bytes() != source.read_bytes():
             errors.append(
-                f"{relative}: canonical materialized section differs from "
+                f"{relative}: canonical shared section differs from "
                 f"{source.name}"
             )
     return errors
@@ -1338,7 +1338,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     for section_name, section_rel_path in sections.items():
         if not isinstance(section_rel_path, str) or not (ROOT / section_rel_path).is_file():
             errors.append(f"missing section file for {section_name}: {section_rel_path}")
-    errors.extend(check_materialized_canonical_sections(manifest, skill_dirs))
+    errors.extend(check_canonical_sections(manifest, skill_dirs))
     for skill_name, section_names in assignments.items():
         if not isinstance(section_names, list) or not all(isinstance(item, str) for item in section_names):
             errors.append(f"{skill_name}: section assignment must be a list of strings")

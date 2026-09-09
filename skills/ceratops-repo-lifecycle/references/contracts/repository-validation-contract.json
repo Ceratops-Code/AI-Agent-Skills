@@ -92,8 +92,7 @@
         {"kind": "file-contains", "path": "requirements.txt", "value": "pytest"}
       ],
       "command": ["{python}", "-m", "pytest", "-q"],
-      "cwd": ".",
-      "python_packages": ["pytest==9.1.1"]
+      "cwd": "."
     },
     {
       "id": "unittest",
@@ -120,8 +119,7 @@
         {"kind": "file-contains", "path": "requirements.txt", "value": "ruff"}
       ],
       "command": ["{python}", "-m", "ruff", "check", "."],
-      "cwd": ".",
-      "python_packages": ["ruff==0.16.1"]
+      "cwd": "."
     },
     {
       "id": "mypy",
@@ -132,8 +130,7 @@
         {"kind": "file-contains", "path": "requirements.txt", "value": "mypy"}
       ],
       "command": ["{python}", "-m", "mypy"],
-      "cwd": ".",
-      "python_packages": ["mypy==2.3.0"]
+      "cwd": "."
     },
     {
       "id": "yaml-lint",
@@ -141,8 +138,7 @@
         {"kind": "path-any", "value": [".yamllint", ".yamllint.yml", ".yamllint.yaml"]}
       ],
       "command": ["{python}", "-m", "yamllint", "."],
-      "cwd": ".",
-      "python_packages": ["yamllint==1.37.1"]
+      "cwd": "."
     },
     {
       "id": "go-test",

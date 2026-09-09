@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Make one repository Ceratops-compatible in its task worktree.
+"""Apply Ceratops compatibility to one repository in its task worktree.
 
 The lifecycle bundle owns the reusable template and canonical shared sections.
 This module derives repository identity and skill assignments, removes only
@@ -23,9 +23,12 @@ from dataclasses import dataclass
 
 import yaml
 
-from .compatibility_check import action_assignment_errors, check_repository
 from .repository_validation_contract import load_validation_contract
 from .sdlc_contract_validation import load_contract, validation_errors
+from .validate_ceratops_compatibility import (
+    action_assignment_errors,
+    validate_ceratops_compatibility,
+)
 
 BUNDLE_ROOT = pathlib.Path(__file__).resolve().parents[2]
 TEMPLATE = BUNDLE_ROOT / "references" / "templates" / "skill-sections.json.tmpl"
@@ -73,7 +76,7 @@ class FileSnapshot:
 
 
 @dataclass(frozen=True)
-class MaterializationPlan:
+class CompatibilityPlan:
     """Validated target writes ready for rollback-protected application."""
 
     manifest: dict[str, object] | None
@@ -187,33 +190,6 @@ def _pyproject(repo_root: pathlib.Path) -> dict[str, object]:
     return value
 
 
-def _declared_python_dependencies(repo_root: pathlib.Path) -> str:
-    """Return only install declarations, excluding tool configuration tables."""
-
-    declared: list[str] = []
-    for name in ("requirements-dev.txt", "requirements.txt"):
-        path = repo_root / name
-        if path.is_file() and not path.is_symlink():
-            declared.append(path.read_text(encoding="utf-8"))
-    pyproject = _pyproject(repo_root)
-    project = pyproject.get("project", {})
-    if isinstance(project, Mapping):
-        dependencies = project.get("dependencies", [])
-        if isinstance(dependencies, list):
-            declared.extend(str(value) for value in dependencies)
-        optional = project.get("optional-dependencies", {})
-        if isinstance(optional, Mapping):
-            for values in optional.values():
-                if isinstance(values, list):
-                    declared.extend(str(value) for value in values)
-    groups = pyproject.get("dependency-groups", {})
-    if isinstance(groups, Mapping):
-        for values in groups.values():
-            if isinstance(values, list):
-                declared.extend(str(value) for value in values)
-    return "\n".join(declared).lower()
-
-
 def _validation_condition_matches(
     repo_root: pathlib.Path,
     condition: Mapping[str, object],
@@ -281,7 +257,6 @@ def contract_checks(repo_root: pathlib.Path) -> list[dict[str, object]]:
                     "command": list(check["command"]),
                     "cwd": _safe_validation_path(check["cwd"], "validation check cwd").as_posix(),
                     "exclusive": check.get("exclusive", False),
-                    "python_packages": list(check.get("python_packages", [])),
                 }
             )
     exclusive_checks = [check for check in selected if check["exclusive"]]
@@ -293,7 +268,7 @@ def contract_checks(repo_root: pathlib.Path) -> list[dict[str, object]]:
 def _validation_workflow(
     repo_root: pathlib.Path, checks: list[dict[str, object]]
 ) -> tuple[str, str, str]:
-    """Render generated CI while delegating project Python ranges to setup-python."""
+    """Render CI using target-owned dependency setup and Python requirements."""
 
     commands: list[str] = []
     for check in checks:
@@ -325,7 +300,6 @@ def _validation_workflow(
         f"          {python_selector}",
     ]
     validation_python = "python"
-    dependency_sources = _declared_python_dependencies(repo_root)
     python_setup: list[str] = []
     if (repo_root / "uv.lock").is_file() and "{python}" in commands:
         setup.extend(
@@ -354,24 +328,6 @@ def _validation_workflow(
                 python_setup.append('python -m pip install -e ".[dev]"')
             elif isinstance(project, Mapping) and project:
                 python_setup.append('python -m pip install -e "."')
-    fallback_candidates: list[str] = []
-    for check in checks:
-        packages = check.get("python_packages", [])
-        if isinstance(packages, list):
-            fallback_candidates.extend(
-                package for package in packages if isinstance(package, str)
-            )
-    fallback_packages = sorted(
-        {
-            package
-            for package in fallback_candidates
-            if re.split(r"[<>=!~]", package, maxsplit=1)[0].lower()
-            not in dependency_sources
-        }
-    )
-    if fallback_packages:
-        installer = "uv pip install" if validation_python.startswith("uv ") else "python -m pip install"
-        python_setup.append(f"{installer} {' '.join(fallback_packages)}")
     if python_setup:
         setup.extend(
             [
@@ -508,16 +464,16 @@ def build_sdlc_contract_candidate(
     repo_root: pathlib.Path,
     *,
     has_skills: bool,
-    materialize: bool,
+    apply_contract: bool,
 ) -> dict[str, object] | None:
-    """Preserve target capabilities and materialize repository validation.
+    """Preserve target capabilities and apply repository validation.
 
     The template owns repository validation; this producer owns skill action
     routing. Existing operations retain their definitions. Skillless targets
     lose only exact producer-owned entries. Deployment is never implicit.
     """
 
-    if not materialize:
+    if not apply_contract:
         return None
     reusable = load_contract(SDLC_TEMPLATE)
     target = repo_root / SDLC_RELATIVE
@@ -710,14 +666,14 @@ def restore_snapshots(
         raise RuntimeError("; ".join(errors))
 
 
-def plan_materialization(
+def plan_ceratops_compatibility(
     repo_root: pathlib.Path,
     source_id: str | None,
     template: Mapping[str, object],
     existing: Mapping[str, object],
     *,
-    materialize_sdlc: bool,
-) -> MaterializationPlan:
+    apply_sdlc_contract: bool,
+) -> CompatibilityPlan:
     """Validate target evidence and compose writes without changing files."""
 
     skill_paths = sorted((repo_root / "skills").glob("*/SKILL.md"))
@@ -855,14 +811,14 @@ def plan_materialization(
         if action_errors:
             raise RuntimeError("; ".join(action_errors))
     validator_text, workflow_text, validation_checks = validation_surfaces(repo_root)
-    return MaterializationPlan(
+    return CompatibilityPlan(
         manifest=manifest,
         skill_updates=skill_updates,
         canonical_sources=canonical_sources,
         sdlc_contract=build_sdlc_contract_candidate(
             repo_root,
             has_skills=bool(skill_names),
-            materialize=materialize_sdlc,
+            apply_contract=apply_sdlc_contract,
         ),
         validator_text=validator_text,
         workflow_text=workflow_text,
@@ -872,9 +828,9 @@ def plan_materialization(
     )
 
 
-def apply_materialization(
+def apply_compatibility_plan(
     repo_root: pathlib.Path,
-    plan: MaterializationPlan,
+    plan: CompatibilityPlan,
 ) -> None:
     """Apply one fully validated plan inside the caller's rollback boundary."""
 
@@ -937,10 +893,10 @@ def apply_materialization(
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Run repository materialization as the package CLI subcommand."""
+    """Apply Ceratops compatibility as the package CLI subcommand."""
 
     parser = argparse.ArgumentParser(
-        description="Make repository sources Ceratops-compatible."
+        description="Apply Ceratops compatibility to repository sources."
     )
     parser.add_argument("--target-repo-root", required=True, type=pathlib.Path)
     parser.add_argument("--runtime-source-id")
@@ -968,13 +924,13 @@ def main(argv: list[str] | None = None) -> int:
             if has_source_skills
             else None
         )
-        phase = "materialization_planning"
-        plan = plan_materialization(
+        phase = "compatibility_planning"
+        plan = plan_ceratops_compatibility(
             repo_root,
             source_id,
             template,
             existing,
-            materialize_sdlc=not args.no_sdlc_contract,
+            apply_sdlc_contract=not args.no_sdlc_contract,
         )
         skill_paths = sorted((repo_root / "skills").glob("*/SKILL.md"))
         mutable_paths = [*skill_paths, existing_path]
@@ -1019,9 +975,9 @@ def main(argv: list[str] | None = None) -> int:
                 or plan.workflow_text is not None
             )
         ]
-        phase = "materialization"
+        phase = "compatibility_application"
         mutation_started = True
-        apply_materialization(repo_root, plan)
+        apply_compatibility_plan(repo_root, plan)
         bootstrap_status = "skipped"
         if plan.skills:
             phase = "bootstrap_synchronization"
@@ -1038,7 +994,7 @@ def main(argv: list[str] | None = None) -> int:
             bootstrap_status = bootstrap_status_value
 
         phase = "compatibility_validation"
-        compatibility = check_repository(repo_root)
+        compatibility = validate_ceratops_compatibility(repo_root)
         if (
             not compatibility["applicable"]
             or compatibility["valid"] is not True
@@ -1073,7 +1029,7 @@ def main(argv: list[str] | None = None) -> int:
             {
                 "bootstrap": bootstrap_status,
                 "sdlc_contract": (
-                    "materialized"
+                    "applied"
                     if plan.sdlc_contract is not None
                     else "not_configured"
                     if not (repo_root / SDLC_RELATIVE).exists()
@@ -1082,12 +1038,12 @@ def main(argv: list[str] | None = None) -> int:
                 "repository_validation": {
                     "checks": plan.validation_checks,
                     "validator": (
-                        "materialized"
+                        "applied"
                         if plan.validator_text is not None
                         else "preserved"
                     ),
                     "workflow": (
-                        "materialized"
+                        "applied"
                         if plan.workflow_text is not None
                         else "preserved"
                     ),
@@ -1096,7 +1052,7 @@ def main(argv: list[str] | None = None) -> int:
                 "rollback": "not_needed",
                 "runtime_source_id": source_id,
                 "skill_manifest": (
-                    "materialized" if plan.manifest is not None else "not_configured"
+                    "applied" if plan.manifest is not None else "not_configured"
                 ),
                 "skills": plan.skills,
                 "status": "ok",

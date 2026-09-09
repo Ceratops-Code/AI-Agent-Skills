@@ -108,8 +108,8 @@ REQUIRED_FILES = [
     SDLC_SCHEMA,
 ]
 
-# The loader owns identity, schema and provenance references; materialization
-# consumes predicates, selection, commands and fallback CI dependencies.
+# The loader owns identity, schema and provenance references; compatibility
+# application consumes predicates, selection and commands.
 VALIDATION_ANNOTATION_FIELDS = frozenset({"root.captured_on", "root.source_doc_scopes"})
 VALIDATION_EXECUTABLE_FIELDS = frozenset(
     {
@@ -117,7 +117,6 @@ VALIDATION_EXECUTABLE_FIELDS = frozenset(
         "root.source_docs_ref", "root.checks",
         "def:check.id", "def:check.when", "def:check.unless",
         "def:check.command", "def:check.cwd", "def:check.exclusive",
-        "def:check.python_packages",
         "def:packageScript.kind", "def:packageScript.manager", "def:packageScript.value",
         "def:pathAny.kind", "def:pathAny.value",
         "def:fileContains.kind", "def:fileContains.path", "def:fileContains.value",

@@ -17,8 +17,8 @@ setup and validation, plus deliverable validation, deployment and publication.
 ### Action References
 
 - Create or publish a repository: `references/create-or-publish.md`
-- Make an existing repository Ceratops-compatible:
-  `references/make-repo-compatible.md`
+- Apply Ceratops compatibility to an existing repository:
+  `references/apply-ceratops-compatibility.md`
 - Review repository-validation, GitHub, code, PR, artifact, registry,
   and release contracts:
   `references/repo-contracts-review.md`
@@ -101,9 +101,9 @@ setup and validation, plus deliverable validation, deployment and publication.
   item changes; route review feedback and Actions failures to `address-review`
   and `fix-ci`, respectively, within the granted scope.
 
-- Use `create-or-publish`, `make-repo-compatible`, `repo-contracts-review`,
-  `codeql-disposition`, `health-audit`, or `dependency-maintenance` for their
-  named repository surfaces.
+- Use `create-or-publish`, `apply-ceratops-compatibility`,
+  `repo-contracts-review`, `codeql-disposition`, `health-audit`, or
+  `dependency-maintenance` for their named repository surfaces.
 - Use `promote` when selected committed branches should join a local
   `release/local` branch without deployment.
 - Use `promote-and-deploy` when promotion should run explicitly selected

@@ -436,16 +436,16 @@ def test_bootstrap_full_install_materializes_self_contained_lifecycle_bundle(
     )
     shutil.rmtree(target_repo / "skills" / "sections")
     (target_repo / "skills" / "skill-sections.json").unlink()
-    materialized = run_compatibility_engine(
+    applied = run_compatibility_engine(
         installed_lifecycle / "scripts",
-        "materialize",
+        "apply",
         "--target-repo-root",
         str(target_repo),
         "--runtime-source-id",
         "installed/target",
     )
-    assert materialized.returncode == 0, materialized.stdout
-    assert json.loads(materialized.stdout)["runtime_source_id"] == "installed/target"
+    assert applied.returncode == 0, applied.stdout
+    assert json.loads(applied.stdout)["runtime_source_id"] == "installed/target"
 
     other_checkout = tmp_path / "other-checkout"
     other_checkout.mkdir()
@@ -500,7 +500,7 @@ def test_lifecycle_only_installed_bundle_materializes_compatible_repo(
 
     result = run_compatibility_engine(
         install_root / "ceratops-repo-lifecycle" / "scripts",
-        "materialize",
+        "apply",
         "--target-repo-root",
         str(target_repo),
         "--runtime-source-id",

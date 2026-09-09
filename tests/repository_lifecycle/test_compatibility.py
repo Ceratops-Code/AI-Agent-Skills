@@ -74,7 +74,7 @@ def test_compatibility_materializer_supplies_target_identity_and_assignments(
 
     result = run_compatibility_engine(
         REPOSITORY_LIFECYCLE_SCRIPTS,
-        "materialize",
+        "apply",
         "--target-repo-root",
         str(repo),
         "--runtime-source-id",
@@ -160,8 +160,8 @@ def test_compatibility_materializer_supplies_target_identity_and_assignments(
     assert (repo / ".github" / "workflows" / "validate.yml").is_file()
     assert output["repository_validation"] == {
         "checks": [],
-        "validator": "materialized",
-        "workflow": "materialized",
+        "validator": "applied",
+        "workflow": "applied",
     }
     payload = repo / "skills" / "sections" / "scripts" / "shared.py"
     payload.parent.mkdir()
@@ -180,9 +180,9 @@ def test_compatibility_materializer_supplies_target_identity_and_assignments(
         newline="\n",
     )
     compatibility = importlib.import_module(
-        "ceratops_repo_compatibility_engine.compatibility_check"
+        "ceratops_repo_compatibility_engine.validate_ceratops_compatibility"
     )
-    assert compatibility.check_repository(repo) == {
+    assert compatibility.validate_ceratops_compatibility(repo) == {
         "applicable": True,
         "valid": True,
         "errors": [],
@@ -235,7 +235,7 @@ def test_compatibility_materializer_supports_repositories_without_skills(
 
     blocked_result = run_compatibility_engine(
         engine_scripts,
-        "materialize",
+        "apply",
         "--target-repo-root",
         str(repo),
         "--runtime-source-id",
@@ -244,7 +244,7 @@ def test_compatibility_materializer_supports_repositories_without_skills(
 
     assert blocked_result.returncode == 1
     assert json.loads(blocked_result.stdout) == {
-        "phase": "materialization_planning",
+        "phase": "compatibility_planning",
         "reason": (
             "npm validation checks require package-lock.json for "
             "deterministic npm ci setup"
@@ -282,7 +282,7 @@ def test_compatibility_materializer_supports_repositories_without_skills(
 
     result = run_compatibility_engine(
         engine_scripts,
-        "materialize",
+        "apply",
         "--target-repo-root",
         str(repo),
         "--runtime-source-id",
@@ -292,7 +292,7 @@ def test_compatibility_materializer_supports_repositories_without_skills(
     assert result.returncode == 0, result.stdout
     output = json.loads(result.stdout)
     assert output["bootstrap"] == "skipped"
-    assert output["sdlc_contract"] == "materialized"
+    assert output["sdlc_contract"] == "applied"
     assert output["runtime_source_id"] is None
     assert output["skill_manifest"] == "not_configured"
     assert not (repo / "skills").exists()
@@ -304,8 +304,8 @@ def test_compatibility_materializer_supports_repositories_without_skills(
     assert not (repo / "scripts" / "deploy-skills.py").exists()
     assert output["repository_validation"] == {
         "checks": ["npm-lint", "unittest"],
-        "validator": "materialized",
-        "workflow": "materialized",
+        "validator": "applied",
+        "workflow": "applied",
     }
     assert (repo / "scripts" / "validate-repository.py").is_file()
     assert (repo / ".github" / "workflows" / "validate.yml").is_file()
@@ -337,7 +337,7 @@ def test_compatibility_materializer_supports_repositories_without_skills(
     shutil.copytree(repo, omitted)
     omitted_result = run_compatibility_engine(
         engine_scripts,
-        "materialize",
+        "apply",
         "--target-repo-root",
         str(omitted),
         "--no-sdlc-contract",
@@ -386,7 +386,7 @@ def test_compatibility_materializer_supports_repositories_without_skills(
     )
     pnpm_result = run_compatibility_engine(
         engine_scripts,
-        "materialize",
+        "apply",
         "--target-repo-root",
         str(pnpm_repo),
         "--runtime-source-id",
@@ -405,7 +405,12 @@ def test_compatibility_materializer_supports_repositories_without_skills(
     assert "corepack prepare pnpm@10.33.4 --activate" in pnpm_workflow
     assert "pnpm install --frozen-lockfile" in pnpm_workflow
     assert "python -m pip install -r requirements-dev.txt" in pnpm_workflow
-    assert "python -m pip install mypy==2.3.0" in pnpm_workflow
+    pnpm_steps = yaml.safe_load(pnpm_workflow)["jobs"]["validate-repository"]["steps"]
+    assert [
+        step["run"].splitlines()
+        for step in pnpm_steps
+        if step.get("name") == "Install Python validation dependencies"
+    ] == [["python -m pip install -r requirements-dev.txt"]]
     assert 'python-version: "3.12"' in pnpm_workflow
 
     uv_repo = empty_repository("uv-compatible")
@@ -420,9 +425,10 @@ def test_compatibility_materializer_supports_repositories_without_skills(
         encoding="utf-8",
         newline="\n",
     )
+    (uv_repo / ".yamllint").write_text("extends: default\n", encoding="utf-8", newline="\n")
     uv_result = run_compatibility_engine(
         engine_scripts,
-        "materialize",
+        "apply",
         "--target-repo-root",
         str(uv_repo),
         "--runtime-source-id",
@@ -433,6 +439,7 @@ def test_compatibility_materializer_supports_repositories_without_skills(
         "pytest",
         "ruff",
         "mypy",
+        "yaml-lint",
     ]
     uv_workflow = (uv_repo / ".github" / "workflows" / "validate.yml").read_text(
         encoding="utf-8"
@@ -441,6 +448,12 @@ def test_compatibility_materializer_supports_repositories_without_skills(
     assert 'python-version-file: "pyproject.toml"' in uv_workflow
     assert 'python-version: "3.12"' not in uv_workflow
     assert "uv sync --extra dev --frozen" in uv_workflow
+    uv_steps = yaml.safe_load(uv_workflow)["jobs"]["validate-repository"]["steps"]
+    assert [
+        step["run"].splitlines()
+        for step in uv_steps
+        if step.get("name") == "Install Python validation dependencies"
+    ] == [["uv sync --extra dev --frozen"]]
     assert "uv run --no-sync python scripts/validate-repository.py" in uv_workflow
 
     # Synthetic recipes exercise extension behavior without coupling the shipped
@@ -476,7 +489,7 @@ def test_compatibility_materializer_supports_repositories_without_skills(
         path.write_text("exit 0\n", encoding="utf-8", newline="\n")
     powershell_result = run_compatibility_engine(
         engine_scripts,
-        "materialize",
+        "apply",
         "--target-repo-root",
         str(powershell_repo),
         "--runtime-source-id",
@@ -507,7 +520,7 @@ def test_compatibility_materializer_supports_repositories_without_skills(
     )
     unittest_result = run_compatibility_engine(
         engine_scripts,
-        "materialize",
+        "apply",
         "--target-repo-root",
         str(unittest_repo),
         "--runtime-source-id",
@@ -531,7 +544,7 @@ def test_compatibility_materializer_supports_repositories_without_skills(
     )
     docs_result = run_compatibility_engine(
         engine_scripts,
-        "materialize",
+        "apply",
         "--target-repo-root",
         str(docs_repo),
         "--runtime-source-id",
@@ -545,7 +558,11 @@ def test_compatibility_materializer_supports_repositories_without_skills(
     docs_workflow = (
         docs_repo / ".github" / "workflows" / "validate.yml"
     ).read_text(encoding="utf-8")
-    assert "ruff==0.16.1" in docs_workflow
+    docs_steps = yaml.safe_load(docs_workflow)["jobs"]["validate-repository"]["steps"]
+    assert all(
+        step.get("name") != "Install Python validation dependencies"
+        for step in docs_steps
+    )
 
     authoritative_repo = empty_repository("authoritative-compatible")
     (authoritative_repo / "scripts").mkdir()
@@ -571,7 +588,7 @@ def test_compatibility_materializer_supports_repositories_without_skills(
     )
     authoritative_result = run_compatibility_engine(
         engine_scripts,
-        "materialize",
+        "apply",
         "--target-repo-root",
         str(authoritative_repo),
         "--runtime-source-id",
@@ -619,7 +636,7 @@ def test_compatibility_materializer_supports_repositories_without_skills(
             "def test_probe(): pass\n", encoding="utf-8"
         )
         configured = run_compatibility_engine(
-            engine_scripts, "materialize", "--target-repo-root", str(config_repo)
+            engine_scripts, "apply", "--target-repo-root", str(config_repo)
         )
         assert configured.returncode == 0, configured.stdout
         assert json.loads(configured.stdout)["repository_validation"]["checks"] == ["pytest"]
@@ -651,7 +668,7 @@ def test_compatibility_materializer_supports_repositories_without_skills(
         contract_path.write_text(json.dumps(candidate) + "\n", encoding="utf-8")
         invalid_repo = empty_repository(f"invalid-contract-{index}")
         invalid = run_compatibility_engine(
-            engine_scripts, "materialize", "--target-repo-root", str(invalid_repo)
+            engine_scripts, "apply", "--target-repo-root", str(invalid_repo)
         )
         assert invalid.returncode == 1, invalid.stdout
         assert json.loads(invalid.stdout)["rollback"] == "not_started"
@@ -704,7 +721,7 @@ def test_compatibility_materializer_preserves_existing_validator_and_ci(
 
     result = run_compatibility_engine(
         REPOSITORY_LIFECYCLE_SCRIPTS,
-        "materialize",
+        "apply",
         "--target-repo-root",
         str(repo),
     )
@@ -745,7 +762,7 @@ def test_compatibility_materializer_preserves_existing_identity_and_custom_secti
 
     result = run_compatibility_engine(
         REPOSITORY_LIFECYCLE_SCRIPTS,
-        "materialize",
+        "apply",
         "--target-repo-root",
         str(repo),
     )
@@ -764,7 +781,7 @@ def test_compatibility_materializer_preserves_existing_identity_and_custom_secti
 
     overridden = run_compatibility_engine(
         REPOSITORY_LIFECYCLE_SCRIPTS,
-        "materialize",
+        "apply",
         "--target-repo-root",
         str(repo),
         "--runtime-source-id",
@@ -821,7 +838,7 @@ def test_compatibility_materializer_rolls_back_every_target_write_on_blocker(
 
     result = run_compatibility_engine(
         engine_scripts,
-        "materialize",
+        "apply",
         "--target-repo-root",
         str(repo),
     )
@@ -864,14 +881,14 @@ def test_compatibility_materializer_blocks_invalid_assignments_before_writes(
 
     result = run_compatibility_engine(
         REPOSITORY_LIFECYCLE_SCRIPTS,
-        "materialize",
+        "apply",
         "--target-repo-root",
         str(repo),
     )
 
     assert result.returncode == 1
     output = json.loads(result.stdout)
-    assert output["phase"] == "materialization_planning"
+    assert output["phase"] == "compatibility_planning"
     assert output["rollback"] == "not_started"
     assert {
         path: (path.read_bytes(), path.stat().st_mtime_ns)
