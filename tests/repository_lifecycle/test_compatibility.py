@@ -124,14 +124,14 @@ def test_compatibility_materializer_supplies_target_identity_and_assignments(
         }
     }
     materializer = importlib.import_module(
-        "ceratops_repo_compatibility_engine.repository_materialization"
+        "ceratops_repo_compatibility_engine.apply_ceratops_compatibility"
     )
     # Current generated entries are idempotent and retire with their skill source.
     assert materializer.build_sdlc_contract_candidate(
-        repo, has_skills=True, materialize=True,
+        repo, has_skills=True, apply_contract=True,
     ) == contract
     skillless = materializer.build_sdlc_contract_candidate(
-        repo, has_skills=False, materialize=True,
+        repo, has_skills=False, apply_contract=True,
     )
     assert skillless["deliverables"] == {"tools": contract["deliverables"]["tools"]}
 
@@ -146,10 +146,10 @@ def test_compatibility_materializer_supplies_target_identity_and_assignments(
     sdlc = repo / "sdlc" / "sdlc.yml"
     sdlc.write_text(yaml.safe_dump(contract, sort_keys=False), encoding="utf-8")
     assert materializer.build_sdlc_contract_candidate(
-        repo, has_skills=True, materialize=True,
+        repo, has_skills=True, apply_contract=True,
     ) == contract
     skillless = materializer.build_sdlc_contract_candidate(
-        repo, has_skills=False, materialize=True,
+        repo, has_skills=False, apply_contract=True,
     )
     assert skillless["deliverables"]["skills"] == {
         "validate": {"ceratops-managed": custom, "custom-check": custom},

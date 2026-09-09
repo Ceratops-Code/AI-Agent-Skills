@@ -910,7 +910,7 @@ def test_v1_duplicate_yaml_keys_and_invalid_schema_are_rejected(tmp_path: pathli
 def test_supported_v1_compatibility_is_independent_of_installer_release(
     tmp_path: pathlib.Path, installer_version: int,
 ) -> None:
-    checker = importlib.import_module("ceratops_repo_compatibility_engine.compatibility_check")
+    checker = importlib.import_module("ceratops_repo_compatibility_engine.validate_ceratops_compatibility")
     _write_v1(tmp_path, deploy={})
     scripts = tmp_path / "scripts"
     scripts.mkdir()
@@ -925,18 +925,18 @@ def test_supported_v1_compatibility_is_independent_of_installer_release(
         "      - run: python scripts/validate-repository.py --evidence-file evidence.log\n",
         encoding="utf-8",
     )
-    assert checker.check_repository(tmp_path) == {
+    assert checker.validate_ceratops_compatibility(tmp_path) == {
         "applicable": True, "valid": True, "errors": [],
     }
 
 
 def test_materialization_preserves_supported_v1_without_migration(tmp_path: pathlib.Path) -> None:
-    materializer = importlib.import_module("ceratops_repo_compatibility_engine.repository_materialization")
+    materializer = importlib.import_module("ceratops_repo_compatibility_engine.apply_ceratops_compatibility")
     path = _write_v1(tmp_path, deploy={"deploy": {"handoff": "ceratops-skill-lifecycle/deploy"}})
     original = path.read_bytes()
     for has_skills in (True, False):
         assert materializer.build_sdlc_contract_candidate(
-            tmp_path, has_skills=has_skills, materialize=True,
+            tmp_path, has_skills=has_skills, apply_contract=True,
         ) is None
     assert path.read_bytes() == original
 
