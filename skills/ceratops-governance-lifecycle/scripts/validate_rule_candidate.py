@@ -653,14 +653,16 @@ def _prefixes(line: str) -> tuple[str, str, str]:
 
 
 def _tokens(content: str) -> list[str]:
-    tokens: list[str] = []
-    cursor = 0
-    for match in PROTECTED_INLINE.finditer(content):
-        tokens.extend(content[cursor : match.start()].split())
-        tokens.append(match.group(0))
-        cursor = match.end()
-    tokens.extend(content[cursor:].split())
-    return tokens
+    """Split at whitespace outside protected inline constructs only.
+
+    Adjoining punctuation and text stay attached so reflow cannot insert spaces
+    at code, link, or autolink boundaries.
+    """
+
+    return [
+        match.group(0)
+        for match in re.finditer(rf"(?:{PROTECTED_INLINE.pattern}|\S)+", content)
+    ]
 
 
 def _wrap_line(

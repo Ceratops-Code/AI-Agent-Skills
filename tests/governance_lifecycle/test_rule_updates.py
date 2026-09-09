@@ -43,12 +43,25 @@ def test_rule_candidate_repairs_multiple_targets_and_is_idempotent(
     second.write_text(second_text, encoding="utf-8", newline="\r\n")
     candidate = tmp_path / "candidate.json"
     evidence = tmp_path / "evidence.json"
+    inline_fragments = (
+        "`name`,",
+        "(`call`)",
+        "`module`.",
+        "`one`/`two`;",
+        "prefix`code`suffix,",
+        "``two  words``:",
+        "**`bold`**!",
+        '[guide](https://example.test/guide "Guide title"),',
+        "(<https://example.test/guide>).",
+    )
     first_replacements = [
         {
             "expected_old": "Old prose.",
             "replacement": (
                 "Safe ordinary prose wraps deterministically while preserving "
-                "every original non-whitespace content character."
+                "every original non-whitespace content character: "
+                + " ".join(inline_fragments)
+                + " Existing spaces remain in `left` / `right`."
             ),
         },
         {
@@ -128,6 +141,10 @@ def test_rule_candidate_repairs_multiple_targets_and_is_idempotent(
     fixed_first = fixed["targets"][0]["replacements"]
     fixed_second = fixed["targets"][1]["replacements"]
     assert "\n" in fixed_first[0]["replacement"]
+    assert all(fragment in fixed_first[0]["replacement"] for fragment in inline_fragments)
+    assert " ".join(fixed_first[0]["replacement"].split()) == " ".join(
+        first_replacements[0]["replacement"].split()
+    )
     assert "\n  " in fixed_first[1]["replacement"]
     assert "\n> >   " in fixed_first[2]["replacement"]
     assert fixed_first[3]["replacement"] == first_replacements[3]["replacement"]
