@@ -1,0 +1,45 @@
+{
+  "contract_format_version": 1,
+  "kind": "ceratops_compatibility_contract",
+  "description": "Internal Ceratops repository structure and compatibility-generation defaults. Structural success is separate from the companion behavioral review. This contract stays in the lifecycle skill; targets own their generated files and dependencies.",
+  "non_deterministic_review_file": "ceratops-compatibility-nondeterministic-contract.json",
+  "surfaces": {
+    "validator": {
+      "path": "scripts/validate-repository.py",
+      "template": "validate-repository.py.tmpl",
+      "required": "always"
+    },
+    "workflow": {
+      "path": ".github/workflows/validate.yml",
+      "template": "validate.yml.tmpl",
+      "required": "always"
+    },
+    "sdlc": {
+      "path": "sdlc/sdlc.yml",
+      "template": "sdlc.yml.tmpl",
+      "required": "when_present"
+    },
+    "skill_manifest": {
+      "path": "skills/skill-sections.json",
+      "template": "skill-sections.json.tmpl",
+      "required": "with_skills"
+    },
+    "skill_bootstrap": {
+      "path": "scripts/deploy-skills.py",
+      "template": "deploy-skills.py.tmpl",
+      "required": "with_skills"
+    }
+  },
+  "ci_required_arguments": ["--evidence-file"],
+  "manifest_profiles": ["ceratops", "ceratops-compatible"],
+  "generated_manifest_profile": "ceratops-compatible",
+  "managed_skill_operations": {
+    "validate": {
+      "ceratops-managed": {"handoff": "ceratops-skill-lifecycle/source-validate"}
+    },
+    "deploy-local": {
+      "ceratops-managed": {"handoff": "ceratops-skill-lifecycle/deploy"},
+      "standalone": {"steps": [{"run": ["python", "scripts/deploy-skills.py"]}]}
+    }
+  }
+}

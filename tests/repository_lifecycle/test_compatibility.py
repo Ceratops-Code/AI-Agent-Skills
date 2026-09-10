@@ -189,6 +189,59 @@ def test_compatibility_materializer_supplies_target_identity_and_assignments(
     }
 
 
+    # Required surfaces are structural checks, including the skill bootstrap.
+    for relative in ("scripts/validate-repository.py", ".github/workflows/validate.yml",
+                     "scripts/deploy-skills.py"):
+        target = repo / relative
+        original = target.read_bytes()
+        target.unlink()
+        missing = compatibility.validate_ceratops_compatibility(repo)
+        assert missing["valid"] is False
+        assert f"missing {relative}" in missing["errors"]
+        target.write_bytes(original)
+
+    workflow = repo / ".github/workflows/validate.yml"
+    original_workflow = workflow.read_bytes()
+    workflow.write_text(workflow.read_text(encoding="utf-8").replace(
+        "--evidence-file ", "--evidence-file=",
+    ), encoding="utf-8")
+    assert compatibility.validate_ceratops_compatibility(repo)["valid"] is True
+    workflow.write_bytes(original_workflow)
+
+    # A real alternate bundle changes generation, bootstrap sync, and checking
+    # through contract data, without changing any executable implementation.
+    bundle = tmp_path / "alternate-bundle"
+    shutil.copytree(REPOSITORY_LIFECYCLE_SOURCE, bundle)
+    shutil.copytree(ROOT / "skills/sections", bundle / "skills/sections")
+    contract_path = bundle / "references/contracts/ceratops-compatibility-deterministic-contract.json"
+    defaults = json.loads(contract_path.read_text(encoding="utf-8"))
+    defaults["surfaces"]["skill_bootstrap"]["path"] = "scripts/bootstrap-skills.py"
+    defaults["surfaces"]["skill_bootstrap"]["template"] = "bootstrap-skills.py.tmpl"
+    defaults["managed_skill_operations"]["validate"]["ceratops-managed"]["handoff"] = "target-lifecycle/source-check"
+    defaults["managed_skill_operations"]["deploy-local"]["standalone"]["steps"][0]["run"][1] = "scripts/bootstrap-skills.py"
+    templates = bundle / "references/templates"
+    (templates / "deploy-skills.py.tmpl").rename(templates / "bootstrap-skills.py.tmpl")
+    contract_path.write_text(json.dumps(defaults), encoding="utf-8")
+    alternate = tmp_path / "alternate-target"
+    create_compatible_repo(alternate, "target/alternate", ["alpha-tool"])
+    (alternate / ".git").write_text("gitdir: test\n", encoding="utf-8")
+    (alternate / "scripts/deploy-skills.py").unlink()
+    # Keep target-owned operation preservation separate from generated defaults.
+    (alternate / "sdlc/sdlc.yml").unlink()
+    write_sdlc_contract(alternate)
+    changed = run_compatibility_engine(bundle / "scripts", "apply", "--target-repo-root", str(alternate))
+    assert changed.returncode == 0, changed.stdout + changed.stderr
+    assert (alternate / "scripts/bootstrap-skills.py").is_file()
+    assert not (alternate / "scripts/deploy-skills.py").exists()
+    actual = yaml.safe_load((alternate / "sdlc/sdlc.yml").read_text(encoding="utf-8"))
+    assert actual["deliverables"]["skills"]["deploy-local"]["standalone"]["steps"][0]["run"] == [
+        "python", "scripts/bootstrap-skills.py",
+    ]
+    assert actual["deliverables"]["skills"]["validate"]["ceratops-managed"] == {
+        "handoff": "target-lifecycle/source-check"
+    }
+
+
 def test_compatibility_materializer_supports_repositories_without_skills(
     tmp_path: pathlib.Path,
 ) -> None:
@@ -894,6 +947,58 @@ def test_compatibility_materializer_blocks_invalid_assignments_before_writes(
         path: (path.read_bytes(), path.stat().st_mtime_ns)
         for path in observed_paths
     } == original
+
+
+    # Malformed bundled policy fails before touching even an invalid target.
+    loader = importlib.import_module("ceratops_repo_compatibility_engine.compatibility_contract")
+    bundle = tmp_path / "invalid-contract-bundle"
+    shutil.copytree(REPOSITORY_LIFECYCLE_SOURCE, bundle)
+    contract_path = bundle / "references/contracts" / loader.CONTRACT_NAME
+    current = json.loads(contract_path.read_text(encoding="utf-8"))
+    invalid_values = []
+    unknown = json.loads(json.dumps(current))
+    unknown["python_packages"] = ["pytest"]
+    invalid_values.append((unknown, "python_packages"))
+    escaping = json.loads(json.dumps(current))
+    escaping["surfaces"]["validator"]["path"] = "../outside.py"
+    invalid_values.append((escaping, "surfaces/validator/path"))
+    duplicate = json.loads(json.dumps(current))
+    duplicate["surfaces"]["workflow"]["path"] = duplicate["surfaces"]["validator"]["path"]
+    invalid_values.append((duplicate, "destinations must be unique"))
+    unsupported = json.loads(json.dumps(current))
+    unsupported["generated_manifest_profile"] = "unknown"
+    invalid_values.append((unsupported, "profile must be accepted"))
+    missing_template = json.loads(json.dumps(current))
+    missing_template["surfaces"]["sdlc"]["template"] = "absent.tmpl"
+    invalid_values.append((missing_template, "missing regular compatibility template"))
+    for value, message in invalid_values:
+        contract_path.write_text(json.dumps(value), encoding="utf-8")
+        with pytest.raises(RuntimeError, match=message):
+            loader.load_compatibility_contract(bundle)
+    blocked = run_compatibility_engine(bundle / "scripts", "apply", "--target-repo-root", str(repo))
+    assert blocked.returncode == 1
+    blocked_output = json.loads(blocked.stdout)
+    assert blocked_output["rollback"] == "not_started"
+    assert "compatibility template" in blocked_output["reason"]
+    assert {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in observed_paths} == original
+
+    contract_path.write_text(json.dumps(current), encoding="utf-8")
+    review_path = contract_path.with_name(current["non_deterministic_review_file"])
+    review = json.loads(review_path.read_text(encoding="utf-8"))
+    review["evidence"] = {"command": "python -m github_contract_engine collect"}
+    review_path.write_text(json.dumps(review), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="invalid compatibility contract"):
+        loader.load_compatibility_contract(bundle)
+    review.pop("evidence")
+    review["deterministic_contract"] = "unrelated-contract.json"
+    review_path.write_text(json.dumps(review), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="review must reference"):
+        loader.load_compatibility_contract(bundle)
+    review["deterministic_contract"] = loader.CONTRACT_NAME
+    review["checks"].append(review["checks"][0])
+    review_path.write_text(json.dumps(review), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="check IDs must be unique"):
+        loader.load_compatibility_contract(bundle)
 
 
 @pytest.mark.parametrize("invalid", [False, True])

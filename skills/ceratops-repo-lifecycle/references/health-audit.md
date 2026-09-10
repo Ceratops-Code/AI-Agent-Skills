@@ -74,7 +74,13 @@ credential-bound fixes precisely.
   guidance when repository contents are part of the health surface.
 - Inspect generic manifest structure, deployment schema, and repository
   validation wiring through `ceratops_repo_compatibility_engine` when local
-  contents are present. Skill-source validation remains outside repo health.
+  contents are present. It consumes the bundled deterministic compatibility
+  contract. Skill-source validation remains outside repo health.
+- Review applicable checks in
+  `references/contracts/ceratops-compatibility-nondeterministic-contract.json`
+  using local declarations and execution evidence. Keep failed or unverified
+  environment, test, and lifecycle requirements visible; structural success
+  does not prove them and does not require repeating existing executions.
 - Expand to open PRs, releases, tags, branches, Actions runs, moderation detail,
   or published artifacts only when script output, repo type, touched files, or
   the user request makes them relevant.

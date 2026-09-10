@@ -1,0 +1,41 @@
+{
+  "contract_format_version": 1,
+  "kind": "nondeterministic_review_contract",
+  "name": "Ceratops compatibility behavioral review",
+  "surface": "compatibility",
+  "description": "Internal requirements reviewed from repository declarations, implementation, and observed execution. No external evidence registry governs Ceratops compatibility. A structural checker result alone cannot establish these requirements.",
+  "deterministic_contract": "ceratops-compatibility-deterministic-contract.json",
+  "checks": [
+    {
+      "id": "ND.COMPATIBILITY.ENVIRONMENT",
+      "applies_when": "Repository entrypoints require dependencies or a particular runtime.",
+      "review_required": "Every independently callable validation or test entrypoint prepares or reuses the repository-owned environment from its dependency declarations and lockfiles. Standalone test execution must work without a prior aggregate run. Nested commands preserve the selected runtime through an absolute executable or the native environment manager. Dependency versions belong to the target repository; the shared contract neither selects packages nor pins versions. Reuse existing native tooling or a shared repository-owned setup helper instead of duplicating setup across entrypoints.",
+      "evidence_keys": ["repository.dependency_declarations", "repository.lockfiles", "entrypoints.setup", "entrypoints.execution_results"]
+    },
+    {
+      "id": "ND.COMPATIBILITY.TESTS",
+      "applies_when": "The repository contains testable executable behavior.",
+      "review_required": "Repository validation runs the applicable test suites through repository-owned test runners or native test commands. Independently callable runners use the same environment preparation and test definitions. CI and local aggregate validation use the same repository entrypoint; any CI-separated test phase uses the same test runner without duplicating test execution. Require meaningful results, not merely runner file presence. Repositories without applicable tests must record the reason; no universal Python test-runner filename is required.",
+      "evidence_keys": ["repository.test_configuration", "validation.selected_checks", "ci.test_wiring", "tests.execution_results"]
+    },
+    {
+      "id": "ND.COMPATIBILITY.LIFECYCLE",
+      "applies_when": "The repository declares lifecycle operations or deliverables.",
+      "review_required": "Owning lifecycle helpers execute deterministic preparation, selected operations, validation, and owned temporary-artifact cleanup to the nearest safe boundary. SDLC declares repository capabilities and each deliverable's commands or specific skill/action handoffs. Generic promotion and deployment resolve that declaration without hardcoded knowledge of deliverable-specific skill implementations. A declared handoff alone does not prove executable dispatch. Identify model-mediated deterministic transitions as gaps, while preserving required judgment and approval boundaries. Direct helper invocation remains available for independent use and diagnostics.",
+      "evidence_keys": ["sdlc.operations", "lifecycle.callers", "lifecycle.execution_results", "lifecycle.cleanup_results"]
+    },
+    {
+      "id": "ND.COMPATIBILITY.APPLICATION",
+      "applies_when": "Ceratops compatibility is applied or its generator is changed.",
+      "review_required": "Create missing compatibility surfaces from the declared templates. Preserve existing validator and CI bytes and mode, supported SDLC formats, target-owned operations, and valid skill declarations. An explicit SDLC omission remains supported. Validate inside the rollback boundary and restore every changed target after a caught failure. Templates initialize repository-owned files; they do not supply an environment helper or test runner automatically. Resolve necessary target setup and test wiring under the owning change scope, and report unmet requirements without claiming full compatibility.",
+      "evidence_keys": ["compatibility.application_result", "compatibility.preservation_tests", "compatibility.rollback_tests", "repository.setup_and_test_wiring"]
+    }
+  ],
+  "review_result_values": {
+    "pass": "The applicable requirement is supported by concrete local evidence.",
+    "fail": "Local evidence demonstrates an unmet requirement.",
+    "not_applicable": "Record why the requirement does not apply to this repository.",
+    "blocked": "Required evidence is unavailable; do not infer success.",
+    "approved_drift": "Record the exact user-approved exception and retained consequence."
+  }
+}

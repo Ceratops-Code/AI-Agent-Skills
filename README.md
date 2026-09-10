@@ -128,8 +128,9 @@ without repository deduplication.
 | `scripts/validate-repository.py` | Local validation coordinator; checks the running Python against `pyproject.toml`, captures first-failure evidence, delegates its default full test phase to `scripts/testing/run-tests.py --all`, and supports CI's separate runner-owned test phase. |
 | `skills/ceratops-repo-lifecycle/references/templates/deploy-skills.py.tmpl` | Authoritative standard-library-only bootstrap copied into compatible skill repositories as `scripts/deploy-skills.py`. |
 | `skills/ceratops-repo-lifecycle/references/contracts/repository-validation-contract.json` | Schema-validated repository checks used by compatibility generation and included in repository contract review and validator discovery. |
+| `skills/ceratops-repo-lifecycle/references/contracts/ceratops-compatibility-*-contract.json` | Internal structural contract consumed by compatibility generation/checking, plus a behavioral review rubric for environment setup, tests, and lifecycle orchestration; no external source registry. |
 | `skills/ceratops-repo-lifecycle/references/templates/validate-repository.py.tmpl` and `validate.yml.tmpl` | Repository-neutral validator and CI templates created only when their target files are absent; dependency installation comes from the target repository. |
-| `skills/ceratops-repo-lifecycle/scripts/ceratops_repo_compatibility_engine/` | Skill-owned package for read-only compatibility checks, SDLC-contract validation, rollback-protected Ceratops compatibility application, and version-only bootstrap synchronization; it operates on explicit target repositories and is never copied into them. |
+| `skills/ceratops-repo-lifecycle/scripts/ceratops_repo_compatibility_engine/` | Skill-owned package with the shared compatibility-contract loader, read-only compatibility checks, SDLC-contract validation, rollback-protected Ceratops compatibility application, and version-only bootstrap synchronization; it operates on explicit target repositories and is never copied into them. |
 | `skills/ceratops-repo-lifecycle/references/templates/skill-sections.json.tmpl` | Repository-neutral template for creating a target repository's live `skills/skill-sections.json`; never a live manifest. |
 | `skills/ceratops-skill-lifecycle/scripts/runtime/install-managed-skills.py` | Classifies explicit, promotion-relative, or all-managed affected sets; owns direct-manifest inventory; and invokes one runtime transaction without source validation. |
 | `skills/ceratops-skill-lifecycle/scripts/runtime/managed_runtime_builder.py` | Stages, activates, rolls back, recovers, and cleans one locked selected-skill runtime transaction. |
@@ -236,6 +237,16 @@ Each repository owns one lifecycle contract:
   repo, PR readiness, code, artifact, and repository-validation contracts. Its
   `repository_validation` scope includes tool documentation and discovery
   indexes; contract review also performs bounded web searches for missing tools.
+- `skills/ceratops-repo-lifecycle/references/contracts/ceratops-compatibility-deterministic-contract.json`
+  owns compatibility destination/template mappings, required-file conditions,
+  accepted manifest profiles, CI arguments, and managed-skill routing defaults.
+  Its closed schema and loader validate the internal companion review contract
+  and SDLC defaults before target mutation. Contract review checks both documents;
+  compatibility application and health review apply the companion requirements
+  from local declarations and execution results, without an external registry.
+  Structural success alone does not prove independent environment setup, test
+  coverage, or automatic handoff execution. Existing templates initialize the
+  validator and CI; setup helpers and test runners remain target-owned.
 - `skills/ceratops-repo-lifecycle/references/contracts/repository-validation-contract.json`
   owns the conditional checks used to generate missing repository validators
   and CI workflows. Its closed schema and loader validate all entries and

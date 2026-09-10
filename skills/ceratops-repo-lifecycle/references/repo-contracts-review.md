@@ -2,8 +2,9 @@
 
 ## Goal
 
-Review repository-validation, GitHub org, GitHub repo, PR readiness, repo-code,
-artifact registry, and release contracts owned by `ceratops-repo-lifecycle`.
+Review Ceratops compatibility, repository-validation, GitHub org, GitHub repo,
+PR readiness, repo-code, artifact registry, and release contracts owned by
+`ceratops-repo-lifecycle`.
 Compare skill-local contract references, checker scripts, current official docs,
 local repo evidence, live GitHub evidence, and registry metadata, then report
 proposed contract or checker updates for explicit approval before repo changes
@@ -34,6 +35,13 @@ are applied.
 
 ### References
 
+- Internal compatibility contracts and schemas:
+  `references/contracts/ceratops-compatibility-deterministic-contract.json`,
+  `references/contracts/ceratops-compatibility-nondeterministic-contract.json`,
+  `references/schemas/ceratops-compatibility-contract.schema.json`, and
+  `references/schemas/nondeterministic-contract.schema.json`.
+  Review these against local templates, consumers, and behavior tests; they
+  have no external source registry.
 - Contract source-doc registry:
   `references/contracts/github-contract-source-docs.json`
 - Repository-validation contract and schema:
@@ -72,8 +80,8 @@ are applied.
 
 ### Boundaries
 
-- Use this action for repository-validation, GitHub, code, PR readiness,
-  artifact, registry, release, or org contract review.
+- Use this action for Ceratops compatibility, repository-validation, GitHub,
+  code, PR readiness, artifact, registry, release, or org contract review.
 - Do not use this action to audit or repair the health of a specific repository.
   Use live GitHub, registry, official-doc, or reference-repo evidence only when
   needed to decide whether a contract claim is current.
@@ -91,7 +99,8 @@ are applied.
 
 ### Skill-Specific Rules
 
-- Routine runs must review repository-validation coverage and the GitHub org,
+- Routine runs must review Ceratops compatibility, repository-validation
+  coverage, and the GitHub org,
   repo state, repo-content, workflow, security, artifact-publishing, and release
   surfaces represented in this action's `references/`.
 - Review current official docs, live product behavior, official API or registry
@@ -128,7 +137,7 @@ are applied.
   and evidence outside its contract.
 - Inspect the installed automation prompt when this run came from automation.
 - Check GitHub auth, local git auth, and installed tooling before asking for
-  credentials.
+  credentials when the selected contract review needs them.
 - Run `python -m github_contract_engine validate consistency` before manual
   review. If it fails,
   classify each finding as stale local dirt, proposed in-scope change,
@@ -136,6 +145,11 @@ are applied.
 
 ### 2. Refresh Current Source Evidence
 
+- For Ceratops compatibility, compare the internal pair with its templates,
+  generator, checker, and behavior tests. Verify deterministic field consumers
+  and review evidence for independent environment setup, tests, and lifecycle
+  script orchestration. External standards research does not apply to this
+  internal concept; use the following steps only for other selected surfaces.
 - Use the registered GitHub and artifact sources as the bounded checklist for
   the next evidence-gathering steps.
 - Run `python -m github_contract_engine check-source-docs --json` before ad hoc
@@ -154,7 +168,8 @@ are applied.
   sources. Use tool documentation to check detection, invocation, and
   dependency assumptions; use the registered discovery indexes to find
   candidates across languages, file formats, and build systems.
-- Run one batch of at most four web discovery queries per routine review,
+- During repository-validation review, run one batch of at most four web
+  discovery queries per routine review,
   including ecosystems absent from the contract. Compare candidates with
   declared checks and package-script coverage, then verify relevant gaps
   against each project's official documentation. Follow up only for a

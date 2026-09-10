@@ -16,6 +16,7 @@ from typing import TypedDict
 
 import yaml
 
+from .compatibility_contract import load_compatibility_contract, template_path
 from .sdlc_contract_validation import read_contract
 
 
@@ -34,7 +35,9 @@ def _regular_file_error(root: pathlib.Path, relative: pathlib.Path) -> str | Non
     return None
 
 
-def _workflow_errors(path: pathlib.Path) -> list[str]:
+def _workflow_errors(
+    path: pathlib.Path, validator: str, required_arguments: list[str],
+) -> list[str]:
     """Validate the CI-to-repository-validator edge from parsed YAML."""
 
     try:
@@ -51,15 +54,16 @@ def _workflow_errors(path: pathlib.Path) -> list[str]:
             if isinstance(step, Mapping) and isinstance(step.get("run"), str):
                 commands.append(step["run"])
     invocation = re.compile(
-        r"\bpython3?\s+(?:\./)?scripts/validate-repository\.py\b"
+        rf"\bpython3?\s+(?:\./)?{re.escape(validator)}\b"
     )
     if not any(
-        invocation.search(command) and "--evidence-file" in command
+        invocation.search(command)
+        and all(argument in command for argument in required_arguments)
         for command in commands
     ):
         return [
-            "CI validation workflow must call scripts/validate-repository.py "
-            "with --evidence-file"
+            f"CI validation workflow must call {validator} "
+            f"with {' '.join(required_arguments)}"
         ]
     return []
 
@@ -127,7 +131,7 @@ def action_assignment_errors(
     repository. Parsing has no installation or target mutation side effects.
     """
 
-    template = pathlib.Path(__file__).resolve().parents[2] / "references/templates/deploy-skills.py.tmpl"
+    template = template_path("skill_bootstrap")
     bootstrap = runpy.run_path(str(template))
     try:
         bootstrap["action_assignments"](root, manifest)
@@ -140,6 +144,7 @@ def _manifest_errors(
     root: pathlib.Path,
     path: pathlib.Path,
     source_skills: set[str],
+    profiles: list[str],
 ) -> list[str]:
     """Validate only generic compatibility-manifest structure and wiring."""
 
@@ -156,13 +161,9 @@ def _manifest_errors(
     source_id = manifest.get("runtime_source_id")
     if not isinstance(source_id, str) or not source_id.strip():
         errors.append("section manifest runtime_source_id must be a nonempty string")
-    if manifest.get("validation_profile") not in {
-        "ceratops",
-        "ceratops-compatible",
-    }:
+    if manifest.get("validation_profile") not in profiles:
         errors.append(
-            "section manifest validation_profile must be ceratops or "
-            "ceratops-compatible"
+            "section manifest validation_profile must be " + " or ".join(profiles)
         )
 
     sections = manifest.get("sections")
@@ -224,45 +225,44 @@ def validate_ceratops_compatibility(repo_root: pathlib.Path) -> CompatibilityRes
     """Return read-only compatibility status for one repository root."""
 
     root = repo_root.resolve()
-    manifest = root / "skills" / "skill-sections.json"
-    sdlc = root / "sdlc" / "sdlc.yml"
-    validator = pathlib.Path("scripts/validate-repository.py")
-    workflow = pathlib.Path(".github/workflows/validate.yml")
+    try:
+        contract = load_compatibility_contract()
+    except RuntimeError as exc:
+        return {"applicable": True, "valid": False, "errors": [str(exc)]}
+    surfaces = contract["surfaces"]
+    paths = {name: pathlib.Path(surface["path"]) for name, surface in surfaces.items()}
     source_skills = {
         path.parent.name
         for path in (root / "skills").glob("*/SKILL.md")
         if path.is_file()
     } if (root / "skills").is_dir() else set()
-    applicable = any(
-        (
-            manifest.exists() or manifest.is_symlink(),
-            sdlc.exists() or sdlc.is_symlink(),
-            (root / validator).exists() or (root / validator).is_symlink(),
-            (root / workflow).exists() or (root / workflow).is_symlink(),
-            bool(source_skills),
-        )
-    )
-    if not applicable:
+    present = {
+        name for name, path in paths.items()
+        if (root / path).exists() or (root / path).is_symlink()
+    }
+    if not present and not source_skills:
         return {"applicable": False, "valid": None, "errors": []}
 
     errors: list[str] = []
-    for relative in (validator, workflow):
-        if error := _regular_file_error(root, relative):
-            errors.append(error)
-    if not _regular_file_error(root, workflow):
-        errors.extend(_workflow_errors(root / workflow))
-
-    if manifest.exists() or manifest.is_symlink():
-        errors.extend(_manifest_errors(root, manifest, source_skills))
-    elif source_skills:
-        errors.append("missing skills/skill-sections.json")
-
-    if sdlc.exists() or sdlc.is_symlink():
-        if sdlc.is_symlink() or not sdlc.is_file():
-            errors.append("sdlc/sdlc.yml must be a regular file")
-        else:
-            _, sdlc_errors = read_contract(sdlc)
-            errors.extend(sdlc_errors)
+    for name, surface in surfaces.items():
+        required = surface["required"] == "always" or (
+            surface["required"] == "with_skills" and bool(source_skills)
+        )
+        if required or name in present:
+            if error := _regular_file_error(root, paths[name]):
+                errors.append(error)
+    if not _regular_file_error(root, paths["workflow"]):
+        errors.extend(_workflow_errors(
+            root / paths["workflow"], surfaces["validator"]["path"],
+            contract["ci_required_arguments"],
+        ))
+    if "skill_manifest" in present and not _regular_file_error(root, paths["skill_manifest"]):
+        errors.extend(_manifest_errors(
+            root, root / paths["skill_manifest"], source_skills, contract["manifest_profiles"],
+        ))
+    if "sdlc" in present and not _regular_file_error(root, paths["sdlc"]):
+        _, sdlc_errors = read_contract(root / paths["sdlc"])
+        errors.extend(sdlc_errors)
 
     unique_errors = list(dict.fromkeys(error for error in errors if error))
     return {

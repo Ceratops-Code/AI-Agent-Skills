@@ -23,6 +23,11 @@ from dataclasses import dataclass
 
 import yaml
 
+from .compatibility_contract import (
+    load_compatibility_contract,
+    surface_path,
+    template_path,
+)
 from .repository_validation_contract import load_validation_contract
 from .sdlc_contract_validation import load_contract, validation_errors
 from .validate_ceratops_compatibility import (
@@ -31,20 +36,9 @@ from .validate_ceratops_compatibility import (
 )
 
 BUNDLE_ROOT = pathlib.Path(__file__).resolve().parents[2]
-TEMPLATE = BUNDLE_ROOT / "references" / "templates" / "skill-sections.json.tmpl"
-SDLC_TEMPLATE = BUNDLE_ROOT / "references" / "templates" / "sdlc.yml.tmpl"
 SOURCE_REPO_ROOT = BUNDLE_ROOT.parents[1]
 SOURCE_CANONICAL_SECTIONS = SOURCE_REPO_ROOT / "skills" / "sections"
 INSTALLED_CANONICAL_SECTIONS = BUNDLE_ROOT / "skills" / "sections"
-VALIDATOR_TEMPLATE = BUNDLE_ROOT / "references" / "templates" / "validate-repository.py.tmpl"
-WORKFLOW_TEMPLATE = BUNDLE_ROOT / "references" / "templates" / "validate.yml.tmpl"
-MANIFEST_RELATIVE = pathlib.Path("skills/skill-sections.json")
-INSTALLER_RELATIVE = pathlib.Path("scripts/deploy-skills.py")
-SDLC_RELATIVE = pathlib.Path("sdlc/sdlc.yml")
-VALIDATOR_RELATIVE = pathlib.Path("scripts/validate-repository.py")
-WORKFLOW_RELATIVE = pathlib.Path(".github/workflows/validate.yml")
-MANAGED_SKILL_HANDOFF = "ceratops-skill-lifecycle/deploy"
-SKILL_VALIDATION_HANDOFF = "ceratops-skill-lifecycle/source-validate"
 START = "<!-- CERATOPS_SHARED_SECTIONS_START -->"
 END = "<!-- CERATOPS_SHARED_SECTIONS_END -->"
 SOURCE_RE = re.compile(r"<!-- SECTION SOURCE: skills/sections/([^ ]+) -->")
@@ -395,8 +389,8 @@ def validation_surfaces(
 ) -> tuple[str | None, str | None, list[str]]:
     """Render only missing validation files and preserve existing files exactly."""
 
-    validator = repo_root / VALIDATOR_RELATIVE
-    workflow = repo_root / WORKFLOW_RELATIVE
+    validator = repo_root / surface_path("validator")
+    workflow = repo_root / surface_path("workflow")
     for path, label in (
         (validator, "repository validator"),
         (workflow, "CI validation workflow"),
@@ -410,7 +404,7 @@ def validation_surfaces(
     checks = contract_checks(repo_root)
     validator_text = None
     if not validator.is_file():
-        template = VALIDATOR_TEMPLATE.read_text(encoding="utf-8")
+        template = template_path("validator").read_text(encoding="utf-8")
         marker = "__CHECK_DEFINITIONS__"
         if template.count(marker) != 1:
             raise RuntimeError("repository validator template marker is invalid")
@@ -420,7 +414,7 @@ def validation_surfaces(
         )
     workflow_text = None
     if not workflow.is_file():
-        template = WORKFLOW_TEMPLATE.read_text(encoding="utf-8")
+        template = template_path("workflow").read_text(encoding="utf-8")
         markers = ("__RUNNER__", "      # __SETUP_STEPS__", "__VALIDATOR_PYTHON__")
         if any(template.count(marker) != 1 for marker in markers):
             raise RuntimeError("CI validation template markers are invalid")
@@ -449,7 +443,7 @@ def validate_template(template: Mapping[str, object]) -> None:
 
     expected = {
         "runtime_source_id": "",
-        "validation_profile": "ceratops-compatible",
+        "validation_profile": load_compatibility_contract()["generated_manifest_profile"],
         "sections": {"core": "skills/sections/core.md"},
         "maintenance_workflows": {},
         "runtime_payloads": {},
@@ -468,15 +462,15 @@ def build_sdlc_contract_candidate(
 ) -> dict[str, object] | None:
     """Preserve target capabilities and apply repository validation.
 
-    The template owns repository validation; this producer owns skill action
-    routing. Existing operations retain their definitions. Skillless targets
+    The template owns repository validation; the compatibility contract owns
+    skill action routing. Existing operations retain their definitions. Skillless targets
     lose only exact producer-owned entries. Deployment is never implicit.
     """
 
     if not apply_contract:
         return None
-    reusable = load_contract(SDLC_TEMPLATE)
-    target = repo_root / SDLC_RELATIVE
+    reusable = load_contract(template_path("sdlc"))
+    target = repo_root / surface_path("sdlc")
     contract = load_contract(target) if target.is_file() else dict(reusable)
     if contract["version"] != reusable["version"]:
         # Compatibility work must not turn a supported contract into a migration.
@@ -488,17 +482,7 @@ def build_sdlc_contract_candidate(
     candidate["repository"] = repository
     deliverables = dict(candidate.get("deliverables", {}))
     skills = dict(deliverables.get("skills", {}))
-    owned_operations: dict[str, dict[str, dict[str, object]]] = {
-        "validate": {
-            "ceratops-managed": {"handoff": SKILL_VALIDATION_HANDOFF},
-        },
-        "deploy-local": {
-            "ceratops-managed": {"handoff": MANAGED_SKILL_HANDOFF},
-            "standalone": {
-                "steps": [{"run": ["python", "scripts/deploy-skills.py"]}],
-            },
-        },
-    }
+    owned_operations = load_compatibility_contract()["managed_skill_operations"]
     for category, owned_entries in owned_operations.items():
         operations = dict(skills.get(category, {}))
         for name, owned in owned_entries.items():
@@ -779,7 +763,7 @@ def plan_ceratops_compatibility(
         {name: custom_sections[name] for name in sorted(custom_sections)}
     )
     profile = existing.get("validation_profile", template["validation_profile"])
-    if profile not in {"ceratops", "ceratops-compatible"}:
+    if profile not in load_compatibility_contract()["manifest_profiles"]:
         raise RuntimeError(f"unsupported validation_profile: {profile!r}")
     canonical_sources: dict[str, pathlib.Path] = {}
     if required_sections:
@@ -847,7 +831,7 @@ def apply_compatibility_plan(
             encoding="utf-8",
             newline=newline,
         )
-    existing_path = repo_root / MANIFEST_RELATIVE
+    existing_path = repo_root / surface_path("skill_manifest")
     if plan.manifest is None:
         if existing_path.is_file():
             existing_path.unlink()
@@ -863,7 +847,7 @@ def apply_compatibility_plan(
             newline="\n",
         )
     if plan.sdlc_contract is not None:
-        sdlc_path = repo_root / SDLC_RELATIVE
+        sdlc_path = repo_root / surface_path("sdlc")
         sdlc_path.parent.mkdir(parents=True, exist_ok=True)
         sdlc_path.write_text(
             yaml.dump(
@@ -875,7 +859,7 @@ def apply_compatibility_plan(
             newline="\n",
         )
     if plan.validator_text is not None:
-        validator_path = repo_root / VALIDATOR_RELATIVE
+        validator_path = repo_root / surface_path("validator")
         validator_path.parent.mkdir(parents=True, exist_ok=True)
         validator_path.write_text(
             plan.validator_text,
@@ -883,7 +867,7 @@ def apply_compatibility_plan(
             newline="\n",
         )
     if plan.workflow_text is not None:
-        workflow_path = repo_root / WORKFLOW_RELATIVE
+        workflow_path = repo_root / surface_path("workflow")
         workflow_path.parent.mkdir(parents=True, exist_ok=True)
         workflow_path.write_text(
             plan.workflow_text,
@@ -914,9 +898,9 @@ def main(argv: list[str] | None = None) -> int:
     mutation_started = False
     try:
         require_linked_worktree(repo_root)
-        template = load_mapping(TEMPLATE)
+        template = load_mapping(template_path("skill_manifest"))
         validate_template(template)
-        existing_path = repo_root / MANIFEST_RELATIVE
+        existing_path = repo_root / surface_path("skill_manifest")
         existing = load_mapping(existing_path) if existing_path.is_file() else {}
         has_source_skills = any((repo_root / "skills").glob("*/SKILL.md"))
         source_id = (
@@ -939,13 +923,13 @@ def main(argv: list[str] | None = None) -> int:
             for section_name in plan.canonical_sources
         )
         if plan.skills:
-            mutable_paths.append(repo_root / INSTALLER_RELATIVE)
+            mutable_paths.append(repo_root / surface_path("skill_bootstrap"))
         if plan.sdlc_contract is not None:
-            mutable_paths.append(repo_root / SDLC_RELATIVE)
+            mutable_paths.append(repo_root / surface_path("sdlc"))
         if plan.validator_text is not None:
-            mutable_paths.append(repo_root / VALIDATOR_RELATIVE)
+            mutable_paths.append(repo_root / surface_path("validator"))
         if plan.workflow_text is not None:
-            mutable_paths.append(repo_root / WORKFLOW_RELATIVE)
+            mutable_paths.append(repo_root / surface_path("workflow"))
         snapshots = [snapshot_file(path) for path in dict.fromkeys(mutable_paths)]
         created_dirs = [
             path
@@ -1032,7 +1016,7 @@ def main(argv: list[str] | None = None) -> int:
                     "applied"
                     if plan.sdlc_contract is not None
                     else "not_configured"
-                    if not (repo_root / SDLC_RELATIVE).exists()
+                    if not (repo_root / surface_path("sdlc")).exists()
                     else "unchanged"
                 ),
                 "repository_validation": {

@@ -2,8 +2,8 @@
 
 ## Goal
 
-Make an existing repository satisfy the `ceratops-compatible` repository and
-validation contract without changing any skill's intended behavior. Repositories
+Make an existing repository satisfy the bundled Ceratops compatibility
+contracts without changing any skill's intended behavior. Repositories
 with no skills omit skill-specific surfaces but still declare repository
 validation in their SDLC contract.
 
@@ -42,9 +42,14 @@ Infer the source identity from stable repository evidence before asking.
 - (D) `ceratops_repo_compatibility_engine.sdlc_contract_validation` reads and
   validates SDLC contracts for compatibility application, execution, and
   health; it never creates or modifies them.
-- (D) Missing repository-validation surfaces come from
-  `references/contracts/repository-validation-contract.json` and the templates
-  under `references/templates/`.
+- The internal compatibility pair is
+  `references/contracts/ceratops-compatibility-deterministic-contract.json` and
+  `references/contracts/ceratops-compatibility-nondeterministic-contract.json`.
+  The generator and checker consume the deterministic contract; review uses
+  the companion rubric and local repository evidence. Keep both in this skill.
+- Missing validator check definitions come from
+  `references/contracts/repository-validation-contract.json`; the compatibility
+  contract owns destination paths, template mappings, and skill routing defaults.
 
 ## Constraints
 
@@ -92,6 +97,9 @@ Infer the source identity from stable repository evidence before asking.
   before adding an undeclared check.
 - Generated CI uses target-owned dependency setup; the validation contract
   supplies no package installation requirements.
+- Review applicable environment, test, and lifecycle behavior against the
+  compatibility review contract using local declarations and execution results.
+  Report failed or unverified requirements; file presence alone is insufficient.
 - Keep source skill folders portable and keep generated shared-section blocks
   out of source `SKILL.md` files.
 
@@ -142,6 +150,8 @@ Infer the source identity from stable repository evidence before asking.
 - After every compatibility application, including zero-skill repositories, call
   `validate_ceratops_compatibility` inside the rollback boundary and require
   every applicable result to be valid with no errors.
+- Resolve every applicable compatibility review check before claiming full
+  compatibility; keep its result distinct from the read-only structural result.
 - Commit the validated compatibility change in the task worktree.
 - If only local release staging was requested, return to the parent skill and
   select `promote`; if deployment was requested, select `promote-and-deploy`;

@@ -16,14 +16,8 @@ import re
 import shutil
 import sys
 
-BUNDLE_ROOT = pathlib.Path(__file__).resolve().parents[2]
-TEMPLATE = (
-    BUNDLE_ROOT
-    / "references"
-    / "templates"
-    / "deploy-skills.py.tmpl"
-)
-TARGET_RELATIVE = pathlib.Path("scripts/deploy-skills.py")
+from .compatibility_contract import surface_path, template_path
+
 INSTALLER_VERSION_RE = re.compile(
     r"^[ \t]*INSTALLER_VERSION[ \t]*=[ \t]*"
     r"(?P<version>[1-9][0-9]*)[ \t]*(?:#.*)?$",
@@ -59,18 +53,19 @@ def synchronize_bootstrap_installer(repo_root: pathlib.Path) -> dict[str, object
     """Synchronize one task-worktree installer and return its compact result."""
 
     root = repo_root.resolve()
-    target = root / TARGET_RELATIVE
+    target = root / surface_path("skill_bootstrap")
+    template = template_path("skill_bootstrap")
     require_linked_worktree(root)
-    source_version = installer_version(TEMPLATE)
+    source_version = installer_version(template)
     if source_version is None:
         raise RuntimeError(
-            f"authoritative installer has no valid INSTALLER_VERSION: {TEMPLATE}"
+            f"authoritative installer has no valid INSTALLER_VERSION: {template}"
         )
     target_version = installer_version(target)
     updated = target_version is None or target_version < source_version
     if updated:
         target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(TEMPLATE, target)
+        shutil.copy2(template, target)
     return {
         "bootstrap_version": source_version,
         "previous_version": target_version,
