@@ -1047,9 +1047,9 @@ def test_credit_analysis_model_catalog_decodes_cli_as_utf8(
     ("timed_out", "exit_code", "startup_log", "expected_error"),
     [
         (True, 1, "unrelated startup warning\n",
-         "Codex child failed for test-review with exit 1: timed out after 1800s"),
+         "Codex child failed for test-review with exit 1: timed out after 1200s"),
         (True, 0, "unrelated startup warning\n",
-         "Codex child failed for test-review with exit 0: timed out after 1800s"),
+         "Codex child failed for test-review with exit 0: timed out after 1200s"),
         (False, 7, "actual child failure\n",
          "Codex child failed for test-review with exit 7: actual child failure"),
         (False, 7, "", "Codex child failed for test-review with exit 7"),
@@ -1147,7 +1147,7 @@ def test_credit_analysis_child_command_places_global_approval_before_exec(
         (attempt_dir / "last-message.json").write_text(
             '{"value": 1}', encoding="utf-8"
         )
-        clock[0] = 1800.0
+        clock[0] = 1200.0
         return runner_process
 
     def terminate_child(child: FakeProcess) -> int:
@@ -1158,6 +1158,9 @@ def test_credit_analysis_child_command_places_global_approval_before_exec(
         child_patch.setattr(workflow.shutil, "which", lambda name: "codex")
         child_patch.setattr(workflow.subprocess, "Popen", fake_popen)
         child_patch.setattr(workflow.time, "monotonic", lambda: clock[0])
+        child_patch.setattr(
+            workflow.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds)
+        )
         child_patch.setattr(workflow, "_process_is_alive", lambda pid: True)
         child_patch.setattr(workflow, "_terminate_process_tree", terminate_child)
         child_patch.setattr(
@@ -1171,13 +1174,14 @@ def test_credit_analysis_child_command_places_global_approval_before_exec(
             schema_path=tmp_path / "schema.json",
             attempt_dir=attempt_dir,
             execution_cwd=tmp_path,
-            timeout_seconds=1800,
         )
 
     assert result == ({"value": 1} if expected_error is None else None)
     assert attempt["error"] == expected_error
     assert attempt["timed_out"] is timed_out
     assert attempt["terminated"] is timed_out
+    if timed_out:
+        assert attempt["duration_ms"] == 1_200_000
     assert attempt["model_invoked"] is True
     assert attempt["exit_code"] == exit_code
     assert terminated == ([runner_process] if timed_out else [])

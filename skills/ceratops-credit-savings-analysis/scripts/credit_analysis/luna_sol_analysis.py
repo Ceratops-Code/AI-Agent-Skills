@@ -1124,7 +1124,7 @@ def _run_codex_child(
     schema_path: pathlib.Path,
     attempt_dir: pathlib.Path,
     execution_cwd: pathlib.Path,
-    timeout_seconds: int = 1800,
+    timeout_seconds: int = 1200,
 ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
     """Launch one explicit read-only Codex child and wait internally."""
 
