@@ -24,6 +24,18 @@ contracts = importlib.import_module(
 
 DEPLOY = "deliverables.sample.deploy-local."
 CHECK = "repository.validate."
+RECEIPT = {
+    "schema": "codex-verified-runtime-deploy-receipt.v1",
+    "status": "OK",
+    "sourceCommit": "3555d719be3a4312a7bf1d0dbc0146b51355dee7",
+    "generation": "verified-generation",
+    "appliedPatchCount": 3,
+    "suppressedPatchCount": 1,
+    "installedSync": "Passed",
+    "launcher": "Passed",
+    "activeGeneration": "running-generation",
+    "activeGenerationUnchanged": True,
+}
 
 
 def _step(script: str, *arguments: str) -> dict[str, object]:
@@ -174,15 +186,53 @@ def test_deploy_operation_requires_and_expands_exact_declared_parameters(
     assert (tmp_path / "value.txt").read_text() == "literal"
 
 
+@pytest.mark.parametrize(
+    ("stdout", "expected"),
+    [
+        (json.dumps(RECEIPT, indent=2), {"result": RECEIPT}),
+        (json.dumps(RECEIPT) + " " * (65536 - len(json.dumps(RECEIPT))),
+         {"result": RECEIPT}),
+        (json.dumps({**RECEIPT, "status": "FAILED"}),
+         {"result": {**RECEIPT, "status": "FAILED"}}),
+        ("", {}),
+        ("ordinary private log", {}),
+        ("ordinary private log\n" + json.dumps(RECEIPT), {}),
+        (json.dumps(RECEIPT) + "\nordinary private log", {}),
+        (json.dumps(RECEIPT) + "\n" + json.dumps(RECEIPT), {}),
+        (json.dumps([RECEIPT]), {}),
+        (json.dumps("OK"), {}),
+        ('{"status":"OK","private":"unrelated JSON"}', {}),
+        ('{"schema":"test.v1","status":true}', {}),
+        ('{"schema":" ","status":"OK"}', {}),
+        ('{"schema":"test.v1","status":"OK","nested":{"x":1,"x":2}}', {}),
+        ('{"schema":"test.v1","status":"OK","value":NaN}', {}),
+        ('{"schema":"test.v1","status":"OK","value":1e999}', {}),
+        ('{"schema":"test.v1","status":"OK","value":' + '[' * 1100
+         + '0' + ']' * 1100 + '}', {}),
+        (json.dumps({**RECEIPT, "data": "x" * 65536}),
+         {"result_omitted": "stdout_limit"}),
+        (json.dumps({**RECEIPT, "data": "\u05d0" * 33000}, ensure_ascii=False),
+         {"result_omitted": "stdout_limit"}),
+    ],
+    ids=["receipt", "size-boundary", "domain-failure", "empty", "text", "log-prefix", "log-suffix",
+         "multiple-documents", "array", "scalar", "unrelated-json", "invalid-status",
+         "blank-schema", "duplicate-member", "nan", "infinity", "deep-json",
+         "oversized", "utf8-size"],
+)
 def test_deploy_runs_repository_command_once_from_repository_directory(
     tmp_path: pathlib.Path,
+    stdout: str,
+    expected: dict[str, object],
 ) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
     (repo / "unrelated-name.py").write_text(
-        "import pathlib\nwith pathlib.Path('count.txt').open('a') as out: out.write('ran\\n')\n",
+        "import pathlib, sys\n"
+        "with pathlib.Path('count.txt').open('a') as out: out.write('ran\\n')\n"
+        f"sys.stdout.buffer.write({stdout.encode('utf-8')!r})\n"
+        "print('unrelated private stderr', file=sys.stderr)\n",
         encoding="utf-8",
     )
     write_sdlc_contract(
@@ -211,6 +261,17 @@ def test_deploy_runs_repository_command_once_from_repository_directory(
     )
     assert result.returncode == 0, result.stderr
     assert (repo / "count.txt").read_text() == "ran\n"
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "completed"
+    operation = payload["results"][0]
+    assert operation["operation"] == DEPLOY + "standalone"
+    assert operation["status"] == "completed"
+    assert operation["steps"] == [1]
+    assert operation.get("step_results", []) == (
+        [{"step": 1, **expected}] if expected else []
+    )
+    assert "private" not in result.stdout
+    assert not result.stderr
 
 
 @pytest.mark.parametrize(
@@ -347,7 +408,10 @@ def test_execute_prepared_operations_stops_after_failure_with_a_ledger(
     )
     write_sdlc_contract(
         tmp_path,
-        repository={"validate": {"repository": _step("check.py")}},
+        repository={"validate": {"repository": {"steps": [
+            {"run": [sys.executable, "-c", f"print({json.dumps(RECEIPT)!r})"]},
+            {"run": [sys.executable, "check.py"]},
+        ]}}},
         deliverables={
             "sample": {
                 "deploy-local": {
@@ -366,6 +430,8 @@ def test_execute_prepared_operations_stops_after_failure_with_a_ledger(
     assert evidence["operation"] == CHECK + "repository"
     assert evidence["commit"] == commit
     assert evidence["diagnostic"]["exit_code"] == 7
+    assert evidence["steps"] == [1]
+    assert evidence["step_results"] == [{"step": 1, "result": RECEIPT}]
     assert evidence["diagnostic"]["stderr_tail"] == [f"line-{i}" for i in range(4, 12)]
     assert len("".join(evidence["diagnostic"]["stdout_tail"])) <= 4096
     assert not (tmp_path / "deployed").exists()
@@ -558,9 +624,18 @@ def test_validation_parameters_remain_strict(tmp_path: pathlib.Path) -> None:
     assert result.returncode == 1 and "unexpected unknown" in result.stderr
 
 
+@pytest.mark.parametrize("change_head", [False, True])
 def test_source_changes_between_steps_prevent_later_mutations(
     tmp_path: pathlib.Path,
+    change_head: bool,
 ) -> None:
+    mutation = "import pathlib, subprocess; pathlib.Path('changed').touch(); "
+    if change_head:
+        mutation += (
+            "subprocess.run(['git', 'add', '.'], check=True, capture_output=True); "
+            "subprocess.run(['git', 'commit', '-m', 'drift'], check=True, capture_output=True); "
+        )
+    mutation += f"print({json.dumps(RECEIPT)!r})"
     write_sdlc_contract(
         tmp_path,
         deliverables={
@@ -572,7 +647,7 @@ def test_source_changes_between_steps_prevent_later_mutations(
                                 "run": [
                                     sys.executable,
                                     "-c",
-                                    "import pathlib; pathlib.Path('changed').touch()",
+                                    mutation,
                                 ]
                             },
                             {
@@ -592,6 +667,9 @@ def test_source_changes_between_steps_prevent_later_mutations(
     result = run_operation_cli(tmp_path, DEPLOY + "local")
     assert result.returncode == 1
     assert json.loads(result.stderr)["status"] == "state_changed"
+    assert json.loads(result.stderr)["step_results"] == [
+        {"step": 1, "result": RECEIPT}
+    ]
     assert not (tmp_path / "deployed").exists()
 
 
@@ -719,7 +797,8 @@ def test_v1_execution_preserves_order_argv_parameters_cwd_and_handoff(
         "path = pathlib.Path(__file__).resolve().parent / 'calls.json'\n"
         "calls = json.loads(path.read_text()) if path.exists() else []\n"
         "calls.append({'argv': sys.argv[1:], 'cwd': str(pathlib.Path.cwd())})\n"
-        "path.write_text(json.dumps(calls), encoding='utf-8')\n",
+        "path.write_text(json.dumps(calls), encoding='utf-8')\n"
+        f"print({json.dumps(RECEIPT)!r})\n",
         encoding="utf-8",
     )
     path = _write_v1(
@@ -765,6 +844,12 @@ def test_v1_execution_preserves_order_argv_parameters_cwd_and_handoff(
     ]
     assert payload["results"][0]["steps"] == ["publish_step"]
     assert payload["results"][1]["steps"] == ["first_step", "second_step"]
+    assert payload["results"][0]["step_results"] == [
+        {"step": "publish_step", "result": RECEIPT}
+    ]
+    assert payload["results"][1]["step_results"] == [
+        {"step": step, "result": RECEIPT} for step in ("first_step", "second_step")
+    ]
     assert payload["results"][1]["handoff"] == "ceratops-skill-lifecycle/deploy"
     calls = json.loads((tmp_path / "calls.json").read_text(encoding="utf-8"))
     assert calls == [
@@ -808,11 +893,19 @@ def test_v1_prepares_entire_batch_before_side_effects(
     assert not marker.exists()
 
 
-def test_v1_failure_stops_batch_with_original_step_ids(tmp_path: pathlib.Path) -> None:
+@pytest.mark.parametrize("startup_error", [False, True])
+def test_v1_failure_stops_batch_with_original_step_ids(
+    tmp_path: pathlib.Path, startup_error: bool,
+) -> None:
+    failed_run = (
+        [str(tmp_path / "missing-executable")]
+        if startup_error else
+        [sys.executable, "-c", f"print({json.dumps(RECEIPT)!r}); raise SystemExit(7)"]
+    )
     _write_v1(tmp_path, release={
         "first": {"steps": [
-            {"id": "before", "run": [sys.executable, "-c", "pass"]},
-            {"id": "failed_step", "run": [sys.executable, "-c", "raise SystemExit(7)"]},
+            {"id": "before", "run": [sys.executable, "-c", f"print({json.dumps(RECEIPT)!r})"]},
+            {"id": "failed_step", "run": failed_run},
             {"id": "unreachable", "run": [sys.executable, "-c", "pass"]},
         ]},
         "second": {"steps": [{"id": "pending", "run": [sys.executable, "-c", "pass"]}]},
@@ -825,7 +918,9 @@ def test_v1_failure_stops_batch_with_original_step_ids(tmp_path: pathlib.Path) -
     assert result["status"] == "operation_failed"
     assert result["failed_step"] == "failed_step"
     assert result["steps"] == ["before"]
-    assert result["diagnostic"]["exit_code"] == 7
+    assert result["diagnostic"]["exit_code"] == (None if startup_error else 7)
+    assert result["step_results"] == [{"step": "before", "result": RECEIPT}]
+    assert result["diagnostic"]["stdout_tail"] == ([] if startup_error else [json.dumps(RECEIPT)])
     assert result["pending_operations"] == ["release.operations.first", "release.operations.second"]
 
 

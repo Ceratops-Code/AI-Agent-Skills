@@ -388,24 +388,41 @@ def test_repository_ship_late_pending_work_reports_remote_mutation(
     assert not list(loaded["_operation_checkpoint_directory"](repo).glob("*.json"))
 
 
+@pytest.mark.parametrize("category", ["publish", "deploy-local"])
+@pytest.mark.parametrize("capture_receipt", [False, True])
 def test_repository_ship_checkpoints_each_operation_before_the_next(
     tmp_path: pathlib.Path,
+    category: str,
+    capture_receipt: bool,
 ) -> None:
     repo, loaded, args, log, state, _ = _setup(tmp_path)
-    args.publish_operation = [PUBLIC, PUBLIC]
+    phase = "release_publication" if category == "publish" else "deployment"
+    label = "publish" if category == "publish" else "deploy"
+    receipt = {"schema": "test.operation-receipt.v1", "status": "OK", "kind": label}
+    script = repo / ("publish-package.py" if category == "publish" else "install-local.py")
+    if capture_receipt:
+        with script.open("a", encoding="utf-8") as stream:
+            stream.write(f"print({json.dumps(receipt)!r})\n")
+        _commit(repo)
+    expected_results = [{"step": 1, "result": receipt}] if capture_receipt else []
+    if category == "publish":
+        args.publish_operation = [PUBLIC, PUBLIC]
+    else:
+        args.deploy_operation = [LOCAL, LOCAL]
     original = loaded["execute_prepared_operation"]
     count = 0
 
     def execute(prepared: Any) -> dict[str, Any]:
         nonlocal count
-        if prepared.category == "publish":
+        if prepared.category == category:
             count += 1
             if count == 2:
-                files = list(
-                    loaded["_operation_checkpoint_directory"](repo).glob("*.json")
-                )
-                assert len(files) == 1
-                assert json.loads(files[0].read_text())["position"] == 1
+                records = [json.loads(path.read_text()) for path in
+                           loaded["_operation_checkpoint_directory"](repo).glob("*.json")]
+                selected = [record for record in records if record["phase"] == phase]
+                assert len(selected) == 1
+                assert selected[0]["position"] == 1
+                assert selected[0]["result"].get("step_results", []) == expected_results
                 raise RuntimeError("interrupted between operations")
         return original(prepared)
 
@@ -414,14 +431,16 @@ def test_repository_ship_checkpoints_each_operation_before_the_next(
     ] = execute
     with pytest.raises(RuntimeError, match="interrupted"):
         loaded["ship_repository"](args)
-    assert log.read_text().splitlines().count("publish") == 1
+    assert log.read_text().splitlines().count(label) == 1
     loaded["_checkpointed_operation_batch"].__globals__[
         "execute_prepared_operation"
     ] = original
     resumed = loaded["ship_repository"](args)
     assert resumed["status"] == "already_shipped"
-    assert log.read_text().splitlines().count("publish") == 2
-    assert log.read_text().splitlines().count("deploy") == 1
+    assert log.read_text().splitlines().count(label) == 2
+    assert log.read_text().splitlines().count("deploy" if label == "publish" else "publish") == 1
+    for operation in resumed[phase]["results"]:
+        assert operation.get("step_results", []) == expected_results
 
 
 def test_repository_ship_rejects_malformed_deployment_checkpoint(

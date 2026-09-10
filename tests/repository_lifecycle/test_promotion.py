@@ -172,9 +172,10 @@ def test_promote_repository_runs_explicit_operation_ids_in_order(
     repo, _, _, environment = prepare_repository_lifecycle_repo(tmp_path)
     log = tmp_path / "operation-order.txt"
     (repo / "ordered-operation.py").write_text(
-        "import pathlib, sys\n"
+        "import json, pathlib, sys\n"
         "with pathlib.Path(sys.argv[2]).open('a', encoding='utf-8') as stream:\n"
-        "    stream.write(sys.argv[1] + '\\n')\n",
+        "    stream.write(sys.argv[1] + '\\n')\n"
+        "print(json.dumps({'schema': 'test.deploy-receipt.v1', 'status': 'OK', 'name': sys.argv[1]}))\n",
         encoding="utf-8",
         newline="\n",
     )
@@ -225,6 +226,15 @@ def test_promote_repository_runs_explicit_operation_ids_in_order(
         "deliverables.sample.deploy-local.custom-deploy",
     ]
     assert log.read_text(encoding="utf-8") == "promotion-check\ncustom-deploy\n"
+    assert result["operations"]["status"] == "completed"
+    for operation, name in zip(
+        result["operations"]["results"], ("promotion-check", "custom-deploy"), strict=True
+    ):
+        assert operation["status"] == "completed"
+        assert operation["step_results"] == [{
+            "step": 1,
+            "result": {"schema": "test.deploy-receipt.v1", "status": "OK", "name": name},
+        }]
 
 
 @pytest.mark.parametrize(

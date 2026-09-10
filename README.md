@@ -153,7 +153,7 @@ without repository deduplication.
 | `skills/ceratops-repo-lifecycle/scripts/github_pr_workflow/` | Package CLI for individual PR operations, opt-in scoped branch/stage/commit preparation and checked draft or fork PR publication in `ensure_pr.py`, bounded standalone review and CI inspectors with caller-owned evidence files, shared readiness-owned CI diagnostics, one-call retry-safe review replies and resolutions, decision-complete gate blockers, single-snapshot terminal Actions outage detection, exact-commit checkpointed shipping, four-proof obsolete-prepared-checkpoint cleanup before automatic resume, scoped pending-work checks, concurrent gates, integrated admin merge, reusable-branch restoration, and terminal cleanup. |
 | `skills/ceratops-repo-lifecycle/scripts/promote-repository.py` | Prepares `release/local`; promotes selected branches with no deployment or an explicit ordered operation selection; or composes promotion into exact-head shipping with ordered release and deploy selections, finalization, and cleanup. |
 | `skills/ceratops-repo-lifecycle/scripts/manage-pending-work.py` | Records, checks, automatically resumes the retained target commit, and progressively finalizes the exact selected scope; preflight preserves and reports non-cleanup-eligible worktrees, while eligible residual-worktree and identity-matched task-temp cleanup stays within validated named directory boundaries and preserves active skill-update state for post-deployment finalization. |
-| `skills/ceratops-repo-lifecycle/scripts/repository_operation.py` | Single capability runner: resolves complete YAML locations, prevalidates ordered argv/parameters/cwd, runs declared validation before deployment or publication, and returns compact results, bounded failures and advisory handoffs. |
+| `skills/ceratops-repo-lifecycle/scripts/repository_operation.py` | Single capability runner: resolves complete YAML locations, prevalidates ordered argv/parameters/cwd, runs declared validation before deployment or publication, and retains bounded structured step results separately from command completion, with bounded failures and advisory handoffs. |
 | `skills/ceratops-repo-lifecycle/scripts/ship-repository.py` | Prevalidates one SDLC contract and ordered phase selections before orchestrating guarded GitHub shipping, main synchronization, per-operation publication and deployment checkpoints, and resumable selected-source cleanup. |
 | `skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py` | Existing source, metadata, runtime-input, contract, and portability validator invoked by source-validate and explicit skill workflows. |
 | `skills/ceratops-skill-lifecycle/scripts/fast-change.py` | Classifies exact structured replacements, generates their diff, and owns the eligible direct-release change through declared Markdown lint, exact helper tests, targeted installation, commit, and failure compensation. |
@@ -231,6 +231,22 @@ Each repository owns one lifecycle contract:
   introduced in `97fb65b` . Materialization preserves supported existing
   contracts.
   Installer release-number differences alone do not require an upgrade.
+- Operation `status: completed` records command completion. A successful step
+  whose entire stdout is a JSON object with nonempty string `schema` and
+  `status` fields is retained unchanged in `step_results` as
+  `{"step": POSITION, "result": OBJECT}`. `POSITION` is the declared version-1
+  step ID or the one-based version-2 step position. Domain success still
+  requires the producer's schema, status and evidence checks; `OK` is not
+  translated to `deployed`. Capture does not validate that domain schema.
+  Stdout above 65,536 UTF-8 bytes yields
+  `{"step": POSITION, "result_omitted": "stdout_limit"}` without content.
+  Logs, mixed output, non-object JSON, malformed JSON, duplicate members and
+  non-finite numbers or container depth above 64 are suppressed; successful
+  stderr is never forwarded.
+  Earlier captured results survive later step failure or commit drift.
+  Promotion returns them and shipping persists them in existing operation
+  checkpoints for resume. Missing results, including older saved operation
+  metadata, do not authorize replaying a completed mutation to recover output.
 - `skills/ceratops-repo-lifecycle/references/contracts/github-contract-source-docs.json`
   records official source documents and reference repositories used by GitHub,
   repo, PR readiness, code, artifact, and repository-validation contracts. Its

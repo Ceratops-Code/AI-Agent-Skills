@@ -6,6 +6,8 @@ mutation. Lifecycle callers own timing and choose operation IDs. This runner
 prepares the whole batch, runs repository and selected-deliverable validations
 before deployment/publication, and stops on failure. Handoffs and prerequisites
 are advisory data, never executable prose or completion receipts.
+Successful steps may return bounded schema-tagged JSON results; their domain
+status is preserved separately from command completion and checkpointed by callers.
 """
 
 from __future__ import annotations
@@ -34,6 +36,8 @@ PARAMETER_NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 PLACEHOLDER_RE = re.compile(r"^\{(?P<name>[a-z][a-z0-9_]*)\}$")
 FAILURE_TAIL_LINES = 8
 FAILURE_TAIL_CHARS = 4096
+STEP_RESULT_BYTES = 65536
+STEP_RESULT_DEPTH = 64
 FAILED_STATUSES = frozenset({"operation_failed", "validation_failed", "state_changed"})
 
 
@@ -307,6 +311,54 @@ def _bounded_tail(value: str | None) -> list[str]:
     return (value or "")[-FAILURE_TAIL_CHARS:].splitlines()[-FAILURE_TAIL_LINES:]
 
 
+def _unique_result_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    """Reject ambiguous JSON members rather than silently replace receipt values."""
+
+    value: dict[str, Any] = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError("Duplicate result member.")
+        value[key] = item
+    return value
+
+
+def _step_result(stdout: str) -> dict[str, Any]:
+    """Retain a whole JSON receipt without forwarding logs or interpreting success.
+
+    Only a complete object with nonempty schema/status strings is a result.
+    Parsing never scans log fragments or reads stderr. Oversized output gets a
+    content-free omission marker; malformed and ordinary output stay suppressed.
+    Container depth is bounded so downstream checkpoint readers can decode it.
+    Capture cannot turn a completed side effect into a retryable failure.
+    """
+
+    if len(stdout.encode("utf-8")) > STEP_RESULT_BYTES:
+        return {"result_omitted": "stdout_limit"}
+    try:
+        value = json.loads(stdout, object_pairs_hook=_unique_result_object)
+        if not isinstance(value, dict) or not all(
+            isinstance(value.get(key), str) and value[key].strip()
+            for key in ("schema", "status")
+        ):
+            return {}
+        pending: list[tuple[dict[str, Any] | list[Any], int]] = [(value, 1)]
+        while pending:
+            container, depth = pending.pop()
+            if depth > STEP_RESULT_DEPTH:
+                return {}
+            children = container.values() if isinstance(container, dict) else container
+            pending.extend(
+                (child, depth + 1)
+                for child in children
+                if isinstance(child, (dict, list))
+            )
+        # Reject non-finite numbers, including exponent overflow, at every depth.
+        json.dumps(value, allow_nan=False)
+    except (ValueError, RecursionError):
+        return {}
+    return {"result": value}
+
+
 def execute_prepared_operation(prepared: PreparedOperation) -> dict[str, object]:
     """Run one prepared operation; never infer that an advisory handoff completed."""
 
@@ -324,6 +376,7 @@ def execute_prepared_operation(prepared: PreparedOperation) -> dict[str, object]
             "message": "HEAD changed after preparation.",
         }
     completed: list[int | str] = []
+    step_results: list[dict[str, Any]] = []
     for step in prepared.steps:
         if prepared.commit and prepared.category in {"deploy-local", "publish"}:
             try:
@@ -364,6 +417,12 @@ def execute_prepared_operation(prepared: PreparedOperation) -> dict[str, object]
                 },
             }
         completed.append(step.position)
+        captured = _step_result(stdout)
+        if captured:
+            step_results.append({"step": step.position, **captured})
+            # The shared list also preserves earlier receipts on later failures
+            # or commit drift, before any subsequent side effect is attempted.
+            base["step_results"] = step_results
         if repository_commit(prepared.repo_root) != prepared.commit:
             return {
                 **base,

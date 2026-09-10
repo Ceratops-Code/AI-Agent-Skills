@@ -70,6 +70,12 @@ setup and validation, plus deliverable validation, deployment and publication.
   not inferred check or installation commands.
 - Treat handoffs as advisory routing within the requested action, not executable
   prose, proof of deployment, or a completion-receipt protocol.
+- Treat `completed` as command completion; validate retained
+  `step_results[].result` independently against the producer's schema and
+  status.
+  Preserve those values and reuse saved results; never replay completed
+  deployment
+  or publication solely to recover missing output.
 - Keep ordinary repository-check failures, including `validation_failed`,
   inside the active action: diagnose and repair in the selected task worktree,
   commit, then repeat promotion or restart shipping for the new commit. Do not
