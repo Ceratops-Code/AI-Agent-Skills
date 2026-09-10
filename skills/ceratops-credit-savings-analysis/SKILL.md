@@ -70,10 +70,15 @@ applies them.
 - The controller validates `gpt-5.6-luna` and `gpt-5.6-sol` at maximum effort
   from the local Codex catalog. Luna and Sol children retain native rollout
   state. Every child is approval-free and read-only. The
-  controller owns waiting, timeout, process-tree termination, non-model progress,
-  prompts, evidence, results, and telemetry, and never spends model calls polling
+  controller owns waiting, timeout, process-tree termination, non-model
+  progress,
+  prompts, evidence, results, and telemetry, and never spends model calls
+  polling
   children. Accepted calls and attempts retain immutable hashes and resumable
   attempt records.
+  Validate and durably checkpoint each completed child while siblings continue.
+  Keep shared orchestration state mutations in the controller and final ordering
+  deterministic.
 - Luna performs high-recall discovery across all five fixed surfaces together.
   Run up to fifteen Luna children concurrently and admit no more than seventy
   Luna attempts for one frozen thread tree, including corrective reruns. Launch
@@ -112,6 +117,13 @@ applies them.
   duration, visible-token, and reasoning-token telemetry as diagnostics. Run no
   model bookkeeping calls; stop before execution when the finite plan is
   malformed or changes admitted run, part, or candidate coverage.
+  Generate model-facing schemas and Python shape checks from one shared response
+  contract, preserving independent evidence and semantic validation. Give each
+  corrective retry its complete retained prior response and exact validation
+  errors inside the proven input envelope. Preserve accepted results, evidence,
+  coverage and unaffected judgments; keep valid identifiers unchanged and repair
+  invalid finding identifiers consistently with their references. Never change a
+  semantic judgment merely to satisfy validation.
 - The planner attempts every completed run. When the seventy-Luna cap prevents
   complete transport, retain exact partial-coverage records by run and part
   identity, record count, input bytes, candidate count, and output bytes.

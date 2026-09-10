@@ -21,6 +21,245 @@ from tests.credit_analysis.sessions import (
 from tests.support.repositories import run_git
 
 
+@pytest.mark.parametrize("outcome", ["success", "failure", "interruption"])
+def test_completion_checkpoint_precedes_slow_sibling_and_replays(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, outcome: str,
+) -> None:
+    """Observe durable publication while an earlier reviewer is still blocked."""
+    workflow = load_credit_analysis_workflow_module()
+    request, _, _ = credit_analysis_request(tmp_path, extra_completed_turns=2)
+    plan = workflow.command_plan_orchestration(request, available_models=holistic_model_catalog())
+    state_path = pathlib.Path(plan["state_path"])
+    runner = FakeCreditModelRunner()
+    workflow.command_execute_orchestration(
+        state_path, runner=runner, task_limit=plan["projected_luna_calls"],
+    )
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    tasks = [item for item in state["manifest"]["sol_tasks"] if item["phase"] == "sol-adjudication"]
+    slow_id, fast_id = tasks[0]["task_id"], tasks[1]["task_id"]
+    slow_entered, release_slow, checkpointed, observed = (
+        threading.Event(), threading.Event(), threading.Event(), threading.Event()
+    )
+    owner_ids: set[int] = set()
+    observed_failures: list[BaseException] = []
+    launches: list[str] = []
+    original_run = runner.run
+    original_save = workflow._holistic_save_state
+    original_accept = workflow._holistic_accept_result
+
+    def run(**kwargs: Any) -> dict[str, Any]:
+        task_id = kwargs["task"]["task_id"]
+        launches.append(task_id)
+        if task_id == slow_id:
+            slow_entered.set()
+            assert release_slow.wait(10), "test did not release slow reviewer"
+        if task_id == fast_id and outcome == "failure":
+            raise RuntimeError("synthetic sibling failure")
+        return original_run(**kwargs)
+
+    def save(current: Mapping[str, Any]) -> None:
+        owner_ids.add(threading.get_ident())
+        original_save(current)
+        execution = current["execution"][fast_id]
+        if execution["status"] == "complete" or execution["attempts"]:
+            checkpointed.set()
+            assert observed.wait(10), "test did not finish reading the published checkpoint"
+
+    def accept(**kwargs: Any) -> None:
+        original_accept(**kwargs)
+        if kwargs["task"]["task_id"] == fast_id and outcome == "interruption":
+            raise KeyboardInterrupt("synthetic controller interruption")
+
+    monkeypatch.setattr(runner, "run", run)
+    monkeypatch.setattr(workflow, "_holistic_save_state", save)
+    monkeypatch.setattr(workflow, "_holistic_accept_result", accept)
+
+    def execute() -> None:
+        try:
+            workflow.command_execute_orchestration(state_path, runner=runner, task_limit=len(tasks))
+        except BaseException as error:
+            observed_failures.append(error)
+
+    owner = threading.Thread(target=execute)
+    owner.start()
+    try:
+        assert slow_entered.wait(10)
+        assert checkpointed.wait(10), "completed sibling was not checkpointed until slow child finished"
+        saved = json.loads(state_path.read_text(encoding="utf-8"))
+        assert saved["execution"][slow_id]["status"] == "pending"
+        assert saved["execution"][fast_id]["attempts"][-1]["outcome"] == (
+            "runner-error" if outcome == "failure" else "accepted"
+        )
+        assert owner.is_alive()
+        assert owner_ids == {owner.ident}
+    finally:
+        observed.set()
+        release_slow.set()
+        owner.join(15)
+    assert not owner.is_alive()
+    if outcome == "success":
+        assert not observed_failures
+    else:
+        assert len(observed_failures) == 1
+        assert isinstance(observed_failures[0], KeyboardInterrupt if outcome == "interruption" else workflow.CreditAnalysisError)
+    saved = json.loads(state_path.read_text(encoding="utf-8"))
+    assert saved["execution"][slow_id]["status"] == "complete", [str(error) for error in observed_failures]
+    retained = {
+        task_id: execution["result"]["sha256"]
+        for task_id, execution in saved["execution"].items() if execution["status"] == "complete"
+    }
+    monkeypatch.setattr(runner, "run", original_run)
+    monkeypatch.setattr(workflow, "_holistic_save_state", original_save)
+    monkeypatch.setattr(workflow, "_holistic_accept_result", original_accept)
+    completed = workflow.command_execute_orchestration(state_path, runner=runner)
+    assert completed["complete"]
+    final_state = json.loads(state_path.read_text(encoding="utf-8"))
+    for task_id, digest in retained.items():
+        assert final_state["execution"][task_id]["result"]["sha256"] == digest
+        assert len(final_state["execution"][task_id]["attempts"]) == 1
+    assert launches.count(slow_id) == launches.count(fast_id) == 1
+    call_count = len(runner.calls)
+    assert workflow.command_execute_orchestration(state_path, runner=runner)["complete"]
+    assert len(runner.calls) == call_count
+
+
+@pytest.mark.parametrize("defect", ["identifier", "reason", "judgment", "interrupted", "legacy"])
+def test_correction_feedback_retains_rejected_response_and_exact_errors(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, defect: str,
+) -> None:
+    workflow = load_credit_analysis_workflow_module()
+    request, _, _ = credit_analysis_request(tmp_path)
+    plan = workflow.command_plan_orchestration(request, available_models=holistic_model_catalog())
+    state_path = pathlib.Path(plan["state_path"])
+
+    class CorrectingRunner(FakeCreditModelRunner):
+        def __init__(self) -> None:
+            super().__init__()
+            self.responses: list[dict[str, Any]] = []
+            self.feedback: dict[str, Any] | None = None
+
+        def run(self, **kwargs: Any) -> dict[str, Any]:
+            raw = super().run(**kwargs)
+            if kwargs["task"]["phase"] != "sol-adjudication":
+                return raw
+            if not self.responses:
+                if defect == "identifier":
+                    old = raw["confirmed_findings"][0]["id"]
+
+                    def rename(value: Any) -> Any:
+                        if isinstance(value, dict):
+                            return {key: rename(item) for key, item in value.items()}
+                        if isinstance(value, list):
+                            return [rename(item) for item in value]
+                        return "F01" if value == old else value
+
+                    raw = rename(raw)
+                else:
+                    group = next(item for item in raw["call_classifications"] if item["classification"] == "avoidable_implemented")
+                    group["reason_code"] = "ordinary-model-error"
+            elif self.feedback is None:
+                self.feedback = json.loads(kwargs["prompt"].split("\nCorrection request:\n", 1)[1])
+                assert self.feedback["prior_response"] == self.responses[0]
+                if defect == "judgment":
+                    group = next(item for item in raw["call_classifications"] if item["classification"] == "avoidable_implemented")
+                    group["classification"] = "reviewed_no_confirmed_waste"
+            self.responses.append(json.loads(json.dumps(raw)))
+            return raw
+
+    runner = CorrectingRunner()
+    workflow.command_execute_orchestration(state_path, runner=runner, task_limit=plan["projected_luna_calls"])
+    if defect == "legacy":
+        original_prepare = workflow._holistic_prepare_task
+
+        def legacy_schema(*args: Any, **kwargs: Any) -> Any:
+            prepared = original_prepare(*args, **kwargs)
+            schema_path = prepared[3]
+            schema = json.loads(schema_path.read_text(encoding="utf-8"))
+
+            def weaken(value: Any) -> Any:
+                if isinstance(value, list):
+                    return [weaken(item) for item in value]
+                if not isinstance(value, dict):
+                    return value
+                if "anyOf" in value:
+                    first_branch, second_branch = value["anyOf"]
+                    result = json.loads(json.dumps(first_branch))
+                    result["properties"]["classification"]["enum"] += second_branch["properties"]["classification"]["enum"]
+                    result["properties"]["reason_code"]["type"] = ["string", "null"]
+                    result["properties"]["reason_code"]["enum"].append(None)
+                    return result
+                return {key: weaken(item) for key, item in value.items() if key != "pattern"}
+
+            schema_path.write_text(json.dumps(weaken(schema)), encoding="utf-8")
+            return prepared
+
+        monkeypatch.setattr(workflow, "_holistic_prepare_task", legacy_schema)
+    if defect == "interrupted":
+        original_bind = workflow._bind_attempt_record
+
+        def interrupt_binding(*args: Any, **kwargs: Any) -> Any:
+            if kwargs["attempt_number"] == 2:
+                raise KeyboardInterrupt("corrective child finished before checkpoint")
+            return original_bind(*args, **kwargs)
+
+        monkeypatch.setattr(workflow, "_bind_attempt_record", interrupt_binding)
+        with pytest.raises(KeyboardInterrupt, match="before checkpoint"):
+            workflow.command_execute_orchestration(state_path, runner=runner, task_limit=1)
+        monkeypatch.setattr(workflow, "_bind_attempt_record", original_bind)
+        before_replay = len(runner.calls)
+        workflow.command_execute_orchestration(state_path, runner=runner, task_limit=1)
+        assert len(runner.calls) == before_replay
+    else:
+        workflow.command_execute_orchestration(state_path, runner=runner, task_limit=1)
+    saved = json.loads(state_path.read_text(encoding="utf-8"))
+    task = next(item for item in saved["manifest"]["sol_tasks"] if item["phase"] == "sol-adjudication")
+    execution = saved["execution"][task["task_id"]]
+    first, second = execution["attempts"][:2]
+    assert runner.feedback is not None
+    assert runner.feedback["validation_errors"] == [first["error"]]
+    assert first["outcome"] == "validation-error"
+    assert pathlib.Path(first["raw_output_path"]).read_text(encoding="utf-8")
+    assert first["input_sha256"] == second["input_sha256"]
+    assert first["prompt_path"] != second["prompt_path"]
+    assert "retry-002" in second["prompt_path"]
+    if defect == "legacy":
+        from jsonschema import Draft202012Validator
+
+        assert first["schema_path"] != second["schema_path"]
+        assert "retry-002" in second["schema_path"]
+        assert Draft202012Validator(json.loads(pathlib.Path(first["schema_path"]).read_text(encoding="utf-8"))).is_valid(runner.responses[0])
+        assert not Draft202012Validator(json.loads(pathlib.Path(second["schema_path"]).read_text(encoding="utf-8"))).is_valid(runner.responses[0])
+    assert runner.feedback["prior_attempt"] == 1
+    if defect == "judgment":
+        assert second["outcome"] == "validation-error"
+        assert "classification" in second["error"]
+        assert execution["status"] == "omitted"
+    else:
+        assert second["outcome"] == "accepted"
+        if defect == "interrupted":
+            assert second["recovered_unrecorded_attempt"]
+            assert second["artifacts"]["prompt"]["sha256"] == hashlib.sha256(
+                pathlib.Path(second["prompt_path"]).read_bytes()
+            ).hexdigest()
+        count = len(runner.calls)
+        assert workflow.command_execute_orchestration(state_path, runner=runner, task_limit=0)
+        assert len(runner.calls) == count
+    from credit_analysis.orchestration_execution import _corrective_prompt
+
+    # Extra feedback must fit in the existing envelope without truncating the
+    # retained response or creating an attempt that could consume another call.
+    saved["model_specs"]["sol"]["input_byte_budget"] = 1
+    prompt_path = pathlib.Path(task["artifacts"]["prompt"])
+    oversized_path = prompt_path.with_name(f"{prompt_path.stem}.retry-999.md")
+    with pytest.raises(workflow.CreditAnalysisError, match="byte envelope"):
+        _corrective_prompt(
+            state=saved, task=dict(task), input_sha=first["input_sha256"],
+            prompt_path=prompt_path, schema_path=pathlib.Path(task["artifacts"]["schema"]),
+            attempt_number=999,
+        )
+    assert not oversized_path.exists()
+
+
 def test_full_analysis_uses_run_windows_parallel_tiers_and_exact_coverage(
     tmp_path: pathlib.Path,
 ) -> None:
