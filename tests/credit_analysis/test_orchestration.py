@@ -359,9 +359,14 @@ def test_full_analysis_uses_run_windows_parallel_tiers_and_exact_coverage(
     assert final["coverage"]["analyzed_runs"] == final["coverage"]["eligible_runs"]
     assert final["omissions"] == []
     report = pathlib.Path(completed["report_path"]).read_text(encoding="utf-8")
-    assert "| Run | Part | Records | Input bytes |" in report
-    assert "| Completed run | Total model calls |" in report
-    assert "| Proposed control | Calls saved per affected run |" in report
+    assert "| Run started | Total model calls | Avoidable calls | Unassessed calls |" in report
+    assert all(line.startswith("|") and line.endswith("|") for line in report.splitlines())
+    assert len(report.splitlines()) == len(final["run_accounting"]) + 3
+    assert " UTC |" in report
+    assert sum(row["unassessed_calls"] for row in final["run_accounting"]) == final["classification_totals"]["unassessed"]
+    assert "Problem:" in completed["presentation_contract"]
+    assert "Proposed fix:" in completed["presentation_contract"]
+    assert "Benefit and effort:" in completed["presentation_contract"]
 
     capacity_root = tmp_path / "sol-capacity"
     capacity_root.mkdir()
@@ -762,6 +767,13 @@ def test_luna_admission_caps_at_seventy_attempts_and_fifteen_workers(
     assert all(item["candidate_ids"] for item in capped)
     assert final["coverage"]["analyzed_runs"] == 70
     assert final["coverage"]["eligible_runs"] == 75
+    report = pathlib.Path(completed["report_path"]).read_text(encoding="utf-8")
+    omitted_runs = [row for row in final["run_accounting"] if row["review_status"] == "not reviewed"]
+    assert len(omitted_runs) == 5
+    for row in omitted_runs:
+        omitted_label = f"not reviewed ({row['total_model_calls']} omitted)"
+        assert f"| {omitted_label} | {omitted_label} |" in report
+    assert len(report.splitlines()) == 78
 
 
 def test_luna_schema_retry_is_single_and_omission_is_exact(
@@ -802,6 +814,84 @@ def test_luna_schema_retry_is_single_and_omission_is_exact(
     )
     assert omission["reason"] == "luna-invalid-output"
     assert omission["candidate_ids"] == state["manifest"]["luna_tasks"][0]["candidate_ids"]
+
+    final = json.loads(pathlib.Path(completed["final_result_path"]).read_text(encoding="utf-8"))
+    assert "not reviewed (" in pathlib.Path(completed["report_path"]).read_text(encoding="utf-8")
+    # Independent arithmetic cases cover both renderers, omitted evidence and
+    # semantic uncertainty; finding memberships must never be counted as calls.
+    display = json.loads(json.dumps(final))
+    display["run_accounting"] = [
+        {
+            "turn_id": "private-run-identifier",
+            "started_at": "2026-09-10T03:00:00+03:00",
+            "total_model_calls": 4, "reviewed_model_calls": 4,
+            "avoidable_calls_fix_implemented": 1,
+            "avoidable_calls_fix_unimplemented": 1, "unassessed_calls": 1,
+            "tokens": {"input_tokens": 80, "cached_input_tokens": 20,
+                       "output_tokens": 20, "reasoning_output_tokens": 5, "total_tokens": 100},
+        },
+        {
+            "started_at": "2026-09-10T00:00:00-04:00",
+            "total_model_calls": 6, "reviewed_model_calls": 4,
+            "avoidable_calls_fix_implemented": 1,
+            "avoidable_calls_fix_unimplemented": 1, "unassessed_calls": 1,
+            "tokens": {"input_tokens": 70, "cached_input_tokens": 70,
+                       "output_tokens": 30, "reasoning_output_tokens": 15, "total_tokens": 100},
+        },
+        {
+            "started_at": None, "total_model_calls": 2, "reviewed_model_calls": 0,
+            "avoidable_calls_fix_implemented": 0,
+            "avoidable_calls_fix_unimplemented": 0, "unassessed_calls": 0, "tokens": {},
+        },
+    ]
+    before_display = json.dumps(display, sort_keys=True)
+    report = workflow._render_holistic_report(display)
+    assert report.splitlines()[2:] == [
+        "| 2026-09-10 00:00:00 UTC | 4 | 2 | 1 | 100; 80.00% / 25.00% / 20.00% / 25.00% |",
+        "| 2026-09-10 04:00:00 UTC | 6 | 2 (4 reviewed; 2 omitted) | 1 (4 reviewed; 2 omitted) | 100; 70.00% / 100.00% / 30.00% / 50.00% |",
+        "| not recorded | 2 | not reviewed (2 omitted) | not reviewed (2 omitted) | 0; 0.00% / 0.00% / 0.00% / 0.00% |",
+        "| **Total** | **12** | **4 (8 reviewed; 4 omitted)** | **2 (8 reviewed; 4 omitted)** | **200; 75.00% / 60.00% / 25.00% / 40.00%** |",
+    ]
+    assert json.dumps(display, sort_keys=True) == before_display
+    omitted_only = workflow._render_holistic_report({**display, "run_accounting": display["run_accounting"][2:]})
+    assert "| **Total** | **2** | **not reviewed (2 omitted)** | **not reviewed (2 omitted)** |" in omitted_only
+    empty = workflow._render_holistic_report({**display, "run_accounting": []})
+    assert len(empty.splitlines()) == 3
+    assert "| **Total** | **0** | **0** | **0** | **0; 0.00%" in empty
+
+    legacy = {
+        "mode": "full-analysis",
+        "confirmed_findings": display["confirmed_findings"],
+        "plausible_risks": display["plausible_risks"],
+        "primary_call_mappings": [
+            {"call_id": f"call-{index}", "classification": classification}
+            for index, classification in enumerate([
+                "avoidable_implemented", "avoidable_unimplemented", "unassessed", "necessary",
+            ])
+        ],
+    }
+    retained_evidence = {"runs": [{
+        "started_at": "2026-09-10T03:00:00+03:00",
+        "calls": [{"call_id": f"call-{index}", "tokens": display["run_accounting"][0]["tokens"] if index == 0 else {}}
+                  for index in range(5)],
+    }]}
+    legacy_before = json.dumps([legacy, retained_evidence], sort_keys=True)
+    report = workflow._render_final_report(legacy, retained_evidence)
+    assert "| 2026-09-10 00:00:00 UTC | 5 | 2 (4 reviewed; 1 omitted) | 1 (4 reviewed; 1 omitted) | 100;" in report
+    packet_path = tmp_path / "display-final.json"
+    packet_path.write_text(json.dumps(legacy), encoding="utf-8")
+    packet_state = {"finalized": True, "mode": "full-analysis", "analysis_id": "display",
+                    "final_result": {"path": str(packet_path)}, "evidence": {"path": "retained-evidence.json"}}
+    packet = workflow._final_packet(packet_state, retained_evidence, {})
+    assert packet["report_markdown"] == report
+    assert "still-actionable" in packet["presentation_contract"]
+    assert "earlier runs" in packet["presentation_contract"]
+    assert "Retain every finding" in packet["presentation_contract"]
+    assert json.dumps([legacy, retained_evidence], sort_keys=True) == legacy_before
+    assert json.loads(packet_path.read_text(encoding="utf-8")) == legacy
+    standalone = {**legacy, "mode": "standalone", "scope_limitation": "Conclusions cover only tool and handoff flow and are not a whole-thread credit reconciliation."}
+    assert workflow._render_final_report(standalone, retained_evidence) == standalone["scope_limitation"] + "\n"
+    assert workflow._render_holistic_report(standalone) == standalone["scope_limitation"] + "\n"
 
 
 def test_credit_analysis_workflow_end_to_end_uses_sharded_semantic_calls(
@@ -1305,12 +1395,11 @@ def test_credit_analysis_workflow_end_to_end_uses_sharded_semantic_calls(
     report = pathlib.Path(completed_state["paths"]["report"]).read_text(
         encoding="utf-8"
     )
-    assert "| Completed run | Total model calls |" in report
-    assert "| Proposed control | Calls saved per affected run |" in report
-    assert all(
-        f"| {finding['proposed_durable_control']} |" in report
-        for finding in outstanding_findings
-    )
+    assert "| Run started | Total model calls | Avoidable calls | Unassessed calls |" in report
+    assert all(line.startswith("|") and line.endswith("|") for line in report.splitlines())
+    assert len(report.splitlines()) == len(final["run_accounting"]) + 3
+    assert all(finding["proposed_durable_control"] not in report for finding in outstanding_findings)
+    assert all(run["turn_id"] not in report for run in final["run_accounting"])
     assert len(final["candidate_decisions"]) == final["luna_discovery"][
         "candidate_count"
     ]

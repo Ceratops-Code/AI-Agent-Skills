@@ -18,6 +18,7 @@ from .persistent_subthread_analysis import *
 from .single_thread_analysis import *
 from .source_execution_context import *
 from .orchestration_execution import command_execute_orchestration
+from .report_rendering import _presentation_contract, _render_holistic_report
 from .report_bookkeeping import (
     _closed_result,
     _holistic_category_reviews,
@@ -26,7 +27,6 @@ from .report_bookkeeping import (
     _holistic_preserve_risk_sources,
     _holistic_surface_ids,
     _holistic_temporary_control_merges,
-    _render_holistic_risks,
     _result_deduped_strings,
     _result_objects,
 )
@@ -2242,6 +2242,7 @@ def _holistic_public_status(state: Mapping[str, Any]) -> dict[str, Any]:
         "evidence_path": state["evidence"]["path"],
         "final_result_path": final.get("path") if isinstance(final, Mapping) else None,
         "report_path": final.get("report_path") if isinstance(final, Mapping) else None,
+        **({"presentation_contract": _presentation_contract()} if state["phase"] == "complete" else {}),
         "projected_luna_calls": manifest["projected_luna_calls"],
         "projected_sol_calls": manifest["projected_sol_calls"],
         "maximum_planned_sol_calls": manifest["maximum_planned_sol_calls"],
@@ -4260,6 +4261,15 @@ is required runtime context, never credit waste. Never recommend a reasoning
 setting, effort, or level. Use only frozen local and canonical-state evidence;
 when broader or deep research would be required, preserve the uncertainty and
 provide a concise paste-ready targeted official-source check instead of guessing.
+Describe the concrete episode and the proposed before-and-after behavior. For
+script findings, name the verified repository-relative filename and relevant
+function, command, or setting in the problem and proposed control. Distinguish
+maintained source, installed copies, deleted temporary scripts, and direct tool
+invocations; if the owner or correction is unverified, state the missing check.
+Do not substitute generic labels such as validation or caller sequence for the
+actual actions. A rule's existence does not prove corrected behavior works;
+preserve the required machine implementation classification. Verify one- or
+two-line effort claims against the actual change.
 The input identity is {input_sha256}.
 """
     if task["phase"] == "luna-discovery":
@@ -4352,9 +4362,13 @@ duplicates by likely owning producer and durable control without dropping a
 material variant. Deep-verify only the supplied owner-deduplicated top-three
 findings against their raw evidence; do not re-adjudicate all Luna candidates.
 Return the complete semantic result ({len(luna_candidate_ids)} candidate
-decisions) using the transport aliases. Prioritize every Minimal or one-to-two
-line control and every finding whose low-end expected savings exceeds one call
-per similar run, while preserving every confirmed finding in the machine result.
+decisions) using the transport aliases. Keep every finding and its full evidence,
+verification, cost, complexity, risk, and ROI assessment in the machine result.
+Write self-contained problem and proposed-control text that supports later chat
+selection by supported recurring net savings and verified one- or two-line
+fixes, without a fixed quota. Chat uses Problem, Proposed fix, and Benefit and
+effort; the controller saves only the runs table in the human report. Review
+ranking does not limit presentation or finding retention.
 """
     return common + instructions + "\nInput packet:\n"
 
@@ -5853,6 +5867,10 @@ def _holistic_final(
                     == "avoidable_unimplemented"
                     for record in reviewed_records
                 ),
+                "unassessed_calls": sum(
+                    classification_by_call.get(str(record["call_id"])) == "unassessed"
+                    for record in reviewed_records
+                ),
                 "tokens": {
                     **dict(tokens),
                     "total_tokens": total_tokens,
@@ -6014,246 +6032,6 @@ def _holistic_final(
             "orchestration_root": state["paths"]["orchestration_root"],
         },
     }
-
-
-def _percentage(numerator: int, denominator: int) -> str:
-    return f"{(100 * numerator / denominator):.2f}%" if denominator else "0.00%"
-
-
-def _render_holistic_report(final: Mapping[str, Any]) -> str:
-    """Render the historical run/control tables plus exact omission accounting."""
-
-    coverage = final["coverage"]
-    evidence_percent = _percentage(
-        int(coverage["analyzed_evidence_bytes"]),
-        int(coverage["eligible_evidence_bytes"]),
-    )
-    lines = [
-        "# Credit savings analysis",
-        "",
-        (
-            f"Coverage: {coverage['fully_analyzed_runs']} complete and "
-            f"{coverage['partially_analyzed_runs']} partial of "
-            f"{coverage['eligible_runs']} runs; {coverage['analyzed_calls']} of {coverage['eligible_calls']} "
-            f"calls, and {coverage['analyzed_evidence_bytes']} of "
-            f"{coverage['eligible_evidence_bytes']} UTF-8 evidence bytes "
-            f"({evidence_percent})."
-        ),
-        "",
-        (
-            f"Luna calls: {final['model_calls']['actual_luna']}; Sol calls: "
-            f"{final['model_calls']['actual_sol']}; bookkeeping calls: 0."
-        ),
-        "",
-        (
-            f"Run parts: {coverage['reviewed_parts']} reviewed, "
-            f"{coverage['unreviewed_parts']} unreviewed, "
-            f"{coverage['planned_parts']} planned. Part inputs: "
-            f"{coverage['reviewed_part_input_bytes']} reviewed of "
-            f"{coverage['planned_part_input_bytes']} planned UTF-8 bytes; "
-            f"{coverage['unreviewed_part_input_bytes']} unreviewed. Luna outputs: "
-            f"{coverage['reviewed_luna_output_bytes']} reviewed of "
-            f"{coverage['accepted_luna_output_bytes']} accepted UTF-8 bytes "
-            f"against {coverage['planned_luna_output_bytes']} planned output bytes."
-        ),
-        "",
-        "## Run-part byte accounting",
-        "",
-        "| Run | Part | Records | Input bytes | Luna output allowance | Actual output bytes | Status |",
-        "|---|---|---:|---:|---:|---:|---|",
-    ]
-    run_labels = {
-        str(run["turn_id"]): str(run.get("started_at") or run["turn_id"])
-        for run in final["run_accounting"]
-    }
-    for window in final["part_accounting"]:
-        lines.append(
-            f"| {run_labels.get(str(window['turn_id']), window['turn_id'])} | "
-            f"{window['run_window_ordinal']}/{window['run_window_count']} | "
-            f"{window['record_count']} | {window['input_bytes']} | "
-            f"{window['output_byte_limit']} | {window['actual_output_bytes']} | "
-            f"{window['status']} |"
-        )
-    lines.extend(
-        [
-        "",
-        "## Completed runs",
-        "",
-        "| Completed run | Total model calls | Avoidable calls - Fix Implemented | Avoidable calls - Fix Unimplemented | Token usage (total; input % of total/cached % of input/output % of total/reasoning output % of output) |",
-        "|---|---:|---:|---:|---|",
-        ]
-    )
-    total_calls = 0
-    total_reviewed_calls = 0
-    total_implemented = 0
-    total_unimplemented = 0
-    token_totals: Counter[str] = Counter()
-    for run in final["run_accounting"]:
-        tokens = run["tokens"]
-        total = int(tokens.get("total_tokens", 0))
-        input_tokens = int(tokens.get("input_tokens", 0))
-        cached = int(tokens.get("cached_input_tokens", 0))
-        output = int(tokens.get("output_tokens", 0))
-        reasoning = int(tokens.get("reasoning_output_tokens", 0))
-        token_summary = (
-            f"{total}; {_percentage(input_tokens, total)} / "
-            f"{_percentage(cached, input_tokens)} / {_percentage(output, total)} / "
-            f"{_percentage(reasoning, output)}"
-        )
-        total_calls += int(run["total_model_calls"])
-        total_reviewed_calls += int(run["reviewed_model_calls"])
-        total_implemented += int(run["avoidable_calls_fix_implemented"])
-        total_unimplemented += int(run["avoidable_calls_fix_unimplemented"])
-        token_totals.update(
-            {
-                key: int(tokens.get(key, 0))
-                for key in (
-                    "input_tokens",
-                    "cached_input_tokens",
-                    "output_tokens",
-                    "reasoning_output_tokens",
-                    "total_tokens",
-                )
-            }
-        )
-        if run["review_status"] == "not reviewed":
-            implemented_display = "not reviewed"
-            unimplemented_display = "not reviewed"
-        elif run["review_status"] == "partially reviewed":
-            reviewed = f"{run['reviewed_model_calls']}/{run['total_model_calls']} reviewed"
-            implemented_display = (
-                f"{run['avoidable_calls_fix_implemented']} ({reviewed})"
-            )
-            unimplemented_display = (
-                f"{run['avoidable_calls_fix_unimplemented']} ({reviewed})"
-            )
-        else:
-            implemented_display = str(run["avoidable_calls_fix_implemented"])
-            unimplemented_display = str(run["avoidable_calls_fix_unimplemented"])
-        run_label = str(run.get("started_at") or run["turn_id"])
-        lines.append(
-            f"| {run_label} | {run['total_model_calls']} | "
-            f"{implemented_display} | {unimplemented_display} | {token_summary} |"
-        )
-    total_tokens = int(token_totals["total_tokens"])
-    total_token_summary = (
-        f"{total_tokens}; "
-        f"{_percentage(token_totals['input_tokens'], total_tokens)} / "
-        f"{_percentage(token_totals['cached_input_tokens'], token_totals['input_tokens'])} / "
-        f"{_percentage(token_totals['output_tokens'], total_tokens)} / "
-        f"{_percentage(token_totals['reasoning_output_tokens'], token_totals['output_tokens'])}"
-    )
-    review_suffix = (
-        ""
-        if total_reviewed_calls == total_calls
-        else f" ({total_reviewed_calls}/{total_calls} reviewed)"
-    )
-    lines.append(
-        f"| **Total** | **{total_calls}** | **{total_implemented}{review_suffix}** | "
-        f"**{total_unimplemented}{review_suffix}** | **{total_token_summary}** |"
-    )
-    lines.extend(
-        [
-            "",
-            "## Proposed controls",
-            "",
-            "| Proposed control | Calls saved per affected run | Est. Percent of Affected Similar Runs | Additional Calls per Affected Run for Implemented Fix | Est. Calls Saving by Fix per Similar Run | New Complexity Introduced by Fix | One-time implementation cost (model calls) | Recommendation |",
-            "|---|---:|---:|---:|---:|---|---:|---|",
-        ]
-    )
-    detailed: list[Mapping[str, Any]] = []
-    for finding in final["confirmed_findings"]:
-        if finding["implementation_status"] == "implemented":
-            continue
-        recurrence = finding["recurrence"]
-        saved = float(recurrence["calls_saved_per_affected_run"])
-        added = float(recurrence["additional_recurring_calls_per_affected_run"])
-        frequency = float(recurrence["affected_similar_run_frequency"])
-        frequency_low = float(
-            recurrence["affected_similar_run_frequency_range"][0]
-        )
-        low_end = max(0.0, saved - added) * frequency_low
-        complexity = str(finding["complexity"])
-        cheap = complexity == "Minimal"
-        recommendation = "Fix" if cheap or low_end > 1 else "Consider"
-        if cheap or low_end > 1:
-            detailed.append(finding)
-        lines.append(
-            f"| {finding['proposed_durable_control']} | {saved:g} | "
-            f"{frequency * 100:.1f}% | {added:g} | "
-            f"{float(recurrence['estimated_calls_saved_per_similar_run']):g} | "
-            f"{complexity} | "
-            f"{float(finding['one_time_implementation_cost']['estimated_model_calls']):g} | "
-            f"{recommendation} |"
-        )
-    for finding in detailed:
-        deep_verified = finding["id"] in set(final["deep_review_finding_ids"])
-        lines.extend(
-            [
-                "",
-                f"### {finding['title']}",
-                "",
-                f"Problem: {finding['problem_summary']}",
-                "",
-                f"Fix: {finding['proposed_durable_control']}",
-                "",
-                f"Owner: {finding['producer_owner']}",
-                "",
-                f"Deep verification: {'yes' if deep_verified else 'no'}",
-                "",
-                "Evidence: " + ", ".join(finding["evidence_refs"]),
-                "",
-                "Verification: " + "; ".join(finding["targeted_verification"]),
-            ]
-        )
-    lines.extend(
-        [
-            "",
-            "## Classification totals",
-            "",
-            "| Classification | Calls |",
-            "|---|---:|",
-        ]
-    )
-    for classification, count in final["classification_totals"].items():
-        lines.append(f"| {classification} | {count} |")
-    lines.extend(_render_holistic_risks(final["plausible_risks"]))
-    lines.extend(["", "## Capacity and execution omissions", ""])
-    if not final["omissions"]:
-        lines.append("None.")
-    else:
-        lines.extend(
-            [
-                "| Run | Window | Records | Evidence bytes | Candidate count | Output bytes | Reason |",
-                "|---|---|---:|---:|---:|---:|---|",
-            ]
-        )
-        for omission in final["omissions"]:
-            identity = omission.get("turn_id") or "-"
-            if omission.get("run_window_ordinal") is not None:
-                window = (
-                    f"{omission['run_window_ordinal']}/"
-                    f"{omission.get('run_window_count', '?')}"
-                )
-            else:
-                window_ids = (
-                    omission.get("omitted_window_task_ids")
-                    or omission.get("task_ids")
-                    or [omission.get("task_id", "-")]
-                )
-                window = ", ".join(str(item) for item in window_ids)
-            candidate_count = omission.get(
-                "candidate_count", len(omission.get("candidate_ids", []))
-            )
-            record_count = omission.get("record_count", candidate_count)
-            evidence_bytes = omission.get("evidence_bytes", omission.get("input_bytes", "-"))
-            lines.append(
-                f"| {identity} | {window} | {record_count} | {evidence_bytes} | "
-                f"{candidate_count} | {omission.get('output_bytes', 0)} | "
-                f"{omission.get('reason', '-')} |"
-            )
-    lines.extend(["", f"Retained result: {final['retained_artifacts']['result']}", ""])
-    return "\n".join(lines)
 
 
 def _finalize_holistic(

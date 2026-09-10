@@ -210,44 +210,52 @@ applies them.
 
 ### Output Contract
 
-- Present findings directly in chat, with artifact paths only on request.
-  Retain every confirmed finding in machine evidence. Before the detailed
-  list, report `Confirmed: N; outstanding: M; already addressed: K`. Show details
-  for every outstanding finding; include already addressed findings only when
-  requested.
-- Give each outstanding finding a plain-language title followed by:
-  - `Problem:` two to four sentences naming the owner, concrete episode, what
-    failed, and why the resulting work was avoidable.
-  - `Evidence:` the affected-call count and concrete command or tool action
-    with its observed result, plus the relevant artifact, answer, and
-    user-correction sequence; show IDs only on request.
-  - `Fix:` the exact durable control, its owner, and how it completes the flow
-    end to end.
-  - `Verification:` the exact behavior test proving every included gap.
-  - `Complexity:` implementation difficulty, one-time implementation cost in
-    model calls, and ongoing maintenance introduced by the fix.
-  - `Savings:` observed avoidable calls and expected savings per similar run,
-    with material assumptions. Distinguish reduced calls from reduced text
-    volume; state when credit or token savings cannot be quantified.
-- Do not show status labels, confidence, internal IDs, or helper taxonomy unless
-  requested.
-- Keep every finding concise, self-contained, and understandable without
-  follow-up. Explain what happened and why the work was avoidable before using
-  implementation jargon; define each necessary non-obvious term; name the
-  broadest correct implementation scope and concrete next artifact or action;
-  and omit routine operational detail.
-- Present each plausible risk separately with `Observed:` for the concrete
-  sequence, `Unknown:` for competing explanations, `Why not confirmed:` for the
-  exact missing fact and why choosing an explanation would be speculation, and
-  `How to confirm:` for the exact metadata or test. Do not merge risks when that
-  hides a distinct unknown or evidence source, and do not include a risk in
-  confirmed savings. For standalone actions, state that the conclusion is
-  limited to the selected surface and is not a whole-thread reconciliation.
-- For full analysis, report necessary, protocol-overhead, avoidable,
-  reviewed-no-confirmed-waste, and unassessed totals separately. Report completed
-  runs, every admitted or omitted part's record count, input bytes, output
-  allowance, actual output bytes, evidence and output totals, and semantic
-  coverage. Never imply that omitted runs, parts, calls, or candidates were reviewed.
+- Retain every finding and its full assessment in machine evidence. In chat,
+  select only the most useful still-actionable findings from the entire
+  requested scope, including earlier runs when presenting a later recheck.
+  Group findings only when the same fix addresses them without hiding a
+  distinct owner or failure. Give the direct result first.
+- Prioritize supported recurring net savings and verified one- or two-line
+  fixes. Do not impose a fixed finding count or fill a quota. Keep minor and
+  verified-resolved findings in machine evidence; provide details on request.
+- Give each selected finding a concrete title and three short parts:
+  - `Problem:` the observed episode, what failed, and the avoidable work.
+  - `Proposed fix:` the exact change and where it belongs.
+  - `Benefit and effort:` supported savings and implementation effort, with
+    material assumptions and any uncertainty that changes the recommendation.
+- For a script-related finding, name the verified repository-relative filename
+  and relevant function, command, or setting in the problem and proposed fix.
+  Replace generic labels such as "validation" with that concrete owner. For
+  a non-file action, identify the exact action and correction instead.
+- Distinguish maintained source from an installed copy or temporary caller.
+  Attribute the failure to the component supported by evidence. If the file
+  was deleted, say so; if the owner is unverified, state what must be checked
+  before offering an implementation-ready fix. Never invent a persistent file.
+- Explain the before-and-after behavior of the fix; a filename alone is not a
+  recommendation. Retain exact supporting evidence and the behavior check for
+  every included gap in machine evidence. Verify a one- or two-line effort
+  claim against the actual change it requires.
+- An existing rule or safeguard does not prove the observed problem is fixed.
+  Distinguish its existence from evidence that the corrected behavior works;
+  preserve the existing machine classification and ROI rules.
+- Distinguish observed avoidable calls from forecast savings. Keep text-volume
+  savings separate from call savings, and state when credit or token savings
+  cannot be quantified. Retain full cost and complexity analysis in machine
+  evidence without reproducing every field in chat.
+- Keep findings self-contained and use plain language before implementation
+  terms. Show internal status labels or confidence ratings only on request.
+  Show internal identifiers or helper taxonomy only on request. Give analysis
+  artifact paths only on request and omit routine operational detail.
+- Retain every plausible risk and its full assessment in machine evidence:
+  what was observed and unknown, why it is not confirmed, and how to confirm
+  it. In chat, surface a risk only when it materially changes
+  the recommendation or the reliability of the conclusions. State its unknown
+  and the exact check needed; exclude it from confirmed savings.
+- For full analysis, the saved human report contains only the runs table
+  defined by the action. Retain complete accounting and detailed findings in
+  machine evidence; disclose consequential coverage gaps briefly in chat.
+  Never imply omitted evidence was reviewed. For a standalone action, state
+  its surface limit and that it is not a whole-thread reconciliation.
 
 ## Analysis-Only Boundaries
 

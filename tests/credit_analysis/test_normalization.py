@@ -785,10 +785,14 @@ def test_credit_analysis_normalizes_sol_transport_without_changing_judgments(
     assert len(risk["source_risks"]) >= 3
     assert len({source["id"] for source in risk["source_risks"]}) == len(risk["source_risks"])
     report_text = workflow._render_holistic_report(final)
+    retained_risk_sources = [
+        source for retained in final["plausible_risks"]
+        for source in retained["source_risks"]
+    ]
     for source in risk["source_risks"]:
-        assert source["description"] in report_text
-        assert source["missing_fact"] in report_text
-        assert all(explanation in report_text for explanation in source["competing_explanations"])
+        assert source in retained_risk_sources
+        assert source["description"] not in report_text
+        assert source["missing_fact"] not in report_text
 
     tampered = report_copy()
     tampered["plausible_risks"][0]["source_risks"][0]["missing_fact"] = "Silently replaced uncertainty."

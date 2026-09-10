@@ -34,7 +34,7 @@ source call without per-surface dismissal records.
 
 ## Output Contract
 
-Present every outstanding instruction-reasoning finding and plausible risk
-under the parent output contract. For a standalone run, state that conclusions
-cover only instructions and reasoning and are not a whole-thread credit
-reconciliation.
+Select and present findings under the parent Output Contract; retain every
+finding and plausible risk in machine evidence. For a standalone run, state
+that conclusions cover only instructions and reasoning
+and are not a whole-thread credit reconciliation.

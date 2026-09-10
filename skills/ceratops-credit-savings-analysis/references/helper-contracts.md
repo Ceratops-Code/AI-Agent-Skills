@@ -78,9 +78,9 @@ combination.
 
 ## Output Contract
 
-Present every outstanding helper-contract finding and plausible risk under the
-parent output contract. Name the owning helper, applicable categories, and
-targeted tests inside the plain-language problem and fix instead of using
-internal owner or category headings. For a standalone run, state that
-conclusions cover only helper contracts and are not a whole-thread credit
-reconciliation.
+Select and present findings under the parent Output Contract; retain every
+finding and plausible risk in machine evidence. For a standalone run, state
+that conclusions cover only helper contracts
+and are not a whole-thread credit reconciliation.
+Retain applicable categories and targeted tests with each finding in
+machine evidence; identify the concrete helper in each selected fix.
