@@ -108,9 +108,12 @@ what still needs attention.
   evidence, run `python scripts/closure_snapshot.py --repo PATH
   [--fetch-remote NAME] [--release-branch BRANCH
   --release-upstream REF] [--task-worktree PATH --task-branch BRANCH]
-  [--temp-root PATH] [--cleanup-temp PATH]`; it snapshots only named targets,
-  removes only exact temporary artifacts that its safety contract validates
-  under `--temp-root`, and emits compact cleanup evidence.
+  [--temp-root PATH] [--cleanup-temp PATH] [--count-temp-files]`; it snapshots
+  only named targets, removes only exact temporary artifacts that its safety
+  contract validates under `--temp-root`, and emits compact cleanup evidence.
+- With `--temp-root`, inspect root existence and type without traversal;
+  `files: null` means uncounted. Use `--count-temp-files` only when a recursive
+  count is needed; it requires `--temp-root`.
 - Pass `--cleanup-temp` only for an exact artifact that selected-thread evidence
   proves this task created; otherwise omit it and report the cleanup.
 - Do not rerun facts reported by the snapshot. Query goal state only when

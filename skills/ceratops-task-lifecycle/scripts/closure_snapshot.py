@@ -162,8 +162,10 @@ def is_ancestor(repo: pathlib.Path, ancestor: str, descendant: str) -> bool:
     return result.returncode == 0
 
 
-def temp_snapshot(path: pathlib.Path) -> dict[str, Any]:
-    """Count files below one explicitly named temporary root."""
+def temp_snapshot(
+    path: pathlib.Path, *, count_files: bool = False
+) -> dict[str, Any]:
+    """Inspect one root; recursive counting is explicit and null means uncounted."""
 
     resolved = path.expanduser().resolve()
     if not resolved.exists():
@@ -173,7 +175,11 @@ def temp_snapshot(path: pathlib.Path) -> dict[str, Any]:
     return {
         "path": str(resolved),
         "exists": True,
-        "files": sum(1 for candidate in resolved.rglob("*") if candidate.is_file()),
+        "files": (
+            sum(1 for candidate in resolved.rglob("*") if candidate.is_file())
+            if count_files
+            else None
+        ),
     }
 
 
@@ -335,6 +341,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--task-branch")
     parser.add_argument("--temp-root", type=pathlib.Path)
     parser.add_argument(
+        "--count-temp-files",
+        action="store_true",
+        help="Recursively count files; requires --temp-root. Otherwise files is null.",
+    )
+    parser.add_argument(
         "--cleanup-temp",
         action="append",
         default=[],
@@ -361,6 +372,8 @@ def main(argv: list[str] | None = None) -> int:
             raise SnapshotError("task worktree checks require --release-branch")
         if args.cleanup_temp and not args.temp_root:
             raise SnapshotError("--cleanup-temp requires --temp-root")
+        if args.count_temp_files and not args.temp_root:
+            raise SnapshotError("--count-temp-files requires --temp-root")
 
         repo = resolve_directory(args.repo, "repo")
         repository_root = pathlib.Path(
@@ -430,7 +443,9 @@ def main(argv: list[str] | None = None) -> int:
             )
 
         if args.temp_root:
-            result["temp"] = temp_snapshot(args.temp_root)
+            result["temp"] = temp_snapshot(
+                args.temp_root, count_files=args.count_temp_files
+            )
     except (OSError, SnapshotError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
