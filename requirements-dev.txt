@@ -2,6 +2,6 @@
 mypy==2.3.1
 pytest==9.1.1
 packaging==26.3
-mcp==2.1.1
+mcp==2.2.0
 ruff==0.16.5
 yamllint==1.38.0
