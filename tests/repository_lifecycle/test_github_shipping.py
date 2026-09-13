@@ -29,7 +29,8 @@ def test_github_read_retry_is_delayed_bounded_and_preserves_result(
 ) -> None:
     command = load_pr_workflow_module(monkeypatch, "command")
     api = importlib.import_module("github_contract_engine.github_api")
-    calls, sleeps = [], []
+    calls: list[tuple[list[str], dict[str, Any]]] = []
+    sleeps: list[float] = []
 
     def run(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
         calls.append((argv, kwargs))

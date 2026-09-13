@@ -867,6 +867,7 @@ class ProjectPythonRedirectionTests(unittest.TestCase):
             with mock.patch.object(self, "canonical_python", sys.executable):
                 payload = self.redirected_hook_result(command, cwd)
             self.assertIsNotNone(payload)
+            assert payload is not None
             wrapper = payload["hookSpecificOutput"]["updatedInput"]["command"]
             self.assertTrue(SANITY.is_wrapped_command(wrapper))
             for outer_shell in ("powershell", "pwsh"):
