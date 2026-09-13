@@ -925,6 +925,7 @@ def test_promote_preserves_structured_operation_failure_evidence(
     assert result["failed_step"] == 1
     assert result["diagnostic"] == {
         "exit_code": 6,
+        "message": "\n".join(f"failure-{index}" for index in range(4, 12)),
         "stdout_tail": [],
         "stderr_tail": [f"failure-{index}" for index in range(4, 12)],
     }
