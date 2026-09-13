@@ -272,11 +272,11 @@ def test_promote_repository_runs_explicit_operation_ids_in_order(
     else:
         assert "validation_handoffs" not in result
         assert "validation_handoffs" not in result["operations"]
-    for operation, name in zip(
+    for operation_result, name in zip(
         result["operations"]["results"], ("promotion-check", "custom-deploy"), strict=True
     ):
-        assert operation["status"] == "completed"
-        assert operation["step_results"] == [{
+        assert operation_result["status"] == "completed"
+        assert operation_result["step_results"] == [{
             "step": 1,
             "result": {"schema": "test.deploy-receipt.v1", "status": "OK", "name": name},
         }]
