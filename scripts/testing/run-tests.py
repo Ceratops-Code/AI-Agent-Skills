@@ -1044,12 +1044,12 @@ def selection_from_changes(
                     rule="deleted-path",
                 )
                 continue
-            renamed_test_source = (
-                path.startswith("tests/")
-                and changed.status.startswith("R")
+            renamed_source = (
+                changed.status.startswith("R")
                 and path_index == 0
                 and len(changed.paths) == 2
             )
+            renamed_test_source = path.startswith("tests/") and renamed_source
             ownership_path = changed.paths[1] if renamed_test_source else path
             full_patterns = sorted(
                 pattern
@@ -1129,7 +1129,8 @@ def selection_from_changes(
                 detail = "ambiguous ignore mapping: " + ", ".join(
                     item.ignore_id for item in matched_ignores
                 )
-            elif changed.status.startswith("D"):
+            elif changed.status.startswith("D") or renamed_source:
+                # Renames remove the source; manifests only need current paths.
                 full_suite = True
                 add_all_reasons(
                     reasons, manifest, path=path, rule="deleted-path"
