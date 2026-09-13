@@ -119,6 +119,20 @@ Use `--result-file PATH` outside the repository to atomically retain the exact
 JSON outcome, including operation receipts and phase durations in seconds. The
 helper records successful and failed attempts without replaying operations.
 
+After validating every deployment receipt against its producer schema, success
+status, requested commit and required fields, finalize the verified saved result
+with `--finalize-result --result-file PATH --task-temp-root ROOT
+--expected-commit COMMIT --verified-result-sha256 SHA256`. The digest identifies
+the exact bytes just validated; it does not replace producer validation. ROOT
+must be one task directory under `<repo-parent>/tmp/<repo-name>/`.
+
+Finalization accepts only complete promote-and-deploy results for that commit,
+rejects changed files and linked or out-of-scope paths, and deletes only the
+named receipt. It preserves failed, incomplete, promotion-only and shipping
+results, other task artifacts and pending-work state. Success prints `OK`;
+cleanup failure preserves the receipt and reports `replay_required: false`.
+Finalization never runs promotion, deployment or publication.
+
 ## Done When
 
 ### Completion Gate

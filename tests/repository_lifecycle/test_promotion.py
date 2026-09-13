@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import copy
+import hashlib
 import json
+import os
 import pathlib
 import runpy
 import subprocess
@@ -172,6 +175,8 @@ def test_promote_repository_requires_an_explicit_deployment_choice(
 def test_promote_repository_runs_explicit_operation_ids_in_order(
     tmp_path: pathlib.Path,
     validation_mode: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     repo, _, _, environment = prepare_repository_lifecycle_repo(tmp_path)
     log = tmp_path / "operation-order.txt"
@@ -214,7 +219,9 @@ def test_promote_repository_runs_explicit_operation_ids_in_order(
     assert run_git(repo, "add", ".").returncode == 0
     assert run_git(repo, "commit", "-m", "add ordered operations").returncode == 0
 
-    result_file = tmp_path / "promotion-result.json"
+    task_temp = repo.parent / "tmp" / repo.name / "promotion-results"
+    task_temp.mkdir(parents=True)
+    result_file = task_temp / "promotion-result.json"
     promoted = subprocess.run(
         [
             sys.executable,
@@ -280,6 +287,151 @@ def test_promote_repository_runs_explicit_operation_ids_in_order(
             "step": 1,
             "result": {"schema": "test.deploy-receipt.v1", "status": "OK", "name": name},
         }]
+
+    # Above, the caller checked the producer schema, success status and all
+    # required fields. Finalization binds that validation to these saved bytes.
+    data = result_file.read_bytes()
+    digest = hashlib.sha256(data).hexdigest()
+    operation_log = log.read_text(encoding="utf-8")
+    arguments = [
+        "--repo-root", str(repo), "--finalize-result",
+        "--result-file", str(result_file), "--task-temp-root", str(task_temp),
+        "--expected-commit", result["head"], "--verified-result-sha256", digest,
+    ]
+
+    def finalize(extra: list[str] | None = None) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, str(PROMOTE_REPOSITORY), *arguments, *(extra or [])],
+            capture_output=True, text=True, check=False, env=environment,
+        )
+
+    def rejected(extra: list[str], message: str, path: pathlib.Path = result_file) -> None:
+        before = path.read_bytes()
+        completed = finalize(extra)
+        assert completed.returncode == 1, (extra, completed.stdout, completed.stderr)
+        failure = json.loads(completed.stderr)
+        assert failure["status"] == "result_cleanup_failed"
+        assert failure["replay_required"] is False
+        assert message.casefold() in failure["message"].casefold(), failure
+        assert path.read_bytes() == before
+        assert log.read_text(encoding="utf-8") == operation_log
+
+    rejected(["--expected-commit", "0" * 40], "expected-commit")
+    rejected(["--expected-commit", "HEAD"], "full expected-commit")
+    rejected(["--verified-result-sha256", "0" * 64], "changed since")
+    rejected(["--verified-result-sha256", ""], "validating every producer receipt")
+    rejected(["--run-operation", "deliverables.sample.deploy-local.custom-deploy"], "execution options")
+    rejected(["--task-temp-root", str(tmp_path)], "one existing task directory")
+
+    # Even an acknowledged file must describe a complete deployment. These
+    # variations supply its new digest, so rejection exercises result semantics.
+    variations = [
+        (["status"], "error", "successful promote-and-deploy"),
+        (["operations"], None, "missing or incomplete"),
+        (["operations", "status"], "operation_failed", "missing or incomplete"),
+        (["operations", "pending_operations"], ["pending"], "missing or incomplete"),
+        (["operations", "completed_operations"], ["duplicate", "duplicate"], "ambiguous"),
+        (["operations", "results"], [], "ambiguous"),
+        (["operations", "results", 0, "commit"], "0" * 40, "different commit"),
+        (["operations", "results", 0, "status"], "failed", "incomplete"),
+        (["operations", "results", 0, "steps"], [True], "Complete step receipts"),
+        (["operations", "results", 0, "step_results"], [], "Complete step receipts"),
+        (["operations", "results", 0, "step_results", 0, "step"], 2, "Step receipt"),
+        (["operations", "results", 0, "step_results", 0, "result"], {}, "schema/status"),
+    ]
+    for field_path, value, message in variations:
+        modified = copy.deepcopy(result)
+        target: Any = modified
+        for field in field_path[:-1]:
+            target = target[field]
+        target[field_path[-1]] = value
+        case_file = task_temp / "invalid-result.json"
+        case_file.write_text(json.dumps(modified), encoding="utf-8")
+        rejected(["--result-file", str(case_file), "--verified-result-sha256",
+                  hashlib.sha256(case_file.read_bytes()).hexdigest()], message, case_file)
+
+    duplicate = task_temp / "duplicate-result.json"
+    duplicate.write_bytes(data.replace(b'"status": "ready"', b'"status": "ready", "status": "ready"', 1))
+    rejected(["--result-file", str(duplicate), "--verified-result-sha256",
+              hashlib.sha256(duplicate.read_bytes()).hexdigest()], "Duplicate", duplicate)
+    changed = task_temp / "changed-result.json"
+    changed.write_bytes(data + b"\n")
+    rejected(["--result-file", str(changed)], "changed since", changed)
+    outside = tmp_path / "outside-result.json"
+    outside.write_bytes(data)
+    rejected(["--result-file", str(outside)], "inside task-temp-root", outside)
+    nested_repo = task_temp / "nested-repository"
+    nested_repo.mkdir()
+    assert run_git(nested_repo, "init").returncode == 0
+    nested_file = nested_repo / "result.json"
+    nested_file.write_bytes(data)
+    rejected(["--result-file", str(nested_file)], "outside Git worktrees", nested_file)
+
+    hardlink = task_temp / "hardlink-result.json"
+    os.link(outside, hardlink)
+    rejected(["--result-file", str(hardlink)], "without hard links", hardlink)
+    link = task_temp / "linked-directory"
+    if os.name == "nt":
+        linked = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(tmp_path)],
+                                capture_output=True, text=True, check=False)
+        assert linked.returncode == 0, linked.stderr
+    else:
+        link.symlink_to(tmp_path, target_is_directory=True)
+    try:
+        rejected(["--result-file", str(link / outside.name)], "symlinks and junctions", outside)
+    finally:
+        if os.name == "nt":
+            link.rmdir()
+        else:
+            link.unlink()
+
+    # Filesystem failure is separate from deployment and must preserve its
+    # receipt. This entry point cannot call promote, even on a failed cleanup.
+    loaded = runpy.run_path(str(PROMOTE_REPOSITORY))
+    original_unlink = pathlib.Path.unlink
+
+    def deny_receipt_unlink(path: pathlib.Path, *args: Any, **kwargs: Any) -> None:
+        if path == result_file:
+            raise PermissionError("receipt is locked")
+        original_unlink(path, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(pathlib.Path, "unlink", deny_receipt_unlink)
+        patch.setitem(loaded["main"].__globals__, "promote", lambda *args, **kwargs: pytest.fail("deployment replayed"))
+        assert loaded["main"](arguments) == 1
+    cleanup_failure = json.loads(capsys.readouterr().err)
+    assert cleanup_failure["status"] == "result_cleanup_failed"
+    assert cleanup_failure["replay_required"] is False
+    assert result_file.read_bytes() == data
+
+    validate_completed = loaded["_completed_deployment"]
+
+    def change_during_validation(value: object, commit: str) -> None:
+        validate_completed(value, commit)
+        result_file.write_bytes(data + b"\n")
+
+    with monkeypatch.context() as patch:
+        patch.setitem(loaded["main"].__globals__, "_completed_deployment", change_during_validation)
+        assert loaded["main"](arguments) == 1
+    changed_failure = json.loads(capsys.readouterr().err)
+    assert "changed during cleanup" in changed_failure["message"]
+    assert changed_failure["replay_required"] is False
+    assert result_file.read_bytes() == data + b"\n"
+    result_file.write_bytes(data)
+
+    kept = task_temp / "other-task-evidence.txt"
+    kept.write_text("keep", encoding="utf-8")
+    scope = pathlib.Path(result["pending_work_scope"])
+    scope_before = scope.read_bytes()
+    finalized = finalize()
+    assert finalized.returncode == 0, finalized.stderr
+    assert finalized.stdout == "OK\n"
+    assert not result_file.exists()
+    assert kept.read_text(encoding="utf-8") == "keep"
+    assert scope.read_bytes() == scope_before
+    assert run_git(repo, "rev-parse", "HEAD").stdout.strip() == result["head"]
+    assert run_git(repo, "show-ref", "--verify", "refs/heads/approved").returncode == 0
+    assert log.read_text(encoding="utf-8") == operation_log
 
 
 @pytest.mark.parametrize(
@@ -966,6 +1118,21 @@ def test_promote_preserves_structured_operation_failure_evidence(
         "stdout_tail": [],
         "stderr_tail": [f"failure-{index}" for index in range(4, 12)],
     }
+
+    task_temp = repo.parent / "tmp" / repo.name / "failed-promotion"
+    task_temp.mkdir(parents=True)
+    saved = task_temp / result_file.name
+    saved.write_bytes(result_file.read_bytes())
+    finalized = subprocess.run(
+        [sys.executable, str(PROMOTE_REPOSITORY), "--repo-root", str(repo),
+         "--finalize-result", "--result-file", str(saved),
+         "--task-temp-root", str(task_temp), "--expected-commit", target_commit,
+         "--verified-result-sha256", hashlib.sha256(saved.read_bytes()).hexdigest()],
+        capture_output=True, text=True, check=False, env=environment,
+    )
+    assert finalized.returncode == 1
+    assert json.loads(finalized.stderr)["replay_required"] is False
+    assert json.loads(saved.read_text(encoding="utf-8")) == result
 
 
 def test_promote_and_deploy_rejects_operation_created_repository_work(
