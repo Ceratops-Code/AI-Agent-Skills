@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import pathlib
+import re
 import runpy
 import shutil
 import subprocess
@@ -32,6 +33,18 @@ from tests.support.repositories import (
     ROOT,
     create_compatible_repo,
 )
+
+
+def rendered_snapshot(destination: pathlib.Path) -> dict[pathlib.Path, bytes]:
+    """Compare skill output while excluding the root's persistent POSIX lock."""
+    return {
+        item.relative_to(destination): item.read_bytes()
+        for item in destination.rglob("*")
+        if item.is_file() and not (
+            item.parent == destination
+            and re.fullmatch(r"\.ceratops-install-[0-9a-f]{64}\.lock", item.name)
+        )
+    }
 
 
 @pytest.mark.parametrize("renderer", [BOOTSTRAP, INSTALLER_TEMPLATE, BUILDER, VALIDATOR], ids=["repository", "compatible", "managed", "validator"])
@@ -866,7 +879,10 @@ def test_runtime_inventory_lists_direct_manifests_and_malformed_blockers(
 
 
 @pytest.mark.parametrize("newline", ["\n", "\r\n"], ids=["lf", "crlf"])
-def test_action_sections_match_across_installation_paths(tmp_path: pathlib.Path, newline: str) -> None:
+@pytest.mark.parametrize("retained_posix_lock", [False, True])
+def test_action_sections_match_across_installation_paths(
+    tmp_path: pathlib.Path, newline: str, retained_posix_lock: bool,
+) -> None:
     repo = tmp_path / "compatible"
     create_compatible_repo(repo, "example/actions", ["alpha-tool", "beta-tool"])
     add_action_sections(repo)
@@ -882,7 +898,10 @@ def test_action_sections_match_across_installation_paths(tmp_path: pathlib.Path,
         for _ in range(2):
             result = subprocess.run(command, capture_output=True, text=True, check=False)
             assert result.returncode == 0, result.stderr
-        outputs.append({p.relative_to(destination): p.read_bytes() for p in destination.rglob("*") if p.is_file()})
+        if renderer == BUILDER and retained_posix_lock:
+            # Exercise the Linux lock artifact on every host platform.
+            (destination / (".ceratops-install-" + "0" * 64 + ".lock")).touch()
+        outputs.append(rendered_snapshot(destination))
         rendered = (destination / "alpha-tool/references/review.md").read_text(encoding="utf-8")
         assert rendered.startswith("# Review Action\n\n<!-- CERATOPS_SHARED_SECTIONS_START -->\n")
         assert rendered.count("<!-- CERATOPS_SHARED_SECTIONS_START -->") == 1
@@ -969,7 +988,7 @@ def test_contract_review_adoption_and_all_managed_output(tmp_path: pathlib.Path)
             command.append("--all-managed")
         result = subprocess.run(command, capture_output=True, text=True, check=False)
         assert result.returncode == 0, result.stderr
-        snapshots.append({p.relative_to(destination): p.read_bytes() for p in destination.rglob("*") if p.is_file()})
+        snapshots.append(rendered_snapshot(destination))
         for skill, refs in expected.items():
             source = ROOT / "skills" / skill
             for relative in refs:
