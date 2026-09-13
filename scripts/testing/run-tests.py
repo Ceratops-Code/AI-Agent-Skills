@@ -1230,6 +1230,8 @@ def execute(
     parser.add_argument("--base")
     parser.add_argument("--diagnostic-output", type=pathlib.Path)
     parser.add_argument("--head")
+    parser.add_argument("--select-only", action="store_true",
+                        help="Validate diff/worktree selection without collecting or running tests.")
     parser.add_argument("--node-map", type=pathlib.Path)
     parser.add_argument("--reconcile-collection", type=pathlib.Path)
     parser.add_argument("--validate-manifest", action="store_true")
@@ -1278,12 +1280,14 @@ def execute(
         selected_modes != 1
         or ((args.base is None) != (args.head is None))
         or (args.node_map is not None and args.reconcile_collection is None)
+        or (args.select_only and not (args.worktree or args.base is not None))
     ):
         payload = base_payload(mode="configuration", base=args.base, head=args.head)
         payload["manifest_errors"] = [
             "choose exactly one of --all, --validate-manifest, --worktree, "
             "--write-collection, --reconcile-collection, or --base with --head; "
-            "--node-map is valid only with --reconcile-collection"
+            "--node-map is valid only with --reconcile-collection; "
+            "--select-only requires --worktree or --base with --head"
         ]
         payload["status"] = "configuration-error"
         return fail_before_tests(CONFIGURATION_EXIT_CODE)
@@ -1405,6 +1409,10 @@ def execute(
     if selection.mapping_gaps:
         payload["status"] = "mapping-gap"
         return fail_before_tests(MAPPING_GAP_EXIT_CODE)
+    if args.select_only:
+        payload["status"] = "selection-valid"
+        emit(payload)
+        return 0
     if not selection.pytest_targets:
         payload["status"] = "no-tests-selected"
         emit(payload)

@@ -74,6 +74,13 @@ def test_sdlc_template_is_a_schema_valid_empty_skeleton(tmp_path: pathlib.Path) 
     for location, handoff in expected.items():
         assert entries[location] == {"handoff": handoff}
     assert set(live["deliverables"]["skills"]["validate"]) == {"ceratops-managed"}
+    selection = entries["repository.test-selection.ci"]
+    assert selection["parameters"] == ["base", "head"]
+    assert selection["steps"][0]["run"] == [
+        "python", "scripts/testing/run-tests.py", "--select-only",
+        "--base", "{base}", "--head", "{head}",
+    ]
+    assert "repository.test-selection.ci" not in runner.validation_operations(ROOT)
 
 
 def test_absent_sdlc_section_is_a_successful_no_op(tmp_path: pathlib.Path) -> None:
@@ -1132,3 +1139,241 @@ def test_health_migration_proposal_is_advisory_and_reaches_automation_summary(
         assert not levels.has_blocking_findings(proposals)
     assert comparison == {"findings": [], "approved_drift": []}
     assert path.read_bytes() == original
+
+@pytest.mark.parametrize("mode", ["explicit", "staged", "committed"])
+def test_repository_path_rename_updates_exact_references_and_preserves_index(
+    tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str], mode: str,
+) -> None:
+    import runpy
+
+    module = runpy.run_path(str(OPERATION_RUNNER.with_name("rename-repository-path.py")))
+    repo = tmp_path / "repo"
+    (repo / "src").mkdir(parents=True)
+    (repo / "docs").mkdir()
+    source = b"print('preserve quotation marks')\r\n"
+    (repo / "src/old-name.py").write_bytes(source)
+    (repo / "README.md").write_bytes(b'Run "src/old-name.py"; keep old-name.pyc.\r\n')
+    (repo / "docs/guide.md").write_bytes(b"[run](../src/old-name.py#entry)\r\n")
+    (repo / "references.json").write_bytes(b'{"command": "src\\\\old-name.py"}\r\n')
+    base = _repository(repo)
+    index = run_git(repo, "diff", "--cached", "--binary").stdout
+    arguments = ["--rename", "src/old-name.py", "lib/new-name.py"]
+    if mode != "explicit":
+        (repo / "lib").mkdir()
+        assert run_git(repo, "mv", "src/old-name.py", "lib/new-name.py").returncode == 0
+        arguments = ["--from-git"]
+        if mode == "committed":
+            assert run_git(repo, "commit", "-m", "rename only").returncode == 0
+            head = run_git(repo, "rev-parse", "HEAD").stdout.strip()
+            arguments += ["--base", base, "--head", head]
+        index = run_git(repo, "diff", "--cached", "--binary").stdout
+    report = tmp_path / "rename-report.json"
+    assert module["main"](["--repo-root", str(repo), *arguments, "--report", str(report)]) == 0
+    assert json.loads(report.read_text(encoding="utf-8"))["status"] == "ready"
+    assert (repo / "README.md").read_bytes().startswith(b'Run "src/old-name.py"')
+    report.unlink()
+    assert module["main"](["--repo-root", str(repo), *arguments, "--apply", "--report", str(report)]) == 0
+    assert capsys.readouterr().out.splitlines() == ["OK", "OK"]
+    assert (repo / "lib/new-name.py").read_bytes() == source
+    assert not (repo / "src/old-name.py").exists()
+    assert (repo / "README.md").read_bytes() == b'Run "lib/new-name.py"; keep old-name.pyc.\r\n'
+    assert (repo / "docs/guide.md").read_bytes() == b"[run](../lib/new-name.py#entry)\r\n"
+    assert json.loads((repo / "references.json").read_bytes()) == {"command": "lib\\new-name.py"}
+    assert run_git(repo, "diff", "--cached", "--binary").stdout == index
+    assert json.loads(report.read_text(encoding="utf-8"))["status"] == "applied"
+
+
+@pytest.mark.parametrize("case", ["ambiguous", "escape", "overwrite", "case-only", "binary", "report", "report-parent"])
+def test_repository_path_rename_rejects_unsafe_or_ambiguous_plans_before_writes(
+    tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str], case: str,
+) -> None:
+    import runpy
+
+    module = runpy.run_path(str(OPERATION_RUNNER.with_name("rename-repository-path.py")))
+    repo = tmp_path / "repo"
+    (repo / "src").mkdir(parents=True)
+    (repo / "src/old.py").write_bytes(b"original\r\n")
+    reference = repo / "references.txt"
+    reference.write_bytes(b'parts = ["src", "old.py"]\r\n' if case == "ambiguous" else b"src/old.py\r\n")
+    if case == "overwrite":
+        (repo / "new.py").write_bytes(b"keep")
+    if case == "binary":
+        (repo / "binary.dat").write_bytes(b"\0src/old.py")
+    _repository(repo)
+    before = {p: p.read_bytes() for p in (repo / "src/old.py", reference)}
+    destination = {"escape": "../outside.py", "case-only": "src/OLD.py"}.get(case, "new.py")
+    argv = ["--repo-root", str(repo), "--rename", "src/old.py", destination, "--apply"]
+    if case == "report":
+        argv += ["--report", str(repo / "report.json")]
+    if case == "report-parent":
+        argv += ["--report", str(tmp_path / "absent/report.json")]
+    code = module["main"](argv)
+    assert code in {1, 2}
+    assert {p: p.read_bytes() for p in before} == before
+    assert not run_git(repo, "status", "--porcelain").stdout
+    if case == "ambiguous":
+        assert code == 2
+        assert module["main"]([*argv, "--reference", '"src", "old.py"', '"new.py"']) == 0
+        assert reference.read_bytes() == b'parts = ["new.py"]\r\n'
+        assert not (repo / "src/old.py").exists()
+    if case == "binary":
+        assert module["main"]([*argv, "--exclude", "binary.dat"]) == 0
+        assert (repo / "binary.dat").read_bytes() == b"\0src/old.py"
+    capsys.readouterr()
+
+
+@pytest.mark.parametrize("failure", ["write", "move", "drift"])
+def test_repository_path_rename_compensates_file_errors_and_detects_source_drift(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, failure: str,
+) -> None:
+    import runpy
+
+    module = runpy.run_path(str(OPERATION_RUNNER.with_name("rename-repository-path.py")))
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "old.py").write_bytes(b"source\r\n")
+    (repo / "one.txt").write_bytes(b"old.py\r\n")
+    (repo / "two.txt").write_bytes(b"old.py\r\n")
+    _repository(repo)
+    report, originals, changes, moves = module["build_plan"](
+        repo, [("old.py", "nested/new.py")], [], set(),
+    )
+    assert not report["unresolved"]
+    if failure == "drift":
+        (repo / "one.txt").write_bytes(b"someone else's edit")
+        with pytest.raises(module["RenameError"], match="changed after planning"):
+            module["apply_plan"](originals, changes, moves, root=repo)
+        assert (repo / "one.txt").read_bytes() == b"someone else's edit"
+    else:
+        method = "write_bytes" if failure == "write" else "rename"
+        original = getattr(pathlib.Path, method)
+        calls = 0
+
+        def fail_once(path: pathlib.Path, *args: object, **kwargs: object) -> object:
+            nonlocal calls
+            calls += 1
+            if calls == (2 if failure == "write" else 1):
+                raise OSError("simulated file failure")
+            return original(path, *args, **kwargs)
+
+        monkeypatch.setattr(pathlib.Path, method, fail_once)
+        with pytest.raises(module["RenameError"], match="rolled back"):
+            module["apply_plan"](originals, changes, moves, root=repo)
+        assert all(path.read_bytes() == content for path, content in originals.items())
+    assert (repo / "old.py").exists()
+    assert not (repo / "nested").exists()
+
+
+def test_repository_path_rename_relocates_markdown_links_with_their_document(
+    tmp_path: pathlib.Path,
+) -> None:
+    import runpy
+
+    module = runpy.run_path(str(OPERATION_RUNNER.with_name("rename-repository-path.py")))
+    repo = tmp_path / "repo"
+    (repo / "docs").mkdir(parents=True)
+    (repo / "asset.txt").write_bytes(b"asset")
+    (repo / "docs/old.md").write_bytes(b"[asset](../asset.txt)\r\n")
+    _repository(repo)
+    assert module["main"]([
+        "--repo-root", str(repo), "--rename", "docs/old.md", "docs/deeper/new.md", "--apply",
+    ]) == 0
+    assert (repo / "docs/deeper/new.md").read_bytes() == b"[asset](../../asset.txt)\r\n"
+
+
+def test_repository_path_rename_requires_explicit_pairs_when_git_has_no_rename(
+    tmp_path: pathlib.Path,
+) -> None:
+    import runpy
+
+    module = runpy.run_path(str(OPERATION_RUNNER.with_name("rename-repository-path.py")))
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "old.py").write_bytes(b"unchanged")
+    _repository(repo)
+    assert module["main"](["--repo-root", str(repo), "--from-git", "--apply"]) == 1
+    assert (repo / "old.py").read_bytes() == b"unchanged"
+
+
+@pytest.mark.parametrize(
+    "operation",
+    [
+        {"parameters": ["base"], "steps": [{"run": ["check"]}]},
+        {"parameters": ["base", "head"], "handoff": "run tests"},
+        {"parameters": ["base", "head"], "steps": [{"run": ["check"]}], "handoff": "run tests"},
+        {"parameters": ["base", "head", "extra"], "steps": [{"run": ["check"]}]},
+    ],
+)
+def test_sdlc_test_selection_requires_executable_commit_context(operation: dict[str, object]) -> None:
+    document = {"version": 2, "kind": "ceratops-sdlc", "repository": {"test-selection": {"ci": operation}}}
+    assert contracts.validation_errors(document)
+
+
+def test_repository_path_rename_handles_spaces_same_names_and_multiple_pairs(tmp_path: pathlib.Path) -> None:
+    import runpy
+
+    module = runpy.run_path(str(OPERATION_RUNNER.with_name("rename-repository-path.py")))
+    repo = tmp_path / "repo with spaces"
+    (repo / "src").mkdir(parents=True)
+    (repo / "src/old name.py").write_bytes(b"first")
+    (repo / "src/same.py").write_bytes(b"second")
+    (repo / "README.md").write_bytes(
+        b'"src/old name.py" "src/same.py"\r\n[run](src/old%20name.py)\r\n',
+    )
+    _repository(repo)
+    assert module["main"]([
+        "--repo-root", str(repo), "--rename", "src/old name.py", "nested/new name.py",
+        "--rename", "src/same.py", "nested/same.py", "--apply",
+    ]) == 0
+    assert (repo / "README.md").read_bytes() == (
+        b'"nested/new name.py" "nested/same.py"\r\n[run](nested/new%20name.py)\r\n'
+    )
+    assert (repo / "nested/new name.py").read_bytes() == b"first"
+    assert (repo / "nested/same.py").read_bytes() == b"second"
+
+
+def test_repository_path_rename_rechecks_links_before_apply(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import runpy
+
+    module = runpy.run_path(str(OPERATION_RUNNER.with_name("rename-repository-path.py")))
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "old.py").write_bytes(b"source")
+    _repository(repo)
+    _, originals, changes, moves = module["build_plan"](repo, [("old.py", "nested/new.py")], [], set())
+    original = pathlib.Path.is_symlink
+    monkeypatch.setattr(pathlib.Path, "is_symlink", lambda path: path == repo / "nested" or original(path))
+    with pytest.raises(module["RenameError"], match="Links and junctions"):
+        module["apply_plan"](originals, changes, moves, root=repo)
+    assert (repo / "old.py").read_bytes() == b"source"
+    assert not (repo / "nested").exists()
+
+
+def test_repository_path_rename_saves_a_failure_report_before_returning(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import runpy
+
+    module = runpy.run_path(str(OPERATION_RUNNER.with_name("rename-repository-path.py")))
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "old.py").write_bytes(b"source")
+    _repository(repo)
+    report = tmp_path / "report.json"
+
+    def interrupted(*args: object, **kwargs: object) -> None:
+        assert json.loads(report.read_text(encoding="utf-8"))["status"] == "ready"
+        raise OSError("simulated write failure")
+
+    monkeypatch.setitem(module["main"].__globals__, "apply_plan", interrupted)
+    assert module["main"]([
+        "--repo-root", str(repo), "--rename", "old.py", "new.py",
+        "--apply", "--report", str(report),
+    ]) == 1
+    retained = json.loads(report.read_text(encoding="utf-8"))
+    assert retained["status"] == "failed"
+    assert retained["message"] == "simulated write failure"
+    assert (repo / "old.py").read_bytes() == b"source"
+    assert not (repo / "new.py").exists()

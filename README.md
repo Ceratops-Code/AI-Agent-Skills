@@ -123,7 +123,7 @@ without repository deduplication.
 | `scripts/deploy-skills.py` | Independent installation and updates; renders selected skills and overlays their files without validation, retirement, or lifecycle runtime calls. |
 | `scripts/deploy-hooks.py` | Independent hook installation and updates; copies the repository hook payloads and merges their registrations while preserving unrelated files and configuration. Does not grant trust or restart Codex. |
 | `scripts/deploy-tool-manager.py` | Standalone first tool-manager installation using global Python and uv, temporary locked libraries, and the manager's own packaging and deployment code; never changes Codex settings. |
-| `scripts/testing/run-tests.py` | Sole test-selection, collection-reconciliation, and pytest-execution owner; validates `tests/test-impact.json`, explains deterministic Git-diff selection, rejects mapping gaps before pytest collection or execution, supports explicit committed-diff, worktree, collection, and `--all` modes, and saves failed-pytest streams and structured pre-test failures with captured command output through `--diagnostic-output`; pytest output remains bounded in the console. |
+| `scripts/testing/run-tests.py` | Sole test-selection, collection-reconciliation, and pytest-execution owner; validates `tests/test-impact.json`, explains deterministic Git-diff selection, rejects mapping gaps before pytest collection or execution, supports explicit committed-diff, worktree, collection, and `--all` modes, adds `--select-only` to check diff/worktree mapping without pytest, and saves failed-pytest streams and structured pre-test failures with captured command output through `--diagnostic-output`; pytest output remains bounded in the console. |
 | `scripts/testing/pytest-diagnostics.py` | Extracts bounded failure summaries using exact pytest identities and source-file evidence; ambiguous or missing tracebacks use only that test's summary reason. Full diagnostic files remain owned by the runner. |
 | `scripts/validate-repository.py` | Local validation coordinator; checks the running Python against `pyproject.toml`, captures first-failure evidence, delegates its default full test phase to `scripts/testing/run-tests.py --all`, and supports CI's separate runner-owned test phase. |
 | `skills/ceratops-repo-lifecycle/references/templates/deploy-skills.py.tmpl` | Authoritative standard-library-only bootstrap copied into compatible skill repositories as `scripts/deploy-skills.py`. |
@@ -154,7 +154,8 @@ without repository deduplication.
 | `skills/ceratops-repo-lifecycle/scripts/promote-repository.py` | Prepares `release/local`; promotes selected branches with no deployment or an explicit ordered operation selection; or composes promotion into exact-head shipping with ordered release and deploy selections, finalization, and cleanup; records phase timings and optional exact JSON outcomes without replay. |
 | `skills/ceratops-repo-lifecycle/scripts/manage-pending-work.py` | Records, checks, automatically resumes the retained target commit, and progressively finalizes the exact selected scope; preflight preserves and reports non-cleanup-eligible worktrees, while eligible residual-worktree and identity-matched task-temp cleanup stays within validated named directory boundaries and preserves active skill-update state for post-deployment finalization. |
 | `skills/ceratops-repo-lifecycle/scripts/repository_operation.py` | Single capability runner: resolves complete YAML locations, prevalidates ordered argv/parameters/cwd, runs declared validation before deployment or publication, and retains bounded structured step results separately from command completion, with bounded failures and advisory handoffs. |
-| `skills/ceratops-repo-lifecycle/scripts/ship-repository.py` | Prevalidates one SDLC contract and ordered phase selections before orchestrating guarded GitHub shipping, main synchronization, per-operation publication and deployment checkpoints, and resumable selected-source cleanup. |
+| `skills/ceratops-repo-lifecycle/scripts/ship-repository.py` | Prevalidates one SDLC contract and ordered phase selections, runs declared CI test selection against freshly fetched base and exact staged head commits before push, and orchestrates guarded GitHub shipping, main synchronization, per-operation publication and deployment checkpoints, and resumable selected-source cleanup. |
+| `skills/ceratops-repo-lifecycle/scripts/rename-repository-path.py` | Plans or applies tracked file renames and exact filename references; accepts explicit or Git-detected rename pairs, updates relative Markdown links, blocks ambiguous references, preserves the index and text bytes outside replacements, and compensates caught file errors. |
 | `skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py` | Existing source, metadata, runtime-input, contract, and portability validator invoked by source-validate and explicit skill workflows. |
 | `skills/ceratops-skill-lifecycle/scripts/fast-change.py` | Classifies exact structured replacements, generates their diff, and owns the eligible direct-release change through declared Markdown lint, exact helper tests, targeted installation, commit, and failure compensation. |
 
@@ -509,6 +510,38 @@ $HOME/.claude/skills/<skill-name>/SKILL.md
 Invoke skills directly with `/skill-name` in Claude Code. In Codex, invoke them
 with `$skill-name`.
 
+## Rename Files And References
+
+From the installed `ceratops-repo-lifecycle` skill directory, preview a rename:
+
+```powershell
+python scripts/rename-repository-path.py --repo-root PATH --rename scripts/old.py scripts/new.py
+```
+
+Add `--apply` to change files. Repeat `--rename OLD NEW` for independent pairs.
+Use `--from-git` for staged renames, or add `--base BASE --head HEAD` for committed
+renames. Git's similarity detection can miss a heavily rewritten file; supply
+the explicit pair in that case. The helper creates no permanent rename catalog
+and leaves staging and committing to the caller.
+
+The plan lists exact reference edits and unresolved filenames. It updates
+repository-relative path tokens, including backslash forms, and local Markdown
+links, preserving quotation marks and line endings. Moving a Markdown document
+also adjusts its links to tracked local files. Ambiguous bare names, computed
+paths and non-UTF-8 references block application. Resolve them with an explicit
+`--reference OLD NEW` replacement, or preserve an entire historical reference
+file with `--exclude FILE`. This does not perform language-symbol refactoring.
+Only tracked regular files and already-moved destinations are included; links,
+case-only renames, overlapping pairs and existing destinations are rejected.
+Case-only renames need an explicitly staged intermediate filename.
+An existing worktree's edited content is preserved outside the planned changes.
+
+Use `--report PATH` for a new report outside the repository; the caller owns its
+retention and cleanup. Without a report, preview prints the plan and a successful
+apply prints `OK`. Caught file errors restore original bytes and paths and remove
+only newly created empty directories. After process termination, inspect Git's
+working-tree diff before retrying; no crash-recovery journal is maintained.
+
 ## Validate
 
 Install the declared Python and Node development dependencies, optionally
@@ -537,7 +570,19 @@ directory when it is empty.
 The validator runs Markdown and YAML lint, Ruff, mypy for Linux and Win32, and
 `scripts/testing/run-tests.py --all`. Pull-request CI calls the same runner
 with exact base and head commit SHAs. Local uncommitted selection is explicit
-through `python scripts/testing/run-tests.py --worktree`. Manifest validation
+through `python scripts/testing/run-tests.py --worktree`. Add `--select-only`
+to either diff or worktree mode to validate the same mapping without collecting
+or running pytest; success reports `selection-valid` and pytest `not-run`,
+including when no tests are selected. Failures retain the normal diagnostics.
+Shipping runs optional `repository.test-selection` entries from `sdlc/sdlc.yml`
+before pushing, independently of `repository.validate`. Each entry declares
+`parameters: [base, head]` and executable steps using whole-argument `{base}`
+and `{head}` placeholders. The helper supplies the freshly fetched remote base
+and exact staged head commits. Entries without both arguments, failed checks,
+fetch failures and changed source state block the push. Other lifecycle actions
+keep their existing validation discovery. A base branch that advances after
+this check is still evaluated by GitHub CI.
+Manifest validation
 is available through
 `python scripts/testing/run-tests.py --validate-manifest`. The validator does
 not invoke skill-local validators. Generic compatibility and

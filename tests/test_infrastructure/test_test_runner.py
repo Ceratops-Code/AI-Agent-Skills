@@ -1103,3 +1103,40 @@ def test_pytest_setup_failure_returns_diagnostic_before_launch(
     assert result.stdout == "" and "unavailable template" in result.stderr
     ordinary = runner.run_text([sys.executable, "-c", "print('ordinary command')"], tmp_path)
     assert ordinary.returncode == 0 and ordinary.stdout.strip() == "ordinary command"
+
+@pytest.mark.parametrize(
+    ("arguments", "diff", "expected", "exit_code"),
+    [
+        (["--base", BASE, "--head", HEAD], b"M\0skills/ceratops-repo-lifecycle/SKILL.md\0", "selection-valid", 0),
+        (["--base", BASE, "--head", HEAD], b"", "selection-valid", 0),
+        (["--worktree"], b"M\0skills/ceratops-repo-lifecycle/SKILL.md\0", "selection-valid", 0),
+        (["--base", BASE, "--head", HEAD], b"R100\0retired/old.py\0skills/ceratops-repo-lifecycle/SKILL.md\0", "selection-valid", 0),
+        (["--base", BASE, "--head", HEAD], b"A\0unknown/new.py\0", "mapping-gap", 3),
+        (["--all"], b"", "configuration-error", 2),
+        (["--validate-manifest"], b"", "configuration-error", 2),
+        (["--base", BASE], b"", "configuration-error", 2),
+    ],
+)
+def test_selection_only_reuses_diff_mapping_without_starting_pytest(
+    tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str],
+    test_runner_module: Any, arguments: list[str], diff: bytes, expected: str, exit_code: int,
+) -> None:
+    execution = DeterministicExecution(test_runner_module, diff)
+    diagnostic = tmp_path / "selection.json"
+    diagnostic.write_text("retained pytest failure", encoding="utf-8")
+    code = test_runner_module.execute(
+        [*arguments, "--select-only", "--diagnostic-output", str(diagnostic)],
+        repo_root=ROOT, text_runner=execution.text, bytes_runner=execution.bytes,
+    )
+    result = payload(capsys)
+    assert code == exit_code
+    assert result["status"] == expected
+    assert result["pytest"] == {"exit_code": None, "outcome": "not-run"}
+    assert not any("pytest" in command for command in execution.commands)
+    assert not execution.final_pytest
+    if code:
+        assert_pretest_diagnostic(diagnostic, result, exit_code)
+    else:
+        assert diagnostic.read_text(encoding="utf-8") == "retained pytest failure"
+        if diff.startswith(b"R"):
+            assert result["full_suite"] is True

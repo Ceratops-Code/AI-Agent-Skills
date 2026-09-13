@@ -90,6 +90,10 @@ selected-source cleanup. YAML declares capabilities; this action owns timing.
    selected validation. An absent default contract or validation category is a
    no-op; explicitly missing locations are errors. Only `validate` entries may
    be selected as checks.
+   Before the first push, run declared `repository.test-selection` operations
+   with the freshly fetched base commit and current head commit as `base` and
+   `head`. Selection failures block the push; absent test-selection operations
+   add no work.
    During the same preflight it validates every registered selected worktree's
    resolved path. A worktree is cleanup-eligible only when its parent chain
    contains a case-insensitive `worktrees` directory component; otherwise the
