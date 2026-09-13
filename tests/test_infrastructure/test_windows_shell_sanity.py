@@ -853,6 +853,31 @@ class ProjectPythonRedirectionTests(unittest.TestCase):
 
         self.assertIsNone(second)
 
+    def test_python_wrapper_preserves_quotes_empty_arguments_and_recursion_guard(self):
+        if shutil.which("pwsh") is None:
+            self.skipTest("PowerShell 7 is required for native argument tests")
+        cwd = self.project_paths["Docs-and-Claims"]["main"]
+        values = ['probe="value"', "", "two words", 'C:\\folder\\"quoted"\\', "O'Brien", "$(literal)"]
+        code = "import json,sys; print(json.dumps(sys.argv[1:]))"
+        arguments = " ".join(SANITY.powershell_quote(value) for value in values)
+        for executable in ("python", "& " + SANITY.powershell_quote(sys.executable)):
+            # The assignment also exercises wrapping when the Python path is
+            # already canonical and no executable substitution is needed.
+            command = f"$null = 1; {executable} -c {SANITY.powershell_quote(code)} {arguments}"
+            with mock.patch.object(self, "canonical_python", sys.executable):
+                payload = self.redirected_hook_result(command, cwd)
+            self.assertIsNotNone(payload)
+            wrapper = payload["hookSpecificOutput"]["updatedInput"]["command"]
+            self.assertTrue(SANITY.is_wrapped_command(wrapper))
+            for outer_shell in ("powershell", "pwsh"):
+                with self.subTest(executable=executable, outer_shell=outer_shell):
+                    result = subprocess.run(
+                        [outer_shell, "-NoProfile", "-NonInteractive", "-Command", wrapper],
+                        capture_output=True, text=True, encoding="utf-8", cwd=cwd,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(json.loads(result.stdout), values)
+
     def test_missing_environment_variable_denies_before_execution(self):
         cwd = self.project_paths["Docs-and-Claims"]["main"]
         with mock.patch.dict(

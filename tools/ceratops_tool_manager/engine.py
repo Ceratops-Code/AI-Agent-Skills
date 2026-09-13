@@ -128,7 +128,7 @@ def wheel_metadata(path: Path) -> tuple[str, str]:
                 raise DeploymentError("wheel must contain one distribution metadata record")
             data = BytesParser().parsebytes(archive.read(metadata[0]))
             # Wheel metadata uses packaging separator normalization, while tool
-            # identities stay exact underscore-separated names. Keep this
+            # identities retain their exact spelling. Keep this
             # bootstrap path standard-library-only.
             return re.sub(r"[-_.]+", "_", str(data["Name"]).lower()), str(data["Version"])
     except (OSError, zipfile.BadZipFile) as exc:
@@ -208,7 +208,7 @@ class Engine:
                     raise DeploymentError("duplicate distribution in release")
                 distributions[name] = wheel_version
                 requirements.append(f"{path.as_uri()} --hash=sha256:{wheel['sha256']}")
-            if distributions.get(release["distribution"]) != version:
+            if distributions.get(release["distribution"].replace("-", "_")) != version:
                 raise DeploymentError("tool distribution version mismatch")
             runtime = global_runtime()
             python, uv = runtime.python, runtime.uv

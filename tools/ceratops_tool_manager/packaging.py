@@ -66,7 +66,7 @@ def package(source: Path, *, lock_only: bool = False) -> dict:
         locked = tomllib.loads(lock.read_text(encoding="utf-8"))
         run([str(uv), "build", str(source), "--wheel", "--out-dir", str(temporary), "--python", str(python), "--no-config", "--no-sources"], cwd=source, env=env)
         wheels = list(temporary.glob("*.whl"))
-        if len(wheels) != 1 or wheel_metadata(wheels[0]) != (config["distribution"], version):
+        if len(wheels) != 1 or wheel_metadata(wheels[0]) != (config["distribution"].replace("-", "_"), version):
             raise DeploymentError("built wheel does not match source identity and version")
         supported = list(cpython_tags((3, 14), ["cp314"], ["win_amd64"])) + list(compatible_tags((3, 14), "cp314", ["win_amd64"]))
         ranks = {tag: index for index, tag in enumerate(supported)}

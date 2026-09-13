@@ -992,9 +992,11 @@ def wrapped_command(command: str, interpreter: str | None = None) -> str:
     encoded = base64.b64encode(command.encode("utf-8")).decode("ascii")
     script = str(pathlib.Path(__file__).resolve())
     wrapper_python = interpreter or sys.executable
+    # Legacy Windows PowerShell loses embedded quotes when invoking Python.
+    shell_option = "--powershell pwsh " if interpreter is not None else ""
     return (
         f"& {powershell_quote(wrapper_python)} {powershell_quote(script)} "
-        f"--encoded-command {powershell_quote(encoded)}"
+        f"{shell_option}--encoded-command {powershell_quote(encoded)}"
     )
 
 
@@ -1003,6 +1005,7 @@ def is_wrapped_command(command: str) -> bool:
 
     scripts = (
         (str(pathlib.Path(__file__).resolve()), "--encoded-command"),
+        (str(pathlib.Path(__file__).resolve()), "--powershell pwsh --encoded-command"),
         (
             str(pathlib.Path(__file__).resolve().with_name(COMMAND_PROBE_NAME)),
             "--encoded-request",
@@ -1185,7 +1188,7 @@ def run_hook() -> int:
         updated_input = dict(tool_input)
         updated_input["command"] = wrapped_command(
             analysis.command,
-            pc_python if python_redirected else None,
+            pc_python,
         )
         fields: dict[str, object] = {"updatedInput": updated_input}
         if python_redirected:
