@@ -115,6 +115,24 @@ def payload(capsys: pytest.CaptureFixture[str]) -> dict[str, Any]:
     return json.loads(capsys.readouterr().out)
 
 
+def assert_pretest_diagnostic(
+    path: pathlib.Path, result: dict[str, Any], exit_code: int,
+) -> dict[str, Any]:
+    """Check the persisted failure and the exact evidence reference returned."""
+    content = path.read_bytes()
+    complete = json.loads(content)
+    assert complete["schema"] == "ai-agent-skills-test-runner-diagnostic.v1"
+    assert complete["exit_code"] == exit_code
+    assert complete["result"] == {key: value for key, value in result.items() if key != "diagnostic"}
+    assert complete["result"]["pytest"] == {"exit_code": None, "outcome": "not-run"}
+    assert result["diagnostic"] == {
+        "bytes": len(content), "path": str(path.resolve()),
+        "sha256": hashlib.sha256(content).hexdigest(),
+    }
+    assert not list(path.parent.glob(f".{path.name}.*.tmp"))
+    return complete
+
+
 def test_committed_diff_mode_collects_and_invokes_only_selected_suite(
     test_runner_module: Any, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -448,6 +466,7 @@ def test_committed_diff_treats_deleted_test_as_intentional_full_suite(
 def test_mapping_gap_returns_before_pytest_collection_or_execution(
     test_runner_module: Any,
     capsys: pytest.CaptureFixture[str],
+    tmp_path: pathlib.Path,
     mode: str,
     mapped_path: str | None,
     unmapped_path: str,
@@ -457,9 +476,11 @@ def test_mapping_gap_returns_before_pytest_collection_or_execution(
     if mapped_path is not None:
         diff += f"M\0{mapped_path}\0"
     execution = DeterministicExecution(runner, diff.encode())
+    diagnostic = tmp_path / "selection failure.json"
+    arguments = ["--worktree"] if mode == "worktree" else ["--base", BASE, "--head", HEAD]
 
     exit_code = runner.execute(
-        ["--worktree"] if mode == "worktree" else ["--base", BASE, "--head", HEAD],
+        [*arguments, "--diagnostic-output", str(diagnostic)],
         repo_root=ROOT,
         text_runner=execution.text,
         bytes_runner=execution.bytes,
@@ -485,6 +506,8 @@ def test_mapping_gap_returns_before_pytest_collection_or_execution(
         for command in execution.commands
     )
     assert execution.final_pytest == []
+    complete = assert_pretest_diagnostic(diagnostic, result, exit_code)
+    assert complete["commands"] == []
 
 
 def test_full_mode_uses_sorted_manifest_targets_without_ambient_inference(
@@ -546,15 +569,26 @@ def test_explicit_worktree_mode_selects_tracked_and_untracked_changes(
     assert len(execution.final_pytest) == 1
 
 
+@pytest.mark.parametrize("output_kind", ["explicit", "default", "unwritable"])
 def test_revision_mode_requires_two_full_commit_shas(
-    test_runner_module: Any, capsys: pytest.CaptureFixture[str]
+    test_runner_module: Any, capsys: pytest.CaptureFixture[str],
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, output_kind: str,
 ) -> None:
     runner = test_runner_module
+    diagnostic = tmp_path / "runner failure.json"
+    if output_kind == "unwritable":
+        blocked_parent = tmp_path / "blocked"
+        blocked_parent.write_text("existing file", encoding="utf-8")
+        diagnostic = blocked_parent / "failure.json"
+    monkeypatch.setattr(runner, "DEFAULT_DIAGNOSTIC_PATH", diagnostic)
+    output_arguments = [] if output_kind == "default" else ["--diagnostic-output", str(diagnostic)]
 
-    missing_head = runner.execute(["--base", BASE], repo_root=ROOT)
+    missing_head = runner.execute(["--base", BASE, *output_arguments], repo_root=ROOT)
     first = payload(capsys)
+    if output_kind != "unwritable":
+        assert_pretest_diagnostic(diagnostic, first, missing_head)
     short_sha = runner.execute(
-        ["--base", "1234", "--head", HEAD], repo_root=ROOT
+        ["--base", "1234", "--head", HEAD, *output_arguments], repo_root=ROOT
     )
     second = payload(capsys)
 
@@ -563,6 +597,72 @@ def test_revision_mode_requires_two_full_commit_shas(
     assert short_sha == runner.CONFIGURATION_EXIT_CODE
     assert second["status"] == "configuration-error"
     assert "full 40-character SHA" in second["manifest_errors"][0]
+    if output_kind == "unwritable":
+        for result in (first, second):
+            assert "cannot create diagnostic output parent" in result["diagnostic"]["error"]
+            assert result["diagnostic"]["path"] == str(diagnostic.resolve())
+        assert not diagnostic.exists()
+        assert blocked_parent.read_text(encoding="utf-8") == "existing file"
+    else:
+        assert_pretest_diagnostic(diagnostic, second, short_sha)
+
+
+@pytest.mark.parametrize("failure", [
+    "manifest-load", "manifest-validation", "selected-collection", "full-collection",
+    "revision-resolution", "worktree-resolution",
+])
+def test_pretest_failures_preserve_report_and_full_command_output(
+    test_runner_module: Any, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str], failure: str,
+) -> None:
+    runner = test_runner_module
+    execution = DeterministicExecution(
+        runner, b"M\0skills/ceratops-credit-savings-analysis/SKILL.md\0",
+    )
+    diagnostic = tmp_path / "runner failure.json"
+    stdout = "ImportError: decisive detail\n" + "later noise\n" * 100
+    stderr = "complete error stream\n"
+    root = ROOT
+    arguments = ["--base", BASE, "--head", HEAD]
+    if failure == "manifest-load":
+        root = tmp_path / "invalid-repository"
+        (root / "tests").mkdir(parents=True)
+        (root / "tests/test-impact.json").write_text("{invalid json", encoding="utf-8")
+    elif failure == "manifest-validation":
+        monkeypatch.setattr(runner, "validate_manifest", lambda *_args, **_kwargs: ["invalid ownership"])
+    elif failure == "full-collection":
+        arguments = ["--write-collection", str(tmp_path / "collection.json")]
+    elif failure == "worktree-resolution":
+        arguments = ["--worktree"]
+
+    def failing_command(command: Any, cwd: pathlib.Path) -> subprocess.CompletedProcess[str]:
+        if "--collect-only" in command or (
+            failure in {"revision-resolution", "worktree-resolution"} and command[0] == "git"
+        ):
+            return subprocess.CompletedProcess(command, 2, stdout, stderr)
+        return execution.text(command, cwd)
+
+    exit_code = runner.execute(
+        [*arguments, "--diagnostic-output", str(diagnostic)], repo_root=root,
+        text_runner=failing_command, bytes_runner=execution.bytes,
+    )
+    result = payload(capsys)
+    assert exit_code == runner.CONFIGURATION_EXIT_CODE
+    assert result["status"] == (
+        "manifest-invalid" if failure.startswith("manifest-") else
+        "configuration-error" if failure.endswith("resolution") else "collection-invalid"
+    )
+    complete = assert_pretest_diagnostic(diagnostic, result, exit_code)
+    assert complete["cwd"] == str(root.resolve())
+    assert execution.final_pytest == []
+    if failure.startswith("manifest-"):
+        assert complete["commands"] == []
+    else:
+        assert complete["commands"]
+        assert all(command["stdout"] == stdout and command["stderr"] == stderr
+                   for command in complete["commands"])
+        assert "ImportError: decisive detail" not in json.dumps(result)
+    assert not (tmp_path / "collection.json").exists()
 
 
 def test_manifest_validation_mode_collects_every_declared_target(
@@ -663,8 +763,9 @@ def test_collection_node_map_resolves_ambiguous_identity(
         "tests/beta/test_flow.py::test_case[value]",
     )
     ambiguous = CollectionExecution(runner, candidates)
+    diagnostic = tmp_path / "collection failure.json"
     mismatch_exit = runner.execute(
-        ["--reconcile-collection", str(baseline_path)],
+        ["--reconcile-collection", str(baseline_path), "--diagnostic-output", str(diagnostic)],
         repo_root=ROOT,
         text_runner=ambiguous.text,
         bytes_runner=ambiguous.bytes,
@@ -676,6 +777,7 @@ def test_collection_node_map_resolves_ambiguous_identity(
     assert mismatch["collection"]["ambiguous"] == [
         {"old": old, "candidates": list(candidates)}
     ]
+    assert_pretest_diagnostic(diagnostic, mismatch, mismatch_exit)
     missing = runner.reconcile_collections((old,), (), {})
     assert missing["ok"] is False
     assert missing["missing"] == [old]
