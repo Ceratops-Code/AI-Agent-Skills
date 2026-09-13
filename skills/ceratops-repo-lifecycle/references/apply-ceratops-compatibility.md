@@ -90,8 +90,13 @@ Infer the source identity from stable repository evidence before asking.
 - Generate a missing validator and CI workflow only from checks declared in
   `references/contracts/repository-validation-contract.json`; obtain approval
   before adding an undeclared check.
-- Generated CI uses target-owned dependency setup; the validation contract
-  supplies no package installation requirements.
+- When creating both validation files in a repository without JavaScript
+  package-manager files, create the locked Markdown setup from templates.
+  Preserve existing Markdown configuration and exclusive validators, and ignore
+  installed dependencies.
+- Generated CI uses target-owned dependency setup, including Node 24 for the
+  generated Markdown setup; the validation contract supplies no package
+  installation requirements.
 - Keep source skill folders portable and keep generated shared-section blocks
   out of source `SKILL.md` files.
 

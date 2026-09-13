@@ -85,6 +85,7 @@ class CompatibilityPlan:
     sdlc_contract: dict[str, object] | None
     validator_text: str | None
     workflow_text: str | None
+    markdown_files: dict[str, str]
     validation_checks: list[str]
     skills: list[str]
     updated_markers: list[str]
@@ -235,11 +236,13 @@ def _validation_condition_matches(
     raise RuntimeError(f"unsupported repository-validation condition: {kind!r}")
 
 
-def contract_checks(repo_root: pathlib.Path) -> list[dict[str, object]]:
+def contract_checks(
+    repo_root: pathlib.Path, *, package: dict[str, object] | None = None
+) -> list[dict[str, object]]:
     """Select checks only after validating the complete shared contract."""
 
     contract = load_validation_contract()
-    package = _package_manifest(repo_root)
+    package = _package_manifest(repo_root) if package is None else package
     scripts = _package_scripts(package)
     package_manager, _ = _package_manager(repo_root, package)
     selected: list[dict[str, object]] = []
@@ -265,8 +268,69 @@ def contract_checks(repo_root: pathlib.Path) -> list[dict[str, object]]:
     return exclusive_checks or selected
 
 
+def default_markdown_files(repo_root: pathlib.Path) -> dict[str, str]:
+    """Plan a locked npm default without replacing target package ownership.
+
+    Application and rollback own these files; planning never installs packages
+    or contacts a registry. Existing Markdown settings keep their precedence.
+    """
+
+    package_files = (
+        "package.json", "package-lock.json", "npm-shrinkwrap.json",
+        "pnpm-lock.yaml", "pnpm-workspace.yaml", "yarn.lock", "bun.lock", "bun.lockb",
+    )
+    if any(
+        (repo_root / name).exists() or (repo_root / name).is_symlink()
+        for name in package_files
+    ):
+        return {}
+    templates = BUNDLE_ROOT / "references" / "templates"
+    files = {
+        name: (templates / template).read_text(encoding="utf-8")
+        for name, template in (
+            ("package.json", "markdown-package.json.tmpl"),
+            ("package-lock.json", "markdown-package-lock.json.tmpl"),
+        )
+    }
+    configurations = (
+        ".markdownlint.jsonc", ".markdownlint.json", ".markdownlint.yaml",
+        ".markdownlint.yml", ".markdownlint.cjs", ".markdownlint.js",
+        ".markdownlint.toml", ".markdownlintrc",
+    )
+    existing = []
+    for name in configurations:
+        path = repo_root / name
+        if path.exists() or path.is_symlink():
+            if path.is_symlink() or not path.is_file():
+                raise RuntimeError(f"existing Markdown configuration must be a regular file: {path}")
+            existing.append(name)
+    if not existing:
+        files[".markdownlint.json"] = (templates / "markdownlint.json.tmpl").read_text(
+            encoding="utf-8"
+        )
+    elif existing[0].endswith((".cjs", ".js", ".toml")):
+        # The CLI deliberately requires an explicit option for these formats.
+        package = json.loads(files["package.json"])
+        package["scripts"]["lint:markdown"] += f" --config {existing[0]}"
+        files["package.json"] = json.dumps(package, indent=2) + "\n"
+    ignore = repo_root / ".gitignore"
+    prior = ""
+    if ignore.exists() or ignore.is_symlink():
+        if ignore.is_symlink() or not ignore.is_file():
+            raise RuntimeError(f"existing Git ignore file must be a regular file: {ignore}")
+        prior = ignore.read_bytes().decode("utf-8")
+    newline = "\r\n" if "\r\n" in prior else "\n"
+    # Append after existing rules so a prior negation cannot expose dependencies.
+    files[".gitignore"] = (
+        prior + (newline if prior and not prior.endswith("\n") else "")
+        + "/node_modules/" + newline
+    )
+    return files
+
+
 def _validation_workflow(
-    repo_root: pathlib.Path, checks: list[dict[str, object]]
+    repo_root: pathlib.Path, checks: list[dict[str, object]],
+    *, markdown_files: Mapping[str, str],
 ) -> tuple[str, str, str]:
     """Render CI using target-owned dependency setup and Python requirements."""
 
@@ -336,14 +400,17 @@ def _validation_workflow(
                 *(f"          {command}" for command in python_setup),
             ]
         )
-    package = _package_manifest(repo_root)
+    package = (
+        json.loads(markdown_files["package.json"])
+        if markdown_files else _package_manifest(repo_root)
+    )
     manager, manager_version = _package_manager(repo_root, package)
     if "{npm}" in commands and "{pnpm}" in commands:
         raise RuntimeError("one validation workflow cannot mix npm and pnpm checks")
     if "{npm}" in commands:
         if manager != "npm":
             raise RuntimeError("npm validation checks require npm repository ownership")
-        if not (repo_root / "package-lock.json").is_file():
+        if not markdown_files and not (repo_root / "package-lock.json").is_file():
             raise RuntimeError(
                 "npm validation checks require package-lock.json for "
                 "deterministic npm ci setup"
@@ -353,7 +420,7 @@ def _validation_workflow(
                 "      - name: Set up Node.js",
                 f"        uses: {SETUP_NODE}",
                 "        with:",
-                '          node-version: "20"',
+                f'          node-version: "{"24" if markdown_files else "20"}"',
                 "      - name: Install npm validation dependencies",
                 "        run: npm ci",
             ]
@@ -392,7 +459,7 @@ def _validation_workflow(
 
 def validation_surfaces(
     repo_root: pathlib.Path,
-) -> tuple[str | None, str | None, list[str]]:
+) -> tuple[str | None, str | None, list[str], dict[str, str]]:
     """Render only missing validation files and preserve existing files exactly."""
 
     validator = repo_root / VALIDATOR_RELATIVE
@@ -405,9 +472,17 @@ def validation_surfaces(
             if path.is_symlink() or not path.is_file():
                 raise RuntimeError(f"existing {label} must be a regular file: {path}")
     if validator.is_file() and workflow.is_file():
-        return None, None, []
+        return None, None, [], {}
 
     checks = contract_checks(repo_root)
+    markdown_files = (
+        default_markdown_files(repo_root)
+        if not validator.is_file() and not workflow.is_file()
+        and not any(check["exclusive"] for check in checks)
+        else {}
+    )
+    if markdown_files:
+        checks = contract_checks(repo_root, package=json.loads(markdown_files["package.json"]))
     validator_text = None
     if not validator.is_file():
         template = VALIDATOR_TEMPLATE.read_text(encoding="utf-8")
@@ -424,13 +499,15 @@ def validation_surfaces(
         markers = ("__RUNNER__", "      # __SETUP_STEPS__", "__VALIDATOR_PYTHON__")
         if any(template.count(marker) != 1 for marker in markers):
             raise RuntimeError("CI validation template markers are invalid")
-        runner, setup, validation_python = _validation_workflow(repo_root, checks)
+        runner, setup, validation_python = _validation_workflow(
+            repo_root, checks, markdown_files=markdown_files
+        )
         workflow_text = (
             template.replace("__RUNNER__", runner)
             .replace("      # __SETUP_STEPS__", setup)
             .replace("__VALIDATOR_PYTHON__", validation_python)
         )
-    return validator_text, workflow_text, [str(check["id"]) for check in checks]
+    return validator_text, workflow_text, [str(check["id"]) for check in checks], markdown_files
 
 
 def load_yaml_mapping(path: pathlib.Path) -> dict[str, object]:
@@ -810,7 +887,7 @@ def plan_ceratops_compatibility(
         action_errors = action_assignment_errors(repo_root, manifest)
         if action_errors:
             raise RuntimeError("; ".join(action_errors))
-    validator_text, workflow_text, validation_checks = validation_surfaces(repo_root)
+    validator_text, workflow_text, validation_checks, markdown_files = validation_surfaces(repo_root)
     return CompatibilityPlan(
         manifest=manifest,
         skill_updates=skill_updates,
@@ -822,6 +899,7 @@ def plan_ceratops_compatibility(
         ),
         validator_text=validator_text,
         workflow_text=workflow_text,
+        markdown_files=markdown_files,
         validation_checks=validation_checks,
         skills=sorted(assignments),
         updated_markers=sorted(updated_markers),
@@ -834,6 +912,8 @@ def apply_compatibility_plan(
 ) -> None:
     """Apply one fully validated plan inside the caller's rollback boundary."""
 
+    for relative, text in plan.markdown_files.items():
+        (repo_root / relative).write_text(text, encoding="utf-8", newline="")
     if plan.canonical_sources:
         sections_dir = repo_root / "skills" / "sections"
         sections_dir.mkdir(parents=True, exist_ok=True)
@@ -934,6 +1014,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         skill_paths = sorted((repo_root / "skills").glob("*/SKILL.md"))
         mutable_paths = [*skill_paths, existing_path]
+        mutable_paths.extend(repo_root / name for name in plan.markdown_files)
         mutable_paths.extend(
             repo_root / "skills" / "sections" / f"{section_name}.md"
             for section_name in plan.canonical_sources

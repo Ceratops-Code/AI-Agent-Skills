@@ -159,10 +159,32 @@ def test_compatibility_materializer_supplies_target_identity_and_assignments(
     assert (repo / "scripts" / "validate-repository.py").is_file()
     assert (repo / ".github" / "workflows" / "validate.yml").is_file()
     assert output["repository_validation"] == {
-        "checks": [],
+        "checks": ["npm-markdown-lint"],
         "validator": "applied",
         "workflow": "applied",
     }
+    package = json.loads((repo / "package.json").read_text(encoding="utf-8"))
+    lock = json.loads((repo / "package-lock.json").read_text(encoding="utf-8"))
+    assert package["private"] is True
+    assert package["scripts"]["lint:markdown"] == (
+        'markdownlint "**/*.md" --ignore node_modules'
+    )
+    assert package["devDependencies"] == {"markdownlint-cli": "0.49.1"}
+    assert lock["packages"][""]["devDependencies"] == package["devDependencies"]
+    assert lock["packages"]["node_modules/markdownlint-cli"]["version"] == "0.49.1"
+    assert json.loads((repo / ".markdownlint.json").read_text(encoding="utf-8"))["MD013"] == {
+        "line_length": 80, "code_blocks": False, "tables": False,
+    }
+    assert (repo / ".gitignore").read_text(encoding="utf-8").endswith("/node_modules/\n")
+    steps = yaml.safe_load(
+        (repo / ".github/workflows/validate.yml").read_text(encoding="utf-8")
+    )["jobs"]["validate-repository"]["steps"]
+    assert next(step["with"] for step in steps if step["name"] == "Set up Node.js") == {
+        "node-version": "24",
+    }
+    assert next(
+        step["run"] for step in steps if step["name"] == "Install npm validation dependencies"
+    ) == "npm ci"
     payload = repo / "skills" / "sections" / "scripts" / "shared.py"
     payload.parent.mkdir()
     payload.write_text("VALUE = True\n", encoding="utf-8", newline="\n")
@@ -436,6 +458,7 @@ def test_compatibility_materializer_supports_repositories_without_skills(
     )
     assert uv_result.returncode == 0, uv_result.stdout
     assert json.loads(uv_result.stdout)["repository_validation"]["checks"] == [
+        "npm-markdown-lint",
         "pytest",
         "ruff",
         "mypy",
@@ -497,6 +520,7 @@ def test_compatibility_materializer_supports_repositories_without_skills(
     )
     assert powershell_result.returncode == 0, powershell_result.stdout
     assert json.loads(powershell_result.stdout)["repository_validation"]["checks"] == [
+        "npm-markdown-lint",
         "powershell-lint",
     ]
     powershell_workflow = (
@@ -528,6 +552,7 @@ def test_compatibility_materializer_supports_repositories_without_skills(
     )
     assert unittest_result.returncode == 0, unittest_result.stdout
     assert json.loads(unittest_result.stdout)["repository_validation"]["checks"] == [
+        "npm-markdown-lint",
         "unittest",
     ]
 
@@ -552,6 +577,7 @@ def test_compatibility_materializer_supports_repositories_without_skills(
     )
     assert docs_result.returncode == 0, docs_result.stdout
     assert json.loads(docs_result.stdout)["repository_validation"]["checks"] == [
+        "npm-markdown-lint",
         "unittest",
         "ruff",
     ]
@@ -598,6 +624,8 @@ def test_compatibility_materializer_supports_repositories_without_skills(
     assert json.loads(authoritative_result.stdout)["repository_validation"]["checks"] == [
         "custom-validator"
     ]
+    assert not (authoritative_repo / "package.json").exists()
+    assert not (authoritative_repo / ".markdownlint.json").exists()
     authoritative_validator = (
         authoritative_repo / "scripts" / "validate-repository.py"
     ).read_text(encoding="utf-8")
@@ -639,7 +667,9 @@ def test_compatibility_materializer_supports_repositories_without_skills(
             engine_scripts, "apply", "--target-repo-root", str(config_repo)
         )
         assert configured.returncode == 0, configured.stdout
-        assert json.loads(configured.stdout)["repository_validation"]["checks"] == ["pytest"]
+        assert json.loads(configured.stdout)["repository_validation"]["checks"] == [
+            "npm-markdown-lint", "pytest",
+        ]
 
     # Contract validation covers entries which do not match the target and
     # rejects broken metadata or evidence links before target mutation.
@@ -736,14 +766,30 @@ def test_compatibility_materializer_preserves_existing_validator_and_ci(
         "validator": "preserved",
         "workflow": "preserved",
     }
+    assert not (repo / "package.json").exists()
+    assert not (repo / ".markdownlint.json").exists()
 
 
+@pytest.mark.parametrize("configuration", [
+    ".markdownlint.jsonc", ".markdownlint.yaml", ".markdownlint.cjs", ".markdownlintrc",
+])
 def test_compatibility_materializer_preserves_existing_identity_and_custom_sections(
     tmp_path: pathlib.Path,
+    configuration: str,
 ) -> None:
     repo = tmp_path / "compatible"
     create_compatible_repo(repo, "preserved/source", ["alpha-tool"])
     (repo / ".git").write_text("gitdir: test\n", encoding="utf-8", newline="\n")
+    markdown_config = repo / configuration
+    configuration_bytes = {
+        ".markdownlint.jsonc": b'{"MD013": false}\r\n',
+        ".markdownlint.yaml": b"MD013: false\r\n",
+        ".markdownlint.cjs": b"module.exports = { MD013: false };\r\n",
+        ".markdownlintrc": b'{"MD013": false}\r\n',
+    }[configuration]
+    markdown_config.write_bytes(configuration_bytes)
+    ignore = repo / ".gitignore"
+    ignore.write_bytes(b"build/\r\n!node_modules/")
     custom = repo / "skills" / "sections" / "custom.md"
     custom.write_text(
         "## Custom Rules\n\nPreserve this target behavior.\n",
@@ -778,6 +824,16 @@ def test_compatibility_materializer_preserves_existing_identity_and_custom_secti
     assert custom.read_text(encoding="utf-8").endswith(
         "Preserve this target behavior.\n"
     )
+    assert markdown_config.read_bytes() == configuration_bytes
+    assert not (repo / ".markdownlint.json").exists()
+    assert ignore.read_bytes() == b"build/\r\n!node_modules/\r\n/node_modules/\r\n"
+    package = json.loads((repo / "package.json").read_text(encoding="utf-8"))
+    if configuration == ".markdownlint.cjs":
+        assert package["scripts"]["lint:markdown"].endswith(" --config .markdownlint.cjs")
+    preserved = {
+        name: (repo / name).read_bytes()
+        for name in (configuration, ".gitignore", "package.json", "package-lock.json")
+    }
 
     overridden = run_compatibility_engine(
         REPOSITORY_LIFECYCLE_SCRIPTS,
@@ -791,10 +847,13 @@ def test_compatibility_materializer_preserves_existing_identity_and_custom_secti
     assert json.loads(manifest_path.read_text(encoding="utf-8"))[
         "runtime_source_id"
     ] == "explicit/source"
+    assert {name: (repo / name).read_bytes() for name in preserved} == preserved
 
 
+@pytest.mark.parametrize("existing_ignore", [False, True])
 def test_compatibility_materializer_rolls_back_every_target_write_on_blocker(
     tmp_path: pathlib.Path,
+    existing_ignore: bool,
 ) -> None:
     lifecycle_bundle = tmp_path / "lifecycle-bundle"
     shutil.copytree(REPOSITORY_LIFECYCLE_SOURCE, lifecycle_bundle)
@@ -817,6 +876,9 @@ def test_compatibility_materializer_rolls_back_every_target_write_on_blocker(
     repo = tmp_path / "compatible"
     create_compatible_repo(repo, "preserved/source", ["alpha-tool"])
     (repo / ".git").write_text("gitdir: test\n", encoding="utf-8", newline="\n")
+    ignore = repo / ".gitignore"
+    if existing_ignore:
+        ignore.write_bytes(b"build/\r\n")
     skill_md = repo / "skills" / "alpha-tool" / "SKILL.md"
     skill_md.write_text(
         skill_md.read_text(encoding="utf-8")
@@ -851,6 +913,13 @@ def test_compatibility_materializer_rolls_back_every_target_write_on_blocker(
     assert {path: path.read_bytes() for path in changed_paths} == original
     assert not (repo / "scripts" / "validate-repository.py").exists()
     assert not (repo / ".github" / "workflows" / "validate.yml").exists()
+    assert all(not (repo / name).exists() for name in (
+        "package.json", "package-lock.json", ".markdownlint.json",
+    ))
+    if existing_ignore:
+        assert ignore.read_bytes() == b"build/\r\n"
+    else:
+        assert not ignore.exists()
 
 
 def test_compatibility_materializer_blocks_invalid_assignments_before_writes(
