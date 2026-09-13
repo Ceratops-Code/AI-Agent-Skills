@@ -40,8 +40,8 @@ Guide tool development and exact local release deployment through one manager.
 
 ### Boundaries
 
-- Tool creation uses the ordinary development environment; the manager exposes
-  only installation, update, and version inspection.
+- Create source in its owning repository. Use the manager's CLI for packaging;
+  MCP accepts only installation, update, and version inspection.
 - Use exact registered releases. A selected previous version uses ordinary
   install or update. Failed candidates leave the active selection intact.
 - Keep Git promotion and release publication in `ceratops-repo-lifecycle`;

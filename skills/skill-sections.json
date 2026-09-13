@@ -5,7 +5,8 @@
     "core": "skills/sections/core.md",
     "multi-action-skill": "skills/sections/multi-action-skill.md",
     "evidence-analysis": "skills/sections/evidence-analysis.md",
-    "bounded-model-analysis": "skills/sections/bounded-model-analysis.md"
+    "bounded-model-analysis": "skills/sections/bounded-model-analysis.md",
+    "contract-review": "skills/sections/contract-review.md"
   },
   "maintenance_workflows": {
     "shared_source_changes": [
@@ -16,11 +17,11 @@
       "python skills/ceratops-skill-lifecycle/scripts/fast-change.py --request <request>"
     ],
     "runtime_generation_changes": [
-      "python scripts/run-tests.py --worktree",
-      "python scripts/install-skills-bootstrap.py --install-root <task-temp-root>"
+      "python scripts/testing/run-tests.py --worktree",
+      "python scripts/deploy-skills.py --install-root <task-temp-root>"
     ],
     "contract_checker_changes": [
-      "python scripts/run-tests.py --worktree"
+      "python scripts/testing/run-tests.py --worktree"
     ],
     "new_skill_local_availability": [
       "$ceratops-skill-lifecycle"
@@ -38,6 +39,10 @@
     ]
   },
   "skills": {
+    "design-document-lifecycle": [
+      "core",
+      "multi-action-skill"
+    ],
     "ceratops-automation-run": [
       "core"
     ],
@@ -79,5 +84,17 @@
       "core",
       "multi-action-skill"
     ]
+  },
+  "actions": {
+    "ceratops-repo-lifecycle": {
+      "references/repo-contracts-review.md": [
+        "contract-review"
+      ]
+    },
+    "ceratops-skill-lifecycle": {
+      "references/skills-contract-review.md": [
+        "contract-review"
+      ]
+    }
   }
 }

@@ -1,7 +1,11 @@
 {
   "version": 1,
   "suites": {
-    "tool-manager": {
+    "design-document-lifecycle": {
+      "pytest": ["tests/design_document_lifecycle"],
+      "depends_on": []
+    },
+    "tool_manager": {
       "pytest": ["tests/tool_manager"],
       "depends_on": []
     },
@@ -50,17 +54,19 @@
   },
   "rules": [
     {
-      "id": "tool-manager-source",
+      "id": "design-document-lifecycle-source",
+      "paths": ["skills/design-document-lifecycle/**"],
+      "suites": ["design-document-lifecycle"]
+    },
+    {
+      "id": "tool_manager_source",
       "paths": [
         ".codex/config.toml",
         "tools/**",
-        "scripts/bootstrap-tool-manager.py",
-        "scripts/package-tool-release.py",
-        "scripts/check-tool-manager.py",
-        "scripts/tool_manager_support.py",
+        "scripts/deploy-tool-manager.py",
         "skills/ceratops-tool-lifecycle/**"
       ],
-      "suites": ["tool-manager"]
+      "suites": ["tool_manager"]
     },
     {
       "id": "credit-analysis-source",
@@ -103,7 +109,7 @@
     {
       "id": "skill-lifecycle-source",
       "paths": [
-        "scripts/install-skills-bootstrap.py",
+        "scripts/deploy-skills.py",
         "skills/ceratops-skill-lifecycle/**"
       ],
       "suites": [
@@ -123,6 +129,7 @@
     {
       "id": "test-hook-source",
       "paths": [
+        "scripts/deploy-hooks.py",
         "hooks/*.py"
       ],
       "suites": [
@@ -140,7 +147,9 @@
     "pyproject.toml",
     "requirements-dev.txt",
     "requirements-runtime.txt",
-    "scripts/run-tests.py",
+    "scripts/testing/run-tests.py",
+    "scripts/testing/pytest-diagnostics.py",
+    "scripts/testing/pytest-environment.py",
     "scripts/validate-repository.py",
     "skills/ceratops-automation-run/**",
     "skills/ceratops-code-consistency-audit/**",

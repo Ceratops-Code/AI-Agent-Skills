@@ -22,6 +22,11 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Select repository Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version-file: pyproject.toml
+
       - name: Install development validators
         run: |
           python -m pip install --upgrade pip
@@ -37,7 +42,7 @@ jobs:
       - name: Run pull-request impact tests
         if: github.event_name == 'pull_request'
         run: >-
-          python scripts/run-tests.py
+          python scripts/testing/run-tests.py
           --base ${{ github.event.pull_request.base.sha }}
           --head ${{ github.event.pull_request.head.sha }}
           --diagnostic-output ${{ runner.temp }}/pytest-failure.json
@@ -45,7 +50,7 @@ jobs:
       - name: Run full main-branch tests
         if: github.event_name == 'push'
         run: >-
-          python scripts/run-tests.py
+          python scripts/testing/run-tests.py
           --all
           --diagnostic-output ${{ runner.temp }}/pytest-failure.json
 

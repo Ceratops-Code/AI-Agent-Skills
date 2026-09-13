@@ -1,6 +1,6 @@
 ---
 name: ceratops-repo-lifecycle
-description: Route Ceratops repository lifecycle work to action references for repository creation, compatibility, contracts, health, dependencies, local promotion, remote release publication, deterministic local deployment, GitHub shipping, and PR merge. Use when Codex should create or harden a repository, make it Ceratops-compatible, review its contracts, disposition CodeQL, maintain dependencies, promote selected task branches into a local release branch with or without deployment, ship a staged branch through guarded GitHub merge, post-merge release publication, and local deployment, or finalize an already-ready PR.
+description: Route Ceratops repository lifecycle work to action references for repository creation, compatibility, contracts, health, dependencies, local promotion, remote release publication, deterministic local deployment, GitHub shipping, and PR merge. Use when Codex should create or harden a repository, make it Ceratops-compatible, review its contracts, disposition CodeQL, maintain dependencies, promote selected task branches into a local release branch with or without deployment, ship a staged branch through guarded GitHub merge, post-merge release publication, and local deployment, or finalize an already-ready PR. Also use for scoped GitHub item inspection and requested item changes, standalone PR publication or review follow-up, or GitHub Actions diagnosis and repair.
 ---
 
 # Ceratops Repository Lifecycle
@@ -9,19 +9,19 @@ description: Route Ceratops repository lifecycle work to action references for r
 
 Route repository compatibility, local Git, GitHub, release publication, and
 deployment lifecycle work to the narrowest action reference. Keep repository
-state transitions in one skill while each repository owns declared remote
-release publication, artifact identity, and local deployment in
-`sdlc/sdlc.yml`.
+state transitions in the skill while `sdlc/sdlc.yml` describes repository
+setup and validation, plus deliverable validation, deployment and publication.
 
 ## Context
 
 ### Action References
 
 - Create or publish a repository: `references/create-or-publish.md`
-- Make an existing repository Ceratops-compatible:
-  `references/make-repo-compatible.md`
-- Review GitHub, code, PR, artifact, registry, and release contracts:
-  `references/contracts-review.md`
+- Apply Ceratops compatibility to an existing repository:
+  `references/apply-ceratops-compatibility.md`
+- Review repository-validation, GitHub, code, PR, artifact, registry,
+  and release contracts:
+  `references/repo-contracts-review.md`
 - Validate or apply a CodeQL alert disposition:
   `references/codeql-disposition.md`
 - Audit or repair repository health: `references/health-audit.md`
@@ -31,16 +31,19 @@ release publication, artifact identity, and local deployment in
 - Ship, synchronize, publish, deploy, and finalize selected work:
   `references/ship.md`
 - Finalize an already-ready PR: `references/merge-pr.md`
+- Inspect GitHub repositories, PRs, and issues: `references/github-triage.md`
+- Publish selected changes as an open PR: `references/publish-pr.md`
+- Address selected PR review feedback: `references/address-review.md`
+- Diagnose and repair GitHub Actions checks: `references/fix-ci.md`
 
 ### Inputs To Capture
 
 - Target repository, checkout, task worktree, branch, selected source branches,
   PR, artifact, dependency queue, compatibility gap, or creation request that
   identifies the action.
-- Whether promotion should stop after assembling `release/local`, run an
-  explicit ordered selection of `deploy.operations`, or continue directly
-  into terminal shipping with selected release and deployment operations only
-  at their lifecycle-owned phases.
+- Whether promotion stops at `release/local`, deploys selected deliverables,
+  or continues into shipping; capture ordered complete YAML operation locations
+  and keep these flow decisions outside the contract.
 - Required live GitHub, local repository, CI, artifact, credential, and
   deployment context named by the selected action reference.
 
@@ -51,9 +54,33 @@ release publication, artifact identity, and local deployment in
 - Keep local promotion, GitHub publication, guarded merge, synchronization,
   deployment routing, repository compatibility, and selected-source cleanup in
   this skill.
-- Execute only named structured operations from the `release` and `deploy`
-  sections of `sdlc/sdlc.yml` through the operation runner. Do not interpret
-  prose as executable commands.
+- Execute named SDLC entries through `scripts/repository_operation.py` with
+  `--repo-root PATH --sdlc-contract PATH --operation LOCATION`; repeat the last
+  flag in order. Locations follow the YAML hierarchy, such as
+  `repository.bootstrap.runtime` or
+  `deliverables.skills.deploy-local.ceratops-managed`.
+  Version 1 locations use `deploy.operations.NAME` or `release.operations.NAME`.
+- Use supported SDLC formats through the shared loader without migration.
+  Require an upgrade only when the requested operation cannot run safely;
+  installer release-number differences alone do not establish incompatibility.
+- Materialize new SDLC contracts in the current format and preserve supported
+  existing contracts.
+- Read declared prerequisite metadata before setup; run only explicitly chosen
+  bootstrap operations. Prerequisites and artifact identity are annotations,
+  not inferred check or installation commands.
+- Treat handoffs as advisory routing within the requested action, not executable
+  prose, proof of deployment, or a completion-receipt protocol.
+- Treat `completed` as command completion; validate retained
+  `step_results[].result` independently against the producer's schema and
+  status.
+  Preserve those values and reuse saved results; never replay completed
+  deployment
+  or publication solely to recover missing output.
+- Keep ordinary repository-check failures, including `validation_failed`,
+  inside the active action: diagnose and repair in the selected task worktree,
+  commit, then repeat promotion or restart shipping for the new commit. Do not
+  perform later deployment or remote mutation before successful validation.
+  Stop only when safe authorized repair cannot proceed, naming the exact cause.
 - Use `references/merge-pr.md` for standalone PR finalization. Integrated ship
   must preserve every readiness, CI, Codex-review, and exact-head gate before
   its final admin merge.
@@ -64,10 +91,10 @@ release publication, artifact identity, and local deployment in
 - Use this skill for repository creation, compatibility, local Git promotion,
   GitHub lifecycle work, deterministic deployment, dependency maintenance,
   CodeQL disposition, and PR merge decisions.
-- Use `$ceratops-skill-lifecycle` for skill-domain creation, mutation, managed
-  deployment, contract review, or consistency review; accept its promotion or
-  shipping handoff and return the managed-skill phase.
-- Use `references/contracts-review.md` for contract review rather than
+- Use `$ceratops-skill-lifecycle` for skill-domain creation, mutation, source
+  validation, managed deployment, contract review, or consistency review; accept
+  its promotion or shipping handoff and return the selected skill action.
+- Use `references/repo-contracts-review.md` for contract review rather than
   lifecycle execution.
 - Use a generic GitHub capability only when no Ceratops repository action fits
   or the selected reference explicitly requires it.
@@ -76,22 +103,26 @@ release publication, artifact identity, and local deployment in
 
 #### 1. Classify the action
 
-- Use `create-or-publish`, `make-repo-compatible`, `contracts-review`,
-  `codeql-disposition`, `health-audit`, or `dependency-maintenance` for their
-  named repository surfaces.
+- Use `github-triage` for general GitHub inspection and explicitly requested
+  item changes; route review feedback and Actions failures to `address-review`
+  and `fix-ci`, respectively, within the granted scope.
+
+- Use `create-or-publish`, `apply-ceratops-compatibility`,
+  `repo-contracts-review`, `codeql-disposition`, `health-audit`, or
+  `dependency-maintenance` for their named repository surfaces.
 - Use `promote` when selected committed branches should join a local
   `release/local` branch without deployment.
-- Use `promote-and-deploy` when the same promotion should run explicitly
-  selected repository operations in order, execute returned handoffs in that
-  order, and report managed skills when no handoff is declared.
+- Use `promote-and-deploy` when promotion should run explicitly selected
+  `deploy-local` entries and use their advisory routing for domain work.
 - Use composed promotion and shipping when selected committed branches should
   enter the complete ship workflow immediately after promotion; only shipping
   may publish a release or deploy in this mode.
-- Use `ship` for the complete staged-branch PR, gate, merge, main sync,
-  ordered remote release publication, ordered local repository deployment,
-  returned handoff handling, late recheck, and selected-source cleanup
-  workflow.
+- Use `ship` for staged-branch GitHub delivery and selected-source cleanup;
+  publication and local deployment run only when their operations are selected.
 - Use `merge-pr` only when standalone PR finalization is the whole task.
+- Use `publish-pr` when explicitly asked to publish selected changes as a PR;
+  preserve repository branch and promotion policies, and stop after verifying
+  the PR without merging or deploying.
 
 #### 2. Close from action evidence
 

@@ -1,6 +1,6 @@
 """Resolve repository-owned artifact identities for contract checks.
 
-Repository-specific artifact identity belongs in the release section of
+Repository-specific artifact identity belongs under its owning deliverable in
 ``sdlc/sdlc.yml``. Explicit checker parameters remain available only for
 repositories that have not declared artifact identities locally; accepting two
 owners for the same facts would reintroduce configuration drift.
@@ -14,6 +14,7 @@ from typing import Any
 
 from ceratops_repo_compatibility_engine.sdlc_contract_validation import (
     SdlcContractError,
+    artifact_entries,
     load_contract,
     validation_errors,
 )
@@ -46,9 +47,9 @@ def _validated_explicit_records(value: object) -> list[dict[str, Any]]:
     if not records:
         return records
     document = {
-        "version": 1,
+        "version": 2,
         "kind": "ceratops-sdlc",
-        "release": {"artifacts": records, "operations": {}},
+        "deliverables": {"explicit": {"artifacts": records}},
     }
     try:
         errors = validation_errors(document, schema_path=SDLC_SCHEMA)
@@ -80,10 +81,7 @@ def resolve_repository_artifact_contracts(
         contract = load_contract(contract_path, schema_path=SDLC_SCHEMA)
     except SdlcContractError as exc:
         raise ValueError(f"invalid sdlc/sdlc.yml: {exc}") from exc
-    release = contract.get("release", {})
-    if not isinstance(release, Mapping):
-        raise ValueError("invalid sdlc/sdlc.yml release section")
-    repository_contracts = _records(release.get("artifacts", []))
+    repository_contracts = artifact_entries(contract)
     if not repository_contracts:
         return explicit
     if explicit:

@@ -30,7 +30,8 @@ def sample_manifest(
         ),
         full_suite_paths=(
             "pyproject.toml",
-            "scripts/run-tests.py",
+            "scripts/testing/run-tests.py",
+            "scripts/testing/pytest-diagnostics.py",
             "tests/conftest.py",
             "tests/support/**",
             "tests/test-impact.json",
@@ -97,7 +98,8 @@ def test_multiple_domains_produce_sorted_deterministic_union(
         "tests/support/repositories.py",
         "tests/conftest.py",
         "tests/test-impact.json",
-        "scripts/run-tests.py",
+        "scripts/testing/run-tests.py",
+        "scripts/testing/pytest-diagnostics.py",
         "pyproject.toml",
     ],
 )
@@ -132,6 +134,24 @@ def test_agents_history_selects_full_suite_from_repository_manifest(
     assert {reason.rule for reason in selection.reasons} == {
         "full-suite:AGENTS.history.json"
     }
+
+
+@pytest.mark.parametrize("path", [
+    "tools/ceratops_tool_manager/packaging.py",
+    "scripts/deploy-tool-manager.py",
+])
+def test_tool_manager_paths_select_their_underscore_named_suite(
+    test_runner_module: Any, path: str,
+) -> None:
+    runner = test_runner_module
+    root = pathlib.Path(__file__).resolve().parents[2]
+    manifest = runner.load_manifest(root / "tests" / "test-impact.json")
+    selection = runner.selection_from_changes(
+        manifest, (runner.ChangedFile("M", (path,)),),
+    )
+    assert selection.suites == ("tool_manager",)
+    assert selection.pytest_targets == ("tests/tool_manager",)
+    assert not selection.mapping_gaps
 
 
 def test_changed_test_file_selects_its_single_owner(test_runner_module: Any) -> None:
@@ -171,6 +191,30 @@ def test_name_status_parser_handles_added_deleted_copied_and_renamed_paths(
     assert {reason.path for reason in selection.reasons} == {
         path for record in records for path in record.paths
     }
+
+
+@pytest.mark.parametrize(("status", "destination", "expected_gap"), [
+    ("R095", "skills/alpha/new.py", None),
+    ("R100", "src/new.py", "src/new.py"),
+    ("C100", "skills/alpha/new.py", "src/old.py"),
+])
+def test_renamed_source_can_retire_mapping_but_live_paths_still_require_ownership(
+    test_runner_module: Any, status: str, destination: str, expected_gap: str | None,
+) -> None:
+    runner = test_runner_module
+    selection = runner.selection_from_changes(
+        sample_manifest(runner),
+        (runner.ChangedFile(status, ("src/old.py", destination)),),
+    )
+
+    assert selection.full_suite == status.startswith("R")
+    assert selection.suites == (
+        ("alpha", "beta", "gamma") if status.startswith("R") else ("alpha",)
+    )
+    assert selection.mapping_gaps == (
+        ({"path": expected_gap, "reason": "unmapped repository path"},)
+        if expected_gap else ()
+    )
 
 
 def test_suite_dependencies_expand_transitively(test_runner_module: Any) -> None:
@@ -272,7 +316,7 @@ def test_stale_rule_globs_are_rejected(test_runner_module: Any, tmp_path: pathli
         full_suite_paths=(
             ".github/workflows/**",
             "pyproject.toml",
-            "scripts/run-tests.py",
+            "scripts/testing/run-tests.py",
             "scripts/validate-repository.py",
             "tests/__init__.py",
             "tests/support/**",
@@ -307,7 +351,7 @@ def test_worktree_manifest_validation_includes_untracked_paths(
         full_suite_paths=(
             ".github/workflows/**",
             "pyproject.toml",
-            "scripts/run-tests.py",
+            "scripts/testing/run-tests.py",
             "scripts/validate-repository.py",
             "tests/__init__.py",
             "tests/support/**",

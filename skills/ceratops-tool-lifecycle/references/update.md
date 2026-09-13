@@ -12,7 +12,7 @@ Select an exact release for an already installed tool.
 2. Call MCP `update` with `tool_id` and `version`, or run:
 
    ```powershell
-   C:\AI-Agents-Tools\ceratops-tool-manager\bin\ceratops-tool-manager.cmd update <tool-id> <version>
+   C:\AI-Agents-Tools\ceratops_tool_manager\bin\ceratops_tool_manager.cmd update <tool-id> <version>
    ```
 
    Explicitly selecting a previous release uses this same operation.

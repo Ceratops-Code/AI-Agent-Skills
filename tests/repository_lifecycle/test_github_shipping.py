@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
 import pathlib
 import subprocess
@@ -12,6 +13,112 @@ from tests.repository_lifecycle.support import (
     load_pr_workflow_module,
 )
 from tests.support.repositories import run_git
+
+
+@pytest.mark.parametrize("surface,status,retry", [
+    ("rest", 502, True), ("rest", 503, True), ("rest", 504, True),
+    ("rest", 401, False), ("rest", 403, False), ("rest", 404, False),
+    ("rest", 422, False), ("graphql", 502, True), ("json", 502, True),
+    ("command", 502, True), ("api-command", 502, True), ("git", 502, False),
+    ("post", 502, False), ("mutation", 502, False), ("edit", 502, False),
+])
+@pytest.mark.parametrize("second_failure", [False, True])
+def test_github_read_retry_is_delayed_bounded_and_preserves_result(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
+    surface: str, status: int, retry: bool, second_failure: bool,
+) -> None:
+    command = load_pr_workflow_module(monkeypatch, "command")
+    api = importlib.import_module("github_contract_engine.github_api")
+    calls: list[tuple[list[str], dict[str, Any]]] = []
+    sleeps: list[float] = []
+
+    def run(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        calls.append((argv, kwargs))
+        failed = len(calls) == 1 or second_failure
+        return subprocess.CompletedProcess(
+            argv, int(failed), '{"message":"service failure"}' if failed else '{"value":1}',
+            f"HTTP {status}" if failed else "",
+        )
+
+    monkeypatch.setattr(api.subprocess, "run", run)
+    monkeypatch.setattr(api.time, "sleep", sleeps.append)
+    if surface in {"rest", "post"}:
+        result = api.run_gh_api("POST" if surface == "post" else "GET", "/repos/o/r", cwd=tmp_path)
+    elif surface in {"graphql", "mutation"}:
+        query = "mutation { updateThing }" if surface == "mutation" else "query { viewer { login } }"
+        result = api.run_gh_graphql(query, {}, "probe", cwd=tmp_path)
+    elif surface == "json":
+        result = api.run_json_command(["gh", "repo", "view", "--json", "name"], "probe", cwd=tmp_path)
+    else:
+        argv = {"command": ["gh", "pr", "view", "1"], "git": ["git", "fetch"],
+                "api-command": ["gh", "api", "/repos/o/r"], "edit": ["gh", "pr", "edit", "1"]}[surface]
+        result = command.run_command(argv, cwd=tmp_path)
+    assert sleeps == ([10] if retry else [])
+    assert len(calls) == (2 if retry else 1)
+    assert all(call == calls[0] for call in calls)
+    ok = not result.returncode if isinstance(result, subprocess.CompletedProcess) else result.ok
+    assert ok == (retry and not second_failure)
+    if isinstance(result, api.ApiResult) and not ok:
+        assert result.status == status and result.message == "service failure"
+
+
+@pytest.mark.parametrize("use_api", [False, True])
+@pytest.mark.parametrize("outcome", ["retry-success", "retry-failed", "already-created", "lookup-failed", "permanent"])
+def test_pr_create_retry_reconciles_state_and_preserves_metadata(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, use_api: bool, outcome: str,
+) -> None:
+    ensure = load_pr_workflow_module(monkeypatch, "ensure_pr")
+    api = importlib.import_module("github_contract_engine.github_api")
+    events, publications, body_files = [], [], []
+    args = argparse.Namespace(repo_root=tmp_path, repo="o/r" if use_api else None,
+                              push_repo="o/r", pr_head="o:topic", head_branch="topic",
+                              base_branch="main", draft=True)
+    title, body = 'Keep "quotes"', "Exact body\r\n\r\n`code`, $(literal), café.\r\n"
+
+    def publish(argv: list[str] | None = None, **kwargs: Any) -> None:
+        events.append("create")
+        if argv is not None:
+            path = pathlib.Path(argv[argv.index("--body-file") + 1])
+            body_files.append(path)
+            publications.append((argv[argv.index("--title") + 1], path.read_bytes()))
+            assert "--draft" in argv
+        else:
+            payload = kwargs["body"]
+            publications.append((payload["title"], payload["body"].encode("utf-8")))
+            assert payload["draft"] is True and payload["head"] == "o:topic"
+        if len(publications) == 1 or outcome == "retry-failed":
+            raise ensure.CommandError("HTTP 422" if outcome == "permanent" else "HTTP 502")
+
+    def rest(method: str, endpoint: str, body: Any, **kwargs: Any) -> Any:
+        assert method == "POST" and endpoint == "/repos/o/r/pulls"
+        try:
+            publish(body=body)
+        except ensure.CommandError as exc:
+            return api.ApiResult(False, method, endpoint, status=422 if outcome == "permanent" else 502,
+                                 message="service failure")
+        return api.ApiResult(True, method, endpoint, data={})
+
+    def lookup(arguments: argparse.Namespace) -> Any:
+        events.append("lookup")
+        if outcome == "lookup-failed":
+            raise ensure.EnsurePrError("lookup unavailable")
+        return {"number": 66, "headRefOid": "expected"} if outcome == "already-created" else None
+
+    monkeypatch.setattr(ensure, "require_success", publish)
+    monkeypatch.setattr(ensure, "run_gh_api", rest)
+    monkeypatch.setattr(ensure, "_open_pr", lookup)
+    monkeypatch.setattr(ensure.time, "sleep", lambda seconds: events.append(seconds))
+    if outcome in {"retry-failed", "lookup-failed", "permanent"}:
+        with pytest.raises((ensure.CommandError, ensure.EnsurePrError)):
+            ensure._create_pr(args, title, body)
+    else:
+        ensure._create_pr(args, title, body)
+    expected = ["create"] if outcome == "permanent" else ["create", 10, "lookup"]
+    if outcome in {"retry-success", "retry-failed"}:
+        expected.append("create")
+    assert events == expected
+    assert all(value == (title, body.encode("utf-8")) for value in publications)
+    assert all(not path.parent.exists() for path in body_files)
 
 
 @pytest.fixture
@@ -210,7 +317,7 @@ def test_failed_log_excerpt_retains_decisive_lines_before_long_tail(
         + "\nlast cleanup line\n"
     )
 
-    excerpt = ship._compact_failed_log(log)
+    excerpt = ship.readiness.compact_failed_log(log)
 
     assert excerpt is not None
     assert "FAILED tests/test_contract.py::test_state" in excerpt
@@ -440,35 +547,24 @@ def test_integrated_ship_delegates_admin_semantics_to_merge_owner(
             [failing],
         ),
     )
+    ci_check = {
+        "name": "validate", "state": "FAILURE", "bucket": "fail", "workflow": "CI",
+        "link": "https://github.com/example/repository/actions/runs/42/job/84",
+    }
     monkeypatch.setattr(
-        ship,
-        "run_json_command",
+        ship.readiness, "run_json_command",
         lambda *args, **kwargs: argparse.Namespace(
-            ok=True,
-            data=[
-                {
-                    "name": "validate",
-                    "state": "FAILURE",
-                    "bucket": "fail",
-                    "workflow": "CI",
-                    "link": (
-                        "https://github.com/example/repository/"
-                        "actions/runs/42/job/84"
-                    ),
-                }
-            ],
-            message=None,
+            ok=True, message=None,
+            data={"status": "completed", "jobs": [{"databaseId": 84, "status": "completed"}]},
         ),
     )
     monkeypatch.setattr(
-        ship,
-        "run_command",
-        lambda *args, **kwargs: subprocess.CompletedProcess(
-            args[0],
-            0,
+        ship.readiness, "run_command",
+        lambda command, **kwargs: subprocess.CompletedProcess(
+            command, 1 if command[1:3] == ["pr", "checks"] else 0,
             stdout=(
-                "setup\nFAILED tests/test_example.py::test_contract\n"
-                "assert False\n"
+                json.dumps([ci_check]) if command[1:3] == ["pr", "checks"] else
+                "setup\nFAILED tests/test_example.py::test_contract\nassert False\n"
             ),
             stderr="",
         ),
@@ -599,6 +695,12 @@ def test_integrated_ship_delegates_admin_semantics_to_merge_owner(
     )
     monkeypatch.setattr(ship.readiness, "validate_readiness", ambiguous_readiness)
     monkeypatch.setattr(ship, "run_json_command", uncertainty_json)
+    monkeypatch.setattr(
+        ship.readiness, "run_command",
+        lambda command, **kwargs: subprocess.CompletedProcess(
+            command, 8, stdout=json.dumps(uncertainty_json(command).data), stderr="",
+        ),
+    )
     with pytest.raises(ship.ShipBlocked) as ambiguous_blocked:
         ship.wait_for_ci_gate(
             "24",
@@ -697,6 +799,12 @@ def test_integrated_ship_delegates_admin_semantics_to_merge_owner(
             ok=False,
             data=None,
             message="no checks reported on the release/local branch",
+        ),
+    )
+    monkeypatch.setattr(
+        ship.readiness, "run_command",
+        lambda command, **kwargs: subprocess.CompletedProcess(
+            command, 1, stdout="", stderr="no checks reported on the release/local branch",
         ),
     )
     with pytest.raises(ship.ShipBlocked) as missing_blocked:
@@ -1042,3 +1150,312 @@ def test_dependabot_requirement_range_title_rejects_ambiguous_minimum(
     assert update["current_version"] == "6.14.2"
     assert update["target_version"] is None
     assert update["update_type"] == "unknown"
+
+
+@pytest.mark.parametrize(
+    ("code", "raw", "valid"),
+    [(0, '[{"name":"CI"}]', True), (1, '[{"name":"CI"}]', True),
+     (8, '[{"name":"CI"}]', True), (1, "", False),
+     (2, "[]", False), (0, "{}", False), (0, "[null]", False)],
+)
+def test_ci_inspector_parses_check_exit_states(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path,
+    code: int, raw: str, valid: bool,
+) -> None:
+    readiness = load_pr_workflow_module(monkeypatch, "readiness")
+    commands: list[list[str]] = []
+
+    def execute(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        return subprocess.CompletedProcess(command, code, raw, "" if valid else "permission denied")
+
+    monkeypatch.setattr(readiness, "run_command", execute)
+    checks, diagnostic = readiness.read_pr_checks("7", "upstream/project", tmp_path)
+    assert (diagnostic is None) is valid
+    assert checks == ([{"name": "CI"}] if valid else [])
+    assert len(commands) == 1
+    assert commands[0][1:6] == ["pr", "checks", "7", "--repo", "upstream/project"]
+
+
+@pytest.mark.parametrize(
+    ("buckets", "selection", "last_head", "status"),
+    [(["pass", "skipping"], [], "a", "passed"),
+     (["fail", "pending"], [], "a", "failed"),
+     (["pending"], [], "a", "pending"), ([], [], "a", "no_checks"),
+     (["future"], [], "a", "unknown"), (["pass"], ["missing"], "a", "blocked"),
+     (["pass"], [], "b", "stale"), (["pass"], [], "", "blocked"),
+     (["fail", "pass"], ["check-1"], "a", "passed")],
+)
+def test_ci_inspector_cli_reports_scope_and_freshness(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str], buckets: list[str], selection: list[str],
+    last_head: str, status: str,
+) -> None:
+    readiness = load_pr_workflow_module(monkeypatch, "readiness")
+    calls: list[list[str]] = []
+
+    def metadata(command: list[str], *args: Any, **kwargs: Any) -> argparse.Namespace:
+        calls.append(command)
+        assert command[1:3] == ["pr", "view"]
+        if len(calls) == 1:
+            return argparse.Namespace(ok=True, message=None, data={
+                "number": 7, "url": "https://github.com/upstream/project/pull/7",
+                "headRefOid": "a" * 40,
+            })
+        assert command[3:6] == ["7", "--repo", "upstream/project"]
+        return argparse.Namespace(ok=bool(last_head), message=None,
+                                  data={"headRefOid": last_head * 40})
+
+    def checks(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        assert command[1:6] == ["pr", "checks", "7", "--repo", "upstream/project"]
+        data = [{"name": f"check-{i}", "bucket": bucket,
+                 "link": "https://ci.example.invalid/job/42"}
+                for i, bucket in enumerate(buckets)]
+        return subprocess.CompletedProcess(command, 1, json.dumps(data), "")
+
+    monkeypatch.setattr(readiness, "run_json_command", metadata)
+    monkeypatch.setattr(readiness, "run_command", checks)
+    report_path = tmp_path / "ci.json"
+    arguments = ["--cwd", str(tmp_path), "--evidence-file", str(report_path)]
+    for name in selection:
+        arguments.extend(("--check", name))
+    assert readiness.inspect_ci_main(arguments) == int(status != "passed")
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    summary = json.loads(capsys.readouterr().out)
+    assert report["status"] == summary["status"] == status
+    assert report["repo"] == "upstream/project"
+    assert report["selected_names"] == selection
+    assert len(calls) == 2
+    assert "checks" not in summary and "failures" not in summary
+    if report["failures"]:
+        assert report["failures"][0]["log_status"] == "external"
+
+
+@pytest.mark.parametrize(
+    ("run_status", "job_status", "log_code", "expected"),
+    [("completed", "completed", 0, "available"),
+     ("in_progress", "completed", 0, "available"),
+     ("in_progress", "in_progress", 0, "pending"),
+     ("completed", "completed", 1, "unavailable")],
+)
+def test_ci_inspector_shares_run_metadata_and_selects_job_log_transport(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path,
+    run_status: str, job_status: str, log_code: int, expected: str,
+) -> None:
+    readiness = load_pr_workflow_module(monkeypatch, "readiness")
+    metadata_calls: list[list[str]] = []
+    log_calls: list[list[str]] = []
+
+    def metadata(command: list[str], *args: Any, **kwargs: Any) -> argparse.Namespace:
+        metadata_calls.append(command)
+        assert command[1:6] == ["run", "view", "42", "--repo", "upstream/project"]
+        return argparse.Namespace(ok=True, message=None, data={
+            "databaseId": 42, "status": run_status, "headSha": "a" * 40,
+            "jobs": [{"databaseId": n, "status": job_status} for n in [84, 85]],
+        })
+
+    def logs(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        log_calls.append(command)
+        return subprocess.CompletedProcess(
+            command, log_code, "compile\nfatal: linker failure\ncleanup\n", "logs expired",
+        )
+
+    monkeypatch.setattr(readiness, "run_json_command", metadata)
+    monkeypatch.setattr(readiness, "run_command", logs)
+    cache: dict[str, Any] = {}
+    details = [readiness.check_log_detail(
+        {"name": f"job-{job}", "link": f"https://github.com/upstream/project/actions/runs/42/job/{job}"},
+        "upstream/project", tmp_path, cache,
+    ) for job in [84, 85]]
+    assert [item["job_id"] for item in details] == ["84", "85"]
+    assert all(item["log_status"] == expected for item in details)
+    assert len(metadata_calls) == 1
+    assert len(log_calls) == (0 if expected == "pending" else 2)
+    if expected == "available":
+        assert "fatal: linker failure" in details[0]["failed_log_excerpt"]
+        if run_status == "in_progress":
+            assert log_calls[0] == ["gh", "api", "repos/upstream/project/actions/jobs/84/logs"]
+        else:
+            assert log_calls[0][-3:] == ["--job", "84", "--log-failed"]
+
+
+@pytest.mark.parametrize(
+    "link",
+    ["https://ci.example.invalid/upstream/project/actions/runs/42/job/84",
+     "https://github.com/another/project/actions/runs/42/job/84",
+     "http://github.com/upstream/project/actions/runs/42/job/84",
+     "https://["],
+)
+def test_ci_inspector_does_not_fetch_foreign_check_links(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path, link: str,
+) -> None:
+    readiness = load_pr_workflow_module(monkeypatch, "readiness")
+    monkeypatch.setattr(readiness, "run_json_command",
+                        lambda *a, **kw: pytest.fail("foreign check fetched"))
+    detail = readiness.check_log_detail({"link": link}, "upstream/project", tmp_path, {})
+    assert detail["log_status"] == "external"
+    assert detail["run_id"] is None
+
+
+@pytest.mark.parametrize("gap", ["permission", "missing_job", "missing_jobs", "missing_status"])
+def test_ci_inspector_keeps_metadata_and_job_gaps_explicit(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path, gap: str,
+) -> None:
+    readiness = load_pr_workflow_module(monkeypatch, "readiness")
+    data: dict[str, Any] = {
+        "status": "completed",
+        "jobs": [{"databaseId": 84 if gap == "missing_status" else 85}],
+    }
+    if gap == "missing_jobs":
+        data.pop("jobs")
+    monkeypatch.setattr(readiness, "run_json_command", lambda *a, **kw: argparse.Namespace(
+        ok=gap != "permission", message="permission denied" if gap == "permission" else None,
+        data=data,
+    ))
+    monkeypatch.setattr(readiness, "run_command", lambda *a, **kw: pytest.fail("unverified job log fetched"))
+    detail = readiness.check_log_detail(
+        {"name": "CI", "link": "https://github.com/upstream/project/actions/runs/42/job/84"},
+        "upstream/project", tmp_path, {},
+    )
+    assert detail["log_status"] == "unavailable"
+    assert detail["diagnostic"]
+    assert detail["failed_log_excerpt"] is None
+
+
+def test_review_inspector_paginates_each_surface_and_fork_base_identity(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    review = load_pr_workflow_module(monkeypatch, "codex_review")
+    calls: list[tuple[str, Any]] = []
+    monkeypatch.setattr(review, "run_json_command", lambda *a, **kw: argparse.Namespace(
+        ok=True, message=None, data={"url": "https://github.com/upstream/project/pull/7"},
+    ))
+
+    def page(nodes: list[Any], more: bool = False, cursor: str | None = None) -> dict[str, Any]:
+        return {"nodes": nodes, "pageInfo": {"hasNextPage": more, "endCursor": cursor}}
+
+    def graphql(query: str, variables: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
+        if "thread" in variables:
+            calls.append(("replies", variables["cursor"]))
+            assert variables == {"thread": "thread-0", "cursor": "replies-1"}
+            return {"data": {"node": {"comments": page([{"id": "reply-100"}])}}}
+        assert (variables["owner"], variables["name"], variables["number"]) == ("upstream", "project", 7)
+        cursor = variables["cursor"]
+        pr: dict[str, Any] = {
+            "number": 7, "url": "https://github.com/upstream/project/pull/7",
+            "headRefOid": "a" * 40, "title": "Fix", "state": "OPEN",
+        }
+        if "reviewThreads(" in query:
+            calls.append(("threads", cursor))
+            threads = [{
+                "id": f"thread-{i}", "isResolved": i not in {0, 100}, "isOutdated": i == 100,
+                "path": "src/app.py", "line": None if i == 100 else 12, "originalLine": 10,
+                "comments": page([{"id": f"reply-{n}", "databaseId": n + 1, "body": "Feedback"}
+                                  for n in range(100)], True, "replies-1") if i == 0 else page([]),
+            } for i in (range(100) if cursor is None else [100])]
+            pr["reviewThreads"] = page(threads, cursor is None, "threads-1" if cursor is None else None)
+        elif "reviews(" in query:
+            calls.append(("reviews", cursor))
+            assert cursor is None
+            pr["reviews"] = page([{"id": "review-1", "state": "CHANGES_REQUESTED", "body": "Fix it"}])
+        else:
+            calls.append(("comments", cursor))
+            nodes = [{"id": f"comment-{i}", "body": "Discussion"} for i in range(100)] if cursor is None else []
+            pr["comments"] = page(nodes, cursor is None, "comments-1" if cursor is None else None)
+        return {"data": {"viewer": {"login": "me"}, "repository": {"pullRequest": pr}}}
+
+    monkeypatch.setattr(review, "gh_graphql", graphql)
+    report_path = tmp_path / "review.json"
+    assert review.main(["inspect", "--cwd", str(tmp_path), "--evidence-file", str(report_path)]) == 0
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    summary = json.loads(capsys.readouterr().out)
+    assert report["repo"] == "upstream/project"
+    assert report["title"] == "Fix" and report["state"] == "OPEN"
+    assert len(report["review_threads"]) == 101
+    assert len(report["review_threads"][0]["comments"]["nodes"]) == 101
+    assert report["review_threads"][-1]["isOutdated"] is True
+    assert report["review_threads"][-1]["originalLine"] == 10
+    assert len(report["conversation_comments"]) == 100
+    assert len(report["reviews"]) == 1
+    assert summary["unresolved_thread_count"] == 2 and "Feedback" not in json.dumps(summary)
+    assert calls == [("threads", None), ("threads", "threads-1"), ("replies", "replies-1"),
+                     ("comments", None), ("comments", "comments-1"), ("reviews", None)]
+
+
+@pytest.mark.parametrize("failure", ["head", "cursor", "shape"])
+def test_review_inspector_rejects_incomplete_activity(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path, failure: str,
+) -> None:
+    review = load_pr_workflow_module(monkeypatch, "codex_review")
+    count = 0
+
+    def graphql(query: str, variables: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
+        nonlocal count
+        count += 1
+        assert count <= 2
+        pr: dict[str, Any] = {"headRefOid": ("b" if failure == "head" else "a") * 40}
+        if failure != "shape":
+            pr["comments"] = {"nodes": [], "pageInfo": {"hasNextPage": True, "endCursor": "stuck"}}
+        return {"data": {"repository": {"pullRequest": pr}}}
+
+    monkeypatch.setattr(review, "gh_graphql", graphql)
+    with pytest.raises(review.CommandError):
+        review.fetch_review_activity("upstream", "project", 7, "a" * 40, cwd=tmp_path)
+
+
+@pytest.mark.parametrize("failure", ["head", "cursor", "shape", "reply_shape"])
+def test_review_inspector_rejects_moving_thread_pages(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path, failure: str,
+) -> None:
+    review = load_pr_workflow_module(monkeypatch, "codex_review")
+    count = 0
+
+    def graphql(query: str, variables: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
+        nonlocal count
+        count += 1
+        assert count <= 2
+        pr: dict[str, Any] = {
+            "headRefOid": ("b" if failure == "head" and count == 2 else "a") * 40,
+            "reviewThreads": {"nodes": [], "pageInfo": {"hasNextPage": True, "endCursor": "stuck"}},
+        }
+        if failure == "shape":
+            pr["reviewThreads"] = None
+        elif failure == "reply_shape":
+            pr["reviewThreads"] = {
+                "nodes": [{"id": "thread-1", "comments": {"nodes": []}}],
+                "pageInfo": {"hasNextPage": False},
+            }
+        return {"data": {"repository": {"pullRequest": pr}}}
+
+    monkeypatch.setattr(review, "gh_graphql", graphql)
+    with pytest.raises(review.CommandError):
+        review.fetch_pr("upstream", "project", 7, cwd=tmp_path)
+
+
+def test_inspectors_preserve_existing_evidence_and_reject_scope_mismatch(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    review = load_pr_workflow_module(monkeypatch, "codex_review")
+    readiness = load_pr_workflow_module(monkeypatch, "readiness")
+    path = tmp_path / "existing.json"
+    path.write_text("owned evidence", encoding="utf-8")
+    original_inspect_ci = readiness.inspect_ci
+    monkeypatch.setattr(review, "fetch_pr", lambda *a, **kw: {"headRefOid": "a" * 40, "reviewThreads": []})
+    monkeypatch.setattr(review, "fetch_review_activity", lambda *a, **kw: {"comments": [], "reviews": []})
+    monkeypatch.setattr(readiness, "inspect_ci", lambda *a, **kw: {})
+    assert review.main(["inspect", "--pr", "7", "--repo", "upstream/project",
+                        "--evidence-file", str(path)]) == 1
+    assert readiness.inspect_ci_main(["--evidence-file", str(path)]) == 1
+    assert path.read_text(encoding="utf-8") == "owned evidence"
+    assert capsys.readouterr().err.count('"status": "error"') == 2
+    with pytest.raises(review.CommandError, match="does not match"):
+        review.resolve_pr("https://github.com/upstream/project/pull/7", "fork/project")
+    monkeypatch.setattr(readiness, "run_json_command", lambda *a, **kw: argparse.Namespace(
+        ok=True, message=None, data={
+            "url": "https://github.com/upstream/project/pull/7", "headRefOid": "a" * 40,
+        },
+    ))
+    with pytest.raises(readiness.CommandError, match="does not match"):
+        original_inspect_ci(
+            "https://github.com/upstream/project/pull/7", "fork/project", tmp_path, [],
+        )

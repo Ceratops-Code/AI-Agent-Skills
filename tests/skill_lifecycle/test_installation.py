@@ -3,13 +3,17 @@ from __future__ import annotations
 import json
 import os
 import pathlib
+import re
 import runpy
 import shutil
 import subprocess
 import sys
 
+import pytest
+
 from tests.skill_lifecycle.support import (
     BOOTSTRAP,
+    BUILDER,
     INSTALLER_TEMPLATE,
     INSTALLER_VERSION,
     LIFECYCLE_SOURCE,
@@ -19,6 +23,7 @@ from tests.skill_lifecycle.support import (
     RUNTIME_MANIFEST,
     RUNTIME_MANIFEST_SCHEMA,
     VALIDATOR,
+    add_action_sections,
     install_bundle_manifest,
     run_builder,
     runtime_owner,
@@ -28,6 +33,58 @@ from tests.support.repositories import (
     ROOT,
     create_compatible_repo,
 )
+
+
+def rendered_snapshot(destination: pathlib.Path) -> dict[pathlib.Path, bytes]:
+    """Compare skill output while excluding the root's persistent POSIX lock."""
+    return {
+        item.relative_to(destination): item.read_bytes()
+        for item in destination.rglob("*")
+        if item.is_file() and not (
+            item.parent == destination
+            and re.fullmatch(r"\.ceratops-install-[0-9a-f]{64}\.lock", item.name)
+        )
+    }
+
+
+@pytest.mark.parametrize("renderer", [BOOTSTRAP, INSTALLER_TEMPLATE, BUILDER, VALIDATOR], ids=["repository", "compatible", "managed", "validator"])
+@pytest.mark.parametrize("newline", ["\n", "\r\n"], ids=["lf", "crlf"])
+def test_section_renderers_remove_complete_internal_comments(
+    tmp_path: pathlib.Path, renderer: pathlib.Path, newline: str,
+) -> None:
+    """Exercise shared-section rendering without installing any runtime copies."""
+
+    section = tmp_path / "sections" / "shared.md"
+    section.parent.mkdir()
+    section.write_text(
+        "<!-- INTERNAL: single-line author note -->\n"
+        "  <!-- INTERNAL: multiline author\n"
+        "note ending -->  \n\n"
+        "## Public guidance\n\n"
+        "Keep this instruction.\n"
+        "<!-- Keep this public comment. -->\n",
+        encoding="utf-8", newline=newline,
+    )
+    manifest = {
+        "sections": {"shared": "sections/shared.md"},
+        "skills": {"example": ["shared"]},
+    }
+    module = runpy.run_path(str(renderer))
+    if renderer in (BOOTSTRAP, INSTALLER_TEMPLATE):
+        rendered = module["section_block"](tmp_path, manifest, "example")
+    else:
+        render = module["rendered_sections_block"]
+        render.__globals__["ROOT"] = tmp_path
+        rendered = render("example", manifest)
+
+    assert rendered == (
+        "<!-- CERATOPS_SHARED_SECTIONS_START -->\n"
+        "<!-- SECTION SOURCE: sections/shared.md -->\n\n"
+        "## Public guidance\n\n"
+        "Keep this instruction.\n"
+        "<!-- Keep this public comment. -->\n"
+        "<!-- CERATOPS_SHARED_SECTIONS_END -->"
+    )
 
 
 def test_external_installer_needs_no_ceratops_bundle(tmp_path: pathlib.Path) -> None:
@@ -40,7 +97,7 @@ def test_external_installer_needs_no_ceratops_bundle(tmp_path: pathlib.Path) -> 
     result = subprocess.run(
         [
             sys.executable,
-            str(repo / "scripts" / "install-skills-bootstrap.py"),
+            str(repo / "scripts" / "deploy-skills.py"),
             "--repo-root",
             str(repo),
             "--install-root",
@@ -76,7 +133,7 @@ def test_external_installer_rejects_unresolved_or_malformed_input_without_fallba
     manifest["skills"]["alpha-tool"] = ["missing-section"]
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8", newline="\n")
     unresolved = subprocess.run(
-        [sys.executable, str(repo / "scripts" / "install-skills-bootstrap.py"), "--repo-root", str(repo), "--install-root", str(install_root)],
+        [sys.executable, str(repo / "scripts" / "deploy-skills.py"), "--repo-root", str(repo), "--install-root", str(install_root)],
         capture_output=True, text=True, check=False, env=environment,
     )
     assert unresolved.returncode != 0
@@ -86,7 +143,7 @@ def test_external_installer_rejects_unresolved_or_malformed_input_without_fallba
 
     manifest_path.write_text("[]\n", encoding="utf-8", newline="\n")
     malformed = subprocess.run(
-        [sys.executable, str(repo / "scripts" / "install-skills-bootstrap.py"), "--repo-root", str(repo), "--install-root", str(install_root)],
+        [sys.executable, str(repo / "scripts" / "deploy-skills.py"), "--repo-root", str(repo), "--install-root", str(install_root)],
         capture_output=True, text=True, check=False, env=environment,
     )
     assert malformed.returncode != 0
@@ -136,7 +193,7 @@ def test_bootstrap_never_calls_installed_lifecycle(
     ) == "Ceratops-Code/AI-Agent-Skills"
 
 
-def test_bootstrap_is_first_install_only_and_cleans_owned_state(
+def test_bootstrap_updates_existing_installations_and_cleans_owned_state(
     tmp_path: pathlib.Path,
 ) -> None:
     codex_home = tmp_path / "codex-home"
@@ -173,6 +230,11 @@ def test_bootstrap_is_first_install_only_and_cleans_owned_state(
     assert runtime_owner(install_root, "ceratops-skill-lifecycle") == (
         "Ceratops-Code/AI-Agent-Skills"
     )
+    installed_skill = install_root / "ceratops-skill-lifecycle"
+    skill_text = (installed_skill / "SKILL.md").read_text(encoding="utf-8")
+    (installed_skill / "SKILL.md").write_text("old installation\n", encoding="utf-8")
+    retained = installed_skill / "local-notes.txt"
+    retained.write_text("keep this\n", encoding="utf-8")
     repeated = subprocess.run(
         [
             sys.executable,
@@ -189,8 +251,113 @@ def test_bootstrap_is_first_install_only_and_cleans_owned_state(
         check=False,
         env={**os.environ, "CODEX_HOME": str(codex_home)},
     )
-    assert repeated.returncode == 1
-    assert "bootstrap is first-install-only" in repeated.stderr
+    assert repeated.returncode == 0, repeated.stderr
+    assert repeated.stdout.strip() == "OK"
+    assert (installed_skill / "SKILL.md").read_text(encoding="utf-8") == skill_text
+    assert retained.read_text(encoding="utf-8") == "keep this\n"
+    assert not list(install_root.glob(".ceratops-bootstrap*"))
+
+
+@pytest.mark.parametrize("installer", [BOOTSTRAP, INSTALLER_TEMPLATE])
+def test_bootstrap_retains_retired_skills_without_content_validation(
+    tmp_path: pathlib.Path,
+    installer: pathlib.Path,
+) -> None:
+    repo = tmp_path / "compatible"
+    install_root = tmp_path / "installed"
+    create_compatible_repo(repo, "example/external", ["alpha-tool"])
+    manifest = json.loads((repo / "skills" / "skill-sections.json").read_text())
+    section = repo / next(iter(manifest["sections"].values()))
+    marker = "<!-- CERATOPS_SHARED_SECTIONS_START -->"
+    section.write_text(marker + "\nUnchecked shared content\n", encoding="utf-8")
+    undeclared = repo / "skills" / "unselected-source"
+    undeclared.mkdir()
+    (undeclared / "SKILL.md").write_text("invalid source\n", encoding="utf-8")
+    retired = install_root / "retired-skill"
+    retired.mkdir(parents=True)
+    (retired / "SKILL.md").write_text("retain retired skill\n", encoding="utf-8")
+    target = install_root / "alpha-tool"
+    target.mkdir()
+    (target / RUNTIME_MANIFEST).write_text("invalid installed metadata\n", encoding="utf-8")
+    (target / "retired-file.txt").write_text("retain old file\n", encoding="utf-8")
+    command = [
+        sys.executable, str(installer), "--repo-root", str(repo),
+        "--install-root", str(install_root),
+    ]
+    for _ in range(2):
+        result = subprocess.run(command, capture_output=True, text=True, check=False)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == "OK"
+        assert (target / "SKILL.md").read_text(encoding="utf-8").count(marker) == 2
+        assert (target / "retired-file.txt").read_text(encoding="utf-8") == "retain old file\n"
+        assert (retired / "SKILL.md").read_text(encoding="utf-8") == "retain retired skill\n"
+        assert not (install_root / "unselected-source").exists()
+        assert not list(install_root.glob(".ceratops-bootstrap*"))
+
+
+@pytest.mark.parametrize("installer", [BOOTSTRAP, INSTALLER_TEMPLATE])
+def test_bootstrap_does_not_follow_existing_destination_links(
+    tmp_path: pathlib.Path,
+    installer: pathlib.Path,
+) -> None:
+    repo = tmp_path / "compatible"
+    create_compatible_repo(repo, "example/external", ["alpha-tool"])
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    sentinel = outside / "SKILL.md"
+    sentinel.write_text("untouched\n", encoding="utf-8")
+    install_root = tmp_path / "installed"
+    install_root.mkdir()
+    target = install_root / "alpha-tool"
+    try:
+        target.symlink_to(outside, target_is_directory=True)
+    except OSError:
+        pytest.skip("creating symbolic links is unavailable")
+    result = subprocess.run(
+        [
+            sys.executable, str(installer), "--repo-root", str(repo),
+            "--install-root", str(install_root),
+        ],
+        capture_output=True, text=True, check=False,
+    )
+    assert result.returncode == 1
+    assert sentinel.read_text(encoding="utf-8") == "untouched\n"
+    assert target.is_symlink()
+    assert not list(install_root.glob(".ceratops-bootstrap*"))
+
+
+def test_bootstrap_cleans_owned_state_after_copy_failure(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    repo = tmp_path / "compatible"
+    create_compatible_repo(repo, "example/external", ["alpha-tool"])
+    install_root = tmp_path / "installed"
+    target = install_root / "alpha-tool"
+    target.mkdir(parents=True)
+    retained = target / "SKILL.md"
+    retained.write_text("prior installation\n", encoding="utf-8")
+    installer = runpy.run_path(str(BOOTSTRAP))
+    copytree = shutil.copytree
+
+    def fail_overlay(
+        source: str | os.PathLike[str],
+        destination: str | os.PathLike[str],
+        *args: object,
+        **kwargs: object,
+    ) -> object:
+        if pathlib.Path(destination) == target:
+            raise OSError("copy failed")
+        return copytree(source, destination, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(shutil, "copytree", fail_overlay)
+    monkeypatch.setattr(sys, "argv", [
+        str(BOOTSTRAP), "--repo-root", str(repo), "--install-root", str(install_root),
+    ])
+    assert installer["main"]() == 1
+    assert "copy failed" in capsys.readouterr().err
+    assert retained.read_text(encoding="utf-8") == "prior installation\n"
     assert not list(install_root.glob(".ceratops-bootstrap*"))
 
 
@@ -260,7 +427,7 @@ def test_bootstrap_full_install_materializes_self_contained_lifecycle_bundle(
         installed_lifecycle
         / "references"
         / "templates"
-        / "skill-sections-template.json"
+        / "skill-sections.json.tmpl"
     ).is_file()
     assert (installed_lifecycle / "skills" / "sections" / "core.md").is_file()
     assert (
@@ -282,16 +449,16 @@ def test_bootstrap_full_install_materializes_self_contained_lifecycle_bundle(
     )
     shutil.rmtree(target_repo / "skills" / "sections")
     (target_repo / "skills" / "skill-sections.json").unlink()
-    materialized = run_compatibility_engine(
+    applied = run_compatibility_engine(
         installed_lifecycle / "scripts",
-        "materialize",
+        "apply",
         "--target-repo-root",
         str(target_repo),
         "--runtime-source-id",
         "installed/target",
     )
-    assert materialized.returncode == 0, materialized.stdout
-    assert json.loads(materialized.stdout)["runtime_source_id"] == "installed/target"
+    assert applied.returncode == 0, applied.stdout
+    assert json.loads(applied.stdout)["runtime_source_id"] == "installed/target"
 
     other_checkout = tmp_path / "other-checkout"
     other_checkout.mkdir()
@@ -346,7 +513,7 @@ def test_lifecycle_only_installed_bundle_materializes_compatible_repo(
 
     result = run_compatibility_engine(
         install_root / "ceratops-repo-lifecycle" / "scripts",
-        "materialize",
+        "apply",
         "--target-repo-root",
         str(target_repo),
         "--runtime-source-id",
@@ -382,7 +549,7 @@ def test_bootstrap_ignores_stale_broken_installed_bundle(
     result = subprocess.run(
         [
             sys.executable,
-            str(repo / "scripts" / "install-skills-bootstrap.py"),
+            str(repo / "scripts" / "deploy-skills.py"),
             "--repo-root",
             str(repo),
             "--install-root",
@@ -455,7 +622,7 @@ def test_runtime_manifest_uses_schema_without_installer_version(
     bootstrap = subprocess.run(
         [
             sys.executable,
-            str(repo / "scripts" / "install-skills-bootstrap.py"),
+            str(repo / "scripts" / "deploy-skills.py"),
             "--repo-root",
             str(repo),
             "--install-root",
@@ -499,7 +666,7 @@ def test_full_install_does_not_run_source_validation(tmp_path: pathlib.Path) -> 
     result = subprocess.run(
         [
             sys.executable,
-            str(repo / "scripts" / "install-skills-bootstrap.py"),
+            str(repo / "scripts" / "deploy-skills.py"),
             "--repo-root",
             str(repo),
             "--install-root",
@@ -534,7 +701,7 @@ def test_targeted_install_checks_only_selected_rendering_inputs(
     result = subprocess.run(
         [
             sys.executable,
-            str(repo / "scripts" / "install-skills-bootstrap.py"),
+            str(repo / "scripts" / "deploy-skills.py"),
             "--repo-root",
             str(repo),
             "--install-root",
@@ -556,7 +723,7 @@ def test_targeted_install_checks_only_selected_rendering_inputs(
     invalid_selected = subprocess.run(
         [
             sys.executable,
-            str(repo / "scripts" / "install-skills-bootstrap.py"),
+            str(repo / "scripts" / "deploy-skills.py"),
             "--repo-root",
             str(repo),
             "--install-root",
@@ -582,7 +749,7 @@ def test_bootstrap_synchronization_compares_only_version(
     repo.mkdir()
     (repo / ".git").write_text("gitdir: test\n", encoding="utf-8", newline="\n")
     (repo / "scripts").mkdir()
-    target = repo / "scripts" / "install-skills-bootstrap.py"
+    target = repo / "scripts" / "deploy-skills.py"
     shutil.copy2(INSTALLER_TEMPLATE, target)
     custom = target.read_text(encoding="utf-8") + "\n# same-version local difference\n"
     target.write_text(custom, encoding="utf-8", newline="\n")
@@ -631,7 +798,7 @@ def test_bootstrap_copies_declare_the_same_explicit_version(
 ) -> None:
     validator = runpy.run_path(str(VALIDATOR))
     parse_version = validator["installer_version"]
-    template = tmp_path / "install-skills-bootstrap-template.py"
+    template = tmp_path / "deploy-skills.py.tmpl"
     template.write_text(
         "INSTALLER_VERSION = 11\nprint('authoritative')\n",
         encoding="utf-8",
@@ -709,3 +876,161 @@ def test_runtime_inventory_lists_direct_manifests_and_malformed_blockers(
     assert [item["skill"] for item in inventory["skills"]] == ["alpha-tool", "beta-tool"]
     assert inventory["blockers"][0]["directory"] == "broken-tool"
     assert "unreadable runtime manifest" in inventory["blockers"][0]["errors"][0]
+
+
+@pytest.mark.parametrize("newline", ["\n", "\r\n"], ids=["lf", "crlf"])
+@pytest.mark.parametrize("retained_posix_lock", [False, True])
+def test_action_sections_match_across_installation_paths(
+    tmp_path: pathlib.Path, newline: str, retained_posix_lock: bool,
+) -> None:
+    repo = tmp_path / "compatible"
+    create_compatible_repo(repo, "example/actions", ["alpha-tool", "beta-tool"])
+    add_action_sections(repo)
+    action = repo / "skills/alpha-tool/references/review.md"
+    action.write_text(action.read_text(encoding="utf-8"), encoding="utf-8", newline=newline)
+    source_before = {p.relative_to(repo): p.read_bytes() for p in repo.rglob("*") if p.is_file()}
+    outputs = []
+    for renderer in (BOOTSTRAP, INSTALLER_TEMPLATE, BUILDER):
+        destination = tmp_path / renderer.name
+        command = [sys.executable, str(renderer), "--repo-root", str(repo), "--install-root", str(destination)]
+        if renderer == BUILDER:
+            command.append("--all-managed")
+        for _ in range(2):
+            result = subprocess.run(command, capture_output=True, text=True, check=False)
+            assert result.returncode == 0, result.stderr
+        if renderer == BUILDER and retained_posix_lock:
+            # Exercise the Linux lock artifact on every host platform.
+            (destination / (".ceratops-install-" + "0" * 64 + ".lock")).touch()
+        outputs.append(rendered_snapshot(destination))
+        rendered = (destination / "alpha-tool/references/review.md").read_text(encoding="utf-8")
+        assert rendered.startswith("# Review Action\n\n<!-- CERATOPS_SHARED_SECTIONS_START -->\n")
+        assert rendered.count("<!-- CERATOPS_SHARED_SECTIONS_START -->") == 1
+        assert rendered.count("<!-- SECTION SOURCE: skills/sections/review-policy.md -->") == 1
+        assert rendered.count("Shared review-policy.") == 1
+        assert rendered.index("Shared review-policy.") < rendered.index("Shared review-extra.") < rendered.index("Keep review domain rules.")
+        assert "INTERNAL:" not in rendered
+        assert "Shared review-policy." not in (destination / "alpha-tool/SKILL.md").read_text(encoding="utf-8")
+        for name in ("run", "notes"):
+            assert (destination / f"alpha-tool/references/{name}.md").read_bytes() == (repo / f"skills/alpha-tool/references/{name}.md").read_bytes()
+    assert outputs[0] == outputs[1] == outputs[2]
+    assert source_before == {p.relative_to(repo): p.read_bytes() for p in repo.rglob("*") if p.is_file()}
+
+
+@pytest.mark.parametrize("renderer", [BOOTSTRAP, INSTALLER_TEMPLATE, BUILDER], ids=["repository", "compatible", "managed"])
+@pytest.mark.parametrize("case", [
+    "map-type", "unknown-skill", "action-map-type", "empty-action-map", "nested", "traversal", "absolute", "backslash", "glob",
+    "unrouted", "missing-file", "wrong-title", "duplicate-route", "unknown-section", "duplicate-section", "aliased-section",
+    "inherited-section", "aliased-inherited-section", "empty-sections", "section-list-type", "section-id-type", "generated-action", "generated-section",
+])
+def test_action_sections_reject_invalid_assignments(tmp_path: pathlib.Path, renderer: pathlib.Path, case: str) -> None:
+    repo = tmp_path / "compatible"
+    create_compatible_repo(repo, "example/actions", ["alpha-tool"])
+    manifest = add_action_sections(repo)
+    actions = manifest["actions"]["alpha-tool"]
+    if case == "map-type":
+        manifest["actions"] = []
+    elif case == "unknown-skill":
+        manifest["actions"]["missing-tool"] = actions
+    elif case == "action-map-type":
+        manifest["actions"]["alpha-tool"] = []
+    elif case == "empty-action-map":
+        actions.clear()
+    elif case in {"nested", "traversal", "absolute", "backslash", "glob", "unrouted"}:
+        relative = {"nested": "references/nested/review.md", "traversal": "references/../review.md", "absolute": "/references/review.md", "backslash": "references\\review.md", "glob": "references/*.md", "unrouted": "references/notes.md"}[case]
+        manifest["actions"]["alpha-tool"] = {relative: ["review-policy"]}
+    elif case == "missing-file":
+        (repo / "skills/alpha-tool/references/review.md").unlink()
+    elif case == "wrong-title":
+        (repo / "skills/alpha-tool/references/review.md").write_text("# Notes\n", encoding="utf-8")
+    elif case == "duplicate-route":
+        parent = repo / "skills/alpha-tool/SKILL.md"
+        parent.write_text(parent.read_text(encoding="utf-8") + "- Duplicate: `references/review.md`\n", encoding="utf-8")
+    elif case == "generated-action":
+        (repo / "skills/alpha-tool/references/review.md").write_text("# Review Action\n\n<!-- CERATOPS_SHARED_SECTIONS_START -->\n", encoding="utf-8")
+    elif case == "generated-section":
+        (repo / "skills/sections/review-policy.md").write_text("<!-- CERATOPS_SHARED_SECTIONS_END -->\n", encoding="utf-8")
+    else:
+        manifest["sections"]["alias"] = manifest["sections"]["review-policy"]
+        manifest["sections"]["core-alias"] = manifest["sections"]["core"]
+        actions["references/review.md"] = {
+            "unknown-section": ["absent"], "duplicate-section": ["review-policy", "review-policy"],
+            "aliased-section": ["review-policy", "alias"], "inherited-section": ["core"],
+            "aliased-inherited-section": ["core-alias"], "empty-sections": [], "section-list-type": "review-policy", "section-id-type": [{}],
+        }[case]
+    (repo / "skills/skill-sections.json").write_text(json.dumps(manifest), encoding="utf-8")
+    destination = tmp_path / "installed"
+    destination.mkdir()
+    retained = destination / "user.txt"
+    retained.write_bytes(b"preserve")
+    command = [sys.executable, str(renderer), "--repo-root", str(repo), "--install-root", str(destination)]
+    if renderer == BUILDER:
+        command.append("--all-managed")
+    result = subprocess.run(command, capture_output=True, text=True, check=False)
+    assert result.returncode != 0
+    assert "Traceback" not in result.stderr
+    assert {p.relative_to(destination): p.read_bytes() for p in destination.rglob("*") if p.is_file()} == {pathlib.Path("user.txt"): b"preserve"}
+
+
+def test_contract_review_adoption_and_all_managed_output(tmp_path: pathlib.Path) -> None:
+    manifest = json.loads((ROOT / "skills/skill-sections.json").read_text(encoding="utf-8"))
+    expected = {
+        "ceratops-repo-lifecycle": {"references/repo-contracts-review.md": ["contract-review"]},
+        "ceratops-skill-lifecycle": {"references/skills-contract-review.md": ["contract-review"]},
+    }
+    assert manifest["actions"] == expected
+    shared = ROOT / manifest["sections"]["contract-review"]
+    assert "## Core Rules" not in shared.read_text(encoding="utf-8")
+    snapshots = []
+    for renderer in (BOOTSTRAP, INSTALLER_TEMPLATE, BUILDER):
+        destination = tmp_path / renderer.name
+        command = [sys.executable, str(renderer), "--repo-root", str(ROOT), "--install-root", str(destination)]
+        if renderer == BUILDER:
+            command.append("--all-managed")
+        result = subprocess.run(command, capture_output=True, text=True, check=False)
+        assert result.returncode == 0, result.stderr
+        snapshots.append(rendered_snapshot(destination))
+        for skill, refs in expected.items():
+            source = ROOT / "skills" / skill
+            for relative in refs:
+                rendered = (destination / skill / relative).read_text(encoding="utf-8")
+                assert rendered.splitlines()[2] == "<!-- CERATOPS_SHARED_SECTIONS_START -->"
+                assert rendered.count("## Contract Review Rules") == 1
+                assert "## Contract Review Rules" not in (source / relative).read_text(encoding="utf-8")
+            assert "## Contract Review Rules" not in (destination / skill / "SKILL.md").read_text(encoding="utf-8")
+            for item in source.rglob("*"):
+                if not item.is_file() or any(part in {"__pycache__", ".pytest_cache"} for part in item.parts):
+                    continue
+                relative = item.relative_to(source).as_posix()
+                if relative != "SKILL.md" and relative not in refs:
+                    assert (destination / skill / relative).read_bytes() == item.read_bytes()
+        repository_review = (destination / "ceratops-repo-lifecycle/references/repo-contracts-review.md").read_text(encoding="utf-8")
+        assert "including ecosystems absent from the contract" in repository_review
+        assert "at most four web discovery queries per routine review" in repository_review
+        assert "candidate dispositions with reasons: covered, proposed addition, deferred," in repository_review
+        skill_review = (destination / "ceratops-skill-lifecycle/references/skills-contract-review.md").read_text(encoding="utf-8")
+        assert "Do not run `skills-consistency-source-validator.py`" in skill_review
+        assert "at most two or three relevant installed OpenAI skill examples" in skill_review
+    assert snapshots[0] == snapshots[1] == snapshots[2]
+
+
+@pytest.mark.parametrize("renderer", [BOOTSTRAP, INSTALLER_TEMPLATE, BUILDER], ids=["repository", "compatible", "managed"])
+def test_action_removal_and_selected_input_boundary(tmp_path: pathlib.Path, renderer: pathlib.Path) -> None:
+    repo = tmp_path / "compatible"
+    create_compatible_repo(repo, "example/actions", ["alpha-tool", "beta-tool"])
+    manifest = add_action_sections(repo)
+    # An unrelated malformed sibling declaration must not block a selected install.
+    manifest["actions"]["beta-tool"] = []
+    manifest_path = repo / "skills/skill-sections.json"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    destination = tmp_path / "installed"
+    command = [sys.executable, str(renderer), "--repo-root", str(repo), "--install-root", str(destination), "--skill", "alpha-tool"]
+    result = subprocess.run(command, capture_output=True, text=True, check=False)
+    assert result.returncode == 0, result.stderr
+    installed = destination / "alpha-tool/references/review.md"
+    assert "Shared review-policy." in installed.read_text(encoding="utf-8")
+    manifest["actions"].pop("alpha-tool")
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    result = subprocess.run(command, capture_output=True, text=True, check=False)
+    assert result.returncode == 0, result.stderr
+    assert installed.read_bytes() == (repo / "skills/alpha-tool/references/review.md").read_bytes()
+    assert not (destination / "beta-tool").exists()

@@ -13,6 +13,7 @@ import pytest
 from tests.skill_lifecycle.support import (
     RUNTIME_INSTALLER,
     RUNTIME_MANIFEST,
+    add_action_sections,
     load_runtime_builder,
     load_runtime_installer,
     run_builder,
@@ -573,7 +574,7 @@ def test_base_revision_resolves_payload_global_and_ambiguous_changes(
     assert run_git(global_repo, "add", ".").returncode == 0
     assert run_git(global_repo, "commit", "-m", "base").returncode == 0
     global_base = run_git(global_repo, "rev-parse", "HEAD").stdout.strip()
-    bootstrap = global_repo / "scripts" / "install-skills-bootstrap.py"
+    bootstrap = global_repo / "scripts" / "deploy-skills.py"
     bootstrap.write_text(
         bootstrap.read_text(encoding="utf-8") + "\n# changed generator\n",
         encoding="utf-8",
@@ -583,7 +584,7 @@ def test_base_revision_resolves_payload_global_and_ambiguous_changes(
         run_git(
             global_repo,
             "add",
-            "scripts/install-skills-bootstrap.py",
+            "scripts/deploy-skills.py",
         ).returncode
         == 0
     )
@@ -735,3 +736,30 @@ def test_transaction_cleanup_blocker_keeps_new_batch_and_serializes_writers(
     assert not thread.is_alive()
     assert len(errors) == 1
     assert isinstance(errors[0], lock_builder["InstallBusy"])
+
+
+@pytest.mark.parametrize("change", ["section", "assignment", "removal", "source-path"])
+def test_action_section_changes_select_exact_consumers(tmp_path: pathlib.Path, change: str) -> None:
+    repo = tmp_path / "compatible"
+    create_compatible_repo(repo, "example/actions", ["alpha-tool", "beta-tool"])
+    manifest = add_action_sections(repo)
+    for command in [("init", "-b", "main"), ("config", "user.email", "test@example.invalid"), ("config", "user.name", "Test Agent"), ("add", "."), ("commit", "-m", "base")]:
+        assert run_git(repo, *command).returncode == 0
+    base = run_git(repo, "rev-parse", "HEAD").stdout.strip()
+    if change == "section":
+        (repo / "skills/sections/review-policy.md").write_text("## Updated\n\nChanged review guidance.\n", encoding="utf-8")
+    elif change == "assignment":
+        manifest["actions"]["alpha-tool"] = {"references/run.md": ["review-policy", "review-extra"]}
+    elif change == "removal":
+        manifest["actions"] = {}
+    else:
+        section = repo / "skills/sections/renamed.md"
+        (repo / "skills/sections/review-policy.md").rename(section)
+        manifest["sections"]["review-policy"] = "skills/sections/renamed.md"
+    (repo / "skills/skill-sections.json").write_text(json.dumps(manifest), encoding="utf-8")
+    assert run_git(repo, "add", "-A").returncode == 0
+    assert run_git(repo, "commit", "-m", "action scope change").returncode == 0
+    affected = load_runtime_installer()["affected_from_base"](repo, base)
+    assert affected.deploy == ("alpha-tool",)
+    assert affected.remove == ()
+    assert not affected.all_managed

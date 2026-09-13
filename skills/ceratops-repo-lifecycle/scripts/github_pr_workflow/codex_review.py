@@ -1,4 +1,4 @@
-"""Wait for, address, or resolve Codex review threads on a pull request."""
+"""Inspect PR discussion, wait for reviews, or address exact review threads."""
 
 from __future__ import annotations
 
@@ -67,16 +67,28 @@ def default_repo(cwd: pathlib.Path | None = None) -> str:
 
 
 def resolve_pr(
-    selector: str,
+    selector: str | None,
     repo: str | None,
     *,
     cwd: pathlib.Path | None = None,
 ) -> tuple[str, str, int]:
     """Resolve PR selector and repository into owner, repo name, and number."""
 
+    if selector is None:
+        command = ["gh", "pr", "view", "--json", "url"]
+        if repo:
+            command.extend(("--repo", repo))
+        result = run_json_command(command, "current pull request", cwd=cwd)
+        if not result.ok or not isinstance(result.data, dict):
+            raise CommandError(result.message or "could not resolve the current PR")
+        selector = result.data.get("url")
+        if not isinstance(selector, str) or not selector:
+            raise CommandError("current PR URL is unavailable")
     match = PR_URL_RE.search(selector)
     if match:
         owner, name, number = match.groups()
+        if repo and repo.lower() != f"{owner}/{name}".lower():
+            raise CommandError("--repo does not match the PR URL repository")
         return owner, name, int(number)
     selected_repo = repo or default_repo(cwd)
     if "/" not in selected_repo:
@@ -86,6 +98,8 @@ def resolve_pr(
         number = int(selector)
     except ValueError as exc:
         raise CommandError("PR selector must be a PR URL or number with --repo") from exc
+    if number < 1:
+        raise CommandError("PR number must be positive")
     return owner, name, number
 
 
@@ -93,6 +107,20 @@ def parse_utc(value: str) -> dt.datetime:
     """Parse GitHub timestamps as timezone-aware UTC datetimes."""
 
     return dt.datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(dt.timezone.utc)
+
+
+def _connection_page(value: object, label: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Reject partial GraphQL connections instead of reporting missing data as empty."""
+
+    if not isinstance(value, dict) or not isinstance(value.get("nodes"), list):
+        raise CommandError(f"{label} response is incomplete")
+    nodes = value["nodes"]
+    if any(not isinstance(node, dict) for node in nodes):
+        raise CommandError(f"{label} response contains an invalid entry")
+    page = value.get("pageInfo")
+    if not isinstance(page, dict) or not isinstance(page.get("hasNextPage"), bool):
+        raise CommandError(f"{label} page information is unavailable")
+    return nodes, page
 
 
 def fetch_pr(
@@ -115,6 +143,8 @@ query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
       url
       createdAt
       headRefOid
+      title
+      state
       reviewThreads(first: 100, after: $cursor) {
         nodes {
           id
@@ -125,6 +155,9 @@ query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
           startLine
           diffSide
           startDiffSide
+          originalLine
+          originalStartLine
+          resolvedBy { login }
           comments(first: 100) {
             nodes {
               id
@@ -132,6 +165,7 @@ query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
               body
               url
               createdAt
+              updatedAt
               author {
                 login
               }
@@ -152,6 +186,7 @@ query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
 }
 """
     cursor: str | None = None
+    seen_cursors: set[str] = set()
     pr_data: dict[str, Any] | None = None
     threads: list[dict[str, Any]] = []
     while True:
@@ -165,17 +200,24 @@ query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
         if not isinstance(pr, dict):
             raise CommandError(f"pull request not found: {owner}/{name}#{number}")
         if pr_data is None:
-            pr_data = {key: pr.get(key) for key in ("number", "url", "createdAt", "headRefOid")}
+            pr_data = {
+                key: pr.get(key)
+                for key in ("number", "url", "createdAt", "headRefOid", "title", "state")
+            }
             viewer = response.get("viewer")
             pr_data["viewer_login"] = (
                 viewer.get("login") if isinstance(viewer, dict) else None
             )
-        review_threads = pr.get("reviewThreads") or {}
-        threads.extend(review_threads.get("nodes") or [])
-        page = review_threads.get("pageInfo") or {}
+        elif pr.get("headRefOid") != pr_data.get("headRefOid"):
+            raise CommandError("PR head changed during review pagination; inspect again")
+        nodes, page = _connection_page(pr.get("reviewThreads"), "review threads")
+        threads.extend(nodes)
         if not page.get("hasNextPage"):
             break
         cursor = page.get("endCursor")
+        if not isinstance(cursor, str) or not cursor or cursor in seen_cursors:
+            raise CommandError("review thread cursor did not advance")
+        seen_cursors.add(cursor)
     assert pr_data is not None
     comment_query = """
 query($thread: ID!, $cursor: String) {
@@ -188,6 +230,7 @@ query($thread: ID!, $cursor: String) {
           body
           url
           createdAt
+          updatedAt
           author {
             login
           }
@@ -202,18 +245,23 @@ query($thread: ID!, $cursor: String) {
 }
 """
     for thread in threads:
-        comments = thread.get("comments") or {}
-        nodes = list(comments.get("nodes") or [])
-        page = comments.get("pageInfo") or {}
+        comments, page = _connection_page(thread.get("comments"), "review thread comments")
+        nodes = list(comments)
+        seen_comment_cursors: set[str] = set()
         while page.get("hasNextPage"):
             cursor = page.get("endCursor")
             thread_id = thread.get("id")
             if not isinstance(thread_id, str) or not thread_id:
                 raise CommandError("review thread id is unavailable during comment pagination")
-            if not isinstance(cursor, str) or not cursor:
+            if (
+                not isinstance(cursor, str)
+                or not cursor
+                or cursor in seen_comment_cursors
+            ):
                 raise CommandError(
-                    f"review thread {thread_id} comment cursor is unavailable"
+                    f"review thread {thread_id} comment cursor did not advance"
                 )
+            seen_comment_cursors.add(cursor)
             data = gh_graphql(
                 comment_query,
                 {"thread": thread_id, "cursor": cursor},
@@ -222,9 +270,10 @@ query($thread: ID!, $cursor: String) {
             node = (data.get("data") or {}).get("node")
             if not isinstance(node, dict):
                 raise CommandError(f"review thread not found during pagination: {thread_id}")
-            next_comments = node.get("comments") or {}
-            nodes.extend(next_comments.get("nodes") or [])
-            next_page = next_comments.get("pageInfo") or {}
+            next_comments, next_page = _connection_page(
+                node.get("comments"), "review thread comments",
+            )
+            nodes.extend(next_comments)
             next_cursor = next_page.get("endCursor")
             if next_page.get("hasNextPage") and next_cursor == cursor:
                 raise CommandError(
@@ -234,6 +283,101 @@ query($thread: ID!, $cursor: String) {
         thread["comments"] = {"nodes": nodes, "pageInfo": page}
     pr_data["reviewThreads"] = threads
     return pr_data
+
+
+def fetch_review_activity(
+    owner: str,
+    name: str,
+    number: int,
+    head_oid: str,
+    *,
+    cwd: pathlib.Path | None = None,
+) -> dict[str, list[dict[str, Any]]]:
+    """Collect discussion and submitted reviews once, outside the bot wait loop.
+
+    Connections advance independently, including empty final pages. Every page
+    must describe the selected head; content remains untrusted evidence.
+    """
+
+    output: dict[str, list[dict[str, Any]]] = {}
+    for connection, fields in (
+        ("comments", "id databaseId url body createdAt updatedAt author { login }"),
+        ("reviews", "id url state body submittedAt author { login }"),
+    ):
+        query = """
+query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      headRefOid
+      CONNECTION(first: 100, after: $cursor) {
+        nodes { FIELDS }
+        pageInfo { hasNextPage endCursor }
+      }
+    }
+  }
+}
+""".replace("CONNECTION", connection).replace("FIELDS", fields)
+        nodes: list[dict[str, Any]] = []
+        cursor: str | None = None
+        seen: set[str] = set()
+        while True:
+            data = gh_graphql(
+                query,
+                {"owner": owner, "name": name, "number": number, "cursor": cursor},
+                cwd=cwd,
+            )
+            pr = ((data.get("data") or {}).get("repository") or {}).get("pullRequest")
+            if not isinstance(pr, dict) or pr.get("headRefOid") != head_oid:
+                raise CommandError("PR head changed or disappeared during review inspection")
+            page_nodes, page = _connection_page(pr.get(connection), f"PR {connection}")
+            nodes.extend(page_nodes)
+            if not page["hasNextPage"]:
+                break
+            cursor = page.get("endCursor")
+            if not isinstance(cursor, str) or not cursor or cursor in seen:
+                raise CommandError(f"PR {connection} cursor did not advance")
+            seen.add(cursor)
+        output[connection] = nodes
+    return output
+
+
+def inspect_review(args: argparse.Namespace) -> int:
+    """Write complete read-only evidence to a new caller-owned report file."""
+
+    owner, name, number = resolve_pr(args.pr, args.repo, cwd=args.cwd)
+    pr = fetch_pr(owner, name, number, cwd=args.cwd)
+    head_oid = pr.get("headRefOid")
+    if not isinstance(head_oid, str) or not head_oid:
+        raise CommandError("PR head is unavailable")
+    activity = fetch_review_activity(owner, name, number, head_oid, cwd=args.cwd)
+    report = {
+        "schema": "ceratops-pr-review-evidence.v1",
+        "repo": f"{owner}/{name}",
+        "pr": number,
+        "url": pr.get("url"),
+        "head_oid": head_oid,
+        "title": pr.get("title"),
+        "state": pr.get("state"),
+        "review_threads": pr["reviewThreads"],
+        "conversation_comments": activity["comments"],
+        "reviews": activity["reviews"],
+    }
+    # Exclusive creation prevents silent replacement of the caller's evidence.
+    with args.evidence_file.expanduser().open("x", encoding="utf-8") as stream:
+        json.dump(report, stream, indent=2, ensure_ascii=True)
+        stream.write("\n")
+    print(json.dumps({
+        "status": "inspected",
+        "repo": report["repo"],
+        "pr": number,
+        "head_oid": head_oid,
+        "review_thread_count": len(pr["reviewThreads"]),
+        "unresolved_thread_count": len(unresolved_review_threads(pr)),
+        "conversation_comment_count": len(activity["comments"]),
+        "review_count": len(activity["reviews"]),
+        "evidence_file": str(args.evidence_file.expanduser().resolve()),
+    }, ensure_ascii=True))
+    return 0
 
 
 def comment_author(comment: dict[str, Any]) -> str:
@@ -604,6 +748,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    inspect_parser = subparsers.add_parser("inspect", help="inspect all PR review surfaces")
+    inspect_parser.add_argument("--pr", help="PR URL or number; defaults to the current branch PR")
+    inspect_parser.add_argument("--repo", help="base repository in OWNER/REPO form")
+    inspect_parser.add_argument("--cwd", type=pathlib.Path, default=pathlib.Path.cwd())
+    inspect_parser.add_argument("--evidence-file", required=True, type=pathlib.Path)
+    inspect_parser.set_defaults(func=inspect_review)
 
     wait_parser = subparsers.add_parser("wait", help="poll for active Codex review threads")
     wait_parser.add_argument("--pr", required=True, help="PR URL or number")

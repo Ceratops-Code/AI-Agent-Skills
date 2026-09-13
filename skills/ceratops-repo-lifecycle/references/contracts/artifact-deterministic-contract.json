@@ -30,7 +30,7 @@
     "artifact_contracts": {
       "type": "array",
       "required": false,
-      "description": "External-artifact identity records loaded from the local sdlc/sdlc.yml release section when declared, otherwise supplied explicitly. Every non-no_artifact record confirms publication even when no workflow is present."
+      "description": "Annotation-only external-artifact identity records loaded from the owning deliverables in local sdlc/sdlc.yml when declared, otherwise supplied explicitly. Every non-no_artifact record declares publication intent even when no workflow is present; it is not evidence of a completed publication."
     },
     "publish_requested": {
       "type": "boolean",

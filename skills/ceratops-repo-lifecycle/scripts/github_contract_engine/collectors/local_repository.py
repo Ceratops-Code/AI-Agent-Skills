@@ -11,12 +11,13 @@ import subprocess
 import sys
 from typing import Any
 
-from ceratops_repo_compatibility_engine.compatibility_check import (
-    CompatibilityResult,
-    check_repository,
-)
 from ceratops_repo_compatibility_engine.sdlc_contract_validation import (
+    migration_proposal,
     read_contract,
+)
+from ceratops_repo_compatibility_engine.validate_ceratops_compatibility import (
+    CompatibilityResult,
+    validate_ceratops_compatibility,
 )
 
 USES_RE = re.compile(r"^\s*uses:\s*([^@\s]+)@([^\s#]+)", re.MULTILINE)
@@ -837,11 +838,16 @@ def _sdlc_contract_facts(local: dict[str, Any]) -> dict[str, Any]:
             "errors": ["sdlc/sdlc.yml must be a regular file"],
         }
     contract, errors = read_contract(path)
-    return {
+    facts: dict[str, Any] = {
         "present": True,
         "valid": contract is not None and not errors,
         "errors": errors,
     }
+    if contract is not None:
+        proposal = migration_proposal(contract, local["root"])
+        if proposal is not None:
+            facts["migration_proposal"] = proposal
+    return facts
 
 
 def _compatibility_facts(local: dict[str, Any]) -> CompatibilityResult:
@@ -849,7 +855,7 @@ def _compatibility_facts(local: dict[str, Any]) -> CompatibilityResult:
 
     if not local["available"] or not local["root"]:
         return {"applicable": False, "valid": None, "errors": []}
-    return check_repository(pathlib.Path(local["root"]))
+    return validate_ceratops_compatibility(pathlib.Path(local["root"]))
 
 
 def _repository_validation_facts(

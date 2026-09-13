@@ -17,7 +17,7 @@
       "lines": "shared SDLC schema validation"
     },
     {
-      "path": "$AI_AGENT_SKILLS_ROOT/skills/ceratops-repo-lifecycle/scripts/ceratops_repo_compatibility_engine/compatibility_check.py",
+      "path": "$AI_AGENT_SKILLS_ROOT/skills/ceratops-repo-lifecycle/scripts/ceratops_repo_compatibility_engine/validate_ceratops_compatibility.py",
       "lines": "shared repository compatibility checker"
     }
   ],

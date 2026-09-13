@@ -1,2 +1,4 @@
 jsonschema==4.26.0
+markdown-it-py==4.0.0
 PyYAML==6.0.3
+tzdata==2026.3

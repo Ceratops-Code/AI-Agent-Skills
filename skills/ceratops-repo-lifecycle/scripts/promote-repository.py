@@ -3,12 +3,9 @@
 
 When release has advanced, the helper may rebase a clean, unpublished,
 linear-history source in its existing worktree. Failed attempts restore and
-verify the exact source snapshot before blocking. Repository-specific
-validation or installation runs only through a named deploy operation from
-``sdlc/sdlc.yml`` when explicitly selected. Composed shipping suppresses
-that promotion-time operation and delegates the exact promoted head to the
-sibling ship helper, which owns post-merge release publication, local
-deployment, and cleanup.
+verify the exact source snapshot before blocking. Repository validation runs from the SDLC validate entries after assembling
+the release and before local deployment. Composed shipping repeats validation
+at its own boundary and owns post-merge publication, deployment, and cleanup.
 """
 
 from __future__ import annotations
@@ -16,9 +13,11 @@ from __future__ import annotations
 import argparse
 import json
 import pathlib
-import re
 import subprocess
 import sys
+import tempfile
+import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
 
@@ -28,18 +27,14 @@ from github_pr_workflow.command import (
     require_success,
     run_command,
 )
+from repository_operation import OperationError, operation_category
 
 SCRIPT_ROOT = pathlib.Path(__file__).resolve().parent
 PENDING_MANAGER = SCRIPT_ROOT / "manage-pending-work.py"
-DEPLOY_RUNNER = SCRIPT_ROOT / "run-deploy-operation.py"
+OPERATION_RUNNER = SCRIPT_ROOT / "repository_operation.py"
 SHIP_REPOSITORY = SCRIPT_ROOT / "ship-repository.py"
 RELEASE_BRANCH = "release/local"
 DEFAULT_SDLC_CONTRACT = pathlib.Path("sdlc/sdlc.yml")
-DEFAULT_RELEASE_PREFLIGHT_OPERATIONS = ("preflight",)
-DEFAULT_RELEASE_OPERATIONS = ("publish",)
-DEFAULT_DEPLOY_OPERATIONS = ("deploy",)
-MANAGED_SKILLS_MANIFEST = pathlib.Path("skills/skill-sections.json")
-OPERATION_ID_RE = re.compile(r"^[a-z][a-z0-9_-]*$")
 
 
 class PromotionError(RuntimeError):
@@ -463,42 +458,32 @@ def _run_json(command: list[str], cwd: pathlib.Path) -> tuple[int, dict[str, Any
     return result.returncode, payload
 
 
-def _has_managed_skills(repo_root: pathlib.Path) -> bool:
-    """Detect manifest-managed skills without inferring from directory names."""
+def _operation_ids(value: object, category: str) -> list[str]:
+    """Require explicit complete YAML locations in the lifecycle-owned category."""
 
-    manifest_path = repo_root / MANAGED_SKILLS_MANIFEST
-    if not manifest_path.exists():
-        return False
-    if not manifest_path.is_file():
-        raise PromotionError("Managed-skill manifest must be a file.")
-    try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise PromotionError("Managed-skill manifest is unreadable.") from exc
-    if not isinstance(manifest, dict) or not isinstance(manifest.get("skills"), dict):
-        raise PromotionError("Managed-skill manifest must declare a skills object.")
-    return bool(manifest["skills"])
-
-
-def _operation_ids(
-    value: object,
-    default: tuple[str, ...],
-    label: str,
-) -> list[str]:
-    """Resolve and validate one explicit ordered selection or its default."""
-
-    selected = list(default) if value is None else value
-    if (
-        not isinstance(selected, list)
-        or not selected
-        or not all(
-            isinstance(operation, str)
-            and OPERATION_ID_RE.fullmatch(operation) is not None
-            for operation in selected
-        )
-    ):
-        raise PromotionError(f"{label} operations must be valid IDs.")
+    selected = [] if value is None else value
+    if not isinstance(selected, list):
+        raise PromotionError("SDLC operations must be an ordered list.")
+    for operation in selected:
+        if operation_category(operation) != category:
+            raise PromotionError(f"Expected {category} operation: {operation}")
     return list(selected)
+
+
+def _validation_command(
+    args: argparse.Namespace, repo_root: pathlib.Path, commit: str,
+) -> list[str]:
+    """Run repository-declared checks without inferring scripts or commands."""
+
+    command = [
+        sys.executable, str(OPERATION_RUNNER), "--repo-root", str(repo_root),
+        "--sdlc-contract", str(args.sdlc_contract), "--validate", "--commit", commit,
+    ]
+    for operation in args.validation_operation or []:
+        command.extend(("--validation-operation", operation))
+    for operation in args.run_operation or []:
+        command.extend(("--operation", operation))
+    return command
 
 
 def _ship_after_promotion(
@@ -542,30 +527,9 @@ def _ship_after_promotion(
         if value is not None:
             command.extend((f"--{field}", value))
     for flag, operations in (
-        (
-            "--release-preflight-operation",
-            _operation_ids(
-                args.release_preflight_operation,
-                DEFAULT_RELEASE_PREFLIGHT_OPERATIONS,
-                "Release preflight",
-            ),
-        ),
-        (
-            "--release-operation",
-            _operation_ids(
-                args.release_operation,
-                DEFAULT_RELEASE_OPERATIONS,
-                "Release publication",
-            ),
-        ),
-        (
-            "--deploy-operation",
-            _operation_ids(
-                args.deploy_operation,
-                DEFAULT_DEPLOY_OPERATIONS,
-                "Deployment",
-            ),
-        ),
+        ("--validation-operation", args.validation_operation or []),
+        ("--publish-operation", _operation_ids(args.publish_operation, "publish")),
+        ("--deploy-operation", _operation_ids(args.deploy_operation, "deploy-local")),
     ):
         for operation in operations:
             command.extend((flag, operation))
@@ -588,14 +552,17 @@ def _ship_after_promotion(
         return shipped
     if ship_code == 1:
         message = shipped.get("message")
-        if status not in {"blocked", "error", "operation_failed"} or not isinstance(message, str):
+        if status not in {"blocked", "error", "operation_failed", "validation_failed", "state_changed"} or not isinstance(message, str):
             raise PromotionError("Shipping returned an incomplete blocker.")
         raise PromotionError(message, shipped)
     raise PromotionError(f"Shipping returned unsupported exit code: {ship_code}")
 
 
-def promote(args: argparse.Namespace) -> dict[str, object]:
+def promote(args: argparse.Namespace, *, timings: dict[str, float] | None = None) -> dict[str, object]:
     """Prepare a release branch, record selected work, and optionally deploy."""
+
+    if timings is None:
+        timings = {}
 
     if args.release_branch != RELEASE_BRANCH:
         raise PromotionError(f"release_branch must be {RELEASE_BRANCH}.")
@@ -611,8 +578,7 @@ def promote(args: argparse.Namespace) -> dict[str, object]:
     shipping_operations_selected = any(
         value is not None
         for value in (
-            args.release_preflight_operation,
-            args.release_operation,
+            args.publish_operation,
             args.deploy_operation,
         )
     )
@@ -660,6 +626,10 @@ def promote(args: argparse.Namespace) -> dict[str, object]:
             raise PromotionError("Promotion requires an explicit deployment choice.")
         if args.release_branch in branches or args.main_branch in branches:
             raise PromotionError("Source branches cannot be release or main.")
+    _operation_ids(args.run_operation, "deploy-local")
+    _operation_ids(args.validation_operation, "validate")
+    _operation_ids(args.publish_operation, "publish")
+    _operation_ids(args.deploy_operation, "deploy-local")
     _clean(repo_root, "before promotion")
     source_states: dict[str, SourceState] = {}
     if not args.prepare_release_only:
@@ -753,38 +723,44 @@ def promote(args: argparse.Namespace) -> dict[str, object]:
     if record_code:
         raise PromotionError(str(record.get("message", "Scope recording failed.")))
 
+    with _timed_phase(timings, "validation"):
+        validation_code, validation = _run_json(
+            _validation_command(args, repo_root, target_commit), repo_root,
+        )
+    if validation_code:
+        raise PromotionError(
+            str(validation.get("message", "Repository validation failed.")),
+            {
+                **validation, "phase": "promotion_validation",
+                "remote_mutation": False, "pending_work_scope": record["pending_work_scope"],
+                "release_branch": args.release_branch, "head": target_commit,
+            },
+        )
     operations: dict[str, Any] | None = None
-    managed_skills: bool | None = None
     handoffs: list[dict[str, str]] = []
     if args.run_operation is not None:
-        managed_skills = _has_managed_skills(repo_root)
         operation_command = [
-            sys.executable,
-            str(DEPLOY_RUNNER),
-            "--repo-root",
-            str(repo_root),
-            "--contract",
-            str(args.sdlc_contract),
+            sys.executable, str(OPERATION_RUNNER), "--repo-root", str(repo_root),
+            "--sdlc-contract", str(args.sdlc_contract), "--commit", target_commit,
         ]
         for operation_id in args.run_operation:
             operation_command.extend(("--operation", operation_id))
-        operation_code, operations = _run_json(
-            operation_command,
-            SCRIPT_ROOT,
-        )
+        for operation_id in args.validation_operation or []:
+            operation_command.extend(("--validation-operation", operation_id))
+        with _timed_phase(timings, "deployment"):
+            operation_code, operations = _run_json(operation_command, repo_root)
         if operation_code:
             raise PromotionError(
                 str(operations.get("message", "Deployment failed.")),
-                operations,
+                {**operations, "phase": "deployment", "remote_mutation": False,
+                 "pending_work_scope": record["pending_work_scope"]},
             )
-        if managed_skills:
-            for operation_result in operations.get("results", []):
-                declared_handoff = operation_result.get("handoff")
-                operation_id = operation_result.get("operation")
-                if isinstance(declared_handoff, str) and isinstance(operation_id, str):
-                    handoffs.append(
-                        {"operation": operation_id, "handoff": declared_handoff}
-                    )
+        for operation_result in operations.get("results", []):
+            if operation_result.get("handoff"):
+                handoffs.append({
+                    "operation": operation_result["operation"],
+                    "handoff": operation_result["handoff"],
+                })
 
     _clean(repo_root, "before reporting ready state")
     pending_work_scope = record["pending_work_scope"]
@@ -807,10 +783,37 @@ def promote(args: argparse.Namespace) -> dict[str, object]:
     }
     if record.get("preserved_sources"):
         result["preserved_sources"] = record["preserved_sources"]
-    if managed_skills is not None:
-        result["managed_skills"] = managed_skills
+    if handoffs:
         result["handoffs"] = handoffs
+    validation_handoffs = [item for item in validation["results"] if item.get("handoff")]
+    if validation_handoffs:
+        result["validation_handoffs"] = validation_handoffs
     return result
+
+
+@contextmanager
+def _timed_phase(timings: dict[str, float], phase: str):
+    """Record actual elapsed work even when a phase fails; never repeat it."""
+    started = time.monotonic()
+    try:
+        yield
+    finally:
+        timings[phase] = round(time.monotonic() - started, 6)
+
+
+def _save_result(path: pathlib.Path, result: dict[str, object]) -> None:
+    """Atomically retain the exact outcome; own and always clean its staging file."""
+    staging = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
+                                         prefix="." + path.name, suffix=".tmp", delete=False) as stream:
+            staging = pathlib.Path(stream.name)
+            json.dump(result, stream, indent=2)
+            stream.write("\n")
+        staging.replace(path)
+    finally:
+        if staging is not None:
+            staging.unlink(missing_ok=True)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -821,6 +824,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--repo-root", type=pathlib.Path, default=pathlib.Path.cwd())
     parser.add_argument("--source-branch", action="append")
+    parser.add_argument("--result-file", type=pathlib.Path,
+                        help="Retain the exact JSON outcome and timings outside the repository.")
     parser.add_argument("--main-branch", default="main")
     parser.add_argument(
         "--release-branch",
@@ -839,7 +844,7 @@ def build_parser() -> argparse.ArgumentParser:
     operation.add_argument(
         "--run-operation",
         action="append",
-        help="Deploy operation ID to run; repeat to preserve an explicit order.",
+        help="Complete deploy-local YAML location; repeat in order.",
     )
     operation.add_argument(
         "--no-run-operation",
@@ -860,19 +865,19 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_SDLC_CONTRACT,
     )
     parser.add_argument(
-        "--release-preflight-operation",
+        "--validation-operation",
         action="append",
-        help="Release preflight operation ID for composed shipping; repeat in order.",
+        help="Validate YAML location; repeats replace repository check discovery.",
     )
     parser.add_argument(
-        "--release-operation",
+        "--publish-operation",
         action="append",
-        help="Release publication operation ID for composed shipping; repeat in order.",
+        help="Publish YAML location for composed shipping; repeat in order.",
     )
     parser.add_argument(
         "--deploy-operation",
         action="append",
-        help="Deploy operation ID for composed shipping; repeat in order.",
+        help="Deploy-local YAML location for composed shipping; repeat in order.",
     )
     return parser
 
@@ -881,24 +886,47 @@ def main(argv: list[str] | None = None) -> int:
     """Run promotion and emit one compact result."""
 
     args = build_parser().parse_args(argv)
+    started = time.monotonic()
+    timings: dict[str, float] = {}
+    result_file = None
+    failed = False
     try:
-        result = promote(args)
+        if args.result_file is not None:
+            requested = args.result_file.expanduser().resolve()
+            if requested.is_relative_to(args.repo_root.resolve()):
+                raise PromotionError("result-file must stay outside the repository")
+            requested.parent.mkdir(parents=True, exist_ok=True)
+            if requested.exists() and not requested.is_file():
+                raise PromotionError("result-file must name a file")
+            result_file = requested
+        result = promote(args, timings=timings)
     except (
         CommandError,
+        OperationError,
         PromotionError,
         OSError,
         ValueError,
         subprocess.SubprocessError,
     ) as exc:
-        payload = (
+        failed = True
+        result = (
             exc.payload
             if isinstance(exc, PromotionError) and exc.payload is not None
             else {"status": "error", "message": str(exc)}
         )
-        print(json.dumps(payload, separators=(",", ":")), file=sys.stderr)
-        return 1
-    print(json.dumps(result, separators=(",", ":")))
-    return 2 if result.get("status") == "pending_work" else 0
+    timings["total"] = round(time.monotonic() - started, 6)
+    result["timings_seconds"] = timings
+    if result_file is not None:
+        try:
+            _save_result(result_file, result)
+        except OSError as exc:
+            # Side effects may already be complete. Retain their exact outcome
+            # in the error instead of suggesting a replay to recover a record.
+            result = {"status": "result_recording_failed", "message": str(exc),
+                      "operation_result": result, "replay_required": False}
+            failed = True
+    print(json.dumps(result, separators=(",", ":")), file=sys.stderr if failed else sys.stdout)
+    return 1 if failed else (2 if result.get("status") == "pending_work" else 0)
 
 
 if __name__ == "__main__":

@@ -230,10 +230,10 @@ class GHContractStateEngineTests(unittest.TestCase):
             contract.write_text(
                 json.dumps(
                     {
-                        "version": 1,
+                        "version": 2,
                         "kind": "ceratops-sdlc",
-                        "deploy": {
-                            "operations": {
+                        "repository": {
+                            "validate": {
                                 "invalid": {
                                     "steps": [
                                         {"id": "invalid", "run": "python -V"}
@@ -259,9 +259,9 @@ class GHContractStateEngineTests(unittest.TestCase):
             contract.write_text(
                 json.dumps(
                     {
-                        "version": 1,
+                        "version": 2,
                         "kind": "ceratops-sdlc",
-                        "deploy": {"operations": {}},
+                        "repository": {"validate": {}},
                     }
                 ),
                 encoding="utf-8",
@@ -475,12 +475,12 @@ class GHContractStateEngineTests(unittest.TestCase):
             (sdlc_root / "sdlc.yml").write_text(
                 json.dumps(
                     {
-                        "version": 1,
+                        "version": 2,
                         "kind": "ceratops-sdlc",
-                        "release": {
+                        "deliverables": {"tools": {
                             "artifacts": [record],
-                            "operations": {},
-                        },
+                            "publish": {},
+                        }},
                     }
                 )
                 + "\n",

@@ -5,6 +5,7 @@ from __future__ import annotations
 import pathlib
 import subprocess
 
+from github_contract_engine.github_api import github_read_command, run_github_command
 
 class CommandError(RuntimeError):
     """Raised when a required native command fails."""
@@ -17,8 +18,9 @@ def run_command(
 ) -> subprocess.CompletedProcess[str]:
     """Run one command without shell expansion or inherited noisy output."""
 
-    return subprocess.run(
+    return run_github_command(
         args,
+        retry_safe=github_read_command(args),
         cwd=cwd,
         capture_output=True,
         text=True,

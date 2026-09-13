@@ -2,7 +2,8 @@
 """Validate and orchestrate one governance proposal iteration run.
 
 ``prepare`` validates a closed request against exact current rule text and the
-existing structured history lookup, writes detailed context evidence, records
+existing structured history lookup, rejects untouched Markdown errors before
+opening proposal artifacts, writes detailed context evidence, records
 exact task-temp cleanup ownership, and opens iteration one through
 ``iteration_controller.py``. ``advance`` delegates the controller's validated
 atomic submit-and-open operation. After a completed run, ``finalize`` preserves
@@ -27,7 +28,11 @@ import tempfile
 from collections.abc import Mapping, Sequence
 
 from validate_rule_candidate import CONTEXT_SCHEMA as CANDIDATE_CONTEXT_SCHEMA
-from validate_rule_candidate import resolve_target_policy
+from validate_rule_candidate import (
+    RuleCandidateValidationError,
+    preflight_unchanged_markdown,
+    resolve_target_policy,
+)
 
 REQUEST_SCHEMA = "ceratops-governance-proposal-request.v3"
 CONTEXT_SCHEMA = "ceratops-governance-proposal-context.v3"
@@ -616,6 +621,13 @@ def command_prepare(request_path: pathlib.Path) -> str:
     request = _validated_request(request_path)
     sources = request["sources"]
     assert isinstance(sources, list)
+    for source in sources:
+        if source["candidate_target"]:
+            try:
+                preflight_unchanged_markdown(pathlib.Path(source["rules"]),
+                    source["expected_text"], source["markdown_policy"], pathlib.Path(str(request["task_temp_root"])))
+            except RuleCandidateValidationError as exc:
+                raise ProposalWorkflowError(str(exc)) from exc
     lookup_arguments = ["lookup"]
     rule_ids: list[str] = []
     for source in sources:

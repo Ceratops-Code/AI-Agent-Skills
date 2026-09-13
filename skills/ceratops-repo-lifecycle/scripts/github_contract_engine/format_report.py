@@ -9,7 +9,6 @@ from typing import Any
 
 from .levels import count_by_level
 
-
 REDACTED = "<redacted>"
 OMITTED = "<omitted>"
 SENSITIVE_KEYS = {
@@ -235,7 +234,32 @@ def build_report(
 ) -> dict[str, Any]:
     """Compose the full machine-readable report."""
 
-    findings = comparison["findings"]
+    findings = list(comparison["findings"])
+    proposal = (
+        observed_states.get("local", {}).get("sdlc_contract", {})
+        .get("migration_proposal")
+    )
+    if proposal is not None:
+        # The existing automation forwards these nonblocking review findings.
+        # No repair dispatcher or operation executor consumes this annotation.
+        repository = (
+            f"{desired_state['parameters'].get('owner')}/"
+            f"{desired_state['parameters'].get('repo')}"
+        )
+        proposal = {**proposal, "repository": repository}
+        findings.append({
+            "level": "NEEDS_AI_AGENT_REVIEW",
+            "check_id": "content.sdlc_migration",
+            "kind": "advisory_migration",
+            "path": "/local/sdlc_contract/migration_proposal",
+            "message": (
+                f"Optional SDLC migration for {repository}: "
+                f"version {proposal['current_version']} to "
+                f"{proposal['recommended_version']}. {proposal['reason']} "
+                "Proposal only; do not automatically migrate or interrupt supported operations."
+            ),
+            "actual": proposal,
+        })
     approved = comparison["approved_drift"]
     result = {
         "target": desired_state["parameters"].get("org_login")

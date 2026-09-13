@@ -43,7 +43,7 @@ def command(definition: dict[str, object], temporary_root: pathlib.Path) -> list
 def prepare_temporary_directories(
     argv: list[str], temporary_root: pathlib.Path
 ) -> None:
-    """Create only catalog-declared working directories inside the owned root."""
+    """Create only contract-declared working directories inside the owned root."""
 
     resolved_root = temporary_root.resolve()
     for index, value in enumerate(argv[:-1]):
@@ -108,7 +108,7 @@ def child_evidence(argv: list[str], temporary_root: pathlib.Path) -> list[str]:
 
 
 def main() -> int:
-    """Run catalog-selected checks in order and emit one bounded result."""
+    """Run contract-selected checks in order and emit one bounded result."""
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--evidence-file", type=pathlib.Path)

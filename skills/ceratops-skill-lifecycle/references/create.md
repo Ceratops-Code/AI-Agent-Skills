@@ -33,7 +33,7 @@ out.
 - Use this action when creating a brand-new skill in this repo or another skills
   repository.
 - If the target repository is not Ceratops-compatible, use
-  `$ceratops-repo-lifecycle` action `make-repo-compatible`, then resume
+  `$ceratops-repo-lifecycle` action `apply-ceratops-compatibility`, then resume
   `create`.
 - If the task is generic one-off scaffolding with no repo integration
   expectations, use the system skill creator only for scaffolding and still
@@ -55,7 +55,8 @@ out.
 - In another repo, verify that `skills/skill-sections.json` declares
   `runtime_source_id`, `validation_profile: ceratops-compatible`, shared
   sections, and per-skill assignments; otherwise complete
-  `$ceratops-repo-lifecycle` action `make-repo-compatible` before continuing.
+  `$ceratops-repo-lifecycle` action `apply-ceratops-compatibility` before
+  continuing.
   Do not require Ceratops-prefixed skill names.
 - When a Ceratops skills source checkout is locally present and no explicit
   other source repo was named, scaffold and edit the new skill only in that

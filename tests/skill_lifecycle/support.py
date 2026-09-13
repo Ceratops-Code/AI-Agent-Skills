@@ -14,18 +14,18 @@ from tests.support.repositories import ROOT, run_git
 LIFECYCLE_SOURCE = ROOT / "skills" / "ceratops-skill-lifecycle"
 VALIDATOR = LIFECYCLE_SOURCE / "scripts" / "skills-consistency-source-validator.py"
 BUILDER = LIFECYCLE_SOURCE / "scripts" / "runtime" / "managed_runtime_builder.py"
-BOOTSTRAP = ROOT / "scripts" / "install-skills-bootstrap.py"
+BOOTSTRAP = ROOT / "scripts" / "deploy-skills.py"
 LIVE_SECTION_MANIFEST = ROOT / "skills" / "skill-sections.json"
 REPOSITORY_LIFECYCLE_SOURCE = ROOT / "skills" / "ceratops-repo-lifecycle"
 REPOSITORY_LIFECYCLE_SCRIPTS = REPOSITORY_LIFECYCLE_SOURCE / "scripts"
-SECTION_MANIFEST_TEMPLATE = REPOSITORY_LIFECYCLE_SOURCE / "references" / "templates" / "skill-sections-template.json"
-INSTALLER_TEMPLATE = REPOSITORY_LIFECYCLE_SOURCE / "references" / "templates" / "install-skills-bootstrap-template.py"
+SECTION_MANIFEST_TEMPLATE = REPOSITORY_LIFECYCLE_SOURCE / "references" / "templates" / "skill-sections.json.tmpl"
+INSTALLER_TEMPLATE = REPOSITORY_LIFECYCLE_SOURCE / "references" / "templates" / "deploy-skills.py.tmpl"
 RUNTIME_INSTALLER = LIFECYCLE_SOURCE / "scripts" / "runtime" / "install-managed-skills.py"
 FAST_CHANGE = LIFECYCLE_SOURCE / "scripts" / "fast-change.py"
 SKILL_UPDATE_WORKFLOW = LIFECYCLE_SOURCE / "scripts" / "skill-update-workflow.py"
 RUNTIME_MANIFEST = ".runtime-manifest.json"
 RUNTIME_MANIFEST_SCHEMA = "ceratops-runtime-skill.v3"
-INSTALLER_VERSION = 11
+INSTALLER_VERSION = 13
 
 
 def prepare_fast_change_repo(tmp_path: pathlib.Path) -> pathlib.Path:
@@ -359,3 +359,29 @@ def install_bundle_manifest(bundle_root: pathlib.Path) -> None:
         encoding="utf-8",
         newline="\n",
     )
+
+
+def add_action_sections(repo: pathlib.Path) -> dict[str, Any]:
+    """Add two routed actions and two ordered action-only section sources."""
+
+    manifest_path = repo / "skills/skill-sections.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    section_dir = repo / "skills/sections"
+    shutil.copy2(ROOT / "skills/sections/multi-action-skill.md", section_dir)
+    manifest["sections"]["multi-action-skill"] = "skills/sections/multi-action-skill.md"
+    manifest["skills"]["alpha-tool"].append("multi-action-skill")
+    for name in ("review-policy", "review-extra"):
+        path = section_dir / f"{name}.md"
+        path.write_text(f"<!-- INTERNAL: author note -->\n\n## {name}\n\nShared {name}.\n", encoding="utf-8")
+        manifest["sections"][name] = f"skills/sections/{name}.md"
+    skill = repo / "skills/alpha-tool"
+    parent = skill / "SKILL.md"
+    parent.write_text(parent.read_text(encoding="utf-8") + "\n### Action References\n\n- Review: `references/review.md`\n- Run: `references/run.md`\n", encoding="utf-8")
+    references = skill / "references"
+    references.mkdir(exist_ok=True)
+    for name in ("review", "run"):
+        (references / f"{name}.md").write_text(f"# {name.title()} Action\n\n## Goal\n\nKeep {name} domain rules.\n", encoding="utf-8")
+    (references / "notes.md").write_text("# Notes\n\nAn unassigned supporting reference.\n", encoding="utf-8")
+    manifest["actions"] = {"alpha-tool": {"references/review.md": ["review-policy", "review-extra"]}}
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    return manifest

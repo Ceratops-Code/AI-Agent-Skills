@@ -1,12 +1,76 @@
-version: 1
+version: 2
 kind: ceratops-sdlc
-deploy:
-  operations:
-    deploy:
-      handoff: ceratops-skill-lifecycle/deploy
-    bootstrap:
+
+repository:
+  prerequisites:
+    python:
+      executable: python
+      version-from:
+        file: pyproject.toml
+        key: project.requires-python
+      includes: [pip]
+
+    node:
+      executable: node
+      channel: lts
+      includes: [npm]
+
+    git:
+      executable: git
+
+    uv:
+      executable: uv
+
+    ripgrep:
+      executable: rg
+
+    powershell:
+      executable: powershell
+      platforms: [windows]
+
+  bootstrap:
+    runtime:
+      prerequisites: [python]
       steps:
-        - id: bootstrap-skills
-          run:
-            - python
-            - scripts/install-skills-bootstrap.py
+        - run: [python, -m, pip, install, -r, requirements-runtime.txt]
+
+    development:
+      prerequisites: [python, node]
+      steps:
+        - run: [python, -m, pip, install, -r, requirements-dev.txt]
+        # Resolve npm.cmd on Windows and npm on other platforms.
+        - run: [python, -c, "import shutil, subprocess; subprocess.run([shutil.which('npm'), 'ci'], check=True)"]
+
+  validate:
+    repository:
+      steps:
+        - run: [python, scripts/validate-repository.py]
+
+deliverables:
+  skills:
+    validate:
+      ceratops-managed:
+        handoff: ceratops-skill-lifecycle/source-validate
+
+    deploy-local:
+      ceratops-managed:
+        handoff: ceratops-skill-lifecycle/deploy
+
+      standalone:
+        steps:
+          - run: [python, scripts/deploy-skills.py]
+
+  hooks:
+    deploy-local:
+      standalone:
+        steps:
+          - run: [python, scripts/deploy-hooks.py]
+
+  tools:
+    deploy-local:
+      ceratops-managed:
+        handoff: ceratops-tool-lifecycle/install
+
+      standalone:
+        steps:
+          - run: [python, scripts/deploy-tool-manager.py]

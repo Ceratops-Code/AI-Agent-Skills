@@ -8,6 +8,9 @@ import json
 import pathlib
 from typing import Any
 
+from ceratops_repo_compatibility_engine.repository_validation_contract import (
+    load_validation_contract,
+)
 from github_pr_workflow.readiness import contract_implementation_errors
 
 from .collect_observed_states import (
@@ -55,6 +58,7 @@ SCHEMAS = REFERENCES / "schemas"
 SDLC_SCHEMA = SCHEMAS / "sdlc.yml.schema.json"
 STATE_SCHEMA = SCHEMAS / "github-lifecycle-deterministic-contract.schema.json"
 PR_SCHEMA = SCHEMAS / "github-pr-readiness-deterministic-contract.schema.json"
+VALIDATION_SCHEMA = SCHEMAS / "repository-validation-contract.schema.json"
 STATE_CONTRACT_PATHS = {
     "org": CONTRACTS / "github-org-deterministic-contract.json",
     "repo": CONTRACTS / "github-repo-deterministic-contract.json",
@@ -72,6 +76,9 @@ ND_CONTRACT_PATHS = {
 }
 REQUIRED_FILES = [
     SOURCE_DOCS,
+    CONTRACTS / "repository-validation-contract.json",
+    VALIDATION_SCHEMA,
+    SCRIPTS / "ceratops_repo_compatibility_engine" / "repository_validation_contract.py",
     *STATE_CONTRACT_PATHS.values(),
     PR_CONTRACT,
     *ND_CONTRACT_PATHS.values(),
@@ -100,6 +107,22 @@ REQUIRED_FILES = [
     SCHEMAS / "github-contract-source-docs.schema.json",
     SDLC_SCHEMA,
 ]
+
+# The loader owns identity, schema and provenance references; compatibility
+# application consumes predicates, selection and commands.
+VALIDATION_ANNOTATION_FIELDS = frozenset({"root.captured_on", "root.source_doc_scopes"})
+VALIDATION_EXECUTABLE_FIELDS = frozenset(
+    {
+        "root.contract_format_version", "root.kind", "root.name",
+        "root.source_docs_ref", "root.checks",
+        "def:check.id", "def:check.when", "def:check.unless",
+        "def:check.command", "def:check.cwd", "def:check.exclusive",
+        "def:packageScript.kind", "def:packageScript.manager", "def:packageScript.value",
+        "def:pathAny.kind", "def:pathAny.value",
+        "def:fileContains.kind", "def:fileContains.path", "def:fileContains.value",
+    }
+)
+
 
 STATE_ANNOTATION_FIELDS = frozenset(
     {
@@ -278,7 +301,7 @@ def _schema_field_nodes(
     root_properties = schema.get("properties", {})
     for name, specification in root_properties.items():
         nodes[f"root.{name}"] = (specification, schema)
-    if schema_path == STATE_SCHEMA:
+    if schema_path in {STATE_SCHEMA, VALIDATION_SCHEMA}:
         for definition_name, definition in schema.get("$defs", {}).items():
             for name, specification in definition.get("properties", {}).items():
                 nodes[f"def:{definition_name}.{name}"] = (
@@ -307,6 +330,9 @@ def _validate_schema_field_roles(
     if schema_path == STATE_SCHEMA:
         annotations = STATE_ANNOTATION_FIELDS
         executable = STATE_EXECUTABLE_FIELDS
+    elif schema_path == VALIDATION_SCHEMA:
+        annotations = VALIDATION_ANNOTATION_FIELDS
+        executable = VALIDATION_EXECUTABLE_FIELDS
     else:
         annotations = PR_ANNOTATION_FIELDS
         executable = PR_EXECUTABLE_FIELDS
@@ -1062,7 +1088,11 @@ def main(argv: list[str] | None = None) -> int:
         if not path.is_file()
     ]
     errors.extend(validate_all_contract_schemas())
-    for schema_path in (STATE_SCHEMA, PR_SCHEMA):
+    try:
+        load_validation_contract()
+    except RuntimeError as exc:
+        errors.append(str(exc))
+    for schema_path in (STATE_SCHEMA, PR_SCHEMA, VALIDATION_SCHEMA):
         if not schema_path.is_file():
             continue
         try:

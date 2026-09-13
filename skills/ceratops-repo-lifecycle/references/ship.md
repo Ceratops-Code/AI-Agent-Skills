@@ -2,12 +2,9 @@
 
 ## Goal
 
-Ship one staged integration branch through GitHub, synchronize local main,
-recheck selected local work, execute or explicitly no-op declared remote
-release operations in order, then execute or explicitly no-op selected local
-repository deploy operations in order, handle their managed-skill handoffs,
-recheck again, and clean only the selected merged source branches and
-worktrees.
+Validate staged work locally, ship it through GitHub, synchronize main, then
+run explicitly selected publication and local deployment operations before
+selected-source cleanup. YAML declares capabilities; this action owns timing.
 
 ## Context
 
@@ -23,9 +20,10 @@ worktrees.
   as an input or requested by a repository-discovery blocker. Never search the
   target for this helper; after a terminal blocker, inspect only the exact
   blocker-named surface.
-- Select a nondefault contract only with `--sdlc-contract PATH`. Repeat
-  `--release-preflight-operation ID`, `--release-operation ID`, or
-  `--deploy-operation ID` to replace that phase's ordered default selection.
+- Select a contract with `--sdlc-contract PATH`. Repeat
+  `--publish-operation LOCATION` or `--deploy-operation LOCATION` for
+  explicitly requested work; omission runs neither category. Optional repeated
+  `--validation-operation LOCATION` flags replace validation discovery.
 - The helper derives the canonical pending-work scope from `--head-branch`.
   When a retained scope exists, the wrapper reuses its recorded exact target
   commit; a caller-supplied `--commit` must match it. An absent scope is a
@@ -48,16 +46,18 @@ worktrees.
 - New PRs derive omitted metadata from the staged commits relative to the base.
   Preserve supplied fields exactly and existing PR fields without overrides.
 - Whether the head is reusable after merge.
-- Optional repository-owned `sdlc/sdlc.yml` path and ordered release preflight,
-  release publication, and deploy operation IDs. Repeat the phase-specific CLI
-  flag to replace that phase's default selection.
+- Optional SDLC path and ordered complete YAML locations for requested work.
+  Without explicit validation locations, run repository validation and
+  validation of selected deliverables in declaration order.
 
 ## Constraints
 
 ### Boundaries
 
 - Ship only clean staged `release/local`.
-- Do not edit source or expand pending-work scope in this action.
+- Repair ordinary check failures under the parent's repair/retry rule without
+  expanding the selected change scope; restart shipping after committing the
+  fix.
 - Keep standalone merge behavior under `merge-pr`; its admin choice is
   unchanged.
 
@@ -84,6 +84,11 @@ worktrees.
    the exact commit already selected by the wrapper.
 3. Before the first remote push, the scope manager atomically normalizes an
    exact version-1 record, then the helper checks the canonical version-2 scope.
+   Prevalidate all selected entries, parameters, exact argv and
+   repository-bounded working directories from `sdlc/sdlc.yml`, then run
+   selected validation. An absent default contract or validation category is a
+   no-op; explicitly missing locations are errors. Only `validate` entries may
+   be selected as checks.
    During the same preflight it validates every registered selected worktree's
    resolved path. A worktree is cleanup-eligible only when its parent chain
    contains a case-insensitive `worktrees` directory component; otherwise the
@@ -98,25 +103,20 @@ worktrees.
 4. (D) The delegated GitHub workflow must resolve exact-head gates with bounded,
    shell-safe evidence. A confirmed Actions outage must stop shipping with
    `external_service_outage`; gates are never bypassed.
+   GitHub reads that fail with HTTP 502, 503, or 504 retry once after ten
+   seconds. PR creation uses the same delay and retries only after a fresh
+   lookup confirms the intended PR is absent.
 5. Only after those gates pass, integrated ship delegates the final exact-head
    merge to `merge.merge_verified_pr(admin=True)`. It inherits the shared
    merge action's checkpointed dedicated-endpoint bypass, restoration, read-back,
    and critical recovery semantics; ship contains no independent toggle logic.
 6. After merge, the helper synchronizes local main and restores a reusable
    integration branch when selected.
-7. Before remote mutation, the wrapper resolves one `--sdlc-contract`, using
-   `sdlc/sdlc.yml` by default. It resolves the ordered defaults `preflight`,
-   `publish`, and `deploy`, or replaces each default with that phase's repeated
-   explicit operation IDs. It prevalidates every selected operation, exact argv,
-   parameter, and repository-bounded working directory before the first remote
-   mutation, then runs all selected release preflight operations in order. An
-   absent default contract makes publication and deployment successful no-ops;
-   an absent `release` or `deploy` section makes only that section a successful
-   no-op. A missing explicitly selected custom contract or operation ID blocks.
-   After
-   synchronization, recheck the selected scope, run declared release
-   publication operations in order or record their no-ops, then run declared
-   local deployment operations in order or record their no-ops, and recheck.
+7. After synchronization and selected-work recheck, validate before each pending
+   publication or deployment batch.
+   Failed checks stop the batch before any later side effect. Keep the action
+   active for repair and a fresh committed attempt; repository scripts need
+   only normal exit codes and diagnostics, not special JSON.
    Before removing a selected worktree or branch
    for a retained source, finalization atomically changes its state to
    `deleting`; an existing `deleting` branch first passes the same cleanliness
@@ -162,22 +162,19 @@ worktrees.
    sibling for retired scopes, residual-cleanup records, operation checkpoints,
    and PR checkpoints; it never scans for or removes unrelated temporary files.
    Every selected operation must remain retry-safe across interruption.
-9. After the helper completes, when synchronized main declares managed skills,
-   execute each handoff returned by its ordered deployment results against that
-   exact checkout. If none was declared, report the managed skills as not
-   deployed without changing the completed repository result.
+9. Use returned advisory handoffs for requested domain work against synchronized
+   main. They neither invoke another skill automatically nor require a receipt;
+   do not infer completed validation, deployment or publication from the hint.
 
 ## Done When
 
 ### Completion Gate
 
-- PR publication, all gates, exact-head admin merge, main synchronization,
-  every selected or explicit no-op remote release publication, and every
-  selected or explicit no-op local repository deployment completed in order;
-  any returned handoffs completed in order, and managed skills without one
-  were reported.
+- Local validation, GitHub gates, exact-head merge, synchronization and selected
+  deterministic operations completed in order; advisory routing was not treated
+  as proof of completed domain work.
 - Every existing cleanup-selected source branch passed pending-work checks; an
-  or proven-empty scope completed as a cleanup no-op.
+  absent or proven-empty scope completed as a cleanup no-op.
 - Only an evidence-proven interrupted `deleting` record was recovered
   automatically; every missing `retained` source remained blocking.
 - Dirty, unavailable, or advanced legacy sources were preserved, excluded from

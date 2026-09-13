@@ -40,7 +40,7 @@ requiring a separate semantic disposition for every call and lens combination.
 
 ## Output Contract
 
-Present every outstanding context-evidence finding and all plausible risks under
-the parent output contract. For a standalone run, state that conclusions cover
-only context and evidence reuse and are not a whole-thread credit
-reconciliation.
+Select and present findings under the parent Output Contract; retain every
+finding and plausible risk in machine evidence. For a standalone run, state
+that conclusions cover only context and evidence reuse
+and are not a whole-thread credit reconciliation.

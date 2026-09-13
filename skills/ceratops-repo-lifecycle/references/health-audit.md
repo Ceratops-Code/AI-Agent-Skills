@@ -24,15 +24,18 @@ credential-bound fixes precisely.
   scoped findings.
 - (D) Prefer `--summary-json` for agent-readable repo-health output; use
   `--json` only when a parser needs the full report.
-- (D) Local health records
-  `ceratops_repo_compatibility_engine.compatibility_check.check_repository(repo_root)`
-  unchanged. It also runs a present `scripts/validate-repository.py` once with
+- (D) Local health records the `validate_ceratops_compatibility(repo_root)`
+  result from `ceratops_repo_compatibility_engine` unchanged. It also runs a
+  present `scripts/validate-repository.py` once with
   `--evidence-file` outside the target; a missing validator or CI validation
   workflow is a finding. External-only health runs no local validator.
-- (D) When the local repository declares `release.artifacts` in
-  `sdlc/sdlc.yml`, the repo checker validates that SDLC contract and uses its
+- When the local repository declares artifact identities in a supported
+  `sdlc/sdlc.yml`, the repo checker validates that contract and uses its
   artifact identities automatically. Caller-supplied
   `artifact_contracts` remain only for repositories without local declarations.
+- Report each `content.sdlc_migration` finding as an advisory proposal naming
+  the repository, current and recommended SDLC versions, and reason.
+  Supported contracts remain usable; automatic migration is outside this action.
 - (D) Organization parameters resolve in this order: contract defaults,
   `--params-file`, named flags, then `--param`. The parameter file defaults to
   `$CODEX_HOME/gh-contract-params.json`.
@@ -54,8 +57,8 @@ credential-bound fixes precisely.
 - Do not use this action as a routine rubber-stamp closeout pass after normal
   ship, dependency-maintenance, or merge flows.
 - If the repo is not yet published, needs first hardening, needs normal PR and
-  release flow, or only needs PR finalization, return to the parent skill and select
-  the owning action.
+  release flow, or only needs PR finalization, return to the parent skill and
+  select the owning action.
 
 ### Workflow
 
@@ -90,8 +93,8 @@ credential-bound fixes precisely.
   policy-matching stale candidates should produce `NEEDS_AI_AGENT_REVIEW`.
 - If the checker reports `WARN`, `NEEDS_AI_AGENT_REVIEW`, or a blind spot,
   classify it from available repo evidence first; escalate only intent that
-  cannot be inferred from repo evidence, and do not close while review items remain
-  unclassified.
+  cannot be inferred from repo evidence, and do not close while review items
+  remain unclassified.
 
 #### 3. Research only where needed
 
@@ -129,8 +132,8 @@ credential-bound fixes precisely.
 - Any broad current-health claim is backed by
   `python -m github_contract_engine validate repo` or equivalent command-result
   evidence.
-- Every applicable `check_repository` result is valid with no errors; every
-  local health run's repository validator also passes.
+- Every applicable `validate_ceratops_compatibility` result is valid with no
+  errors; every local health run's repository validator also passes.
 - Actions hardening claims are backed by a fresh local workflow scan when repo
   files were available.
 - Local state is verified for every touched repo, worktree, generated file,

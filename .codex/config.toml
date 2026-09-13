@@ -1,10 +1,10 @@
 # Development repository only; do not expose this service to Forms.
-[mcp_servers.ceratops-tool-manager]
+[mcp_servers.ceratops_tool_manager]
 command = 'python'
 args = [
   '-I',
   '-B',
-  'C:\AI-Agents-Tools\ceratops-tool-manager\bin\ceratops-tool-manager.py',
+  'C:\AI-Agents-Tools\ceratops_tool_manager\bin\ceratops_tool_manager.py',
   '--mcp',
 ]
 enabled_tools = ['install', 'update', 'versions']

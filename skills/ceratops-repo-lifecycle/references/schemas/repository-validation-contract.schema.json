@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ceratops.dev/schemas/repository-validation-contract.schema.json",
+  "title": "Repository validation generation contract",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract_format_version", "kind", "name", "source_docs_ref", "source_doc_scopes", "checks"],
+  "properties": {
+    "contract_format_version": {"const": 1},
+    "kind": {"const": "repository_validation_contract"},
+    "name": {"const": "ceratops_repository_validation_contract"},
+    "captured_on": {
+      "description": "Annotation-only review provenance; it does not select or execute checks.",
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+    },
+    "source_docs_ref": {"const": "github-contract-source-docs.json"},
+    "source_doc_scopes": {
+      "description": "Annotation-only source-registry scopes for standards review and validator discovery; their references are validated by the contract loader.",
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "checks": {
+      "description": "Executable check selection and command data consumed by apply_ceratops_compatibility.contract_checks and the generated repository validator.",
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/check"}
+    }
+  },
+  "$defs": {
+    "text": {"type": "string", "minLength": 1},
+    "path": {
+      "description": "Repository-relative path or glob; the contract loader also rejects absolute paths, drives, and parent traversal.",
+      "type": "string",
+      "minLength": 1
+    },
+    "packageScript": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "value"],
+      "properties": {
+        "kind": {"const": "package-script"},
+        "manager": {"enum": ["npm", "pnpm"]},
+        "value": {"$ref": "#/$defs/text"}
+      }
+    },
+    "pathAny": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "value"],
+      "properties": {
+        "kind": {"const": "path-any"},
+        "value": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/path"}}
+      }
+    },
+    "fileContains": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "path", "value"],
+      "properties": {
+        "kind": {"const": "file-contains"},
+        "path": {"$ref": "#/$defs/path"},
+        "value": {"$ref": "#/$defs/text"}
+      }
+    },
+    "condition": {
+      "description": "Executable predicates consumed by apply_ceratops_compatibility._validation_condition_matches.",
+      "oneOf": [
+        {"$ref": "#/$defs/packageScript"},
+        {"$ref": "#/$defs/pathAny"},
+        {"$ref": "#/$defs/fileContains"}
+      ]
+    },
+    "check": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "when", "command", "cwd"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$"},
+        "when": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/condition"}},
+        "unless": {"type": "array", "items": {"$ref": "#/$defs/condition"}},
+        "command": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/text"}},
+        "cwd": {"$ref": "#/$defs/path"},
+        "exclusive": {"type": "boolean"}
+      }
+    }
+  }
+}

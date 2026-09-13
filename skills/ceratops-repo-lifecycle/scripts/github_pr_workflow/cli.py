@@ -33,6 +33,8 @@ def _parser() -> argparse.ArgumentParser:
         choices=(
             "ensure-pr",
             "validate",
+            "inspect-review",
+            "inspect-ci",
             "wait",
             "address",
             "resolve",
@@ -59,6 +61,8 @@ def main(argv: list[str] | None = None) -> int:
     commands: dict[str, Command] = {
         "ensure-pr": ensure_pr.main,
         "validate": readiness.main,
+        "inspect-review": lambda values: codex_review.main(["inspect", *(values or [])]),
+        "inspect-ci": readiness.inspect_ci_main,
         "wait": lambda values: codex_review.main(["wait", *(values or [])]),
         "address": lambda values: codex_review.main(["address", *(values or [])]),
         "resolve": lambda values: codex_review.main(["resolve", *(values or [])]),

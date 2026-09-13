@@ -992,9 +992,11 @@ def wrapped_command(command: str, interpreter: str | None = None) -> str:
     encoded = base64.b64encode(command.encode("utf-8")).decode("ascii")
     script = str(pathlib.Path(__file__).resolve())
     wrapper_python = interpreter or sys.executable
+    # Legacy Windows PowerShell loses embedded quotes when invoking Python.
+    shell_option = "--powershell pwsh " if interpreter is not None else ""
     return (
         f"& {powershell_quote(wrapper_python)} {powershell_quote(script)} "
-        f"--encoded-command {powershell_quote(encoded)}"
+        f"{shell_option}--encoded-command {powershell_quote(encoded)}"
     )
 
 
@@ -1003,6 +1005,7 @@ def is_wrapped_command(command: str) -> bool:
 
     scripts = (
         (str(pathlib.Path(__file__).resolve()), "--encoded-command"),
+        (str(pathlib.Path(__file__).resolve()), "--powershell pwsh --encoded-command"),
         (
             str(pathlib.Path(__file__).resolve().with_name(COMMAND_PROBE_NAME)),
             "--encoded-request",
@@ -1185,7 +1188,7 @@ def run_hook() -> int:
         updated_input = dict(tool_input)
         updated_input["command"] = wrapped_command(
             analysis.command,
-            pc_python if python_redirected else None,
+            pc_python,
         )
         fields: dict[str, object] = {"updatedInput": updated_input}
         if python_redirected:
@@ -1272,6 +1275,24 @@ def _module_preflight_failure(
     return returncode if 1 <= returncode <= 255 else 1
 
 
+def _without_progress(command: str) -> str:
+    """Suppress progress in this child only, without filtering any output stream.
+
+    A dot-sourced script block preserves top-level ``using``/``param`` syntax
+    while the preference is set before module autoloading or command execution.
+    Single-quote escaping keeps the supplied command literal until PowerShell
+    parses it. Capture failure inside the block: Windows PowerShell can reset
+    ``$?`` when the block returns. Match ``-Command`` failure semantics without
+    letting a stale ``$LASTEXITCODE`` override a handled failure or explicit exit.
+    """
+
+    literal = (command + "\nif (-not $?) { exit 1 }").replace("'", "''")
+    return (
+        "$ProgressPreference = 'SilentlyContinue'\n. ([scriptblock]::Create('"
+        + literal + "'))"
+    )
+
+
 def execute_powershell(
     command: str,
     cwd: str | None,
@@ -1283,7 +1304,7 @@ def execute_powershell(
     environment = windows_powershell_environment(powershell)
     if requires_utility_module_preflight(command, powershell):
         preflight = base64.b64encode(
-            POWERSHELL_UTILITY_PREFLIGHT.encode("utf-16le")
+            _without_progress(POWERSHELL_UTILITY_PREFLIGHT).encode("utf-16le")
         ).decode("ascii")
         preflight_args = [
             powershell,
@@ -1328,7 +1349,9 @@ def execute_powershell(
             )
 
     executable = _instrument_for_error_detection(command) if annotations else command
-    encoded = base64.b64encode(executable.encode("utf-16le")).decode("ascii")
+    encoded = base64.b64encode(
+        _without_progress(executable).encode("utf-16le")
+    ).decode("ascii")
     args = [
         powershell,
         "-NoProfile",

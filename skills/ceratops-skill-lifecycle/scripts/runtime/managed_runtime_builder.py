@@ -33,7 +33,6 @@ from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, cast
 
-
 ROOT = pathlib.Path(__file__).resolve().parents[4]
 SECTION_MANIFEST = ROOT / "skills" / "skill-sections.json"
 SKILLS = ROOT / "skills"
@@ -258,28 +257,127 @@ def validate_manifest(
                     payload_parts(value, f"runtime_payloads.{key}[{index}]")
                 except ValueError as exc:
                     errors.append(str(exc))
+    try:
+        action_assignments(ROOT, manifest, None if all_managed else checked_skills)
+    except (OSError, ValueError) as exc:
+        errors.append(str(exc))
     return errors
+
+
+def action_assignments(
+    repo_root: pathlib.Path,
+    manifest: Mapping[str, object],
+    selected: set[str] | None = None,
+) -> dict[str, dict[str, list[str]]]:
+    """Resolve only declared public action targets before any destination writes.
+
+    An absent map preserves skill-only manifests. Explicit paths must be direct,
+    uniquely routed action references; sections cannot repeat within an action
+    or duplicate its parent skill's shared content, including source aliases.
+    """
+
+    raw = manifest.get("actions", {})
+    skills = manifest.get("skills", {})
+    sections = manifest.get("sections", {})
+    if not isinstance(raw, Mapping):
+        raise ValueError("section manifest actions must be an object")
+    if not isinstance(skills, Mapping) or not isinstance(sections, Mapping):
+        raise ValueError("action assignments require skills and sections objects")
+    result: dict[str, dict[str, list[str]]] = {}
+    for skill, actions in raw.items():
+        if selected is not None and skill not in selected:
+            continue
+        if not isinstance(skill, str) or SKILL_NAME_RE.fullmatch(skill) is None or skill not in skills:
+            raise ValueError(f"unknown action assignment skill: {skill}")
+        if not isinstance(actions, Mapping) or not actions:
+            raise ValueError(f"{skill}: action assignments must be a nonempty object")
+        skill_dir = repo_root / "skills" / skill
+        _assert_inside(skill_dir, repo_root)
+        parent = skill_dir / "SKILL.md"
+        if not parent.is_file() or _unsafe_link(skill_dir) or _unsafe_link(parent):
+            raise ValueError(f"{skill}: unavailable action index")
+        lines = parent.read_text(encoding="utf-8").splitlines()
+        if lines.count("### Action References") != 1:
+            raise ValueError(f"{skill}: requires one Action References index")
+        start = lines.index("### Action References") + 1
+        end = next((i for i in range(start, len(lines)) if re.match(r"^#{1,3}\s", lines[i])), len(lines))
+        routes = re.findall(r"`(references/[^`\s]+\.md)`", "\n".join(lines[start:end]))
+        parent_sections = skills[skill]
+        if not isinstance(parent_sections, list) or not all(isinstance(item, str) for item in parent_sections):
+            raise ValueError(f"{skill}: invalid parent section assignment")
+        inherited = {
+            (repo_root / path).resolve()
+            for name in parent_sections
+            if isinstance(path := sections.get(name), str)
+        }
+        resolved: dict[str, list[str]] = {}
+        for relative, names in actions.items():
+            label = f"{skill}: {relative}"
+            if not isinstance(relative, str) or re.fullmatch(r"references/[a-z0-9]+(?:-[a-z0-9]+)*\.md", relative) is None:
+                raise ValueError(f"{label}: action target must be one direct references/*.md path")
+            if routes.count(relative) != 1:
+                raise ValueError(f"{label}: action target must be routed exactly once")
+            source = skill_dir / relative
+            _assert_inside(source, skill_dir)
+            if not source.is_file() or _unsafe_link(source.parent) or _unsafe_link(source):
+                raise ValueError(f"{label}: unavailable action reference")
+            # Rendering also checks the reserved H1 and source-only boundary.
+            render_action(source.read_text(encoding="utf-8"), "", label)
+            if not isinstance(names, list) or not names or not all(isinstance(name, str) and name for name in names):
+                raise ValueError(f"{label}: section assignment must be a nonempty string list")
+            seen = set(inherited)
+            for name in names:
+                section = sections.get(name)
+                if not isinstance(section, str) or not _safe_repo_pattern(section):
+                    raise ValueError(f"{label}: invalid or unknown section assignment {name!r}")
+                path = repo_root / section
+                _assert_inside(path, repo_root)
+                if not path.is_file() or _unsafe_link(path.parent) or _unsafe_link(path):
+                    raise ValueError(f"{label}: unavailable section {section}")
+                if path.resolve() in seen:
+                    raise ValueError(f"{label}: duplicate or inherited section {name}")
+                seen.add(path.resolve())
+                if any(marker in path.read_text(encoding="utf-8") for marker in (START, END, SOURCE_PREFIX)):
+                    raise ValueError(f"{label}: section source contains generated markers")
+            resolved[relative] = names
+        result[skill] = resolved
+    return result
+
+
+def render_action(source: str, shared: str, label: str) -> str:
+    """Insert a single generated block directly after a public action's H1."""
+
+    if any(marker in source for marker in (START, END, SOURCE_PREFIX)):
+        raise ValueError(f"{label}: source action must be delta-only")
+    lines = source.replace("\r\n", "\n").split("\n")
+    if not lines or re.fullmatch(r"# .+ Action", lines[0]) is None:
+        raise ValueError(f"{label}: action must be titled # <Action Name> Action")
+    after = "\n".join(lines[1:]).strip("\n")
+    return f"{lines[0]}\n\n{shared}\n\n{after}\n" if after else f"{lines[0]}\n\n{shared}\n"
 
 
 def section_text(rel_path: str) -> str:
     """Read one shared section and strip internal-only comments."""
 
     lines = (ROOT / rel_path).read_text(encoding="utf-8").splitlines()
-    visible = [
-        line for line in lines if not line.strip().startswith("<!-- INTERNAL:")
-    ]
-    return "\n".join(visible).strip("\n")
+    # Strip whole author-only blocks without leaving multiline comment tails.
+    return re.sub(
+        r"(?ms)^[ \t]*<!--[ \t]*INTERNAL:(?:(?!-->).)*-->[ \t]*(?:\n|$)",
+        "",
+        "\n".join(lines),
+    ).strip("\n")
 
 
 def rendered_sections_block(
-    skill_name: str, manifest: Mapping[str, object]
+    skill_name: str, manifest: Mapping[str, object],
+    section_names: Sequence[str] | None = None,
 ) -> str:
     """Render the generated shared-section block for one runtime skill."""
 
     sections = cast(Mapping[str, str], manifest["sections"])
     assignments = cast(Mapping[str, Sequence[str]], manifest["skills"])
     rendered: list[str] = []
-    for name in assignments[skill_name]:
+    for name in assignments[skill_name] if section_names is None else section_names:
         rel_path = sections[name]
         rendered.append(f"{SOURCE_PREFIX}{rel_path}{SOURCE_SUFFIX}")
         rendered.append(section_text(rel_path))
@@ -533,6 +631,12 @@ def write_expected_skill(
     (target_skill / "SKILL.md").write_text(
         runtime_skill_text, encoding="utf-8", newline="\n"
     )
+    for action_relative, names in action_assignments(ROOT, manifest, {skill_name}).get(skill_name, {}).items():
+        action_text = (source_dir / action_relative).read_text(encoding="utf-8")
+        (target_skill / action_relative).write_text(
+            render_action(action_text, rendered_sections_block(skill_name, manifest, names), f"{skill_name}: {action_relative}"),
+            encoding="utf-8", newline="\n",
+        )
     declarations = payload_declarations_for(skill_name, manifest)
     for payload, relative in expand_payload_declarations(declarations):
         destination = target_skill.joinpath(*relative.parts)
@@ -556,7 +660,7 @@ def write_expected_skill(
     }
     (target_skill / MANIFEST_NAME).write_text(
         json.dumps(runtime_manifest, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
+        encoding="utf-8", newline="\n",
     )
     validate_tree_links(target_skill)
 
@@ -780,7 +884,7 @@ def recover_interrupted(
                 else:
                     _remove_tree(paths["retired"], install_root)
             continue
-        for skill, paths in skills.items():
+        for paths in skills.values():
             _remove_tree(paths["retired"], install_root)
 
 

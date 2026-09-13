@@ -14,23 +14,23 @@ from typing import Any
 import pytest
 
 REPOSITORY = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(REPOSITORY / "tools" / "ceratops-tool-manager" / "src"))
+sys.path.insert(0, str(REPOSITORY / "tools"))
 engine_module = importlib.import_module("ceratops_tool_manager.engine")
 storage = importlib.import_module("ceratops_tool_manager.storage")
 contracts = importlib.import_module("ceratops_tool_manager.contracts")
 cli = importlib.import_module("ceratops_tool_manager.cli")
 
 
-def make_release(root, version, *, tool="fixture", dependency=False):
+def make_release(root, version, *, tool="fixture", dependency=False, metadata_name=None):
     """Create a harmless wheel envelope and register its exact artifact digest."""
     temporary = root / "build"
     temporary.mkdir(exist_ok=True)
-    wheel = temporary / f"{tool.replace('-', '_')}-{version}-py3-none-any.whl"
-    module = "ceratops_tool_manager" if tool == "ceratops-tool-manager" else "fixture"
+    wheel = temporary / f"{tool}-{version}-py3-none-any.whl"
+    module = "ceratops_tool_manager" if tool == "ceratops_tool_manager" else "fixture"
     with zipfile.ZipFile(wheel, "w") as archive:
         archive.writestr(f"{module}/__init__.py", "")
         archive.writestr(f"{module}/__main__.py", "")
-        archive.writestr(f"{tool.replace('-', '_')}-{version}.dist-info/METADATA", f"Metadata-Version: 2.1\nName: {tool}\nVersion: {version}\n" + ("Requires-Dist: missing-dependency\n" if dependency else ""))
+        archive.writestr(f"{tool}-{version}.dist-info/METADATA", f"Metadata-Version: 2.1\nName: {metadata_name or tool}\nVersion: {version}\n" + ("Requires-Dist: missing-dependency\n" if dependency else ""))
     manifest = {"schema": 1, "tool_id": tool, "version": version, "distribution": tool, "module": module,
                 "wheels": [{"filename": wheel.name, "sha256": hashlib.sha256(wheel.read_bytes()).hexdigest()}]}
     raw = (json.dumps(manifest) + "\n").encode()
@@ -99,6 +99,18 @@ def test_install_update_previous_and_versions(deployment, tmp_path):
     assert not (tmp_path / "registry.json").exists()
 
 
+@pytest.mark.parametrize("metadata_name", ["example_tool", "Example-Tool", "example.tool", "example__tool"])
+@pytest.mark.parametrize("tool", ["example_tool", "example-tool"])
+def test_underscore_identity_installs_with_normalized_wheel_metadata(deployment, tmp_path, metadata_name, tool):
+    """Backend name normalization must not change a tool's exact store identity."""
+    make_release(tmp_path, "1.0.0", tool=tool, metadata_name=metadata_name)
+    engine, _, _ = deployment
+    result = engine.install(tool, "1.0.0")
+    assert result["tool_id"] == tool
+    assert engine.versions(tool)["installed_version"] == "1.0.0"
+    assert (tmp_path / tool / "current.json").is_file()
+
+
 @pytest.mark.parametrize("phase", ["venv", "sync", "check", "--deployment-check"])
 def test_failed_candidate_preserves_active_and_cleans_stage(deployment, tmp_path, phase):
     engine, _, failure = deployment
@@ -126,22 +138,22 @@ def test_failed_first_install_does_not_select_anything(deployment, tmp_path):
 
 def test_self_update_completes_old_process_then_new_launch_selects_version(deployment, tmp_path):
     engine, _, _ = deployment
-    make_release(tmp_path, "0.1.0", tool="ceratops-tool-manager")
-    make_release(tmp_path, "0.2.0", tool="ceratops-tool-manager")
-    engine.install("ceratops-tool-manager", "0.1.0")
-    previous = engine.selected("ceratops-tool-manager")
-    result = engine.update("ceratops-tool-manager", "0.2.0")
+    make_release(tmp_path, "0.1.0", tool="ceratops_tool_manager")
+    make_release(tmp_path, "0.2.0", tool="ceratops_tool_manager")
+    engine.install("ceratops_tool_manager", "0.1.0")
+    previous = engine.selected("ceratops_tool_manager")
+    result = engine.update("ceratops_tool_manager", "0.2.0")
     assert result["running_version"] == "0.1.0"
     assert result["installed_version"] == "0.2.0"
     assert result["reconnection_required"] is True
     assert engine.versions()["running_version"] == "0.1.0"
-    assert (tmp_path / "ceratops-tool-manager/versions/0.1.0" / previous["instance"]).is_dir()
+    assert (tmp_path / "ceratops_tool_manager/versions/0.1.0" / previous["instance"]).is_dir()
     engine.running_version = "0.2.0"
     assert engine.versions()["reconnection_required"] is False
-    assert engine.update("ceratops-tool-manager", "0.1.0")["reconnection_required"] is True
+    assert engine.update("ceratops_tool_manager", "0.1.0")["reconnection_required"] is True
 
 
-@pytest.mark.parametrize("identity", ["../escape", "C:/escape", "foo/bar", "foo\\bar", "foo:stream", "A", "con", "a..b", "a.", "a ", "a--b", "x" * 81])
+@pytest.mark.parametrize("identity", ["../escape", "C:/escape", "foo/bar", "foo\\bar", "foo:stream", "A", "con", "a..b", "a.", "a ", "a__b", "-a", "a-", "a--b", "a_-b", "x" * 81])
 def test_identity_escapes_fail_before_writes(deployment, tmp_path, identity):
     engine, calls, _ = deployment
     with pytest.raises(contracts.DeploymentError):

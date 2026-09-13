@@ -35,38 +35,22 @@ best practices from
 - Do not audit whether any source or installed skill satisfies the contracts;
   use `skills-consistency-review` for manifest-backed installed-skill
   compliance.
-- Do not run `skills-consistency-source-validator.py`; targeted skill
-  validation belongs to `skills-consistency-review`.
+- Do not run `skills-consistency-source-validator.py`; deterministic source
+  validation belongs to `source-validate`.
 - Do not inspect unrelated metadata, shared sections, runtime payloads,
   automation prompts, helpers, installers, or installed runtime copies.
 
 ### Skill-Specific Rules
 
-- Treat official sources listed in
-  `references/contracts/skill-contract-source-docs.json` as standards
-  authority and installed OpenAI skills only as bounded pattern evidence.
 - Refresh evidence only for a concrete standards question; do not perform
   broad research when the existing evidence is current and sufficient.
-- Keep deterministic, machine-checkable requirements in
-  `skill-deterministic-contract.json` and judgment-dependent requirements in
-  `skill-nondeterministic-contract.json`.
 - Preserve stable check IDs, remediation classifications, scope, and evidence
   mappings unless current best-practice evidence requires a change.
-- Treat the contracts as standards definitions, not evidence that any skill
-  complies with them.
-- Keep skill standards under this action's `references/` tree; do not recreate
-  a repository-root contract payload.
+- Do not recreate a repository-root contract payload.
 
 ## Workflow
 
-### 1. Inspect current standards evidence
-
-- Read `references/contracts/skill-contract-source-docs.json` and both skill
-  contracts.
-- Identify the exact contract requirement whose currency, placement, or scope
-  needs review.
-
-### 2. Refresh only necessary sources
+### 1. Refresh only necessary sources
 
 - Check the highest-priority current source capable of resolving the standards
   question.
@@ -75,16 +59,14 @@ best practices from
 - Update source registry entries and capture dates only for evidence actually
   refreshed.
 
-### 3. Reconcile the contracts
+### 2. Reconcile the contracts
 
 - Update the deterministic or non-deterministic contract according to the
   evidence type.
-- Keep cross-contract references, check IDs, evidence keys, and remediation
-  classifications internally consistent.
 - Do not convert a skill-compliance finding into a standards change unless the
   referenced best-practice evidence shows the contract itself is wrong.
 
-### 4. Verify contract artifacts
+### 3. Verify contract artifacts
 
 - Parse every changed JSON contract or registry file.
 - Re-open the changed contract entries and confirm that no standard, check, or
@@ -98,8 +80,6 @@ best practices from
 
 - Every reviewed contract claim is supported by current registered evidence or
   reported as unresolved.
-- Deterministic and judgment-dependent requirements remain in their respective
-  contracts with consistent IDs and references.
 - No source skill, installed skill, repository validator, or runtime surface was
   treated as reviewed for compliance.
 

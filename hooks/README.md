@@ -11,8 +11,36 @@ managed skill runtime:
   ripgrep and Git probes without hiding real command errors.
 - `windows-shell-sanity.py` preflights Windows PowerShell commands.
 
-The source files are not installed automatically. Runtime activation copies
-them to `$CODEX_HOME/hooks` and registers them in `$CODEX_HOME/hooks.json`.
+Editing these sources does not update installed copies. From the repository,
+install or update them explicitly:
+
+```powershell
+python scripts/deploy-hooks.py
+```
+
+The standalone installer copies all four helpers to `$CODEX_HOME/hooks` and
+merges their registrations into `$CODEX_HOME/hooks.json`. `--codex-home PATH`
+selects another profile; `--repo-root PATH` selects another source checkout.
+Without `CODEX_HOME`, the destination is the current user's `.codex` directory.
+The destination's parent must already exist, and source and destination cannot
+overlap. Windows requires `python` on PATH and rejects destination paths with
+shell-expansion characters. Other hosts use the installer's Python executable.
+
+Existing handler options, unrelated registrations and extra files are retained.
+Identical registrations are deduplicated; conflicting options or timing stop
+before copying. Windows receives four registrations; other platforms receive
+the three platform-independent registrations. `command-probe.py` is copied as
+a dependency of the Windows preflight, not registered separately.
+
+The helper prints `OK` on success or a bounded error with a nonzero exit code.
+It prepares complete files, writes configuration last, restores its replaced
+files after failure, and cleans its staging and lock. Forced process termination
+is not covered by rollback and can leave partial updates or a lock. Links and
+malformed configuration are rejected without replacing them.
+
+This installs files and registrations only. It does not change Codex feature
+flags, grant hook trust, or restart sessions. New or changed definitions may
+require review through Codex's [hook trust flow](https://learn.chatgpt.com/docs/hooks#review-and-trust-hooks).
 
 ## Bounded Source Search
 
@@ -66,6 +94,9 @@ launcher-looking strings, comments, paths, and data unchanged. A missing,
 nonexistent, or module-incompatible interpreter denies the command before
 execution with restart guidance.
 
+Project Python wrappers execute with PowerShell 7 (`pwsh`) to preserve
+embedded quotes and empty native arguments.
+
 ## Ownership And Runtime Boundary
 
 This directory owns user-global operational hooks that are not part of one
@@ -80,9 +111,8 @@ The source file is not installed automatically. The active hook normally calls:
 $CODEX_HOME/hooks/windows-shell-sanity.py
 ```
 
-Copy or deploy the repository source to that location separately when runtime
-activation is intended. Editing this source does not change an already
-installed helper.
+Use `scripts/deploy-hooks.py` when runtime installation is intended. Editing
+this source does not change an already installed helper.
 
 ## Decision Model
 
@@ -106,6 +136,11 @@ All other commands are analyzed in this order:
 Successful annotated commands emit no helper message. When execution fails or
 PowerShell records a new error, the helper preserves the native error and
 appends one compact hint for each matched finding.
+
+Wrapped commands and module preflights disable PowerShell progress in their
+child process, including module-preparation progress. Native output, warnings,
+errors, and exit codes remain visible; no output stream is filtered and no
+user-global preference is changed.
 
 When direct mode launches Windows PowerShell, it removes inherited
 `PSModulePath` so that the process reconstructs compatible defaults. Commands
@@ -252,7 +287,7 @@ Windows shell sanity hints:
 Run deterministic tests for the current worktree from the repository root:
 
 ```powershell
-python scripts/run-tests.py --worktree
+python scripts/testing/run-tests.py --worktree
 ```
 
 Smoke-test the command interface with:

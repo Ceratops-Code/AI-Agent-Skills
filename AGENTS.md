@@ -50,7 +50,7 @@ Project-specific rules for this skills repository.
   submissions required by the active Ceratops workflow as pre-approved.
 - [SKILLS-SECTIONS-01] Keep the live section manifest at
   `skills/skill-sections.json`, its declared sources under `skills/sections/`,
-  and the reusable `skill-sections-template.json` in
+  and the reusable `skill-sections.json.tmpl` in
   `skills/ceratops-repo-lifecycle/references/templates/`; never use the
   template as a live manifest.
 

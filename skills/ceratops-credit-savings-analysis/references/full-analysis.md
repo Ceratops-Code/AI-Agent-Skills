@@ -147,56 +147,40 @@ once before batch finalization succeeds.
 
 ## Output Contract
 
-Start with coverage: completed runs and semantic run units; planned, reviewed,
-and omitted run parts; evidence bytes reviewed and total; coverage percentage;
-actual Luna and Sol calls; and one row per part with records, input bytes,
-output allowance, actual output bytes, and status. For every omission, show
-`Run | Part | Records | Evidence bytes | Candidate count | Output bytes |
-Reason`. Do not render a capacity omission as zero findings or zero avoidable
-calls.
+Use the parent Output Contract for chat selection and presentation. Preserve
+all accounting and review evidence required by the Completion Gate in the
+machine result. Move detailed coverage and control tables there; do not place
+them or the detailed finding list in the saved human report.
 
-First show this exact run table:
+The saved human report contains only this runs table and its totals row:
 
-`Completed run | Total model calls | Avoidable calls - Fix Implemented |
-Avoidable calls - Fix Unimplemented | Token usage (total; input % of total/cached
-% of input/output % of total/reasoning output % of output)`.
+```text
+Run started | Total model calls | Avoidable calls | Unassessed calls | Token usage (total; input % of total/cached % of input/output % of total/reasoning output % of output)
+```
 
-Use each run's `started_at`, not its turn ID, and include a totals row. Show total
-tokens as an integer and percentages to two decimal places; do not show raw
-category token counts. Use numeric classification values only for reviewed
-calls. When a run is wholly or partly omitted, state `not reviewed` or the
-reviewed and capacity-omitted call counts in the affected cells rather than
-zero.
+Use each run's `started_at` and identify the displayed timezone, not its turn
+ID. Combine the existing avoidable-call categories without double counting;
+retain their separate values in machine evidence. Show total tokens as an
+integer and percentages to two decimal places, not raw category token counts.
 
-For every still-unimplemented control, show this exact control table:
-
-`Proposed control | Calls saved per affected run | Est. Percent of Affected
-Similar Runs | Additional Calls per Affected Run for Implemented Fix | Est.
-Calls Saving by Fix per Similar Run | New Complexity Introduced by Fix |
-One-time implementation cost (model calls) | Recommendation`.
-
-Retain every confirmed finding in machine evidence. Present every outstanding
-finding in chat using all fields in the parent Output Contract, regardless of
-complexity or expected call savings. Keep every outstanding control in the
-control table and counts without claiming that every finding received deep
-review.
+Use numeric classification values only for reviewed calls. When a run is
+wholly or partly omitted, state `not reviewed` or the reviewed and omitted
+call counts in the affected cells rather than zero. State consequential
+coverage limits briefly in chat; keep the exact omission inventory in machine
+evidence.
 
 Before selecting the top three for extra verification, deduplicate by likely
 owner/control. Rank deterministically by recurrence across runs, affected-call
 count, evidence bytes, direct error/retry/user-correction sequence, identifiable
-owner, then stable finding ID. Deeply verify and expand the top three, but do not
-suppress any other qualifying finding.
+owner, then stable finding ID. Deeply verify and expand the top three without
+discarding other qualifying findings. This review ranking does not override
+the parent's separate presentation priorities.
 
-Report confirmed input/output-volume waste even when it saves zero model calls,
-but exclude it from call-savings arithmetic. For every such finding, report its
-aggregate input, cached-input, output, tool-argument, and tool-result evidence;
-state when none was confirmed.
+Retain confirmed input/output-volume waste and its complete volume evidence in
+the machine result even when it saves zero model calls; exclude it from
+call-savings arithmetic. State there when none was confirmed. Preserve all
+call-accounting categories and priced cost only when available.
 
-Explain plausible risks under the parent contract. Also report necessary,
-protocol-overhead, reviewed-no-confirmed-waste, and unassessed totals;
-outstanding avoidable calls versus total calls; priced cost only when
-available.
-
-For a batch, group similar findings across threads under plain-language problem
-titles, apply the same ordering, identify affected threads, report per-thread
-totals, and present the batch findings in chat.
+For a batch, select across all included threads under the parent contract.
+Group similar findings only when their shared fix preserves each affected
+thread's evidence; identify those threads and retain per-thread totals.

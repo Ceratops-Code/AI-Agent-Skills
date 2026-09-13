@@ -6,7 +6,7 @@ on success and written in full only for the first failed check. A successful
 run removes stale evidence at that exact path and prunes only the dedicated
 default evidence directory when empty. Commands use argv lists, and managed
 runtime installation remains outside this aggregate. Tests delegate to
-``scripts/run-tests.py --all`` with a complete failure-diagnostic destination;
+``scripts/testing/run-tests.py --all`` with a complete failure-diagnostic destination;
 CI may use ``--without-tests`` only when a separate explicit invocation of that
 same runner owns the job's test phase.
 """
@@ -16,8 +16,10 @@ from __future__ import annotations
 import argparse
 import json
 import pathlib
+import platform
 import subprocess
 import sys
+import tomllib
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 
@@ -55,6 +57,30 @@ ProcessRunner = Callable[
 ]
 
 
+def require_repository_python(repo_root: pathlib.Path) -> None:
+    """Reject a mismatched interpreter before any checks or child side effects.
+
+    The standard project requirement is also consumed by uv local setup and CI.
+    Use packaging's PEP 440 parser rather than maintaining a version grammar.
+    This check does not install or switch Python or modify the environment.
+    """
+
+    from packaging.specifiers import SpecifierSet
+    from packaging.version import Version
+
+    metadata = tomllib.loads((repo_root / "pyproject.toml").read_text(encoding="utf-8"))
+    project = metadata.get("project")
+    requirement = project.get("requires-python") if isinstance(project, dict) else None
+    if not isinstance(requirement, str) or not requirement.strip():
+        raise ValueError("pyproject.toml must declare project.requires-python")
+    version = Version(platform.python_version())
+    if version not in SpecifierSet(requirement):
+        raise ValueError(
+            f"Python {version} does not satisfy project.requires-python={requirement!r}; "
+            "use the interpreter selected by uv python find --system"
+        )
+
+
 def run_process(
     command: Sequence[str], cwd: pathlib.Path
 ) -> subprocess.CompletedProcess[str]:
@@ -90,7 +116,13 @@ def build_checks(
         Check("markdown-lint", (npm, "run", "lint:markdown"), repo_root),
         Check(
             "yaml-lint",
-            (python, "-m", "yamllint", "."),
+            (
+                python,
+                "-m",
+                "yamllint",
+                ".",
+                "skills/ceratops-repo-lifecycle/references/templates/sdlc.yml.tmpl",
+            ),
             repo_root,
         ),
         Check(
@@ -103,7 +135,7 @@ def build_checks(
                 "scripts",
                 "tools",
                 "skills/ceratops-repo-lifecycle/references/templates/"
-                "install-skills-bootstrap-template.py",
+                "deploy-skills.py.tmpl",
             ),
             repo_root,
         ),
@@ -126,7 +158,7 @@ def build_checks(
                 "pytest",
                 (
                     python,
-                    "scripts/run-tests.py",
+                    "scripts/testing/run-tests.py",
                     "--all",
                     "--diagnostic-output",
                     str(pytest_diagnostic),
@@ -364,11 +396,35 @@ def main(
         print(json.dumps(payload, separators=(",", ":"), ensure_ascii=True))
         return 2
 
-    failure = run_checks(
-        build_checks(repo_root, include_tests=not parsed.without_tests),
-        evidence_file,
-        process_runner=process_runner,
-    )
+    failure: Failure | None
+    try:
+        require_repository_python(repo_root)
+    except (ImportError, OSError, ValueError) as exc:
+        reason = _utf8_prefix(str(exc), 2_000)
+        check = Check("python-requirement", (sys.executable, __file__, *arguments), repo_root)
+        evidence_error = None
+        try:
+            write_evidence(
+                evidence_file,
+                check,
+                subprocess.CompletedProcess(check.command, 2, "", reason),
+            )
+        except OSError as evidence_exc:
+            evidence_error = _utf8_prefix(str(evidence_exc), 1_000)
+        failure = Failure(
+            check=check.name,
+            platform=None,
+            exit_code=2,
+            evidence_file=evidence_file,
+            evidence_error=evidence_error,
+            details={"reason": reason},
+        )
+    else:
+        failure = run_checks(
+            build_checks(repo_root, include_tests=not parsed.without_tests),
+            evidence_file,
+            process_runner=process_runner,
+        )
     if failure is None:
         try:
             cleanup_evidence(

@@ -16,7 +16,7 @@ repo docs, then update the narrowest correct source that exists.
   `skills/skill-sections.json`, `skills/sections/`,
   `skills/ceratops-skill-lifecycle/references/templates/ceratops-logo-500.png`,
   repository-lifecycle compatibility templates,
-  `scripts/install-skills-bootstrap.py`,
+  `scripts/deploy-skills.py`,
   `skills/ceratops-skill-lifecycle/scripts/runtime/managed_runtime_builder.py`,
   installer resolution, synchronization, and repository-consistency helpers,
   `skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py`,
@@ -89,8 +89,9 @@ repo docs, then update the narrowest correct source that exists.
   verify --state STATE --evidence-output EVIDENCE`. The helper must preserve the
   recorded pre-existing worktree baseline, reject undeclared new changes or
   source drift, collect every declared pytest node before edits without
-  executing tests, run the declared checks once, treat declared zero-match
-  searches as success, write detailed evidence, and emit only `OK` or one
+  executing tests, reject Git whitespace errors in changed tracked and new files
+  before running the declared checks once, treat declared zero-match searches as
+  success, write detailed evidence, and emit only `OK` or one
   compact actionable error. After a passed verification, `verify` may start one
   correction generation only when the current task HEAD or complete prepared
   scope snapshot differs from the passed evidence. It must atomically make the
@@ -120,11 +121,8 @@ repo docs, then update the narrowest correct source that exists.
 
 - Change both explicit `INSTALLER_VERSION` values together and reuse an
   unpublished bump when replacing its architecture. Run both public CLI
-  behavior tests. AI-Agent-Skills executes a temporary snapshot of its
-  installed lifecycle outside the managed destination and uses its independent
-  installer once when that path is unavailable or unsuccessful;
-  compatible-repository installers remain self-contained and
-  Ceratops-independent.
+  behavior tests. Repository and compatible-repository bootstrap installers
+  remain self-contained and never invoke installed lifecycle code.
 - If shared section files or `skills/skill-sections.json` changed, run the
   manifest's shared-source check path.
 - Do not run validation solely because skill-local text, metadata, or docs

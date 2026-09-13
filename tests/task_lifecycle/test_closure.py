@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import importlib.util
 import json
 import pathlib
 import subprocess
 import sys
+
+import pytest
 
 from tests.support.repositories import ROOT, run_git
 
@@ -27,6 +30,7 @@ CREDIT_FULL_REFERENCE = (
 
 def test_closure_snapshot_composes_only_named_local_state(
     tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     remote = tmp_path / "remote.git"
     repo = tmp_path / "repo"
@@ -36,6 +40,26 @@ def test_closure_snapshot_composes_only_named_local_state(
     temp_root.mkdir()
     (temp_root / "one.txt").write_text("one\n", encoding="utf-8", newline="\n")
     (temp_root / "two.txt").write_text("two\n", encoding="utf-8", newline="\n")
+
+    spec = importlib.util.spec_from_file_location("closure_snapshot", CLOSURE_SNAPSHOT)
+    assert spec is not None and spec.loader is not None
+    helper = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(helper)
+
+    def unexpected_traversal(*args: object, **kwargs: object) -> object:
+        raise AssertionError("Default closure must not enumerate the temp tree")
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(pathlib.Path, "rglob", unexpected_traversal)
+        scoped.setattr(pathlib.Path, "iterdir", unexpected_traversal)
+        assert helper.temp_snapshot(temp_root)["files"] is None
+        assert helper.temp_snapshot(temp_root / "absent")["files"] == 0
+    nested = temp_root / "nested"
+    nested.mkdir()
+    (nested / "three.txt").write_text("three\n", encoding="utf-8")
+    assert helper.temp_snapshot(temp_root, count_files=True)["files"] == 3
+    with pytest.raises(helper.SnapshotError, match="not a directory"):
+        helper.temp_snapshot(temp_root / "one.txt")
 
     assert run_git(tmp_path, "init", "--bare", str(remote)).returncode == 0
     assert run_git(repo, "init", "-b", "main").returncode == 0
@@ -116,7 +140,21 @@ def test_closure_snapshot_composes_only_named_local_state(
     assert result["task"]["branch"] == "codex/closure-test"
     assert result["task"]["clean"] is True
     assert result["task"]["staged_in_release"] is True
-    assert result["temp"]["files"] == 2
+    assert result["temp"]["files"] is None
+
+    counted = subprocess.run(
+        [sys.executable, str(CLOSURE_SNAPSHOT), "--repo", str(repo),
+         "--temp-root", str(temp_root), "--count-temp-files"],
+        capture_output=True, text=True, check=False,
+    )
+    assert counted.returncode == 0, counted.stderr
+    assert json.loads(counted.stdout)["temp"]["files"] == 3
+    missing_root = subprocess.run(
+        [sys.executable, str(CLOSURE_SNAPSHOT), "--repo", str(repo), "--count-temp-files"],
+        capture_output=True, text=True, check=False,
+    )
+    assert missing_root.returncode == 2
+    assert "--count-temp-files requires --temp-root" in missing_root.stderr
 
     invalid = subprocess.run(
         [

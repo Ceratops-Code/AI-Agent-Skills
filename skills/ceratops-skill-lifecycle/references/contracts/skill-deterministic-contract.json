@@ -25,8 +25,8 @@
       "lines": "selected-batch staging, activation, rollback, locking, ownership, and stale cleanup"
     },
     {
-      "path": "$AI_AGENT_SKILLS_ROOT/scripts/install-skills-bootstrap.py",
-      "lines": "versioned first-install skill bootstrap"
+      "path": "$AI_AGENT_SKILLS_ROOT/scripts/deploy-skills.py",
+      "lines": "versioned independent skill installer"
     },
     {
       "path": "$AI_AGENT_SKILLS_ROOT/skills/skill-sections.json",
@@ -109,10 +109,10 @@
       "id": "skill.bootstrap_version_consistency",
       "category": "runtime",
       "deterministic_evidence": [
-        "scripts/install-skills-bootstrap.py INSTALLER_VERSION",
+        "scripts/deploy-skills.py INSTALLER_VERSION",
         "bootstrap installer CLI behavior tests"
       ],
-      "pass_condition": "A skill-bearing source repository bootstrap declares one positive internal INSTALLER_VERSION. The bootstrap is standard-library-only, first-install-only, stages and validates a complete selected batch under the install root, never calls lifecycle runtime code, exposes only repo-root, install-root, and skill inputs, and cleans only bootstrap-owned state. Managed runtime CLI and manifests contain no installer-version field."
+      "pass_condition": "A skill-bearing source repository bootstrap declares one positive internal INSTALLER_VERSION. The bootstrap is standard-library-only, renders selected skills and overlays their files without content validation, retirement, or lifecycle runtime calls, retains destination-only files and other skills, exposes only repo-root, install-root, and skill inputs, preserves input parsing and path safety, and cleans only bootstrap-owned staging and locks. Copy failures may leave partial updates. Managed runtime CLI and manifests contain no installer-version field."
     },
     {
       "id": "skill.frontmatter_and_layout",
@@ -140,9 +140,11 @@
       "deterministic_evidence": [
         "skills/skill-sections.json",
         "skills/sections/*",
-        "source SKILL.md"
+        "source SKILL.md",
+        "source action references",
+        "managed and standalone installation behavior tests"
       ],
-      "pass_condition": "Every source skill has a manifest assignment including core, source SKILL.md files remain delta-only, assigned shared sections render from skill-lifecycle-owned canonical inputs, and source files do not contain generated runtime shared-section blocks. A repository with no source skills has empty assignment and canonical-section maps."
+      "pass_condition": "Every source skill has a manifest assignment including core. Optional actions maps skill names to uniquely routed direct references/*.md action paths and nonempty section-ID lists; missing skills, unknown sections, unsafe paths, non-action targets, repeated sections, inherited skill sections, and generated markers in source actions are rejected. Skill-level assignments and canonical shared-section inputs are preserved. Each action's ordered shared content is inserted exactly once after its H1 only in installed copies, consistently across managed and independent installers. Source SKILL.md and action files remain delta-only. A repository with no source skills has empty skill, action, and canonical-section maps."
     },
     {
       "id": "skill.multi_action_contract",
@@ -208,10 +210,11 @@
         "skills/ceratops-skill-lifecycle/references/contracts/skill-nondeterministic-contract.json",
         "skill-contract-source-docs.json",
         "skills/ceratops-skill-lifecycle/references/skills-contract-review.md",
+        "skills/ceratops-skill-lifecycle/references/source-validate.md",
         "skills/ceratops-skill-lifecycle/references/skills-consistency-review.md",
         "README.md"
       ],
-      "pass_condition": "The source-doc registry and contract-review action own skill-design standards refresh, the validator owns deterministic compliance, and the repository consistency action owns manual non-deterministic compliance without silently changing the contracts."
+      "pass_condition": "The source-doc registry and contract-review action own skill-design standards refresh. The source-validate action invokes the existing bundle-owned validator in full, selected-skill, or sections mode; deployment requires its passing full result for unchanged source inputs. The separate skills-consistency-review action owns manual non-deterministic compliance without silently changing the contracts."
     },
     {
       "id": "skill.governance_consistency_audit",

@@ -3,9 +3,13 @@
 
 from __future__ import annotations
 
-import concurrent.futures
-
 from .execution_outcomes import has_failure_telemetry, has_nonzero_process_result
+from .model_response_contract import (
+    _holistic_luna_schema,
+    _validate_holistic_transport_value,
+    build_sol_schema,
+    validate_classification_reason,
+)
 
 from .model_input_preparation import *
 from .model_capacity_planning import *
@@ -13,6 +17,8 @@ from .multi_thread_analysis import *
 from .persistent_subthread_analysis import *
 from .single_thread_analysis import *
 from .source_execution_context import *
+from .orchestration_execution import command_execute_orchestration
+from .report_rendering import _presentation_contract, _render_holistic_report
 from .report_bookkeeping import (
     _closed_result,
     _holistic_category_reviews,
@@ -21,7 +27,6 @@ from .report_bookkeeping import (
     _holistic_preserve_risk_sources,
     _holistic_surface_ids,
     _holistic_temporary_control_merges,
-    _render_holistic_risks,
     _result_deduped_strings,
     _result_objects,
 )
@@ -1124,7 +1129,7 @@ def _run_codex_child(
     schema_path: pathlib.Path,
     attempt_dir: pathlib.Path,
     execution_cwd: pathlib.Path,
-    timeout_seconds: int = 1800,
+    timeout_seconds: int = 1200,
 ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
     """Launch one explicit read-only Codex child and wait internally."""
 
@@ -2237,6 +2242,7 @@ def _holistic_public_status(state: Mapping[str, Any]) -> dict[str, Any]:
         "evidence_path": state["evidence"]["path"],
         "final_result_path": final.get("path") if isinstance(final, Mapping) else None,
         "report_path": final.get("report_path") if isinstance(final, Mapping) else None,
+        **({"presentation_contract": _presentation_contract()} if state["phase"] == "complete" else {}),
         "projected_luna_calls": manifest["projected_luna_calls"],
         "projected_sol_calls": manifest["projected_sol_calls"],
         "maximum_planned_sol_calls": manifest["maximum_planned_sol_calls"],
@@ -2870,97 +2876,6 @@ def _holistic_result_refs(value: Any, label: str, *, empty: bool = False) -> lis
     return refs
 
 
-def _holistic_luna_schema(
-    *,
-    state: Mapping[str, Any],
-    task: Mapping[str, Any],
-    input_sha256: str,
-    contract: Mapping[str, Any],
-) -> dict[str, Any]:
-    surface_values = list(state["manifest"]["surface_order"])
-    candidate_pattern = rf"^{re.escape(str(state['analysis_id']))}\.c\.[0-9]{{6}}$"
-    properties = {
-        "schema": {"type": "string", "const": HOLISTIC_LUNA_RESULT_SCHEMA},
-        "analysis_id": {"type": "string", "const": state["analysis_id"]},
-        "task_id": {"type": "string", "const": task["task_id"]},
-        "input_sha256": {"type": "string", "const": input_sha256},
-        "coverage": {
-            "type": "object",
-            "properties": {
-                "candidate_count": {"type": "integer", "const": len(task["candidate_ids"])},
-                "candidate_ids_sha256": {
-                    "type": "string",
-                    "const": task["candidate_ids_sha256"],
-                },
-                "first_candidate_id": {
-                    "type": "string",
-                    "const": task["candidate_ids"][0],
-                },
-                "last_candidate_id": {
-                    "type": "string",
-                    "const": task["candidate_ids"][-1],
-                },
-            },
-            "required": [
-                "candidate_count",
-                "candidate_ids_sha256",
-                "first_candidate_id",
-                "last_candidate_id",
-            ],
-            "additionalProperties": False,
-        },
-        "candidates": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "id": {"type": "string", "pattern": r"^[a-z0-9][a-z0-9._-]*$"},
-                    "kind": {"type": "string", "enum": contract["luna_candidate_kinds"]},
-                    "title": {"type": "string", "minLength": 1},
-                    "hypothesis": {"type": "string", "minLength": 1},
-                    "surface_ids": {
-                        "type": "array",
-                        "minItems": 1,
-                        "items": {"type": "string", "enum": surface_values},
-                    },
-                    "candidate_ids": {
-                        "type": "array",
-                        "minItems": 1,
-                        "items": {"type": "string", "pattern": candidate_pattern},
-                    },
-                    "evidence_refs": {
-                        "type": "array",
-                        "minItems": 1,
-                        "items": {
-                            "type": "string",
-                            "pattern": r"^(?:evidence|analysis)://",
-                        },
-                    },
-                    "producer_owner_hint": {"type": "string", "minLength": 1},
-                },
-                "required": [
-                    "id",
-                    "kind",
-                    "title",
-                    "hypothesis",
-                    "surface_ids",
-                    "candidate_ids",
-                    "evidence_refs",
-                    "producer_owner_hint",
-                ],
-                "additionalProperties": False,
-            },
-        },
-    }
-    return {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": properties,
-        "required": list(properties),
-        "additionalProperties": False,
-    }
-
-
 def _holistic_sol_schema(
     *,
     state: Mapping[str, Any],
@@ -2970,218 +2885,14 @@ def _holistic_sol_schema(
     luna_candidate_ids: Sequence[str],
     alias_record: Mapping[str, Any],
 ) -> dict[str, Any]:
-    def string(max_length: int) -> dict[str, Any]:
-        return {"type": "string", "minLength": 1, "maxLength": max_length}
-
-    def strings(max_length: int, *, nonempty: bool = False) -> dict[str, Any]:
-        result: dict[str, Any] = {
-            "type": "array",
-            "items": string(max_length),
-        }
-        if nonempty:
-            result["minItems"] = 1
-        return result
-
-    def aliases(values: Sequence[str], *, nonempty: bool = False) -> dict[str, Any]:
-        result: dict[str, Any] = {
-            "type": "array",
-            "items": {"type": "string", "enum": list(values)},
-        }
-        if nonempty:
-            result["minItems"] = 1
-        return result
-
-    def number() -> dict[str, Any]:
-        return {"type": "number", "minimum": 0}
-
-    def boolean() -> dict[str, Any]:
-        return {"type": "boolean"}
-
-    def nullable_string(max_length: int) -> dict[str, Any]:
-        return {"type": ["string", "null"], "maxLength": max_length}
-
-    def closed(properties: Mapping[str, Any]) -> dict[str, Any]:
-        return {
-            "type": "object",
-            "properties": dict(properties),
-            "required": list(properties),
-            "additionalProperties": False,
-        }
-
-    def objects(item: Mapping[str, Any]) -> dict[str, Any]:
-        return {"type": "array", "items": dict(item)}
-
-    del state, task, input_sha256
+    """Bind frozen transport aliases to the shared response contract."""
     canonical_to_alias, _ = _holistic_alias_lookups(alias_record)
-    luna_aliases = [canonical_to_alias[item] for item in luna_candidate_ids]
-    alias_tables = alias_record["aliases"]
-    call_aliases = list(alias_tables["calls"])
-    evidence_aliases = list(alias_tables["evidence"])
-    recurrence = closed(
-        {
-            "calls_saved_per_affected_run": number(),
-            "additional_recurring_calls_per_affected_run": number(),
-            "affected_similar_run_frequency": number(),
-            "affected_similar_run_frequency_range": {
-                "type": "array",
-                "minItems": 2,
-                "maxItems": 2,
-                "items": number(),
-            },
-            "assumptions": strings(240, nonempty=True),
-        }
+    return build_sol_schema(
+        contract=contract,
+        luna_aliases=[canonical_to_alias[item] for item in luna_candidate_ids],
+        call_aliases=list(alias_record["aliases"]["calls"]),
+        evidence_aliases=list(alias_record["aliases"]["evidence"]),
     )
-    cost = closed(
-        {
-            "estimated_model_calls": number(),
-            "description": string(240),
-        }
-    )
-    finding = closed(
-        {
-            "id": string(96),
-            "title": string(160),
-            "problem_summary": string(600),
-            "waste_kind": {"type": "string", "enum": contract["waste_kinds"]},
-            "affected_call_ids": aliases(call_aliases, nonempty=True),
-            "evidence_refs": aliases(evidence_aliases, nonempty=True),
-            "producer_type": {"type": "string", "enum": contract["producer_types"]},
-            "producer_owner": string(240),
-            "proposed_durable_control": string(600),
-            "implementation_status": {
-                "type": "string",
-                "enum": contract["implementation_statuses"],
-            },
-            "targeted_verification": strings(320, nonempty=True),
-            "recurrence": recurrence,
-            "confidence": {"type": "number", "minimum": 0, "maximum": 1},
-            "complexity": {"type": "string", "enum": contract["complexities"]},
-            "one_time_implementation_cost": cost,
-            "helper_categories": {
-                "type": "array",
-                "items": {"type": "string", "enum": contract["helper_categories"]},
-            },
-        }
-    )
-    risk = closed(
-        {
-            "id": string(96),
-            "description": string(480),
-            "affected_call_ids": aliases(call_aliases, nonempty=True),
-            "evidence_refs": aliases(evidence_aliases, nonempty=True),
-            "competing_explanations": strings(320, nonempty=True),
-            "missing_fact": string(320),
-            "verification_needed": strings(320, nonempty=True),
-        }
-    )
-    temporary_review = closed(
-        {
-            "id": string(96),
-            "source_luna_candidate_ids": aliases(luna_aliases, nonempty=True),
-            "problem_solved": string(360),
-            "affected_call_ids": aliases(call_aliases, nonempty=True),
-            "observed_temporary_control": string(480),
-            "final_canonical_evidence_refs": aliases(
-                evidence_aliases,
-                nonempty=True,
-            ),
-            "disposition": {
-                "type": "string",
-                "enum": contract["temporary_control_dispositions"],
-            },
-            "owning_producer": nullable_string(240),
-            "recurrence_inputs": closed(
-                {
-                    "likely": boolean(),
-                    "frequency_range": {
-                        "type": "array",
-                        "minItems": 2,
-                        "maxItems": 2,
-                        "items": number(),
-                    },
-                    "basis": string(320),
-                }
-            ),
-            "savings_inputs": closed(
-                {
-                    "expected_calls_saved": number(),
-                    "maintenance_model_calls": number(),
-                    "justifies_maintenance": boolean(),
-                    "basis": string(320),
-                }
-            ),
-            "finding_id": nullable_string(96),
-            "no_finding_reason": nullable_string(360),
-        }
-    )
-    properties = {
-        "candidate_decisions": objects(
-            closed(
-                {
-                    "luna_candidate_id": {
-                        "type": "string",
-                        "enum": luna_aliases,
-                    },
-                    "disposition": {
-                        "type": "string",
-                        "enum": contract["adjudication_dispositions"],
-                    },
-                    "reason": string(320),
-                    "evidence_refs": aliases(evidence_aliases, nonempty=True),
-                    "finding_ids": strings(96),
-                    "risk_ids": strings(96),
-                }
-            )
-        ),
-        "confirmed_findings": objects(finding),
-        "plausible_risks": objects(risk),
-        "temporary_control_reviews": objects(temporary_review),
-        "temporary_control_merges": objects(
-            closed(
-                {
-                    "control_key": string(160),
-                    "owning_producer": string(240),
-                    "review_ids": strings(96, nonempty=True),
-                    "finding_id": string(96),
-                }
-            )
-        ),
-        "helper_category_reviews": objects(
-            closed(
-                {
-                    "category": {"type": "string", "enum": contract["helper_categories"]},
-                    "applies": boolean(),
-                    "evidence_refs": aliases(evidence_aliases),
-                    "reason": string(320),
-                }
-            )
-        ),
-        "call_classifications": objects(
-            closed(
-                {
-                    "call_ids": aliases(call_aliases, nonempty=True),
-                    "classification": {
-                        "type": "string",
-                        "enum": contract["call_classifications"],
-                    },
-                    "reason_code": {
-                        "type": ["string", "null"],
-                        "enum": [*contract["necessary_reason_codes"], None],
-                    },
-                    "rationale": string(240),
-                    "evidence_refs": aliases(evidence_aliases, nonempty=True),
-                }
-            )
-        ),
-    }
-    return {
-        "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "title": HOLISTIC_SOL_TRANSPORT_SCHEMA,
-        "type": "object",
-        "properties": properties,
-        "required": list(properties),
-        "additionalProperties": False,
-    }
 
 
 def _validate_holistic_luna_result(
@@ -4550,6 +4261,15 @@ is required runtime context, never credit waste. Never recommend a reasoning
 setting, effort, or level. Use only frozen local and canonical-state evidence;
 when broader or deep research would be required, preserve the uncertainty and
 provide a concise paste-ready targeted official-source check instead of guessing.
+Describe the concrete episode and the proposed before-and-after behavior. For
+script findings, name the verified repository-relative filename and relevant
+function, command, or setting in the problem and proposed control. Distinguish
+maintained source, installed copies, deleted temporary scripts, and direct tool
+invocations; if the owner or correction is unverified, state the missing check.
+Do not substitute generic labels such as validation or caller sequence for the
+actual actions. A rule's existence does not prove corrected behavior works;
+preserve the required machine implementation classification. Verify one- or
+two-line effort claims against the actual change.
 The input identity is {input_sha256}.
 """
     if task["phase"] == "luna-discovery":
@@ -4642,9 +4362,13 @@ duplicates by likely owning producer and durable control without dropping a
 material variant. Deep-verify only the supplied owner-deduplicated top-three
 findings against their raw evidence; do not re-adjudicate all Luna candidates.
 Return the complete semantic result ({len(luna_candidate_ids)} candidate
-decisions) using the transport aliases. Prioritize every Minimal or one-to-two
-line control and every finding whose low-end expected savings exceeds one call
-per similar run, while preserving every confirmed finding in the machine result.
+decisions) using the transport aliases. Keep every finding and its full evidence,
+verification, cost, complexity, risk, and ROI assessment in the machine result.
+Write self-contained problem and proposed-control text that supports later chat
+selection by supported recurring net savings and verified one- or two-line
+fixes, without a fixed quota. Chat uses Problem, Proposed fix, and Benefit and
+effort; the controller saves only the runs table in the human report. Review
+ranking does not limit presentation or finding retention.
 """
     return common + instructions + "\nInput packet:\n"
 
@@ -4829,14 +4553,8 @@ def _holistic_call_classifications(
         if unknown:
             raise CreditAnalysisError(f"{label} references an unknown call")
         classification = str(group.get("classification"))
-        if classification not in contract["call_classifications"]:
-            raise CreditAnalysisError(f"{label} classification is invalid")
         reason = group.get("reason_code")
-        if classification == "necessary":
-            if reason not in contract["necessary_reason_codes"]:
-                raise CreditAnalysisError(f"{label} necessary reason is invalid")
-        elif reason is not None:
-            raise CreditAnalysisError(f"{label} non-necessary reason must be null")
+        validate_classification_reason(group, contract, label)
         if group.get("workstream") not in {"producer", "analysis-overhead"}:
             raise CreditAnalysisError(f"{label} workstream is invalid")
         refs = _holistic_result_refs(group.get("evidence_refs"), f"{label} evidence")
@@ -5395,90 +5113,6 @@ def _validate_holistic_sol_result(
         "call_classifications": classifications,
         "analysis_summary": raw["analysis_summary"],
     }
-
-
-def _validate_holistic_transport_value(
-    value: Any,
-    schema: Mapping[str, Any],
-    label: str,
-) -> None:
-    """Validate the closed Sol transport subset used by injected runners too.
-
-    Codex CLI enforces the same JSON Schema in production. Keeping this small
-    dependency-free validator in the controller preserves standalone managed
-    skill execution while making fake-runner behavior equivalent for the
-    object, array, scalar, enum, and string-bound features used here.
-    """
-
-    expected_type = schema.get("type")
-    if isinstance(expected_type, list):
-        if value is None and "null" in expected_type:
-            return
-        if "string" not in expected_type or not isinstance(value, str):
-            raise CreditAnalysisError(f"{label} has an invalid type")
-    elif expected_type == "object":
-        if not isinstance(value, Mapping):
-            raise CreditAnalysisError(f"{label} must be an object")
-        properties = schema.get("properties")
-        required = schema.get("required")
-        if not isinstance(properties, Mapping) or not isinstance(required, list):
-            raise CreditAnalysisError(f"{label} schema is invalid")
-        if set(value) != set(required):
-            raise CreditAnalysisError(f"{label} fields are invalid")
-        for key, item in value.items():
-            child = properties.get(key)
-            if not isinstance(child, Mapping):
-                raise CreditAnalysisError(f"{label}.{key} schema is invalid")
-            _validate_holistic_transport_value(item, child, f"{label}.{key}")
-        return
-    elif expected_type == "array":
-        if not isinstance(value, list):
-            raise CreditAnalysisError(f"{label} must be an array")
-        minimum = schema.get("minItems")
-        maximum = schema.get("maxItems")
-        if isinstance(minimum, int) and len(value) < minimum:
-            raise CreditAnalysisError(f"{label} has too few items")
-        if isinstance(maximum, int) and len(value) > maximum:
-            raise CreditAnalysisError(f"{label} has too many items")
-        item_schema = schema.get("items")
-        if not isinstance(item_schema, Mapping):
-            raise CreditAnalysisError(f"{label} item schema is invalid")
-        for index, item in enumerate(value):
-            _validate_holistic_transport_value(
-                item,
-                item_schema,
-                f"{label}[{index}]",
-            )
-        return
-    elif expected_type == "string":
-        if not isinstance(value, str):
-            raise CreditAnalysisError(f"{label} must be text")
-    elif expected_type == "number":
-        if not isinstance(value, (int, float)) or isinstance(value, bool):
-            raise CreditAnalysisError(f"{label} must be numeric")
-    elif expected_type == "integer":
-        if not isinstance(value, int) or isinstance(value, bool):
-            raise CreditAnalysisError(f"{label} must be an integer")
-    elif expected_type == "boolean":
-        if not isinstance(value, bool):
-            raise CreditAnalysisError(f"{label} must be boolean")
-    else:
-        raise CreditAnalysisError(f"{label} schema type is unsupported")
-    if isinstance(value, str):
-        minimum = schema.get("minLength")
-        maximum = schema.get("maxLength")
-        if isinstance(minimum, int) and len(value) < minimum:
-            raise CreditAnalysisError(f"{label} is empty")
-        if isinstance(maximum, int) and len(value) > maximum:
-            raise CreditAnalysisError(
-                f"{label} exceeds its {maximum}-character semantic bound"
-            )
-    if "enum" in schema and value not in schema["enum"]:
-        raise CreditAnalysisError(f"{label} is outside the frozen contract")
-    if "minimum" in schema and value < schema["minimum"]:
-        raise CreditAnalysisError(f"{label} is below its minimum")
-    if "maximum" in schema and value > schema["maximum"]:
-        raise CreditAnalysisError(f"{label} is above its maximum")
 
 
 def _holistic_restore_alias_value(value: Any, aliases: Mapping[str, str]) -> Any:
@@ -6045,6 +5679,23 @@ def _holistic_unrecorded_attempt(
         if int(event_types.get("fake.semantic.completed", 0)) == 1
         else "codex-cli"
     )
+    retry_prompt = prompt_path.with_name(
+        f"{prompt_path.stem}.retry-{attempt_number:03d}{prompt_path.suffix}"
+    )
+    output_byte_limit = task.get("output_byte_limit")
+    if retry_prompt.exists() or retry_prompt.is_symlink():
+        if not retry_prompt.is_file() or retry_prompt.is_symlink():
+            raise CreditAnalysisError("unrecorded corrective prompt is unsafe")
+        prompt_path = retry_prompt
+        if task["phase"] == "luna-discovery":
+            output_byte_limit = max(1_000, int(task["output_byte_limit"]) * 9 // 10)
+    retry_schema = schema_path.with_name(
+        f"{schema_path.stem}.retry-{attempt_number:03d}{schema_path.suffix}"
+    )
+    if retry_schema.exists() or retry_schema.is_symlink():
+        if not retry_schema.is_file() or retry_schema.is_symlink():
+            raise CreditAnalysisError("unrecorded corrective schema is unsafe")
+        schema_path = retry_schema
     attempt = _bind_attempt_record(
         {
             "runner": runner,
@@ -6058,6 +5709,7 @@ def _holistic_unrecorded_attempt(
             "terminated": False,
             "duration_ms": None,
             "duration_telemetry": "unavailable-after-state-write-interruption",
+            "output_byte_limit": output_byte_limit,
             "prompt_path": str(prompt_path),
             "schema_path": str(schema_path),
             "raw_output_path": str(raw_path),
@@ -6213,6 +5865,10 @@ def _holistic_final(
                 "avoidable_calls_fix_unimplemented": sum(
                     classification_by_call.get(str(record["call_id"]))
                     == "avoidable_unimplemented"
+                    for record in reviewed_records
+                ),
+                "unassessed_calls": sum(
+                    classification_by_call.get(str(record["call_id"])) == "unassessed"
                     for record in reviewed_records
                 ),
                 "tokens": {
@@ -6378,246 +6034,6 @@ def _holistic_final(
     }
 
 
-def _percentage(numerator: int, denominator: int) -> str:
-    return f"{(100 * numerator / denominator):.2f}%" if denominator else "0.00%"
-
-
-def _render_holistic_report(final: Mapping[str, Any]) -> str:
-    """Render the historical run/control tables plus exact omission accounting."""
-
-    coverage = final["coverage"]
-    evidence_percent = _percentage(
-        int(coverage["analyzed_evidence_bytes"]),
-        int(coverage["eligible_evidence_bytes"]),
-    )
-    lines = [
-        "# Credit savings analysis",
-        "",
-        (
-            f"Coverage: {coverage['fully_analyzed_runs']} complete and "
-            f"{coverage['partially_analyzed_runs']} partial of "
-            f"{coverage['eligible_runs']} runs; {coverage['analyzed_calls']} of {coverage['eligible_calls']} "
-            f"calls, and {coverage['analyzed_evidence_bytes']} of "
-            f"{coverage['eligible_evidence_bytes']} UTF-8 evidence bytes "
-            f"({evidence_percent})."
-        ),
-        "",
-        (
-            f"Luna calls: {final['model_calls']['actual_luna']}; Sol calls: "
-            f"{final['model_calls']['actual_sol']}; bookkeeping calls: 0."
-        ),
-        "",
-        (
-            f"Run parts: {coverage['reviewed_parts']} reviewed, "
-            f"{coverage['unreviewed_parts']} unreviewed, "
-            f"{coverage['planned_parts']} planned. Part inputs: "
-            f"{coverage['reviewed_part_input_bytes']} reviewed of "
-            f"{coverage['planned_part_input_bytes']} planned UTF-8 bytes; "
-            f"{coverage['unreviewed_part_input_bytes']} unreviewed. Luna outputs: "
-            f"{coverage['reviewed_luna_output_bytes']} reviewed of "
-            f"{coverage['accepted_luna_output_bytes']} accepted UTF-8 bytes "
-            f"against {coverage['planned_luna_output_bytes']} planned output bytes."
-        ),
-        "",
-        "## Run-part byte accounting",
-        "",
-        "| Run | Part | Records | Input bytes | Luna output allowance | Actual output bytes | Status |",
-        "|---|---|---:|---:|---:|---:|---|",
-    ]
-    run_labels = {
-        str(run["turn_id"]): str(run.get("started_at") or run["turn_id"])
-        for run in final["run_accounting"]
-    }
-    for window in final["part_accounting"]:
-        lines.append(
-            f"| {run_labels.get(str(window['turn_id']), window['turn_id'])} | "
-            f"{window['run_window_ordinal']}/{window['run_window_count']} | "
-            f"{window['record_count']} | {window['input_bytes']} | "
-            f"{window['output_byte_limit']} | {window['actual_output_bytes']} | "
-            f"{window['status']} |"
-        )
-    lines.extend(
-        [
-        "",
-        "## Completed runs",
-        "",
-        "| Completed run | Total model calls | Avoidable calls - Fix Implemented | Avoidable calls - Fix Unimplemented | Token usage (total; input % of total/cached % of input/output % of total/reasoning output % of output) |",
-        "|---|---:|---:|---:|---|",
-        ]
-    )
-    total_calls = 0
-    total_reviewed_calls = 0
-    total_implemented = 0
-    total_unimplemented = 0
-    token_totals: Counter[str] = Counter()
-    for run in final["run_accounting"]:
-        tokens = run["tokens"]
-        total = int(tokens.get("total_tokens", 0))
-        input_tokens = int(tokens.get("input_tokens", 0))
-        cached = int(tokens.get("cached_input_tokens", 0))
-        output = int(tokens.get("output_tokens", 0))
-        reasoning = int(tokens.get("reasoning_output_tokens", 0))
-        token_summary = (
-            f"{total}; {_percentage(input_tokens, total)} / "
-            f"{_percentage(cached, input_tokens)} / {_percentage(output, total)} / "
-            f"{_percentage(reasoning, output)}"
-        )
-        total_calls += int(run["total_model_calls"])
-        total_reviewed_calls += int(run["reviewed_model_calls"])
-        total_implemented += int(run["avoidable_calls_fix_implemented"])
-        total_unimplemented += int(run["avoidable_calls_fix_unimplemented"])
-        token_totals.update(
-            {
-                key: int(tokens.get(key, 0))
-                for key in (
-                    "input_tokens",
-                    "cached_input_tokens",
-                    "output_tokens",
-                    "reasoning_output_tokens",
-                    "total_tokens",
-                )
-            }
-        )
-        if run["review_status"] == "not reviewed":
-            implemented_display = "not reviewed"
-            unimplemented_display = "not reviewed"
-        elif run["review_status"] == "partially reviewed":
-            reviewed = f"{run['reviewed_model_calls']}/{run['total_model_calls']} reviewed"
-            implemented_display = (
-                f"{run['avoidable_calls_fix_implemented']} ({reviewed})"
-            )
-            unimplemented_display = (
-                f"{run['avoidable_calls_fix_unimplemented']} ({reviewed})"
-            )
-        else:
-            implemented_display = str(run["avoidable_calls_fix_implemented"])
-            unimplemented_display = str(run["avoidable_calls_fix_unimplemented"])
-        run_label = str(run.get("started_at") or run["turn_id"])
-        lines.append(
-            f"| {run_label} | {run['total_model_calls']} | "
-            f"{implemented_display} | {unimplemented_display} | {token_summary} |"
-        )
-    total_tokens = int(token_totals["total_tokens"])
-    total_token_summary = (
-        f"{total_tokens}; "
-        f"{_percentage(token_totals['input_tokens'], total_tokens)} / "
-        f"{_percentage(token_totals['cached_input_tokens'], token_totals['input_tokens'])} / "
-        f"{_percentage(token_totals['output_tokens'], total_tokens)} / "
-        f"{_percentage(token_totals['reasoning_output_tokens'], token_totals['output_tokens'])}"
-    )
-    review_suffix = (
-        ""
-        if total_reviewed_calls == total_calls
-        else f" ({total_reviewed_calls}/{total_calls} reviewed)"
-    )
-    lines.append(
-        f"| **Total** | **{total_calls}** | **{total_implemented}{review_suffix}** | "
-        f"**{total_unimplemented}{review_suffix}** | **{total_token_summary}** |"
-    )
-    lines.extend(
-        [
-            "",
-            "## Proposed controls",
-            "",
-            "| Proposed control | Calls saved per affected run | Est. Percent of Affected Similar Runs | Additional Calls per Affected Run for Implemented Fix | Est. Calls Saving by Fix per Similar Run | New Complexity Introduced by Fix | One-time implementation cost (model calls) | Recommendation |",
-            "|---|---:|---:|---:|---:|---|---:|---|",
-        ]
-    )
-    detailed: list[Mapping[str, Any]] = []
-    for finding in final["confirmed_findings"]:
-        if finding["implementation_status"] == "implemented":
-            continue
-        recurrence = finding["recurrence"]
-        saved = float(recurrence["calls_saved_per_affected_run"])
-        added = float(recurrence["additional_recurring_calls_per_affected_run"])
-        frequency = float(recurrence["affected_similar_run_frequency"])
-        frequency_low = float(
-            recurrence["affected_similar_run_frequency_range"][0]
-        )
-        low_end = max(0.0, saved - added) * frequency_low
-        complexity = str(finding["complexity"])
-        cheap = complexity == "Minimal"
-        recommendation = "Fix" if cheap or low_end > 1 else "Consider"
-        if cheap or low_end > 1:
-            detailed.append(finding)
-        lines.append(
-            f"| {finding['proposed_durable_control']} | {saved:g} | "
-            f"{frequency * 100:.1f}% | {added:g} | "
-            f"{float(recurrence['estimated_calls_saved_per_similar_run']):g} | "
-            f"{complexity} | "
-            f"{float(finding['one_time_implementation_cost']['estimated_model_calls']):g} | "
-            f"{recommendation} |"
-        )
-    for finding in detailed:
-        deep_verified = finding["id"] in set(final["deep_review_finding_ids"])
-        lines.extend(
-            [
-                "",
-                f"### {finding['title']}",
-                "",
-                f"Problem: {finding['problem_summary']}",
-                "",
-                f"Fix: {finding['proposed_durable_control']}",
-                "",
-                f"Owner: {finding['producer_owner']}",
-                "",
-                f"Deep verification: {'yes' if deep_verified else 'no'}",
-                "",
-                "Evidence: " + ", ".join(finding["evidence_refs"]),
-                "",
-                "Verification: " + "; ".join(finding["targeted_verification"]),
-            ]
-        )
-    lines.extend(
-        [
-            "",
-            "## Classification totals",
-            "",
-            "| Classification | Calls |",
-            "|---|---:|",
-        ]
-    )
-    for classification, count in final["classification_totals"].items():
-        lines.append(f"| {classification} | {count} |")
-    lines.extend(_render_holistic_risks(final["plausible_risks"]))
-    lines.extend(["", "## Capacity and execution omissions", ""])
-    if not final["omissions"]:
-        lines.append("None.")
-    else:
-        lines.extend(
-            [
-                "| Run | Window | Records | Evidence bytes | Candidate count | Output bytes | Reason |",
-                "|---|---|---:|---:|---:|---:|---|",
-            ]
-        )
-        for omission in final["omissions"]:
-            identity = omission.get("turn_id") or "-"
-            if omission.get("run_window_ordinal") is not None:
-                window = (
-                    f"{omission['run_window_ordinal']}/"
-                    f"{omission.get('run_window_count', '?')}"
-                )
-            else:
-                window_ids = (
-                    omission.get("omitted_window_task_ids")
-                    or omission.get("task_ids")
-                    or [omission.get("task_id", "-")]
-                )
-                window = ", ".join(str(item) for item in window_ids)
-            candidate_count = omission.get(
-                "candidate_count", len(omission.get("candidate_ids", []))
-            )
-            record_count = omission.get("record_count", candidate_count)
-            evidence_bytes = omission.get("evidence_bytes", omission.get("input_bytes", "-"))
-            lines.append(
-                f"| {identity} | {window} | {record_count} | {evidence_bytes} | "
-                f"{candidate_count} | {omission.get('output_bytes', 0)} | "
-                f"{omission.get('reason', '-')} |"
-            )
-    lines.extend(["", f"Retained result: {final['retained_artifacts']['result']}", ""])
-    return "\n".join(lines)
-
-
 def _finalize_holistic(
     state: dict[str, Any],
     evidence: Mapping[str, Any],
@@ -6698,729 +6114,6 @@ def _finalize_holistic(
     }
     _cleanup_orchestration_transient(state)
     _holistic_save_state(state)
-
-
-def _diagnosed_luna_retry(error: CreditAnalysisError) -> bool:
-    """Retry only a concrete result-size or output-contract failure."""
-
-    message = str(error).lower()
-    return any(
-        marker in message
-        for marker in (
-            "byte target",
-            "schema",
-            "fields are invalid",
-            "identity changed",
-            "coverage attestation",
-            "invalid type",
-            "must be an",
-            "must be text",
-            "must be numeric",
-            "must be boolean",
-            "outside the frozen contract",
-            "too many items",
-            "too few items",
-        )
-    )
-
-
-def _holistic_model_attempt(
-    *,
-    runner: Any | None,
-    state: Mapping[str, Any],
-    task: Mapping[str, Any],
-    payload: Mapping[str, Any],
-    input_sha: str,
-    prompt_path: pathlib.Path,
-    schema_path: pathlib.Path,
-    attempt_number: int,
-) -> tuple[dict[str, Any] | None, dict[str, Any]]:
-    """Invoke one already-prepared task; callers own durable state updates."""
-
-    role = _holistic_role(task)
-    model = str(state["model_specs"][role]["model"])
-    effort = str(state["model_specs"][role]["reasoning_effort"])
-    runtime_task = {**task, "reasoning_effort": effort}
-    if task["phase"] == "luna-discovery" and attempt_number > 1:
-        runtime_task["output_byte_limit"] = max(
-            1_000, int(task["output_byte_limit"]) * 9 // 10
-        )
-        retry_prompt_path = prompt_path.with_name(
-            f"{prompt_path.stem}.retry-{attempt_number:03d}{prompt_path.suffix}"
-        )
-        _write_or_verify_text(
-            retry_prompt_path,
-            _holistic_prompt(
-                state=state,
-                task=runtime_task,
-                input_payload=payload,
-                input_sha256=input_sha,
-                luna_candidate_ids=[],
-            ),
-            "Luna corrective retry prompt",
-        )
-        prompt_path = retry_prompt_path
-    attempt_dir = (
-        pathlib.Path(str(task["artifacts"]["attempts"]))
-        / f"attempt-{attempt_number:03d}"
-    )
-    if runner is None:
-        raw, attempt = _run_codex_child(
-            analysis_id=str(state["analysis_id"]),
-            model=model,
-            reasoning_effort=effort,
-            task=runtime_task,
-            prompt_path=prompt_path,
-            schema_path=schema_path,
-            attempt_dir=attempt_dir,
-            execution_cwd=pathlib.Path(str(task["execution_cwd"])),
-        )
-    else:
-        raw, attempt = _invoke_injected_runner(
-            runner,
-            model=model,
-            task=runtime_task,
-            prompt_path=prompt_path,
-            schema_path=schema_path,
-            input_payload=payload,
-            input_sha256=input_sha,
-            attempt_dir=attempt_dir,
-        )
-    return raw, {
-        **attempt,
-        "reasoning_effort": effort,
-        "output_byte_limit": runtime_task.get("output_byte_limit"),
-    }
-
-
-def _omit_luna_task(
-    state: dict[str, Any],
-    task: Mapping[str, Any],
-    *,
-    reason: str,
-    error: str | None = None,
-) -> None:
-    execution = state["execution"][task["task_id"]]
-    execution["status"] = "omitted"
-    output_bytes = 0
-    for attempt in reversed(execution["attempts"]):
-        raw_artifact = attempt.get("artifacts", {}).get("raw_output")
-        if not isinstance(raw_artifact, Mapping):
-            continue
-        raw_path = pathlib.Path(str(raw_artifact.get("path")))
-        if raw_path.is_file() and not raw_path.is_symlink():
-            output_bytes = raw_path.stat().st_size
-            break
-    omission = {
-        "stage": "luna",
-        "reason": reason,
-        "task_id": task["task_id"],
-        "turn_id": task["turn_id"],
-        "run_window_ordinal": task["run_window_ordinal"],
-        "run_window_count": task["run_window_count"],
-        "candidate_ids": list(task["candidate_ids"]),
-        "record_count": len(task["candidate_ids"]),
-        "candidate_count": len(task["candidate_ids"]),
-        "evidence_bytes": int(task["evidence_bytes"]),
-        "input_bytes": int(task["input_bytes"]),
-        "output_bytes": output_bytes,
-    }
-    if error:
-        omission["error"] = error
-    if not any(
-        item.get("task_id") == task["task_id"]
-        for item in state["omissions"]
-        if isinstance(item, Mapping)
-    ):
-        state["omissions"].append(omission)
-
-
-def _omit_sol_task(
-    state: dict[str, Any],
-    task: Mapping[str, Any],
-    *,
-    reason: str,
-    error: str | None = None,
-) -> None:
-    """Retain exact inventory for one non-final Sol task that cannot be accepted."""
-
-    if task["phase"] == "sol-final":
-        raise CreditAnalysisError("the final Sol result cannot be omitted")
-    execution = state["execution"][task["task_id"]]
-    execution["status"] = "omitted"
-    output_bytes = 0
-    for attempt in reversed(execution["attempts"]):
-        raw_artifact = attempt.get("artifacts", {}).get("raw_output")
-        if not isinstance(raw_artifact, Mapping):
-            continue
-        raw_path = pathlib.Path(str(raw_artifact.get("path")))
-        if raw_path.is_file() and not raw_path.is_symlink():
-            output_bytes = raw_path.stat().st_size
-            break
-    source_record_ids = list(task.get("candidate_ids", []))
-    candidate_ids = list(
-        task.get("luna_candidate_ids", source_record_ids)
-    )
-    call_ids = list(task.get("call_ids", []))
-    if not call_ids:
-        call_ids = list(
-            dict.fromkeys(
-                call_id
-                for window in task.get("audit_windows", [])
-                for call_id in window.get("call_ids", [])
-            )
-        )
-    input_path = pathlib.Path(str(task["artifacts"]["input"]))
-    input_bytes = (
-        input_path.stat().st_size
-        if input_path.is_file() and not input_path.is_symlink()
-        else 0
-    )
-    omission: dict[str, Any] = {
-        "stage": task["phase"],
-        "reason": reason,
-        "task_id": task["task_id"],
-        "turn_ids": list(task.get("turn_ids", [])),
-        "candidate_ids": candidate_ids,
-        "source_record_ids": source_record_ids,
-        "call_ids": call_ids,
-        "record_count": len(source_record_ids),
-        "candidate_count": len(candidate_ids),
-        "evidence_bytes": int(task.get("routing_bytes") or input_bytes),
-        "input_bytes": input_bytes,
-        "output_bytes": output_bytes,
-        "attempt_count": len(execution["attempts"]),
-    }
-    if error:
-        omission["error"] = error
-    if not any(
-        item.get("task_id") == task["task_id"]
-        for item in state["omissions"]
-        if isinstance(item, Mapping)
-    ):
-        state["omissions"].append(omission)
-
-
-def command_execute_orchestration(
-    state_path: pathlib.Path,
-    *,
-    runner: Any | None = None,
-    available_models: set[str] | Mapping[str, Mapping[str, Any]] | None = None,
-    task_limit: int | None = None,
-    expected_request_path: pathlib.Path | None = None,
-) -> dict[str, Any]:
-    """Execute run parts and independent Sol stages with bounded concurrency."""
-
-    state, evidence, contract, compact = _holistic_read_state(state_path)
-    if expected_request_path is not None:
-        expected_request = expected_request_path.expanduser().resolve(strict=True)
-        planned_request = pathlib.Path(
-            str(state["immutable_artifacts"]["request"]["path"])
-        ).resolve(strict=True)
-        if planned_request != expected_request:
-            raise CreditAnalysisError(
-                "request does not own the existing orchestration state"
-            )
-    if state["phase"] == "complete":
-        return _holistic_public_status(state)
-    catalog = (
-        available_models
-        if available_models is not None
-        else (
-            runner.available_models
-            if runner is not None and hasattr(runner, "available_models")
-            else _codex_model_catalog()
-        )
-    )
-    current_specs = _holistic_model_specs(contract, catalog)
-    for role in ("luna", "sol"):
-        planned = state["model_specs"][role]
-        current = current_specs[role]
-        if (
-            current["model"] != planned["model"]
-            or current["reasoning_effort"] != planned["reasoning_effort"]
-            or current["effective_context_tokens"]
-            < planned["effective_context_tokens"]
-        ):
-            raise CreditAnalysisError(
-                f"{role} model capability changed after planning"
-            )
-    if task_limit is not None and (
-        not isinstance(task_limit, int)
-        or isinstance(task_limit, bool)
-        or task_limit < 0
-    ):
-        raise CreditAnalysisError("task_limit must be a nonnegative integer")
-
-    tasks = _holistic_task_map(state["manifest"])
-    task_budget = task_limit
-    progressed = 0
-    luna_attempt_limit = int(
-        contract["semantic_call_contract"]["luna_max_attempts"]
-    )
-    sol_retry_limit = int(
-        contract["semantic_call_contract"][
-            "sol_max_validation_retries_per_task"
-        ]
-    )
-    state["phase"] = "executing"
-    _holistic_save_state(state)
-
-    while True:
-        luna_tasks = state["manifest"]["luna_tasks"]
-        pending_luna = [
-            task
-            for task in luna_tasks
-            if state["execution"][task["task_id"]]["status"] == "pending"
-        ]
-        remaining_attempts = luna_attempt_limit - int(
-            state["model_attempts"]["luna"]
-        )
-        if remaining_attempts <= 0:
-            for task in pending_luna:
-                _omit_luna_task(state, task, reason="luna-attempt-cap")
-            pending_luna = []
-            _holistic_save_state(state)
-
-        luna_terminal = all(
-            state["execution"][task["task_id"]]["status"]
-            in {"complete", "omitted"}
-            for task in luna_tasks
-        )
-        if luna_terminal and state.get("routing") is None:
-            _freeze_sol_routing(state, compact, contract)
-            tasks = _holistic_task_map(state["manifest"])
-
-        sol_omission_changed = False
-        for base_task in state["manifest"]["sol_tasks"]:
-            execution = state["execution"][base_task["task_id"]]
-            if execution["status"] != "pending":
-                continue
-            rejected = _sol_validation_error_count(execution)
-            if not rejected:
-                continue
-            task = _holistic_runtime_task(state, base_task)
-            if task["phase"] == "sol-final":
-                # Revalidate frozen output before enforcing limits on new calls.
-                continue
-            if rejected > sol_retry_limit:
-                _omit_sol_task(
-                    state,
-                    task,
-                    reason="sol-invalid-output",
-                    error=str(execution["attempts"][-1].get("error") or "invalid result"),
-                )
-                progressed += 1
-                sol_omission_changed = True
-                continue
-        if sol_omission_changed:
-            _holistic_save_state(state)
-
-        if state.get("routing") is not None:
-            _freeze_focused_review(state, compact, contract)
-
-        ready: list[dict[str, Any]] = []
-        for task_id in state["task_order"]:
-            execution = state["execution"][task_id]
-            if execution["status"] != "pending":
-                continue
-            base_task = tasks[task_id]
-            if any(
-                state["execution"][dependency]["status"]
-                not in {"complete", "skipped", "omitted"}
-                for dependency in base_task["dependencies"]
-            ):
-                continue
-            if base_task["phase"].startswith("sol-") and state.get("routing") is None:
-                continue
-            ready.append(_holistic_runtime_task(state, base_task))
-
-        if not ready:
-            break
-        phase = ready[0]["phase"]
-        if phase == "luna-discovery":
-            ready = [task for task in ready if task["phase"] == phase]
-            concurrency = int(
-                contract["semantic_call_contract"]["luna_max_concurrency"]
-            )
-            ready = ready[: min(concurrency, max(0, remaining_attempts))]
-        elif phase in {"sol-adjudication", "sol-direct-evidence"}:
-            ready = [
-                task
-                for task in ready
-                if task["phase"] in {"sol-adjudication", "sol-direct-evidence"}
-            ]
-            concurrency = len(ready)
-        else:
-            ready = [ready[0]]
-            concurrency = 1
-        if task_budget is not None:
-            remaining_tasks = task_budget - progressed
-            if remaining_tasks <= 0:
-                break
-            ready = ready[:remaining_tasks]
-        if not ready:
-            break
-
-        prepared: list[
-            tuple[
-                dict[str, Any],
-                dict[str, Any],
-                str,
-                pathlib.Path,
-                pathlib.Path,
-                list[str],
-            ]
-        ] = []
-        for task in ready:
-            payload, digest, prompt_path, schema_path, candidate_ids = (
-                _holistic_prepare_task(
-                    state, evidence, contract, compact, task
-                )
-            )
-            result_path = pathlib.Path(str(task["artifacts"]["result"]))
-            if result_path.is_file() and not result_path.is_symlink():
-                validated = _validate_holistic_task_result(
-                    _read_json(result_path, "recoverable holistic result"),
-                    state=state,
-                    task=task,
-                    input_sha256=digest,
-                    contract=contract,
-                    compact=compact,
-                    luna_candidate_ids=candidate_ids,
-                )
-                _holistic_accept_result(
-                    state=state,
-                    task=task,
-                    validated=validated,
-                    input_sha256=digest,
-                    prompt_path=prompt_path,
-                    schema_path=schema_path,
-                    attempt=None,
-                    recovered=True,
-                )
-                progressed += 1
-                continue
-            recoverable = _holistic_recoverable_raw(state, task, digest)
-            if recoverable is not None:
-                try:
-                    validated = _validate_holistic_task_result(
-                        recoverable,
-                        state=state,
-                        task=task,
-                        input_sha256=digest,
-                        contract=contract,
-                        compact=compact,
-                        luna_candidate_ids=candidate_ids,
-                    )
-                except CreditAnalysisError:
-                    pass
-                else:
-                    _holistic_accept_result(
-                        state=state,
-                        task=task,
-                        validated=validated,
-                        input_sha256=digest,
-                        prompt_path=prompt_path,
-                        schema_path=schema_path,
-                        attempt=None,
-                        recovered=True,
-                    )
-                    progressed += 1
-                    continue
-            if task["phase"] == "sol-final":
-                if _sol_validation_error_count(state["execution"][task["task_id"]]) > sol_retry_limit:
-                    raise CreditAnalysisError(
-                        "final Sol failed validation after its automatic retry"
-                    )
-                if _sol_attempt_capacity(state, contract, task) == 0:
-                    raise CreditAnalysisError(
-                        "Sol attempt ceiling leaves no final result capacity"
-                    )
-            raw: Mapping[str, Any] | None
-            unrecorded = _holistic_unrecorded_attempt(
-                state,
-                task,
-                digest,
-                prompt_path,
-                schema_path,
-            )
-            if unrecorded is not None:
-                raw, attempt = unrecorded
-                role = _holistic_role(task)
-                state["model_attempts"][role] += 1
-                execution = state["execution"][task["task_id"]]
-                try:
-                    if (
-                        task["phase"] == "luna-discovery"
-                        and _json_bytes(raw)
-                        > int(
-                            attempt.get("output_byte_limit")
-                            or task["output_byte_limit"]
-                        )
-                    ):
-                        raise CreditAnalysisError(
-                            "Luna result exceeds its output byte target"
-                        )
-                    validated = _validate_holistic_task_result(
-                        raw,
-                        state=state,
-                        task=task,
-                        input_sha256=digest,
-                        contract=contract,
-                        compact=compact,
-                        luna_candidate_ids=candidate_ids,
-                    )
-                except CreditAnalysisError as error:
-                    execution["attempts"].append(
-                        {
-                            **attempt,
-                            "outcome": "validation-error",
-                            "error": str(error),
-                        }
-                    )
-                    can_retry_luna = (
-                        task["phase"] == "luna-discovery"
-                        and _diagnosed_luna_retry(error)
-                        and len(execution["attempts"]) == 1
-                        and state["model_attempts"]["luna"] < luna_attempt_limit
-                    )
-                    can_retry_sol = (
-                        task["phase"].startswith("sol-")
-                        and _can_retry_sol_validation(
-                            state, contract, task
-                        )
-                    )
-                    if not can_retry_luna and not can_retry_sol:
-                        if task["phase"] == "luna-discovery":
-                            _omit_luna_task(
-                                state,
-                                task,
-                                reason="luna-invalid-output",
-                                error=str(error),
-                            )
-                            progressed += 1
-                            continue
-                        if task["phase"] != "sol-final":
-                            _omit_sol_task(
-                                state,
-                                task,
-                                reason="sol-invalid-output",
-                                error=str(error),
-                            )
-                            progressed += 1
-                            continue
-                        _holistic_sync_child_lineage(state)
-                        _holistic_save_state(state)
-                        raise
-                    _holistic_sync_child_lineage(state)
-                    _holistic_save_state(state)
-                    continue
-                else:
-                    _holistic_accept_result(
-                        state=state,
-                        task=task,
-                        validated=validated,
-                        input_sha256=digest,
-                        prompt_path=prompt_path,
-                        schema_path=schema_path,
-                        attempt=attempt,
-                        recovered=True,
-                    )
-                    progressed += 1
-                    continue
-            prepared.append(
-                (task, payload, digest, prompt_path, schema_path, candidate_ids)
-            )
-        if phase.startswith("sol-"):
-            # Reuse retained results before spending any remaining launch budget.
-            _validate_sol_call_budget(state, contract)
-            launch_capacity = _sol_attempt_capacity(state, contract, ready[0])
-            deferred = prepared[launch_capacity:]
-            prepared = prepared[:launch_capacity]
-            for task, *_ in deferred:
-                execution = state["execution"][task["task_id"]]
-                if task["phase"] != "sol-final" and _sol_validation_error_count(
-                    execution
-                ):
-                    _omit_sol_task(
-                        state,
-                        task,
-                        reason="sol-retry-capacity",
-                        error=str(execution["attempts"][-1].get("error") or "invalid result"),
-                    )
-                    progressed += 1
-            if deferred:
-                _holistic_save_state(state)
-            if not prepared and any(
-                state["execution"][item[0]["task_id"]]["status"] == "pending"
-                for item in deferred
-            ):
-                raise CreditAnalysisError(
-                    "Sol attempt ceiling leaves no "
-                    + ("final result" if phase == "sol-final" else "first-stage")
-                    + " capacity"
-                )
-        if not prepared:
-            continue
-
-        futures: dict[Any, tuple[Any, ...]] = {}
-        with concurrent.futures.ThreadPoolExecutor(
-            max_workers=max(1, min(concurrency, len(prepared)))
-        ) as executor:
-            for prepared_item in prepared:
-                task, payload, digest, prompt_path, schema_path, _ = prepared_item
-                attempt_number = (
-                    len(state["execution"][task["task_id"]]["attempts"]) + 1
-                )
-                future = executor.submit(
-                    _holistic_model_attempt,
-                    runner=runner,
-                    state=state,
-                    task=task,
-                    payload=payload,
-                    input_sha=digest,
-                    prompt_path=prompt_path,
-                    schema_path=schema_path,
-                    attempt_number=attempt_number,
-                )
-                futures[future] = (*prepared_item, attempt_number)
-        completed = [
-            (future, futures[future])
-            for future in concurrent.futures.as_completed(futures)
-        ]
-        completed.sort(key=lambda completed_item: int(completed_item[1][0]["ordinal"]))
-        fatal_error: CreditAnalysisError | None = None
-        for future, completed_item in completed:
-            task, _, digest, prompt_path, schema_path, candidate_ids, attempt_number = (
-                completed_item
-            )
-            raw, attempt = future.result()
-            attempt = _bind_attempt_record(
-                attempt,
-                state=state,
-                task=task,
-                input_sha256=digest,
-                attempt_number=attempt_number,
-            )
-            role = _holistic_role(task)
-            if attempt["model_invoked"]:
-                state["model_attempts"][role] += 1
-            execution = state["execution"][task["task_id"]]
-            if raw is None:
-                execution["attempts"].append(
-                    {**attempt, "outcome": "runner-error"}
-                )
-                if task["phase"] == "luna-discovery":
-                    _omit_luna_task(
-                        state,
-                        task,
-                        reason="luna-runner-error",
-                        error=str(attempt.get("error") or "no result"),
-                    )
-                    progressed += 1
-                    continue
-                _holistic_sync_child_lineage(state)
-                _holistic_save_state(state)
-                if fatal_error is None:
-                    fatal_error = CreditAnalysisError(
-                        str(
-                            attempt.get("error")
-                            or "model task produced no result"
-                        )
-                    )
-                continue
-            try:
-                if (
-                    task["phase"] == "luna-discovery"
-                    and _json_bytes(raw)
-                    > int(
-                        attempt.get("output_byte_limit")
-                        or task["output_byte_limit"]
-                    )
-                ):
-                    raise CreditAnalysisError(
-                        "Luna result exceeds its output byte target"
-                    )
-                validated = _validate_holistic_task_result(
-                    raw,
-                    state=state,
-                    task=task,
-                    input_sha256=digest,
-                    contract=contract,
-                    compact=compact,
-                    luna_candidate_ids=candidate_ids,
-                )
-            except CreditAnalysisError as error:
-                execution["attempts"].append(
-                    {
-                        **attempt,
-                        "outcome": "validation-error",
-                        "error": str(error),
-                    }
-                )
-                can_retry_luna = (
-                    task["phase"] == "luna-discovery"
-                    and _diagnosed_luna_retry(error)
-                    and len(execution["attempts"]) == 1
-                    and state["model_attempts"]["luna"] < luna_attempt_limit
-                )
-                can_retry_sol = (
-                    task["phase"].startswith("sol-")
-                    and _can_retry_sol_validation(
-                        state, contract, task
-                    )
-                )
-                if can_retry_luna or can_retry_sol:
-                    continue
-                if task["phase"] == "luna-discovery":
-                    _omit_luna_task(
-                        state,
-                        task,
-                        reason="luna-invalid-output",
-                        error=str(error),
-                    )
-                    progressed += 1
-                    continue
-                if task["phase"] != "sol-final":
-                    _omit_sol_task(
-                        state,
-                        task,
-                        reason="sol-invalid-output",
-                        error=str(error),
-                    )
-                    progressed += 1
-                    continue
-                _holistic_sync_child_lineage(state)
-                _holistic_save_state(state)
-                if fatal_error is None:
-                    fatal_error = error
-                continue
-            _holistic_accept_result(
-                state=state,
-                task=task,
-                validated=validated,
-                input_sha256=digest,
-                prompt_path=prompt_path,
-                schema_path=schema_path,
-                attempt=attempt,
-                recovered=False,
-            )
-            progressed += 1
-        _holistic_sync_child_lineage(state)
-        _holistic_save_state(state)
-        if fatal_error is not None:
-            raise fatal_error
-
-    if all(
-        state["execution"][task_id]["status"]
-        in {"complete", "skipped", "omitted"}
-        for task_id in state["task_order"]
-    ):
-        _finalize_holistic(state, evidence, compact)
-    else:
-        _holistic_save_state(state)
-    return _holistic_public_status(state)
 
 
 def _orchestration_state_path_from_request(

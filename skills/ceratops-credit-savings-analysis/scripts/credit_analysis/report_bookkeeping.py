@@ -352,35 +352,6 @@ def _holistic_preserve_risk_sources(
     return preserved
 
 
-def _render_holistic_risks(risks: Sequence[Mapping[str, Any]]) -> list[str]:
-    """Render combined assessments and every distinct original uncertainty."""
-
-    lines = ["", "## Plausible risks", ""]
-    if not risks:
-        return [*lines, "None."]
-    lines.extend([
-        "| Risk | Unknown | Why not confirmed | Calls | Evidence | How to confirm |",
-        "|---|---|---|---|---|---|",
-    ])
-    fields = (
-        "description", "missing_fact", "competing_explanations",
-        "affected_call_ids", "evidence_refs", "verification_needed",
-    )
-    displayed: list[Mapping[str, Any]] = []
-    for risk in risks:
-        for record in [risk, *risk.get("source_risks", [])]:
-            if any(all(record[field] == prior[field] for field in fields) for prior in displayed):
-                continue
-            displayed.append(record)
-            cells = [
-                "; ".join(record[field]) if isinstance(record[field], list) else str(record[field])
-                for field in fields
-            ]
-            cells = [cell.replace("|", "\\|").replace("\n", "<br>") for cell in cells]
-            lines.append("| " + " | ".join(cells) + " |")
-    return lines
-
-
 def _holistic_preserve_review_sources(
     reviews: Mapping[str, Mapping[str, Any]],
     decisions: Sequence[Mapping[str, Any]],

@@ -2,11 +2,18 @@
 
 ## Unreleased
 
-- Unified deployment operations, release publication, and artifact identity in
-  repository-owned `sdlc/sdlc.yml`; added whole-sequence operation preparation,
-  one lifecycle-contract CLI selector, ordered phase-specific operation
-  selection, structured bounded failures, and per-position shipping
-  checkpoints.
+- Renamed compatibility application and validation interfaces, and removed
+  validation-contract package requirements and fallback installation.
+
+- Formalized repository validation as a schema-validated contract shared by
+  compatibility generation and contract review. Registered tool documentation
+  and cross-ecosystem discovery sources, and corrected pytest configuration
+  detection together with unittest exclusions.
+- Unified repository setup and validation with deliverable capabilities in
+  version-2 `sdlc/sdlc.yml`. Lifecycle actions retain flow ownership; one runner
+  executes ordered operations and advisory handoffs, blocks later mutations on
+  failed checks, and supports local repair and committed retry. Publication
+  identity belongs to its deliverable, with per-operation shipping checkpoints.
 - Made update execution collect every declared pytest node during prepare so
   missing classes or functions fail before source edits without running tests.
 - Made artifact classification treat Python project manifests as buildable but
@@ -42,7 +49,7 @@
   `ceratops-skill-lifecycle`.
 - Added separate `promote`, `promote-and-deploy`, `run-operation`, and `ship`
   actions backed by `promote-repository.py`, `manage-pending-work.py`,
-  `run-deploy-operation.py`, and `ship-repository.py`.
+  `repository_operation.py`, and `ship-repository.py`.
 - Restored preferred fast-change skill maintenance with one classified Python
   orchestrator owning multi-file and multi-skill patching, exact existing
   tests, targeted installation, commit, and failure compensation.
@@ -54,10 +61,10 @@
   source-anchor enforcement with behavioral and structured-data checks.
 - Moved the live section manifest and sources to
   `skills/skill-sections.json` and `skills/sections/`, added the live
-  `deploy/deploy.yml` contract, moved the reusable section-manifest template
-  into the skill-lifecycle bundle, and kept the reusable deployment-contract
+  SDLC contract, moved the reusable section-manifest template
+  into the repository-lifecycle bundle, and kept the reusable SDLC-contract
   skeleton under repository-lifecycle references.
-- Made compatibility materialization preserve target identity and custom
+- Made compatibility application preserve target identity and custom
   section assignments, roll back blocker paths, and run from a self-contained
   lifecycle-only installed bundle.
 - Split health policy into deterministic and non-deterministic contracts for
@@ -65,7 +72,8 @@
   and external artifact registries.
 - Split contract review by lifecycle owner: GitHub, code, repo, PR, org, and
   artifact contracts now live under `ceratops-repo-lifecycle` as
-  `contracts-review`; skill consistency, governance, and skill-design contracts
+  `repo-contracts-review`; skill consistency, governance, and skill-design
+  contracts
   now live under `ceratops-skill-lifecycle` as
   `skills-consistency-review`.
 - Retired the standalone `ceratops-contract-review` and

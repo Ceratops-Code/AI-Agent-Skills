@@ -33,6 +33,12 @@ from types import ModuleType
 from typing import Any
 
 from . import session_evidence_collector
+from .report_rendering import (
+    _finding_presentation_key,
+    _finding_savings,
+    _presentation_contract,
+    _render_final_report,
+)
 
 PACKAGE_DIR = pathlib.Path(__file__).resolve().parent
 SCRIPT_DIR = PACKAGE_DIR.parent
@@ -4778,164 +4784,12 @@ def _cleanup_transients(state: Mapping[str, Any]) -> None:
             directory.rmdir()
 
 
-def _finding_savings(finding: Mapping[str, Any]) -> float:
-    roi = finding.get("roi")
-    if isinstance(roi, Mapping):
-        value = roi.get("estimated_calls_saved_per_similar_run")
-    else:
-        recurrence = finding.get("recurrence")
-        value = (
-            recurrence.get("estimated_calls_saved_per_similar_run")
-            if isinstance(recurrence, Mapping)
-            else 0
-        )
-    return float(value) if isinstance(value, (int, float)) else 0.0
-
-
-def _finding_presentation_key(finding: Mapping[str, Any]) -> tuple[Any, ...]:
-    return (
-        0 if finding.get("complexity") == "Minimal" else 1,
-        -_finding_savings(finding),
-        -int(finding.get("deduplicated_avoidable_call_count", 0)),
-        str(finding.get("id", "")),
-    )
-
-
-def _render_final_report(final: Mapping[str, Any]) -> str:
-    """Render every finding without exposing controller bookkeeping fields."""
-
-    all_findings = list(final.get("confirmed_findings", []))
-    findings = sorted(
-        (
-            finding
-            for finding in all_findings
-            if finding.get("implementation_status") != "implemented"
-        ),
-        key=_finding_presentation_key,
-    )
-    lines = [
-        "# Credit-savings analysis",
-        "",
-        (
-            f"Confirmed: {len(all_findings)}; outstanding: {len(findings)}; "
-            f"already addressed: {len(all_findings) - len(findings)}"
-        ),
-        "",
-    ]
-    if final.get("scope_limitation"):
-        lines.extend([str(final["scope_limitation"]), ""])
-    if not findings:
-        lines.extend(["No outstanding findings.", ""])
-    for finding in findings:
-        affected = finding.get("primary_call_ids") or finding.get(
-            "affected_call_ids", []
-        )
-        observed_calls = finding.get("deduplicated_avoidable_call_count")
-        if not isinstance(observed_calls, int):
-            observed_calls = len(affected)
-        recurrence = finding.get("recurrence", {})
-        owner = finding.get("producer_owner") or finding.get("producer_type")
-        lines.extend(
-            [
-                f"## {finding['title']}",
-                "",
-                f"Problem: {finding['problem_summary']} The owning producer is {owner}.",
-                "",
-                f"Evidence: {finding['evidence_narrative']}",
-                "",
-                f"Fix: {finding['proposed_durable_control']}",
-                "",
-                "Verification: " + "; ".join(finding["targeted_verification"]),
-                "",
-                (
-                    "Savings: "
-                    f"{observed_calls} deduplicated observed call(s); "
-                    f"{_finding_savings(finding):g} estimated call(s) per similar run; "
-                    f"implementation cost {finding['one_time_implementation_cost']['estimated_model_calls']:g} "
-                    f"call(s); complexity {finding['complexity']}."
-                ),
-            ]
-        )
-        assumptions = recurrence.get("assumptions", [])
-        if assumptions:
-            lines.extend(["", "Assumptions: " + "; ".join(assumptions)])
-        lines.append("")
-    volume_findings = [
-        finding for finding in findings if finding.get("waste_kind") == "context-volume"
-    ]
-    lines.extend(["## Input/output token reduction", ""])
-    if not volume_findings:
-        lines.extend(["No input/output-volume reduction was confirmed.", ""])
-    for finding in volume_findings:
-        lines.extend(
-            [
-                f"- {finding['title']}: {finding['evidence_narrative']} "
-                f"Recommended control: {finding['proposed_durable_control']}",
-                "",
-            ]
-        )
-    risks = final.get("plausible_risks", [])
-    lines.extend(["## Plausible but unverified", ""])
-    if not risks:
-        lines.extend(["None.", ""])
-    for risk in risks:
-        verification = risk.get("verification_needed", [])
-        lines.extend(
-            [
-                f"### {risk['description']}",
-                "",
-                f"Observed: {risk['observed_sequence']}",
-                "",
-                "Unknown: " + "; ".join(risk["competing_explanations"]),
-                "",
-                (
-                    f"Why not confirmed: {risk['missing_fact']}; choosing between "
-                    "the competing explanations would be speculation."
-                ),
-                "",
-                "How to confirm: " + "; ".join(verification),
-                "",
-            ]
-        )
-    totals = final.get("totals", {})
-    lines.extend(["## Totals", ""])
-    if final.get("mode") == "full-analysis":
-        lines.extend(
-            [
-                f"- Avoidable: {totals.get('avoidable_calls', 0)} of "
-                f"{totals.get('total_model_calls', 0)} calls.",
-                f"- Necessary: {totals.get('necessary_calls', 0)}, including "
-                f"{totals.get('protocol_overhead_calls', 0)} protocol-overhead calls.",
-                "- Reviewed without confirmed waste: "
-                f"{totals.get('reviewed_no_confirmed_waste_calls', 0)} calls.",
-                f"- Unassessed: {totals.get('unassessed_calls', 0)} calls. These were "
-                "not deterministically treated as necessary.",
-            ]
-        )
-    else:
-        lines.append(
-            f"- Surface avoidable: {totals.get('surface_observed_avoidable_calls', 0)} "
-            f"of {totals.get('surface_candidates', 0)} candidates."
-        )
-    priced = final.get("priced_cost")
-    if isinstance(priced, Mapping):
-        lines.append(f"- Priced cost: {json.dumps(priced, sort_keys=True)}")
-    retained = final.get("retained_paths", {})
-    lines.extend(
-        [
-            "",
-            "Retained analysis result: " + str(retained.get("final_machine_result")),
-        ]
-    )
-    return "\n".join(lines).rstrip()
-
-
 def _final_packet(
     state: Mapping[str, Any],
     evidence: Mapping[str, Any],
     contract: Mapping[str, Any],
 ) -> dict[str, Any]:
-    del evidence, contract
+    del contract
     if state.get("finalized") is not True:
         raise CreditAnalysisError("analysis is not finalized")
     final = _read_json(
@@ -4947,7 +4801,8 @@ def _final_packet(
         "analysis_id": state["analysis_id"],
         "complete": True,
         "protocol_budget": _protocol_budget(state, semantic_total),
-        "report_markdown": _render_final_report(final),
+        "report_markdown": _render_final_report(final, evidence),
+        "presentation_contract": _presentation_contract(),
         "retained_result_path": state["final_result"]["path"],
         "retained_evidence_path": state["evidence"]["path"],
     }

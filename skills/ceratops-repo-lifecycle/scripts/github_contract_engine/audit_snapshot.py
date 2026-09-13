@@ -112,7 +112,7 @@ def _recent_history(repo_root: pathlib.Path) -> list[dict[str, str]]:
         "skills/ceratops-repo-lifecycle/references/contracts/"
         "github-contract-source-docs.json",
         "skills/ceratops-repo-lifecycle/references/contracts",
-        "skills/ceratops-repo-lifecycle/references/contracts-review.md",
+        "skills/ceratops-repo-lifecycle/references/repo-contracts-review.md",
         "skills/ceratops-repo-lifecycle/scripts/github_contract_engine",
     )
     result: list[dict[str, str]] = []

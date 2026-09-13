@@ -5,9 +5,14 @@ import json
 import pathlib
 import subprocess
 import sys
+import tomllib
+import zoneinfo
+from importlib.metadata import version
 from typing import Any
 
+import pytest
 import yaml
+from packaging.requirements import Requirement
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 VALIDATOR_PATH = ROOT / "scripts" / "validate-repository.py"
@@ -45,6 +50,19 @@ def test_build_checks_owns_order_both_platforms_and_space_safe_paths(
         ("mypy", "win32"),
         ("pytest", None),
     ]
+    yaml_check = VALIDATOR.build_checks(ROOT, python_executable=sys.executable)[1]
+    yaml_inventory = subprocess.run(
+        [*yaml_check.command[:3], "--list-files", *yaml_check.command[3:]],
+        cwd=ROOT, capture_output=True, text=True, check=False,
+    )
+    assert yaml_inventory.returncode == 0, yaml_inventory.stderr
+    yaml_paths = {
+        (ROOT / line).resolve() for line in yaml_inventory.stdout.splitlines()
+    }
+    assert (
+        ROOT / "skills/ceratops-repo-lifecycle/references/templates/sdlc.yml.tmpl"
+    ).resolve() in yaml_paths
+    assert (ROOT / "sdlc/sdlc.yml").resolve() in yaml_paths
     assert checks[2].command == (
         "python executable",
         "-m",
@@ -53,14 +71,14 @@ def test_build_checks_owns_order_both_platforms_and_space_safe_paths(
         "scripts",
         "tools",
         "skills/ceratops-repo-lifecycle/references/templates/"
-        "install-skills-bootstrap-template.py",
+        "deploy-skills.py.tmpl",
     )
     assert checks[3].command[-2:] == ("--platform", "linux")
     assert checks[4].command[-2:] == ("--platform", "win32")
     diagnostic = repo_root / "build" / "test-diagnostics" / "pytest-failure.json"
     assert checks[5].command == (
         "python executable",
-        "scripts/run-tests.py",
+        "scripts/testing/run-tests.py",
         "--all",
         "--diagnostic-output",
         str(diagnostic),
@@ -82,6 +100,11 @@ def test_ci_runs_repository_validator_that_owns_both_mypy_platforms() -> None:
         )
     )
     steps = workflow["jobs"]["validate-repository"]["steps"]
+    python_step = next(step for step in steps if step.get("name") == "Select repository Python")
+    assert python_step["uses"].startswith("actions/setup-python@")
+    assert python_step["with"] == {"python-version-file": "pyproject.toml"}
+    installation_step = next(step for step in steps if step.get("name") == "Install development validators")
+    assert steps.index(python_step) < steps.index(installation_step)
     validation_step = next(
         step for step in steps if step.get("name") == "Validate repository"
     )
@@ -97,7 +120,7 @@ def test_ci_runs_repository_validator_that_owns_both_mypy_platforms() -> None:
     )
     pull_request_command = " ".join(pull_request_step["run"].split())
     assert pull_request_command.startswith(
-        "python scripts/run-tests.py --base "
+        "python scripts/testing/run-tests.py --base "
     )
     assert " --head " in pull_request_command
     assert (
@@ -105,7 +128,7 @@ def test_ci_runs_repository_validator_that_owns_both_mypy_platforms() -> None:
         in pull_request_command
     )
     assert " ".join(full_step["run"].split()) == (
-        "python scripts/run-tests.py --all "
+        "python scripts/testing/run-tests.py --all "
         "--diagnostic-output ${{ runner.temp }}/pytest-failure.json"
     )
     upload_step = next(
@@ -128,7 +151,7 @@ def test_ci_runs_repository_validator_that_owns_both_mypy_platforms() -> None:
     ] == ["linux", "win32"]
     assert next(check for check in checks if check.name == "pytest").command == (
         "python",
-        "scripts/run-tests.py",
+        "scripts/testing/run-tests.py",
         "--all",
         "--diagnostic-output",
         str(ROOT / "build" / "test-diagnostics" / "pytest-failure.json"),
@@ -307,6 +330,10 @@ def test_omitted_evidence_flag_keeps_repository_default(
     tmp_path: pathlib.Path, monkeypatch: Any, capsys: Any
 ) -> None:
     repo_root = tmp_path / "repository"
+    repo_root.mkdir()
+    (repo_root / "pyproject.toml").write_text(
+        (ROOT / "pyproject.toml").read_text(encoding="utf-8"), encoding="utf-8"
+    )
     validator_path = repo_root / "scripts" / "validate-repository.py"
     monkeypatch.setattr(VALIDATOR, "__file__", str(validator_path))
 
@@ -336,3 +363,96 @@ def test_omitted_evidence_flag_keeps_repository_default(
     assert capsys.readouterr().out == "OK\n"
     assert not expected.exists()
     assert not expected.parent.exists()
+
+
+@pytest.mark.parametrize(
+    ("requirement", "version", "accepted"),
+    [
+        (">=3.14,<3.15", "3.14.7", True),
+        (">=3.14,<3.15", "3.13.12", False),
+        (">=3.14,<3.15", "3.15.0", False),
+        (">=3.14,<3.15", "3.15.0rc1", False),
+        (">=3.15,<3.16", "3.15.1", True),
+        (">=3.15,<3.16", "3.14.7", False),
+    ],
+)
+def test_python_requirement_uses_declared_range_not_a_helper_pin(
+    tmp_path: pathlib.Path, monkeypatch: Any, requirement: str, version: str, accepted: bool
+) -> None:
+    (tmp_path / "pyproject.toml").write_text(
+        f'[project]\nrequires-python = "{requirement}"\n', encoding="utf-8"
+    )
+    monkeypatch.setattr(VALIDATOR.platform, "python_version", lambda: version)
+    if accepted:
+        VALIDATOR.require_repository_python(tmp_path)
+    else:
+        with pytest.raises(ValueError, match="does not satisfy"):
+            VALIDATOR.require_repository_python(tmp_path)
+
+
+@pytest.mark.parametrize("metadata", ["", "[project]\n", '[project]\nrequires-python = ""\n', '[project]\nrequires-python = "not-a-version"\n'])
+def test_python_requirement_rejects_missing_or_invalid_metadata(
+    tmp_path: pathlib.Path, metadata: str
+) -> None:
+    (tmp_path / "pyproject.toml").write_text(metadata, encoding="utf-8")
+    with pytest.raises(ValueError):
+        VALIDATOR.require_repository_python(tmp_path)
+
+
+def test_wrong_python_stops_before_checks_and_succeeds_after_correction(
+    tmp_path: pathlib.Path, monkeypatch: Any, capsys: Any
+) -> None:
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nrequires-python = ">=3.14,<3.15"\n', encoding="utf-8"
+    )
+    monkeypatch.setattr(VALIDATOR, "__file__", str(tmp_path / "scripts" / "validate-repository.py"))
+    monkeypatch.setattr(VALIDATOR.platform, "python_version", lambda: "3.13.12")
+    calls: list[Any] = []
+
+    def runner(command: Any, cwd: pathlib.Path) -> subprocess.CompletedProcess[str]:
+        calls.append((command, cwd))
+        return completed(command)
+
+    evidence = tmp_path / "diagnostics" / "python.log"
+    result = VALIDATOR.main(["--evidence-file", str(evidence)], process_runner=runner)
+    payload = json.loads(capsys.readouterr().out)
+    assert result == 2
+    assert calls == []
+    assert payload["check"] == "python-requirement"
+    assert "Python 3.13.12" in payload["reason"]
+    assert "project.requires-python" in evidence.read_text(encoding="utf-8")
+    monkeypatch.setattr(VALIDATOR.platform, "python_version", lambda: "3.14.7")
+    assert VALIDATOR.main(["--evidence-file", str(evidence)], process_runner=runner) == 0
+    assert capsys.readouterr().out == "OK\n"
+    assert len(calls) == 6
+    assert not evidence.exists()
+
+
+def test_repository_setup_has_one_python_selection_and_no_interpreter_downloads() -> None:
+    metadata = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    assert metadata["tool"]["uv"]["python-preference"] == "only-system"
+    assert metadata["tool"]["uv"]["python-downloads"] == "never"
+    assert metadata["tool"]["uv"]["package"] is False
+    assert "python_version" not in metadata["tool"]["mypy"]
+    assert "target-version" not in metadata["tool"].get("ruff", {})
+    tool_metadata = tomllib.loads(
+        (ROOT / "tools" / "ceratops_tool_manager" / "pyproject.toml").read_text(encoding="utf-8")
+    )
+    assert metadata["project"]["requires-python"] == tool_metadata["project"]["requires-python"]
+
+
+def test_runtime_dependencies_supply_timezones_without_an_os_database() -> None:
+    requirements = [
+        Requirement(line)
+        for line in (ROOT / "requirements-runtime.txt").read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.startswith("#")
+    ]
+    timezone_requirement = next(item for item in requirements if item.name == "tzdata")
+    assert version("tzdata") in timezone_requirement.specifier
+    original_path = zoneinfo.TZPATH
+    zoneinfo.reset_tzpath(())
+    try:
+        for key in ("UTC", "Asia/Jerusalem"):
+            assert zoneinfo.ZoneInfo.no_cache(key).key == key
+    finally:
+        zoneinfo.reset_tzpath(original_path)

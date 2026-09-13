@@ -8,6 +8,7 @@ import threading
 from typing import Any, Mapping
 
 import pytest
+from jsonschema import Draft202012Validator
 
 from tests.credit_analysis.models import (
     FakeCreditModelRunner,
@@ -784,10 +785,14 @@ def test_credit_analysis_normalizes_sol_transport_without_changing_judgments(
     assert len(risk["source_risks"]) >= 3
     assert len({source["id"] for source in risk["source_risks"]}) == len(risk["source_risks"])
     report_text = workflow._render_holistic_report(final)
+    retained_risk_sources = [
+        source for retained in final["plausible_risks"]
+        for source in retained["source_risks"]
+    ]
     for source in risk["source_risks"]:
-        assert source["description"] in report_text
-        assert source["missing_fact"] in report_text
-        assert all(explanation in report_text for explanation in source["competing_explanations"])
+        assert source in retained_risk_sources
+        assert source["description"] not in report_text
+        assert source["missing_fact"] not in report_text
 
     tampered = report_copy()
     tampered["plausible_risks"][0]["source_risks"][0]["missing_fact"] = "Silently replaced uncertainty."
@@ -1047,9 +1052,9 @@ def test_credit_analysis_model_catalog_decodes_cli_as_utf8(
     ("timed_out", "exit_code", "startup_log", "expected_error"),
     [
         (True, 1, "unrelated startup warning\n",
-         "Codex child failed for test-review with exit 1: timed out after 1800s"),
+         "Codex child failed for test-review with exit 1: timed out after 1200s"),
         (True, 0, "unrelated startup warning\n",
-         "Codex child failed for test-review with exit 0: timed out after 1800s"),
+         "Codex child failed for test-review with exit 0: timed out after 1200s"),
         (False, 7, "actual child failure\n",
          "Codex child failed for test-review with exit 7: actual child failure"),
         (False, 7, "", "Codex child failed for test-review with exit 7"),
@@ -1147,7 +1152,7 @@ def test_credit_analysis_child_command_places_global_approval_before_exec(
         (attempt_dir / "last-message.json").write_text(
             '{"value": 1}', encoding="utf-8"
         )
-        clock[0] = 1800.0
+        clock[0] = 1200.0
         return runner_process
 
     def terminate_child(child: FakeProcess) -> int:
@@ -1158,6 +1163,9 @@ def test_credit_analysis_child_command_places_global_approval_before_exec(
         child_patch.setattr(workflow.shutil, "which", lambda name: "codex")
         child_patch.setattr(workflow.subprocess, "Popen", fake_popen)
         child_patch.setattr(workflow.time, "monotonic", lambda: clock[0])
+        child_patch.setattr(
+            workflow.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds)
+        )
         child_patch.setattr(workflow, "_process_is_alive", lambda pid: True)
         child_patch.setattr(workflow, "_terminate_process_tree", terminate_child)
         child_patch.setattr(
@@ -1171,13 +1179,14 @@ def test_credit_analysis_child_command_places_global_approval_before_exec(
             schema_path=tmp_path / "schema.json",
             attempt_dir=attempt_dir,
             execution_cwd=tmp_path,
-            timeout_seconds=1800,
         )
 
     assert result == ({"value": 1} if expected_error is None else None)
     assert attempt["error"] == expected_error
     assert attempt["timed_out"] is timed_out
     assert attempt["terminated"] is timed_out
+    if timed_out:
+        assert attempt["duration_ms"] == 1_200_000
     assert attempt["model_invoked"] is True
     assert attempt["exit_code"] == exit_code
     assert terminated == ([runner_process] if timed_out else [])
@@ -1343,6 +1352,137 @@ def test_credit_analysis_workflow_rejects_invalid_and_conflicting_passes(
             compact=compact,
             luna_candidate_ids=candidate_ids,
         )
+
+    schema = json.loads(
+        pathlib.Path(sol_task["artifacts"]["schema"]).read_text(encoding="utf-8")
+    )
+    Draft202012Validator.check_schema(schema)
+    schema_validator = Draft202012Validator(schema)
+    response = good._sol(sol_task, payload, digest)
+    original_response = json.dumps(response, sort_keys=True)
+
+    result_id_schema = schema["properties"]["confirmed_findings"]["items"]["properties"]["id"]
+    for identifier in ("f01", "0", "finding.with-parts_2", "F01", "", "bad id", "/bad", "f01\n", "f01\r\n", "f01\u2028"):
+        assert Draft202012Validator(result_id_schema).is_valid(identifier) == (
+            workflow.IDENTIFIER_RE.fullmatch(identifier) is not None
+        )
+
+    def validate_response(value: dict[str, Any]) -> dict[str, Any]:
+        return workflow._validate_holistic_task_result(
+            value, state=active_state, task=sol_task, input_sha256=digest,
+            contract=contract, compact=compact, luna_candidate_ids=candidate_ids,
+        )
+
+    def rename_result_id(value: Any, old: str, new: str) -> Any:
+        if isinstance(value, dict):
+            return {key: rename_result_id(item, old, new) for key, item in value.items()}
+        if isinstance(value, list):
+            return [rename_result_id(item, old, new) for item in value]
+        return new if value == old else value
+
+    # The recorded uppercase ID must fail the supplied schema and the Python
+    # boundary alike, while the corrected ID keeps every reference and judgment.
+    original_id = response["confirmed_findings"][0]["id"]
+    invalid_id = rename_result_id(response, original_id, "F01")
+    assert not schema_validator.is_valid(invalid_id)
+    with pytest.raises(workflow.CreditAnalysisError, match=r"confirmed_findings\[0\]\.id must match pattern"):
+        validate_response(invalid_id)
+    corrected_id = rename_result_id(invalid_id, "F01", "f01")
+    schema_validator.validate(corrected_id)
+    accepted_id = validate_response(corrected_id)
+    accepted_finding = next(item for item in accepted_id["confirmed_findings"] if item["id"] == "f01")
+    for field in ("problem_summary", "waste_kind", "proposed_durable_control"):
+        assert accepted_finding[field] == response["confirmed_findings"][0][field]
+    from credit_analysis import model_response_contract as response_contract
+    response_contract.validate_response_correction(invalid_id, corrected_id, schema)
+
+    inconsistent_id = json.loads(json.dumps(corrected_id))
+    linked_decision = next(item for item in inconsistent_id["candidate_decisions"] if "f01" in item["finding_ids"])
+    linked_decision["finding_ids"] = ["other-id" if value == "f01" else value for value in linked_decision["finding_ids"]]
+    schema_validator.validate(inconsistent_id)
+    with pytest.raises(workflow.CreditAnalysisError, match="protected response field"):
+        response_contract.validate_response_correction(invalid_id, inconsistent_id, schema)
+
+    for field, changed_value in (
+        ("waste_kind", next(value for value in contract["waste_kinds"] if value != response["confirmed_findings"][0]["waste_kind"])),
+        ("proposed_durable_control", "A different proposed control."),
+        ("evidence_refs", [next(value for value in schema["properties"]["confirmed_findings"]["items"]["properties"]["evidence_refs"]["items"]["enum"] if value not in response["confirmed_findings"][0]["evidence_refs"])]),
+    ):
+        changed_judgment = json.loads(json.dumps(corrected_id))
+        changed_judgment["confirmed_findings"][0][field] = changed_value
+        schema_validator.validate(changed_judgment)
+        with pytest.raises(workflow.CreditAnalysisError, match="protected response field"):
+            response_contract.validate_response_correction(invalid_id, changed_judgment, schema)
+    changed_risk = json.loads(json.dumps(corrected_id))
+    assert changed_risk["plausible_risks"]
+    changed_risk["plausible_risks"][0]["missing_fact"] = "A different missing fact."
+    schema_validator.validate(changed_risk)
+    with pytest.raises(workflow.CreditAnalysisError, match="missing_fact"):
+        response_contract.validate_response_correction(invalid_id, changed_risk, schema)
+
+    missing_and_extra = json.loads(original_response)
+    del missing_and_extra["confirmed_findings"][0]["title"]
+    missing_and_extra["unexpected_field"] = "Remove this invalid extra field."
+    response_contract.validate_response_correction(missing_and_extra, response, schema)
+    changed_valid_child = json.loads(original_response)
+    changed_valid_child["confirmed_findings"][0]["problem_summary"] = "Changed valid child of an invalid parent."
+    with pytest.raises(workflow.CreditAnalysisError, match="problem_summary"):
+        response_contract.validate_response_correction(missing_and_extra, changed_valid_child, schema)
+    response_contract.validate_response_correction(verbose_raw, response, schema)
+    shortened_valid_text = json.loads(original_response)
+    shortened_valid_text["confirmed_findings"][0]["problem_summary"] = "Shorter but different."
+    with pytest.raises(workflow.CreditAnalysisError, match="problem_summary"):
+        response_contract.validate_response_correction(response, shortened_valid_text, schema)
+
+    # Every classification/reason pair uses the same nested form in the schema
+    # and canonical validator, including the recorded avoidable/reason mismatch.
+    classification_schema = schema["properties"]["call_classifications"]["items"]
+    classification_validator = Draft202012Validator(classification_schema)
+    sample_group = response["call_classifications"][0]
+    for classification in contract["call_classifications"]:
+        for reason_code in [None, *contract["necessary_reason_codes"]]:
+            group = {**sample_group, "classification": classification, "reason_code": reason_code}
+            valid = (classification == "necessary") == (reason_code is not None)
+            assert classification_validator.is_valid(group) is valid
+            if valid:
+                response_contract.validate_classification_reason(group, contract, "group")
+            else:
+                with pytest.raises(workflow.CreditAnalysisError, match="reason_code"):
+                    response_contract.validate_classification_reason(group, contract, "group")
+    recorded_group = {**sample_group, "classification": "avoidable_implemented", "reason_code": "ordinary-model-error"}
+    assert not classification_validator.is_valid(recorded_group)
+    with pytest.raises(workflow.CreditAnalysisError, match="reason_code must have type 'null'"):
+        response_contract._validate_holistic_transport_value(recorded_group, classification_schema, "group")
+    corrected_group = {**recorded_group, "reason_code": None}
+    classification_validator.validate(corrected_group)
+    response_contract.validate_classification_reason(corrected_group, contract, "group")
+    response_contract.validate_response_correction(recorded_group, corrected_group, classification_schema)
+    assert corrected_group["classification"] == "avoidable_implemented"
+    switched_classification = {**recorded_group, "classification": "necessary"}
+    classification_validator.validate(switched_classification)
+    with pytest.raises(workflow.CreditAnalysisError, match="classification"):
+        response_contract.validate_response_correction(recorded_group, switched_classification, classification_schema)
+
+    invalid_reason = json.loads(original_response)
+    invalid_reason["call_classifications"][0]["reason_code"] = "ordinary-model-error"
+    assert not schema_validator.is_valid(invalid_reason)
+    with pytest.raises(workflow.CreditAnalysisError, match=r"call_classifications\[0\]\.reason_code"):
+        validate_response(invalid_reason)
+    invalid_reason["call_classifications"][0]["reason_code"] = None
+    schema_validator.validate(invalid_reason)
+    accepted_reason = validate_response(invalid_reason)
+    assert accepted_reason["call_classifications"][0]["classification"] == sample_group["classification"]
+    assert json.dumps(response, sort_keys=True) == original_response
+
+    # Structural validity cannot bypass independent exact coverage and evidence
+    # checks; the same well-formed response remains incomplete after this edit.
+    missing_call = json.loads(original_response)
+    missing_call["call_classifications"].pop()
+    schema_validator.validate(missing_call)
+    with pytest.raises(workflow.CreditAnalysisError, match="missing or cross-analysis"):
+        validate_response(missing_call)
+    with pytest.raises(workflow.CreditAnalysisError, match="call_classifications"):
+        response_contract.validate_response_correction(response, missing_call, schema)
 
     completed = workflow.command_execute_orchestration(
         state_path,

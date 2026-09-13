@@ -2,9 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import pathlib
+import stat
 import subprocess
 import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any
 
 import pytest
@@ -158,6 +162,103 @@ def test_committed_diff_mode_collects_and_invokes_only_selected_suite(
     )
 
 
+def test_failure_summary_matches_real_long_pytest_titles(
+    test_runner_module: Any, tmp_path: pathlib.Path
+) -> None:
+    names = ["test_before", "test_" + "long_name_" * 12, "test_after"]
+    path = tmp_path / "test_failures.py"
+    path.write_text(
+        "\n".join(
+            f"def {name}():\n    raise AssertionError('{index}-only')\n"
+            for index, name in enumerate(names)
+        ),
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        [sys.executable, "-m", "pytest", "-q", "--color=no", "-o", "addopts=", path.name],
+        cwd=tmp_path, capture_output=True, text=True, check=False,
+    )
+    assert result.returncode == 1, result.stderr
+    summary = test_runner_module.pytest_diagnostics.pytest_failure_summary(result.stdout, result.stderr)
+    assert summary["failed_tests"] == [f"{path.name}::{name}" for name in names]
+    for index, failure in enumerate(summary["failures"]):
+        assert failure["source_location"] == f"{path.name}:{index * 3 + 2}"
+        assert f"{index}-only" in failure["excerpt"]
+        assert all(f"{other}-only" not in failure["excerpt"] for other in range(3) if other != index)
+
+
+@pytest.mark.parametrize(
+    ("title", "identity"),
+    [
+        ("test_prefix_longer", "tests/test_a.py::test_prefix_longer"),
+        ("TestExample.test_same[a::b]", "tests/test_a.py::TestExample::test_same[a::b]"),
+        ("ERROR at setup of TestExample.test_same[value]", "tests/test_a.py::TestExample::test_same[value]"),
+        ("ERROR at teardown of test_same", "tests/test_a.py::test_same"),
+        ("ERROR collecting tests/test_a.py", "tests/test_a.py"),
+    ],
+)
+def test_failure_summary_matches_exact_identities_without_order_fallback(
+    test_runner_module: Any, title: str, identity: str
+) -> None:
+    output = (
+        "___ test_prefix ___\nE       wrong-prefix\ntests/test_a.py:10: AssertionError\n"
+        "___ TestOther.test_same[a::b] ___\nE       wrong-class\ntests/test_a.py:20: AssertionError\n"
+        "___ TestExample.test_same[other] ___\nE       wrong-parameter\ntests/test_a.py:30: AssertionError\n"
+        f"_ {title} _\nE       exact-match\ntests/test_a.py:40: AssertionError\n"
+        "=== short test summary info ===\n"
+        "FAILED tests/test_a.py::test_missing - missing-reason\n"
+        f"FAILED {identity} - exact-reason\n"
+        "FAILED tests/test_a.py::test_prefix - prefix-reason\n"
+    )
+    summary = test_runner_module.pytest_diagnostics.pytest_failure_summary(output, "")
+    assert summary["failures"] == [
+        {"test": "tests/test_a.py::test_missing", "source_location": None, "excerpt": "missing-reason"},
+        {"test": identity, "source_location": "tests/test_a.py:40", "excerpt": "E       exact-match"},
+        {"test": "tests/test_a.py::test_prefix", "source_location": "tests/test_a.py:10", "excerpt": "E       wrong-prefix"},
+    ]
+
+
+@pytest.mark.parametrize("with_locations", [True, False])
+@pytest.mark.parametrize("reported_sections", [("b", "a"), ("b",)])
+def test_failure_summary_requires_evidence_for_duplicate_titles(
+    test_runner_module: Any, with_locations: bool, reported_sections: tuple[str, ...]
+) -> None:
+    output = ""
+    for module in reported_sections:
+        output += f"_ test_same _\nE       failure-{module}\n"
+        if with_locations:
+            output += f"tests/test_{module}.py:10: AssertionError\n"
+    output += "=== short test summary info ===\n"
+    for module in ("a", "b"):
+        output += f"FAILED tests/test_{module}.py::test_same - reason-{module}\n"
+    summary = test_runner_module.pytest_diagnostics.pytest_failure_summary(output, "")
+    assert summary["failures"] == [
+        {
+            "test": f"tests/test_{module}.py::test_same",
+            "source_location": f"tests/test_{module}.py:10" if with_locations and module in reported_sections else None,
+            "excerpt": f"E       failure-{module}" if with_locations and module in reported_sections else f"reason-{module}",
+        }
+        for module in ("a", "b")
+    ]
+
+
+def test_failure_summary_bounds_multibyte_fields(test_runner_module: Any) -> None:
+    diagnostics = test_runner_module.pytest_diagnostics
+    identity = "tests/" + "界" * 250 + ".py::test_long"
+    output = (
+        "_ test_long _\nE       " + "界" * 1_000 + "\n"
+        + identity.partition("::")[0] + ":10: AssertionError\n"
+        + "=== short test summary info ===\nFAILED " + identity + "\n"
+    )
+    summary = diagnostics.pytest_failure_summary(output, "")
+    failure = summary["failures"][0]
+    for field, limit in (("test", 400), ("source_location", 500), ("excerpt", 800)):
+        assert len(failure[field].encode("utf-8")) <= limit
+        assert failure[field].endswith("...")
+    assert len(summary["decisive_excerpt"].encode("utf-8")) <= 2_000
+    assert len(summary["context_excerpt"].encode("utf-8")) <= 2_000
+
+
 def test_pytest_failure_writes_full_diagnostic_and_emits_bounded_summary(
     test_runner_module: Any,
     tmp_path: pathlib.Path,
@@ -244,7 +345,7 @@ def test_pytest_failure_writes_full_diagnostic_and_emits_bounded_summary(
         "sha256": hashlib.sha256(content).hexdigest(),
     }
 
-    overflow = runner.pytest_failure_summary(
+    overflow = runner.pytest_diagnostics.pytest_failure_summary(
         "\n".join(
             f"FAILED tests/test_many.py::test_{index} - failure {index}"
             for index in range(12)
@@ -465,14 +566,19 @@ def test_revision_mode_requires_two_full_commit_shas(
 
 
 def test_manifest_validation_mode_collects_every_declared_target(
-    test_runner_module: Any, capsys: pytest.CaptureFixture[str]
+    tmp_path: pathlib.Path,
 ) -> None:
-    runner = test_runner_module
+    """The nested entrypoint resolves its repository and adjacent diagnostics."""
+    process = subprocess.run(
+        [sys.executable, str(ROOT / "scripts" / "testing" / "run-tests.py"), "--validate-manifest"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
 
-    exit_code = runner.execute(["--validate-manifest"], repo_root=ROOT)
-    result = payload(capsys)
-
-    assert exit_code == 0
+    assert process.returncode == 0, process.stdout + process.stderr
+    result = json.loads(process.stdout)
     assert result["status"] == "manifest-valid"
     assert result["pytest"]["outcome"] == "not-run"
 
@@ -665,3 +771,233 @@ def test_release_documentation_changes_need_no_executable_suite(
     assert result["mapping_gaps"] == []
     assert result["selected_suites"] == []
     assert execution.final_pytest == []
+
+
+def test_pytest_environment_isolates_peers_and_nested_runs_and_cleans_up(
+    test_runner_module: Any, tmp_path: pathlib.Path,
+) -> None:
+    environment = test_runner_module.pytest_environment
+    sentinel = tmp_path / "keep.txt"
+    sentinel.write_text("caller-owned", encoding="utf-8")
+    caller = {**os.environ, "PYTEST_DEBUG_TEMPROOT": str(tmp_path)}
+    before = caller.copy()
+    process_before = dict(os.environ)
+    with environment.isolated_environment(tmp_path, environ=caller, windows=False) as first:
+        root = pathlib.Path(first["TMP"])
+        assert root.parent == tmp_path
+        assert all(first[key] == str(root) for key in ("TEMP", "TMPDIR", "PYTEST_DEBUG_TEMPROOT"))
+        readonly = root / "readonly"
+        readonly.write_text("git object", encoding="utf-8")
+        readonly.chmod(stat.S_IREAD)
+        with environment.isolated_environment(tmp_path, environ=caller, windows=False) as peer:
+            peer_root = pathlib.Path(peer["TMP"])
+            assert peer_root != root and peer_root.parent == tmp_path
+        assert not peer_root.exists() and root.is_dir()
+        with pytest.raises(RuntimeError, match="interrupted work"):
+            with environment.isolated_environment(tmp_path, environ=first, windows=False) as nested:
+                nested_root = pathlib.Path(nested["TMP"])
+                assert nested_root.parent == root
+                raise RuntimeError("interrupted work")
+        assert not nested_root.exists() and root.is_dir()
+    assert not root.exists()
+    assert list(tmp_path.iterdir()) == [sentinel]
+    assert caller == before and dict(os.environ) == process_before
+
+
+def test_non_windows_environment_keeps_git_and_explicit_pytest_options(
+    test_runner_module: Any, tmp_path: pathlib.Path,
+) -> None:
+    caller = {
+        "PYTEST_DEBUG_TEMPROOT": str(tmp_path), "PYTEST_ADDOPTS": "--color=no",
+        "GIT_CONFIG_COUNT": "untouched", "GIT_TEMPLATE_DIR": "custom-template",
+        "UNRELATED": "preserved",
+    }
+    with test_runner_module.pytest_environment.isolated_environment(
+        tmp_path, environ=caller, windows=False,
+    ) as child:
+        for key in ("GIT_CONFIG_COUNT", "GIT_TEMPLATE_DIR", "PYTEST_ADDOPTS", "UNRELATED"):
+            assert child[key] == caller[key]
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize("selection", ["environment", "configuration", "empty"])
+def test_windows_environment_preserves_selected_git_template_and_caller_config(
+    test_runner_module: Any, tmp_path: pathlib.Path, selection: str,
+) -> None:
+    template = tmp_path / "custom template"
+    (template / "info").mkdir(parents=True)
+    (template / "hooks").mkdir()
+    (template / "info" / "exclude").write_text("custom-ignore\n", encoding="utf-8")
+    (template / "hooks" / "pre-commit.sample").write_text("sample hook\n", encoding="utf-8")
+    config = template / "config"
+    original = b"[custom]\n\tsetting = preserved\n[core]\n\tlongpaths = false\n"
+    config.write_bytes(original)
+    caller = {
+        **os.environ, "PYTEST_DEBUG_TEMPROOT": str(tmp_path),
+        "GIT_CONFIG_COUNT": "2", "GIT_CONFIG_KEY_0": "test.preserved",
+        "GIT_CONFIG_VALUE_0": "caller-value", "GIT_CONFIG_KEY_1": "init.templateDir",
+        "GIT_CONFIG_VALUE_1": str(template),
+    }
+    if selection == "configuration":
+        caller.pop("GIT_TEMPLATE_DIR", None)
+    else:
+        caller["GIT_TEMPLATE_DIR"] = "" if selection == "empty" else str(template)
+        # Explicit environment selection must take precedence over configuration.
+        caller["GIT_CONFIG_VALUE_1"] = str(tmp_path / "unselected-missing-template")
+    before = caller.copy()
+    with test_runner_module.pytest_environment.isolated_environment(
+        tmp_path, environ=caller, windows=True,
+    ) as child:
+        copied = pathlib.Path(child["GIT_TEMPLATE_DIR"])
+        assert copied != template
+        assert child["GIT_CONFIG_COUNT"] == "3"
+        assert child["GIT_CONFIG_VALUE_0"] == "caller-value"
+        repo = pathlib.Path(child["TMP"]) / "repo"
+        result = subprocess.run(
+            ["git", "init", "-q", str(repo)], env=child, capture_output=True, text=True, check=False,
+        )
+        assert result.returncode == 0, result.stderr
+        local = subprocess.run(
+            ["git", "-C", str(repo), "config", "--local", "--get", "core.longpaths"],
+            env=child, capture_output=True, text=True, check=False,
+        )
+        assert local.returncode == 0 and local.stdout.strip() == "true"
+        if selection != "empty":
+            assert (repo / ".git" / "info" / "exclude").read_text() == "custom-ignore\n"
+            assert (repo / ".git" / "hooks" / "pre-commit.sample").read_text() == "sample hook\n"
+            preserved = subprocess.run(
+                ["git", "-C", str(repo), "config", "--local", "--get", "custom.setting"],
+                env=child, capture_output=True, text=True, check=False,
+            )
+            assert preserved.stdout.strip() == "preserved"
+        else:
+            assert not (repo / ".git" / "info" / "exclude").exists()
+    assert not copied.exists() and not repo.exists()
+    assert caller == before and config.read_bytes() == original
+
+
+@pytest.mark.skipif(os.name != "nt", reason="requires Windows Git long-path handling")
+def test_windows_environment_supports_long_paths_and_local_bare_push(
+    test_runner_module: Any, tmp_path: pathlib.Path,
+) -> None:
+    caller = {
+        **os.environ, "PYTEST_DEBUG_TEMPROOT": str(tmp_path),
+        "GIT_CONFIG_COUNT": "0", "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_NOSYSTEM": "1",
+    }
+    caller.pop("GIT_TEMPLATE_DIR", None)
+    caller.pop("GIT_CONFIG_PARAMETERS", None)
+    with test_runner_module.pytest_environment.isolated_environment(
+        tmp_path, environ=caller,
+    ) as child:
+        root = pathlib.Path(child["TMP"])
+
+        def git(*arguments: str) -> str:
+            result = subprocess.run(
+                ["git", *arguments], cwd=root, env=child, capture_output=True,
+                text=True, encoding="utf-8", check=False,
+            )
+            assert result.returncode == 0, result.stderr
+            return result.stdout.strip()
+
+        repo = root / "source"
+        git("init", "-q", "-b", "main", str(repo))
+        assert (repo / ".git" / "info" / "exclude").is_file()
+        assert (repo / ".git" / "hooks").is_dir()
+        relative = pathlib.Path(*(["nested-" + "x" * 40] * 6), "tracked.txt")
+        tracked = repo / relative
+        assert len(str(tracked)) > 260
+        tracked.parent.mkdir(parents=True)
+        tracked.write_text("first\n", encoding="utf-8")
+        git("-C", str(repo), "add", ".")
+        commit = (
+            "-C", str(repo), "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+            "-c", "commit.gpgsign=false", "commit", "-q", "-m",
+        )
+        git(*commit, "first")
+        tracked.write_text("second\n", encoding="utf-8")
+        git("-C", str(repo), "add", ".")
+        git(*commit, "second")
+        assert git("-C", str(repo), "diff", "HEAD~1", "HEAD", "--name-only") == relative.as_posix()
+        # Keep repository discovery below Git's separate startup path limit.
+        # Quarantined loose objects still exceed MAX_PATH during the real push.
+        remote = root / ("remote-" + "x" * max(1, 210 - len(str(root)) - 8))
+        assert len(str(remote)) < 260
+        assert len(str(remote / "objects" / "tmp_objdir-incoming-XXXXXX" / "ab" / ("0" * 38))) > 260
+        git("init", "-q", "--bare", str(remote))
+        assert git("-C", str(remote), "config", "--local", "--get", "core.longpaths") == "true"
+        # Counterfactual: the same push fails when only command-scoped config is
+        # available, because receive-pack discards that inherited setting.
+        git("-C", str(remote), "config", "core.longpaths", "false")
+        blocked = subprocess.run(
+            ["git", "-C", str(repo), "push", "--quiet", str(remote), "HEAD:refs/heads/main"],
+            cwd=root, env=child, capture_output=True, text=True, check=False,
+        )
+        assert blocked.returncode != 0 and "temporary object directory" in blocked.stderr
+        git("-C", str(remote), "config", "core.longpaths", "true")
+        git("-C", str(repo), "push", "--quiet", str(remote), "HEAD:refs/heads/main")
+        assert git("-C", str(remote), "rev-parse", "refs/heads/main") == git("-C", str(repo), "rev-parse", "HEAD")
+    assert not root.exists()
+
+
+@pytest.mark.parametrize("invalid_count", ["invalid", "-1"])
+def test_windows_environment_rejects_invalid_setup_and_cleans_owned_directory(
+    test_runner_module: Any, tmp_path: pathlib.Path, invalid_count: str,
+) -> None:
+    environment = test_runner_module.pytest_environment
+    caller = {**os.environ, "PYTEST_DEBUG_TEMPROOT": str(tmp_path), "GIT_CONFIG_COUNT": invalid_count}
+    with pytest.raises(environment.PytestEnvironmentError, match="GIT_CONFIG_COUNT"):
+        with environment.isolated_environment(tmp_path, environ=caller, windows=True):
+            pytest.fail("invalid environment reached pytest")
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize("failure", [False, True])
+def test_pytest_cleanup_error_preserves_output_and_test_exit_code(
+    test_runner_module: Any, tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch, failure: bool,
+) -> None:
+    runner = test_runner_module
+    test = tmp_path / "test_example.py"
+    test.write_text(
+        "def test_example():\n    print('complete-output-marker')\n"
+        + ("    assert False, 'test-failure-marker'\n" if failure else ""), encoding="utf-8",
+    )
+    original = runner.pytest_environment.isolated_environment
+    roots = []
+
+    @contextmanager
+    def cleanup_error(cwd: pathlib.Path) -> Iterator[dict[str, str]]:
+        with original(cwd, environ={**os.environ, "PYTEST_DEBUG_TEMPROOT": str(tmp_path)}) as child:
+            roots.append(pathlib.Path(child["TMP"]))
+            yield child
+        raise PermissionError("simulated cleanup failure")
+
+    monkeypatch.setattr(runner.pytest_environment, "isolated_environment", cleanup_error)
+    result = runner.run_text(
+        [sys.executable, "-m", "pytest", "-q", "-s", "--color=no", "-o", "addopts=", test.name], tmp_path,
+    )
+    assert result.returncode == (1 if failure else runner.CONFIGURATION_EXIT_CODE)
+    assert "complete-output-marker" in result.stdout
+    if failure:
+        assert "test-failure-marker" in result.stdout
+    assert "simulated cleanup failure" in result.stderr
+    assert all(not root.exists() for root in roots)
+
+
+def test_pytest_setup_failure_returns_diagnostic_before_launch(
+    test_runner_module: Any, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = test_runner_module
+
+    @contextmanager
+    def rejected(cwd: pathlib.Path) -> Iterator[dict[str, str]]:
+        raise runner.pytest_environment.PytestEnvironmentError("unavailable template")
+        yield {}  # pragma: no cover
+
+    monkeypatch.setattr(runner.pytest_environment, "isolated_environment", rejected)
+    result = runner.run_text([sys.executable, "-m", "pytest", "--collect-only", "-q"], tmp_path)
+    assert result.returncode == runner.CONFIGURATION_EXIT_CODE
+    assert result.stdout == "" and "unavailable template" in result.stderr
+    ordinary = runner.run_text([sys.executable, "-c", "print('ordinary command')"], tmp_path)
+    assert ordinary.returncode == 0 and ordinary.stdout.strip() == "ordinary command"
