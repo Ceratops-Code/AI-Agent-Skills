@@ -15,6 +15,9 @@ import json
 import pathlib
 import subprocess
 import sys
+import tempfile
+import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
 
@@ -555,8 +558,11 @@ def _ship_after_promotion(
     raise PromotionError(f"Shipping returned unsupported exit code: {ship_code}")
 
 
-def promote(args: argparse.Namespace) -> dict[str, object]:
+def promote(args: argparse.Namespace, *, timings: dict[str, float] | None = None) -> dict[str, object]:
     """Prepare a release branch, record selected work, and optionally deploy."""
+
+    if timings is None:
+        timings = {}
 
     if args.release_branch != RELEASE_BRANCH:
         raise PromotionError(f"release_branch must be {RELEASE_BRANCH}.")
@@ -717,9 +723,10 @@ def promote(args: argparse.Namespace) -> dict[str, object]:
     if record_code:
         raise PromotionError(str(record.get("message", "Scope recording failed.")))
 
-    validation_code, validation = _run_json(
-        _validation_command(args, repo_root, target_commit), repo_root,
-    )
+    with _timed_phase(timings, "validation"):
+        validation_code, validation = _run_json(
+            _validation_command(args, repo_root, target_commit), repo_root,
+        )
     if validation_code:
         raise PromotionError(
             str(validation.get("message", "Repository validation failed.")),
@@ -740,7 +747,8 @@ def promote(args: argparse.Namespace) -> dict[str, object]:
             operation_command.extend(("--operation", operation_id))
         for operation_id in args.validation_operation or []:
             operation_command.extend(("--validation-operation", operation_id))
-        operation_code, operations = _run_json(operation_command, repo_root)
+        with _timed_phase(timings, "deployment"):
+            operation_code, operations = _run_json(operation_command, repo_root)
         if operation_code:
             raise PromotionError(
                 str(operations.get("message", "Deployment failed.")),
@@ -783,6 +791,31 @@ def promote(args: argparse.Namespace) -> dict[str, object]:
     return result
 
 
+@contextmanager
+def _timed_phase(timings: dict[str, float], phase: str):
+    """Record actual elapsed work even when a phase fails; never repeat it."""
+    started = time.monotonic()
+    try:
+        yield
+    finally:
+        timings[phase] = round(time.monotonic() - started, 6)
+
+
+def _save_result(path: pathlib.Path, result: dict[str, object]) -> None:
+    """Atomically retain the exact outcome; own and always clean its staging file."""
+    staging = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
+                                         prefix="." + path.name, suffix=".tmp", delete=False) as stream:
+            staging = pathlib.Path(stream.name)
+            json.dump(result, stream, indent=2)
+            stream.write("\n")
+        staging.replace(path)
+    finally:
+        if staging is not None:
+            staging.unlink(missing_ok=True)
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Create the promotion parser."""
 
@@ -791,6 +824,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--repo-root", type=pathlib.Path, default=pathlib.Path.cwd())
     parser.add_argument("--source-branch", action="append")
+    parser.add_argument("--result-file", type=pathlib.Path,
+                        help="Retain the exact JSON outcome and timings outside the repository.")
     parser.add_argument("--main-branch", default="main")
     parser.add_argument(
         "--release-branch",
@@ -851,8 +886,20 @@ def main(argv: list[str] | None = None) -> int:
     """Run promotion and emit one compact result."""
 
     args = build_parser().parse_args(argv)
+    started = time.monotonic()
+    timings: dict[str, float] = {}
+    result_file = None
+    failed = False
     try:
-        result = promote(args)
+        if args.result_file is not None:
+            requested = args.result_file.expanduser().resolve()
+            if requested.is_relative_to(args.repo_root.resolve()):
+                raise PromotionError("result-file must stay outside the repository")
+            requested.parent.mkdir(parents=True, exist_ok=True)
+            if requested.exists() and not requested.is_file():
+                raise PromotionError("result-file must name a file")
+            result_file = requested
+        result = promote(args, timings=timings)
     except (
         CommandError,
         OperationError,
@@ -861,15 +908,25 @@ def main(argv: list[str] | None = None) -> int:
         ValueError,
         subprocess.SubprocessError,
     ) as exc:
-        payload = (
+        failed = True
+        result = (
             exc.payload
             if isinstance(exc, PromotionError) and exc.payload is not None
             else {"status": "error", "message": str(exc)}
         )
-        print(json.dumps(payload, separators=(",", ":")), file=sys.stderr)
-        return 1
-    print(json.dumps(result, separators=(",", ":")))
-    return 2 if result.get("status") == "pending_work" else 0
+    timings["total"] = round(time.monotonic() - started, 6)
+    result["timings_seconds"] = timings
+    if result_file is not None:
+        try:
+            _save_result(result_file, result)
+        except OSError as exc:
+            # Side effects may already be complete. Retain their exact outcome
+            # in the error instead of suggesting a replay to recover a record.
+            result = {"status": "result_recording_failed", "message": str(exc),
+                      "operation_result": result, "replay_required": False}
+            failed = True
+    print(json.dumps(result, separators=(",", ":")), file=sys.stderr if failed else sys.stdout)
+    return 1 if failed else (2 if result.get("status") == "pending_work" else 0)
 
 
 if __name__ == "__main__":

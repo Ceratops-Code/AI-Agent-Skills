@@ -114,6 +114,10 @@ Preparation-only requires a clean `main` checkout and exits immediately after
 `release/local` is ready, before source preflight, promotion, scope records,
 or deployment.
 
+Use `--result-file PATH` outside the repository to atomically retain the exact
+JSON outcome, including operation receipts and phase durations in seconds. The
+helper records successful and failed attempts without replaying operations.
+
 ## Done When
 
 ### Completion Gate

@@ -200,10 +200,13 @@ def test_promote_repository_runs_explicit_operation_ids_in_order(
     assert run_git(repo, "add", ".").returncode == 0
     assert run_git(repo, "commit", "-m", "add ordered operations").returncode == 0
 
+    result_file = tmp_path / "promotion-result.json"
     promoted = subprocess.run(
         [
             sys.executable,
             str(PROMOTE_REPOSITORY),
+            "--result-file",
+            str(result_file),
             "--repo-root",
             str(repo),
             "--source-branch",
@@ -221,6 +224,11 @@ def test_promote_repository_runs_explicit_operation_ids_in_order(
 
     assert promoted.returncode == 0, promoted.stderr
     result = json.loads(promoted.stdout)
+    assert json.loads(result_file.read_text(encoding="utf-8")) == result
+    assert set(result["timings_seconds"]) == {"validation", "deployment", "total"}
+    assert all(0 <= value <= result["timings_seconds"]["total"]
+               for value in result["timings_seconds"].values())
+    assert not list(tmp_path.glob(".promotion-result.json*.tmp"))
     assert result["operations"]["completed_operations"] == [
         "deliverables.sample.deploy-local.promotion-check",
         "deliverables.sample.deploy-local.custom-deploy",
@@ -884,10 +892,13 @@ def test_promote_preserves_structured_operation_failure_evidence(
     assert run_git(repo, "commit", "-m", "make deployment fail").returncode == 0
     target_commit = run_git(repo, "rev-parse", "HEAD").stdout.strip()
 
+    result_file = tmp_path / "promotion-result.json"
     promoted = subprocess.run(
         [
             sys.executable,
             str(PROMOTE_REPOSITORY),
+            "--result-file",
+            str(result_file),
             "--repo-root",
             str(repo),
             "--source-branch",
@@ -903,6 +914,11 @@ def test_promote_preserves_structured_operation_failure_evidence(
 
     assert promoted.returncode == 1
     result = json.loads(promoted.stderr)
+    assert json.loads(result_file.read_text(encoding="utf-8")) == result
+    assert set(result["timings_seconds"]) == {"validation", "deployment", "total"}
+    assert all(0 <= value <= result["timings_seconds"]["total"]
+               for value in result["timings_seconds"].values())
+    assert not list(tmp_path.glob(".promotion-result.json*.tmp"))
     assert result["status"] == "operation_failed"
     assert result["operation"] == "deliverables.sample.deploy-local.deploy"
     assert result["commit"] == target_commit

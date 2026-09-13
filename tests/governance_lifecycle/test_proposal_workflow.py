@@ -98,6 +98,23 @@ def test_proposal_workflow_validates_context_and_owns_iteration_transition(
         encoding="utf-8",
         newline="\n",
     )
+    if not is_toml:
+        valid_text = target.read_text(encoding="utf-8")
+        # The first error is inside the planned edit. It must not hide a later
+        # unchanged error, and rejection must precede controller artifacts.
+        broken = "Current exact target. " + ("long word " * 18).rstrip()
+        target_source["expected_text"] = [broken]
+        request_path.write_text(json.dumps(request) + "\n", encoding="utf-8")
+        target.write_text(valid_text.replace("Current exact target.", broken)
+                          + "\nUntouched " + ("word " * 25).rstrip() + "\n", encoding="utf-8")
+        rejected = subprocess.run([sys.executable, str(PROPOSAL_WORKFLOW), "prepare",
+                                   "--request", str(request_path)], capture_output=True, text=True)
+        assert rejected.returncode != 0
+        assert "line=5" in rejected.stderr and "MD013" in rejected.stderr
+        assert not state.exists() and not evidence.exists() and not iterations.exists()
+        assert not list(task_temp_root.glob(".rule-candidate-*"))
+        # Keeping only the in-range error is permitted; advance repairs it.
+        target.write_text(valid_text.replace("Current exact target.", broken), encoding="utf-8")
     prepared = subprocess.run(
         [
             sys.executable,
