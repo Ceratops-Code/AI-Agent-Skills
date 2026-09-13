@@ -30,6 +30,7 @@ from ceratops_repo_compatibility_engine.sdlc_contract_validation import (
 from ceratops_repo_compatibility_engine.sdlc_contract_validation import (
     operation_category as contract_operation_category,
 )
+from github_pr_workflow.command import failure_excerpt
 
 DEFAULT_CONTRACT = pathlib.Path("sdlc/sdlc.yml")
 PARAMETER_NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
@@ -322,11 +323,12 @@ def _unique_result_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return value
 
 
-def _step_result(stdout: str) -> dict[str, Any]:
+def _step_result(stdout: str, *, require_identity: bool = True) -> dict[str, Any]:
     """Retain a whole JSON receipt without forwarding logs or interpreting success.
 
-    Only a complete object with nonempty schema/status strings is a result.
-    Parsing never scans log fragments or reads stderr. Oversized output gets a
+    Successful output requires nonempty schema/status strings; a failed command
+    may preserve any complete JSON object from either stream. Parsing never
+    scans log fragments. Oversized output gets a
     content-free omission marker; malformed and ordinary output stay suppressed.
     Container depth is bounded so downstream checkpoint readers can decode it.
     Capture cannot turn a completed side effect into a retryable failure.
@@ -336,10 +338,10 @@ def _step_result(stdout: str) -> dict[str, Any]:
         return {"result_omitted": "stdout_limit"}
     try:
         value = json.loads(stdout, object_pairs_hook=_unique_result_object)
-        if not isinstance(value, dict) or not all(
+        if not isinstance(value, dict) or (require_identity and not all(
             isinstance(value.get(key), str) and value[key].strip()
             for key in ("schema", "status")
-        ):
+        )):
             return {}
         pending: list[tuple[dict[str, Any] | list[Any], int]] = [(value, 1)]
         while pending:
@@ -402,6 +404,13 @@ def execute_prepared_operation(prepared: PreparedOperation) -> dict[str, object]
         except OSError as exc:
             code, stdout, stderr = None, "", str(exc)
         if code != 0:
+            child_results = {}
+            for stream, output in (("stdout", stdout), ("stderr", stderr)):
+                captured = _step_result(output, require_identity=False)
+                if "result_omitted" in captured:
+                    captured["result_omitted"] = "output_limit"
+                if captured:
+                    child_results[stream] = captured
             return {
                 **base,
                 "status": "validation_failed"
@@ -412,8 +421,12 @@ def execute_prepared_operation(prepared: PreparedOperation) -> dict[str, object]
                 "failed_step": step.position,
                 "diagnostic": {
                     "exit_code": code,
+                    "message": failure_excerpt("\n".join((stderr, stdout)))
+                    or (f"Command exited with code {code}." if code is not None
+                        else "Command could not start."),
                     "stdout_tail": _bounded_tail(stdout),
                     "stderr_tail": _bounded_tail(stderr),
+                    **({"child_results": child_results} if child_results else {}),
                 },
             }
         completed.append(step.position)

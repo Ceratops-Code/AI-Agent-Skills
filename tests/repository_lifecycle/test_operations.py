@@ -396,10 +396,26 @@ def test_operation_cli_prevalidates_and_runs_explicit_ids_in_order(
     assert json.loads(result.stdout)["completed_operations"] == list(names)
 
 
+@pytest.mark.parametrize("structured", [False, True])
 def test_execute_prepared_operations_stops_after_failure_with_a_ledger(
     tmp_path: pathlib.Path,
+    structured: bool,
 ) -> None:
+    failure_stdout = {
+        "noise": "x" * 10000, "check": "configuration", "exit_code": 7,
+        "evidence_file": str(tmp_path / "failure.log"),
+    }
+    failure_stderr = {
+        "schema": "example.failure.v1", "status": "error",
+        "message": "Required configuration is missing",
+    }
     (tmp_path / "check.py").write_text(
+        ("import pathlib, sys\n"
+         "if pathlib.Path('fixed').exists(): raise SystemExit(0)\n"
+         f"print({json.dumps(failure_stdout)!r})\n"
+         f"print({json.dumps(failure_stderr)!r}, file=sys.stderr)\n"
+         "raise SystemExit(7)\n")
+        if structured else
         "import pathlib, sys\n"
         "print('x' * 10000)\n"
         "for i in range(12): print(f'line-{i}', file=sys.stderr)\n"
@@ -432,7 +448,15 @@ def test_execute_prepared_operations_stops_after_failure_with_a_ledger(
     assert evidence["diagnostic"]["exit_code"] == 7
     assert evidence["steps"] == [1]
     assert evidence["step_results"] == [{"step": 1, "result": RECEIPT}]
-    assert evidence["diagnostic"]["stderr_tail"] == [f"line-{i}" for i in range(4, 12)]
+    if structured:
+        assert evidence["diagnostic"]["child_results"] == {
+            "stdout": {"result": failure_stdout}, "stderr": {"result": failure_stderr},
+        }
+        assert "Required configuration is missing" in evidence["diagnostic"]["message"]
+        assert "failure.log" in evidence["diagnostic"]["message"]
+    else:
+        assert evidence["diagnostic"]["stderr_tail"] == [f"line-{i}" for i in range(4, 12)]
+        assert "child_results" not in evidence["diagnostic"]
     assert len("".join(evidence["diagnostic"]["stdout_tail"])) <= 4096
     assert not (tmp_path / "deployed").exists()
     (tmp_path / "fixed").touch()
@@ -736,6 +760,25 @@ def test_repository_bootstrap_resolves_platform_npm_and_preserves_failure(
     assert "SDLC-npm-ci" in result.stdout
     if exit_code:
         assert str(exit_code) in result.stderr
+    command = importlib.import_module("github_pr_workflow.command")
+    if exit_code:
+        payload = json.dumps({
+            "noise": "x" * 10000, "status": "error",
+            "message": "Required configuration is missing", "evidence_file": "failure.log",
+        })
+        argv = [sys.executable, "-c", f"import sys; print({payload!r}); sys.exit(9)"]
+        with pytest.raises(command.CommandError) as failed:
+            command.require_output(argv, cwd=tmp_path)
+        assert "Required configuration is missing" in str(failed.value)
+        assert "failure.log" in str(failed.value) and len(str(failed.value)) <= 2400
+        assert failed.value.completed.stdout == payload + "\n"
+        assert failed.value.completed.returncode == 9
+    else:
+        assert command.require_output(
+            [sys.executable, "-c", "print('OK')"], cwd=tmp_path,
+        ) == "OK"
+    with pytest.raises(command.CommandError, match="could not start"):
+        command.require_output([str(tmp_path / "missing-command")], cwd=tmp_path)
 
 
 # Version 1 is the historical f49e575/f671d9b SDLC schema, not a guessed

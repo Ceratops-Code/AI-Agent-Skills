@@ -247,6 +247,11 @@ Each repository owns one lifecycle contract:
   Promotion returns them and shipping persists them in existing operation
   checkpoints for resume. Missing results, including older saved operation
   metadata, do not authorize replaying a completed mutation to recover output.
+- On command failure, diagnostics include a concise error excerpt and preserve
+  bounded structured errors from each output stream. Excerpts extract error
+  details before shortening the output and retain reported diagnostic-file
+  locations. CI log retrieval may fall back to the raw log of the completed
+  job; it never reruns the failed command.
 - `skills/ceratops-repo-lifecycle/references/contracts/github-contract-source-docs.json`
   records official source documents and reference repositories used by GitHub,
   repo, PR readiness, code, artifact, and repository-validation contracts. Its

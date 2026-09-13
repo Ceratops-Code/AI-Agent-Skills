@@ -93,7 +93,7 @@ def test_pr_create_retry_reconciles_state_and_preserves_metadata(
         assert method == "POST" and endpoint == "/repos/o/r/pulls"
         try:
             publish(body=body)
-        except ensure.CommandError as exc:
+        except ensure.CommandError:
             return api.ApiResult(False, method, endpoint, status=422 if outcome == "permanent" else 502,
                                  message="service failure")
         return api.ApiResult(True, method, endpoint, data={})
@@ -324,6 +324,16 @@ def test_failed_log_excerpt_retains_decisive_lines_before_long_tail(
     assert "E       assert actual == expected" in excerpt
     assert "last cleanup line" in excerpt
     assert len(excerpt.encode("utf-8")) <= 2_000
+    payload = {"noise": "x" * 10000, "status": "mapping-gap",
+               "mapping_gaps": ["old/path.py"], "pytest": {"status": "not-run"},
+               "evidence_file": "validation.json"}
+    for prefix in ("", "2026-09-13T09:00:00.000Z ", "job\tstep\t2026-09-13T09:00:00Z "):
+        structured = prefix + "\x1b[31m" + json.dumps(payload) + "\x1b[0m\n"
+        excerpt = ship.readiness.compact_failed_log(structured + "\n".join(["cleanup"] * 30))
+        assert excerpt is not None and len(excerpt.encode("utf-8")) <= 2000
+        assert "\x1b" not in excerpt
+        for expected in ("mapping-gap", "old/path.py", "not-run", "validation.json"):
+            assert expected in excerpt
 
 
 def test_integrated_ship_delegates_admin_semantics_to_merge_owner(
@@ -1232,15 +1242,17 @@ def test_ci_inspector_cli_reports_scope_and_freshness(
 
 
 @pytest.mark.parametrize(
-    ("run_status", "job_status", "log_code", "expected"),
-    [("completed", "completed", 0, "available"),
-     ("in_progress", "completed", 0, "available"),
-     ("in_progress", "in_progress", 0, "pending"),
-     ("completed", "completed", 1, "unavailable")],
+    ("run_status", "job_status", "log_code", "expected", "fallback"),
+    [("completed", "completed", 0, "available", False),
+     ("in_progress", "completed", 0, "available", False),
+     ("in_progress", "in_progress", 0, "pending", False),
+     ("completed", "completed", 1, "unavailable", False),
+     ("completed", "completed", 0, "available", True),
+     ("completed", "completed", 1, "available", True)],
 )
 def test_ci_inspector_shares_run_metadata_and_selects_job_log_transport(
     monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path,
-    run_status: str, job_status: str, log_code: int, expected: str,
+    run_status: str, job_status: str, log_code: int, expected: str, fallback: bool,
 ) -> None:
     readiness = load_pr_workflow_module(monkeypatch, "readiness")
     metadata_calls: list[list[str]] = []
@@ -1256,6 +1268,13 @@ def test_ci_inspector_shares_run_metadata_and_selects_job_log_transport(
 
     def logs(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
         log_calls.append(command)
+        if fallback:
+            raw = command[1] == "api"
+            output = ("\x1b[31m" + json.dumps({"noise": "x" * 8000, "status": "mapping-gap",
+                       "mapping_gaps": ["missing-map.py"]}) + "\x1b[0m") if raw else (
+                       "##[group]Run python run-tests.py --diagnostic-output pytest-failure.json\n"
+                       "##[endgroup]\nError: Process completed with exit code 1.\n")
+            return subprocess.CompletedProcess(command, 0 if raw else log_code, output, "")
         return subprocess.CompletedProcess(
             command, log_code, "compile\nfatal: linker failure\ncleanup\n", "logs expired",
         )
@@ -1270,11 +1289,14 @@ def test_ci_inspector_shares_run_metadata_and_selects_job_log_transport(
     assert [item["job_id"] for item in details] == ["84", "85"]
     assert all(item["log_status"] == expected for item in details)
     assert len(metadata_calls) == 1
-    assert len(log_calls) == (0 if expected == "pending" else 2)
+    per_job = 2 if run_status == "completed" and (fallback or log_code) else 1
+    assert len(log_calls) == (0 if expected == "pending" else 2 * per_job)
     if expected == "available":
-        assert "fatal: linker failure" in details[0]["failed_log_excerpt"]
+        assert ("missing-map.py" if fallback else "fatal: linker failure") in details[0]["failed_log_excerpt"]
+        assert "\x1b" not in details[0]["failed_log_excerpt"]
         if run_status == "in_progress":
-            assert log_calls[0] == ["gh", "api", "repos/upstream/project/actions/jobs/84/logs"]
+            assert log_calls[0] == ["gh", "api", "repos/upstream/project/actions/jobs/84/logs",
+                                    "--allow-escape-sequences"]
         else:
             assert log_calls[0][-3:] == ["--job", "84", "--log-failed"]
 
