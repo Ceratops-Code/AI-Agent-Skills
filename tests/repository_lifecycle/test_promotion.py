@@ -325,7 +325,7 @@ def test_promote_repository_runs_explicit_operation_ids_in_order(
 
     # Even an acknowledged file must describe a complete deployment. These
     # variations supply its new digest, so rejection exercises result semantics.
-    variations = [
+    variations: list[tuple[list[str | int], object, str]] = [
         (["status"], "error", "successful promote-and-deploy"),
         (["operations"], None, "missing or incomplete"),
         (["operations", "status"], "operation_failed", "missing or incomplete"),
