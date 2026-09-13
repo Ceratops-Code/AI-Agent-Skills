@@ -1091,9 +1091,12 @@ def test_dependency_finalization_delegates_admin_to_shared_merge(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     dependency = load_pr_workflow_module(monkeypatch, "dependency_finalization")
+    checkout = tmp_path / "checkout"
+    helper_directory = tmp_path / "helpers"
     commands: list[list[str]] = []
 
     def run_command(command: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        assert kwargs["cwd"] == checkout
         commands.append(command)
         return subprocess.CompletedProcess(
             command,
@@ -1103,11 +1106,11 @@ def test_dependency_finalization_delegates_admin_to_shared_merge(
         )
 
     monkeypatch.setattr(dependency, "run_command", run_command)
-    monkeypatch.setattr(dependency, "merge_helper_directory", lambda: tmp_path)
+    monkeypatch.setattr(dependency, "merge_helper_directory", lambda: helper_directory)
     result, error = dependency.merge_pr(
         "example/repository",
         24,
-        tmp_path,
+        checkout,
         "merge",
         expected_head="a" * 40,
         admin=True,
@@ -1118,7 +1121,11 @@ def test_dependency_finalization_delegates_admin_to_shared_merge(
     assert error is None
     assert result == {"status": "merged", "head": "a" * 40}
     command = commands[0]
-    assert command[1:4] == ["-m", "github_pr_workflow", "merge"]
+    assert command[1:3] == [
+        str(helper_directory / "github_pr_workflow" / "__main__.py"),
+        "merge",
+    ]
+    assert command[command.index("--repo-root") + 1] == str(checkout)
     assert "--admin" in command
     assert command[command.index("--expected-head") + 1] == "a" * 40
     assert "enforce_admins" not in " ".join(command)
