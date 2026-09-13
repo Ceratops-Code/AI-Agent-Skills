@@ -1979,7 +1979,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="align the local head to main and safely restore its remote ref",
     )
-    parser.add_argument("--ci-wait-seconds", type=int, default=900)
+    parser.add_argument("--ci-wait-seconds", type=int, default=1800)
     parser.add_argument("--review-wait-seconds", type=int, default=260)
     parser.add_argument("--review-replies-request", type=pathlib.Path)
     parser.add_argument("--interval-seconds", type=int, default=10)

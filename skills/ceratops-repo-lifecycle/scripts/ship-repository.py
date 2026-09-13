@@ -1236,7 +1236,7 @@ def build_parser() -> argparse.ArgumentParser:
             "Complete deploy-local location to run after publication; repeat in order."
         ),
     )
-    parser.add_argument("--ci-wait-seconds", type=int, default=900)
+    parser.add_argument("--ci-wait-seconds", type=int, default=1800)
     parser.add_argument("--review-wait-seconds", type=int, default=260)
     parser.add_argument("--review-replies-request", type=pathlib.Path)
     parser.add_argument("--interval-seconds", type=int, default=10)
