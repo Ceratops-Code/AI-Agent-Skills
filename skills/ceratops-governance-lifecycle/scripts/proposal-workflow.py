@@ -625,7 +625,7 @@ def command_prepare(request_path: pathlib.Path) -> str:
         if source["candidate_target"]:
             try:
                 preflight_unchanged_markdown(pathlib.Path(source["rules"]),
-                    source["expected_text"], source["markdown_policy"], request["task_temp_root"])
+                    source["expected_text"], source["markdown_policy"], pathlib.Path(str(request["task_temp_root"])))
             except RuleCandidateValidationError as exc:
                 raise ProposalWorkflowError(str(exc)) from exc
     lookup_arguments = ["lookup"]
