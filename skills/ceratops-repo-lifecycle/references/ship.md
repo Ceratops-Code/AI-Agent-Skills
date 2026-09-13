@@ -103,6 +103,9 @@ selected-source cleanup. YAML declares capabilities; this action owns timing.
 4. (D) The delegated GitHub workflow must resolve exact-head gates with bounded,
    shell-safe evidence. A confirmed Actions outage must stop shipping with
    `external_service_outage`; gates are never bypassed.
+   GitHub reads that fail with HTTP 502, 503, or 504 retry once after ten
+   seconds. PR creation uses the same delay and retries only after a fresh
+   lookup confirms the intended PR is absent.
 5. Only after those gates pass, integrated ship delegates the final exact-head
    merge to `merge.merge_verified_pr(admin=True)`. It inherits the shared
    merge action's checkpointed dedicated-endpoint bypass, restoration, read-back,

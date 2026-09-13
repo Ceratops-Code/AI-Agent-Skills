@@ -11,12 +11,15 @@ import json
 import pathlib
 import re
 import subprocess
+import time
 import urllib.request
 from dataclasses import asdict, dataclass
 from typing import Any
 
 
 API_VERSION = "2026-03-10"
+RETRY_DELAY_SECONDS = 10
+TRANSIENT_HTTP_STATUSES = {502, 503, 504}
 PARAM_RE = re.compile(r"\$\{([^}]+)\}")
 
 
@@ -106,9 +109,51 @@ def parse_error(stdout: str, stderr: str) -> tuple[int | None, str]:
                 for value in (payload.get("message"), payload.get("errors"))
                 if value
             )
+            if status is None:
+                match = re.search(r"HTTP (\d{3})", text)
+                status = int(match.group(1)) if match else None
             return status, message or candidate.strip()
     match = re.search(r"HTTP (\d{3})", text)
     return (int(match.group(1)) if match else None), text.strip()
+
+
+def transient_github_error(stdout: str, stderr: str = "") -> bool:
+    """Recognize only the temporary HTTP failures eligible for one replay."""
+
+    return parse_error(stdout, stderr)[0] in TRANSIENT_HTTP_STATUSES
+
+
+def github_read_command(command: list[str]) -> bool:
+    """Identify supported CLI reads conservatively; never infer a safe write."""
+
+    if len(command) < 3 or command[0] != "gh":
+        return False
+    if command[1] == "api":
+        return "graphql" not in command and not any(
+            part.startswith(("-X", "--method", "--input", "-f", "-F", "--field", "--raw-field"))
+            for part in command[2:]
+        )
+    return (command[1], command[2]) in {
+        ("pr", "list"), ("pr", "view"), ("pr", "checks"), ("pr", "diff"),
+        ("repo", "view"), ("run", "list"), ("run", "view"),
+    }
+
+
+def run_github_command(
+    command: list[str], *, retry_safe: bool, **kwargs: Any,
+) -> subprocess.CompletedProcess[str]:
+    """Replay a safe GitHub operation once after ten seconds on 502/503/504.
+
+    Mutating callers must reconcile remote state themselves before retrying;
+    transport errors alone cannot prove that a write did not reach GitHub.
+    """
+
+    process = subprocess.run(command, **kwargs)
+    if (retry_safe and command[0] == "gh" and process.returncode
+            and transient_github_error(process.stdout, process.stderr)):
+        time.sleep(RETRY_DELAY_SECONDS)
+        process = subprocess.run(command, **kwargs)
+    return process
 
 
 def run_gh_api(
@@ -129,8 +174,9 @@ def run_gh_api(
     if body is not None:
         command.extend(["--input", "-"])
     command.append(endpoint)
-    process = subprocess.run(
+    process = run_github_command(
         command,
+        retry_safe=method.upper() == "GET" and body is None,
         cwd=cwd,
         input=json.dumps(body) if body is not None else None,
         text=True,
@@ -188,8 +234,9 @@ def run_gh_graphql(
 ) -> ApiResult:
     """Call GitHub GraphQL through the authenticated GitHub CLI."""
 
-    process = subprocess.run(
+    process = run_github_command(
         ["gh", "api", "graphql", "--input", "-"],
+        retry_safe=re.match(r"\s*(?:query\b|\{)", query) is not None,
         cwd=cwd,
         input=json.dumps({"query": query, "variables": variables}),
         text=True,
@@ -232,8 +279,9 @@ def run_json_command(
 ) -> ApiResult:
     """Run a first-party CLI command whose stdout is JSON."""
 
-    process = subprocess.run(
+    process = run_github_command(
         command,
+        retry_safe=github_read_command(command),
         cwd=cwd,
         text=True,
         encoding="utf-8",

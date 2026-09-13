@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
 import pathlib
 import subprocess
@@ -12,6 +13,111 @@ from tests.repository_lifecycle.support import (
     load_pr_workflow_module,
 )
 from tests.support.repositories import run_git
+
+
+@pytest.mark.parametrize("surface,status,retry", [
+    ("rest", 502, True), ("rest", 503, True), ("rest", 504, True),
+    ("rest", 401, False), ("rest", 403, False), ("rest", 404, False),
+    ("rest", 422, False), ("graphql", 502, True), ("json", 502, True),
+    ("command", 502, True), ("api-command", 502, True), ("git", 502, False),
+    ("post", 502, False), ("mutation", 502, False), ("edit", 502, False),
+])
+@pytest.mark.parametrize("second_failure", [False, True])
+def test_github_read_retry_is_delayed_bounded_and_preserves_result(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
+    surface: str, status: int, retry: bool, second_failure: bool,
+) -> None:
+    command = load_pr_workflow_module(monkeypatch, "command")
+    api = importlib.import_module("github_contract_engine.github_api")
+    calls, sleeps = [], []
+
+    def run(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        calls.append((argv, kwargs))
+        failed = len(calls) == 1 or second_failure
+        return subprocess.CompletedProcess(
+            argv, int(failed), '{"message":"service failure"}' if failed else '{"value":1}',
+            f"HTTP {status}" if failed else "",
+        )
+
+    monkeypatch.setattr(api.subprocess, "run", run)
+    monkeypatch.setattr(api.time, "sleep", sleeps.append)
+    if surface in {"rest", "post"}:
+        result = api.run_gh_api("POST" if surface == "post" else "GET", "/repos/o/r", cwd=tmp_path)
+    elif surface in {"graphql", "mutation"}:
+        query = "mutation { updateThing }" if surface == "mutation" else "query { viewer { login } }"
+        result = api.run_gh_graphql(query, {}, "probe", cwd=tmp_path)
+    elif surface == "json":
+        result = api.run_json_command(["gh", "repo", "view", "--json", "name"], "probe", cwd=tmp_path)
+    else:
+        argv = {"command": ["gh", "pr", "view", "1"], "git": ["git", "fetch"],
+                "api-command": ["gh", "api", "/repos/o/r"], "edit": ["gh", "pr", "edit", "1"]}[surface]
+        result = command.run_command(argv, cwd=tmp_path)
+    assert sleeps == ([10] if retry else [])
+    assert len(calls) == (2 if retry else 1)
+    assert all(call == calls[0] for call in calls)
+    ok = not result.returncode if isinstance(result, subprocess.CompletedProcess) else result.ok
+    assert ok == (retry and not second_failure)
+    if isinstance(result, api.ApiResult) and not ok:
+        assert result.status == status and result.message == "service failure"
+
+
+@pytest.mark.parametrize("use_api", [False, True])
+@pytest.mark.parametrize("outcome", ["retry-success", "retry-failed", "already-created", "lookup-failed", "permanent"])
+def test_pr_create_retry_reconciles_state_and_preserves_metadata(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, use_api: bool, outcome: str,
+) -> None:
+    ensure = load_pr_workflow_module(monkeypatch, "ensure_pr")
+    api = importlib.import_module("github_contract_engine.github_api")
+    events, publications, body_files = [], [], []
+    args = argparse.Namespace(repo_root=tmp_path, repo="o/r" if use_api else None,
+                              push_repo="o/r", pr_head="o:topic", head_branch="topic",
+                              base_branch="main", draft=True)
+    title, body = 'Keep "quotes"', "Exact body\r\n\r\n`code`, $(literal), café.\r\n"
+
+    def publish(argv: list[str] | None = None, **kwargs: Any) -> None:
+        events.append("create")
+        if argv is not None:
+            path = pathlib.Path(argv[argv.index("--body-file") + 1])
+            body_files.append(path)
+            publications.append((argv[argv.index("--title") + 1], path.read_bytes()))
+            assert "--draft" in argv
+        else:
+            payload = kwargs["body"]
+            publications.append((payload["title"], payload["body"].encode("utf-8")))
+            assert payload["draft"] is True and payload["head"] == "o:topic"
+        if len(publications) == 1 or outcome == "retry-failed":
+            raise ensure.CommandError("HTTP 422" if outcome == "permanent" else "HTTP 502")
+
+    def rest(method: str, endpoint: str, body: Any, **kwargs: Any) -> Any:
+        assert method == "POST" and endpoint == "/repos/o/r/pulls"
+        try:
+            publish(body=body)
+        except ensure.CommandError as exc:
+            return api.ApiResult(False, method, endpoint, status=422 if outcome == "permanent" else 502,
+                                 message="service failure")
+        return api.ApiResult(True, method, endpoint, data={})
+
+    def lookup(arguments: argparse.Namespace) -> Any:
+        events.append("lookup")
+        if outcome == "lookup-failed":
+            raise ensure.EnsurePrError("lookup unavailable")
+        return {"number": 66, "headRefOid": "expected"} if outcome == "already-created" else None
+
+    monkeypatch.setattr(ensure, "require_success", publish)
+    monkeypatch.setattr(ensure, "run_gh_api", rest)
+    monkeypatch.setattr(ensure, "_open_pr", lookup)
+    monkeypatch.setattr(ensure.time, "sleep", lambda seconds: events.append(seconds))
+    if outcome in {"retry-failed", "lookup-failed", "permanent"}:
+        with pytest.raises((ensure.CommandError, ensure.EnsurePrError)):
+            ensure._create_pr(args, title, body)
+    else:
+        ensure._create_pr(args, title, body)
+    expected = ["create"] if outcome == "permanent" else ["create", 10, "lookup"]
+    if outcome in {"retry-success", "retry-failed"}:
+        expected.append("create")
+    assert events == expected
+    assert all(value == (title, body.encode("utf-8")) for value in publications)
+    assert all(not path.parent.exists() for path in body_files)
 
 
 @pytest.fixture

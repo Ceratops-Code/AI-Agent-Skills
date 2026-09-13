@@ -13,7 +13,9 @@ from collections.abc import Mapping
 from typing import Any
 from urllib.parse import urlencode, urlsplit
 
-from github_contract_engine.github_api import run_gh_api
+from github_contract_engine.github_api import (
+    RETRY_DELAY_SECONDS, run_gh_api, transient_github_error,
+)
 
 from .command import CommandError, require_output, require_success, run_command
 
@@ -197,6 +199,36 @@ def _raw_git(repo_root: pathlib.Path, *arguments: str) -> str:
     return result.stdout
 
 
+def _create_pr(args: argparse.Namespace, title: str, body: str) -> None:
+    """Create once, reconciling an uncertain service failure before one retry."""
+
+    for attempt in range(2):
+        try:
+            if getattr(args, "repo", None):
+                payload = {
+                    "title": title, "body": body, "head": args.pr_head,
+                    "base": args.base_branch, "draft": bool(getattr(args, "draft", False)),
+                }
+                if args.push_repo.lower() != args.repo.lower():
+                    payload["head_repo"] = args.push_repo.split("/")[1]
+                _api("POST", f"/repos/{args.repo}/pulls", args, payload)
+            else:
+                command = ["gh", "pr", "create", "--base", args.base_branch,
+                           "--head", args.head_branch]
+                if getattr(args, "draft", False):
+                    command.append("--draft")
+                _publish_metadata(command, repo_root=args.repo_root, title=title, body=body)
+            return
+        except (CommandError, EnsurePrError) as exc:
+            if attempt or not transient_github_error(str(exc)):
+                raise
+            time.sleep(RETRY_DELAY_SECONDS)
+            # Lookup errors propagate. A found PR still goes through the
+            # caller's exact-head verification before shipping can continue.
+            if _open_pr(args) is not None:
+                return
+
+
 def _changed_paths(repo_root: pathlib.Path) -> set[str]:
     """Include index, worktree, and untracked changes without rename guessing."""
 
@@ -333,7 +365,8 @@ def _publication_target(args: argparse.Namespace) -> None:
 def _api(method: str, endpoint: str, args: argparse.Namespace, body: Any = None) -> Any:
     result = run_gh_api(method, endpoint, body, cwd=args.repo_root)
     if not result.ok:
-        raise EnsurePrError(result.message or f"GitHub {method} request failed")
+        prefix = f"HTTP {result.status}: " if result.status is not None else ""
+        raise EnsurePrError(prefix + (result.message or f"GitHub {method} request failed"))
     return result.data
 
 
@@ -436,22 +469,7 @@ def ensure_pr(args: argparse.Namespace) -> dict[str, object]:
                 title = default_title
             if body is None:
                 body = default_body
-        if getattr(args, "repo", None):
-            payload = {
-                "title": title, "body": body, "head": args.pr_head,
-                "base": args.base_branch, "draft": bool(getattr(args, "draft", False)),
-            }
-            if args.push_repo.lower() != args.repo.lower():
-                payload["head_repo"] = args.push_repo.split("/")[1]
-            _api("POST", f"/repos/{args.repo}/pulls", args, payload)
-        else:
-            command = [
-                "gh", "pr", "create", "--base", args.base_branch,
-                "--head", args.head_branch,
-            ]
-            if getattr(args, "draft", False):
-                command.append("--draft")
-            _publish_metadata(command, repo_root=repo_root, title=title, body=body)
+        _create_pr(args, title, body)
     elif args.title is not None or args.body is not None:
         command = ["gh", "pr", "edit", str(pr["number"])]
         if getattr(args, "repo", None):
