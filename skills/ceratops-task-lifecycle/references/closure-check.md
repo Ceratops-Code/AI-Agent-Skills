@@ -43,6 +43,12 @@ what still needs attention.
   underlying option or decision.
 - After semantic discovery, sweep only touched scopes and the verified task temp
   root for plausible task-created residue.
+- Before cleanup or closure, review every temporary script or one-off code
+  snippet from the selected task, including deleted ones recorded in the
+  conversation. For each, explain what it did and whether permanent code
+  still needs any of its behavior, with a reason or stated uncertainty.
+  Name the permanent script and smallest change for each needed improvement;
+  account for every item before saying no permanent changes are needed.
 - Reconcile every material failed command, gate, retry, interruption, and manual
   recovery in the selected closure window. Classify its cause as target-system,
   workflow/helper, agent/tool-use, or external interruption; name the earliest
