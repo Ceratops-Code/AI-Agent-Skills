@@ -383,6 +383,38 @@ def test_compatibility_materializer_supports_repositories_without_skills(
         )
         return target
 
+    # A transpiling build does not establish type safety. Preserve an explicit
+    # typecheck for either package manager, with or without a build script.
+    for manager in ("npm", "pnpm"):
+        for has_build in (False, True):
+            typecheck_repo = empty_repository(f"{manager}-typecheck-{has_build}")
+            scripts = {"typecheck": "tsc --noEmit"}
+            if has_build:
+                scripts["build"] = "vite build"
+            package = {"scripts": scripts}
+            if manager == "pnpm":
+                package["packageManager"] = "pnpm@10.33.4"
+                (typecheck_repo / "pnpm-lock.yaml").write_text(
+                    "lockfileVersion: '9.0'\n", encoding="utf-8", newline="\n"
+                )
+            else:
+                (typecheck_repo / "package-lock.json").write_text(
+                    json.dumps({"lockfileVersion": 3, "requires": True, "packages": {}})
+                    + "\n", encoding="utf-8", newline="\n"
+                )
+            (typecheck_repo / "package.json").write_text(
+                json.dumps(package) + "\n", encoding="utf-8", newline="\n"
+            )
+            typecheck_result = run_compatibility_engine(
+                engine_scripts, "apply", "--target-repo-root", str(typecheck_repo)
+            )
+            assert typecheck_result.returncode == 0, typecheck_result.stdout
+            selected = json.loads(typecheck_result.stdout)["repository_validation"]["checks"]
+            assert f"{manager}-typecheck" in selected
+            assert (f"{manager}-build" in selected) is has_build
+            other_manager = "npm" if manager == "pnpm" else "pnpm"
+            assert f"{other_manager}-typecheck" not in selected
+
     pnpm_repo = empty_repository("pnpm-compatible")
     (pnpm_repo / "package.json").write_text(
         json.dumps(

@@ -14,7 +14,9 @@ The required, optional, and unnecessary criteria below are this skill's
 tailoring policy. Include a view only when it materially improves explanation;
 use prose for trivial relationships. Keep names, boundaries, directions,
 protocols, cardinality, and runtime ordering consistent with prose and
-evidence.
+evidence. Give each diagram a title stating its type and scope and a legend;
+label element types, responsibilities, and relationship intent, with
+technologies and protocols at the appropriate abstraction level.
 
 Mechanical validation checks declarations and syntax only. Section presence,
 declared coverage, link existence, and rendered Mermaid never prove
@@ -29,7 +31,7 @@ inspected, so do not assert clause-level conformance.
 
 | Topic | Applicability | Content |
 | --- | --- | --- |
-| `purpose` | Required | State purpose, scope, stakeholders, goals, and non-goals; identify the design questions readers must decide. |
+| `purpose` | Required | State purpose, scope, stakeholders, intended readers, prerequisite knowledge, goals, and non-goals; identify the design questions readers must decide and prioritize the architectural quality goals that drive them. |
 | `constraints` | Required | Separate imposed constraints from assumptions; give assumptions an owner or a way to verify them. |
 | `context` | Required | Describe the system boundary, users, external dependencies, trust boundaries, and the responsibilities on each side. |
 | `strategy` | Required | Explain the approach, its important tradeoffs, and how it supports goals under the constraints. |

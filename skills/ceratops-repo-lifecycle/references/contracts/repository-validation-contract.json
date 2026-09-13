@@ -73,12 +73,33 @@
     {
       "id": "pnpm-typecheck",
       "when": [
-        {"kind": "package-script", "manager": "pnpm", "value": "typecheck"}
+        {
+          "kind": "package-script",
+          "manager": "pnpm",
+          "value": "typecheck"
+        }
       ],
-      "unless": [
-        {"kind": "package-script", "manager": "pnpm", "value": "build"}
+      "command": [
+        "{pnpm}",
+        "run",
+        "typecheck"
       ],
-      "command": ["{pnpm}", "run", "typecheck"],
+      "cwd": "."
+    },
+    {
+      "id": "npm-typecheck",
+      "when": [
+        {
+          "kind": "package-script",
+          "manager": "npm",
+          "value": "typecheck"
+        }
+      ],
+      "command": [
+        "{npm}",
+        "run",
+        "typecheck"
+      ],
       "cwd": "."
     },
     {
