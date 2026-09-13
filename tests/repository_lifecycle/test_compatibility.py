@@ -391,7 +391,7 @@ def test_compatibility_materializer_supports_repositories_without_skills(
             scripts = {"typecheck": "tsc --noEmit"}
             if has_build:
                 scripts["build"] = "vite build"
-            package = {"scripts": scripts}
+            package: dict[str, object] = {"scripts": scripts}
             if manager == "pnpm":
                 package["packageManager"] = "pnpm@10.33.4"
                 (typecheck_repo / "pnpm-lock.yaml").write_text(
