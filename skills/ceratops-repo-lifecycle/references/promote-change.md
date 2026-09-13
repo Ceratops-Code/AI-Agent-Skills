@@ -72,9 +72,10 @@ owns selected post-merge publication, deployment and cleanup.
 2. For `promote`, run the helper with `--no-run-operation`.
 3. For `promote-and-deploy`, repeat `--run-operation LOCATION` in order.
    The helper accepts only `deliverables.<name>.deploy-local.<operation>`,
-   validates the entire selection before commands, and reruns validation before
-   deployment. Explicit missing locations are errors; absent validation is a
-   successful no-op.
+   prepares the entire selection before commands, runs selected validation
+   once, and executes the prepared operations only while the checked commit
+   stays clean and unchanged. Explicit missing locations are errors; absent
+   validation is a successful no-op.
 4. For composed shipping, use `--ship-after-promotion`, one optional
    `--sdlc-contract PATH`, and repeated `--publish-operation LOCATION` or
    `--deploy-operation LOCATION` for requested post-merge work. Omitted mutation

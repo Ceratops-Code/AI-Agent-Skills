@@ -27,7 +27,15 @@ from github_pr_workflow.command import (
     require_success,
     run_command,
 )
-from repository_operation import OperationError, operation_category
+from repository_operation import (
+    OperationError,
+    OperationRequest,
+    PreparedOperation,
+    execute_prepared_operations,
+    operation_category,
+    prepare_operations,
+    require_clean_commit,
+)
 
 SCRIPT_ROOT = pathlib.Path(__file__).resolve().parent
 PENDING_MANAGER = SCRIPT_ROOT / "manage-pending-work.py"
@@ -723,10 +731,25 @@ def promote(args: argparse.Namespace, *, timings: dict[str, float] | None = None
     if record_code:
         raise PromotionError(str(record.get("message", "Scope recording failed.")))
 
+    prepared_operations: list[PreparedOperation] = []
     with _timed_phase(timings, "validation"):
-        validation_code, validation = _run_json(
-            _validation_command(args, repo_root, target_commit), repo_root,
-        )
+        try:
+            if args.run_operation is not None:
+                require_clean_commit(repo_root, target_commit)
+                # Freeze the complete deployment selection before validation.
+                # Its executor retains the commit barriers without a second
+                # CLI invocation that would rerun the same validation commands.
+                prepared_operations = prepare_operations(
+                    repo_root,
+                    [OperationRequest(name) for name in args.run_operation],
+                    args.sdlc_contract,
+                )
+            validation_code, validation = _run_json(
+                _validation_command(args, repo_root, target_commit), repo_root,
+            )
+        except (OperationError, OSError, ValueError) as exc:
+            validation_code = 1
+            validation = {"status": "error", "message": str(exc)[:4096]}
     if validation_code:
         raise PromotionError(
             str(validation.get("message", "Repository validation failed.")),
@@ -736,20 +759,19 @@ def promote(args: argparse.Namespace, *, timings: dict[str, float] | None = None
                 "release_branch": args.release_branch, "head": target_commit,
             },
         )
+    validation_handoffs = [item for item in validation["results"] if item.get("handoff")]
     operations: dict[str, Any] | None = None
     handoffs: list[dict[str, str]] = []
     if args.run_operation is not None:
-        operation_command = [
-            sys.executable, str(OPERATION_RUNNER), "--repo-root", str(repo_root),
-            "--sdlc-contract", str(args.sdlc_contract), "--commit", target_commit,
-        ]
-        for operation_id in args.run_operation:
-            operation_command.extend(("--operation", operation_id))
-        for operation_id in args.validation_operation or []:
-            operation_command.extend(("--validation-operation", operation_id))
         with _timed_phase(timings, "deployment"):
-            operation_code, operations = _run_json(operation_command, repo_root)
-        if operation_code:
+            try:
+                require_clean_commit(repo_root, target_commit)
+                operations = execute_prepared_operations(prepared_operations)
+                if validation_handoffs:
+                    operations["validation_handoffs"] = validation_handoffs
+            except (OperationError, OSError, ValueError) as exc:
+                operations = {"status": "error", "message": str(exc)[:4096]}
+        if operations["status"] != "completed":
             raise PromotionError(
                 str(operations.get("message", "Deployment failed.")),
                 {**operations, "phase": "deployment", "remote_mutation": False,
@@ -785,7 +807,6 @@ def promote(args: argparse.Namespace, *, timings: dict[str, float] | None = None
         result["preserved_sources"] = record["preserved_sources"]
     if handoffs:
         result["handoffs"] = handoffs
-    validation_handoffs = [item for item in validation["results"] if item.get("handoff")]
     if validation_handoffs:
         result["validation_handoffs"] = validation_handoffs
     return result

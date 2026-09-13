@@ -183,7 +183,7 @@ required, targeted installation, staging, commit, and compensation.
 
 Promotion validates the assembled `release/local` commit.
 `promote-and-deploy` additionally runs explicitly selected `deploy-local`
-entries, with validation before deployment. Shipping validates again before
+entries after that single validation pass. Shipping validates again before
 remote changes, and validates the synchronized commit before pending publication
 or deployment. Successful earlier checks do not suppress a later lifecycle
 boundary. The agent repairs ordinary failures in the selected task worktree,

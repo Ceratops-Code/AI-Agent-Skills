@@ -166,8 +166,12 @@ def test_promote_repository_requires_an_explicit_deployment_choice(
         assert log.read_text(encoding="utf-8") == "no-base\n"
 
 
+@pytest.mark.parametrize(
+    "validation_mode", ["absent", "discovered", "explicit", "invalid-selection"]
+)
 def test_promote_repository_runs_explicit_operation_ids_in_order(
     tmp_path: pathlib.Path,
+    validation_mode: str,
 ) -> None:
     repo, _, _, environment = prepare_repository_lifecycle_repo(tmp_path)
     log = tmp_path / "operation-order.txt"
@@ -179,24 +183,34 @@ def test_promote_repository_runs_explicit_operation_ids_in_order(
         encoding="utf-8",
         newline="\n",
     )
-    write_sdlc_contract(
-        repo,
-        deliverables={"sample": {"deploy-local": {
-            operation: {
-                "steps": [
-                    {
-                        "run": [
-                            sys.executable,
-                            "ordered-operation.py",
-                            operation,
-                            str(log),
-                        ],
-                    }
-                ]
-            }
-            for operation in ("promotion-check", "custom-deploy")
-        }}},
-    )
+
+    def operation(name: str) -> dict[str, Any]:
+        return {"steps": [{"run": [
+            sys.executable, "ordered-operation.py", name, str(log),
+        ]}]}
+
+    deliverable: dict[str, Any] = {"deploy-local": {
+        name: operation(name) for name in ("promotion-check", "custom-deploy")
+    }}
+    repository: dict[str, Any] = {}
+    selection: list[str] = []
+    checks: list[str] = []
+    if validation_mode != "absent":
+        repository["validate"] = {"repository-check": operation("repository-check")}
+        deliverable["validate"] = {
+            "deliverable-check": operation("deliverable-check"),
+            "advisory": {"handoff": "ceratops-skill-lifecycle/source-validate"},
+        }
+        checks = ["repository-check", "deliverable-check"]
+    if validation_mode == "explicit":
+        selection = [
+            "--validation-operation", "repository.validate.repository-check",
+            "--validation-operation", "deliverables.sample.validate.advisory",
+        ]
+        checks = ["repository-check"]
+    elif validation_mode == "invalid-selection":
+        selection = ["--run-operation", "deliverables.sample.deploy-local.missing"]
+    write_sdlc_contract(repo, repository=repository, deliverables={"sample": deliverable})
     assert run_git(repo, "add", ".").returncode == 0
     assert run_git(repo, "commit", "-m", "add ordered operations").returncode == 0
 
@@ -215,6 +229,7 @@ def test_promote_repository_runs_explicit_operation_ids_in_order(
             "deliverables.sample.deploy-local.promotion-check",
             "--run-operation",
             "deliverables.sample.deploy-local.custom-deploy",
+            *selection,
         ],
         capture_output=True,
         text=True,
@@ -222,6 +237,13 @@ def test_promote_repository_runs_explicit_operation_ids_in_order(
         env=environment,
     )
 
+    if validation_mode == "invalid-selection":
+        assert promoted.returncode == 1
+        failure = json.loads(promoted.stderr)
+        assert failure["phase"] == "promotion_validation"
+        assert "deliverables.sample.deploy-local.missing" in failure["message"]
+        assert not log.exists()
+        return
     assert promoted.returncode == 0, promoted.stderr
     result = json.loads(promoted.stdout)
     assert json.loads(result_file.read_text(encoding="utf-8")) == result
@@ -233,8 +255,23 @@ def test_promote_repository_runs_explicit_operation_ids_in_order(
         "deliverables.sample.deploy-local.promotion-check",
         "deliverables.sample.deploy-local.custom-deploy",
     ]
-    assert log.read_text(encoding="utf-8") == "promotion-check\ncustom-deploy\n"
+    assert log.read_text(encoding="utf-8").splitlines() == [
+        *checks, "promotion-check", "custom-deploy",
+    ]
     assert result["operations"]["status"] == "completed"
+    if validation_mode != "absent":
+        expected_handoffs = [{
+            "operation": "deliverables.sample.validate.advisory",
+            "commit": result["head"],
+            "steps": [],
+            "status": "advisory",
+            "handoff": "ceratops-skill-lifecycle/source-validate",
+        }]
+        assert result["validation_handoffs"] == expected_handoffs
+        assert result["operations"]["validation_handoffs"] == expected_handoffs
+    else:
+        assert "validation_handoffs" not in result
+        assert "validation_handoffs" not in result["operations"]
     for operation, name in zip(
         result["operations"]["results"], ("promotion-check", "custom-deploy"), strict=True
     ):
@@ -971,8 +1008,10 @@ def test_promote_and_deploy_rejects_operation_created_repository_work(
     assert (repo / "generated-by-deploy.txt").is_file()
 
 
+@pytest.mark.parametrize("mutation", ["none", "dirty", "head"])
 def test_promotion_repairs_and_revalidates_the_final_commit_before_deployment(
     tmp_path: pathlib.Path,
+    mutation: str,
 ) -> None:
     repo, _, deployment_log, environment = prepare_repository_lifecycle_repo(tmp_path)
     checks = tmp_path / "checks.txt"
@@ -1009,9 +1048,34 @@ def test_promotion_repairs_and_revalidates_the_final_commit_before_deployment(
     assert run_git(repo, "add", "quality.txt").returncode == 0
     assert run_git(repo, "commit", "-m", "repair").returncode == 0
     repaired = run_git(repo, "rev-parse", "HEAD").stdout.strip()
+    if mutation != "none":
+        promotion = runpy.run_path(str(PROMOTE_REPOSITORY))
+        original_run_json = promotion["_run_json"]
+
+        def change_after_validation(
+            argv: list[str], cwd: pathlib.Path,
+        ) -> tuple[int, dict[str, Any]]:
+            code, result = original_run_json(argv, cwd)
+            if "--validate" in argv and code == 0:
+                (repo / "quality.txt").write_text("changed", encoding="utf-8")
+                if mutation == "head":
+                    assert run_git(repo, "add", "quality.txt").returncode == 0
+                    assert run_git(repo, "commit", "-m", "concurrent change").returncode == 0
+            return code, result
+
+        promotion["promote"].__globals__["_run_json"] = change_after_validation
+        args = promotion["build_parser"]().parse_args(command[2:])
+        with pytest.raises(promotion["PromotionError"]) as caught:
+            promotion["promote"](args)
+        assert caught.value.payload["phase"] == "deployment"
+        assert caught.value.payload["status"] == "error"
+        assert ("HEAD changed" if mutation == "head" else "clean") in str(caught.value)
+        assert checks.read_text().splitlines() == [broken, repaired]
+        assert not deployment_log.exists()
+        return
     succeeded = subprocess.run(command, env=environment, capture_output=True, text=True, check=False)
     assert succeeded.returncode == 0, succeeded.stderr
-    assert checks.read_text().splitlines() == [broken, repaired, repaired]
+    assert checks.read_text().splitlines() == [broken, repaired]
     assert deployment_log.read_text() == "no-base\n"
 
 
