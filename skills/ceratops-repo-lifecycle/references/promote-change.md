@@ -72,9 +72,10 @@ owns selected post-merge publication, deployment and cleanup.
 2. For `promote`, run the helper with `--no-run-operation`.
 3. For `promote-and-deploy`, repeat `--run-operation LOCATION` in order.
    The helper accepts only `deliverables.<name>.deploy-local.<operation>`,
-   validates the entire selection before commands, and reruns applicable
-   validation and tests before deployment. Explicit missing locations are
-   errors; version-3 tests require declared commands, handoffs, or reasoned no-ops.
+   prepares the entire selection before commands, runs applicable validation
+   and tests once, and executes the prepared operations only while the checked
+   commit stays clean and unchanged. Explicit missing locations are errors;
+   version-3 tests require declared commands, handoffs, or reasoned no-ops.
 4. For composed shipping, use `--ship-after-promotion`, one optional
    `--sdlc-contract PATH`, and repeated `--publish-operation LOCATION` or
    `--deploy-operation LOCATION` for requested post-merge work. Omitted mutation
@@ -115,6 +116,24 @@ the repository's declared entries, not from helper-selected script names.
 Preparation-only requires a clean `main` checkout and exits immediately after
 `release/local` is ready, before source preflight, promotion, scope records,
 or deployment.
+
+Use `--result-file PATH` outside the repository to atomically retain the exact
+JSON outcome, including operation receipts and phase durations in seconds. The
+helper records successful and failed attempts without replaying operations.
+
+After validating every deployment receipt against its producer schema, success
+status, requested commit and required fields, finalize the verified saved result
+with `--finalize-result --result-file PATH --task-temp-root ROOT
+--expected-commit COMMIT --verified-result-sha256 SHA256`. The digest identifies
+the exact bytes just validated; it does not replace producer validation. ROOT
+must be one task directory under `<repo-parent>/tmp/<repo-name>/`.
+
+Finalization accepts only complete promote-and-deploy results for that commit,
+rejects changed files and linked or out-of-scope paths, and deletes only the
+named receipt. It preserves failed, incomplete, promotion-only and shipping
+results, other task artifacts and pending-work state. Success prints `OK`;
+cleanup failure preserves the receipt and reports `replay_required: false`.
+Finalization never runs promotion, deployment or publication.
 
 ## Done When
 

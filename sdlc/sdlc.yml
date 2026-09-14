@@ -41,6 +41,12 @@ repository:
         # Resolve npm.cmd on Windows and npm on other platforms.
         - run: [python, -c, "import shutil, subprocess; subprocess.run([shutil.which('npm'), 'ci'], check=True)"]
 
+  test-selection:
+    ci:
+      parameters: [base, head]
+      steps:
+        - run: [python, scripts/testing/run-tests.py, --select-only, --base, "{base}", --head, "{head}"]
+
   validate:
     repository:
       steps:

@@ -13,6 +13,7 @@ selected-source cleanup. YAML declares capabilities; this action owns timing.
 - (D) From the installed `ceratops-repo-lifecycle` skill root, run:
   `python scripts/ship-repository.py --repo-root PATH --head-branch
   release/local --base-branch main --remote-name origin --reusable-head`.
+  The CI wait defaults to 30 minutes; `--ci-wait-seconds` overrides it.
 - Run the helper before manual readiness or implementation inspection, without
   separate helper-existence or repository-identity checks. `--repo-root`
   identifies the target repository, and the helper infers `OWNER/REPO` from
@@ -91,6 +92,10 @@ selected-source cleanup. YAML declares capabilities; this action owns timing.
    and `tests` entries may be selected as checks; missing locations are errors.
    Registered skill actions execute through the SDLC engine. An unresolved
    handoff blocks dependent mutation; CI never executes skill handoffs.
+   Before the first push, run declared `repository.test-selection` operations
+   with the freshly fetched base commit and current head commit as `base` and
+   `head`. Selection failures block the push; absent test-selection operations
+   add no work.
    During the same preflight it validates every registered selected worktree's
    resolved path. A worktree is cleanup-eligible only when its parent chain
    contains a case-insensitive `worktrees` directory component; otherwise the
@@ -105,6 +110,9 @@ selected-source cleanup. YAML declares capabilities; this action owns timing.
 4. (D) The delegated GitHub workflow must resolve exact-head gates with bounded,
    shell-safe evidence. A confirmed Actions outage must stop shipping with
    `external_service_outage`; gates are never bypassed.
+   GitHub reads that fail with HTTP 502, 503, or 504 retry once after ten
+   seconds. PR creation uses the same delay and retries only after a fresh
+   lookup confirms the intended PR is absent.
 5. Only after those gates pass, integrated ship delegates the final exact-head
    merge to `merge.merge_verified_pr(admin=True)`. It inherits the shared
    merge action's checkpointed dedicated-endpoint bypass, restoration, read-back,

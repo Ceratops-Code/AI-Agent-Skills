@@ -110,6 +110,9 @@ under the history contract in [rule-design.md](rule-design.md).
   helper must verify current source and skill-policy hashes, write compact
   context evidence, initialize the controller's candidate-validation state, and
   open iteration 1 without mutating a governed target.
+  Before writing context or opening an iteration, reject existing Markdown
+  errors outside the declared replacement ranges. Errors within those ranges
+  may be repaired by the proposal; final whole-target validation still applies.
 - (D) After writing each pending structured candidate and semantic assessment,
   run `python scripts/proposal-workflow.py advance --state STATE --outcome
   OUTCOME --regressions RESULT`. Before hashing or recording, the controller

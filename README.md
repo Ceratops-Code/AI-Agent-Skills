@@ -123,18 +123,19 @@ without repository deduplication.
 | `scripts/deploy-skills.py` | Independent installation and updates; renders selected skills and overlays their files without validation, retirement, or lifecycle runtime calls. |
 | `scripts/deploy-hooks.py` | Independent hook installation and updates; copies the repository hook payloads and merges their registrations while preserving unrelated files and configuration. Does not grant trust or restart Codex. |
 | `scripts/deploy-tool-manager.py` | Standalone first tool-manager installation using global Python and uv, temporary locked libraries, and the manager's own packaging and deployment code; never changes Codex settings. |
-| `scripts/testing/run-tests.py` | Sole test-selection, collection-reconciliation, and pytest-execution owner; validates `tests/test-impact.json`, explains deterministic Git-diff selection, rejects mapping gaps before pytest collection or execution, supports explicit committed-diff, worktree, collection, and `--all` modes, and writes complete failed-pytest streams to a diagnostic file while returning only bounded failure evidence. |
+| `scripts/testing/run-tests.py` | Sole test-selection, collection-reconciliation, and pytest-execution owner; validates `tests/test-impact.json`, explains deterministic Git-diff selection, rejects mapping gaps before pytest collection or execution, supports explicit committed-diff, worktree, collection, and `--all` modes, adds `--select-only` to check diff/worktree mapping without pytest, and saves failed-pytest streams and structured pre-test failures with captured command output through `--diagnostic-output`; pytest output remains bounded in the console. |
 | `scripts/testing/pytest-diagnostics.py` | Extracts bounded failure summaries using exact pytest identities and source-file evidence; ambiguous or missing tracebacks use only that test's summary reason. Full diagnostic files remain owned by the runner. |
 | `scripts/validate-repository.py` | Local validation coordinator; checks the running Python against `pyproject.toml`, captures first-failure evidence, delegates its default full test phase to `scripts/testing/run-tests.py --all`, and supports CI's separate runner-owned test phase. |
 | `skills/ceratops-repo-lifecycle/references/templates/deploy-skills.py.tmpl` | Authoritative standard-library-only bootstrap copied into compatible skill repositories as `scripts/deploy-skills.py`. |
 | `skills/ceratops-repo-lifecycle/references/contracts/repository-validation-contract.json` | Schema-validated repository checks used by compatibility generation and included in repository contract review and validator discovery. |
 | `skills/ceratops-repo-lifecycle/references/contracts/ceratops-compatibility-*-contract.json` | Internal structural contract consumed by compatibility generation/checking, plus a behavioral review rubric for environment setup, tests, and lifecycle orchestration; no external source registry. |
-| `skills/ceratops-repo-lifecycle/references/templates/validate-repository.py.tmpl` and `validate.yml.tmpl` | Repository-neutral validator and CI templates created only when their target files are absent; dependency installation comes from the target repository. |
+| `skills/ceratops-repo-lifecycle/references/templates/validate-repository.py.tmpl` and `validate.yml.tmpl` | Repository-neutral validator and CI templates created only when their target files are absent; new validation setups without JavaScript package-manager files also receive locked Markdown dependencies and default rules from the Markdown templates. Existing tooling, Markdown settings, and exclusive validators are preserved. |
 | `skills/ceratops-repo-lifecycle/scripts/ceratops_repo_compatibility_engine/` | Skill-owned package with the shared compatibility-contract loader, read-only compatibility checks, SDLC-contract validation, rollback-protected Ceratops compatibility application, and version-only bootstrap synchronization; it operates on explicit target repositories and is never copied into them. |
 | `skills/ceratops-repo-lifecycle/references/templates/skill-sections.json.tmpl` | Repository-neutral template for creating a target repository's live `skills/skill-sections.json`; never a live manifest. |
 | `skills/ceratops-skill-lifecycle/scripts/runtime/install-managed-skills.py` | Classifies explicit, promotion-relative, or all-managed affected sets; owns direct-manifest inventory; and invokes one runtime transaction without source validation. |
 | `skills/ceratops-skill-lifecycle/scripts/runtime/managed_runtime_builder.py` | Stages, activates, rolls back, recovers, and cleans one locked selected-skill runtime transaction. |
-| `skills/ceratops-skill-lifecycle/scripts/skill-update-workflow.py` | Prepares and verifies declared cohesive skill updates, preserves unrelated dirty state, records exact task-temp ownership plus an active-update retention marker, finalizes owned request, state, evidence, and marker files, and removes the verified task-temp root only when empty after completed caller use. |
+| `skills/ceratops-skill-lifecycle/scripts/skill-update-workflow.py` | Prepares and verifies declared cohesive skill updates, preserves unrelated dirty state, owns temporary check folders through collection and verification, records exact task-temp ownership plus an active-update retention marker, finalizes owned request, state, evidence, and marker files, and removes the verified task-temp root only when empty after completed caller use. |
+| `skills/ceratops-skill-lifecycle/scripts/skill_update_scratch.py` | Supplies subprocess-only temporary-directory settings under the verified task-temp root and removes its unique check folder after success or failure; cleanup errors block verification while preserving check evidence, and recorded residue is retried before new checks. Explicit paths in check arguments remain caller-owned. |
 | `skills/ceratops-credit-savings-analysis/scripts/credit_analysis/session_evidence_collector.py` | Resolves current, named, indexed, and project-identified sessions and collects one complete prepared traversal per analysis, preserving formatted messages, canonical current-source references, bounded nested-command failure provenance, tool and process telemetry, fingerprints, usage, closure, and classification modes. |
 | `skills/ceratops-misunderstanding-audit/scripts/audit.py` and `audit_sources.py` | Read selected local history or exported maintained-reader pages, freeze N-day or single-case scope, separate user wording from annotations, preserve timestamp and lineage evidence, validate semantic-review accounting, and publish a report and ledger with scoped temporary-input cleanup; no model calls or automatic rule edits. |
 | `skills/ceratops-credit-savings-analysis/scripts/credit_analysis/execution_outcomes.py` | Shared interpretation of tool-result envelopes and runtime failure headers for collection, model-input preparation, and review routing; printed content stays separate and nonzero process results do not imply semantic failure. |
@@ -143,19 +144,20 @@ without repository deduplication.
 | `skills/ceratops-credit-savings-analysis/scripts/credit_analysis/model_response_contract.py` | Owns the shared model-facing schema fragments and Python shape checks for lowercase identifiers and classification/reason forms; evidence references, completeness, and semantic checks remain independent. |
 | `skills/ceratops-credit-savings-analysis/scripts/credit_analysis/report_rendering.py` | Renders full-analysis reports as runs tables with UTC start times, combined avoidable counts, separate unassessed counts, exact omission labels, and token percentages. Direct-result delivery uses retained per-call evidence for the same table. Chat guidance comes from the parent skill Output Contract; the caller selects useful findings across the requested audit while complete findings, risks, accounting, and reviewer records stay in machine evidence. |
 | `skills/ceratops-credit-savings-analysis/scripts/credit_analysis/report_bookkeeping.py` | Owns result-shape validation, surface ordering, temporary-control links, category consolidation, and reviewer-record preservation. Final results retain complete original confirmed findings, risks, control reviews, and category assessments in controller-generated `source_findings`, `source_risks`, and `source_reviews`, checked against accepted reviewer records. Candidate links identify each finding's destination, which must cover its original calls and evidence; retained source findings do not add to savings or finding totals. Copied category checklists aggregate applicability across reviewed portions without discarding differing assessments. Every distinct risk uncertainty remains in machine evidence. The controller revalidates saved final output before enforcing limits on new attempts and selects the highest-priority complete audit window that fits the reserved review slot. |
-| `skills/ceratops-task-lifecycle/scripts/closure_snapshot.py` | Emits one compact snapshot for explicitly named closure targets and optionally removes exact task-created files validated inside the task temp root. |
+| `skills/ceratops-task-lifecycle/scripts/closure_snapshot.py` | Emits one compact snapshot for explicitly named closure targets, inspects temp-root metadata without traversal unless `--count-temp-files` is requested, and optionally removes exact task-created files validated inside the task temp root. |
 | `skills/ceratops-governance-lifecycle/scripts/apply_rules_update.py` | Applies approved rule and TOML text with required rule-history appends or exact ID migrations, supports validated history-only identity repairs, rolls back mixed writes, and cleans only explicitly disposable artifacts after success. |
-| `skills/ceratops-governance-lifecycle/scripts/validate_rule_candidate.py` | Safely repairs candidate-only Markdown whitespace, parses complete TOML targets without reflow, preserves shared rule/history checks, proves idempotence, and writes caller-selected evidence. |
+| `skills/ceratops-governance-lifecycle/scripts/validate_rule_candidate.py` | Preflights untouched Markdown before proposal preparation, safely repairs candidate-only whitespace, parses complete TOML targets without reflow, preserves shared rule/history checks, proves idempotence, and writes caller-selected evidence. |
 | `skills/ceratops-governance-lifecycle/scripts/rule_candidate_source.py` | Owns exact UTF-8 source loading, encoding and line-ending preservation, shared candidate data, and input-integrity checks used by governance validation and application. |
-| `skills/ceratops-governance-lifecycle/scripts/proposal-workflow.py` | Validates exact proposal inputs, histories, target policies, and hashes; records task-temp ownership; delegates validated controller transitions; and preserves the exact champion while finalizing owned artifacts. |
+| `skills/ceratops-governance-lifecycle/scripts/proposal-workflow.py` | Validates exact proposal inputs, histories, target policies, and hashes; rejects untouched formatting errors before opening artifacts; records task-temp ownership; delegates validated controller transitions; and preserves the exact champion while finalizing owned artifacts. |
 | `skills/ceratops-governance-lifecycle/scripts/iteration_controller.py` | Opens structured candidates, invokes mechanical validation before recording, retains the exact validated champion, enforces stopping, and safely finalizes owned artifacts. |
 | `skills/ceratops-governance-lifecycle/scripts/rule_graph.py` | Parses canonical AGENTS rules and rejects structural syntax or rule-local explicit-user override escape clauses. |
 | `skills/ceratops-repo-lifecycle/scripts/github_contract_engine/` | Package CLI for compact local audit snapshots, contract evaluation, shared GitHub API access, sanitized evidence, and evidence-gated CodeQL disposition. |
 | `skills/ceratops-repo-lifecycle/scripts/github_pr_workflow/` | Package CLI for individual PR operations, opt-in scoped branch/stage/commit preparation and checked draft or fork PR publication in `ensure_pr.py`, bounded standalone review and CI inspectors with caller-owned evidence files, shared readiness-owned CI diagnostics, one-call retry-safe review replies and resolutions, decision-complete gate blockers, single-snapshot terminal Actions outage detection, exact-commit checkpointed shipping, four-proof obsolete-prepared-checkpoint cleanup before automatic resume, scoped pending-work checks, concurrent gates, integrated admin merge, reusable-branch restoration, and terminal cleanup. |
-| `skills/ceratops-repo-lifecycle/scripts/promote-repository.py` | Prepares `release/local`; promotes selected branches with no deployment or an explicit ordered operation selection; or composes promotion into exact-head shipping with ordered release and deploy selections, finalization, and cleanup. |
+| `skills/ceratops-repo-lifecycle/scripts/promote-repository.py` | Prepares `release/local`; promotes selected branches with no deployment or an explicit ordered operation selection; or composes promotion into exact-head shipping with ordered release and deploy selections, finalization, and cleanup; records phase timings and exact JSON outcomes, then finalizes caller-validated deployment receipts within the task temp root by verified digest and commit without replay. |
 | `skills/ceratops-repo-lifecycle/scripts/manage-pending-work.py` | Records, checks, automatically resumes the retained target commit, and progressively finalizes the exact selected scope; preflight preserves and reports non-cleanup-eligible worktrees, while eligible residual-worktree and identity-matched task-temp cleanup stays within validated named directory boundaries and preserves active skill-update state for post-deployment finalization. |
-| `skills/ceratops-repo-lifecycle/scripts/repository_operation.py` | Single capability runner: resolves complete YAML locations, prevalidates ordered argv/parameters/cwd, runs declared validation before deployment or publication, and returns compact results, bounded failures and advisory handoffs. |
-| `skills/ceratops-repo-lifecycle/scripts/ship-repository.py` | Prevalidates one SDLC contract and ordered phase selections before orchestrating guarded GitHub shipping, main synchronization, per-operation publication and deployment checkpoints, and resumable selected-source cleanup. |
+| `skills/ceratops-repo-lifecycle/scripts/repository_operation.py` | Single capability runner: resolves complete YAML locations, prevalidates ordered argv/parameters/cwd, runs declared validation before deployment or publication, and retains bounded structured step results separately from command completion, with bounded failures and advisory handoffs. |
+| `skills/ceratops-repo-lifecycle/scripts/ship-repository.py` | Prevalidates one SDLC contract and ordered phase selections, runs declared CI test selection against freshly fetched base and exact staged head commits before push, and orchestrates guarded GitHub shipping, main synchronization, per-operation publication and deployment checkpoints, and resumable selected-source cleanup. |
+| `skills/ceratops-repo-lifecycle/scripts/rename-repository-path.py` | Plans or applies tracked file renames and exact filename references; accepts explicit or Git-detected rename pairs, updates relative Markdown links, blocks ambiguous references, preserves the index and text bytes outside replacements, and compensates caught file errors. |
 | `skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py` | Existing source, metadata, runtime-input, contract, and portability validator invoked by source-validate and explicit skill workflows. |
 | `skills/ceratops-skill-lifecycle/scripts/fast-change.py` | Classifies exact structured replacements, generates their diff, and owns the eligible direct-release change through declared Markdown lint, exact helper tests, targeted installation, commit, and failure compensation. |
 
@@ -183,7 +185,7 @@ required, targeted installation, staging, commit, and compensation.
 
 Promotion validates the assembled `release/local` commit.
 `promote-and-deploy` additionally runs explicitly selected `deploy-local`
-entries, with validation and tests before deployment. Shipping requires both
+entries after that single validation and test pass. Shipping requires both
 results before remote changes and repeats both on the synchronized commit before
 pending publication or deployment. Successful earlier checks do not suppress
 a later lifecycle
@@ -235,6 +237,27 @@ Each repository owns one lifecycle contract:
   Applying current compatibility upgrades version 2; version 1 needs explicit
   operation-ownership mapping before application. Installer release numbers
   alone do not determine SDLC compatibility.
+- Operation `status: completed` records command completion. A successful step
+  whose entire stdout is a JSON object with nonempty string `schema` and
+  `status` fields is retained unchanged in `step_results` as
+  `{"step": POSITION, "result": OBJECT}`. `POSITION` is the declared version-1
+  step ID or the one-based version-2/3 step position. Domain success still
+  requires the producer's schema, status and evidence checks; `OK` is not
+  translated to `deployed`. Capture does not validate that domain schema.
+  Stdout above 65,536 UTF-8 bytes yields
+  `{"step": POSITION, "result_omitted": "stdout_limit"}` without content.
+  Logs, mixed output, non-object JSON, malformed JSON, duplicate members and
+  non-finite numbers or container depth above 64 are suppressed; successful
+  stderr is never forwarded.
+  Earlier captured results survive later step failure or commit drift.
+  Promotion returns them and shipping persists them in existing operation
+  checkpoints for resume. Missing results, including older saved operation
+  metadata, do not authorize replaying a completed mutation to recover output.
+- On command failure, diagnostics include a concise error excerpt and preserve
+  bounded structured errors from each output stream. Excerpts extract error
+  details before shortening the output and retain reported diagnostic-file
+  locations. CI log retrieval may fall back to the raw log of the completed
+  job; it never reruns the failed command.
 - `skills/ceratops-repo-lifecycle/references/contracts/github-contract-source-docs.json`
   records official source documents and reference repositories used by GitHub,
   repo, PR readiness, code, artifact, and repository-validation contracts. Its
@@ -535,6 +558,38 @@ $HOME/.claude/skills/<skill-name>/SKILL.md
 Invoke skills directly with `/skill-name` in Claude Code. In Codex, invoke them
 with `$skill-name`.
 
+## Rename Files And References
+
+From the installed `ceratops-repo-lifecycle` skill directory, preview a rename:
+
+```powershell
+python scripts/rename-repository-path.py --repo-root PATH --rename scripts/old.py scripts/new.py
+```
+
+Add `--apply` to change files. Repeat `--rename OLD NEW` for independent pairs.
+Use `--from-git` for staged renames, or add `--base BASE --head HEAD` for committed
+renames. Git's similarity detection can miss a heavily rewritten file; supply
+the explicit pair in that case. The helper creates no permanent rename catalog
+and leaves staging and committing to the caller.
+
+The plan lists exact reference edits and unresolved filenames. It updates
+repository-relative path tokens, including backslash forms, and local Markdown
+links, preserving quotation marks and line endings. Moving a Markdown document
+also adjusts its links to tracked local files. Ambiguous bare names, computed
+paths and non-UTF-8 references block application. Resolve them with an explicit
+`--reference OLD NEW` replacement, or preserve an entire historical reference
+file with `--exclude FILE`. This does not perform language-symbol refactoring.
+Only tracked regular files and already-moved destinations are included; links,
+case-only renames, overlapping pairs and existing destinations are rejected.
+Case-only renames need an explicitly staged intermediate filename.
+An existing worktree's edited content is preserved outside the planned changes.
+
+Use `--report PATH` for a new report outside the repository; the caller owns its
+retention and cleanup. Without a report, preview prints the plan and a successful
+apply prints `OK`. Caught file errors restore original bytes and paths and remove
+only newly created empty directories. After process termination, inspect Git's
+working-tree diff before retrying; no crash-recovery journal is maintained.
+
 ## Validate
 
 Install the declared Python and Node development dependencies, optionally
@@ -563,7 +618,19 @@ directory when it is empty.
 The validator runs Markdown and YAML lint, Ruff, mypy for Linux and Win32, and
 `scripts/testing/run-tests.py --all`. Pull-request CI calls the same runner
 with exact base and head commit SHAs. Local uncommitted selection is explicit
-through `python scripts/testing/run-tests.py --worktree`. Manifest validation
+through `python scripts/testing/run-tests.py --worktree`. Add `--select-only`
+to either diff or worktree mode to validate the same mapping without collecting
+or running pytest; success reports `selection-valid` and pytest `not-run`,
+including when no tests are selected. Failures retain the normal diagnostics.
+Shipping runs optional `repository.test-selection` entries from `sdlc/sdlc.yml`
+before pushing, independently of `repository.validate`. Each entry declares
+`parameters: [base, head]` and executable steps using whole-argument `{base}`
+and `{head}` placeholders. The helper supplies the freshly fetched remote base
+and exact staged head commits. Entries without both arguments, failed checks,
+fetch failures and changed source state block the push. Other lifecycle actions
+keep their existing validation discovery. A base branch that advances after
+this check is still evaluated by GitHub CI.
+Manifest validation
 is available through
 `python scripts/testing/run-tests.py --validate-manifest`. The validator does
 not invoke skill-local validators. Generic compatibility and

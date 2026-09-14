@@ -132,7 +132,7 @@
         "skills/ceratops-skill-lifecycle/references/templates/ceratops-logo-500.png",
         "source SKILL.md description"
       ],
-      "pass_condition": "OpenAI interface metadata exists, default_prompt names the skill, display name resembles the skill identity, and short description overlaps the trigger description; the ceratops profile additionally requires icon fields, shared Ceratops icon paths, and matching bytes."
+      "pass_condition": "OpenAI interface metadata exists, default_prompt names the skill, display name resembles the skill identity, and short description contains 25 to 64 characters and overlaps the trigger description; the ceratops profile additionally requires icon fields, shared Ceratops icon paths, and matching bytes."
     },
     {
       "id": "skill.shared_section_generation",

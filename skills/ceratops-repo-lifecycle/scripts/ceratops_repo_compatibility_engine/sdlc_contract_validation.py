@@ -21,10 +21,10 @@ SKILL_ROOT = pathlib.Path(__file__).resolve().parents[2]
 SCHEMA = SKILL_ROOT / "references" / "schemas" / "sdlc.yml.schema.json"
 CURRENT_VERSION = 3
 VERSION_SCHEMAS = {1: SCHEMA.with_name("sdlc.v1.schema.json"), 2: SCHEMA.with_name("sdlc.v2.schema.json"), 3: SCHEMA}
-OPERATION_CATEGORIES = frozenset({"bootstrap", "validate", "tests", "deploy-local", "publish"})
+OPERATION_CATEGORIES = frozenset({"bootstrap", "validate", "tests", "test-selection", "deploy-local", "publish"})
 NAME = r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*"
 CURRENT_OPERATION_RE = re.compile(
-    rf"^(?:repository\.(?P<repository>bootstrap|validate|tests)|"
+    rf"^(?:repository\.(?P<repository>bootstrap|validate|tests|test-selection)|"
     rf"deliverables\.{NAME}\.(?P<deliverable>validate|tests|deploy-local|publish))\.{NAME}$"
 )
 V1_OPERATION_RE = re.compile(r"^(deploy|release)\.operations\.[a-z][a-z0-9_-]*$")

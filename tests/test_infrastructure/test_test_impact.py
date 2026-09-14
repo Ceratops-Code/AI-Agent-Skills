@@ -193,6 +193,30 @@ def test_name_status_parser_handles_added_deleted_copied_and_renamed_paths(
     }
 
 
+@pytest.mark.parametrize(("status", "destination", "expected_gap"), [
+    ("R095", "skills/alpha/new.py", None),
+    ("R100", "src/new.py", "src/new.py"),
+    ("C100", "skills/alpha/new.py", "src/old.py"),
+])
+def test_renamed_source_can_retire_mapping_but_live_paths_still_require_ownership(
+    test_runner_module: Any, status: str, destination: str, expected_gap: str | None,
+) -> None:
+    runner = test_runner_module
+    selection = runner.selection_from_changes(
+        sample_manifest(runner),
+        (runner.ChangedFile(status, ("src/old.py", destination)),),
+    )
+
+    assert selection.full_suite == status.startswith("R")
+    assert selection.suites == (
+        ("alpha", "beta", "gamma") if status.startswith("R") else ("alpha",)
+    )
+    assert selection.mapping_gaps == (
+        ({"path": expected_gap, "reason": "unmapped repository path"},)
+        if expected_gap else ()
+    )
+
+
 def test_suite_dependencies_expand_transitively(test_runner_module: Any) -> None:
     runner = test_runner_module
     manifest = sample_manifest(

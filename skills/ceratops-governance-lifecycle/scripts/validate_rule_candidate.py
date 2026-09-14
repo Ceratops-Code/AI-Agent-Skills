@@ -878,6 +878,42 @@ def _run_policy_command(
         return output.text, detail
 
 
+def preflight_unchanged_markdown(
+    path: Path, expected_old: Sequence[str], policy: Mapping[str, object] | None,
+    temporary_root: Path,
+) -> None:
+    """Reject existing out-of-scope errors before proposal artifacts are opened.
+
+    Declared edit lines may be the requested formatting repair. Full prospective
+    validation still runs later; this preflight never changes source text.
+    """
+    if policy is None:
+        return
+    source = read_source(path, "proposal target")
+    _, spans = construct_prospective(source, [
+        {"expected_old": old, "replacement": old} for old in expected_old
+    ])
+    ranges = [(_line_number(source.text, span.start),
+               _line_number(source.text, max(span.start, span.end - 1))) for span in spans]
+    output, detail = _run_policy_command(
+        cast(Sequence[str], policy["validate_command"]), policy=policy, source=source,
+        text=source.text, suffix="preflight", temporary_root=temporary_root,
+    )
+    if output != source.text:
+        raise RuleCandidateValidationError(f"target={path} preflight validator changed text")
+    if detail["returncode"] == 0:
+        return
+    diagnostic = f"{detail['stdout']}\n{detail['stderr']}"
+    matches = list(re.finditer(r":(\d+)(?::\d+)?\s+(?:error\s+)?MD\d+\b[^\n]*", diagnostic))
+    if not matches or any(len(str(detail[key])) >= MAX_COMMAND_OUTPUT for key in ("stdout", "stderr")):
+        raise _validator_failure(source, source.text, detail, spans, policy)
+    for match in matches:
+        line = int(match.group(1))
+        if not any(start <= line <= end for start, end in ranges):
+            raise _validator_failure(source, source.text,
+                                     {"stdout": match.group(), "stderr": ""}, spans, policy)
+
+
 def _replacement_for_opcode(
     spans: Sequence[ReplacementSpan],
     start: int,

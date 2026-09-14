@@ -24,6 +24,18 @@ contracts = importlib.import_module(
 
 DEPLOY = "deliverables.sample.deploy-local."
 CHECK = "repository.validate."
+RECEIPT = {
+    "schema": "codex-verified-runtime-deploy-receipt.v1",
+    "status": "OK",
+    "sourceCommit": "3555d719be3a4312a7bf1d0dbc0146b51355dee7",
+    "generation": "verified-generation",
+    "appliedPatchCount": 3,
+    "suppressedPatchCount": 1,
+    "installedSync": "Passed",
+    "launcher": "Passed",
+    "activeGeneration": "running-generation",
+    "activeGenerationUnchanged": True,
+}
 
 
 @pytest.mark.parametrize("mode", ["ci", "skill", "return"])
@@ -121,6 +133,13 @@ def test_sdlc_template_is_a_schema_valid_empty_skeleton(tmp_path: pathlib.Path) 
     for location, handoff in expected.items():
         assert entries[location] == {"handoff": handoff}
     assert set(live["deliverables"]["skills"]["validate"]) == {"ceratops-managed"}
+    selection = entries["repository.test-selection.ci"]
+    assert selection["parameters"] == ["base", "head"]
+    assert selection["steps"][0]["run"] == [
+        "python", "scripts/testing/run-tests.py", "--select-only",
+        "--base", "{base}", "--head", "{head}",
+    ]
+    assert "repository.test-selection.ci" not in runner.validation_operations(ROOT)
 
 
 def test_absent_sdlc_section_is_a_successful_no_op(tmp_path: pathlib.Path) -> None:
@@ -233,15 +252,53 @@ def test_deploy_operation_requires_and_expands_exact_declared_parameters(
     assert (tmp_path / "value.txt").read_text() == "literal"
 
 
+@pytest.mark.parametrize(
+    ("stdout", "expected"),
+    [
+        (json.dumps(RECEIPT, indent=2), {"result": RECEIPT}),
+        (json.dumps(RECEIPT) + " " * (65536 - len(json.dumps(RECEIPT))),
+         {"result": RECEIPT}),
+        (json.dumps({**RECEIPT, "status": "FAILED"}),
+         {"result": {**RECEIPT, "status": "FAILED"}}),
+        ("", {}),
+        ("ordinary private log", {}),
+        ("ordinary private log\n" + json.dumps(RECEIPT), {}),
+        (json.dumps(RECEIPT) + "\nordinary private log", {}),
+        (json.dumps(RECEIPT) + "\n" + json.dumps(RECEIPT), {}),
+        (json.dumps([RECEIPT]), {}),
+        (json.dumps("OK"), {}),
+        ('{"status":"OK","private":"unrelated JSON"}', {}),
+        ('{"schema":"test.v1","status":true}', {}),
+        ('{"schema":" ","status":"OK"}', {}),
+        ('{"schema":"test.v1","status":"OK","nested":{"x":1,"x":2}}', {}),
+        ('{"schema":"test.v1","status":"OK","value":NaN}', {}),
+        ('{"schema":"test.v1","status":"OK","value":1e999}', {}),
+        ('{"schema":"test.v1","status":"OK","value":' + '[' * 1100
+         + '0' + ']' * 1100 + '}', {}),
+        (json.dumps({**RECEIPT, "data": "x" * 65536}),
+         {"result_omitted": "stdout_limit"}),
+        (json.dumps({**RECEIPT, "data": "\u05d0" * 33000}, ensure_ascii=False),
+         {"result_omitted": "stdout_limit"}),
+    ],
+    ids=["receipt", "size-boundary", "domain-failure", "empty", "text", "log-prefix", "log-suffix",
+         "multiple-documents", "array", "scalar", "unrelated-json", "invalid-status",
+         "blank-schema", "duplicate-member", "nan", "infinity", "deep-json",
+         "oversized", "utf8-size"],
+)
 def test_deploy_runs_repository_command_once_from_repository_directory(
     tmp_path: pathlib.Path,
+    stdout: str,
+    expected: dict[str, object],
 ) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
     (repo / "unrelated-name.py").write_text(
-        "import pathlib\nwith pathlib.Path('count.txt').open('a') as out: out.write('ran\\n')\n",
+        "import pathlib, sys\n"
+        "with pathlib.Path('count.txt').open('a') as out: out.write('ran\\n')\n"
+        f"sys.stdout.buffer.write({stdout.encode('utf-8')!r})\n"
+        "print('unrelated private stderr', file=sys.stderr)\n",
         encoding="utf-8",
     )
     write_sdlc_contract(
@@ -270,6 +327,17 @@ def test_deploy_runs_repository_command_once_from_repository_directory(
     )
     assert result.returncode == 0, result.stderr
     assert (repo / "count.txt").read_text() == "ran\n"
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "completed"
+    operation = payload["results"][0]
+    assert operation["operation"] == DEPLOY + "standalone"
+    assert operation["status"] == "completed"
+    assert operation["steps"] == [1]
+    assert operation.get("step_results", []) == (
+        [{"step": 1, **expected}] if expected else []
+    )
+    assert "private" not in result.stdout
+    assert not result.stderr
 
 
 @pytest.mark.parametrize(
@@ -394,10 +462,26 @@ def test_operation_cli_prevalidates_and_runs_explicit_ids_in_order(
     assert json.loads(result.stdout)["completed_operations"] == list(names)
 
 
+@pytest.mark.parametrize("structured", [False, True])
 def test_execute_prepared_operations_stops_after_failure_with_a_ledger(
     tmp_path: pathlib.Path,
+    structured: bool,
 ) -> None:
+    failure_stdout = {
+        "noise": "x" * 10000, "check": "configuration", "exit_code": 7,
+        "evidence_file": str(tmp_path / "failure.log"),
+    }
+    failure_stderr = {
+        "schema": "example.failure.v1", "status": "error",
+        "message": "Required configuration is missing",
+    }
     (tmp_path / "check.py").write_text(
+        ("import pathlib, sys\n"
+         "if pathlib.Path('fixed').exists(): raise SystemExit(0)\n"
+         f"print({json.dumps(failure_stdout)!r})\n"
+         f"print({json.dumps(failure_stderr)!r}, file=sys.stderr)\n"
+         "raise SystemExit(7)\n")
+        if structured else
         "import pathlib, sys\n"
         "print('x' * 10000)\n"
         "for i in range(12): print(f'line-{i}', file=sys.stderr)\n"
@@ -406,7 +490,10 @@ def test_execute_prepared_operations_stops_after_failure_with_a_ledger(
     )
     write_sdlc_contract(
         tmp_path,
-        repository={"validate": {"repository": _step("check.py")}},
+        repository={"validate": {"repository": {"steps": [
+            {"run": [sys.executable, "-c", f"print({json.dumps(RECEIPT)!r})"]},
+            {"run": [sys.executable, "check.py"]},
+        ]}}},
         deliverables={
             "sample": {
                 "deploy-local": {
@@ -425,7 +512,17 @@ def test_execute_prepared_operations_stops_after_failure_with_a_ledger(
     assert evidence["operation"] == CHECK + "repository"
     assert evidence["commit"] == commit
     assert evidence["diagnostic"]["exit_code"] == 7
-    assert evidence["diagnostic"]["stderr_tail"] == [f"line-{i}" for i in range(4, 12)]
+    assert evidence["steps"] == [1]
+    assert evidence["step_results"] == [{"step": 1, "result": RECEIPT}]
+    if structured:
+        assert evidence["diagnostic"]["child_results"] == {
+            "stdout": {"result": failure_stdout}, "stderr": {"result": failure_stderr},
+        }
+        assert "Required configuration is missing" in evidence["diagnostic"]["message"]
+        assert "failure.log" in evidence["diagnostic"]["message"]
+    else:
+        assert evidence["diagnostic"]["stderr_tail"] == [f"line-{i}" for i in range(4, 12)]
+        assert "child_results" not in evidence["diagnostic"]
     assert len("".join(evidence["diagnostic"]["stdout_tail"])) <= 4096
     assert not (tmp_path / "deployed").exists()
     (tmp_path / "fixed").touch()
@@ -617,9 +714,18 @@ def test_validation_parameters_remain_strict(tmp_path: pathlib.Path) -> None:
     assert result.returncode == 1 and "unexpected unknown" in result.stderr
 
 
+@pytest.mark.parametrize("change_head", [False, True])
 def test_source_changes_between_steps_prevent_later_mutations(
     tmp_path: pathlib.Path,
+    change_head: bool,
 ) -> None:
+    mutation = "import pathlib, subprocess; pathlib.Path('changed').touch(); "
+    if change_head:
+        mutation += (
+            "subprocess.run(['git', 'add', '.'], check=True, capture_output=True); "
+            "subprocess.run(['git', 'commit', '-m', 'drift'], check=True, capture_output=True); "
+        )
+    mutation += f"print({json.dumps(RECEIPT)!r})"
     write_sdlc_contract(
         tmp_path,
         deliverables={
@@ -631,7 +737,7 @@ def test_source_changes_between_steps_prevent_later_mutations(
                                 "run": [
                                     sys.executable,
                                     "-c",
-                                    "import pathlib; pathlib.Path('changed').touch()",
+                                    mutation,
                                 ]
                             },
                             {
@@ -651,6 +757,9 @@ def test_source_changes_between_steps_prevent_later_mutations(
     result = run_operation_cli(tmp_path, DEPLOY + "local")
     assert result.returncode == 1
     assert json.loads(result.stderr)["status"] == "state_changed"
+    assert json.loads(result.stderr)["step_results"] == [
+        {"step": 1, "result": RECEIPT}
+    ]
     assert not (tmp_path / "deployed").exists()
 
 
@@ -717,6 +826,25 @@ def test_repository_bootstrap_resolves_platform_npm_and_preserves_failure(
     assert "SDLC-npm-ci" in result.stdout
     if exit_code:
         assert str(exit_code) in result.stderr
+    command = importlib.import_module("github_pr_workflow.command")
+    if exit_code:
+        payload = json.dumps({
+            "noise": "x" * 10000, "status": "error",
+            "message": "Required configuration is missing", "evidence_file": "failure.log",
+        })
+        argv = [sys.executable, "-c", f"import sys; print({payload!r}); sys.exit(9)"]
+        with pytest.raises(command.CommandError) as failed:
+            command.require_output(argv, cwd=tmp_path)
+        assert "Required configuration is missing" in str(failed.value)
+        assert "failure.log" in str(failed.value) and len(str(failed.value)) <= 2400
+        assert failed.value.completed.stdout == payload + "\n"
+        assert failed.value.completed.returncode == 9
+    else:
+        assert command.require_output(
+            [sys.executable, "-c", "print('OK')"], cwd=tmp_path,
+        ) == "OK"
+    with pytest.raises(command.CommandError, match="could not start"):
+        command.require_output([str(tmp_path / "missing-command")], cwd=tmp_path)
 
 
 # Version 1 is the historical f49e575/f671d9b SDLC schema, not a guessed
@@ -778,7 +906,8 @@ def test_v1_execution_preserves_order_argv_parameters_cwd_and_handoff(
         "path = pathlib.Path(__file__).resolve().parent / 'calls.json'\n"
         "calls = json.loads(path.read_text()) if path.exists() else []\n"
         "calls.append({'argv': sys.argv[1:], 'cwd': str(pathlib.Path.cwd())})\n"
-        "path.write_text(json.dumps(calls), encoding='utf-8')\n",
+        "path.write_text(json.dumps(calls), encoding='utf-8')\n"
+        f"print({json.dumps(RECEIPT)!r})\n",
         encoding="utf-8",
     )
     path = _write_v1(
@@ -824,6 +953,12 @@ def test_v1_execution_preserves_order_argv_parameters_cwd_and_handoff(
     ]
     assert payload["results"][0]["steps"] == ["publish_step"]
     assert payload["results"][1]["steps"] == ["first_step", "second_step"]
+    assert payload["results"][0]["step_results"] == [
+        {"step": "publish_step", "result": RECEIPT}
+    ]
+    assert payload["results"][1]["step_results"] == [
+        {"step": step, "result": RECEIPT} for step in ("first_step", "second_step")
+    ]
     assert payload["results"][1]["handoff"] == "ceratops-skill-lifecycle/deploy"
     calls = json.loads((tmp_path / "calls.json").read_text(encoding="utf-8"))
     assert calls == [
@@ -867,11 +1002,19 @@ def test_v1_prepares_entire_batch_before_side_effects(
     assert not marker.exists()
 
 
-def test_v1_failure_stops_batch_with_original_step_ids(tmp_path: pathlib.Path) -> None:
+@pytest.mark.parametrize("startup_error", [False, True])
+def test_v1_failure_stops_batch_with_original_step_ids(
+    tmp_path: pathlib.Path, startup_error: bool,
+) -> None:
+    failed_run = (
+        [str(tmp_path / "missing-executable")]
+        if startup_error else
+        [sys.executable, "-c", f"print({json.dumps(RECEIPT)!r}); raise SystemExit(7)"]
+    )
     _write_v1(tmp_path, release={
         "first": {"steps": [
-            {"id": "before", "run": [sys.executable, "-c", "pass"]},
-            {"id": "failed_step", "run": [sys.executable, "-c", "raise SystemExit(7)"]},
+            {"id": "before", "run": [sys.executable, "-c", f"print({json.dumps(RECEIPT)!r})"]},
+            {"id": "failed_step", "run": failed_run},
             {"id": "unreachable", "run": [sys.executable, "-c", "pass"]},
         ]},
         "second": {"steps": [{"id": "pending", "run": [sys.executable, "-c", "pass"]}]},
@@ -884,7 +1027,9 @@ def test_v1_failure_stops_batch_with_original_step_ids(tmp_path: pathlib.Path) -
     assert result["status"] == "operation_failed"
     assert result["failed_step"] == "failed_step"
     assert result["steps"] == ["before"]
-    assert result["diagnostic"]["exit_code"] == 7
+    assert result["diagnostic"]["exit_code"] == (None if startup_error else 7)
+    assert result["step_results"] == [{"step": "before", "result": RECEIPT}]
+    assert result["diagnostic"]["stdout_tail"] == ([] if startup_error else [json.dumps(RECEIPT)])
     assert result["pending_operations"] == ["release.operations.first", "release.operations.second"]
 
 
@@ -1116,3 +1261,242 @@ def test_sdlc_launches_native_package_manager_test_command(tmp_path: pathlib.Pat
     }}))
     assert runner.main(["--repo-root", str(tmp_path), "--tests", "--ci"]) == 0
     assert json.loads(capsys.readouterr().out)["completed_operations"] == ["repository.tests.package"]
+
+
+@pytest.mark.parametrize("mode", ["explicit", "staged", "committed"])
+def test_repository_path_rename_updates_exact_references_and_preserves_index(
+    tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str], mode: str,
+) -> None:
+    import runpy
+
+    module = runpy.run_path(str(OPERATION_RUNNER.with_name("rename-repository-path.py")))
+    repo = tmp_path / "repo"
+    (repo / "src").mkdir(parents=True)
+    (repo / "docs").mkdir()
+    source = b"print('preserve quotation marks')\r\n"
+    (repo / "src/old-name.py").write_bytes(source)
+    (repo / "README.md").write_bytes(b'Run "src/old-name.py"; keep old-name.pyc.\r\n')
+    (repo / "docs/guide.md").write_bytes(b"[run](../src/old-name.py#entry)\r\n")
+    (repo / "references.json").write_bytes(b'{"command": "src\\\\old-name.py"}\r\n')
+    base = _repository(repo)
+    index = run_git(repo, "diff", "--cached", "--binary").stdout
+    arguments = ["--rename", "src/old-name.py", "lib/new-name.py"]
+    if mode != "explicit":
+        (repo / "lib").mkdir()
+        assert run_git(repo, "mv", "src/old-name.py", "lib/new-name.py").returncode == 0
+        arguments = ["--from-git"]
+        if mode == "committed":
+            assert run_git(repo, "commit", "-m", "rename only").returncode == 0
+            head = run_git(repo, "rev-parse", "HEAD").stdout.strip()
+            arguments += ["--base", base, "--head", head]
+        index = run_git(repo, "diff", "--cached", "--binary").stdout
+    report = tmp_path / "rename-report.json"
+    assert module["main"](["--repo-root", str(repo), *arguments, "--report", str(report)]) == 0
+    assert json.loads(report.read_text(encoding="utf-8"))["status"] == "ready"
+    assert (repo / "README.md").read_bytes().startswith(b'Run "src/old-name.py"')
+    report.unlink()
+    assert module["main"](["--repo-root", str(repo), *arguments, "--apply", "--report", str(report)]) == 0
+    assert capsys.readouterr().out.splitlines() == ["OK", "OK"]
+    assert (repo / "lib/new-name.py").read_bytes() == source
+    assert not (repo / "src/old-name.py").exists()
+    assert (repo / "README.md").read_bytes() == b'Run "lib/new-name.py"; keep old-name.pyc.\r\n'
+    assert (repo / "docs/guide.md").read_bytes() == b"[run](../lib/new-name.py#entry)\r\n"
+    assert json.loads((repo / "references.json").read_bytes()) == {"command": "lib\\new-name.py"}
+    assert run_git(repo, "diff", "--cached", "--binary").stdout == index
+    assert json.loads(report.read_text(encoding="utf-8"))["status"] == "applied"
+
+
+@pytest.mark.parametrize("case", ["ambiguous", "escape", "overwrite", "case-only", "binary", "report", "report-parent"])
+def test_repository_path_rename_rejects_unsafe_or_ambiguous_plans_before_writes(
+    tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str], case: str,
+) -> None:
+    import runpy
+
+    module = runpy.run_path(str(OPERATION_RUNNER.with_name("rename-repository-path.py")))
+    repo = tmp_path / "repo"
+    (repo / "src").mkdir(parents=True)
+    (repo / "src/old.py").write_bytes(b"original\r\n")
+    reference = repo / "references.txt"
+    reference.write_bytes(b'parts = ["src", "old.py"]\r\n' if case == "ambiguous" else b"src/old.py\r\n")
+    if case == "overwrite":
+        (repo / "new.py").write_bytes(b"keep")
+    if case == "binary":
+        (repo / "binary.dat").write_bytes(b"\0src/old.py")
+    _repository(repo)
+    before = {p: p.read_bytes() for p in (repo / "src/old.py", reference)}
+    destination = {"escape": "../outside.py", "case-only": "src/OLD.py"}.get(case, "new.py")
+    argv = ["--repo-root", str(repo), "--rename", "src/old.py", destination, "--apply"]
+    if case == "report":
+        argv += ["--report", str(repo / "report.json")]
+    if case == "report-parent":
+        argv += ["--report", str(tmp_path / "absent/report.json")]
+    code = module["main"](argv)
+    assert code in {1, 2}
+    assert {p: p.read_bytes() for p in before} == before
+    assert not run_git(repo, "status", "--porcelain").stdout
+    if case == "ambiguous":
+        assert code == 2
+        assert module["main"]([*argv, "--reference", '"src", "old.py"', '"new.py"']) == 0
+        assert reference.read_bytes() == b'parts = ["new.py"]\r\n'
+        assert not (repo / "src/old.py").exists()
+    if case == "binary":
+        assert module["main"]([*argv, "--exclude", "binary.dat"]) == 0
+        assert (repo / "binary.dat").read_bytes() == b"\0src/old.py"
+    capsys.readouterr()
+
+
+@pytest.mark.parametrize("failure", ["write", "move", "drift"])
+def test_repository_path_rename_compensates_file_errors_and_detects_source_drift(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, failure: str,
+) -> None:
+    import runpy
+
+    module = runpy.run_path(str(OPERATION_RUNNER.with_name("rename-repository-path.py")))
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "old.py").write_bytes(b"source\r\n")
+    (repo / "one.txt").write_bytes(b"old.py\r\n")
+    (repo / "two.txt").write_bytes(b"old.py\r\n")
+    _repository(repo)
+    report, originals, changes, moves = module["build_plan"](
+        repo, [("old.py", "nested/new.py")], [], set(),
+    )
+    assert not report["unresolved"]
+    if failure == "drift":
+        (repo / "one.txt").write_bytes(b"someone else's edit")
+        with pytest.raises(module["RenameError"], match="changed after planning"):
+            module["apply_plan"](originals, changes, moves, root=repo)
+        assert (repo / "one.txt").read_bytes() == b"someone else's edit"
+    else:
+        method = "write_bytes" if failure == "write" else "rename"
+        original = getattr(pathlib.Path, method)
+        calls = 0
+
+        def fail_once(path: pathlib.Path, *args: object, **kwargs: object) -> object:
+            nonlocal calls
+            calls += 1
+            if calls == (2 if failure == "write" else 1):
+                raise OSError("simulated file failure")
+            return original(path, *args, **kwargs)
+
+        monkeypatch.setattr(pathlib.Path, method, fail_once)
+        with pytest.raises(module["RenameError"], match="rolled back"):
+            module["apply_plan"](originals, changes, moves, root=repo)
+        assert all(path.read_bytes() == content for path, content in originals.items())
+    assert (repo / "old.py").exists()
+    assert not (repo / "nested").exists()
+
+
+def test_repository_path_rename_relocates_markdown_links_with_their_document(
+    tmp_path: pathlib.Path,
+) -> None:
+    import runpy
+
+    module = runpy.run_path(str(OPERATION_RUNNER.with_name("rename-repository-path.py")))
+    repo = tmp_path / "repo"
+    (repo / "docs").mkdir(parents=True)
+    (repo / "asset.txt").write_bytes(b"asset")
+    (repo / "docs/old.md").write_bytes(b"[asset](../asset.txt)\r\n")
+    _repository(repo)
+    assert module["main"]([
+        "--repo-root", str(repo), "--rename", "docs/old.md", "docs/deeper/new.md", "--apply",
+    ]) == 0
+    assert (repo / "docs/deeper/new.md").read_bytes() == b"[asset](../../asset.txt)\r\n"
+
+
+def test_repository_path_rename_requires_explicit_pairs_when_git_has_no_rename(
+    tmp_path: pathlib.Path,
+) -> None:
+    import runpy
+
+    module = runpy.run_path(str(OPERATION_RUNNER.with_name("rename-repository-path.py")))
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "old.py").write_bytes(b"unchanged")
+    _repository(repo)
+    assert module["main"](["--repo-root", str(repo), "--from-git", "--apply"]) == 1
+    assert (repo / "old.py").read_bytes() == b"unchanged"
+
+
+@pytest.mark.parametrize(
+    "operation",
+    [
+        {"parameters": ["base"], "steps": [{"run": ["check"]}]},
+        {"parameters": ["base", "head"], "handoff": "run tests"},
+        {"parameters": ["base", "head"], "steps": [{"run": ["check"]}], "handoff": "run tests"},
+        {"parameters": ["base", "head", "extra"], "steps": [{"run": ["check"]}]},
+    ],
+)
+def test_sdlc_test_selection_requires_executable_commit_context(operation: dict[str, object]) -> None:
+    document = {"version": 2, "kind": "ceratops-sdlc", "repository": {"test-selection": {"ci": operation}}}
+    assert contracts.validation_errors(document)
+
+
+def test_repository_path_rename_handles_spaces_same_names_and_multiple_pairs(tmp_path: pathlib.Path) -> None:
+    import runpy
+
+    module = runpy.run_path(str(OPERATION_RUNNER.with_name("rename-repository-path.py")))
+    repo = tmp_path / "repo with spaces"
+    (repo / "src").mkdir(parents=True)
+    (repo / "src/old name.py").write_bytes(b"first")
+    (repo / "src/same.py").write_bytes(b"second")
+    (repo / "README.md").write_bytes(
+        b'"src/old name.py" "src/same.py"\r\n[run](src/old%20name.py)\r\n',
+    )
+    _repository(repo)
+    assert module["main"]([
+        "--repo-root", str(repo), "--rename", "src/old name.py", "nested/new name.py",
+        "--rename", "src/same.py", "nested/same.py", "--apply",
+    ]) == 0
+    assert (repo / "README.md").read_bytes() == (
+        b'"nested/new name.py" "nested/same.py"\r\n[run](nested/new%20name.py)\r\n'
+    )
+    assert (repo / "nested/new name.py").read_bytes() == b"first"
+    assert (repo / "nested/same.py").read_bytes() == b"second"
+
+
+def test_repository_path_rename_rechecks_links_before_apply(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import runpy
+
+    module = runpy.run_path(str(OPERATION_RUNNER.with_name("rename-repository-path.py")))
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "old.py").write_bytes(b"source")
+    _repository(repo)
+    _, originals, changes, moves = module["build_plan"](repo, [("old.py", "nested/new.py")], [], set())
+    original = pathlib.Path.is_symlink
+    monkeypatch.setattr(pathlib.Path, "is_symlink", lambda path: path == repo / "nested" or original(path))
+    with pytest.raises(module["RenameError"], match="Links and junctions"):
+        module["apply_plan"](originals, changes, moves, root=repo)
+    assert (repo / "old.py").read_bytes() == b"source"
+    assert not (repo / "nested").exists()
+
+
+def test_repository_path_rename_saves_a_failure_report_before_returning(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import runpy
+
+    module = runpy.run_path(str(OPERATION_RUNNER.with_name("rename-repository-path.py")))
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "old.py").write_bytes(b"source")
+    _repository(repo)
+    report = tmp_path / "report.json"
+
+    def interrupted(*args: object, **kwargs: object) -> None:
+        assert json.loads(report.read_text(encoding="utf-8"))["status"] == "ready"
+        raise OSError("simulated write failure")
+
+    monkeypatch.setitem(module["main"].__globals__, "apply_plan", interrupted)
+    assert module["main"]([
+        "--repo-root", str(repo), "--rename", "old.py", "new.py",
+        "--apply", "--report", str(report),
+    ]) == 1
+    retained = json.loads(report.read_text(encoding="utf-8"))
+    assert retained["status"] == "failed"
+    assert retained["message"] == "simulated write failure"
+    assert (repo / "old.py").read_bytes() == b"source"
+    assert not (repo / "new.py").exists()

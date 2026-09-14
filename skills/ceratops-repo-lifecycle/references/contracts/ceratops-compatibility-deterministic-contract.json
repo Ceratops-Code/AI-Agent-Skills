@@ -95,6 +95,8 @@
     "payloads": [
       "scripts/repository_operation.py",
       "scripts/sdlc_handoffs.py",
+      "scripts/github_pr_workflow/command.py",
+      "scripts/github_contract_engine/github_api.py",
       "scripts/ceratops_repo_compatibility_engine/sdlc_contract_validation.py",
       "references/schemas/sdlc.yml.schema.json",
       "references/schemas/sdlc.v1.schema.json",

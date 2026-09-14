@@ -11,10 +11,17 @@ at its own boundary and owns post-merge publication, deployment, and cleanup.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import os
 import pathlib
+import re
+import stat
 import subprocess
 import sys
+import tempfile
+import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
 
@@ -24,7 +31,16 @@ from github_pr_workflow.command import (
     require_success,
     run_command,
 )
-from repository_operation import OperationError, operation_category
+from repository_operation import (
+    OperationError,
+    OperationRequest,
+    PreparedOperation,
+    _unique_result_object,
+    execute_prepared_operations,
+    operation_category,
+    prepare_operations,
+    require_clean_commit,
+)
 
 SCRIPT_ROOT = pathlib.Path(__file__).resolve().parent
 PENDING_MANAGER = SCRIPT_ROOT / "manage-pending-work.py"
@@ -555,8 +571,11 @@ def _ship_after_promotion(
     raise PromotionError(f"Shipping returned unsupported exit code: {ship_code}")
 
 
-def promote(args: argparse.Namespace) -> dict[str, object]:
+def promote(args: argparse.Namespace, *, timings: dict[str, float] | None = None) -> dict[str, object]:
     """Prepare a release branch, record selected work, and optionally deploy."""
+
+    if timings is None:
+        timings = {}
 
     if args.release_branch != RELEASE_BRANCH:
         raise PromotionError(f"release_branch must be {RELEASE_BRANCH}.")
@@ -717,9 +736,25 @@ def promote(args: argparse.Namespace) -> dict[str, object]:
     if record_code:
         raise PromotionError(str(record.get("message", "Scope recording failed.")))
 
-    validation_code, validation = _run_json(
-        _validation_command(args, repo_root, target_commit), repo_root,
-    )
+    prepared_operations: list[PreparedOperation] = []
+    with _timed_phase(timings, "validation"):
+        try:
+            if args.run_operation is not None:
+                require_clean_commit(repo_root, target_commit)
+                # Freeze the complete deployment selection before validation.
+                # Its executor retains the commit barriers without a second
+                # CLI invocation that would rerun the same validation commands.
+                prepared_operations = prepare_operations(
+                    repo_root,
+                    [OperationRequest(name) for name in args.run_operation],
+                    args.sdlc_contract,
+                )
+            validation_code, validation = _run_json(
+                _validation_command(args, repo_root, target_commit), repo_root,
+            )
+        except (OperationError, OSError, ValueError) as exc:
+            validation_code = 1
+            validation = {"status": "error", "message": str(exc)[:4096]}
     if validation_code:
         raise PromotionError(
             str(validation.get("message", "Repository validation failed.")),
@@ -729,19 +764,19 @@ def promote(args: argparse.Namespace) -> dict[str, object]:
                 "release_branch": args.release_branch, "head": target_commit,
             },
         )
+    validation_handoffs = [item for item in validation["results"] if item.get("handoff") and not item.get("handoff_completed")]
     operations: dict[str, Any] | None = None
     handoffs: list[dict[str, str]] = []
     if args.run_operation is not None:
-        operation_command = [
-            sys.executable, str(OPERATION_RUNNER), "--repo-root", str(repo_root),
-            "--sdlc-contract", str(args.sdlc_contract), "--commit", target_commit,
-        ]
-        for operation_id in args.run_operation:
-            operation_command.extend(("--operation", operation_id))
-        for operation_id in args.validation_operation or []:
-            operation_command.extend(("--validation-operation", operation_id))
-        operation_code, operations = _run_json(operation_command, repo_root)
-        if operation_code:
+        with _timed_phase(timings, "deployment"):
+            try:
+                require_clean_commit(repo_root, target_commit)
+                operations = execute_prepared_operations(prepared_operations)
+                if validation_handoffs:
+                    operations["validation_handoffs"] = validation_handoffs
+            except (OperationError, OSError, ValueError) as exc:
+                operations = {"status": "error", "message": str(exc)[:4096]}
+        if operations["status"] != "completed":
             raise PromotionError(
                 str(operations.get("message", "Deployment failed.")),
                 {**operations, "phase": "deployment", "remote_mutation": False,
@@ -783,6 +818,147 @@ def promote(args: argparse.Namespace) -> dict[str, object]:
     return result
 
 
+@contextmanager
+def _timed_phase(timings: dict[str, float], phase: str):
+    """Record actual elapsed work even when a phase fails; never repeat it."""
+    started = time.monotonic()
+    try:
+        yield
+    finally:
+        timings[phase] = round(time.monotonic() - started, 6)
+
+
+def _save_result(path: pathlib.Path, result: dict[str, object]) -> None:
+    """Atomically retain the exact outcome; own and always clean its staging file."""
+    staging = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
+                                         prefix="." + path.name, suffix=".tmp", delete=False) as stream:
+            staging = pathlib.Path(stream.name)
+            json.dump(result, stream, indent=2)
+            stream.write("\n")
+        staging.replace(path)
+    finally:
+        if staging is not None:
+            staging.unlink(missing_ok=True)
+
+
+def _cleanup_path(path: pathlib.Path) -> pathlib.Path:
+    """Reject links before resolving an explicitly selected cleanup path."""
+    absolute = pathlib.Path(os.path.abspath(path.expanduser()))
+    for part in (absolute, *absolute.parents):
+        if part.is_symlink() or part.is_junction():
+            raise PromotionError(f"Result cleanup rejects symlinks and junctions: {part}")
+    return absolute
+
+
+def _completed_deployment(result: object, commit: str) -> None:
+    """Check the lifecycle envelope, not the meaning of domain-specific receipts.
+
+    The caller must first validate each producer's success contract and supply
+    the digest of those exact saved bytes. This check cannot infer domain success
+    from a zero exit code, a schema name, or an arbitrary producer status string.
+    """
+    if not isinstance(result, dict) or result.get("status") != "ready":
+        raise PromotionError("Result is not a successful promote-and-deploy outcome.")
+    if result.get("head") != commit:
+        raise PromotionError("Result head does not match expected-commit.")
+    operations = result.get("operations")
+    if (not isinstance(operations, dict) or operations.get("status") != "completed"
+            or operations.get("pending_operations") != []):
+        raise PromotionError("Deployment is missing or incomplete; retain the result.")
+    completed = operations.get("completed_operations")
+    outcomes = operations.get("results")
+    if (not isinstance(completed, list) or not completed
+            or not all(isinstance(item, str) and item for item in completed)
+            or len(set(completed)) != len(completed)
+            or not isinstance(outcomes, list) or len(outcomes) != len(completed)):
+        raise PromotionError("Completed deployment operations are missing or ambiguous.")
+    for operation, outcome in zip(completed, outcomes, strict=True):
+        if (not isinstance(outcome, dict) or outcome.get("operation") != operation
+                or outcome.get("status") != "completed" or outcome.get("commit") != commit):
+            raise PromotionError(f"Deployment outcome is incomplete or has a different commit: {operation}")
+        steps = outcome.get("steps")
+        receipts = outcome.get("step_results")
+        if (not isinstance(steps, list) or not steps
+                or not all((type(step) is int and step > 0)
+                           or (isinstance(step, str) and step.strip()) for step in steps)
+                or len(set(steps)) != len(steps)
+                or not isinstance(receipts, list) or len(receipts) != len(steps)):
+            raise PromotionError(f"Complete step receipts are required for cleanup: {operation}")
+        for step, item in zip(steps, receipts, strict=True):
+            if (not isinstance(item, dict) or item.get("step") != step
+                    or type(item.get("step")) is not type(step) or set(item) != {"step", "result"}):
+                raise PromotionError(f"Step receipt is missing or ambiguous: {operation}, step {step}")
+            receipt = item["result"]
+            if not isinstance(receipt, dict) or not all(
+                isinstance(receipt.get(field), str) and receipt[field].strip()
+                for field in ("schema", "status")
+            ):
+                raise PromotionError(f"Producer schema/status is missing: {operation}, step {step}")
+
+
+def finalize_result(args: argparse.Namespace) -> None:
+    """Remove only a caller-validated receipt; never invoke lifecycle operations.
+
+    This explicit completion trigger owns the temporary result file only. The
+    supplied SHA-256 binds the caller's producer validation to the bytes removed.
+    All checks precede unlink; other task files and pending-work state belong to
+    their respective owners. Failed cleanup can be retried without deployment.
+    """
+    execution_options = (
+        args.source_branch, args.run_operation, args.no_run_operation,
+        args.prepare_release_only, args.ship_after_promotion, args.validation_operation,
+        args.publish_operation, args.deploy_operation, args.title, args.body,
+    )
+    if any(option is not None and option is not False for option in execution_options):
+        raise PromotionError("finalize-result cannot be combined with lifecycle execution options.")
+    if args.result_file is None or args.task_temp_root is None:
+        raise PromotionError("finalize-result requires result-file and task-temp-root.")
+    if not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", args.expected_commit or ""):
+        raise PromotionError("finalize-result requires a full expected-commit hash.")
+    if not re.fullmatch(r"[0-9a-f]{64}", args.verified_result_sha256 or ""):
+        raise PromotionError("Supply verified-result-sha256 only after validating every producer receipt.")
+    repo_root = args.repo_root.expanduser().resolve(strict=True)
+    common_dir = pathlib.Path(require_output(
+        _git(repo_root, "rev-parse", "--path-format=absolute", "--git-common-dir"), cwd=repo_root,
+    ).strip())
+    if common_dir.name != ".git":
+        raise PromotionError("Result cleanup requires a repository with a primary checkout.")
+    primary_root = common_dir.parent
+    task_root = _cleanup_path(args.task_temp_root)
+    expected_parent = primary_root.parent / "tmp" / primary_root.name
+    if not task_root.is_dir() or task_root.parent != expected_parent:
+        raise PromotionError(f"task-temp-root must be one existing task directory under {expected_parent}.")
+    inside_git = run_command(_git(task_root, "rev-parse", "--is-inside-work-tree"), cwd=task_root)
+    if inside_git.returncode != 128:
+        raise PromotionError("task-temp-root must be outside Git worktrees and repository state.")
+    path = _cleanup_path(args.result_file)
+    if not path.is_relative_to(task_root) or path == task_root:
+        raise PromotionError("result-file must be a file inside task-temp-root.")
+    inside_git = run_command(_git(path.parent, "rev-parse", "--is-inside-work-tree"), cwd=path.parent)
+    if inside_git.returncode != 128:
+        raise PromotionError("result-file must be outside Git worktrees and repository state.")
+    original_stat = path.stat()
+    if not stat.S_ISREG(original_stat.st_mode) or original_stat.st_nlink != 1:
+        raise PromotionError("result-file must be a regular file without hard links.")
+    data = path.read_bytes()
+    if hashlib.sha256(data).hexdigest() != args.verified_result_sha256:
+        raise PromotionError("Result changed since producer validation; revalidate the saved result.")
+    result = json.loads(data, object_pairs_hook=_unique_result_object)
+    _completed_deployment(result, args.expected_commit)
+    # Recheck identity and contents immediately before the only destructive step.
+    _cleanup_path(path)
+    current_stat = path.stat()
+    identity = ("st_dev", "st_ino", "st_mtime_ns", "st_size", "st_mode", "st_nlink")
+    if (any(getattr(current_stat, field) != getattr(original_stat, field) for field in identity)
+            or path.read_bytes() != data):
+        raise PromotionError("Result changed during cleanup; retain and revalidate it.")
+    path.unlink()
+    if path.exists():
+        raise PromotionError("Result path was recreated during cleanup; the new file was preserved.")
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Create the promotion parser."""
 
@@ -791,6 +967,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--repo-root", type=pathlib.Path, default=pathlib.Path.cwd())
     parser.add_argument("--source-branch", action="append")
+    parser.add_argument("--result-file", type=pathlib.Path,
+                        help="Retain the exact JSON outcome until verified-result finalization.")
+    parser.add_argument("--finalize-result", action="store_true",
+                        help="Delete an explicitly validated deployment result without running operations.")
+    parser.add_argument("--task-temp-root", type=pathlib.Path,
+                        help="Finalization boundary: <repo-parent>/tmp/<repo-name>/<task>.")
+    parser.add_argument("--expected-commit", help="Full deployed commit for result finalization.")
+    parser.add_argument("--verified-result-sha256",
+                        help="Digest of the exact saved result after caller validation of every producer receipt.")
     parser.add_argument("--main-branch", default="main")
     parser.add_argument(
         "--release-branch",
@@ -850,9 +1035,34 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     """Run promotion and emit one compact result."""
 
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if args.finalize_result:
+        try:
+            finalize_result(args)
+        except (CommandError, PromotionError, OSError, ValueError) as exc:
+            print(json.dumps({"status": "result_cleanup_failed", "message": str(exc),
+                              "replay_required": False}, separators=(",", ":")), file=sys.stderr)
+            return 1
+        print("OK")
+        return 0
+    if any(value is not None for value in (args.task_temp_root, args.expected_commit,
+                                          args.verified_result_sha256)):
+        parser.error("result cleanup arguments require --finalize-result")
+    started = time.monotonic()
+    timings: dict[str, float] = {}
+    result_file = None
+    failed = False
     try:
-        result = promote(args)
+        if args.result_file is not None:
+            requested = args.result_file.expanduser().resolve()
+            if requested.is_relative_to(args.repo_root.resolve()):
+                raise PromotionError("result-file must stay outside the repository")
+            requested.parent.mkdir(parents=True, exist_ok=True)
+            if requested.exists() and not requested.is_file():
+                raise PromotionError("result-file must name a file")
+            result_file = requested
+        result = promote(args, timings=timings)
     except (
         CommandError,
         OperationError,
@@ -861,15 +1071,25 @@ def main(argv: list[str] | None = None) -> int:
         ValueError,
         subprocess.SubprocessError,
     ) as exc:
-        payload = (
+        failed = True
+        result = (
             exc.payload
             if isinstance(exc, PromotionError) and exc.payload is not None
             else {"status": "error", "message": str(exc)}
         )
-        print(json.dumps(payload, separators=(",", ":")), file=sys.stderr)
-        return 1
-    print(json.dumps(result, separators=(",", ":")))
-    return 2 if result.get("status") == "pending_work" else 0
+    timings["total"] = round(time.monotonic() - started, 6)
+    result["timings_seconds"] = timings
+    if result_file is not None:
+        try:
+            _save_result(result_file, result)
+        except OSError as exc:
+            # Side effects may already be complete. Retain their exact outcome
+            # in the error instead of suggesting a replay to recover a record.
+            result = {"status": "result_recording_failed", "message": str(exc),
+                      "operation_result": result, "replay_required": False}
+            failed = True
+    print(json.dumps(result, separators=(",", ":")), file=sys.stderr if failed else sys.stdout)
+    return 1 if failed else (2 if result.get("status") == "pending_work" else 0)
 
 
 if __name__ == "__main__":

@@ -8,6 +8,7 @@ after success; it invalidates the earlier success before checks and cannot be
 reopened after passing. Prepare collects declared pytest nodes without running
 tests. Git whitespace preflight includes tracked and new files before declared
 checks, which use closed structured forms and run without a shell.
+Collection and verification own temporary check folders and remove them on exit.
 Source files are never patched, staged, committed, installed, promoted, or
 rolled back. Prepare records exact cleanup ownership and an active-update
 retention marker beneath the verified task temp root, verify retains detailed
@@ -30,6 +31,8 @@ import subprocess
 import sys
 import tempfile
 from collections.abc import Mapping, Sequence
+
+from skill_update_scratch import check_environment
 
 REQUEST_SCHEMA = "ceratops-skill-update-request.v2"
 STATE_SCHEMA = "ceratops-skill-update-state.v2"
@@ -94,6 +97,7 @@ def _run(
     arguments: Sequence[str],
     *,
     cwd: pathlib.Path,
+    environment: Mapping[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run one declared process without shell interpretation."""
 
@@ -101,6 +105,7 @@ def _run(
         return subprocess.run(
             list(arguments),
             cwd=cwd,
+            env=environment,
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -528,6 +533,7 @@ def _validate_checks(
 def _collect_declared_pytest_nodes(
     repo_root: pathlib.Path,
     checks: Sequence[Mapping[str, object]],
+    task_temp_root: pathlib.Path,
 ) -> None:
     """Reject uncollectable declared pytest nodes before source edits begin."""
 
@@ -544,10 +550,11 @@ def _collect_declared_pytest_nodes(
     unique_nodes = list(dict.fromkeys(nodes))
     if not unique_nodes:
         return
-    result = _run(
-        [sys.executable, "-m", "pytest", "--collect-only", "-q", *unique_nodes],
-        cwd=repo_root,
-    )
+    with check_environment(task_temp_root) as environment:
+        result = _run(
+            [sys.executable, "-m", "pytest", "--collect-only", "-q", *unique_nodes],
+            cwd=repo_root, environment=environment,
+        )
     if result.returncode:
         detail = " ".join((result.stderr or result.stdout).split())
         if len(detail) > MAX_COMPACT_DETAIL:
@@ -685,7 +692,7 @@ def _validated_request(
         )
 
     checks = _validate_checks(request["checks"], repo_root, allowed_set)
-    _collect_declared_pytest_nodes(repo_root, checks)
+    _collect_declared_pytest_nodes(repo_root, checks, task_temp_root)
     dirty = sorted(_dirty_paths(repo_root))
     baseline_dirty = {path: _snapshot(repo_root, path) for path in dirty}
     baseline_targets = {path: _snapshot(repo_root, path) for path in allowed}
@@ -1173,6 +1180,7 @@ def _bounded(value: str) -> str:
 def _run_check(
     repo_root: pathlib.Path,
     check: Mapping[str, object],
+    environment: Mapping[str, str],
 ) -> dict[str, object]:
     kind = check.get("kind")
     if kind == "pytest":
@@ -1180,34 +1188,27 @@ def _run_check(
         if not isinstance(nodes, list) or not all(isinstance(node, str) for node in nodes):
             raise UpdateExecutionError("state pytest check is invalid")
         argv = [sys.executable, "-m", "pytest", "-q", *nodes]
-        result = _run(argv, cwd=repo_root)
-        evidence = {
-            "kind": kind,
-            "nodes": nodes,
-            "returncode": result.returncode,
-            "stdout": _bounded(result.stdout),
-            "stderr": _bounded(result.stderr),
-        }
-        if result.returncode:
-            raise CheckFailure("pytest check failed", evidence)
-        return evidence
-    if kind == "command":
+        selection: dict[str, object] = {"nodes": nodes}
+    elif kind == "command":
         raw_argv = check.get("argv")
         if not isinstance(raw_argv, list) or not all(
             isinstance(item, str) for item in raw_argv
         ):
             raise UpdateExecutionError("state command check is invalid")
-        command_argv = [str(item) for item in raw_argv]
-        result = _run(command_argv, cwd=repo_root)
+        argv = [str(item) for item in raw_argv]
+        selection = {"argv": argv}
+    if kind in {"pytest", "command"}:
+        result = _run(argv, cwd=repo_root, environment=environment)
         evidence = {
             "kind": kind,
-            "argv": command_argv,
+            **selection,
             "returncode": result.returncode,
             "stdout": _bounded(result.stdout),
             "stderr": _bounded(result.stderr),
         }
         if result.returncode:
-            raise CheckFailure(f"command check failed with {result.returncode}", evidence)
+            message = "pytest check failed" if kind == "pytest" else f"command check failed with {result.returncode}"
+            raise CheckFailure(message, evidence)
         return evidence
     if kind != "search":
         raise UpdateExecutionError("state check kind is invalid")
@@ -1322,25 +1323,25 @@ def command_verify(state_path: pathlib.Path, evidence_path: pathlib.Path) -> Non
             failures.append(str(exc))
     checks = state["checks"]
     assert isinstance(checks, list)
-    for raw_check in (checks if not failures else []):
-        if not isinstance(raw_check, Mapping):
-            failures.append("state check is invalid")
-            break
-        try:
-            results.append(_run_check(repo_root, raw_check))
-        except CheckFailure as exc:
-            results.append(exc.evidence)
-            failures.append(str(exc))
-            break
-        except UpdateExecutionError as exc:
-            results.append(
-                {
-                    "kind": raw_check.get("kind", "unknown"),
-                    "error": str(exc),
-                }
-            )
-            failures.append(str(exc))
-            break
+    try:
+        if not failures:
+            with check_environment(pathlib.Path(str(cleanup["task_temp_root"]))) as environment:
+                for raw_check in checks:
+                    if not isinstance(raw_check, Mapping):
+                        failures.append("state check is invalid")
+                        break
+                    try:
+                        results.append(_run_check(repo_root, raw_check, environment))
+                    except CheckFailure as exc:
+                        results.append(exc.evidence)
+                        failures.append(str(exc))
+                        break
+                    except UpdateExecutionError as exc:
+                        results.append({"kind": raw_check.get("kind", "unknown"), "error": str(exc)})
+                        failures.append(str(exc))
+                        break
+    except OSError as exc:
+        failures.append(str(exc))
     if not failures or results:
         try:
             final_input_sha256, final_changed, final_groups = _verification_input(state)

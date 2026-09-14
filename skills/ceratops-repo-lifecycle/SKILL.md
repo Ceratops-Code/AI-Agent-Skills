@@ -76,6 +76,12 @@ and publication.
 - Require separate applicable validation and test results before promotion
   continuation, shipping, publication, and deployment. Explicit selection cannot
   omit version-3 gates; a declared no-op must include its reason.
+- Treat `completed` as command completion; validate retained
+  `step_results[].result` independently against the producer's schema and
+  status.
+  Preserve those values and reuse saved results; never replay completed
+  deployment
+  or publication solely to recover missing output.
 - Keep ordinary repository-check failures, including `validation_failed` and `tests_failed`,
   inside the active action: diagnose and repair in the selected task worktree,
   commit, then repeat promotion or restart shipping for the new commit. Do not

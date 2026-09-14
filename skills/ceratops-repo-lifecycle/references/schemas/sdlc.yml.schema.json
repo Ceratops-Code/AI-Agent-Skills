@@ -49,6 +49,9 @@
         "bootstrap": {
           "$ref": "#/$defs/operations"
         },
+        "test-selection": {
+          "$ref": "#/$defs/test-selection-operations"
+        },
         "validate": {
           "$ref": "#/$defs/operations"
         },
@@ -143,6 +146,28 @@
             ]
           }
         }
+      }
+    },
+    "test-selection-operations": {
+      "type": "object",
+      "propertyNames": {"$ref": "#/$defs/name"},
+      "additionalProperties": {
+        "allOf": [
+          {"$ref": "#/$defs/operation"},
+          {
+            "required": ["parameters", "steps"],
+            "properties": {
+              "parameters": {
+                "type": "array",
+                "minItems": 2,
+                "maxItems": 2,
+                "uniqueItems": true,
+                "items": {"enum": ["base", "head"]}
+              }
+            },
+            "not": {"required": ["handoff"]}
+          }
+        ]
       }
     },
     "operations": {

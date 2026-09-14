@@ -19,7 +19,7 @@ class DeploymentError(ValueError):
 
 def token(value: Any, kind: str = "identity") -> str:
     patterns = {
-        "identity": r"[a-z][a-z0-9]*(?:_[a-z0-9]+)*",
+        "identity": r"[a-z][a-z0-9]*(?:[-_][a-z0-9]+)*",
         "version": r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)",
         "module": r"[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)*",
         "sha256": r"[0-9a-f]{64}",

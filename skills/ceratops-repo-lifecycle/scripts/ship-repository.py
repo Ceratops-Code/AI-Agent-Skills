@@ -17,6 +17,9 @@ import subprocess
 import sys
 from typing import Any
 
+from ceratops_repo_compatibility_engine.sdlc_contract_validation import (
+    operation_entries,
+)
 from github_pr_workflow import ship as github_ship
 from repository_operation import (
     FAILED_STATUSES,
@@ -26,6 +29,7 @@ from repository_operation import (
     execute_prepared_operations,
     operation_category,
     prepare_operations,
+    read_repository_contract,
     repository_commit,
     require_clean_commit,
 )
@@ -908,6 +912,66 @@ def _validate_phase(
     return result
 
 
+def _test_selection_phase(
+    args: argparse.Namespace, repo_root: pathlib.Path, expected_head: str | None,
+) -> dict[str, Any] | None:
+    """Check the repository's CI diff selection immediately before GitHub work.
+
+    The optional capability uses the existing operation executor, never a
+    hard-coded test runner. Fetch changes only local Git metadata; no remote
+    write occurs here. No configured capability means no fetch or extra command.
+    """
+    entries = operation_entries(read_repository_contract(repo_root, args.sdlc_contract))
+    selected = [name for name in entries if operation_category(name) == "test-selection"]
+    if not selected:
+        return None
+    try:
+        head = repository_commit(repo_root)
+        if head is None:
+            raise OperationError("Test selection requires a committed repository.")
+        require_clean_commit(repo_root, expected_head or head)
+
+        def git_value(*arguments: str) -> str:
+            result = subprocess.run(
+                ["git", *arguments], cwd=repo_root, capture_output=True,
+                text=True, encoding="utf-8", errors="replace", check=False,
+                env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+            )
+            if result.returncode:
+                raise OperationError(result.stderr.strip() or "Git comparison resolution failed.")
+            return result.stdout.strip()
+
+        git_value("check-ref-format", f"refs/heads/{args.base_branch}")
+        if not args.remote_name or args.remote_name.startswith("-"):
+            raise OperationError("Test selection requires a valid remote name.")
+        branch_head = git_value("rev-parse", "--verify", f"refs/heads/{args.head_branch}^{{commit}}")
+        if branch_head != head:
+            raise OperationError("Test selection must run from the exact staged release checkout.")
+        for name in selected:
+            placeholders = {argument for step in entries[name]["steps"] for argument in step["run"]}
+            if not {"{base}", "{head}"}.issubset(placeholders):
+                raise OperationError(f"Test selection must consume both base and head: {name}")
+        git_value("fetch", "--no-tags", "--", args.remote_name, f"refs/heads/{args.base_branch}")
+        base = git_value("rev-parse", "--verify", "FETCH_HEAD^{commit}")
+        prepared = prepare_operations(repo_root, [
+            OperationRequest(name, parameters={"base": base, "head": head}) for name in selected
+        ], args.sdlc_contract)
+        require_clean_commit(repo_root, head)
+        result = execute_prepared_operations(prepared)
+        if result["status"] in FAILED_STATUSES:
+            raise RepositoryShipError(
+                str(result.get("message", "CI test selection failed.")),
+                {**result, "base": base, "head": head,
+                 "phase": "before_remote", "remote_mutation": False},
+            )
+        require_clean_commit(repo_root, head)
+        return {**result, "base": base, "head": head}
+    except (OperationError, OSError) as exc:
+        raise RepositoryShipError(str(exc), {
+            "phase": "before_remote", "remote_mutation": False,
+        }) from exc
+
+
 def ship_repository(args: argparse.Namespace) -> dict[str, object]:
     """Run complete shipping, release publication, deployment, and cleanup."""
 
@@ -959,6 +1023,7 @@ def ship_repository(args: argparse.Namespace) -> dict[str, object]:
         args, repo_root, [*release_operations, *deploy_operations],
         phase="before_remote", remote_mutation=False,
     )
+    test_selection = _test_selection_phase(args, repo_root, prepared_target_commit)
     ship_code, shipped = _run_json(
         _ship_command(
             args,
@@ -1174,6 +1239,8 @@ def ship_repository(args: argparse.Namespace) -> dict[str, object]:
         "deployment": deployment,
         "finalization": finalized,
     }
+    if test_selection is not None:
+        result["test_selection"] = test_selection
     validation_handoffs = [item for item in validation["results"] if item.get("handoff") and not item.get("handoff_completed")]
     if validation_handoffs:
         result["validation_handoffs"] = validation_handoffs
@@ -1236,7 +1303,7 @@ def build_parser() -> argparse.ArgumentParser:
             "Complete deploy-local location to run after publication; repeat in order."
         ),
     )
-    parser.add_argument("--ci-wait-seconds", type=int, default=900)
+    parser.add_argument("--ci-wait-seconds", type=int, default=1800)
     parser.add_argument("--review-wait-seconds", type=int, default=260)
     parser.add_argument("--review-replies-request", type=pathlib.Path)
     parser.add_argument("--interval-seconds", type=int, default=10)

@@ -95,8 +95,10 @@ A source project contains normal `pyproject.toml` wheel packaging and a
 }
 ```
 
-`tool_id` and distribution names use lowercase underscore-separated identifiers,
-starting with a letter. Release versions are exact numeric `major.minor.patch`
+`tool_id` and distribution names use lowercase identifiers starting with a
+letter, with single hyphens or underscores between alphanumeric segments.
+Tool identities stay exact; distribution matching uses package-name
+normalization. Release versions are exact numeric `major.minor.patch`
 values. Module names use lowercase Python import components. Windows device
 names, separators, traversal, malformed identities, and unknown fields fail
 validation. The source distribution and built wheel version must agree.

@@ -43,6 +43,12 @@ what still needs attention.
   underlying option or decision.
 - After semantic discovery, sweep only touched scopes and the verified task temp
   root for plausible task-created residue.
+- Before cleanup or closure, review every temporary script or one-off code
+  snippet from the selected task, including deleted ones recorded in the
+  conversation. For each, explain what it did and whether permanent code
+  still needs any of its behavior, with a reason or stated uncertainty.
+  Name the permanent script and smallest change for each needed improvement;
+  account for every item before saying no permanent changes are needed.
 - Reconcile every material failed command, gate, retry, interruption, and manual
   recovery in the selected closure window. Classify its cause as target-system,
   workflow/helper, agent/tool-use, or external interruption; name the earliest
@@ -108,9 +114,12 @@ what still needs attention.
   evidence, run `python scripts/closure_snapshot.py --repo PATH
   [--fetch-remote NAME] [--release-branch BRANCH
   --release-upstream REF] [--task-worktree PATH --task-branch BRANCH]
-  [--temp-root PATH] [--cleanup-temp PATH]`; it snapshots only named targets,
-  removes only exact temporary artifacts that its safety contract validates
-  under `--temp-root`, and emits compact cleanup evidence.
+  [--temp-root PATH] [--cleanup-temp PATH] [--count-temp-files]`; it snapshots
+  only named targets, removes only exact temporary artifacts that its safety
+  contract validates under `--temp-root`, and emits compact cleanup evidence.
+- With `--temp-root`, inspect root existence and type without traversal;
+  `files: null` means uncounted. Use `--count-temp-files` only when a recursive
+  count is needed; it requires `--temp-root`.
 - Pass `--cleanup-temp` only for an exact artifact that selected-thread evidence
   proves this task created; otherwise omit it and report the cleanup.
 - Do not rerun facts reported by the snapshot. Query goal state only when

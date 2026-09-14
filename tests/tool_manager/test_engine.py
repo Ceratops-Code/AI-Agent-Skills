@@ -100,14 +100,15 @@ def test_install_update_previous_and_versions(deployment, tmp_path):
 
 
 @pytest.mark.parametrize("metadata_name", ["example_tool", "Example-Tool", "example.tool", "example__tool"])
-def test_underscore_identity_installs_with_normalized_wheel_metadata(deployment, tmp_path, metadata_name):
+@pytest.mark.parametrize("tool", ["example_tool", "example-tool"])
+def test_underscore_identity_installs_with_normalized_wheel_metadata(deployment, tmp_path, metadata_name, tool):
     """Backend name normalization must not change a tool's exact store identity."""
-    make_release(tmp_path, "1.0.0", tool="example_tool", metadata_name=metadata_name)
+    make_release(tmp_path, "1.0.0", tool=tool, metadata_name=metadata_name)
     engine, _, _ = deployment
-    result = engine.install("example_tool", "1.0.0")
-    assert result["tool_id"] == "example_tool"
-    assert engine.versions("example_tool")["installed_version"] == "1.0.0"
-    assert (tmp_path / "example_tool/current.json").is_file()
+    result = engine.install(tool, "1.0.0")
+    assert result["tool_id"] == tool
+    assert engine.versions(tool)["installed_version"] == "1.0.0"
+    assert (tmp_path / tool / "current.json").is_file()
 
 
 @pytest.mark.parametrize("phase", ["venv", "sync", "check", "--deployment-check"])
@@ -152,7 +153,7 @@ def test_self_update_completes_old_process_then_new_launch_selects_version(deplo
     assert engine.update("ceratops_tool_manager", "0.1.0")["reconnection_required"] is True
 
 
-@pytest.mark.parametrize("identity", ["../escape", "C:/escape", "foo/bar", "foo\\bar", "foo:stream", "A", "con", "a..b", "a.", "a ", "a__b", "a-b", "x" * 81])
+@pytest.mark.parametrize("identity", ["../escape", "C:/escape", "foo/bar", "foo\\bar", "foo:stream", "A", "con", "a..b", "a.", "a ", "a__b", "-a", "a-", "a--b", "a_-b", "x" * 81])
 def test_identity_escapes_fail_before_writes(deployment, tmp_path, identity):
     engine, calls, _ = deployment
     with pytest.raises(contracts.DeploymentError):

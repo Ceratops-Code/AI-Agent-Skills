@@ -94,6 +94,9 @@ launcher-looking strings, comments, paths, and data unchanged. A missing,
 nonexistent, or module-incompatible interpreter denies the command before
 execution with restart guidance.
 
+Project Python wrappers execute with PowerShell 7 (`pwsh`) to preserve
+embedded quotes and empty native arguments.
+
 ## Ownership And Runtime Boundary
 
 This directory owns user-global operational hooks that are not part of one

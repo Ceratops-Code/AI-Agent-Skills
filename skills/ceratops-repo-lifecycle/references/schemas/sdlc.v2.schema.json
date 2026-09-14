@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/Ceratops-Code/AI-Agent-Skills/schemas/sdlc.v2.schema.json",
+  "$id": "https://github.com/Ceratops-Code/AI-Agent-Skills/schemas/sdlc.yml.schema.json",
   "title": "Ceratops repository SDLC contract",
   "type": "object",
   "additionalProperties": false,
@@ -48,6 +48,9 @@
         },
         "bootstrap": {
           "$ref": "#/$defs/operations"
+        },
+        "test-selection": {
+          "$ref": "#/$defs/test-selection-operations"
         },
         "validate": {
           "$ref": "#/$defs/operations"
@@ -134,6 +137,28 @@
             ]
           }
         }
+      }
+    },
+    "test-selection-operations": {
+      "type": "object",
+      "propertyNames": {"$ref": "#/$defs/name"},
+      "additionalProperties": {
+        "allOf": [
+          {"$ref": "#/$defs/operation"},
+          {
+            "required": ["parameters", "steps"],
+            "properties": {
+              "parameters": {
+                "type": "array",
+                "minItems": 2,
+                "maxItems": 2,
+                "uniqueItems": true,
+                "items": {"enum": ["base", "head"]}
+              }
+            },
+            "not": {"required": ["handoff"]}
+          }
+        ]
       }
     },
     "operations": {

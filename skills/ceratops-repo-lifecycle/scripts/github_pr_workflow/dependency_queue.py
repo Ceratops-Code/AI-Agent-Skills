@@ -8,11 +8,13 @@ import pathlib
 import re
 import subprocess
 import sys
+import time
 from collections import defaultdict
 from typing import Any
 
 from .dependency_common import (
     WorkflowError,
+    as_object,
     compact_error,
     default_workspace_root,
     emit_result,
@@ -23,6 +25,7 @@ from .dependency_common import (
     write_json,
 )
 from .dependency_evidence import (
+    branch_freshness,
     dependency_tree_evidence,
     exact_ci_evidence,
     fetch_pr_batch,
@@ -34,7 +37,6 @@ from .dependency_evidence import (
     registry_evidence,
 )
 from .dependency_finalization import finalize
-
 
 UPDATE_RISK_ORDER = {
     "same_or_nonsemantic": 0,
@@ -85,6 +87,89 @@ def package_failure_message(update: dict[str, Any], evidence: dict[str, Any]) ->
     return f"{package}: {reason or 'evidence unavailable'}"[:360]
 
 
+def wait_for_dependabot_rebases(
+    details: dict[tuple[str, int], dict[str, Any]],
+    *,
+    wait_seconds: float = 180,
+    interval_seconds: float = 15,
+) -> tuple[dict[tuple[str, int], dict[str, Any]], list[dict[str, Any]]]:
+    """Wait before capturing approval evidence, batching only unfinished bot PRs.
+
+    One queue-wide wait budget avoids per-PR sleeps. Immutable comparisons are
+    reused while base/head stay unchanged; each network query also has a timeout.
+    Expiry permits manual repair but never approval of the stale head. Query
+    failures remain preflight blockers, rather than being called rebase failures.
+    """
+
+    pending = {
+        key for key, live in details.items()
+        if str(live.get("state")).upper() == "OPEN"
+        and str(live.get("author")).lower() in {
+            "dependabot", "dependabot[bot]", "app/dependabot",
+        }
+    }
+    started = time.monotonic()
+    deadline = started + max(0, wait_seconds)
+    comparisons: dict[tuple[str, str, str], dict[str, Any]] = {}
+    blockers: list[dict[str, Any]] = []
+    while pending:
+        for key in sorted(pending):
+            live = details[key]
+            if str(live.get("state")).upper() != "OPEN":
+                pending.remove(key)
+                continue
+            identity = (key[0], str(live.get("base_oid")), str(live.get("head_oid")))
+            evidence = comparisons.get(identity)
+            if evidence is None:
+                evidence = branch_freshness(
+                    key[0], live,
+                    timeout=min(30, max(1, deadline - time.monotonic())),
+                )
+                comparisons[identity] = evidence
+            live["branch_freshness"] = evidence
+            if evidence["status"] == "failed":
+                blockers.append({
+                    "repo": key[0], "pr": key[1], "check": "branch_freshness",
+                    "message": evidence["message"],
+                })
+                pending.remove(key)
+            elif evidence["status"] == "current":
+                live["rebase_wait"] = {"status": "ready"}
+                pending.remove(key)
+        if not pending:
+            break
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            for key in pending:
+                details[key]["rebase_wait"] = {
+                    "status": "timed_out",
+                    "message": "Dependabot branch is still behind; repair and refresh preflight",
+                }
+            break
+        time.sleep(min(max(1, interval_seconds), remaining))
+        requested: dict[str, set[int]] = defaultdict(set)
+        for repo, number in pending:
+            requested[repo].add(number)
+        refreshed, errors = fetch_pr_batch(
+            requested, timeout=min(30, max(1, deadline - time.monotonic()))
+        )
+        blockers.extend(errors)
+        for key in list(pending):
+            if key not in refreshed:
+                pending.remove(key)
+                if not any(
+                    str(item.get("repo")).lower() == key[0]
+                    and item.get("pr") in {None, key[1]} for item in errors
+                ):
+                    blockers.append({
+                        "repo": key[0], "pr": key[1], "check": "pr_query",
+                        "message": "PR missing during Dependabot rebase wait",
+                    })
+            else:
+                details[key] = refreshed[key]
+    return details, blockers
+
+
 def preflight(args: argparse.Namespace) -> int:
     """Build a non-mutating queue gate from the caller's complete snapshot."""
 
@@ -102,6 +187,8 @@ def preflight(args: argparse.Namespace) -> int:
         if isinstance(item, dict) and isinstance(item.get("repo"), str) and isinstance(item.get("number"), int):
             requested[item["repo"]].add(item["number"])
     live_details, blockers = fetch_pr_batch(requested)
+    live_details, rebase_blockers = wait_for_dependabot_rebases(live_details)
+    blockers.extend(rebase_blockers)
     if snapshot_blocked:
         blockers.extend(
             {
@@ -319,6 +406,9 @@ def preflight(args: argparse.Namespace) -> int:
                     "registry": registry,
                     "dependency_tree": dependency_tree,
                     "decision_gates": {
+                        "rebase_repair_required": (
+                            as_object(live.get("rebase_wait")).get("status") == "timed_out"
+                        ),
                         "compatibility_review_required": bool(
                             update_types & {"major", "unknown"}
                         ),

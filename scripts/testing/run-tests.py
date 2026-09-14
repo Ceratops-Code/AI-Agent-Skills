@@ -38,6 +38,7 @@ SCHEMA = "ai-agent-skills-test-impact-result.v1"
 COLLECTION_SCHEMA = "ai-agent-skills-pytest-collection.v1"
 NODE_MAP_SCHEMA = "ai-agent-skills-pytest-node-map.v1"
 PYTEST_DIAGNOSTIC_SCHEMA = "ai-agent-skills-pytest-diagnostic.v1"
+RUNNER_DIAGNOSTIC_SCHEMA = "ai-agent-skills-test-runner-diagnostic.v1"
 DEFAULT_DIAGNOSTIC_PATH = pathlib.Path(
     "build", "test-diagnostics", "pytest-failure.json"
 )
@@ -759,30 +760,16 @@ def write_json_atomic(path: pathlib.Path, payload: Mapping[str, object]) -> None
             temporary.unlink(missing_ok=True)
 
 
-def write_pytest_diagnostic(
-    path: pathlib.Path,
-    *,
-    command: Sequence[str],
-    cwd: pathlib.Path,
-    result: subprocess.CompletedProcess[str],
+def write_failure_diagnostic(
+    path: pathlib.Path, payload: Mapping[str, object],
 ) -> dict[str, object]:
-    """Persist complete failed-pytest streams and return bounded file evidence."""
+    """Persist a failure atomically and return bounded evidence for its caller."""
 
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
         raise ImpactError(f"cannot create diagnostic output parent: {exc}") from exc
-    write_json_atomic(
-        path,
-        {
-            "schema": PYTEST_DIAGNOSTIC_SCHEMA,
-            "command": list(command),
-            "cwd": str(cwd),
-            "exit_code": result.returncode,
-            "stdout": result.stdout,
-            "stderr": result.stderr,
-        },
-    )
+    write_json_atomic(path, payload)
     try:
         content = path.read_bytes()
     except OSError as exc:
@@ -1044,12 +1031,12 @@ def selection_from_changes(
                     rule="deleted-path",
                 )
                 continue
-            renamed_test_source = (
-                path.startswith("tests/")
-                and changed.status.startswith("R")
+            renamed_source = (
+                changed.status.startswith("R")
                 and path_index == 0
                 and len(changed.paths) == 2
             )
+            renamed_test_source = path.startswith("tests/") and renamed_source
             ownership_path = changed.paths[1] if renamed_test_source else path
             full_patterns = sorted(
                 pattern
@@ -1129,7 +1116,8 @@ def selection_from_changes(
                 detail = "ambiguous ignore mapping: " + ", ".join(
                     item.ignore_id for item in matched_ignores
                 )
-            elif changed.status.startswith("D"):
+            elif changed.status.startswith("D") or renamed_source:
+                # Renames remove the source; manifests only need current paths.
                 full_suite = True
                 add_all_reasons(
                     reasons, manifest, path=path, rule="deleted-path"
@@ -1242,12 +1230,44 @@ def execute(
     parser.add_argument("--base")
     parser.add_argument("--diagnostic-output", type=pathlib.Path)
     parser.add_argument("--head")
+    parser.add_argument("--select-only", action="store_true",
+                        help="Validate diff/worktree selection without collecting or running tests.")
     parser.add_argument("--node-map", type=pathlib.Path)
     parser.add_argument("--reconcile-collection", type=pathlib.Path)
     parser.add_argument("--validate-manifest", action="store_true")
     parser.add_argument("--worktree", action="store_true")
     parser.add_argument("--write-collection", type=pathlib.Path)
     args = parser.parse_args(list(argv) if argv is not None else None)
+    diagnostic_path = resolve_data_path(root, args.diagnostic_output or DEFAULT_DIAGNOSTIC_PATH)
+    preflight_commands: list[dict[str, object]] = []
+
+    def preflight_text(command: Sequence[str], cwd: pathlib.Path) -> subprocess.CompletedProcess[str]:
+        """Retain complete collection/error streams before summaries shorten them."""
+        result = text_runner(command, cwd)
+        if result.returncode or "--collect-only" in command:
+            preflight_commands.append({
+                "command": list(command), "cwd": str(cwd), "exit_code": result.returncode,
+                "stdout": result.stdout, "stderr": result.stderr,
+            })
+        return result
+
+    def fail_before_tests(exit_code: int) -> int:
+        """Keep the original failure even when its diagnostic cannot be saved.
+
+        Like failed-pytest evidence, the file remains until a successful test
+        run clears it; successful collection operations retain their artifacts.
+        """
+        try:
+            payload["diagnostic"] = write_failure_diagnostic(diagnostic_path, {
+                "schema": RUNNER_DIAGNOSTIC_SCHEMA, "cwd": str(root),
+                "exit_code": exit_code, "result": dict(payload),
+                "commands": preflight_commands,
+            })
+        except (ImpactError, OSError) as exc:
+            payload["diagnostic"] = {"error": str(exc), "path": str(diagnostic_path)}
+        emit(payload)
+        return exit_code
+
     selected_modes = (
         int(args.all)
         + int(args.validate_manifest)
@@ -1260,16 +1280,17 @@ def execute(
         selected_modes != 1
         or ((args.base is None) != (args.head is None))
         or (args.node_map is not None and args.reconcile_collection is None)
+        or (args.select_only and not (args.worktree or args.base is not None))
     ):
         payload = base_payload(mode="configuration", base=args.base, head=args.head)
         payload["manifest_errors"] = [
             "choose exactly one of --all, --validate-manifest, --worktree, "
             "--write-collection, --reconcile-collection, or --base with --head; "
-            "--node-map is valid only with --reconcile-collection"
+            "--node-map is valid only with --reconcile-collection; "
+            "--select-only requires --worktree or --base with --head"
         ]
         payload["status"] = "configuration-error"
-        emit(payload)
-        return CONFIGURATION_EXIT_CODE
+        return fail_before_tests(CONFIGURATION_EXIT_CODE)
     mode = (
         "validate-manifest"
         if args.validate_manifest
@@ -1289,21 +1310,19 @@ def execute(
     except ImpactError as exc:
         payload["manifest_errors"] = [str(exc)]
         payload["status"] = "manifest-invalid"
-        emit(payload)
-        return CONFIGURATION_EXIT_CODE
+        return fail_before_tests(CONFIGURATION_EXIT_CODE)
     errors = validate_manifest(
         root,
         manifest,
         collect=args.validate_manifest,
         include_untracked=args.worktree,
-        text_runner=text_runner,
+        text_runner=preflight_text,
         bytes_runner=bytes_runner,
     )
     if errors:
         payload["manifest_errors"] = list(errors)
         payload["status"] = "manifest-invalid"
-        emit(payload)
-        return CONFIGURATION_EXIT_CODE
+        return fail_before_tests(CONFIGURATION_EXIT_CODE)
     if args.validate_manifest:
         payload["status"] = "manifest-valid"
         emit(payload)
@@ -1311,7 +1330,7 @@ def execute(
     if args.write_collection is not None or args.reconcile_collection is not None:
         try:
             targets = all_selection(manifest).pytest_targets
-            nodeids = collect_nodeids(root, targets, runner=text_runner)
+            nodeids = collect_nodeids(root, targets, runner=preflight_text)
             if args.write_collection is not None:
                 destination = resolve_data_path(root, args.write_collection)
                 snapshot = collection_snapshot(nodeids, targets)
@@ -1341,41 +1360,37 @@ def execute(
         except ImpactError as exc:
             payload["collection_errors"] = [str(exc)]
             payload["status"] = "collection-invalid"
-            emit(payload)
-            return CONFIGURATION_EXIT_CODE
+            return fail_before_tests(CONFIGURATION_EXIT_CODE)
         if reconciliation["ok"]:
             payload["status"] = "collection-reconciled"
             emit(payload)
             return 0
         payload["status"] = "collection-mismatch"
-        emit(payload)
-        return COLLECTION_MISMATCH_EXIT_CODE
+        return fail_before_tests(COLLECTION_MISMATCH_EXIT_CODE)
     changes: tuple[ChangedFile, ...] = ()
     if args.all:
         selection = all_selection(manifest)
     elif args.worktree:
         try:
-            base = resolve_worktree_base(root, runner=text_runner)
+            base = resolve_worktree_base(root, runner=preflight_text)
             changes = worktree_changed_files(root, base, runner=bytes_runner)
         except ImpactError as exc:
             payload["manifest_errors"] = [str(exc)]
             payload["status"] = "configuration-error"
-            emit(payload)
-            return CONFIGURATION_EXIT_CODE
+            return fail_before_tests(CONFIGURATION_EXIT_CODE)
         payload["base"] = base
         payload["head"] = "WORKTREE"
         payload["changed"] = [item.payload() for item in changes]
         selection = selection_from_changes(manifest, changes)
     else:
         try:
-            base = resolve_revision(root, args.base, runner=text_runner)
-            head = resolve_revision(root, args.head, runner=text_runner)
+            base = resolve_revision(root, args.base, runner=preflight_text)
+            head = resolve_revision(root, args.head, runner=preflight_text)
             changes = changed_files(root, base, head, runner=bytes_runner)
         except ImpactError as exc:
             payload["manifest_errors"] = [str(exc)]
             payload["status"] = "configuration-error"
-            emit(payload)
-            return CONFIGURATION_EXIT_CODE
+            return fail_before_tests(CONFIGURATION_EXIT_CODE)
         payload["base"] = base
         payload["head"] = head
         payload["changed"] = [item.payload() for item in changes]
@@ -1393,21 +1408,20 @@ def execute(
     )
     if selection.mapping_gaps:
         payload["status"] = "mapping-gap"
+        return fail_before_tests(MAPPING_GAP_EXIT_CODE)
+    if args.select_only:
+        payload["status"] = "selection-valid"
         emit(payload)
-        return MAPPING_GAP_EXIT_CODE
+        return 0
     if not selection.pytest_targets:
         payload["status"] = "no-tests-selected"
         emit(payload)
         return 0
-    collection = collect_errors(root, selection.pytest_targets, runner=text_runner)
+    collection = collect_errors(root, selection.pytest_targets, runner=preflight_text)
     if collection:
         payload["manifest_errors"] = collection
         payload["status"] = "collection-invalid"
-        emit(payload)
-        return CONFIGURATION_EXIT_CODE
-    diagnostic_path = resolve_data_path(
-        root, args.diagnostic_output or DEFAULT_DIAGNOSTIC_PATH
-    )
+        return fail_before_tests(CONFIGURATION_EXIT_CODE)
     pytest_command = [
         sys.executable,
         "-m",
@@ -1425,11 +1439,13 @@ def execute(
             pytest_diagnostics.pytest_failure_summary(result.stdout, result.stderr)
         )
         try:
-            pytest_payload["diagnostic"] = write_pytest_diagnostic(
+            pytest_payload["diagnostic"] = write_failure_diagnostic(
                 diagnostic_path,
-                command=pytest_command,
-                cwd=root,
-                result=result,
+                {
+                    "schema": PYTEST_DIAGNOSTIC_SCHEMA, "command": pytest_command,
+                    "cwd": str(root), "exit_code": result.returncode,
+                    "stdout": result.stdout, "stderr": result.stderr,
+                },
             )
         except ImpactError as exc:
             pytest_payload["diagnostic"] = {

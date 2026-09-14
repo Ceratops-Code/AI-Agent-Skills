@@ -72,18 +72,19 @@ def test_deploy_completes_launchers_after_runtime_record(tmp_path, monkeypatch, 
 
 
 @pytest.fixture
-def source_package(tmp_path, monkeypatch):
+def source_package(tmp_path, monkeypatch, request):
     """Provide reviewed source and an offline wheel builder; writes stay in tmp_path."""
     runtime_root = tmp_path / "installed"
     runtime_root.mkdir()
     monkeypatch.setattr(storage, "INSTALL_ROOT", runtime_root)
     seed = tmp_path / "seed"
     seed.mkdir()
-    bundle = make_release(seed, "1.0.0")
+    identity = getattr(request, "param", "fixture")
+    bundle = make_release(seed, "1.0.0", tool=identity)
     project = tmp_path / "reviewed source"
     project.mkdir()
-    (project / "tool.json").write_text(json.dumps({"schema": 1, "tool_id": "fixture", "distribution": "fixture", "module": "fixture"}))
-    (project / "pyproject.toml").write_text('[project]\nname="fixture"\nversion="1.0.0"\n')
+    (project / "tool.json").write_text(json.dumps({"schema": 1, "tool_id": identity, "distribution": identity, "module": "fixture"}))
+    (project / "pyproject.toml").write_text(f'[project]\nname="{identity}"\nversion="1.0.0"\n')
     (project / "pylock.toml").write_text('lock-version="1.0"\npackages=[]\n')
     runtime = engine_module.Runtime(tmp_path / "python.exe", tmp_path / "uv.exe", "3.14.7", "0.12.10")
     monkeypatch.setattr(package_module, "global_runtime", lambda: runtime)
@@ -118,8 +119,10 @@ def test_packaging_refuses_changed_version_and_publishes_atomically(source_packa
 
 
 @pytest.mark.usefixtures("deployment")
+@pytest.mark.parametrize("source_package", ["fixture", "form-filling"], indirect=True)
 def test_cli_packages_then_installs_through_existing_engine(source_package, tmp_path, monkeypatch, capsys):
     project, runtime_root, calls = source_package
+    identity = json.loads((project / "tool.json").read_text())["tool_id"]
     outside = tmp_path / "another checkout"
     outside.mkdir()
     monkeypatch.chdir(outside)
@@ -127,10 +130,10 @@ def test_cli_packages_then_installs_through_existing_engine(source_package, tmp_
     output = capsys.readouterr()
     result = json.loads(output.out)
     assert not output.err and len(output.out.splitlines()) == 1
-    assert result["tool_id"] == "fixture" and result["version"] == "1.0.0"
+    assert result["tool_id"] == identity and result["version"] == "1.0.0"
     assert len(calls) == 1 and calls[0][1]["cwd"] == project
-    assert not (runtime_root / "fixture/current.json").exists()
-    assert cli.main(["install", "fixture", "1.0.0"]) == 0
+    assert not (runtime_root / identity / "current.json").exists()
+    assert cli.main(["install", identity, "1.0.0"]) == 0
     assert json.loads(capsys.readouterr().out)["installed_version"] == "1.0.0"
 
 

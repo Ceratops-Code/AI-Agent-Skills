@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import json
 import pathlib
+import runpy
 import sys
 import time
 from typing import Any
@@ -28,6 +29,7 @@ from .dependency_common import (
     write_json,
 )
 from .dependency_evidence import fetch_pr_batch
+
 
 def parse_pr_identifier(value: str) -> tuple[str, int] | None:
     match = PR_URL_RE.match(value.strip()) or PR_ID_RE.match(value.strip())
@@ -245,8 +247,7 @@ def merge_pr(
 ) -> tuple[dict[str, Any] | None, str | None]:
     command = [
         sys.executable,
-        "-m",
-        "github_pr_workflow",
+        str(merge_helper_directory() / "github_pr_workflow" / "__main__.py"),
         "merge",
         "--pr",
         f"https://github.com/{repo}/pull/{number}",
@@ -266,7 +267,7 @@ def merge_pr(
     ]
     if admin:
         command.append("--admin")
-    completed = run_command(command, cwd=merge_helper_directory())
+    completed = run_command(command, cwd=checkout)
     raw = completed.stdout if completed.returncode == 0 else completed.stderr
     try:
         value = json.loads(raw or "{}")
@@ -312,6 +313,123 @@ def fresh_live(repo: str, number: int) -> tuple[dict[str, Any] | None, dict[str,
     if value is None:
         return None, {"repo": repo, "pr": number, "check": "pr_query", "message": "PR not returned"}
     return value, None
+
+
+def _git_value(root: pathlib.Path, *arguments: str) -> str:
+    completed = run_command(["git", *arguments], cwd=root)
+    if completed.returncode:
+        raise WorkflowError(compact_error(completed))
+    return completed.stdout.strip()
+
+
+def selected_worktree_cleanup(
+    checkout: dict[str, Any], approved_head: str, base_ref: str
+) -> tuple[dict[str, str] | None, str | None]:
+    """Pin cleanup to an explicit checkout at the approved PR commit.
+
+    Primary checkouts are never cleanup candidates. The existing pending-work
+    manager owns deletion after merge and sync; this function only records the
+    selected branch and canonical task-worktree identity before the merge.
+    """
+
+    if not checkout.get("explicit"):
+        return None, None
+    try:
+        worktree = pathlib.Path(str(checkout["path"])).resolve()
+        common = pathlib.Path(_git_value(
+            worktree, "rev-parse", "--path-format=absolute", "--git-common-dir"
+        )).resolve()
+        primary = common.parent
+        if worktree == primary:
+            return None, None
+        expected_parent = primary.parent / "worktrees" / primary.name
+        if common.name != ".git" or worktree.parent != expected_parent:
+            raise WorkflowError("selected checkout is outside the managed task-worktree root")
+        branch = _git_value(worktree, "branch", "--show-current")
+        if not branch or not base_ref or branch == base_ref:
+            raise WorkflowError("cleanup requires a selected source branch and a distinct base")
+        if _git_value(worktree, "rev-parse", "HEAD") != approved_head:
+            raise WorkflowError("selected worktree is not at the preflight-approved PR head")
+        registered = _git_value(
+            primary, "for-each-ref", "--format=%(worktreepath)", f"refs/heads/{branch}"
+        )
+        if not registered or pathlib.Path(registered).resolve() != worktree:
+            raise WorkflowError("selected source branch is registered in another worktree")
+        if _git_value(worktree, "status", "--porcelain"):
+            raise WorkflowError("selected worktree contains uncommitted work")
+        return {
+            "repo_root": str(primary), "worktree": str(worktree),
+            "branch": branch, "head": approved_head, "base_ref": base_ref,
+        }, None
+    except (OSError, WorkflowError) as exc:
+        return None, str(exc)
+
+
+def finalize_worktree_cleanup(
+    plan: dict[str, str],
+) -> tuple[dict[str, Any], str | None]:
+    """Delegate removal and residual-folder verification to the cleanup owner.
+
+    A scope containing another task's source is preserved. On failure the
+    manager's checkpoint and exact selected identity remain in the result for
+    recovery; no alternate recursive-delete implementation is used here.
+    """
+
+    result: dict[str, Any] = {"plan": plan}
+    try:
+        primary = pathlib.Path(plan["repo_root"])
+        worktree = pathlib.Path(plan["worktree"])
+        current_plan, error = selected_worktree_cleanup(
+            {"explicit": True, "path": str(worktree)}, plan["head"], plan["base_ref"]
+        )
+        if error or current_plan != plan:
+            raise WorkflowError(error or "selected worktree identity changed after merge")
+        base = plan["base_ref"]
+        if _git_value(primary, "branch", "--show-current") != base:
+            raise WorkflowError("primary checkout is not on the synchronized PR base")
+        target = _git_value(primary, "rev-parse", "HEAD")
+        if target != _git_value(primary, "rev-parse", f"refs/remotes/origin/{base}"):
+            raise WorkflowError("primary checkout is not synchronized with origin")
+        if _git_value(primary, "status", "--porcelain"):
+            raise WorkflowError("primary checkout contains uncommitted work")
+        manager = runpy.run_path(str(merge_helper_directory() / "manage-pending-work.py"))
+        scope = manager["_scope_path"](primary, base)
+        if scope.exists():
+            sources = load_json(scope).get("sources")
+            if not isinstance(sources, list) or not sources or any(
+                not isinstance(source, dict)
+                or source.get("branch") != plan["branch"]
+                or source.get("commit") != plan["head"]
+                for source in sources
+            ):
+                raise WorkflowError("pending-work scope contains another task; cleanup preserved")
+        recorded = manager["record_scope"](
+            primary, target_branch=base, target_commit=target,
+            source_branches=[plan["branch"]],
+        )
+        result["record"] = recorded
+        if recorded.get("status") != "ready":
+            raise WorkflowError("selected worktree is not ready for cleanup; see recorded findings")
+        if recorded.get("source_branches") != [plan["branch"]]:
+            raise WorkflowError("pending-work selection changed during recording; cleanup preserved")
+        finalized = manager["finalize_scope"](
+            primary, scope, target_branch=base, target_commit=target,
+            current_branch=base, current_commit=target,
+        )
+        result["result"] = finalized
+        if (
+            finalized.get("status") != "finalized"
+            or finalized.get("preserved")
+            or finalized.get("preserved_worktrees")
+            or worktree.exists()
+        ):
+            raise WorkflowError("selected worktree cleanup is incomplete; see retained state")
+        result["status"] = "cleaned"
+        return result, None
+    except (OSError, RuntimeError, ValueError) as exc:
+        result["status"] = "blocked"
+        result["message"] = str(exc)
+        return result, str(exc)
 
 
 def finalize(args: argparse.Namespace) -> int:
@@ -395,6 +513,15 @@ def finalize(args: argparse.Namespace) -> int:
             results.append({**blocker, "status": "blocked"})
             continue
         repository = approved_item["repository"]
+        approved_live = as_object(as_object(approved_item.get("pr")).get("live"))
+        if as_object(approved_live.get("rebase_wait")).get("status") == "timed_out":
+            blocker = {
+                "repo": repo, "pr": number, "check": "dependabot_rebase",
+                "message": "preflight rebase wait expired; repair and run a new preflight and approval",
+            }
+            blockers.append(blocker)
+            results.append({**blocker, "status": "blocked"})
+            continue
         if repository.get("archived") or repository.get("requires_report_only"):
             blocker = {
                 "repo": repo,
@@ -547,6 +674,17 @@ def finalize(args: argparse.Namespace) -> int:
             blockers.append(blocker)
             results.append({**blocker, "status": "blocked", "fingerprint": current_fingerprint})
             continue
+        cleanup_plan, cleanup_error = selected_worktree_cleanup(
+            checkout_info, approved_head, str(live.get("base_ref") or "")
+        )
+        if cleanup_error:
+            blocker = {
+                "repo": repo, "pr": number, "check": "worktree_cleanup",
+                "message": cleanup_error,
+            }
+            blockers.append(blocker)
+            results.append({**blocker, "status": "blocked"})
+            continue
         merge_result, merge_error = merge_pr(
             repo,
             number,
@@ -590,6 +728,7 @@ def finalize(args: argparse.Namespace) -> int:
                 "merge_method": method,
                 "admin": args.admin,
                 "result": merge_result,
+                **({"cleanup_plan": cleanup_plan} if cleanup_plan else {}),
             }
         )
         refreshed, snapshot_process = refresh_snapshot(
@@ -649,6 +788,21 @@ def finalize(args: argparse.Namespace) -> int:
                         "message": str(item.get("blocker") or item.get("reason") or item.get("path")),
                     }
                 )
+
+    for item in results:
+        plan = item.get("cleanup_plan")
+        if item.get("status") != "merged" or not isinstance(plan, dict):
+            continue
+        if sync_error:
+            cleanup_error = f"checkout sync failed; selected worktree retained: {sync_error}"
+            item["cleanup"] = {"status": "blocked", "plan": plan}
+        else:
+            item["cleanup"], cleanup_error = finalize_worktree_cleanup(plan)
+        if cleanup_error:
+            blockers.append({
+                "repo": item["repo"], "pr": item["pr"],
+                "check": "worktree_cleanup", "message": cleanup_error,
+            })
 
     final_summary = as_object(final_snapshot.get("summary"))
     sync_summary = as_object(sync_result.get("summary")) if sync_result else {}

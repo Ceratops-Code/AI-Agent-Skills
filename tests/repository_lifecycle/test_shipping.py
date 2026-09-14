@@ -399,24 +399,41 @@ def test_repository_ship_late_pending_work_reports_remote_mutation(
     assert not list(loaded["_operation_checkpoint_directory"](repo).glob("*.json"))
 
 
+@pytest.mark.parametrize("category", ["publish", "deploy-local"])
+@pytest.mark.parametrize("capture_receipt", [False, True])
 def test_repository_ship_checkpoints_each_operation_before_the_next(
     tmp_path: pathlib.Path,
+    category: str,
+    capture_receipt: bool,
 ) -> None:
     repo, loaded, args, log, state, _ = _setup(tmp_path)
-    args.publish_operation = [PUBLIC, PUBLIC]
+    phase = "release_publication" if category == "publish" else "deployment"
+    label = "publish" if category == "publish" else "deploy"
+    receipt = {"schema": "test.operation-receipt.v1", "status": "OK", "kind": label}
+    script = repo / ("publish-package.py" if category == "publish" else "install-local.py")
+    if capture_receipt:
+        with script.open("a", encoding="utf-8") as stream:
+            stream.write(f"print({json.dumps(receipt)!r})\n")
+        _commit(repo)
+    expected_results = [{"step": 1, "result": receipt}] if capture_receipt else []
+    if category == "publish":
+        args.publish_operation = [PUBLIC, PUBLIC]
+    else:
+        args.deploy_operation = [LOCAL, LOCAL]
     original = loaded["execute_prepared_operation"]
     count = 0
 
     def execute(prepared: Any) -> dict[str, Any]:
         nonlocal count
-        if prepared.category == "publish":
+        if prepared.category == category:
             count += 1
             if count == 2:
-                files = list(
-                    loaded["_operation_checkpoint_directory"](repo).glob("*.json")
-                )
-                assert len(files) == 1
-                assert json.loads(files[0].read_text())["position"] == 1
+                records = [json.loads(path.read_text()) for path in
+                           loaded["_operation_checkpoint_directory"](repo).glob("*.json")]
+                selected = [record for record in records if record["phase"] == phase]
+                assert len(selected) == 1
+                assert selected[0]["position"] == 1
+                assert selected[0]["result"].get("step_results", []) == expected_results
                 raise RuntimeError("interrupted between operations")
         return original(prepared)
 
@@ -425,14 +442,16 @@ def test_repository_ship_checkpoints_each_operation_before_the_next(
     ] = execute
     with pytest.raises(RuntimeError, match="interrupted"):
         loaded["ship_repository"](args)
-    assert log.read_text().splitlines().count("publish") == 1
+    assert log.read_text().splitlines().count(label) == 1
     loaded["_checkpointed_operation_batch"].__globals__[
         "execute_prepared_operation"
     ] = original
     resumed = loaded["ship_repository"](args)
     assert resumed["status"] == "already_shipped"
-    assert log.read_text().splitlines().count("publish") == 2
-    assert log.read_text().splitlines().count("deploy") == 1
+    assert log.read_text().splitlines().count(label) == 2
+    assert log.read_text().splitlines().count("deploy" if label == "publish" else "publish") == 1
+    for operation in resumed[phase]["results"]:
+        assert operation.get("step_results", []) == expected_results
 
 
 def test_repository_ship_rejects_malformed_deployment_checkpoint(
@@ -911,3 +930,68 @@ def test_publish_pr_preparation_flags_are_opt_in(
         module.ensure_pr(args)
     assert run_git(repo, "branch", "--show-current").stdout.strip() == "main"
     assert state["creates"] == 0
+
+@pytest.mark.parametrize("case", ["passed", "selection-failed", "fetch-failed", "missing-argument", "source-changed"])
+def test_repository_ship_checks_declared_test_selection_before_remote_work(
+    tmp_path: pathlib.Path, case: str,
+) -> None:
+    repo, loaded, args, log, state, commands = _setup(tmp_path)
+    remote = tmp_path / "remote.git"
+    assert run_git(tmp_path, "init", "--bare", str(remote)).returncode == 0
+    args.remote_name = "ci-test"
+    args.base_branch = "target"
+    assert run_git(repo, "remote", "add", args.remote_name, str(remote)).returncode == 0
+    stale_base = run_git(repo, "rev-parse", "HEAD").stdout.strip()
+    assert run_git(repo, "push", args.remote_name, "HEAD:refs/heads/target").returncode == 0
+    (repo / "base-advance.txt").write_text("fresh base", encoding="utf-8")
+    base = _commit(repo)
+    assert run_git(repo, "push", args.remote_name, "HEAD:refs/heads/target").returncode == 0
+    assert run_git(repo, "update-ref", "refs/remotes/ci-test/target", stale_base).returncode == 0
+    selection_log = tmp_path / "selection.json"
+    script = repo / "selection.py"
+    script.write_text(
+        "import json, pathlib, sys\n"
+        f"pathlib.Path({str(selection_log)!r}).write_text(json.dumps(sys.argv[1:]))\n"
+        + ("pathlib.Path('code.txt').write_text('dirty')\n" if case == "source-changed" else "")
+        + "print(json.dumps({'schema':'selection.fixture.v1','status':'"
+        + ("mapping-gap" if case == "selection-failed" else "selection-valid") + "'}))\n"
+        + ("raise SystemExit(3)\n" if case == "selection-failed" else ""),
+        encoding="utf-8",
+    )
+    contract = loaded["read_repository_contract"](repo, None)
+    command = [sys.executable, "selection.py", "{base}", "{head}"]
+    if case == "missing-argument":
+        command.pop()
+    contract["repository"]["test-selection"] = {
+        "ci": {"parameters": ["base", "head"], "steps": [{"run": command}]},
+    }
+    write_sdlc_contract(repo, repository=contract["repository"], deliverables=contract["deliverables"])
+    head = _commit(repo)
+    if case == "fetch-failed":
+        assert run_git(repo, "remote", "set-url", args.remote_name, str(tmp_path / "absent")).returncode == 0
+    original = loaded["ship_repository"].__globals__["_run_json"]
+
+    def checked_remote(command: list[str], **kwargs: Any) -> tuple[int, dict[str, Any]]:
+        if "github_pr_workflow" in command:
+            assert json.loads(selection_log.read_text()) == [base, head]
+        return original(command, **kwargs)
+
+    loaded["ship_repository"].__globals__["_run_json"] = checked_remote
+    if case == "passed":
+        result = loaded["ship_repository"](args)
+        assert result["status"] == "shipped"
+        assert result["test_selection"]["base"] == base
+        assert result["test_selection"]["head"] == head
+        assert result["test_selection"]["status"] == "completed"
+        assert state["calls"] == 1
+    else:
+        with pytest.raises(loaded["RepositoryShipError"]) as failure:
+            loaded["ship_repository"](args)
+        assert failure.value.payload["phase"] == "before_remote"
+        assert failure.value.payload["remote_mutation"] is False
+        assert state["calls"] == 0
+        assert not any("github_pr_workflow" in command for command in commands)
+        if case == "selection-failed":
+            assert failure.value.payload["diagnostic"]["exit_code"] == 3
+            assert failure.value.payload["base"] == base
+            assert failure.value.payload["head"] == head

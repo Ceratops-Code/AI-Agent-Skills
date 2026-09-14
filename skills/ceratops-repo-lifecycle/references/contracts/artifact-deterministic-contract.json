@@ -1025,7 +1025,7 @@
         {
           "path": "/local/workflows/text",
           "operator": "matches",
-          "expected": "pypa/gh-action-pypi-publish|twine upload"
+          "expected": "pypa/gh-action-pypi-publish|twine upload|uv publish"
         },
         {
           "path": "/local/workflows/text",

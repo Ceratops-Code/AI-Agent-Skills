@@ -1,16 +1,224 @@
 from __future__ import annotations
 
 import json
+import os
 import pathlib
+import runpy
+import shlex
+import stat
 import sys
+from contextlib import contextmanager
+
+import pytest
 
 from tests.skill_lifecycle.support import (
+    SKILL_UPDATE_WORKFLOW,
     prepare_skill_update_workflow_worktree,
     run_skill_update_workflow,
 )
 from tests.support.repositories import (
     run_git,
 )
+
+
+@pytest.mark.parametrize(
+    "outcome", ["passed", "collection_failed", "command_failed", "pytest_failed", "cleanup_failed"]
+)
+def test_skill_update_scratch_is_owned_through_collection_and_verification(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, outcome: str,
+) -> None:
+    case_root = tmp_path / "paths with spaces"
+    case_root.mkdir()
+    worktree, scope, task_temp_root = prepare_skill_update_workflow_worktree(case_root)
+    log = scope / "scratch-paths.jsonl"
+    caller_temp = scope / "caller pytest"
+    caller_temp.mkdir()
+    sentinel = caller_temp / "keep.txt"
+    sentinel.write_text("caller-owned", encoding="utf-8")
+    retained = task_temp_root / "keep.txt"
+    retained.write_text("unrelated", encoding="utf-8")
+    monkeypatch.setenv("SCRATCH_CHECK_LOG", str(log))
+    inherited_options = "--maxfail=1 --basetemp " + shlex.quote(str(caller_temp))
+    monkeypatch.setenv("PYTEST_ADDOPTS", inherited_options)
+    monkeypatch.setenv("PYTEST_DEBUG_TEMPROOT", str(caller_temp))
+    probe = (
+        "import json, os, pathlib, stat, tempfile\n"
+        "def record(phase, pytest_path=None):\n"
+        "    folder = pathlib.Path(tempfile.mkdtemp(prefix='generated-'))\n"
+        "    generated = folder / 'readonly.txt'\n"
+        "    generated.write_text('generated', encoding='utf-8')\n"
+        "    generated.chmod(stat.S_IREAD)\n"
+        "    value = {'phase': phase, 'folder': str(folder), 'root': tempfile.gettempdir(), "
+        "'pytest': str(pytest_path) if pytest_path else None}\n"
+        "    with pathlib.Path(os.environ['SCRATCH_CHECK_LOG']).open('a', encoding='utf-8') as log:\n"
+        "        log.write(json.dumps(value) + '\\n')\n"
+    )
+    test_file = worktree / "tests" / "test_helper.py"
+    test_file.write_text(
+        probe + "record('collection')\n"
+        + ("raise RuntimeError('collection failed')\n" if outcome == "collection_failed" else "")
+        + "def test_helper_value(tmp_path):\n"
+        + "    record('test', tmp_path)\n"
+        + f"    assert {outcome != 'pytest_failed'}\n",
+        encoding="utf-8", newline="\n",
+    )
+    check_script = scope / "check.py"
+    check_script.write_text(
+        probe + "record('command')\nprint('probe-finished')\n"
+        + f"raise SystemExit({7 if outcome == 'command_failed' else 0})\n",
+        encoding="utf-8", newline="\n",
+    )
+    request_path = task_temp_root / "request.json"
+    state_path = task_temp_root / "state.json"
+    evidence_path = task_temp_root / "evidence.json"
+    source_path = "skills/alpha-tool/scripts/tool.py"
+    request_path.write_text(json.dumps({
+        "schema": "ceratops-skill-update-request.v2",
+        "repo_root": str(worktree), "task_temp_root": str(task_temp_root),
+        "evidence_output": str(evidence_path),
+        "disposable_artifacts": ["request", "state", "evidence"],
+        "selected_skills": ["alpha-tool"], "allowed_paths": [source_path],
+        "change_groups": [{"name": "helper", "paths": [source_path]}],
+        "checks": [
+            {"kind": "command", "argv": [sys.executable, str(check_script)]},
+            {"kind": "pytest", "nodes": ["tests/test_helper.py::test_helper_value"]},
+        ],
+    }) + "\n", encoding="utf-8", newline="\n")
+    prepared = run_skill_update_workflow(
+        "prepare", "--request", str(request_path), "--state", str(state_path),
+    )
+    records = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    assert len(records) == 1
+    assert not pathlib.Path(records[0]["root"]).exists()
+    assert sentinel.read_text(encoding="utf-8") == "caller-owned"
+    if outcome == "collection_failed":
+        assert prepared.returncode == 2
+        assert "pytest node collection failed" in prepared.stderr
+        assert not state_path.exists() and not evidence_path.exists()
+        assert sorted(path.name for path in task_temp_root.iterdir()) == ["keep.txt", "request.json"]
+        return
+    assert prepared.returncode == 0, prepared.stderr
+    (worktree / source_path).write_text("VALUE = 2\n", encoding="utf-8", newline="\n")
+    if outcome == "cleanup_failed":
+        monkeypatch.syspath_prepend(str(SKILL_UPDATE_WORKFLOW.parent))
+        workflow = runpy.run_path(str(SKILL_UPDATE_WORKFLOW))
+        namespace = workflow["command_verify"].__globals__
+        original_environment = namespace["check_environment"]
+
+        @contextmanager
+        def failed_cleanup(root: pathlib.Path):
+            with original_environment(root) as environment:
+                yield environment
+            raise OSError("simulated scratch cleanup failure")
+
+        monkeypatch.setitem(namespace, "check_environment", failed_cleanup)
+        with pytest.raises(workflow["UpdateExecutionError"], match="scratch cleanup failure"):
+            workflow["command_verify"](state_path, evidence_path)
+    else:
+        verified = run_skill_update_workflow(
+            "verify", "--state", str(state_path), "--evidence-output", str(evidence_path),
+        )
+        assert verified.returncode == (0 if outcome == "passed" else 2), verified.stderr
+    evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+    assert evidence["status"] == ("passed" if outcome == "passed" else "failed")
+    assert evidence["checks"][0]["returncode"] == (7 if outcome == "command_failed" else 0)
+    assert "probe-finished" in evidence["checks"][0]["stdout"]
+    if outcome == "cleanup_failed":
+        assert len(evidence["checks"]) == 2
+        assert all(check["returncode"] == 0 for check in evidence["checks"])
+        assert evidence["failures"] == ["simulated scratch cleanup failure"]
+    records = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    for record in records:
+        scratch = pathlib.Path(record["root"])
+        assert scratch.parent == task_temp_root
+        assert pathlib.Path(record["folder"]).is_relative_to(scratch)
+        assert not scratch.exists()
+        if record["pytest"]:
+            assert pathlib.Path(record["pytest"]).is_relative_to(scratch)
+    assert not list(task_temp_root.glob("check-*"))
+    assert not list(task_temp_root.glob(".check-*.cleanup.json"))
+    assert os.environ["PYTEST_ADDOPTS"] == inherited_options
+    assert sentinel.read_text(encoding="utf-8") == "caller-owned"
+    finalized = run_skill_update_workflow("finalize", "--state", str(state_path))
+    if outcome == "passed":
+        assert finalized.returncode == 0, finalized.stderr
+        assert sorted(path.name for path in task_temp_root.iterdir()) == ["keep.txt"]
+    else:
+        assert finalized.returncode == 2
+        assert state_path.exists() and evidence_path.exists() and request_path.exists()
+    assert retained.read_text(encoding="utf-8") == "unrelated"
+
+
+@pytest.mark.parametrize("failure", ["body", "cleanup", "residual"])
+def test_skill_update_scratch_handles_exceptions_and_cleanup_errors(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, failure: str,
+) -> None:
+    module = runpy.run_path(str(SKILL_UPDATE_WORKFLOW.with_name("skill_update_scratch.py")))
+    check_environment = module["check_environment"]
+    filesystem = module["shutil"]
+    original_rmtree = filesystem.rmtree
+    if failure != "body":
+        def leave_residue(*args, **kwargs):
+            if failure == "cleanup":
+                raise PermissionError("locked file")
+        monkeypatch.setattr(filesystem, "rmtree", leave_residue)
+    expected = ValueError if failure == "body" else OSError
+    with pytest.raises(expected) as captured:
+        with check_environment(tmp_path) as environment:
+            scratch = pathlib.Path(environment["TEMP"])
+            generated = scratch / "readonly.txt"
+            generated.write_text("generated", encoding="utf-8")
+            generated.chmod(stat.S_IREAD)
+            if failure == "body":
+                raise ValueError("test body failed")
+    if failure == "body":
+        assert not scratch.exists()
+    else:
+        assert scratch.exists()
+        assert str(scratch) in str(captured.value)
+        assert "cleanup" in str(captured.value)
+        records = list(tmp_path.glob(".check-*.cleanup.json"))
+        assert len(records) == 1
+        with pytest.raises(OSError):
+            with check_environment(tmp_path):
+                pytest.fail("new checks started before unfinished cleanup")
+        assert records[0].exists()
+        monkeypatch.setattr(filesystem, "rmtree", original_rmtree)
+        with check_environment(tmp_path):
+            assert not scratch.exists()
+            assert not records[0].exists()
+        assert not list(tmp_path.glob(".check-*.cleanup.json"))
+        assert not list(tmp_path.glob("check-*"))
+
+
+@pytest.mark.parametrize("invalid", ["path", "json", "options"])
+def test_skill_update_scratch_preserves_unowned_paths(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, invalid: str,
+) -> None:
+    module = runpy.run_path(str(SKILL_UPDATE_WORKFLOW.with_name("skill_update_scratch.py")))
+    root = tmp_path / "task"
+    root.mkdir()
+    outside = tmp_path / "caller"
+    outside.mkdir()
+    sentinel = outside / "keep.txt"
+    sentinel.write_text("keep", encoding="utf-8")
+    unrecorded = root / "check-caller"
+    unrecorded.mkdir()
+    marker = root / ".check-retained.cleanup.json"
+    if invalid == "path":
+        marker.write_text(json.dumps({
+            "schema": module["SCRATCH_SCHEMA"], "path": str(outside),
+        }), encoding="utf-8")
+    elif invalid == "json":
+        marker.write_text("{", encoding="utf-8")
+    else:
+        monkeypatch.setenv("PYTEST_ADDOPTS", "'unterminated")
+    with pytest.raises(OSError):
+        with module["check_environment"](root):
+            pytest.fail("invalid scratch ownership or options were accepted")
+    assert sentinel.read_text(encoding="utf-8") == "keep"
+    assert unrecorded.is_dir()
+    assert set(root.iterdir()) == ({unrecorded} if invalid == "options" else {unrecorded, marker})
 
 
 def test_skill_update_workflow_accepts_new_shared_section_source(

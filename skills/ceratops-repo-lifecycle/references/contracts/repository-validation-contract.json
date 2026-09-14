@@ -113,15 +113,24 @@
           "value": "typecheck"
         }
       ],
-      "unless": [
+      "command": [
+        "{pnpm}",
+        "run",
+        "typecheck"
+      ],
+      "cwd": "."
+    },
+    {
+      "id": "npm-typecheck",
+      "when": [
         {
           "kind": "package-script",
-          "manager": "pnpm",
-          "value": "build"
+          "manager": "npm",
+          "value": "typecheck"
         }
       ],
       "command": [
-        "{pnpm}",
+        "{npm}",
         "run",
         "typecheck"
       ],
