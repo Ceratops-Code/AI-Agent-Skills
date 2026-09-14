@@ -527,10 +527,9 @@ while stale locks fail instead of changing dependency decisions during checks.
 
 SDLC execution and schemas stay in the repository-lifecycle skill. Target
 repositories receive no engine copy or SDLC launcher. CI sets up uv and calls
-`Ceratops-Code/AI-Agent-Skills/skills/ceratops-repo-lifecycle/scripts@<commit>` with
- `repo-root` and `evidence-file` inputs. GitHub obtains the action; no Codex
-skills
-installation is needed on the runner. The action uses its own locked Python
+`Ceratops-Code/AI-Agent-Skills/skills/ceratops-repo-lifecycle/scripts@<commit>`
+with `repo-root` and `evidence-file` inputs. GitHub obtains the action; no Codex
+skills installation is needed on the runner. The action uses its own locked Python
 project, while target scripts use their repository's project.
 
 Compatibility preserves an existing action pin. For new CI it resolves a
