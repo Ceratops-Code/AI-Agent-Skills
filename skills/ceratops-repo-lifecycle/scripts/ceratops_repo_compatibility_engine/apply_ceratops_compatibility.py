@@ -29,6 +29,7 @@ from .compatibility_contract import (
     template_path,
 )
 from .python_tests import discover_python_tests, test_operation
+from .python_tool_configuration import project_text, repository_configured
 from .repository_validation_contract import load_validation_contract
 from .sdlc_contract_validation import load_contract, validation_errors
 from .validate_ceratops_compatibility import (
@@ -199,6 +200,7 @@ def _validation_condition_matches(
     condition: Mapping[str, object],
     package_scripts: set[str],
     package_manager: str | None,
+    planned_files: Mapping[str, str] | None = None,
 ) -> bool:
     kind = condition.get("kind")
     if kind == "package-script" and set(condition) in (
@@ -231,6 +233,8 @@ def _validation_condition_matches(
         if not isinstance(value, str) or not value:
             raise RuntimeError("repository-validation contract file-contains value must be text")
         path = repo_root.joinpath(*relative.parts)
+        if planned_files is not None and relative.as_posix() in planned_files:
+            return value in planned_files[relative.as_posix()]
         return (
             path.is_file()
             and not path.is_symlink()
@@ -248,13 +252,18 @@ def contract_checks(
     package = _package_manifest(repo_root) if package is None else package
     scripts = _package_scripts(package)
     package_manager, _ = _package_manager(repo_root, package)
+    planned_files = {
+        surface_path("validation_project").as_posix(): project_text(
+            repo_root, template_path("validation_project"),
+        ),
+    }
     selected: list[dict[str, object]] = []
     for check in contract["checks"]:
         if any(
-            _validation_condition_matches(repo_root, condition, scripts, package_manager)
+            _validation_condition_matches(repo_root, condition, scripts, package_manager, planned_files)
             for condition in check["when"]
         ) and not any(
-            _validation_condition_matches(repo_root, condition, scripts, package_manager)
+            _validation_condition_matches(repo_root, condition, scripts, package_manager, planned_files)
             for condition in check.get("unless", [])
         ):
             selected.append(
@@ -265,6 +274,13 @@ def contract_checks(
                     "exclusive": check.get("exclusive", False),
                 }
             )
+            tool = check["id"]
+            if tool in {"ruff", "mypy"} and not repository_configured(repo_root, tool):
+                # Root-owned configuration retains normal tool discovery. The
+                # generated fallback lives beside the scripts dependencies and
+                # must be selected explicitly because checks run from repo root.
+                flag = "--config" if tool == "ruff" else "--config-file"
+                selected[-1]["command"] = [*check["command"], flag, surface_path("validation_project").as_posix()]
     exclusive_checks = [check for check in selected if check["exclusive"]]
     if len(exclusive_checks) > 1:
         raise RuntimeError("multiple exclusive repository validators matched")
@@ -482,7 +498,9 @@ def validation_surfaces(
             raise RuntimeError("existing CI workflow must expose a repository validation invocation before integration")
         if changed:
             workflow_text = yaml.dump(payload, Dumper=IndentedSafeDumper, sort_keys=False)
-    return validator_text, workflow_text, [str(check["id"]) for check in checks], markdown_files
+    # Report only checks we generated; preserved validators own their internals.
+    generated_checks = [str(check["id"]) for check in checks] if validator_text is not None else []
+    return validator_text, workflow_text, generated_checks, markdown_files
 
 
 def load_yaml_mapping(path: pathlib.Path) -> dict[str, object]:

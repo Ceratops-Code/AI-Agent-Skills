@@ -7,7 +7,6 @@ the verified target; an existing environment is never recursively discarded.
 
 from __future__ import annotations
 
-import json
 import os
 import pathlib
 import re
@@ -21,6 +20,7 @@ import yaml
 
 from .python_entrypoints import bind_entrypoint, existing_entrypoints
 from .python_tests import discover_python_tests
+from .python_tool_configuration import project_text
 
 
 def runtime_files(root: pathlib.Path, bundle: pathlib.Path, contract: Mapping[str, Any], checks: list[dict[str, Any]]) -> dict[pathlib.Path, str]:
@@ -39,6 +39,7 @@ def runtime_files(root: pathlib.Path, bundle: pathlib.Path, contract: Mapping[st
                 dependencies.add(module)
     project = root / contract["surfaces"]["validation_project"]["path"]
     template = bundle / "references/templates" / contract["surfaces"]["validation_project"]["template"]
+    rendered = project_text(root, template, dependencies)
     if project.is_file():
         document = tomllib.loads(project.read_text(encoding="utf-8"))
         declared = document.get("project", {}).get("dependencies", [])
@@ -46,8 +47,8 @@ def runtime_files(root: pathlib.Path, bundle: pathlib.Path, contract: Mapping[st
         missing = {name for name in dependencies if name.lower().replace("_", "-") not in names}
         if missing:
             raise RuntimeError("existing validator project must declare: " + ", ".join(sorted(missing)))
-    else:
-        files[project] = template.read_text(encoding="utf-8").replace("__DEPENDENCIES__", json.dumps(sorted(dependencies)))
+    if not project.is_file() or project.read_text(encoding="utf-8") != rendered:
+        files[project] = rendered
     for relative in runtime["payloads"]:
         source = bundle / relative
         if source.is_symlink() or not source.is_file():

@@ -17,7 +17,7 @@ def prepare_script_environment(repo: pathlib.Path) -> None:
     shutil.copyfile(templates / "python_environment.py.tmpl", scripts / "python_environment.py")
     (scripts / "pyproject.toml").write_text(
         (templates / "validation-pyproject.toml.tmpl").read_text(encoding="utf-8").replace(
-            "__DEPENDENCIES__", '["jsonschema", "PyYAML"]'
+            "__DEPENDENCIES__", '["jsonschema", "PyYAML", "ruff", "mypy"]'
         ), encoding="utf-8",
     )
     (scripts / ".gitignore").write_text(".venv/\n__pycache__/\n", encoding="utf-8")

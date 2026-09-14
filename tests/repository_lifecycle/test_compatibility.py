@@ -7,6 +7,7 @@ import pathlib
 import shutil
 import subprocess
 import sys
+import tomllib
 
 import pytest
 import yaml
@@ -169,7 +170,7 @@ def test_compatibility_materializer_supplies_target_identity_and_assignments(
     assert (repo / "scripts" / "validate-repository.py").is_file()
     assert (repo / ".github" / "workflows" / "validate.yml").is_file()
     assert output["repository_validation"] == {
-        "checks": ["npm-markdown-lint"],
+        "checks": ["npm-markdown-lint", "ruff", "mypy"],
         "validator": "applied",
         "workflow": "applied",
     }
@@ -310,7 +311,7 @@ def test_compatibility_materializer_supports_repositories_without_skills(
     )
     (repo / "tests").mkdir()
     (repo / "tests" / "test_probe.py").write_text(
-        "import unittest\n\n"
+        "import unittest\n\n\n"
         "class TestProbe(unittest.TestCase):\n"
         "    def test_probe(self) -> None:\n"
         "        self.assertTrue(True)\n",
@@ -388,7 +389,7 @@ def test_compatibility_materializer_supports_repositories_without_skills(
     assert "deliverables" not in contract
     assert not (repo / "scripts" / "deploy-skills.py").exists()
     assert output["repository_validation"] == {
-        "checks": ["npm-lint"],
+        "checks": ["npm-lint", "ruff", "mypy"],
         "validator": "applied",
         "workflow": "applied",
     }
@@ -501,6 +502,7 @@ def test_compatibility_materializer_supports_repositories_without_skills(
     assert pnpm_result.returncode == 0, pnpm_result.stdout
     assert json.loads(pnpm_result.stdout)["repository_validation"]["checks"] == [
         "pnpm-build",
+        "ruff",
         "mypy",
     ]
     pnpm_workflow = (
@@ -517,7 +519,6 @@ def test_compatibility_materializer_supports_repositories_without_skills(
         if step.get("name") == "Install Python validation dependencies"
     ] == []
     assert 'python-version: "3.12"' not in pnpm_workflow
-    import tomllib
     pnpm_runtime = tomllib.loads((pnpm_repo / "scripts/pyproject.toml").read_text())
     assert "mypy" in pnpm_runtime["project"]["dependencies"]
     assert (pnpm_repo / "requirements-dev.txt").read_text() == "pytest==9.1.1\n"
@@ -608,6 +609,8 @@ def test_compatibility_materializer_supports_repositories_without_skills(
     assert powershell_result.returncode == 0, powershell_result.stdout
     assert json.loads(powershell_result.stdout)["repository_validation"]["checks"] == [
         "npm-markdown-lint",
+        "ruff",
+        "mypy",
         "powershell-lint",
     ]
     powershell_workflow = (
@@ -640,6 +643,8 @@ def test_compatibility_materializer_supports_repositories_without_skills(
     assert unittest_result.returncode == 0, unittest_result.stdout
     assert json.loads(unittest_result.stdout)["repository_validation"]["checks"] == [
         "npm-markdown-lint",
+        "ruff",
+        "mypy",
     ]
 
     docs_repo = empty_repository("docs-compatible")
@@ -665,6 +670,7 @@ def test_compatibility_materializer_supports_repositories_without_skills(
     assert json.loads(docs_result.stdout)["repository_validation"]["checks"] == [
         "npm-markdown-lint",
         "ruff",
+        "mypy",
     ]
     docs_workflow = (
         docs_repo / ".github" / "workflows" / "validate.yml"
@@ -752,7 +758,9 @@ def test_compatibility_materializer_supports_repositories_without_skills(
             engine_scripts, "apply", "--target-repo-root", str(config_repo)
         )
         assert configured.returncode == 0, configured.stdout
-        assert json.loads(configured.stdout)["repository_validation"]["checks"] == ["npm-markdown-lint"]
+        assert json.loads(configured.stdout)["repository_validation"]["checks"] == [
+            "npm-markdown-lint", "ruff", "mypy"
+        ]
         assert (config_repo / "scripts/run-tests.py").is_file()
         assert "python" in yaml.safe_load((config_repo / "sdlc/sdlc.yml").read_text())["repository"]["tests"]
 
@@ -1151,13 +1159,14 @@ def test_generated_runtime_runs_without_installed_skills_and_keeps_tests_separat
     tests = repo / "tests"
     tests.mkdir()
     probe = tests / "test_probe.py"
-    probe.write_text("def test_probe():\n    assert False, 'test-gate-evidence'\n")
+    probe.write_text("def test_probe():\n    raise AssertionError('test-gate-evidence')\n")
     custom = repo / "scripts/nested/probe.py"
     custom.parent.mkdir()
     custom.write_text(
         '"""A repository-owned script with imports before its main body."""\n'
         "from __future__ import annotations\n"
-        "import json, os, subprocess, sys, yaml\n"
+        "import json\nimport os\nimport sys\n\nimport yaml\n\n"
+        "yaml.safe_load('ready: true')\n"
         "print(json.dumps({'python':sys.executable,'prefix':sys.prefix,'cwd':os.getcwd(),'args':sys.argv[1:]}))\n"
     )
     # Test and validation commands share scripts/.venv while the application's
@@ -1194,6 +1203,15 @@ def test_generated_runtime_runs_without_installed_skills_and_keeps_tests_separat
     prefix = ["uv", "run", "--project", "scripts", "--locked", "python"]
     validation = subprocess.run([*prefix, "scripts/validate-repository.py"], cwd=repo, capture_output=True, text=True)
     assert validation.returncode == 0, validation.stderr
+    # The generated settings must be consumed, not merely written to TOML.
+    check_probe = repo / "scripts/check_probe.py"
+    check_probe.write_text("import math\n")
+    lint_failure = subprocess.run([*prefix, "scripts/validate-repository.py"], cwd=repo, capture_output=True, text=True)
+    assert json.loads(lint_failure.stdout)["check"] == "ruff"
+    check_probe.write_text('def value() -> int:\n    return "wrong-type"\n')
+    type_failure = subprocess.run([*prefix, "scripts/validate-repository.py"], cwd=repo, capture_output=True, text=True)
+    assert json.loads(type_failure.stdout)["check"] == "mypy"
+    check_probe.write_text("def value() -> int:\n    return 1\n")
     evidence = tmp_path / "sdlc-failure.json"
     command = [*prefix, "scripts/sdlc.py", "--validate", "--ci", "--evidence-file", str(evidence)]
     failed = subprocess.run(command, cwd=repo, capture_output=True, text=True)
@@ -1217,6 +1235,38 @@ def test_generated_runtime_runs_without_installed_skills_and_keeps_tests_separat
     reapplied = run_compatibility_engine(REPOSITORY_LIFECYCLE_SCRIPTS, "apply", "--target-repo-root", str(repo))
     assert reapplied.returncode == 0, reapplied.stdout
     assert (repo / "scripts/uv.lock").read_bytes() == lock
+    # Preserve a repository's adjusted tool settings and comments on reapply.
+    project.write_text(project.read_text().replace('ignore = ["E501"]', 'ignore = ["E501", "F401"] # repository choice'))
+    configured = project.read_bytes()
+    check_probe.write_text("import math\n")
+    reapplied = run_compatibility_engine(REPOSITORY_LIFECYCLE_SCRIPTS, "apply", "--target-repo-root", str(repo))
+    assert reapplied.returncode == 0, reapplied.stdout
+    assert project.read_bytes() == configured
+    configured_check = subprocess.run([*prefix, "scripts/validate-repository.py"], cwd=repo, capture_output=True, text=True)
+    assert configured_check.returncode == 0, configured_check.stdout + configured_check.stderr
+    # Adding an absent table must preserve the other tool's configuration.
+    without_mypy = project.read_text().split("\n[tool.mypy]", 1)[0].rstrip() + "\n"
+    project.write_text(without_mypy)
+    reapplied = run_compatibility_engine(REPOSITORY_LIFECYCLE_SCRIPTS, "apply", "--target-repo-root", str(repo))
+    assert reapplied.returncode == 0, reapplied.stdout
+    assert project.read_text().startswith(without_mypy)
+    assert tomllib.loads(project.read_text())["tool"]["mypy"] == tomllib.loads(project_before.decode())["tool"]["mypy"]
+    # Root settings must not be shadowed by newly generated scripts settings.
+    root_configured = tmp_path / "root-configured"
+    root_configured.mkdir()
+    (root_configured / ".git").write_text("gitdir: test\n")
+    (root_configured / "pyproject.toml").write_text(
+        '[tool.ruff.lint]\nselect=["F"]\nignore=["F401"]\n'
+        '[tool.mypy]\nfiles=["scripts/check_probe.py"]\ndisable_error_code=["return-value"]\n'
+    )
+    (root_configured / "scripts").mkdir()
+    (root_configured / "scripts/check_probe.py").write_text('import math\ndef value() -> int:\n    return "allowed"\n')
+    created = run_compatibility_engine(REPOSITORY_LIFECYCLE_SCRIPTS, "apply", "--target-repo-root", str(root_configured))
+    assert created.returncode == 0, created.stdout
+    defaults = tomllib.loads((root_configured / "scripts/pyproject.toml").read_text())["tool"]
+    assert "ruff" not in defaults and "mypy" not in defaults
+    root_check = subprocess.run([*prefix, "scripts/validate-repository.py"], cwd=root_configured, capture_output=True, text=True)
+    assert root_check.returncode == 0, root_check.stdout + root_check.stderr
 
 
 @pytest.mark.parametrize("inherited_form", ["joined", "separate"])

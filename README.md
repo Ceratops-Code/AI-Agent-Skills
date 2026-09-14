@@ -454,6 +454,13 @@ uv project owns tooling dependencies. `pyproject.toml` and `uv.lock` suffice
 for that environment; no parallel requirements file is needed. Existing
 application manifests retain their owners and locations. Dependabot gets
 a `uv` entry for `/scripts` without removing other entries.
+
+The same project template supplies Ruff lint rules and mypy checking defaults.
+Generated validators select those settings explicitly unless the repository
+provides root tool configuration. Existing settings remain authoritative;
+compatibility adds only absent tool tables. The bundled SDLC engine under
+`scripts/runtime` is excluded from default application lint and type checking.
+
 Initial application resolves the lock and syncs the environment. Later runs
 use the lock; missing dependencies are installed by uv before Python starts,
 while stale locks fail instead of changing dependency decisions during checks.

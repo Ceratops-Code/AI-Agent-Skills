@@ -160,6 +160,11 @@
           "kind": "file-contains",
           "path": "requirements.txt",
           "value": "ruff"
+        },
+        {
+          "kind": "file-contains",
+          "path": "scripts/pyproject.toml",
+          "value": "[tool.ruff"
         }
       ],
       "command": [
@@ -195,6 +200,11 @@
           "kind": "file-contains",
           "path": "requirements.txt",
           "value": "mypy"
+        },
+        {
+          "kind": "file-contains",
+          "path": "scripts/pyproject.toml",
+          "value": "[tool.mypy"
         }
       ],
       "command": [

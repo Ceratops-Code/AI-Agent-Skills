@@ -153,6 +153,10 @@ Infer the source identity from stable repository evidence before asking.
 
 ### 3. Create repository validation and bootstrap
 
+- Generate Ruff and mypy defaults in the scripts project from its template.
+  Generated validation uses those defaults unless the repository supplies its
+  own configuration; preserve existing settings and custom validators.
+
 - Create a missing `scripts/validate-repository.py` and
   `.github/workflows/validate.yml` for every repository, including repositories
   with no skills. CI invokes the repository-owned SDLC runner, which separately
