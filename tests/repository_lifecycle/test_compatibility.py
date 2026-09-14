@@ -1053,6 +1053,12 @@ def test_generated_runtime_runs_without_installed_skills_and_keeps_tests_separat
     assert result["status"] == "tests_failed"
     assert result["operation"] == "repository.tests.python"
     assert any("test-gate-evidence" in line for line in result["diagnostic"]["stdout_tail"])
+    collector = importlib.import_module("github_contract_engine.collectors.local_repository")
+    facts = collector._repository_validation_facts(
+        {"available": True, "root": str(repo)}, [{"id": "content.repository_validation"}], str(evidence),
+    )
+    assert facts["valid"] is False
+    assert [entry["status"] for entry in facts["gate_results"]] == ["completed", "tests_failed"]
     probe.write_text("def test_probe():\n    assert True\n")
     passed = subprocess.run(command, cwd=repo, capture_output=True, text=True)
     assert passed.returncode == 0, passed.stdout + passed.stderr

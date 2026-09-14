@@ -24,11 +24,12 @@ credential-bound fixes precisely.
   scoped findings.
 - (D) Prefer `--summary-json` for agent-readable repo-health output; use
   `--json` only when a parser needs the full report.
-- (D) Local health records the `validate_ceratops_compatibility(repo_root)`
-  result from `ceratops_repo_compatibility_engine` unchanged. It also runs a
-  present `scripts/validate-repository.py` once with
-  `--evidence-file` outside the target; a missing validator or CI validation
-  workflow is a finding. External-only health runs no local validator.
+- Local health records structural compatibility separately, then uses the
+  repository's SDLC to run applicable validation and tests. Version 3 uses the
+  locked uv runtime and skill-owned action bindings. Repositories without SDLC
+  retain direct validator execution. Missing or invalid required files remain
+  findings; external-only health runs no local commands. Keep failure evidence
+  outside the target repository.
 - When the local repository declares artifact identities in a supported
   `sdlc/sdlc.yml`, the repo checker validates that contract and uses its
   artifact identities automatically. Caller-supplied

@@ -336,7 +336,9 @@ advisory migration proposals with the repository, current and recommended
 versions, and reason. The existing Global Repo Health Consistency automation
 receives these through its health findings; proposals neither block execution
 nor migrate files. Ship validates selected publication operations before remote
-mutation. Local health does not run skill-source validation.
+mutation. Local health runs SDLC validation and tests, including registered
+deterministic skill actions when declared. It retains direct validator
+execution for repositories without a validation-capable SDLC.
 
 Collect review evidence for non-deterministic checks with:
 

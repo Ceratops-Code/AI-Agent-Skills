@@ -1055,3 +1055,64 @@ def test_health_migration_proposal_is_advisory_and_reaches_automation_summary(
         assert not levels.has_blocking_findings(proposals)
     assert comparison == {"findings": [], "approved_drift": []}
     assert path.read_bytes() == original
+
+
+
+def test_nested_uv_projects_keep_independent_pip_manifests() -> None:
+    collector = importlib.import_module("github_contract_engine.collectors.local_repository")
+    assert collector._dependabot_ecosystems([
+        "pyproject.toml", "requirements-dev.txt", "scripts/validation/pyproject.toml",
+        "scripts/validation/uv.lock", "apps/api/pyproject.toml", "apps/api/requirements.txt",
+    ]) == {
+        "pip": ["apps/api/pyproject.toml", "apps/api/requirements.txt", "pyproject.toml", "requirements-dev.txt"],
+        "uv": ["scripts/validation/pyproject.toml", "scripts/validation/uv.lock"],
+    }
+
+
+def test_tests_only_cli_preserves_declared_parameters(tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]) -> None:
+    import yaml
+    document = {"version": 3, "kind": "ceratops-sdlc", "repository": {
+        "tests": {"unit": {"parameters": ["suite"], "steps": [{"run": [
+            sys.executable, "-c", "import sys; assert sys.argv[1] == 'selected'", "{suite}",
+        ]}]}},
+    }}
+    path = tmp_path / "sdlc/sdlc.yml"
+    path.parent.mkdir()
+    path.write_text(yaml.safe_dump(document))
+    assert runner.main(["--repo-root", str(tmp_path), "--tests", "--parameter", "suite=selected"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["completed_operations"] == ["repository.tests.unit"]
+
+
+def test_completed_validation_binding_is_not_returned_as_pending_handoff(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    import yaml
+    document = {"version": 3, "kind": "ceratops-sdlc", "deliverables": {"service": {
+        "validate": {"source": {"handoff": "example-skill/check"}},
+        "tests": {"none": {"no-op": "No tests in this fixture."}},
+        "deploy-local": {"local": {"steps": [{"run": [sys.executable, "-c", "pass"]}]}},
+    }}}
+    path = tmp_path / "sdlc/sdlc.yml"
+    path.parent.mkdir()
+    path.write_text(yaml.safe_dump(document))
+    monkeypatch.setattr(runner, "execute_handoff", lambda route, root: {"status": "completed", "handoff": route})
+    assert runner.main(["--repo-root", str(tmp_path), "--operation", "deliverables.service.deploy-local.local"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert "validation_handoffs" not in result
+
+
+
+@pytest.mark.skipif(shutil.which("npm") is None, reason="npm is not installed")
+def test_sdlc_launches_native_package_manager_test_command(tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]) -> None:
+    import yaml
+    (tmp_path / "package.json").write_text(json.dumps({
+        "name": "sdlc-command-probe", "private": True, "scripts": {"test": "node --version"},
+    }))
+    path = tmp_path / "sdlc/sdlc.yml"
+    path.parent.mkdir()
+    path.write_text(yaml.safe_dump({"version": 3, "kind": "ceratops-sdlc", "repository": {
+        "tests": {"package": {"steps": [{"run": ["npm", "test"]}]}},
+    }}))
+    assert runner.main(["--repo-root", str(tmp_path), "--tests", "--ci"]) == 0
+    assert json.loads(capsys.readouterr().out)["completed_operations"] == ["repository.tests.package"]

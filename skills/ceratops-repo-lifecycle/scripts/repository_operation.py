@@ -13,8 +13,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import pathlib
 import re
+import shutil
 import subprocess
 import sys
 from collections.abc import Mapping, Sequence
@@ -350,8 +352,14 @@ def execute_prepared_operation(prepared: PreparedOperation) -> dict[str, object]
                     "message": str(exc),
                 }
         try:
+            argv = list(step.argv)
+            # CreateProcess does not apply PATHEXT to bare npm/pnpm commands.
+            # Resolve a bare executable while leaving repository-relative paths
+            # bound to the declared cwd and preserving shell-free arguments.
+            if os.name == "nt" and not any(separator in argv[0] for separator in ("/", "\\")):
+                argv[0] = shutil.which(argv[0]) or argv[0]
             result = subprocess.run(
-                list(step.argv),
+                argv,
                 cwd=step.cwd,
                 capture_output=True,
                 text=True,
@@ -505,7 +513,7 @@ def main(argv: list[str] | None = None) -> int:
                 [
                     OperationRequest(
                         operation,
-                        parameters=parameters if args.validate else None,
+                        parameters=parameters if args.validate or args.tests else None,
                         parameters_if_declared=conditional
                         if args.validate or args.tests
                         else {**conditional, **parameters},
@@ -555,7 +563,7 @@ def main(argv: list[str] | None = None) -> int:
                     checks if args.validate or args.tests else execute_prepared_operations(prepared)
                 )
                 advisory_checks = [
-                    item for item in checks["results"] if item.get("handoff")
+                    item for item in checks["results"] if item.get("handoff") and not item.get("handoff_completed")
                 ]
                 if advisory_checks and not (args.validate or args.tests):
                     result["validation_handoffs"] = advisory_checks
