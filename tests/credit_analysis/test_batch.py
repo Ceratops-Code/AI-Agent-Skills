@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import pathlib
+import subprocess
 from typing import Any
 
 import pytest
@@ -471,9 +472,11 @@ def test_credit_analysis_batch_selects_recent_threads_and_projects_once(
         workflow.command_prepare_batch(ambiguous_request)
 
 
+@pytest.mark.parametrize("api_failure_event", [None, "error", "turn.failed"])
 def test_credit_analysis_batch_resumes_and_preserves_every_thread_finding(
     tmp_path: pathlib.Path,
     monkeypatch: pytest.MonkeyPatch,
+    api_failure_event: str | None,
 ) -> None:
     workflow = load_credit_analysis_workflow_module()
     monkeypatch.setattr(
@@ -523,6 +526,79 @@ def test_credit_analysis_batch_resumes_and_preserves_every_thread_finding(
     status = workflow.command_prepare_batch(request)
     resumed_state = json.loads(state_path.read_text(encoding="utf-8"))
     assert resumed_state["items"] == prepared_items
+
+    if api_failure_event is not None:
+        runner = FakeCreditModelRunner()
+        original_invoke = workflow._invoke_injected_runner
+        checked_patterns: set[str] = set()
+
+        def check_patterns(value: Any) -> None:
+            if isinstance(value, dict):
+                pattern = value.get("pattern")
+                if isinstance(pattern, str) and pattern not in checked_patterns:
+                    # Ripgrep uses a non-backtracking engine like the API's
+                    # documented failure boundary. Check actual compilation.
+                    compiled = subprocess.run(
+                        ["rg", "--null-data", "--quiet", "--regexp", pattern],
+                        input="", text=True, capture_output=True, check=False,
+                    )
+                    assert compiled.returncode in {0, 1}, compiled.stderr
+                    checked_patterns.add(pattern)
+                for child in value.values():
+                    check_patterns(child)
+            elif isinstance(value, list):
+                for child in value:
+                    check_patterns(child)
+
+        def reject_schema(*args: Any, **kwargs: Any) -> tuple[None, dict[str, Any]]:
+            _, attempt = original_invoke(*args, **kwargs)
+            check_patterns(json.loads(pathlib.Path(attempt["schema_path"]).read_text(encoding="utf-8")))
+            message = json.dumps({
+                "type": "error",
+                "error": {
+                    "type": "invalid_request_error",
+                    "code": "invalid_json_schema",
+                    "message": "Invalid JSON schema: unsupported response pattern",
+                    "param": "text.format.schema",
+                },
+                "status": 400,
+            })
+            event = (
+                {"type": "error", "message": message}
+                if api_failure_event == "error"
+                else {"type": "turn.failed", "error": {"message": message}}
+            )
+            pathlib.Path(attempt["events_path"]).write_text(
+                json.dumps(event) + "\n", encoding="utf-8",
+            )
+            pathlib.Path(attempt["raw_output_path"]).unlink()
+            return None, {**attempt, "exit_code": 1, "error": "unrelated CLI startup warning"}
+
+        monkeypatch.setattr(workflow, "_invoke_injected_runner", reject_schema)
+        child_state = pathlib.Path(status["child_status"]["state_path"])
+        with pytest.raises(workflow.CreditAnalysisError, match="invalid_json_schema"):
+            workflow.command_execute_orchestration(child_state, runner=runner)
+        failed = json.loads(child_state.read_text(encoding="utf-8"))
+        assert checked_patterns
+        assert failed["phase"] != "complete"
+        assert not failed["omissions"]
+        assert failed["model_attempts"]["sol"] == 0
+        assert any(
+            "unsupported response pattern" in attempt["error"]
+            for execution in failed["execution"].values()
+            for attempt in execution["attempts"]
+        )
+        call_count = len(runner.calls)
+        with pytest.raises(workflow.CreditAnalysisError, match="invalid_json_schema"):
+            workflow.command_execute_orchestration(child_state, runner=runner)
+        assert len(runner.calls) == call_count
+        blocked_batch = run_credit_analysis_workflow("status-batch", "--state", str(state_path))
+        assert blocked_batch.returncode == 0, blocked_batch.stderr
+        assert json.loads(blocked_batch.stdout)["pending_thread_id"] == ids[0]
+        cli_resume = run_credit_analysis_workflow("execute", "--state", str(child_state))
+        assert cli_resume.returncode == 2
+        assert "invalid_json_schema" in cli_resume.stderr
+        return
 
     first_final = complete_holistic_credit_analysis(
         workflow,

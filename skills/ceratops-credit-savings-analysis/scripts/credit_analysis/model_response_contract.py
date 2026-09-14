@@ -26,13 +26,13 @@ from .single_thread_analysis import (
 def identifier_schema(
     *, max_length: int | None = None, nullable: bool = False
 ) -> dict[str, Any]:
-    """Use Python's complete identifier match in JSON Schema's search semantics."""
+    """Preserve complete identifier matches in the API and Python 3.14 validators."""
 
     result: dict[str, Any] = {
         "type": ["string", "null"] if nullable else "string",
-        # JSON Schema's $ also matches before a terminal newline. This portable
-        # absolute-end assertion preserves the canonical fullmatch boundary.
-        "pattern": rf"(?:{IDENTIFIER_RE.pattern})(?![\s\S])",
+        # $ can match before a terminal newline in Python. The absolute-end
+        # anchor preserves fullmatch semantics without API-unsupported lookaround.
+        "pattern": IDENTIFIER_RE.pattern.removesuffix("$") + r"\z",
         "minLength": 1,
     }
     if max_length is not None:

@@ -28,6 +28,49 @@ def _checkpoint_state(state: dict[str, Any]) -> None:
     analysis._holistic_save_state(state)
 
 
+def _schema_rejection(attempt: Mapping[str, Any]) -> str | None:
+    """Read permanent API schema failures from retained, integrity-bound events.
+
+    CLI startup diagnostics may hide the actual API error. Only error events with
+    the provider's exact code stop the batch; ordinary model failures retain their
+    existing handling. Reusing this check on resume prevents a paid retry against
+    the same rejected request. Already running siblings still finish and checkpoint.
+    """
+    artifact = attempt.get("artifacts", {}).get("events")
+    if not isinstance(artifact, Mapping):
+        return None
+    path = pathlib.Path(str(artifact["path"]))
+    if path.is_symlink() or not path.is_file() or analysis._file_hash(path) != artifact["sha256"]:
+        raise CreditAnalysisError("failed attempt events changed")
+    with path.open(encoding="utf-8") as handle:
+        for line in handle:
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(event, Mapping) or event.get("type") not in {"error", "turn.failed"}:
+                continue
+            detail = event.get("error", event)
+            if not isinstance(detail, Mapping):
+                continue
+            message = detail.get("message")
+            if isinstance(message, str):
+                try:
+                    decoded = json.loads(message)
+                except json.JSONDecodeError:
+                    decoded = None
+                if isinstance(decoded, Mapping):
+                    detail = decoded
+            detail = detail.get("error", detail)
+            if isinstance(detail, Mapping) and detail.get("code") == "invalid_json_schema":
+                return (
+                    "API rejected response schema (invalid_json_schema): "
+                    + str(detail.get("message") or "schema is unsupported")
+                    + "; repair the schema and start a new analysis"
+                )
+    return None
+
+
 def _prior_rejection(
     state: Mapping[str, Any], task: Mapping[str, Any], input_sha: str,
     *, oldest: bool = False,
@@ -343,9 +386,14 @@ def _consume_attempt(
         state["model_attempts"][role] += 1
     execution = state["execution"][task["task_id"]]
     if raw is None:
+        schema_error = _schema_rejection(attempt)
+        if schema_error is not None:
+            attempt["error"] = schema_error
         execution["attempts"].append(
             {**attempt, "outcome": "runner-error"}
         )
+        if schema_error is not None:
+            raise CreditAnalysisError(schema_error)
         if task["phase"] == "luna-discovery":
             _omit_luna_task(
                 state,
@@ -458,6 +506,12 @@ def command_execute_orchestration(
             raise CreditAnalysisError(
                 "request does not own the existing orchestration state"
             )
+    for execution in state["execution"].values():
+        for attempt in execution["attempts"]:
+            if attempt.get("outcome") == "runner-error":
+                schema_error = _schema_rejection(attempt)
+                if schema_error is not None:
+                    raise CreditAnalysisError(schema_error)
     if state["phase"] == "complete":
         return analysis._holistic_public_status(state)
     catalog = (
