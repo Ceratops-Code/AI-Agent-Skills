@@ -6,6 +6,7 @@ Reusable Ceratops skills for Codex and other agents compatible with `SKILL.md`.
 
 | Skill | Purpose |
 | --- | --- |
+| `codex-desktop-upgrade` | Assess official Codex desktop updates, reconcile patches and route requested qualification through the patcher helpers. |
 | `design-document-lifecycle` | Create or review an authoritative software design document using a tailored arc42 contract, C4 views, scoped implementation evidence, and mechanical validation. |
 | `ceratops-repo-lifecycle` | Route repository lifecycle work across compatibility, local promotion, structured deployment, guarded shipping, GitHub creation and inspection, PR publication, review follow-up, CI repair, contracts, health, dependencies, and PR merge actions. |
 | `ceratops-governance-lifecycle` | Route prompt optimization, advisory skill optimization, regression-safe instruction updates, and cross-scope governance consistency audits across action references. |

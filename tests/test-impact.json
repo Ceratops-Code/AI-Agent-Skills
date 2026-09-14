@@ -153,6 +153,7 @@
     "scripts/validate-repository.py",
     "skills/ceratops-automation-run/**",
     "skills/ceratops-code-consistency-audit/**",
+    "skills/codex-desktop-upgrade/**",
     "skills/sections/**",
     "skills/skill-sections.json",
     "tests/__init__.py",
