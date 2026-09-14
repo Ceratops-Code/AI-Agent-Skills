@@ -136,6 +136,14 @@ repo docs, then update the narrowest correct source that exists.
 - If runtime generation or validation flow no longer matches the section model,
   fix the scripts instead of working around them in skill text.
 
+- (D) For an explicitly revised request after failed verification, run
+  `python scripts/skill-update-workflow.py supersede --state OLD --request REQUEST
+  --new-state STATE` before editing newly declared paths. Preserve the original
+  source baseline and failed records, transfer the active marker to the successor,
+  and remove the inherited disposable records only after the successor passes
+  and is finalized. Reject scope removal, changed evidence, completed or
+  invalidated state, and artifact collisions before changing ownership.
+
 #### 4. Run needed checks
 
 - Change both explicit `INSTALLER_VERSION` values together and reuse an

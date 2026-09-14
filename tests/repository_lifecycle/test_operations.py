@@ -162,6 +162,50 @@ def test_registered_skill_executor_is_portable_and_failure_is_not_completion(
     assert handoffs.execute_handoff("example-skill/check", repo)["status"] == "handoff_required"
 
 
+@pytest.mark.parametrize("failure", [None, "candidate", "missing_manager"])
+def test_tool_install_binding_uses_checkout_metadata_and_propagates_failures(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, failure: str | None,
+) -> None:
+    handoffs = importlib.import_module("sdlc_handoffs")
+    skill = tmp_path / "skills/ceratops-tool-lifecycle/references"
+    skill.mkdir(parents=True)
+    shutil.copyfile(ROOT / "skills/ceratops-tool-lifecycle/references/action-executors.json", skill / "action-executors.json")
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    repo = tmp_path / "repo with spaces & punctuation"
+    repo.mkdir()
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        if failure == "missing_manager":
+            raise FileNotFoundError("manager launcher missing")
+        return subprocess.CompletedProcess(argv, 7 if failure else 0, "OK\n", "candidate failed" if failure else "")
+
+    monkeypatch.setattr(handoffs.subprocess, "run", run)
+    result = handoffs.execute_handoff("ceratops-tool-lifecycle/install", repo)
+    assert result["status"] == ("operation_failed" if failure else "completed")
+    assert calls[0][0] == ["python", "-I", "-B",
+                           "C:/AI-Agents-Tools/ceratops_tool_manager/bin/ceratops_tool_manager.py",
+                           "install", "--source", str(repo)]
+    assert calls[0][1]["cwd"] == repo
+    assert not calls[0][1].get("shell", False)
+
+
+def test_live_sdlc_v3_selects_validation_and_tests_for_every_deploy() -> None:
+    document = contracts.load_contract(ROOT / "sdlc/sdlc.yml")
+    assert document["version"] == 3
+    for deliverable in ("skills", "hooks", "tools"):
+        locations = runner.validation_operations(ROOT, [f"deliverables.{deliverable}.deploy-local.standalone"])
+        assert "repository.validate.repository" in locations
+        assert "repository.tests.python" in locations
+        assert f"deliverables.{deliverable}.tests.repository" in locations
+    requests = [runner.OperationRequest("repository.validate.repository"),
+                runner.OperationRequest("repository.tests.python")]
+    operations = runner.prepare_operations(ROOT, requests, context="ci")
+    assert operations[0].steps[0].argv == ("uv", "run", "--locked", "scripts/validate-repository.py")
+    assert operations[1].steps[0].argv == ("uv", "run", "--locked", "scripts/testing/run-tests.py", "--auto")
+
+
 def _step(script: str, *arguments: str) -> dict[str, object]:
     return {"steps": [{"run": [sys.executable, script, *arguments]}]}
 

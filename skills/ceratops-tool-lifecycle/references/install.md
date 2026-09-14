@@ -5,6 +5,15 @@
  Install the selected repository's declared tool version after candidate
 validation.
 
+## SDLC execution
+
+`sdlc/sdlc.yml` routes tool deployment to `ceratops-tool-lifecycle/install`.
+This action's executor invokes the installed tool manager with `--source` set
+to the selected repository. Tool name and version come from that checkout's
+`pyproject.toml`. The manager's stable launcher selects its installed Python
+runtime. Missing manager installation or ambiguous tool selection fails before
+deployment is reported complete.
+
 ## Workflow
 
 1. For repository installation, use the selected checkout's `pyproject.toml`

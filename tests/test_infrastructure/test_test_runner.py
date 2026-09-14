@@ -18,6 +18,69 @@ BASE = "1" * 40
 HEAD = "2" * 40
 
 
+@pytest.mark.parametrize("target", [
+    "tests/test_infrastructure/test_repository_validator.py::test_runtime_dependencies_supply_timezones_without_an_os_database",
+    "tests/test_infrastructure/test_repository_validator.py",
+])
+def test_explicit_targets_collect_and_run_only_requested_cases(test_runner_module: Any, capsys: Any, target: str) -> None:
+    execution = DeterministicExecution(test_runner_module, b"")
+    assert test_runner_module.execute([target, target], repo_root=ROOT,
+                                     text_runner=execution.text, bytes_runner=execution.bytes) == 0
+    result = payload(capsys)
+    assert result["mode"] == "targets"
+    assert result["pytest_targets"] == [target]
+    assert result["full_suite"] is False
+    assert execution.final_pytest == [(sys.executable, "-m", "pytest", "-q", target)]
+
+
+@pytest.mark.parametrize("arguments", [
+    ["tests/missing.py"], ["../outside.py"],
+    ["tests/test_infrastructure/test_repository_validator.py::missing_node"],
+    ["tests/test_infrastructure", "--all"], ["--auto", "--worktree"], ["--", "-q"],
+])
+def test_invalid_explicit_selection_never_runs_tests(test_runner_module: Any, tmp_path: pathlib.Path,
+                                                   capsys: Any, arguments: list[str]) -> None:
+    execution = DeterministicExecution(test_runner_module, b"")
+    assert test_runner_module.execute(["--diagnostic-output", str(tmp_path / "failure.json"), *arguments],
+                                     repo_root=ROOT, text_runner=execution.text,
+                                     bytes_runner=execution.bytes) != 0
+    assert not execution.final_pytest
+    assert payload(capsys)["pytest"]["outcome"] == "not-run"
+
+
+@pytest.mark.parametrize("context", ["local", "push", "pull_request", "malformed", "unsupported"])
+def test_auto_uses_explicit_ci_context_and_preserves_local_full_selection(
+    test_runner_module: Any, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, capsys: Any, context: str,
+) -> None:
+    execution = DeterministicExecution(test_runner_module, b"M\0tools/ceratops_tool_manager/cli.py\0")
+    monkeypatch.setenv("GITHUB_ACTIONS", "false" if context == "local" else "true")
+    monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request" if context == "malformed" else context)
+    event = tmp_path / "event.json"
+    event.write_text(json.dumps({"pull_request": {"base": {"sha": BASE}, "head": {"sha": HEAD}}})
+                     if context != "malformed" else "{}", encoding="utf-8")
+    monkeypatch.setenv("GITHUB_EVENT_PATH", str(event))
+    # Real selection, bounded collection fixture: the execution contract under test
+    # is argv selection, not a second collection of the entire repository.
+    def commands(command, cwd):
+        if "--collect-only" in command:
+            return subprocess.CompletedProcess(command, 0, "tests/fixture.py::test_value\n", "")
+        return execution.text(command, cwd)
+    code = test_runner_module.execute(["--auto", "--diagnostic-output", str(tmp_path / "failure.json")],
+                                      repo_root=ROOT, text_runner=commands, bytes_runner=execution.bytes)
+    result = payload(capsys)
+    if context in {"malformed", "unsupported"}:
+        assert code != 0 and not execution.final_pytest
+        assert result["status"] == "configuration-error"
+    elif context == "pull_request":
+        assert code == 0
+        assert (result["base"], result["head"]) == (BASE, HEAD)
+        assert result["pytest_targets"] == ["tests/tool_manager"]
+    else:
+        assert code == 0 and result["full_suite"]
+        assert result["pytest_targets"] == list(test_runner_module.all_selection(
+            test_runner_module.load_manifest(ROOT / "tests/test-impact.json")).pytest_targets)
+
+
 class DeterministicExecution:
     """Provide Git evidence and collect real tests while stubbing final execution."""
 

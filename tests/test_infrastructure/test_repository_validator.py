@@ -87,38 +87,15 @@ def test_ci_runs_repository_validator_that_owns_both_mypy_platforms() -> None:
     installation_step = next(step for step in steps if step.get("name") == "Install development validators")
     assert steps.index(uv_step) < steps.index(installation_step)
     assert "uv sync --project scripts --locked" in installation_step["run"]
-    validation_step = next(
-        step for step in steps if step.get("name") == "Validate repository"
-    )
-    assert " ".join(validation_step["run"].split()) == (
-        "uv run --locked scripts/validate-repository.py "
-        "--evidence-file ${{ runner.temp }}/repository-validation.log"
-    )
-    pull_request_step = next(
-        step for step in steps if step.get("name") == "Run pull-request impact tests"
-    )
-    full_step = next(
-        step for step in steps if step.get("name") == "Run full main-branch tests"
-    )
-    pull_request_command = " ".join(pull_request_step["run"].split())
-    assert pull_request_command.startswith(
-        "uv run --locked scripts/testing/run-tests.py --base "
-    )
-    assert " --head " in pull_request_command
-    assert (
-        "--diagnostic-output ${{ runner.temp }}/pytest-failure.json"
-        in pull_request_command
-    )
-    assert " ".join(full_step["run"].split()) == (
-        "uv run --locked scripts/testing/run-tests.py --all "
-        "--diagnostic-output ${{ runner.temp }}/pytest-failure.json"
-    )
-    upload_step = next(
-        step for step in steps if step.get("name") == "Upload validation evidence"
-    )
-    assert upload_step["with"]["path"].splitlines() == [
-        "${{ runner.temp }}/repository-validation.log",
-        "${{ runner.temp }}/pytest-failure.json",
+    gate = next(step for step in steps if step.get("name") == "Validate and test through SDLC")
+    assert gate["uses"] == "./skills/ceratops-repo-lifecycle/scripts"
+    assert gate["with"] == {"repo-root": ".", "evidence-file": "${{ runner.temp }}/sdlc-validation.json"}
+    assert steps.index(installation_step) < steps.index(gate)
+    upload = next(step for step in steps if step.get("name") == "Upload validation evidence")
+    assert upload["with"]["path"].splitlines() == [
+        "${{ runner.temp }}/sdlc-validation.json",
+        "build/deploy-validation/repository-validation.log",
+        "build/test-diagnostics/pytest-failure.json",
     ]
 
     checks = VALIDATOR.build_checks(
@@ -228,6 +205,25 @@ def test_failure_is_fail_fast_compact_and_writes_complete_evidence(
     assert "complete stderr diagnostics" in evidence
     assert "complete stdout diagnostics" not in captured.out
     assert "complete stderr diagnostics" not in captured.out
+
+
+def test_validation_has_no_test_mode_or_test_side_effects(tmp_path: pathlib.Path, capsys: Any) -> None:
+    calls = []
+
+    def run(command, cwd):
+        calls.append(command)
+        assert "pytest" not in command
+        assert not any("run-tests.py" in argument for argument in command)
+        return completed(command)
+
+    evidence = tmp_path / "validation.log"
+    assert VALIDATOR.main(["--evidence-file", str(evidence)], process_runner=run) == 0
+    assert len(calls) == 5
+    assert capsys.readouterr().out == "OK\n"
+    calls.clear()
+    assert VALIDATOR.main(["--without-tests"], process_runner=run) == 2
+    assert not calls
+    assert json.loads(capsys.readouterr().out)["unexpected_arguments"] == ["--without-tests"]
 
 
 def test_omitted_evidence_flag_keeps_repository_default(

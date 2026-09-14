@@ -23,6 +23,218 @@ from tests.support.repositories import (
 )
 
 
+def _supersede_case(tmp_path: pathlib.Path, *, preexisting: bool = False, new_maintenance: bool = False):
+    worktree, scope, temp = prepare_skill_update_workflow_worktree(tmp_path)
+    source = "skills/alpha-tool/scripts/tool.py"
+    request = temp / "request.json"
+    state = temp / "state.json"
+    evidence = temp / "evidence.json"
+    if preexisting:
+        (worktree / "notes.txt").write_text("keep original notes\n", encoding="utf-8")
+    declaration: dict[str, Any] = {
+        "schema": "ceratops-skill-update-request.v2", "repo_root": str(worktree),
+        "task_temp_root": str(temp), "evidence_output": str(evidence),
+        "disposable_artifacts": ["request", "state", "evidence"],
+        "selected_skills": ["alpha-tool"], "allowed_paths": [source],
+        "change_groups": [{"name": "helper", "paths": [source]}],
+        "checks": [{"kind": "command", "argv": [sys.executable, "-c", "raise SystemExit(7)"]}],
+    }
+    if new_maintenance:
+        (worktree / "scripts").mkdir(exist_ok=True)
+        declaration["allowed_paths"].append("scripts/new-helper.py")
+        declaration["change_groups"][0]["paths"].append("scripts/new-helper.py")
+    request.write_text(json.dumps(declaration), encoding="utf-8")
+    result = run_skill_update_workflow("prepare", "--request", str(request), "--state", str(state))
+    assert result.returncode == 0, result.stderr
+    (worktree / source).write_text("VALUE = 2\n", encoding="utf-8", newline="\n")
+    if new_maintenance:
+        (worktree / "scripts/new-helper.py").write_text("VALUE = 2\n", encoding="utf-8", newline="\n")
+    result = run_skill_update_workflow("verify", "--state", str(state), "--evidence-output", str(evidence))
+    assert result.returncode == 2, result.stderr
+    assert json.loads(evidence.read_text())["checks"][0]["returncode"] == 7
+    successor_request = temp / "successor-request.json"
+    successor = temp / "successor-state.json"
+    successor_evidence = temp / "successor-evidence.json"
+    declaration["evidence_output"] = str(successor_evidence)
+    declaration["checks"][0]["argv"][-1] = "raise SystemExit(0)"
+    successor_request.write_text(json.dumps(declaration), encoding="utf-8")
+    return worktree, request, state, evidence, successor_request, successor, successor_evidence
+
+
+@pytest.mark.parametrize("protected_request", [False, True])
+def test_supersede_preserves_baseline_failed_records_and_transfers_cleanup(tmp_path: pathlib.Path, protected_request: bool) -> None:
+    worktree, request, state, evidence, new_request, successor, new_evidence = _supersede_case(tmp_path)
+    old = {path: path.read_bytes() for path in (request, state, evidence)}
+    initial = json.loads(old[state])
+    if protected_request:
+        revised = json.loads(new_request.read_text())
+        revised["disposable_artifacts"] = ["state", "evidence"]
+        new_request.write_text(json.dumps(revised), encoding="utf-8")
+    result = run_skill_update_workflow("supersede", "--state", str(state), "--request", str(new_request), "--new-state", str(successor))
+    assert result.returncode == 0, result.stderr
+    assert all(path.read_bytes() == content for path, content in old.items())
+    transferred = json.loads(successor.read_text())
+    assert transferred["baseline_targets"] == initial["baseline_targets"]
+    assert transferred["baseline_dirty"] == initial["baseline_dirty"]
+    assert json.loads((state.parent / ".ceratops-skill-update-active.json").read_text())["state"] == str(successor)
+    blocked = run_skill_update_workflow("finalize", "--state", str(state))
+    assert blocked.returncode == 2
+    blocked = run_skill_update_workflow("finalize", "--state", str(successor))
+    assert blocked.returncode == 2
+    result = run_skill_update_workflow("verify", "--state", str(successor), "--evidence-output", str(new_evidence))
+    assert result.returncode == 0, result.stderr
+    assert json.loads(new_evidence.read_text())["changed_paths"] == ["skills/alpha-tool/scripts/tool.py"]
+    result = run_skill_update_workflow("finalize", "--state", str(successor))
+    assert result.returncode == 0, result.stderr
+    assert all(not path.exists() for path in (request, state, evidence, successor, new_evidence))
+    assert new_request.exists() == protected_request
+    assert (worktree / "skills/alpha-tool/scripts/tool.py").read_text() == "VALUE = 2\n"
+
+
+@pytest.mark.parametrize("problem", ["evidence", "missing", "missing_marker_record", "scope", "collision", "same_request", "new_dirt", "passed", "invalidated"])
+def test_supersede_refuses_without_changing_failed_ownership(tmp_path: pathlib.Path, problem: str) -> None:
+    worktree, request, state, evidence, new_request, successor, new_evidence = _supersede_case(tmp_path)
+    declaration = json.loads(new_request.read_text())
+    if problem == "evidence":
+        evidence.write_text("{}", encoding="utf-8")
+    elif problem == "missing":
+        evidence.unlink()
+    elif problem == "missing_marker_record":
+        stored = json.loads(state.read_text())
+        stored["cleanup"]["owned_artifacts"] = [item for item in stored["cleanup"]["owned_artifacts"] if item["role"] != "retention"]
+        state.write_text(json.dumps(stored), encoding="utf-8")
+    elif problem == "scope":
+        declaration["allowed_paths"] = ["skills/alpha-tool/SKILL.md"]
+        declaration["change_groups"][0]["paths"] = declaration["allowed_paths"]
+    elif problem == "collision":
+        successor = state
+    elif problem == "same_request":
+        declaration["checks"] = json.loads(request.read_text())["checks"]
+    elif problem == "new_dirt":
+        (worktree / "undeclared.py").write_text("VALUE = 3\n", encoding="utf-8")
+    elif problem in {"passed", "invalidated"}:
+        stored = json.loads(state.read_text())
+        stored["verification"] = {"status": problem, "generation": 1, "input_sha256": "a" * 64,
+                                  "evidence_sha256": "b" * 64 if problem == "passed" else None}
+        state.write_text(json.dumps(stored), encoding="utf-8")
+    new_request.write_text(json.dumps(declaration), encoding="utf-8")
+    before = {path: path.read_bytes() for path in state.parent.iterdir() if path.is_file()}
+    result = run_skill_update_workflow("supersede", "--state", str(state), "--request", str(new_request), "--new-state", str(successor))
+    assert result.returncode == 2, result.stdout
+    assert {path: path.read_bytes() for path in state.parent.iterdir() if path.is_file()} == before
+
+
+def test_supersede_failed_marker_write_keeps_previous_state(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _, request, state, evidence, new_request, successor, _ = _supersede_case(tmp_path)
+    monkeypatch.syspath_prepend(str(SKILL_UPDATE_WORKFLOW.parent))
+    workflow = runpy.run_path(str(SKILL_UPDATE_WORKFLOW))
+    namespace = workflow["command_supersede"].__globals__
+    original = namespace["_write_json_atomic"]
+    marker = state.parent / ".ceratops-skill-update-active.json"
+    before = {path: path.read_bytes() for path in (request, state, evidence, marker)}
+
+    def write(path, value, label):
+        if path == marker:
+            raise OSError("marker locked")
+        original(path, value, label)
+
+    monkeypatch.setitem(namespace, "_write_json_atomic", write)
+    with pytest.raises(OSError, match="marker locked"):
+        workflow["command_supersede"](state, new_request, successor)
+    assert not successor.exists()
+    assert all(path.read_bytes() == content for path, content in before.items())
+
+
+def test_supersede_finalization_preflights_all_inherited_records(tmp_path: pathlib.Path) -> None:
+    _, request, state, evidence, new_request, successor, new_evidence = _supersede_case(tmp_path)
+    result = run_skill_update_workflow("supersede", "--state", str(state), "--request", str(new_request), "--new-state", str(successor))
+    assert result.returncode == 0, result.stderr
+    result = run_skill_update_workflow("verify", "--state", str(successor), "--evidence-output", str(new_evidence))
+    assert result.returncode == 0, result.stderr
+    evidence.write_text("changed failed evidence", encoding="utf-8")
+    before = {path: path.read_bytes() for path in (request, state, evidence, new_request, successor, new_evidence)}
+    result = run_skill_update_workflow("finalize", "--state", str(successor))
+    assert result.returncode == 2 and "superseded artifact changed" in result.stderr
+    assert all(path.read_bytes() == content for path, content in before.items())
+
+
+def test_supersede_scope_extension_preserves_unrelated_dirty_baseline(tmp_path: pathlib.Path) -> None:
+    worktree, _, state, _, request, successor, evidence = _supersede_case(tmp_path, preexisting=True)
+    revised = json.loads(request.read_text())
+    additional = "skills/alpha-tool/SKILL.md"
+    revised["allowed_paths"].append(additional)
+    revised["change_groups"][0]["paths"].append(additional)
+    request.write_text(json.dumps(revised), encoding="utf-8")
+    result = run_skill_update_workflow("supersede", "--state", str(state), "--request", str(request), "--new-state", str(successor))
+    assert result.returncode == 0, result.stderr
+    target = worktree / additional
+    target.write_text(target.read_text() + "\nUpdated instructions.\n", encoding="utf-8", newline="\n")
+    notes = worktree / "notes.txt"
+    notes.write_text("changed notes\n", encoding="utf-8")
+    result = run_skill_update_workflow("verify", "--state", str(successor), "--evidence-output", str(evidence))
+    assert result.returncode == 2 and "pre-existing dirty path changed" in result.stderr
+    notes.write_text("keep original notes\n", encoding="utf-8")
+    result = run_skill_update_workflow("verify", "--state", str(successor), "--evidence-output", str(evidence))
+    assert result.returncode == 0, result.stderr
+    assert set(json.loads(evidence.read_text())["changed_paths"]) == {additional, "skills/alpha-tool/scripts/tool.py"}
+    assert run_skill_update_workflow("finalize", "--state", str(successor)).returncode == 0
+    assert notes.read_text() == "keep original notes\n"
+
+
+def test_supersede_chain_retains_all_failed_attempts_until_success(tmp_path: pathlib.Path) -> None:
+    _, request, state, evidence, revised, second, second_evidence = _supersede_case(tmp_path)
+    declaration = json.loads(revised.read_text())
+    declaration["checks"][0]["argv"][-1] = "raise SystemExit(8)"
+    revised.write_text(json.dumps(declaration), encoding="utf-8")
+    assert run_skill_update_workflow("supersede", "--state", str(state), "--request", str(revised), "--new-state", str(second)).returncode == 0
+    assert run_skill_update_workflow("verify", "--state", str(second), "--evidence-output", str(second_evidence)).returncode == 2
+    kept = {path: path.read_bytes() for path in (request, state, evidence, revised, second, second_evidence)}
+    third, third_evidence, third_request = [state.parent / name for name in ("third.json", "third-evidence.json", "third-request.json")]
+    declaration["checks"][0]["argv"][-1] = "raise SystemExit(0)"
+    declaration["evidence_output"] = str(third_evidence)
+    third_request.write_text(json.dumps(declaration), encoding="utf-8")
+    result = run_skill_update_workflow("supersede", "--state", str(second), "--request", str(third_request), "--new-state", str(third))
+    assert result.returncode == 0, result.stderr
+    assert all(path.read_bytes() == content for path, content in kept.items())
+    assert run_skill_update_workflow("verify", "--state", str(third), "--evidence-output", str(third_evidence)).returncode == 0
+    result = run_skill_update_workflow("finalize", "--state", str(third))
+    assert result.returncode == 0, result.stderr
+    assert not state.parent.exists()
+
+
+def test_supersede_carries_new_maintenance_files_and_subsequent_in_scope_fixes(tmp_path: pathlib.Path) -> None:
+    worktree, _, state, _, request, successor, evidence = _supersede_case(tmp_path, new_maintenance=True)
+    original = json.loads(state.read_text())["baseline_targets"]
+    # The failed record stays unchanged while its already-declared source is fixed.
+    (worktree / "scripts/new-helper.py").write_text("VALUE = 3\n", encoding="utf-8", newline="\n")
+    result = run_skill_update_workflow("supersede", "--state", str(state), "--request", str(request), "--new-state", str(successor))
+    assert result.returncode == 0, result.stderr
+    assert json.loads(successor.read_text())["baseline_targets"] == original
+    result = run_skill_update_workflow("verify", "--state", str(successor), "--evidence-output", str(evidence))
+    assert result.returncode == 0, result.stderr
+    assert "scripts/new-helper.py" in json.loads(evidence.read_text())["changed_paths"]
+    assert run_skill_update_workflow("finalize", "--state", str(successor)).returncode == 0
+
+
+def test_supersede_refuses_scope_removal_before_importing_revised_tests(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _, _, state, _, request, successor, _ = _supersede_case(tmp_path)
+    revised = json.loads(request.read_text())
+    revised["allowed_paths"] = ["skills/alpha-tool/SKILL.md"]
+    revised["change_groups"][0]["paths"] = revised["allowed_paths"]
+    revised["checks"] = [{"kind": "pytest", "nodes": ["tests/test_helper.py::test_helper_value"]}]
+    request.write_text(json.dumps(revised), encoding="utf-8")
+    monkeypatch.syspath_prepend(str(SKILL_UPDATE_WORKFLOW.parent))
+    workflow = runpy.run_path(str(SKILL_UPDATE_WORKFLOW))
+
+    def collect(*args):
+        pytest.fail("revised tests imported before scope validation")
+
+    monkeypatch.setitem(workflow["command_supersede"].__globals__, "_collect_declared_pytest_nodes", collect)
+    with pytest.raises(workflow["UpdateExecutionError"], match="cannot remove prepared scope"):
+        workflow["command_supersede"](state, request, successor)
+    assert not successor.exists()
+
+
 @pytest.mark.parametrize(
     "outcome", [
         "passed", "collection_failed", "command_failed", "pytest_failed",

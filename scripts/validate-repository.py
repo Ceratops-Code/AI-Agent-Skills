@@ -5,7 +5,8 @@
 on success and written in full only for the first failed check. A successful
 run removes stale evidence at that exact path and prunes only the dedicated
 default evidence directory when empty. Commands use argv lists, and managed
-runtime installation and test execution remain outside this aggregate.
+runtime installation remains outside this aggregate. SDLC v3 owns the separate
+test phase; this validator never collects or executes tests.
 """
 
 from __future__ import annotations
@@ -100,7 +101,7 @@ def build_checks(
 
     python = python_executable or sys.executable
     npm = npm_executable or ("npm.cmd" if sys.platform == "win32" else "npm")
-    return (
+    checks: tuple[Check, ...] = (
         Check("markdown-lint", (npm, "run", "lint:markdown"), repo_root),
         Check(
             "yaml-lint",
@@ -140,6 +141,7 @@ def build_checks(
             "win32",
         ),
     )
+    return checks
 
 
 def evidence_text(

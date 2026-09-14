@@ -166,10 +166,12 @@ without repository deduplication.
 | `skills/ceratops-repo-lifecycle/scripts/promote-repository.py` | Prepares `release/local`; promotes selected branches with no deployment or an explicit ordered operation selection; or composes promotion into exact-head shipping with ordered release and deploy selections, finalization, and cleanup; checks live publication before rebasing only task commits while preserving shared history; records outcomes and finalizes bound deployment evidence within the task temp root without replay. |
 | `skills/ceratops-repo-lifecycle/scripts/manage-pending-work.py` | Records, checks, automatically resumes the retained target commit, and progressively finalizes the exact selected scope; preflight preserves and reports non-cleanup-eligible worktrees, while eligible residual-worktree and identity-matched task-temp cleanup stays within validated named directory boundaries and preserves active skill-update state for post-deployment finalization. |
 | `skills/ceratops-repo-lifecycle/scripts/action.yml` | GitHub composite action that runs declared validation and tests using the skill-owned SDLC engine; CI defers skill handoffs and retains failure evidence. |
-| `skills/ceratops-repo-lifecycle/scripts/repository_operation.py` | Single capability runner: resolves complete YAML locations, prevalidates ordered argv/parameters/cwd, runs declared validation before deployment or publication, and retains bounded structured step results separately from command completion, with bounded failures and advisory handoffs. |
+| `skills/ceratops-repo-lifecycle/scripts/repository_operation.py` | Single capability runner: resolves complete YAML locations, prevalidates ordered argv/parameters/cwd, runs applicable validation and test gates before deployment or publication, and retains bounded structured step results separately from command completion; skill callers execute registered handoffs and CI defers them. |
 | `skills/ceratops-repo-lifecycle/scripts/ship-repository.py` | Prevalidates one SDLC contract and ordered phase selections, runs declared CI test selection against freshly fetched base and exact staged head commits before push, and orchestrates guarded GitHub shipping, main synchronization, per-operation publication and deployment checkpoints, and resumable selected-source cleanup. |
 | `skills/ceratops-repo-lifecycle/scripts/rename-repository-path.py` | Plans or applies tracked file renames and exact filename references; accepts explicit or Git-detected rename pairs, updates relative Markdown links, blocks ambiguous references, preserves the index and text bytes outside replacements, and compensates caught file errors. |
 | `skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py` | Existing source, metadata, runtime-input, contract, and portability validator invoked by source-validate and explicit skill workflows. |
+| `skills/ceratops-skill-lifecycle/scripts/skill-update-workflow.py` | Records allowed files, checks and the original worktree baseline; prepares, verifies and finalizes updates. Its `supersede` command starts a revised request after failure, preserves the original baseline and failed records, and transfers their exact cleanup ownership to the successor. |
+| `skills/ceratops-skill-lifecycle/scripts/skill_update_state.py` | Owns update state, filesystem boundaries and cleanup-record validation; successful successor finalization removes only unchanged inherited disposable records and preserves protected inputs. |
 | `skills/ceratops-skill-lifecycle/scripts/fast-change.py` | Classifies exact structured replacements, generates their diff, and owns the eligible direct-release change through declared Markdown lint, exact helper tests, targeted installation, commit, and failure compensation. |
 
 Lifecycle helpers suppress successful subcommand output and print only compact
@@ -568,9 +570,10 @@ test implementations and non-Python test commands remain repository-owned.
 
 This source repository uses `scripts/pyproject.toml` and `scripts/uv.lock` for
 its maintenance scripts and Python tests. The root `pyproject.toml` holds Ruff
-and mypy settings. Its existing SDLC format and test-selection behavior remain
-repository-owned; this environment migration does not apply every compatibility
-template to the source repository.
+and mypy settings. Its SDLC v3 contract runs validation and tests separately.
+CI uses the local composite action in this checkout, preserving PR test selection;
+local and push gates run the full test suite. Other repositories use the same
+skill-owned action pinned to a published commit.
 
 ## Shared Skill Python Environment
 
@@ -746,10 +749,17 @@ Failure evidence remains available for diagnosis until the next successful run,
 which removes the selected evidence file and prunes the dedicated default
 directory when it is empty.
 The validator runs Markdown and YAML lint, Ruff, and mypy for Linux and Win32;
-it never runs tests. Tests run only through an explicit
-`scripts/testing/run-tests.py` command. Pull-request CI calls that runner with
-exact base and head commit SHAs. Local uncommitted selection is explicit through
-`uv run --locked scripts/testing/run-tests.py --worktree`.
+it never runs tests.
+SDLC separately runs `scripts/testing/run-tests.py --auto`: exact PR base/head
+impact selection in GitHub, all tests locally and on push. Every deliverable
+declares its tests, using a no-op when the repository test phase covers them.
+Promotion and shipping require both applicable results before mutation.
+Run an individual case with
+`uv run --locked scripts/testing/run-tests.py tests/path.py::test_name`.
+Local uncommitted selection is explicit
+through `uv run --locked scripts/testing/run-tests.py --worktree`.
+The runner's internal `scripts/testing/runner_requests.py` module owns argument
+validation and the explicitly requested GitHub context selection.
 Add `--select-only` to either diff or worktree mode to validate the same mapping
 without collecting or running pytest; success reports `selection-valid` and
 pytest `not-run`, including when no tests are selected. Failures retain the

@@ -30,25 +30,11 @@ jobs:
           uv sync --project scripts --locked
           npm ci
 
-      - name: Validate repository
-        run: >-
-          uv run --locked scripts/validate-repository.py
-          --evidence-file ${{ runner.temp }}/repository-validation.log
-
-      - name: Run pull-request impact tests
-        if: github.event_name == 'pull_request'
-        run: >-
-          uv run --locked scripts/testing/run-tests.py
-          --base ${{ github.event.pull_request.base.sha }}
-          --head ${{ github.event.pull_request.head.sha }}
-          --diagnostic-output ${{ runner.temp }}/pytest-failure.json
-
-      - name: Run full main-branch tests
-        if: github.event_name == 'push'
-        run: >-
-          uv run --locked scripts/testing/run-tests.py
-          --all
-          --diagnostic-output ${{ runner.temp }}/pytest-failure.json
+      - name: Validate and test through SDLC
+        uses: ./skills/ceratops-repo-lifecycle/scripts
+        with:
+          repo-root: .
+          evidence-file: ${{ runner.temp }}/sdlc-validation.json
 
       - name: Upload validation evidence
         if: failure()
@@ -57,5 +43,6 @@ jobs:
           if-no-files-found: ignore
           name: repository-validation-evidence
           path: |
-            ${{ runner.temp }}/repository-validation.log
-            ${{ runner.temp }}/pytest-failure.json
+            ${{ runner.temp }}/sdlc-validation.json
+            build/deploy-validation/repository-validation.log
+            build/test-diagnostics/pytest-failure.json

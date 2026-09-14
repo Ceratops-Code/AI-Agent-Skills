@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Select, explain, validate, and run repository tests from deterministic data.
 
-The runner accepts only explicit full-suite, committed-revision, manifest,
-worktree, collection-snapshot, or collection-reconciliation modes. Worktree
-mode compares tracked and untracked paths with the resolved HEAD commit; no
-mode is inferred from ambient state. Collection modes preserve every pytest
+The runner accepts explicit test targets, full-suite, committed-revision,
+manifest, worktree, collection-snapshot, or collection-reconciliation modes.
+Explicit --auto selects PR impact tests in GitHub and all tests locally or on
+push. Worktree mode compares tracked and untracked paths with resolved HEAD. Collection modes preserve every pytest
 node identity, including parameter IDs, across structural moves without a
 model. The runner uses Git, the checked-in impact manifest, and pytest through
 argv arrays; it never invokes a shell, network client, model, prompt, agent, or
@@ -14,7 +14,6 @@ or execution so CI cannot silently accept incomplete ownership data.
 
 from __future__ import annotations
 
-import argparse
 import fnmatch
 import functools
 import hashlib
@@ -30,6 +29,8 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Any
+
+from runner_requests import parse_request
 
 pytest_diagnostics = importlib.import_module("pytest-diagnostics")
 pytest_environment = importlib.import_module("pytest-environment")
@@ -1225,19 +1226,7 @@ def execute(
     """Execute one explicit mode and emit exactly one stable JSON result."""
 
     root = (repo_root or pathlib.Path(__file__).resolve().parents[2]).resolve()
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--all", action="store_true")
-    parser.add_argument("--base")
-    parser.add_argument("--diagnostic-output", type=pathlib.Path)
-    parser.add_argument("--head")
-    parser.add_argument("--select-only", action="store_true",
-                        help="Validate diff/worktree selection without collecting or running tests.")
-    parser.add_argument("--node-map", type=pathlib.Path)
-    parser.add_argument("--reconcile-collection", type=pathlib.Path)
-    parser.add_argument("--validate-manifest", action="store_true")
-    parser.add_argument("--worktree", action="store_true")
-    parser.add_argument("--write-collection", type=pathlib.Path)
-    args = parser.parse_args(list(argv) if argv is not None else None)
+    args, request_error = parse_request(argv)
     diagnostic_path = resolve_data_path(root, args.diagnostic_output or DEFAULT_DIAGNOSTIC_PATH)
     preflight_commands: list[dict[str, object]] = []
 
@@ -1268,31 +1257,15 @@ def execute(
         emit(payload)
         return exit_code
 
-    selected_modes = (
-        int(args.all)
-        + int(args.validate_manifest)
-        + int(args.worktree)
-        + int(args.write_collection is not None)
-        + int(args.reconcile_collection is not None)
-        + int(args.base is not None or args.head is not None)
-    )
-    if (
-        selected_modes != 1
-        or ((args.base is None) != (args.head is None))
-        or (args.node_map is not None and args.reconcile_collection is None)
-        or (args.select_only and not (args.worktree or args.base is not None))
-    ):
+    if request_error:
         payload = base_payload(mode="configuration", base=args.base, head=args.head)
-        payload["manifest_errors"] = [
-            "choose exactly one of --all, --validate-manifest, --worktree, "
-            "--write-collection, --reconcile-collection, or --base with --head; "
-            "--node-map is valid only with --reconcile-collection; "
-            "--select-only requires --worktree or --base with --head"
-        ]
+        payload["manifest_errors"] = [request_error]
         payload["status"] = "configuration-error"
         return fail_before_tests(CONFIGURATION_EXIT_CODE)
     mode = (
-        "validate-manifest"
+        "targets"
+        if args.targets
+        else "validate-manifest"
         if args.validate_manifest
         else "all"
         if args.all
@@ -1368,7 +1341,9 @@ def execute(
         payload["status"] = "collection-mismatch"
         return fail_before_tests(COLLECTION_MISMATCH_EXIT_CODE)
     changes: tuple[ChangedFile, ...] = ()
-    if args.all:
+    if args.targets:
+        selection = Selection((), tuple(dict.fromkeys(args.targets)), (), (), (), False, False)
+    elif args.all:
         selection = all_selection(manifest)
     elif args.worktree:
         try:

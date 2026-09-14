@@ -71,12 +71,16 @@
       "paths": [
         ".codex/config.toml",
         "tools/**",
-        "scripts/deploy-tool-manager.py",
-        "skills/ceratops-tool-lifecycle/**"
+        "scripts/deploy-tool-manager.py"
       ],
       "suites": [
         "tool_manager"
       ]
+    },
+    {
+      "id": "tool-lifecycle-source",
+      "paths": ["skills/ceratops-tool-lifecycle/**"],
+      "suites": ["tool_manager", "repository-lifecycle"]
     },
     {
       "id": "credit-analysis-source",
@@ -156,6 +160,7 @@
     "package.json",
     "pyproject.toml",
     "scripts/testing/run-tests.py",
+    "scripts/testing/runner_requests.py",
     "scripts/testing/pytest-diagnostics.py",
     "scripts/testing/pytest-environment.py",
     "scripts/validate-repository.py",
