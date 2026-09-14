@@ -1,6 +1,6 @@
 ---
 name: codex-desktop-upgrade
-description: Assess a new official Codex desktop version against a selected patched build, reconcile affected patches, and route explicitly requested candidate qualification and adoption through the existing patcher helpers.
+description: Assess a new official Codex desktop version against a selected patched build, reconcile affected patches, test every supported feature on the candidate, and route explicitly requested adoption through the existing patcher helpers.
 ---
 
 # Codex Desktop Upgrade
@@ -48,21 +48,25 @@ imports, code comparison, assessment records and cleanup. Its
    retain the review. `NeedsReview` preserves unresolved decisions; `Reviewed`
    means decisions were supplied. Neither establishes compatibility. Changed
    bindings require a fresh review; do not transfer old decisions blindly.
-5. For requested reconciliation, fix the owning patcher code and run its
-   existing regression cases. Build from the assessed snapshot with an explicit
-   patch set using `BuildCode` after committing clean source. Retain missing
-   candidate evidence and prior deferred checks without counting old passes
-   as target-version verification.
+5. For requested upgrade or reconciliation work, fix the owning patcher code
+   and run its existing tests. Build from the assessed snapshot with an explicit
+   patch set using `BuildCode` after committing clean source. Run all applicable
+   repository, browser and actual-Codex tests through their existing owners,
+   using the isolated app runner for tests inside Codex. Account for every
+   supported feature and resolve coverage gaps. Retain unresolved results and
+   prior deferred checks as blockers; reuse earlier passes only when the owning
+   helper verifies their applicability to the candidate.
 6. For requested adoption, use the returned candidate evidence handoff and
    existing qualification and repository lifecycle commands. Stop at the
    authorized phase and report unresolved requirements or command failures.
 
 ## Done When
 
-The authorized phase has its exact helper receipt and every requested patch has
- a supported decision or an explicit unresolved disposition. Assessment
-completion
-does not establish candidate compatibility, qualification or runtime adoption.
+The authorized phase has its exact helper receipt and every requested patch
+has a supported decision or an explicit unresolved disposition. Upgrade or
+reconciliation work is complete only when all applicable tests pass for the
+exact candidate and every supported feature is covered. Assessment completion
+alone does not establish compatibility, qualification or runtime adoption.
 
 ### Output Contract
 
