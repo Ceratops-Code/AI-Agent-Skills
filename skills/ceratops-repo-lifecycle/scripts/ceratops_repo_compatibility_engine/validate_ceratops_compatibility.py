@@ -57,7 +57,7 @@ def _workflow_errors(
             if isinstance(step, Mapping) and isinstance(step.get("run"), str):
                 commands.append(step["run"])
     invocation = re.compile(
-        rf"\bpython3?\s+(?:\./)?{re.escape(validator)}\b"
+        rf"\b(?:python3?|uv\s+run\s+--locked)\s+(?:\./)?{re.escape(validator)}\b"
     )
     if not any(
         invocation.search(command)
@@ -313,9 +313,14 @@ def validate_ceratops_compatibility(repo_root: pathlib.Path) -> CompatibilityRes
         elif sdlc:
             entries = operation_entries(sdlc)
             expected = load_compatibility_contract()["runtime"]["project"]
-            validator_command = ["uv", "run", "--project", expected, "--locked", "python", surfaces["validator"]["path"]]
+            # uv supports project discovery from the script path and explicit
+            # project selection for existing repository commands.
+            validator_commands = [
+                ["uv", "run", "--locked", surfaces["validator"]["path"]],
+                ["uv", "run", "--project", expected, "--locked", "python", surfaces["validator"]["path"]],
+            ]
             commands = [step["run"] for name, entry in entries.items() if ".validate." in name for step in entry.get("steps", [])]
-            if validator_command not in commands:
+            if not any(command in commands for command in validator_commands):
                 errors.append("SDLC must invoke the repository validator through its locked uv project")
             if not sdlc.get("repository", {}).get("tests"):
                 errors.append("SDLC must declare repository tests or an explicit no-op")

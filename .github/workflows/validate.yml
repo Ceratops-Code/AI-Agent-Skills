@@ -22,11 +22,6 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Select repository Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version-file: scripts/pyproject.toml
-
       - name: Set up uv
         uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
 
@@ -37,14 +32,14 @@ jobs:
 
       - name: Validate repository
         run: >-
-          python scripts/validate-repository.py
+          uv run --locked scripts/validate-repository.py
           --without-tests
           --evidence-file ${{ runner.temp }}/repository-validation.log
 
       - name: Run pull-request impact tests
         if: github.event_name == 'pull_request'
         run: >-
-          python scripts/testing/run-tests.py
+          uv run --locked scripts/testing/run-tests.py
           --base ${{ github.event.pull_request.base.sha }}
           --head ${{ github.event.pull_request.head.sha }}
           --diagnostic-output ${{ runner.temp }}/pytest-failure.json
@@ -52,7 +47,7 @@ jobs:
       - name: Run full main-branch tests
         if: github.event_name == 'push'
         run: >-
-          python scripts/testing/run-tests.py
+          uv run --locked scripts/testing/run-tests.py
           --all
           --diagnostic-output ${{ runner.temp }}/pytest-failure.json
 

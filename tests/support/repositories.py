@@ -14,7 +14,6 @@ def prepare_script_environment(repo: pathlib.Path) -> None:
     templates = INSTALLER_TEMPLATE.parent
     scripts = repo / "scripts"
     scripts.mkdir(exist_ok=True)
-    shutil.copyfile(templates / "python_environment.py.tmpl", scripts / "python_environment.py")
     (scripts / "pyproject.toml").write_text(
         (templates / "validation-pyproject.toml.tmpl").read_text(encoding="utf-8").replace(
             "__DEPENDENCIES__", '["jsonschema", "PyYAML", "ruff", "mypy"]'

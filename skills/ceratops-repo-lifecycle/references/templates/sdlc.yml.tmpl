@@ -12,7 +12,7 @@ repository:
   validate:
     repository:
       steps:
-        - run: [uv, run, --project, scripts, --locked, python, scripts/validate-repository.py]
+        - run: [uv, run, --locked, scripts/validate-repository.py]
   tests:
     none:
       no-op: No repository test command has been detected or declared.

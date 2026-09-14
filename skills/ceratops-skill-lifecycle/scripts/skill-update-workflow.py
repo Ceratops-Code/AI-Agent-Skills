@@ -972,10 +972,15 @@ def _validated_state(path: pathlib.Path) -> dict[str, object]:
             and isinstance(content, Mapping)
             and content.get("kind") == "missing"
         )
-        if not matches and not _is_tracked(repo_root, value) and not new_shared_source:
-            raise UpdateExecutionError(
-                f"state ancillary path is not tracked: {value}"
-            )
+        # The index loses a staged deletion; its prepared commit retains ownership.
+        if not matches and not new_shared_source and not _is_tracked(repo_root, value):
+            prepared_paths = _git(
+                repo_root, "ls-tree", "--name-only", "-z", str(raw["head"]), "--", value,
+            ).split("\0")
+            if value not in prepared_paths:
+                raise UpdateExecutionError(
+                    f"state ancillary path is not tracked at the prepared commit: {value}"
+                )
     if owners != set(selected):
         raise UpdateExecutionError("state selected skills lack allowed source paths")
     cleanup = _validated_cleanup(

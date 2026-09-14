@@ -221,7 +221,7 @@ def test_skill_update_scratch_preserves_unowned_paths(
     assert set(root.iterdir()) == ({unrecorded} if invalid == "options" else {unrecorded, marker})
 
 
-@pytest.mark.parametrize("new_source", ["skills/sections/scripts/shared-helper.py", "scripts/python_environment.py", "unowned/new.py"])
+@pytest.mark.parametrize("new_source", ["skills/sections/scripts/shared-helper.py", "scripts/example_helper.py", "unowned/new.py"])
 def test_skill_update_workflow_accepts_new_shared_section_source(
     tmp_path: pathlib.Path,
     new_source: str,
@@ -766,3 +766,50 @@ def test_skill_update_workflow_preserves_baseline_runs_checks_once_and_finalizes
     assert finalized.returncode == 0, finalized.stderr
     assert finalized.stdout.strip() == "OK"
     assert not removed_task_temp_root.exists()
+
+
+@pytest.mark.parametrize("placement", ["staged-deletion", "committed-deletion", "staged-addition"])
+def test_skill_update_workflow_preserves_declared_ancillary_changes(
+    tmp_path: pathlib.Path, placement: str,
+) -> None:
+    worktree, _scope, task_temp_root = prepare_skill_update_workflow_worktree(tmp_path)
+    ancillary = worktree / "repository-helper.py"
+    ancillary.write_text("VALUE = 1\n", encoding="utf-8")
+    assert run_git(worktree, "add", ancillary.name).returncode == 0
+    if placement != "staged-addition":
+        assert run_git(worktree, "commit", "-m", "add ancillary helper").returncode == 0
+    request_path = task_temp_root / "request.json"
+    state_path = task_temp_root / "state.json"
+    evidence_path = task_temp_root / "evidence.json"
+    paths = ["skills/alpha-tool/scripts/tool.py", ancillary.name]
+    request = {
+        "schema": "ceratops-skill-update-request.v2",
+        "repo_root": str(worktree), "task_temp_root": str(task_temp_root),
+        "evidence_output": str(evidence_path),
+        "disposable_artifacts": ["request", "state", "evidence"],
+        "selected_skills": ["alpha-tool"], "allowed_paths": paths,
+        "change_groups": [{"name": "remove-ancillary-helper", "paths": paths}],
+        "checks": [{"kind": "command", "argv": [
+            sys.executable, "-c", "import pathlib,sys; assert pathlib.Path(sys.argv[1]).exists() == (sys.argv[2] == 'staged-addition')", str(ancillary), placement,
+        ]}],
+    }
+    request_path.write_text(json.dumps(request) + "\n", encoding="utf-8")
+    prepared = run_skill_update_workflow("prepare", "--request", str(request_path), "--state", str(state_path))
+    assert prepared.returncode == 0, prepared.stderr
+    if placement == "staged-addition":
+        ancillary.write_text("VALUE = 2\n", encoding="utf-8")
+    else:
+        ancillary.unlink()
+    assert run_git(worktree, "add", ancillary.name).returncode == 0
+    verified = run_skill_update_workflow("verify", "--state", str(state_path), "--evidence-output", str(evidence_path))
+    assert verified.returncode == 0, verified.stderr
+    assert json.loads(evidence_path.read_text())["changed_paths"] == [ancillary.name]
+    if placement == "committed-deletion":
+        assert run_git(worktree, "commit", "-m", "remove ancillary helper").returncode == 0
+        committed = run_skill_update_workflow("verify", "--state", str(state_path), "--evidence-output", str(evidence_path))
+        assert committed.returncode == 0, committed.stderr
+        assert json.loads(evidence_path.read_text())["generation"] == 1
+    finalized = run_skill_update_workflow("finalize", "--state", str(state_path))
+    assert finalized.returncode == 0, finalized.stderr
+    assert not task_temp_root.exists()
+    assert ancillary.exists() == (placement == "staged-addition")

@@ -126,9 +126,8 @@ without repository deduplication.
 | `scripts/deploy-tool-manager.py` | First tool-manager installation, launched in the scripts environment; uses the manager's global Python and uv prerequisites, temporary locked libraries, and packaging and deployment code. Never changes Codex settings. |
 | `scripts/testing/run-tests.py` | Sole test-selection, collection-reconciliation, and pytest-execution owner; validates `tests/test-impact.json`, explains deterministic Git-diff selection, rejects mapping gaps before pytest collection or execution, supports explicit committed-diff, worktree, collection, and `--all` modes, adds `--select-only` to check diff/worktree mapping without pytest, and saves failed-pytest streams and structured pre-test failures with captured command output through `--diagnostic-output`; pytest output remains bounded in the console. |
 | `scripts/testing/pytest-diagnostics.py` | Extracts bounded failure summaries using exact pytest identities and source-file evidence; ambiguous or missing tracebacks use only that test's summary reason. Full diagnostic files remain owned by the runner. |
-| `scripts/python_environment.py` | Shared bootstrap for repository Python entrypoints; uv selects and synchronizes the locked scripts environment before execution. Generated from the compatibility template. |
 | `scripts/validate-repository.py` | Local validation coordinator; checks the running Python against `scripts/pyproject.toml`, captures first-failure evidence, delegates its default full test phase to `scripts/testing/run-tests.py --all`, and supports CI's separate runner-owned test phase. |
-| `skills/ceratops-repo-lifecycle/references/templates/deploy-skills.py.tmpl` | Authoritative standalone installer copied into compatible skill repositories as `scripts/deploy-skills.py`; its shared bootstrap selects the scripts environment. |
+| `skills/ceratops-repo-lifecycle/references/templates/deploy-skills.py.tmpl` | Authoritative standalone installer copied into compatible skill repositories as `scripts/deploy-skills.py`; invoke it through uv using the scripts project. |
 | `skills/ceratops-repo-lifecycle/references/contracts/repository-validation-contract.json` | Schema-validated repository checks used by compatibility generation and included in repository contract review and validator discovery. |
 | `skills/ceratops-repo-lifecycle/references/contracts/ceratops-compatibility-*-contract.json` | Internal structural contract consumed by compatibility generation/checking, plus a behavioral review rubric for environment setup, tests, and lifecycle orchestration; no external source registry. |
 | `skills/ceratops-repo-lifecycle/references/templates/validate-repository.py.tmpl` and `validate.yml.tmpl` | Repository-neutral validator and CI templates created only when their target files are absent; new validation setups without JavaScript package-manager files also receive locked Markdown dependencies and default rules from the Markdown templates. Existing tooling, Markdown settings, and exclusive validators are preserved. |
@@ -136,7 +135,7 @@ without repository deduplication.
 | `skills/ceratops-repo-lifecycle/references/templates/skill-sections.json.tmpl` | Repository-neutral template for creating a target repository's live `skills/skill-sections.json`; never a live manifest. |
 | `skills/ceratops-skill-lifecycle/scripts/runtime/install-managed-skills.py` | Classifies exact affected sets, owns direct-manifest inventory, and invokes one runtime transaction; emits commit-bound completion evidence and can finalize its saved promotion handoff without replaying deployment. |
 | `skills/ceratops-skill-lifecycle/scripts/runtime/managed_runtime_builder.py` | Stages, activates, rolls back, recovers, and cleans one locked selected-skill runtime transaction. |
-| `skills/ceratops-skill-lifecycle/scripts/skill-update-workflow.py` | Prepares and verifies declared cohesive skill updates, preserves unrelated dirty state, owns temporary check folders through collection and verification, records exact task-temp ownership plus an active-update retention marker, finalizes owned request, state, evidence, and marker files, and removes the verified task-temp root only when empty after completed caller use. |
+| `skills/ceratops-skill-lifecycle/scripts/skill-update-workflow.py` | Prepares and verifies declared cohesive skill updates, checks ancillary ownership against the prepared commit so staged and committed deletions remain valid, preserves unrelated dirty state, owns temporary check folders through collection and verification, records exact task-temp ownership plus an active-update retention marker, finalizes owned request, state, evidence, and marker files, and removes the verified task-temp root only when empty after completed caller use. |
 | `skills/ceratops-skill-lifecycle/scripts/skill_update_scratch.py` | Supplies subprocess-only temporary-directory settings under the verified task-temp root and removes its unique check folder after success or failure; cleanup errors block verification while preserving check evidence, and recorded residue is retried before new checks. Explicit paths in check arguments remain caller-owned. |
 | `skills/ceratops-credit-savings-analysis/scripts/credit_analysis/session_evidence_collector.py` | Resolves current, named, indexed, and project-identified sessions and collects one complete prepared traversal per analysis, preserving formatted messages, canonical current-source references, bounded nested-command failure provenance, tool and process telemetry, fingerprints, usage, closure, and classification modes. |
 | `skills/ceratops-misunderstanding-audit/scripts/audit.py` and `audit_sources.py` | Read selected local history or exported maintained-reader pages, freeze N-day or single-case scope, separate user wording from annotations, preserve timestamp and lineage evidence, validate semantic-review accounting, and publish a report and ledger with scoped temporary-input cleanup; no model calls or automatic rule edits. |
@@ -470,7 +469,7 @@ repository-lifecycle skill. A target's CI needs uv and its own copied runtime,
 without installed Ceratops skills:
 
 ```powershell
-uv run --project scripts --locked python scripts/sdlc.py --validate --ci
+uv run --locked scripts/sdlc.py --validate --ci
 ```
 
 `--validate` runs validation and tests as separate operations. `--tests` selects
@@ -478,11 +477,12 @@ only tests; `--return-handoffs` exposes unresolved routes to a skill caller.
 New repository validators never select test runners. Conventional Python tests
 or pytest configuration generate `scripts/run-tests.py` from its template when
 absent. That runner uses the scripts project, owns its temporary pytest
-directories, and can be customized. Every Python entrypoint under `scripts`
-calls the shared `python_environment.py` bootstrap before dependencies load,
-so a direct `python scripts/<entrypoint>.py` call selects the same locked
-environment from any working directory. uv owns dependency installation and
-Python selection; the scripts contain no package-installation logic. Existing
+directories, and can be customized. Invoke Python entrypoints with
+`uv run --locked <path-to-script.py>`; uv discovers their project from the
+script location and prepares its environment before execution. Use an
+absolute script path when calling from outside the repository. Module
+commands select the project with `--project scripts`. Repository scripts
+contain no environment bootstrap or package-installation logic. Existing
 test implementations and non-Python test commands remain repository-owned.
 
 This source repository uses `scripts/pyproject.toml` and `scripts/uv.lock` for
@@ -644,15 +644,15 @@ CI:
 ```powershell
 npm ci
 $validationEvidence = Join-Path $env:TEMP "repository-validation.log"
-python scripts/validate-repository.py --evidence-file $validationEvidence
+uv run --locked scripts/validate-repository.py --evidence-file $validationEvidence
 ```
 
-CI selects Python from `scripts/pyproject.toml` and runs
-`uv sync --project scripts --locked`. Local entrypoints synchronize that same
-project automatically before loading dependencies. The validator checks the
-selected interpreter against the project's requirement before repository
-checks; mypy uses that interpreter. Root Ruff and mypy settings configure the
-checks independently of dependency installation.
+CI runs `uv sync --project scripts --locked`; local commands use
+`uv run --locked <script.py>`. In both cases uv selects Python from
+`scripts/pyproject.toml` and synchronizes its locked dependencies before
+execution. The validator checks the selected interpreter against the project's
+requirement before repository checks; mypy uses that interpreter. Root Ruff and
+mypy settings configure the checks independently of dependency installation.
 
 Without the flag, evidence defaults to
 `build/deploy-validation/repository-validation.log`.
@@ -662,10 +662,11 @@ directory when it is empty.
 The validator runs Markdown and YAML lint, Ruff, mypy for Linux and Win32, and
 `scripts/testing/run-tests.py --all`. Pull-request CI calls the same runner
 with exact base and head commit SHAs. Local uncommitted selection is explicit
-through `python scripts/testing/run-tests.py --worktree`. Add `--select-only`
-to either diff or worktree mode to validate the same mapping without collecting
-or running pytest; success reports `selection-valid` and pytest `not-run`,
-including when no tests are selected. Failures retain the normal diagnostics.
+through `uv run --locked scripts/testing/run-tests.py --worktree`.
+Add `--select-only` to either diff or worktree mode to validate the same mapping
+without collecting or running pytest; success reports `selection-valid` and
+pytest `not-run`, including when no tests are selected. Failures retain the
+normal diagnostics.
 Shipping runs optional `repository.test-selection` entries from `sdlc/sdlc.yml`
 before pushing, independently of `repository.validate`. Each entry declares
 `parameters: [base, head]` and executable steps using whole-argument `{base}`
@@ -676,8 +677,8 @@ keep their existing validation discovery. A base branch that advances after
 this check is still evaluated by GitHub CI.
 Manifest validation
 is available through
-`python scripts/testing/run-tests.py --validate-manifest`. The validator does
-not invoke skill-local validators. Generic compatibility and
+`uv run --locked scripts/testing/run-tests.py --validate-manifest`.
+The validator does not invoke skill-local validators. Generic compatibility and
 health validate lifecycle definitions through the repository-lifecycle
 `ceratops_repo_compatibility_engine.sdlc_contract_validation` module. Runtime
 rendering is owned only by bootstrap and managed deployment under the selected
@@ -702,8 +703,8 @@ reconcile it after moving tests:
 
 ```powershell
 $collection = Join-Path $env:TEMP "pytest-collection.json"
-python scripts/testing/run-tests.py --write-collection $collection
-python scripts/testing/run-tests.py --reconcile-collection $collection
+uv run --locked scripts/testing/run-tests.py --write-collection $collection
+uv run --locked scripts/testing/run-tests.py --reconcile-collection $collection
 ```
 
 Reconciliation preserves complete pytest identities, including parameter IDs,

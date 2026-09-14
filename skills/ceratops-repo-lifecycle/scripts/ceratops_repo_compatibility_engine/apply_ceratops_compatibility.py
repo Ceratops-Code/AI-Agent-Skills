@@ -363,7 +363,7 @@ def _validation_workflow(
                 raise RuntimeError("repository-validation contract check command values must be text")
             commands.append(value)
     setup: list[str] = ["      - name: Set up uv", f"        uses: {SETUP_UV}"]
-    validation_python = "uv run --project scripts --locked python"
+    validation_python = "uv run --locked"
     package = (
         json.loads(markdown_files["package.json"])
         if markdown_files else _package_manifest(repo_root)
@@ -490,7 +490,7 @@ def validation_surfaces(
                 elif surface_path("validator").as_posix() in command:
                     if "\n" in command.strip() or any(token in command for token in ("&&", ";", "|")):
                         raise RuntimeError("custom CI validation command requires explicit SDLC integration")
-                    step["run"] = "uv run --project scripts --locked python scripts/sdlc.py --validate --ci --evidence-file ${{ runner.temp }}/repository-validation.log"
+                    step["run"] = "uv run --locked scripts/sdlc.py --validate --ci --evidence-file ${{ runner.temp }}/repository-validation.log"
                     changed = found = True
                     if not any("astral-sh/setup-uv@" in item.get("uses", "") for item in steps if isinstance(item, dict)):
                         steps.insert(steps.index(step), {"name": "Set up uv", "uses": SETUP_UV.split(" #", 1)[0]})

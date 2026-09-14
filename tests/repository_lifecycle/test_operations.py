@@ -15,7 +15,12 @@ from tests.repository_lifecycle.support import (
     SDLC_CONTRACT_TEMPLATE,
     run_operation_cli,
 )
-from tests.support.repositories import ROOT, run_git, write_sdlc_contract
+from tests.support.repositories import (
+    ROOT,
+    prepare_script_environment,
+    run_git,
+    write_sdlc_contract,
+)
 
 runner = importlib.import_module("repository_operation")
 contracts = importlib.import_module(
@@ -137,7 +142,7 @@ def test_sdlc_template_is_a_schema_valid_empty_skeleton(tmp_path: pathlib.Path) 
     document = contracts.load_contract(contract)
     assert document["version"] == 3
     assert document["repository"]["validate"]["repository"]["steps"] == [
-        {"run": ["uv", "run", "--project", "scripts", "--locked", "python", "scripts/validate-repository.py"]}
+        {"run": ["uv", "run", "--locked", "scripts/validate-repository.py"]}
     ]
     assert "deliverables" not in document
     live = contracts.load_contract(ROOT / "sdlc" / "sdlc.yml")
@@ -156,7 +161,7 @@ def test_sdlc_template_is_a_schema_valid_empty_skeleton(tmp_path: pathlib.Path) 
     selection = entries["repository.test-selection.ci"]
     assert selection["parameters"] == ["base", "head"]
     assert selection["steps"][0]["run"] == [
-        "python", "scripts/testing/run-tests.py", "--select-only",
+        "uv", "run", "--locked", "scripts/testing/run-tests.py", "--select-only",
         "--base", "{base}", "--head", "{head}",
     ]
     assert "repository.test-selection.ci" not in runner.validation_operations(ROOT)
@@ -834,6 +839,7 @@ def test_repository_bootstrap_resolves_platform_npm_and_preserves_failure(
         OPERATION_RUNNER.parents[3] / "sdlc" / "sdlc.yml"
     )
     argv = contract["repository"]["bootstrap"]["development"]["steps"][-1]["run"]
+    prepare_script_environment(tmp_path)
     result = subprocess.run(
         argv,
         cwd=tmp_path,

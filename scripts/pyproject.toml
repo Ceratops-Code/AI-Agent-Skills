@@ -17,8 +17,6 @@ dependencies = [
 
 [tool.uv]
 package = false
-python-preference = "only-system"
-python-downloads = "never"
 
 [tool.uv.workspace]
 members = []

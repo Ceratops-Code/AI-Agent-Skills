@@ -49,8 +49,7 @@
         "skill_bootstrap",
         "sdlc_runner",
         "validation_project",
-        "python_test_runner",
-        "python_environment"
+        "python_test_runner"
       ],
       "properties": {
         "validator": {
@@ -75,9 +74,6 @@
           "$ref": "#/$defs/surface"
         },
         "python_test_runner": {
-          "$ref": "#/$defs/surface"
-        },
-        "python_environment": {
           "$ref": "#/$defs/surface"
         }
       }

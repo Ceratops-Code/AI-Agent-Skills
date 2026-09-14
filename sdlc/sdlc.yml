@@ -38,18 +38,18 @@ repository:
       steps:
         - run: [uv, sync, --project, scripts, --locked]
         # Resolve npm.cmd on Windows and npm on other platforms.
-        - run: [python, -c, "import shutil, subprocess; subprocess.run([shutil.which('npm'), 'ci'], check=True)"]
+        - run: [uv, run, --project, scripts, --locked, python, -c, "import shutil, subprocess; subprocess.run([shutil.which('npm'), 'ci'], check=True)"]
 
   test-selection:
     ci:
       parameters: [base, head]
       steps:
-        - run: [python, scripts/testing/run-tests.py, --select-only, --base, "{base}", --head, "{head}"]
+        - run: [uv, run, --locked, scripts/testing/run-tests.py, --select-only, --base, "{base}", --head, "{head}"]
 
   validate:
     repository:
       steps:
-        - run: [python, scripts/validate-repository.py]
+        - run: [uv, run, --locked, scripts/validate-repository.py]
 
 deliverables:
   skills:
@@ -63,13 +63,13 @@ deliverables:
 
       standalone:
         steps:
-          - run: [python, scripts/deploy-skills.py]
+          - run: [uv, run, --locked, scripts/deploy-skills.py]
 
   hooks:
     deploy-local:
       standalone:
         steps:
-          - run: [python, scripts/deploy-hooks.py]
+          - run: [uv, run, --locked, scripts/deploy-hooks.py]
 
   tools:
     deploy-local:
@@ -78,4 +78,4 @@ deliverables:
 
       standalone:
         steps:
-          - run: [python, scripts/deploy-tool-manager.py]
+          - run: [uv, run, --locked, scripts/deploy-tool-manager.py]

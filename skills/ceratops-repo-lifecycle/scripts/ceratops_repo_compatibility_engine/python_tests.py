@@ -47,4 +47,4 @@ def discover_python_tests(root: pathlib.Path, rules: Mapping[str, Any]) -> list[
 
 def test_operation(root: pathlib.Path, runner: str) -> dict[str, Any]:
     """Use the scripts project for generated tests; preserve explicit SDLC operations."""
-    return {"steps": [{"run": ["uv", "run", "--project", "scripts", "--locked", "python", runner]}]}
+    return {"steps": [{"run": ["uv", "run", "--locked", runner]}]}

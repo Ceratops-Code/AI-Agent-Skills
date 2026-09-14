@@ -169,8 +169,7 @@
     "tests/support/**",
     "tests/test-impact.json",
     "scripts/pyproject.toml",
-    "scripts/uv.lock",
-    "scripts/python_environment.py"
+    "scripts/uv.lock"
   ],
   "ignored_paths": [
     {

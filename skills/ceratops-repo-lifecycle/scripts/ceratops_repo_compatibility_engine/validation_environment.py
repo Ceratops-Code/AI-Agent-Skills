@@ -18,7 +18,6 @@ from typing import Any
 
 import yaml
 
-from .python_entrypoints import bind_entrypoint, existing_entrypoints
 from .python_tests import discover_python_tests
 from .python_tool_configuration import project_text
 
@@ -54,14 +53,13 @@ def runtime_files(root: pathlib.Path, bundle: pathlib.Path, contract: Mapping[st
         if source.is_symlink() or not source.is_file():
             raise RuntimeError(f"missing regular SDLC runtime payload: {relative}")
         content = source.read_text(encoding="utf-8")
-        files[root / runtime["payload_root"] / relative] = bind_entrypoint(content) if source.suffix == ".py" else content
+        files[root / runtime["payload_root"] / relative] = content
     ignore = root / runtime["project"] / ".gitignore"
     existing_ignore = ignore.read_text(encoding="utf-8") if ignore.is_file() else ""
     missing_ignore = [value for value in runtime["ignored_paths"] if value not in existing_ignore.splitlines()]
     if missing_ignore:
         files[ignore] = existing_ignore.rstrip("\n") + ("\n" if existing_ignore else "") + "\n".join(missing_ignore) + "\n"
-    files.update(existing_entrypoints(root))
-    for key in ("sdlc_runner", "python_environment"):
+    for key in ("sdlc_runner",):
         surface = contract["surfaces"][key]
         destination = root / surface["path"]
         source = bundle / "references/templates" / surface["template"]

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import importlib.util
 import json
-import os
 import pathlib
 import subprocess
 import sys
@@ -101,16 +100,15 @@ def test_ci_runs_repository_validator_that_owns_both_mypy_platforms() -> None:
         )
     )
     steps = workflow["jobs"]["validate-repository"]["steps"]
-    python_step = next(step for step in steps if step.get("name") == "Select repository Python")
-    assert python_step["uses"].startswith("actions/setup-python@")
-    assert python_step["with"] == {"python-version-file": "scripts/pyproject.toml"}
+    uv_step = next(step for step in steps if step.get("uses", "").startswith("astral-sh/setup-uv@"))
     installation_step = next(step for step in steps if step.get("name") == "Install development validators")
-    assert steps.index(python_step) < steps.index(installation_step)
+    assert steps.index(uv_step) < steps.index(installation_step)
+    assert "uv sync --project scripts --locked" in installation_step["run"]
     validation_step = next(
         step for step in steps if step.get("name") == "Validate repository"
     )
     assert " ".join(validation_step["run"].split()).startswith(
-        "python scripts/validate-repository.py "
+        "uv run --locked scripts/validate-repository.py "
     )
     assert "--without-tests" in validation_step["run"].split()
     pull_request_step = next(
@@ -121,7 +119,7 @@ def test_ci_runs_repository_validator_that_owns_both_mypy_platforms() -> None:
     )
     pull_request_command = " ".join(pull_request_step["run"].split())
     assert pull_request_command.startswith(
-        "python scripts/testing/run-tests.py --base "
+        "uv run --locked scripts/testing/run-tests.py --base "
     )
     assert " --head " in pull_request_command
     assert (
@@ -129,7 +127,7 @@ def test_ci_runs_repository_validator_that_owns_both_mypy_platforms() -> None:
         in pull_request_command
     )
     assert " ".join(full_step["run"].split()) == (
-        "python scripts/testing/run-tests.py --all "
+        "uv run --locked scripts/testing/run-tests.py --all "
         "--diagnostic-output ${{ runner.temp }}/pytest-failure.json"
     )
     upload_step = next(
@@ -434,19 +432,19 @@ def test_wrong_python_stops_before_checks_and_succeeds_after_correction(
 
 
 @pytest.mark.parametrize("entrypoint", [
-    "scripts/deploy-hooks.py", "scripts/deploy-skills.py", "scripts/deploy-tool-manager.py",
+    "scripts/deploy-hooks.py", "scripts/deploy-skills.py",
     "scripts/validate-repository.py", "scripts/testing/run-tests.py",
     *["skills/ceratops-repo-lifecycle/references/templates/" + name + ".py.tmpl"
-      for name in ("deploy-skills", "run-tests", "validate-repository", "sdlc")],
+      for name in ("deploy-skills", "run-tests", "validate-repository")],
 ])
-def test_repository_setup_has_one_python_selection_and_no_interpreter_downloads(
+def test_repository_entrypoints_run_through_uv(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, entrypoint: str,
 ) -> None:
     metadata = tomllib.loads((ROOT / "scripts/pyproject.toml").read_text(encoding="utf-8"))
     tool_settings = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     assert "project" not in tool_settings
-    assert metadata["tool"]["uv"]["python-preference"] == "only-system"
-    assert metadata["tool"]["uv"]["python-downloads"] == "never"
+    assert metadata["tool"]["uv"].get("python-preference") != "only-system"
+    assert metadata["tool"]["uv"].get("python-downloads") != "never"
     assert metadata["tool"]["uv"]["package"] is False
     assert "python_version" not in tool_settings["tool"]["mypy"]
     assert tool_settings["tool"]["ruff"]["target-version"] == f"py{sys.version_info.major}{sys.version_info.minor}"
@@ -454,34 +452,29 @@ def test_repository_setup_has_one_python_selection_and_no_interpreter_downloads(
         (ROOT / "tools" / "ceratops_tool_manager" / "pyproject.toml").read_text(encoding="utf-8")
     )
     assert metadata["project"]["requires-python"] == tool_metadata["project"]["requires-python"]
-    # Intercept uv before the helper body runs: even deployment entrypoints must
-    # select the scripts environment before they can produce any side effect.
-    bindir = tmp_path / "bin"
-    bindir.mkdir()
-    probe = bindir / "capture.py"
-    probe.write_text(
-        "import json, os, sys\n"
-        "print(json.dumps({'args':sys.argv[1:], 'environment':os.environ['UV_PROJECT_ENVIRONMENT'], 'cwd':os.getcwd()}))\n"
-        "print('environment-selected', file=sys.stderr)\nraise SystemExit(47)\n",
-        encoding="utf-8",
-    )
-    if os.name == "nt":
-        (bindir / "uv.cmd").write_text(f'@"{sys.executable}" "{probe}" %*\n', encoding="utf-8")
-    else:
-        launcher = bindir / "uv"
-        launcher.write_text(f'#!{sys.executable}\n' + probe.read_text(encoding="utf-8"), encoding="utf-8")
-        launcher.chmod(0o755)
-    monkeypatch.setenv("PATH", str(bindir) + os.pathsep + os.environ["PATH"])
-    monkeypatch.setenv("UV_PROJECT_ENVIRONMENT", str(tmp_path / "unrelated"))
-    monkeypatch.delenv("CERATOPS_SCRIPTS_PROJECT", raising=False)
+    monkeypatch.delenv("UV_PROJECT_ENVIRONMENT", raising=False)
     script = ROOT / entrypoint
-    result = subprocess.run([sys.executable, str(script), "two words"], cwd=tmp_path, capture_output=True, text=True)
-    assert result.returncode == 47, result.stderr
-    observed = json.loads(result.stdout)
-    assert observed["environment"] == str(ROOT / "scripts/.venv")
-    assert observed["args"][-2:] == [str(script), "two words"]
-    assert pathlib.Path(observed["cwd"]) == tmp_path
-    assert result.stderr == "environment-selected\n"
+    if script.suffix == ".tmpl":
+        # Exercise rendered standalone scripts without any installed skill or
+        # repository bootstrap. Their own directory determines the uv project.
+        scripts = tmp_path / "independent/scripts"
+        scripts.mkdir(parents=True)
+        template = script.read_text(encoding="utf-8")
+        script = scripts / script.stem
+        script.write_text(template.replace("__TEST_TARGETS__", "[]").replace("__CHECK_DEFINITIONS__", "[]"), encoding="utf-8")
+        project_template = ROOT / "skills/ceratops-repo-lifecycle/references/templates/validation-pyproject.toml.tmpl"
+        (scripts / "pyproject.toml").write_text(
+            project_template.read_text(encoding="utf-8").replace("__DEPENDENCIES__", "[]"), encoding="utf-8",
+        )
+        locked = subprocess.run(["uv", "lock", "--project", str(scripts)], capture_output=True, text=True)
+        assert locked.returncode == 0, locked.stderr
+    result = subprocess.run(["uv", "run", "--locked", str(script), "--help"], cwd=tmp_path, capture_output=True, text=True)
+    if entrypoint == "scripts/validate-repository.py":
+        assert result.returncode == 2, result.stdout + result.stderr
+        assert json.loads(result.stdout)["unexpected_arguments"] == ["--help"]
+    else:
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "usage:" in result.stdout.lower()
 
 
 def test_runtime_dependencies_supply_timezones_without_an_os_database() -> None:

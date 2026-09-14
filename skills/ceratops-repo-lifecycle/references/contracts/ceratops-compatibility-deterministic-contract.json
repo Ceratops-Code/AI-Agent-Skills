@@ -43,11 +43,6 @@
       "path": "scripts/run-tests.py",
       "template": "run-tests.py.tmpl",
       "required": "with_python_tests"
-    },
-    "python_environment": {
-      "path": "scripts/python_environment.py",
-      "template": "python_environment.py.tmpl",
-      "required": "always"
     }
   },
   "ci_required_arguments": [
@@ -76,10 +71,7 @@
             "run": [
               "uv",
               "run",
-              "--project",
-              "scripts",
               "--locked",
-              "python",
               "scripts/deploy-skills.py"
             ]
           }

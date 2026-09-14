@@ -116,7 +116,7 @@ def test_compatibility_materializer_supplies_target_identity_and_assignments(
     assert contract["deliverables"]["skills"]["deploy-local"]["standalone"] == {
         "steps": [
             {
-                "run": ["uv", "run", "--project", "scripts", "--locked", "python", "scripts/deploy-skills.py"],
+                "run": ["uv", "run", "--locked", "scripts/deploy-skills.py"],
             }
         ]
     }
@@ -268,7 +268,7 @@ def test_compatibility_materializer_supplies_target_identity_and_assignments(
     assert not (alternate / "scripts/deploy-skills.py").exists()
     actual = yaml.safe_load((alternate / "sdlc/sdlc.yml").read_text(encoding="utf-8"))
     assert actual["deliverables"]["skills"]["deploy-local"]["standalone"]["steps"][0]["run"] == [
-        "uv", "run", "--project", "scripts", "--locked", "python", "scripts/bootstrap-skills.py",
+        "uv", "run", "--locked", "scripts/bootstrap-skills.py",
     ]
     assert actual["deliverables"]["skills"]["validate"]["ceratops-managed"] == {
         "handoff": "target-lifecycle/source-check"
@@ -384,7 +384,7 @@ def test_compatibility_materializer_supports_repositories_without_skills(
     assert not (repo / "skills").exists()
     contract = yaml.safe_load((repo / "sdlc" / "sdlc.yml").read_text())
     assert contract["repository"]["validate"]["repository"]["steps"] == [
-        {"run": ["uv", "run", "--project", "scripts", "--locked", "python", "scripts/validate-repository.py"]}
+        {"run": ["uv", "run", "--locked", "scripts/validate-repository.py"]}
     ]
     assert "deliverables" not in contract
     assert not (repo / "scripts" / "deploy-skills.py").exists()
@@ -564,7 +564,7 @@ def test_compatibility_materializer_supports_repositories_without_skills(
         for step in uv_steps
         if step.get("name") == "Install Python validation dependencies"
     ] == []
-    assert "uv run --project scripts --locked python scripts/sdlc.py --validate --ci" in uv_workflow
+    assert "uv run --locked scripts/sdlc.py --validate --ci" in uv_workflow
     assert (uv_repo / "uv.lock").read_text() == "version = 1\n"
 
     # Synthetic recipes exercise extension behavior without coupling the shipped
@@ -967,8 +967,8 @@ def test_compatibility_materializer_rolls_back_every_target_write_on_blocker(
     )
     workflow_template.write_text(
         workflow_template.read_text(encoding="utf-8").replace(
-            "python scripts/sdlc.py",
-            "python scripts/not-the-sdlc-runner.py",
+            "uv run --locked scripts/sdlc.py",
+            "uv run --locked scripts/not-the-sdlc-runner.py",
         ),
         encoding="utf-8",
         newline="\n",
@@ -1164,11 +1164,12 @@ def test_generated_runtime_runs_without_installed_skills_and_keeps_tests_separat
     custom.parent.mkdir()
     custom.write_text(
         '"""A repository-owned script with imports before its main body."""\n'
-        "from __future__ import annotations\n"
+        "from __future__ import annotations\n\n"
         "import json\nimport os\nimport sys\n\nimport yaml\n\n"
         "yaml.safe_load('ready: true')\n"
         "print(json.dumps({'python':sys.executable,'prefix':sys.prefix,'cwd':os.getcwd(),'args':sys.argv[1:]}))\n"
     )
+    original_custom = custom.read_bytes()
     # Test and validation commands share scripts/.venv while the application's
     # own declarations remain untouched.
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "no-installed-skills"))
@@ -1178,9 +1179,10 @@ def test_generated_runtime_runs_without_installed_skills_and_keeps_tests_separat
     assert (repo / "requirements.txt").read_text() == "# repository-owned\n"
     assert not (repo / "uv.lock").exists()
     assert (repo / "scripts/.gitignore").read_text() == "/custom-output/\n.venv/\n**/__pycache__/\n"
-    child_environment = {**os.environ, "UV_PROJECT_ENVIRONMENT": str(tmp_path / "unrelated")}
-    child_environment.pop("CERATOPS_SCRIPTS_PROJECT", None)
-    direct_command = [sys.executable, str(custom), "two words"]
+    assert custom.read_bytes() == original_custom
+    child_environment = dict(os.environ)
+    child_environment.pop("UV_PROJECT_ENVIRONMENT", None)
+    direct_command = ["uv", "run", "--locked", str(custom), "two words"]
     direct = subprocess.run(direct_command, cwd=tmp_path, env=child_environment, capture_output=True, text=True)
     assert direct.returncode == 0, direct.stderr
     actual = json.loads(direct.stdout)
@@ -1200,7 +1202,7 @@ def test_generated_runtime_runs_without_installed_skills_and_keeps_tests_separat
     assert stale.returncode != 0 and not stale.stdout.strip()
     assert (repo / "scripts/uv.lock").read_bytes() == lock_before
     project.write_bytes(project_before)
-    prefix = ["uv", "run", "--project", "scripts", "--locked", "python"]
+    prefix = ["uv", "run", "--locked"]
     validation = subprocess.run([*prefix, "scripts/validate-repository.py"], cwd=repo, capture_output=True, text=True)
     assert validation.returncode == 0, validation.stderr
     # The generated settings must be consumed, not merely written to TOML.
@@ -1286,7 +1288,6 @@ def test_generated_python_runner_cleans_owned_temp_even_with_overrides(
     runner = repo / "scripts/run-tests.py"
     runner.write_text(template.replace("__TEST_TARGETS__", "['test_probe.py']"))
     templates = REPOSITORY_LIFECYCLE_SOURCE / "references/templates"
-    shutil.copyfile(templates / "python_environment.py.tmpl", repo / "scripts/python_environment.py")
     (repo / "scripts/pyproject.toml").write_text(
         (templates / "validation-pyproject.toml.tmpl").read_text().replace("__DEPENDENCIES__", '["pytest"]')
     )
@@ -1295,7 +1296,7 @@ def test_generated_python_runner_cleans_owned_temp_even_with_overrides(
     inherited = f'--basetemp="{tmp_path}"' if inherited_form == "joined" else f'--basetemp "{tmp_path}"'
     monkeypatch.setenv("PYTEST_ADDOPTS", "-q " + inherited)
     result = subprocess.run([
-        sys.executable, str(runner), "--pytest-arg=--basetemp", "--pytest-arg=" + str(outside),
+        "uv", "run", "--locked", str(runner), "--pytest-arg=--basetemp", "--pytest-arg=" + str(outside),
         "--pytest-arg=--basetemp=" + str(repo),
     ], cwd=repo, capture_output=True, text=True)
     assert result.returncode == 1, result.stderr

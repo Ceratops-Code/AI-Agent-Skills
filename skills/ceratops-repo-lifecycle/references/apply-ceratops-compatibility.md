@@ -98,9 +98,9 @@ Infer the source identity from stable repository evidence before asking.
 - Generate one uv project, lock and `.venv` under `scripts`; uv selects the
   declared Python and installs locked dependencies. Keep application manifests
   in their existing locations.
-- Bind Python entrypoints under `scripts` to `python_environment.py` before
-  loading their dependencies. Direct invocation must select this project
-  independently of the caller's interpreter and working directory.
+- Run repository Python entrypoints through `uv run --locked <script.py>`.
+  Keep their project and lock in `scripts`; uv owns Python selection and
+  dependency synchronization. Do not inject environment bootstrap code.
 - Generate `scripts/run-tests.py` when Python tests are detected. Preserve
   repository-owned test implementation; generated Python test commands use the
   scripts project. CI runs validation and tests without executing skill handoffs.
