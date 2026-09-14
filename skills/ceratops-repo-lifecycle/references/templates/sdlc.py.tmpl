@@ -2,7 +2,7 @@
 """Run this repository's copied SDLC engine inside its declared uv environment.
 
 Usage from the repository root:
-uv run --project scripts/validation --locked python scripts/sdlc.py --validate
+uv run --project scripts --locked python scripts/sdlc.py --validate
 The copied engine is usable without installed skills. CI adds --ci so handoffs
 are never executed. uv owns environment creation and dependency installation.
 """
@@ -14,7 +14,7 @@ import runpy
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-RUNTIME = ROOT / "scripts/validation/runtime/scripts"
+RUNTIME = ROOT / "scripts/runtime/scripts"
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(RUNTIME))
 

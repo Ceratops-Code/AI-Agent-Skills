@@ -923,7 +923,7 @@ def _repository_validation_facts(
         if contract and contract["version"] >= 2:
             uses_sdlc = True
             command = (
-                ["uv", "run", "--project", "scripts/validation", "--locked", "python", "scripts/sdlc.py", "--validate"]
+                ["uv", "run", "--project", "scripts", "--locked", "python", "scripts/sdlc.py", "--validate"]
                 if contract["version"] >= 3 else
                 [sys.executable, str(pathlib.Path(__file__).resolve().parents[2] / "repository_operation.py"),
                  "--repo-root", str(root), "--validate"]

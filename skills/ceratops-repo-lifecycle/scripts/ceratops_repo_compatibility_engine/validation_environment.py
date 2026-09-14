@@ -48,7 +48,11 @@ def runtime_files(root: pathlib.Path, bundle: pathlib.Path, contract: Mapping[st
         if source.is_symlink() or not source.is_file():
             raise RuntimeError(f"missing regular SDLC runtime payload: {relative}")
         files[root / runtime["payload_root"] / relative] = source.read_text(encoding="utf-8")
-    files[root / runtime["project"] / ".gitignore"] = "\n".join(runtime["ignored_paths"]) + "\n"
+    ignore = root / runtime["project"] / ".gitignore"
+    existing_ignore = ignore.read_text(encoding="utf-8") if ignore.is_file() else ""
+    missing_ignore = [value for value in runtime["ignored_paths"] if value not in existing_ignore.splitlines()]
+    if missing_ignore:
+        files[ignore] = existing_ignore.rstrip("\n") + ("\n" if existing_ignore else "") + "\n".join(missing_ignore) + "\n"
     for key in ("sdlc_runner",):
         surface = contract["surfaces"][key]
         destination = root / surface["path"]
@@ -58,14 +62,55 @@ def runtime_files(root: pathlib.Path, bundle: pathlib.Path, contract: Mapping[st
     data = yaml.safe_load(dependabot.read_text(encoding="utf-8")) if dependabot.is_file() else {"version": 2, "updates": []}
     if not isinstance(data, dict) or data.get("version") != 2 or not isinstance(data.get("updates"), list):
         raise RuntimeError("Dependabot configuration must have version 2 and an updates list")
-    registration = contract["dependency_updates"]
+    registrations = [dict(contract["dependency_updates"])]
+    if any((root / "skills").glob("*/SKILL.md")):
+        registrations.append({**contract["dependency_updates"], "directory": "/skills/sections/python"})
     if not all(isinstance(item, dict) for item in data["updates"]):
         raise RuntimeError("Dependabot updates must be objects")
-    if not any(item.get("package-ecosystem") == registration["package-ecosystem"] and (
-        item.get("directory") == registration["directory"] or registration["directory"] in item.get("directories", [])
-    ) for item in data["updates"]):
-        data["updates"].append(dict(registration))
-        files[dependabot] = yaml.safe_dump(data, sort_keys=False)
+    for registration in registrations:
+        if not any(item.get("package-ecosystem") == registration["package-ecosystem"] and (
+            item.get("directory") == registration["directory"] or registration["directory"] in item.get("directories", [])
+        ) for item in data["updates"]):
+            data["updates"].append(registration)
+            files[dependabot] = yaml.safe_dump(data, sort_keys=False)
+    return files
+
+
+def skill_runtime_files(root: pathlib.Path, canonical: pathlib.Path, payloads: dict[str, Any]) -> dict[pathlib.Path, str]:
+    """Seed portable skill launchers while preserving existing runtime ownership.
+
+    The section manifest owns copying, so both installers use their existing
+    payload path. These small declarations are templates for compatible skill
+    repositories; their owners maintain added dependencies and the resulting lock.
+    """
+    defaults = {
+        "scripts/run-skill.py": "scripts/run-skill.py",
+        "python/pyproject.toml": "scripts/python-runtime/pyproject.toml",
+        "python/uv.lock": "scripts/python-runtime/uv.lock",
+    }
+    declarations = payloads.setdefault("*", [])
+    if not isinstance(declarations, list):
+        raise RuntimeError("shared skill runtime payloads must be a list")
+    files: dict[pathlib.Path, str] = {}
+    for relative, target in defaults.items():
+        mapping = {"source": "skills/sections/" + relative, "target": target}
+        owners = [item for item in declarations if isinstance(item, dict) and item.get("target") == target]
+        if owners and owners != [mapping]:
+            raise RuntimeError(f"shared skill runtime target requires explicit ownership integration: {target}")
+        if not owners:
+            declarations.append(mapping)
+        destination = root / mapping["source"]
+        if destination.is_symlink() or (destination.exists() and not destination.is_file()):
+            raise RuntimeError(f"skill runtime source must be a regular file: {destination}")
+        if not destination.is_file():
+            source = canonical / relative
+            if source.is_symlink() or not source.is_file():
+                raise RuntimeError(f"canonical skill runtime input is missing: {source}")
+            files[destination] = source.read_text(encoding="utf-8")
+    project = root / "skills/sections/python/pyproject.toml"
+    lock = root / "skills/sections/python/uv.lock"
+    if project.is_file() != lock.is_file():
+        raise RuntimeError("existing skill runtime requires both pyproject.toml and uv.lock")
     return files
 
 

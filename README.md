@@ -444,13 +444,14 @@ OpenAI skills from `$CODEX_HOME/plugins/cache/` as pattern examples only and
 keeps durable Ceratops obligations in the deterministic skill contract, shared
 sections, validator, or skill-local source.
 
-## Reusable Repository Runtime
+## Reusable Repository Tooling
 
-Compatibility templates create `scripts/validation/pyproject.toml`, `uv.lock`
-and an ignored `.venv` with a Python matching `requires-python`. This separate
-uv project owns validator dependencies; application `pyproject.toml` and
-requirements files remain where the repository maintains them. Dependabot gets
-a `uv` entry for `/scripts/validation` without removing other entries.
+Compatibility templates create `scripts/pyproject.toml`, `scripts/uv.lock`
+and an ignored `scripts/.venv` with a Python matching `requires-python`. This separate
+uv project owns tooling dependencies. `pyproject.toml` and `uv.lock` suffice
+for that environment; no parallel requirements file is needed. Existing
+application manifests retain their owners and locations. Dependabot gets
+a `uv` entry for `/scripts` without removing other entries.
 Initial application resolves the lock and syncs the environment. Later runs
 use the lock; missing dependencies are installed by uv before Python starts,
 while stale locks fail instead of changing dependency decisions during checks.
@@ -460,7 +461,7 @@ repository-lifecycle skill. A target's CI needs uv and its own copied runtime,
 without installed Ceratops skills:
 
 ```powershell
-uv run --project scripts/validation --locked python scripts/sdlc.py --validate --ci
+uv run --project scripts --locked python scripts/sdlc.py --validate --ci
 ```
 
 `--validate` runs validation and tests as separate operations. `--tests` selects
@@ -471,9 +472,40 @@ absent. That runner uses the caller's interpreter, owns its temporary pytest
 directories, and can be customized; SDLC owns its environment wrapper. Existing
 test implementations and non-Python test commands remain repository-owned.
 
-This source repository's live SDLC, CI, dependency files and test runner have
-not been migrated by this reusable change. The setup and Validate instructions
-below describe that existing repository configuration.
+This source repository's live SDLC/CI entrypoints, root Python dependency
+declarations and test runner have not been migrated. The setup and Validate
+instructions below describe that existing repository configuration.
+
+## Shared Skill Python Environment
+
+All managed skills receive `scripts/run-skill.py` and a small
+`scripts/python-runtime/pyproject.toml` and `uv.lock` pair through the section
+manifest. The source declarations live under `skills/sections/python`.
+Dependabot maintains this project's lock independently of repository tooling.
+Compatibility setup copies these starter inputs into skill-bearing targets;
+their owners declare any additional dependencies their skills need.
+
+Run an installed Python helper through its launcher, preserving its arguments:
+
+```text
+uv run --no-project --python 3.14 python <skill-root>/scripts/run-skill.py scripts/<helper>.py
+```
+
+The launcher also accepts `-m MODULE`. The first uv command selects the
+dependency-free bootstrap interpreter. The launcher then invokes uv with the
+bundled project's locked dependencies and required Python version. It preserves
+the caller's working directory and the helper's output and exit status.
+Nested Python commands inherit that environment.
+
+The shared project resides at
+`$CODEX_HOME/runtimes/ceratops/<project-and-lock-sha256>/`, with its Python
+executable inside `.venv`. When `CODEX_HOME` is unset, the launcher uses
+`~/.codex`. Identical declaration pairs share one environment; different locks
+get separate environments. Deployment copies declarations, never a `.venv`.
+Missing packages are synchronized before helper execution; stale locks block
+execution. Published environments remain reusable across runs and deployments;
+the launcher always removes unpublished staging directories. Existing external
+tools keep the environments managed by their own installers.
 
 ## Install For Codex
 

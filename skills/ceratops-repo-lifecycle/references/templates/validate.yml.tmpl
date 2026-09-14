@@ -15,7 +15,7 @@ jobs:
       # __SETUP_STEPS__
       - name: Validate and test through SDLC
         run: >-
-          uv run --project scripts/validation --locked python scripts/sdlc.py --validate --ci
+          uv run --project scripts --locked python scripts/sdlc.py --validate --ci
           --evidence-file ${{ runner.temp }}/repository-validation.log
 
       - name: Upload validation evidence

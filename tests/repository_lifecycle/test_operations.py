@@ -83,6 +83,9 @@ def test_registered_skill_executor_is_portable_and_failure_is_not_completion(
     handoffs = importlib.import_module("sdlc_handoffs")
     skill = tmp_path / "skills/example-skill"
     (skill / "references").mkdir(parents=True)
+    (skill / "scripts").mkdir()
+    shutil.copyfile(ROOT / "skills/sections/scripts/run-skill.py", skill / "scripts/run-skill.py")
+    shutil.copytree(ROOT / "skills/sections/python", skill / "scripts/python-runtime")
     script = skill / "probe.py"
     script.write_text("import pathlib, sys\npathlib.Path(sys.argv[1], 'called.txt').write_text('called')\nraise SystemExit(int(sys.argv[2]))\n")
     binding = skill / "references/action-executors.json"
@@ -94,6 +97,18 @@ def test_registered_skill_executor_is_portable_and_failure_is_not_completion(
         assert handoffs.execute_handoff("example-skill/check", repo)["status"] == expected
         assert (repo / "called.txt").read_text() == "called"
     assert handoffs.execute_handoff("example-skill/unknown", repo)["status"] == "handoff_required"
+    receipt = {"schema": "fixture.deployment.v1", "status": "deployed", "entities": ["one"]}
+    script.write_text("import json\nprint(json.dumps(" + repr(receipt) + "))\n")
+    binding.write_text(json.dumps({"version": 1, "actions": {"check": {"steps": [
+        {"run": ["{python}", "{skill_root}/probe.py"]},
+        {"run": [sys.executable, "-c", "raise SystemExit(7)"]},
+    ]}}}))
+    result = handoffs.execute_handoff("example-skill/check", repo)
+    assert result["status"] == "operation_failed"
+    assert result["steps"] == [1]
+    assert result["step_results"] == [{"step": 1, "result": receipt}]
+    (skill / "scripts/run-skill.py").unlink()
+    assert handoffs.execute_handoff("example-skill/check", repo)["status"] == "handoff_required"
 
 
 def _step(script: str, *arguments: str) -> dict[str, object]:
@@ -117,7 +132,7 @@ def test_sdlc_template_is_a_schema_valid_empty_skeleton(tmp_path: pathlib.Path) 
     document = contracts.load_contract(contract)
     assert document["version"] == 3
     assert document["repository"]["validate"]["repository"]["steps"] == [
-        {"run": ["uv", "run", "--project", "scripts/validation", "--locked", "python", "scripts/validate-repository.py"]}
+        {"run": ["uv", "run", "--project", "scripts", "--locked", "python", "scripts/validate-repository.py"]}
     ]
     assert "deliverables" not in document
     live = contracts.load_contract(ROOT / "sdlc" / "sdlc.yml")
@@ -1206,11 +1221,11 @@ def test_health_migration_proposal_is_advisory_and_reaches_automation_summary(
 def test_nested_uv_projects_keep_independent_pip_manifests() -> None:
     collector = importlib.import_module("github_contract_engine.collectors.local_repository")
     assert collector._dependabot_ecosystems([
-        "pyproject.toml", "requirements-dev.txt", "scripts/validation/pyproject.toml",
-        "scripts/validation/uv.lock", "apps/api/pyproject.toml", "apps/api/requirements.txt",
+        "pyproject.toml", "requirements-dev.txt", "scripts/pyproject.toml",
+        "scripts/uv.lock", "apps/api/pyproject.toml", "apps/api/requirements.txt",
     ]) == {
         "pip": ["apps/api/pyproject.toml", "apps/api/requirements.txt", "pyproject.toml", "requirements-dev.txt"],
-        "uv": ["scripts/validation/pyproject.toml", "scripts/validation/uv.lock"],
+        "uv": ["scripts/pyproject.toml", "scripts/uv.lock"],
     }
 
 

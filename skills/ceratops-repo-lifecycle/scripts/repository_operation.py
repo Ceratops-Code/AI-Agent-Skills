@@ -33,16 +33,15 @@ from ceratops_repo_compatibility_engine.sdlc_contract_validation import (
 from ceratops_repo_compatibility_engine.sdlc_contract_validation import (
     operation_category as contract_operation_category,
 )
-from sdlc_handoffs import execute_handoff
 from github_pr_workflow.command import failure_excerpt
+from sdlc_handoffs import execute_handoff
+from sdlc_results import capture_step_result
 
 DEFAULT_CONTRACT = pathlib.Path("sdlc/sdlc.yml")
 PARAMETER_NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
 PLACEHOLDER_RE = re.compile(r"^\{(?P<name>[a-z][a-z0-9_]*)\}$")
 FAILURE_TAIL_LINES = 8
 FAILURE_TAIL_CHARS = 4096
-STEP_RESULT_BYTES = 65536
-STEP_RESULT_DEPTH = 64
 FAILED_STATUSES = frozenset({"operation_failed", "validation_failed", "tests_failed", "state_changed", "handoff_required", "error"})
 
 
@@ -326,55 +325,6 @@ def _bounded_tail(value: str | None) -> list[str]:
     return (value or "")[-FAILURE_TAIL_CHARS:].splitlines()[-FAILURE_TAIL_LINES:]
 
 
-def _unique_result_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-    """Reject ambiguous JSON members rather than silently replace receipt values."""
-
-    value: dict[str, Any] = {}
-    for key, item in pairs:
-        if key in value:
-            raise ValueError("Duplicate result member.")
-        value[key] = item
-    return value
-
-
-def _step_result(stdout: str, *, require_identity: bool = True) -> dict[str, Any]:
-    """Retain a whole JSON receipt without forwarding logs or interpreting success.
-
-    Successful output requires nonempty schema/status strings; a failed command
-    may preserve any complete JSON object from either stream. Parsing never
-    scans log fragments. Oversized output gets a
-    content-free omission marker; malformed and ordinary output stay suppressed.
-    Container depth is bounded so downstream checkpoint readers can decode it.
-    Capture cannot turn a completed side effect into a retryable failure.
-    """
-
-    if len(stdout.encode("utf-8")) > STEP_RESULT_BYTES:
-        return {"result_omitted": "stdout_limit"}
-    try:
-        value = json.loads(stdout, object_pairs_hook=_unique_result_object)
-        if not isinstance(value, dict) or (require_identity and not all(
-            isinstance(value.get(key), str) and value[key].strip()
-            for key in ("schema", "status")
-        )):
-            return {}
-        pending: list[tuple[dict[str, Any] | list[Any], int]] = [(value, 1)]
-        while pending:
-            container, depth = pending.pop()
-            if depth > STEP_RESULT_DEPTH:
-                return {}
-            children = container.values() if isinstance(container, dict) else container
-            pending.extend(
-                (child, depth + 1)
-                for child in children
-                if isinstance(child, (dict, list))
-            )
-        # Reject non-finite numbers, including exponent overflow, at every depth.
-        json.dumps(value, allow_nan=False)
-    except (ValueError, RecursionError):
-        return {}
-    return {"result": value}
-
-
 def execute_prepared_operation(prepared: PreparedOperation) -> dict[str, object]:
     """Run one operation in its declared caller context and retain gate failures."""
 
@@ -428,7 +378,7 @@ def execute_prepared_operation(prepared: PreparedOperation) -> dict[str, object]
         if code != 0:
             child_results = {}
             for stream, output in (("stdout", stdout), ("stderr", stderr)):
-                captured = _step_result(output, require_identity=False)
+                captured = capture_step_result(output, require_identity=False)
                 if "result_omitted" in captured:
                     captured["result_omitted"] = "output_limit"
                 if captured:
@@ -452,7 +402,7 @@ def execute_prepared_operation(prepared: PreparedOperation) -> dict[str, object]
                 },
             }
         completed.append(step.position)
-        captured = _step_result(stdout)
+        captured = capture_step_result(stdout)
         if captured:
             step_results.append({"step": step.position, **captured})
             # The shared list also preserves earlier receipts on later failures

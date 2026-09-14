@@ -30,3 +30,10 @@ updates:
     labels:
       - dependencies
       - python
+  - package-ecosystem: uv
+    directory: /skills/sections/python
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies
+      - python

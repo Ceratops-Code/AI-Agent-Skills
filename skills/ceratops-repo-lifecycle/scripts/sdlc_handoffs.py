@@ -11,8 +11,11 @@ import json
 import os
 import pathlib
 import re
+import shutil
 import subprocess
 import sys
+
+from sdlc_results import capture_step_result
 
 
 def execute_handoff(route: str, repo_root: pathlib.Path) -> dict[str, object]:
@@ -26,6 +29,9 @@ def execute_handoff(route: str, repo_root: pathlib.Path) -> dict[str, object]:
     binding = root / "references" / "action-executors.json"
     if root.is_symlink() or binding.is_symlink() or not binding.is_file():
         return {"status": "handoff_required", "handoff": route, "message": "Installed skill has no executor binding."}
+    completed: list[int] = []
+    receipts: list[dict[str, object]] = []
+    evidence: dict[str, object] = {"handoff": route, "steps": completed}
     try:
         document = json.loads(binding.read_text(encoding="utf-8"))
         if set(document) != {"version", "actions"} or document.get("version") != 1 or not isinstance(document["actions"], dict):
@@ -52,11 +58,24 @@ def execute_handoff(route: str, repo_root: pathlib.Path) -> dict[str, object]:
                 for token, value in values.items():
                     argument = argument.replace(token, value)
                 argv.append(argument)
+            if step["run"][0] == "{python}":
+                launcher = root / "scripts/run-skill.py"
+                uv = shutil.which("uv")
+                if launcher.is_symlink() or not launcher.is_file() or uv is None:
+                    return {**evidence, "status": "handoff_required", "message": "Python action requires uv and the installed run-skill.py launcher."}
+                # The bootstrap has no package dependencies. The launcher selects
+                # this skill's locked environment before the real helper starts.
+                argv = [uv, "run", "--no-project", "--python", "3.14", "python", str(launcher), *argv[1:]]
             commands.append(argv)
         for position, argv in enumerate(commands, 1):
             result = subprocess.run(argv, cwd=repo_root, capture_output=True, text=True, encoding="utf-8", errors="replace", check=False)
             if result.returncode:
-                return {"status": "operation_failed", "handoff": route, "step": position, "exit_code": result.returncode, "stderr_tail": result.stderr[-4096:], "stdout_tail": result.stdout[-4096:]}
+                return {**evidence, "status": "operation_failed", "step": position, "exit_code": result.returncode, "stderr_tail": result.stderr[-4096:], "stdout_tail": result.stdout[-4096:]}
+            completed.append(position)
+            captured = capture_step_result(result.stdout)
+            if captured:
+                receipts.append({"step": position, **captured})
+                evidence["step_results"] = receipts
     except (OSError, ValueError, TypeError, AttributeError) as exc:
-        return {"status": "operation_failed", "handoff": route, "message": str(exc)}
-    return {"status": "completed", "handoff": route}
+        return {**evidence, "status": "operation_failed", "message": str(exc)}
+    return {**evidence, "status": "completed"}

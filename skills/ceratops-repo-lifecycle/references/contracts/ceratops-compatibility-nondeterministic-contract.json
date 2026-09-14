@@ -9,7 +9,7 @@
     {
       "id": "ND.COMPATIBILITY.ENVIRONMENT",
       "applies_when": "The repository has the required validator environment.",
-      "review_required": "The repository validator runs through uv using its declared tooling project, compatible Python, and locked dependencies. uv owns setup before Python starts; validator code does not install dependencies. Application and test environments remain repository-owned and need not share the validator environment. Normal execution preserves the lock; dependency updates are explicit.",
+      "review_required": "The repository validator runs through uv using its declared tooling project, compatible Python, and locked dependencies. uv owns setup before Python starts; validator code does not install dependencies. Application and test environments remain repository-owned and need not share the validator environment. Normal execution preserves the lock; dependency updates are explicit. The generated tooling project resides directly under scripts; generated tooling commands select it explicitly. Dependency declarations need one owner per environment; a requirements file is not required alongside pyproject.toml and uv.lock.",
       "evidence_keys": [
         "repository.dependency_declarations",
         "repository.lockfiles",
@@ -42,7 +42,7 @@
     {
       "id": "ND.COMPATIBILITY.APPLICATION",
       "applies_when": "Ceratops compatibility is applied or its generator changes.",
-      "review_required": "Create or reconcile required files from declared templates and register the isolated validator project with dependency maintenance. SDLC is required in the current compatibility format; supported older formats remain executable outside application. Preserve target-owned operations, dependencies, test implementations, skill declarations, and file modes. Block ambiguous custom rewrites before mutation. Perform setup and structural verification inside the rollback boundary; restore changed target files after failure and remove newly created environments owned by the failed application. Report unresolved behavior without claiming full compatibility.",
+      "review_required": "Create or reconcile required files from declared templates and register the isolated validator project with dependency maintenance. SDLC is required in the current compatibility format; supported older formats remain executable outside application. Preserve target-owned operations, dependencies, test implementations, skill declarations, and file modes. Block ambiguous custom rewrites before mutation. Perform setup and structural verification inside the rollback boundary; restore changed target files after failure and remove newly created environments owned by the failed application. Report unresolved behavior without claiming full compatibility. Skill-bearing targets receive shared Python launcher payloads and starter locked declarations. Review skill-specific dependency coverage before claiming the deployed helpers are ready.",
       "evidence_keys": [
         "compatibility.application_result",
         "compatibility.preservation_tests",

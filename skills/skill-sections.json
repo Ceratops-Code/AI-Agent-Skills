@@ -29,13 +29,33 @@
   },
   "runtime_payloads": {
     "ceratops-repo-lifecycle": [
-      "skills/sections/*.md"
+      "skills/sections/*.md",
+      "skills/sections/scripts/run-skill.py",
+      "skills/sections/python/pyproject.toml",
+      "skills/sections/python/uv.lock"
     ],
     "ceratops-skill-lifecycle": [
-      "skills/sections/*.md"
+      "skills/sections/*.md",
+      "skills/sections/scripts/run-skill.py",
+      "skills/sections/python/pyproject.toml",
+      "skills/sections/python/uv.lock"
     ],
     "openai-docs-managed": [
       "skills/openai-docs-managed/scripts/openai_docs_retrieval.py"
+    ],
+    "*": [
+      {
+        "source": "skills/sections/scripts/run-skill.py",
+        "target": "scripts/run-skill.py"
+      },
+      {
+        "source": "skills/sections/python/pyproject.toml",
+        "target": "scripts/python-runtime/pyproject.toml"
+      },
+      {
+        "source": "skills/sections/python/uv.lock",
+        "target": "scripts/python-runtime/uv.lock"
+      }
     ]
   },
   "skills": {

@@ -39,6 +39,7 @@ from .validation_environment import (
     remove_created_environment,
     runtime_files,
     setup_runtime,
+    skill_runtime_files,
 )
 
 BUNDLE_ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -346,7 +347,7 @@ def _validation_workflow(
                 raise RuntimeError("repository-validation contract check command values must be text")
             commands.append(value)
     setup: list[str] = ["      - name: Set up uv", f"        uses: {SETUP_UV}"]
-    validation_python = "uv run --project scripts/validation --locked python"
+    validation_python = "uv run --project scripts --locked python"
     package = (
         json.loads(markdown_files["package.json"])
         if markdown_files else _package_manifest(repo_root)
@@ -473,7 +474,7 @@ def validation_surfaces(
                 elif surface_path("validator").as_posix() in command:
                     if "\n" in command.strip() or any(token in command for token in ("&&", ";", "|")):
                         raise RuntimeError("custom CI validation command requires explicit SDLC integration")
-                    step["run"] = "uv run --project scripts/validation --locked python scripts/sdlc.py --validate --ci --evidence-file ${{ runner.temp }}/repository-validation.log"
+                    step["run"] = "uv run --project scripts --locked python scripts/sdlc.py --validate --ci --evidence-file ${{ runner.temp }}/repository-validation.log"
                     changed = found = True
                     if not any("astral-sh/setup-uv@" in item.get("uses", "") for item in steps if isinstance(item, dict)):
                         steps.insert(steps.index(step), {"name": "Set up uv", "uses": SETUP_UV.split(" #", 1)[0]})
@@ -881,6 +882,11 @@ def plan_ceratops_compatibility(
     compatibility_contract = load_compatibility_contract()
     python_tests = discover_python_tests(repo_root, compatibility_contract["python_test_detection"])
     generated_runtime = runtime_files(repo_root, BUNDLE_ROOT, compatibility_contract, contract_checks(repo_root))
+    if manifest is not None:
+        # The manifest and payload files share the compatibility rollback scope.
+        updated_payloads = dict(runtime_payloads)
+        generated_runtime.update(skill_runtime_files(repo_root, canonical_sections_root(), updated_payloads))
+        manifest["runtime_payloads"] = updated_payloads
     test_runner = repo_root / surface_path("python_test_runner")
     if python_tests and not test_runner.is_file():
         generated_runtime[test_runner] = template_path("python_test_runner").read_text(encoding="utf-8").replace("__TEST_TARGETS__", repr(python_tests))

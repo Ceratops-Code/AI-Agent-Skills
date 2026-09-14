@@ -8,11 +8,11 @@ repository:
     validation:
       prerequisites: [uv]
       steps:
-        - run: [uv, sync, --project, scripts/validation, --locked]
+        - run: [uv, sync, --project, scripts, --locked]
   validate:
     repository:
       steps:
-        - run: [uv, run, --project, scripts/validation, --locked, python, scripts/validate-repository.py]
+        - run: [uv, run, --project, scripts, --locked, python, scripts/validate-repository.py]
   tests:
     none:
       no-op: No repository test command has been detected or declared.

@@ -12,12 +12,25 @@ from __future__ import annotations
 import argparse
 import os
 import pathlib
+import shlex
 import subprocess
 import sys
 import tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 DEFAULT_TARGETS = __TEST_TARGETS__
+
+
+def without_basetemp(arguments: list[str]) -> list[str]:
+    """Remove outer-run locations before pytest validates every occurrence."""
+    options = iter(arguments)
+    retained = []
+    for option in options:
+        if option == "--basetemp":
+            next(options, None)
+        elif not option.startswith("--basetemp="):
+            retained.append(option)
+    return retained
 
 
 def main() -> int:
@@ -34,12 +47,17 @@ def main() -> int:
         temporary = pathlib.Path(directory)
         environment = os.environ.copy()
         environment["PYTHONPYCACHEPREFIX"] = str(temporary / "python-cache")
-        # Last-option precedence keeps cleanup ownership even when project or
-        # caller options specify their own pytest temporary paths.
-        environment["PYTEST_ADDOPTS"] = os.environ.get("PYTEST_ADDOPTS", "")
+        # Pytest validates inherited basetemp values even when later CLI values
+        # override them. An outer pytest location is an invalid ancestor here.
+        try:
+            environment["PYTEST_ADDOPTS"] = shlex.join(without_basetemp(
+                shlex.split(environment.get("PYTEST_ADDOPTS", ""))
+            ))
+        except ValueError as exc:
+            parser.error(f"invalid PYTEST_ADDOPTS: {exc}")
         try:
             result = subprocess.run(
-                [sys.executable, "-m", "pytest", *targets, *args.pytest_arg,
+                [sys.executable, "-m", "pytest", *targets, *without_basetemp(args.pytest_arg),
                  "--basetemp", str(temporary / "pytest"),
                  "-o", "cache_dir=" + str(temporary / "pytest-cache")],
                 cwd=ROOT, env=environment, check=False,

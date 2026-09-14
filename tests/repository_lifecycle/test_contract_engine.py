@@ -330,7 +330,7 @@ class GHContractStateEngineTests(unittest.TestCase):
             )
             self.assertTrue(valid["compatibility"]["applicable"])
             self.assertFalse(valid["compatibility"]["valid"])
-            self.assertIn("missing scripts/validation/pyproject.toml", valid["compatibility"]["errors"])
+            self.assertIn("missing scripts/pyproject.toml", valid["compatibility"]["errors"])
 
             value = json.loads(manifest.read_text(encoding="utf-8"))
             value["runtime_source_id"] = ""

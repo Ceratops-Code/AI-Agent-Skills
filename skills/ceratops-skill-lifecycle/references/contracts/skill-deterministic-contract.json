@@ -170,9 +170,12 @@
       "category": "runtime",
       "deterministic_evidence": [
         "skills/skill-sections.json runtime_payloads",
-        "declared payload source and target paths"
+        "declared payload source and target paths",
+        "skills/sections/scripts/run-skill.py",
+        "bundled scripts/python-runtime/pyproject.toml and uv.lock",
+        "shared skill Python environment behavior tests"
       ],
-      "pass_condition": "Runtime payload declarations use either an existing repo-relative path or matching glob copied at its source-relative target, or an exact `source` and installed-skill-relative `target` mapping. Exact mappings select one file, all paths are portable, installed targets are collision-free, single-skill executable sources are skill-owned, and multi-skill executable sources remain under `skills/sections/scripts`."
+      "pass_condition": "Runtime payload declarations use either an existing repo-relative path or matching glob copied at its source-relative target, or an exact `source` and installed-skill-relative `target` mapping. Exact mappings select one file, all paths are portable, installed targets are collision-free, single-skill executable sources are skill-owned, and multi-skill executable sources remain under `skills/sections/scripts`. Bundled Python launchers require a declared Python version and matching immutable project/lock bytes, and invoke uv with the lock before executing the helper; identical declaration pairs select the same cached environment."
     },
     {
       "id": "skill.runtime_source_ownership",

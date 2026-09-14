@@ -25,7 +25,7 @@ Infer the source identity from stable repository evidence before asking.
 - (D) Run the skill-owned compatibility engine from the repository-lifecycle
   bundle's `scripts` folder. The engine operates on `--target-repo-root` and is
   retained in the skill. Only the generic SDLC execution payload and its
-  schemas are copied into `scripts/validation/runtime`.
+  schemas are copied into `scripts/runtime`.
 - (D) `ceratops_repo_compatibility_engine.validate_ceratops_compatibility`
   exposes `validate_ceratops_compatibility(repo_root)` returning
   `{applicable, valid, errors}`. It performs read-only manifest, deployment,
@@ -96,7 +96,7 @@ Infer the source identity from stable repository evidence before asking.
   `references/contracts/repository-validation-contract.json`; obtain approval
   before adding an undeclared check.
 - Ensure uv is available before applying compatibility. Generate the validator
-  project, lock and local `.venv` under `scripts/validation`; uv selects a
+  project, lock and local `.venv` under `scripts`; uv selects a
   Python matching that project's `requires-python` and installs its locked
   dependencies. Keep application manifests in their existing locations.
 - Generate `scripts/run-tests.py` when Python tests are detected; preserve an

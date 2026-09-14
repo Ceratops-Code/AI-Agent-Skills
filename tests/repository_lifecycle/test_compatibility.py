@@ -114,7 +114,7 @@ def test_compatibility_materializer_supplies_target_identity_and_assignments(
     assert contract["deliverables"]["skills"]["deploy-local"]["standalone"] == {
         "steps": [
             {
-                "run": ["python", "scripts/deploy-skills.py"],
+                "run": ["uv", "run", "--project", "scripts", "--locked", "python", "scripts/deploy-skills.py"],
             }
         ]
     }
@@ -122,6 +122,14 @@ def test_compatibility_materializer_supplies_target_identity_and_assignments(
         "public": {
             "steps": [{"run": [sys.executable, "-V"]}]
         }
+    }
+    assert {item["target"] for item in manifest["runtime_payloads"]["*"]} == {
+        "scripts/run-skill.py", "scripts/python-runtime/pyproject.toml", "scripts/python-runtime/uv.lock",
+    }
+    assert (repo / "skills/sections/python/uv.lock").is_file()
+    updates = yaml.safe_load((repo / ".github/dependabot.yml").read_text())["updates"]
+    assert {item["directory"] for item in updates if item["package-ecosystem"] == "uv"} == {
+        "/scripts", "/skills/sections/python",
     }
     materializer = importlib.import_module(
         "ceratops_repo_compatibility_engine.apply_ceratops_compatibility"
@@ -187,7 +195,7 @@ def test_compatibility_materializer_supplies_target_identity_and_assignments(
         step["run"] for step in steps if step["name"] == "Install npm validation dependencies"
     ) == "npm ci"
     payload = repo / "skills" / "sections" / "scripts" / "shared.py"
-    payload.parent.mkdir()
+    payload.parent.mkdir(exist_ok=True)
     payload.write_text("VALUE = True\n", encoding="utf-8", newline="\n")
     manifest["runtime_payloads"] = {
         "alpha-tool": [
@@ -241,7 +249,7 @@ def test_compatibility_materializer_supplies_target_identity_and_assignments(
     defaults["surfaces"]["skill_bootstrap"]["path"] = "scripts/bootstrap-skills.py"
     defaults["surfaces"]["skill_bootstrap"]["template"] = "bootstrap-skills.py.tmpl"
     defaults["managed_skill_operations"]["validate"]["ceratops-managed"]["handoff"] = "target-lifecycle/source-check"
-    defaults["managed_skill_operations"]["deploy-local"]["standalone"]["steps"][0]["run"][1] = "scripts/bootstrap-skills.py"
+    defaults["managed_skill_operations"]["deploy-local"]["standalone"]["steps"][0]["run"][-1] = "scripts/bootstrap-skills.py"
     templates = bundle / "references/templates"
     (templates / "deploy-skills.py.tmpl").rename(templates / "bootstrap-skills.py.tmpl")
     contract_path.write_text(json.dumps(defaults), encoding="utf-8")
@@ -258,7 +266,7 @@ def test_compatibility_materializer_supplies_target_identity_and_assignments(
     assert not (alternate / "scripts/deploy-skills.py").exists()
     actual = yaml.safe_load((alternate / "sdlc/sdlc.yml").read_text(encoding="utf-8"))
     assert actual["deliverables"]["skills"]["deploy-local"]["standalone"]["steps"][0]["run"] == [
-        "python", "scripts/bootstrap-skills.py",
+        "uv", "run", "--project", "scripts", "--locked", "python", "scripts/bootstrap-skills.py",
     ]
     assert actual["deliverables"]["skills"]["validate"]["ceratops-managed"] == {
         "handoff": "target-lifecycle/source-check"
@@ -374,7 +382,7 @@ def test_compatibility_materializer_supports_repositories_without_skills(
     assert not (repo / "skills").exists()
     contract = yaml.safe_load((repo / "sdlc" / "sdlc.yml").read_text())
     assert contract["repository"]["validate"]["repository"]["steps"] == [
-        {"run": ["uv", "run", "--project", "scripts/validation", "--locked", "python", "scripts/validate-repository.py"]}
+        {"run": ["uv", "run", "--project", "scripts", "--locked", "python", "scripts/validate-repository.py"]}
     ]
     assert "deliverables" not in contract
     assert not (repo / "scripts" / "deploy-skills.py").exists()
@@ -509,7 +517,7 @@ def test_compatibility_materializer_supports_repositories_without_skills(
     ] == []
     assert 'python-version: "3.12"' not in pnpm_workflow
     import tomllib
-    pnpm_runtime = tomllib.loads((pnpm_repo / "scripts/validation/pyproject.toml").read_text())
+    pnpm_runtime = tomllib.loads((pnpm_repo / "scripts/pyproject.toml").read_text())
     assert "mypy" in pnpm_runtime["project"]["dependencies"]
     assert (pnpm_repo / "requirements-dev.txt").read_text() == "pytest==9.1.1\n"
 
@@ -554,7 +562,7 @@ def test_compatibility_materializer_supports_repositories_without_skills(
         for step in uv_steps
         if step.get("name") == "Install Python validation dependencies"
     ] == []
-    assert "uv run --project scripts/validation --locked python scripts/sdlc.py --validate --ci" in uv_workflow
+    assert "uv run --project scripts --locked python scripts/sdlc.py --validate --ci" in uv_workflow
     assert (uv_repo / "uv.lock").read_text() == "version = 1\n"
 
     # Synthetic recipes exercise extension behavior without coupling the shipped
@@ -1123,6 +1131,8 @@ def test_generated_runtime_runs_without_installed_skills_and_keeps_tests_separat
 ) -> None:
     repo = tmp_path / "independent"
     repo.mkdir()
+    (repo / "scripts").mkdir()
+    (repo / "scripts/.gitignore").write_text("/custom-output/\n")
     (repo / ".git").write_text("gitdir: test\n")
     # A nested tooling workspace must not rewrite the application's lock or
     # adopt its incompatible Python constraint.
@@ -1141,7 +1151,8 @@ def test_generated_runtime_runs_without_installed_skills_and_keeps_tests_separat
     assert (repo / "pyproject.toml").read_text() == application
     assert (repo / "requirements.txt").read_text() == "# repository-owned\n"
     assert not (repo / "uv.lock").exists()
-    prefix = ["uv", "run", "--project", "scripts/validation", "--locked", "python"]
+    assert (repo / "scripts/.gitignore").read_text() == "/custom-output/\n.venv/\n**/__pycache__/\n"
+    prefix = ["uv", "run", "--project", "scripts", "--locked", "python"]
     validation = subprocess.run([*prefix, "scripts/validate-repository.py"], cwd=repo, capture_output=True, text=True)
     assert validation.returncode == 0, validation.stderr
     evidence = tmp_path / "sdlc-failure.json"
@@ -1163,13 +1174,16 @@ def test_generated_runtime_runs_without_installed_skills_and_keeps_tests_separat
     assert passed.returncode == 0, passed.stdout + passed.stderr
     assert not evidence.exists()
     assert json.loads(passed.stdout)["completed_operations"] == ["repository.validate.repository", "repository.tests.python"]
-    lock = (repo / "scripts/validation/uv.lock").read_bytes()
+    lock = (repo / "scripts/uv.lock").read_bytes()
     reapplied = run_compatibility_engine(REPOSITORY_LIFECYCLE_SCRIPTS, "apply", "--target-repo-root", str(repo))
     assert reapplied.returncode == 0, reapplied.stdout
-    assert (repo / "scripts/validation/uv.lock").read_bytes() == lock
+    assert (repo / "scripts/uv.lock").read_bytes() == lock
 
 
-def test_generated_python_runner_cleans_owned_temp_even_with_overrides(tmp_path: pathlib.Path) -> None:
+@pytest.mark.parametrize("inherited_form", ["joined", "separate"])
+def test_generated_python_runner_cleans_owned_temp_even_with_overrides(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, inherited_form: str,
+) -> None:
     repo = tmp_path / "runner"
     (repo / "scripts").mkdir(parents=True)
     marker = tmp_path / "observed.json"
@@ -1183,8 +1197,11 @@ def test_generated_python_runner_cleans_owned_temp_even_with_overrides(tmp_path:
     runner = repo / "scripts/run-tests.py"
     runner.write_text(template.replace("__TEST_TARGETS__", "['test_probe.py']"))
     outside = tmp_path / "caller-temp"
+    inherited = f'--basetemp="{tmp_path}"' if inherited_form == "joined" else f'--basetemp "{tmp_path}"'
+    monkeypatch.setenv("PYTEST_ADDOPTS", "-q " + inherited)
     result = subprocess.run([
         sys.executable, str(runner), "--pytest-arg=--basetemp", "--pytest-arg=" + str(outside),
+        "--pytest-arg=--basetemp=" + str(repo),
     ], cwd=repo, capture_output=True, text=True)
     assert result.returncode == 1, result.stderr
     observed = pathlib.Path(json.loads(marker.read_text()))

@@ -1003,14 +1003,96 @@ def test_contract_review_adoption_and_all_managed_output(tmp_path: pathlib.Path)
                 relative = item.relative_to(source).as_posix()
                 if relative != "SKILL.md" and relative not in refs:
                     assert (destination / skill / relative).read_bytes() == item.read_bytes()
-        repository_review = (destination / "ceratops-repo-lifecycle/references/repo-contracts-review.md").read_text(encoding="utf-8")
+        repository_review = " ".join((destination / "ceratops-repo-lifecycle/references/repo-contracts-review.md").read_text(encoding="utf-8").split())
         assert "including ecosystems absent from the contract" in repository_review
         assert "at most four web discovery queries per routine review" in repository_review
         assert "candidate dispositions with reasons: covered, proposed addition, deferred," in repository_review
-        skill_review = (destination / "ceratops-skill-lifecycle/references/skills-contract-review.md").read_text(encoding="utf-8")
+        skill_review = " ".join((destination / "ceratops-skill-lifecycle/references/skills-contract-review.md").read_text(encoding="utf-8").split())
         assert "Do not run `skills-consistency-source-validator.py`" in skill_review
         assert "at most two or three relevant installed OpenAI skill examples" in skill_review
     assert snapshots[0] == snapshots[1] == snapshots[2]
+
+
+@pytest.mark.skipif(shutil.which("uv") is None, reason="uv is required for the deployed runtime integration")
+def test_shared_skill_python_environment_reuses_lock_and_repairs_missing_package(tmp_path: pathlib.Path) -> None:
+    """Two installed skills share one environment and retain independent locks."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    codex_home = tmp_path / "codex home"
+    destination = codex_home / "skills"
+    names = ["ceratops-repo-lifecycle", "ceratops-skill-lifecycle"]
+    installed = subprocess.run([
+        sys.executable, str(BOOTSTRAP), "--repo-root", str(ROOT), "--install-root", str(destination),
+        "--skill", names[0], "--skill", names[1],
+    ], capture_output=True, text=True)
+    assert installed.returncode == 0, installed.stderr
+    uv = shutil.which("uv")
+    assert uv is not None
+    environment = {**os.environ, "CODEX_HOME": str(codex_home)}
+    for name in names:
+        skill = destination / name
+        assert not (skill / ".venv").exists()
+        (skill / "scripts/probe.py").write_text(
+            "import json, jsonschema, yaml, markdown_it, sys, subprocess\n"
+            "from zoneinfo import ZoneInfo\n"
+            "ZoneInfo('Asia/Jerusalem')\n"
+            "nested = subprocess.check_output([sys.executable, '-c', 'import sys; print(sys.executable)'], text=True).strip()\n"
+            "print(json.dumps({'schema':'probe.v1','status':'ready','python':sys.executable,'nested':nested,'args':sys.argv[1:]}))\n",
+        )
+
+    def invoke(name: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run([
+            uv, "run", "--no-project", "--python", "3.14", "python",
+            str(destination / name / "scripts/run-skill.py"), "scripts/probe.py", "two words",
+        ], cwd=tmp_path, env=environment, capture_output=True, text=True)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(invoke, names))
+    assert all(item.returncode == 0 for item in results), [item.stderr for item in results]
+    first, second = [json.loads(item.stdout) for item in results]
+    assert first == second
+    assert first["args"] == ["two words"]
+    assert first["python"] == first["nested"]
+    interpreter = pathlib.Path(first["python"])
+    assert interpreter.is_relative_to(codex_home / "runtimes/ceratops")
+    assert ".venv" in interpreter.parts
+    assert not list((codex_home / "runtimes/ceratops").glob(".prepare-*"))
+    launcher_path = destination / names[0] / "scripts/run-skill.py"
+    module_result = subprocess.run([
+        sys.executable, str(launcher_path), "-m", "probe", "two words",
+    ], cwd=tmp_path, env=environment, capture_output=True, text=True)
+    assert module_result.returncode == 0, module_result.stderr
+    assert json.loads(module_result.stdout) == first
+    (launcher_path.parent / "failed.py").write_text("import sys\nprint('helper failure', file=sys.stderr)\nraise SystemExit(7)\n")
+    failed = subprocess.run([
+        sys.executable, str(launcher_path), "scripts/failed.py",
+    ], cwd=tmp_path, env=environment, capture_output=True, text=True)
+    assert failed.returncode == 7 and failed.stderr == "helper failure\n"
+
+    removed = subprocess.run([uv, "pip", "uninstall", "--python", str(interpreter), "jsonschema"], capture_output=True, text=True)
+    assert removed.returncode == 0, removed.stderr
+    repaired = invoke(names[0])
+    assert repaired.returncode == 0, repaired.stderr
+    assert json.loads(repaired.stdout)["python"] == str(interpreter)
+
+    project = destination / names[1] / "scripts/python-runtime"
+    pyproject = project / "pyproject.toml"
+    pyproject.write_text(pyproject.read_text().replace('version = "0.0.0"', 'version = "0.1.0"'))
+    stale = invoke(names[1])
+    assert stale.returncode != 0
+    assert not stale.stdout.strip()
+    locked = subprocess.run([uv, "lock", "--project", str(project)], capture_output=True, text=True)
+    assert locked.returncode == 0, locked.stderr
+    separate = invoke(names[1])
+    assert separate.returncode == 0, separate.stderr
+    assert json.loads(separate.stdout)["python"] != str(interpreter)
+    assert json.loads(invoke(names[0]).stdout)["python"] == str(interpreter)
+
+    launcher = runpy.run_path(str(destination / names[0] / "scripts/run-skill.py"))
+    shared = launcher["shared_project"](destination / names[0], codex_home)
+    (shared / "pyproject.toml").write_text("changed = true\n")
+    with pytest.raises(ValueError, match="declaration changed"):
+        launcher["shared_project"](destination / names[0], codex_home)
 
 
 @pytest.mark.parametrize("renderer", [BOOTSTRAP, INSTALLER_TEMPLATE, BUILDER], ids=["repository", "compatible", "managed"])
