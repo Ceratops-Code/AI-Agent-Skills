@@ -18,6 +18,7 @@ from tests.repository_lifecycle.support import (
 from tests.support.repositories import (
     ROOT,
     prepare_script_environment,
+    run_ci_action,
     run_git,
     write_sdlc_contract,
 )
@@ -78,6 +79,46 @@ def test_v3_tests_gate_mutations_and_ci_never_dispatches_handoffs(
     assert failed["status"] == "tests_failed"
     assert location in failed["pending_operations"]
     assert location not in failed["completed_operations"]
+
+
+@pytest.mark.parametrize("failure", [None, "validation", "tests"])
+def test_ci_action_runs_skill_engine_without_repository_copies(
+    tmp_path: pathlib.Path, failure: str | None,
+) -> None:
+    repo = tmp_path / "repository with spaces"
+    (repo / "sdlc").mkdir(parents=True)
+    evidence = tmp_path / "failure evidence.json"
+    evidence.write_text("previous failure")
+
+    def command(name: str) -> dict[str, object]:
+        program = ("from pathlib import Path; p=Path('order.txt'); "
+                   f"p.write_text((p.read_text() if p.exists() else '') + {name!r} + chr(10)); "
+                   f"raise SystemExit({7 if failure == name else 0})")
+        return {"steps": [{"run": [sys.executable, "-c", program]}]}
+
+    declaration = {"version": 3, "kind": "ceratops-sdlc",
+                   "repository": {"validate": {"structure": command("validation")}},
+                   "deliverables": {"service": {
+                       "validate": {"source": {"handoff": "nonexistent-skill/check"}},
+                       "tests": {"unit": command("tests")},
+                   }}}
+    (repo / "sdlc/sdlc.yml").write_text(json.dumps(declaration))
+    result = run_ci_action(repo, evidence, tmp_path / "action checkout")
+    assert result.returncode == (1 if failure else 0), result.stderr
+    payload = json.loads(result.stderr if failure else result.stdout)
+    if failure:
+        assert json.loads(evidence.read_text()) == payload
+        assert payload["status"] == ("validation_failed" if failure == "validation" else "tests_failed")
+    else:
+        assert not evidence.exists()
+        assert payload["status"] == "completed"
+    expected = "validation\n" if failure == "validation" else "validation\ntests\n"
+    assert (repo / "order.txt").read_text() == expected
+    if failure != "validation":
+        handoff = next(item for item in payload["results"] if item.get("handoff"))
+        assert handoff["status"] == "deferred_handoff"
+    assert not (repo / "scripts/sdlc.py").exists()
+    assert not (repo / "scripts/runtime").exists()
 
 
 @pytest.mark.parametrize("tests", [None, {}, {"none": {"no-op": " "}}, {"unit": {"steps": [], "no-op": "ambiguous"}}])
