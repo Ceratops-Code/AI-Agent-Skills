@@ -22,10 +22,9 @@ Infer the source identity from stable repository evidence before asking.
 
 ### Script Bundle
 
-- (D) Run the skill-owned compatibility engine from the repository-lifecycle
-  bundle's `scripts` folder. The engine operates on `--target-repo-root` and is
-  retained in the skill. Only the generic SDLC execution payload and its
-  schemas are copied into `scripts/runtime`.
+- Keep compatibility and SDLC execution code and schemas in this skill.
+  Target repositories receive declarations and repository-specific entrypoints.
+  CI invokes this skill's pinned GitHub action and never dispatches handoffs.
 - (D) `ceratops_repo_compatibility_engine.validate_ceratops_compatibility`
   exposes `validate_ceratops_compatibility(repo_root)` returning
   `{applicable, valid, errors}`. It performs read-only manifest, deployment,
@@ -159,8 +158,9 @@ Infer the source identity from stable repository evidence before asking.
 
 - Create a missing `scripts/validate-repository.py` and
   `.github/workflows/validate.yml` for every repository, including repositories
-  with no skills. CI invokes the repository-owned SDLC runner, which separately
-  selects validation and tests and never dispatches skill handoffs.
+  with no skills. CI invokes this skill's GitHub action to select validation and
+  tests separately. Preserve an existing action commit pin; otherwise resolve a
+  published revision or use `--ci-action-revision <commit>`.
 - When skills exist, the compatibility apply helper synchronizes the
   independent `scripts/deploy-skills.py`. Retain a same- or
   higher-version bootstrap and replace only a missing or lower version.
@@ -192,9 +192,9 @@ Infer the source identity from stable repository evidence before asking.
   SDLC contracts, and a supported standalone
   installer. Skillless repositories retain only repository capabilities and
   target-owned deliverables.
-- Every target has the isolated validator runtime, SDLC runner, separate test
-  declarations, and CI wiring. Python-test repositories also have their runner.
-  Structural checks and applicable validation and tests pass separately;
+- Every target has the isolated validator environment, separate test
+  declarations, and CI action wiring. Python-test repositories also have their
+  runner. Structural checks and applicable validation and tests pass separately;
   deferred CI handoffs remain for the owning skill action to resolve.
 - Any caught blocker after mutation restores the exact prior target files and
   reports completed or failed rollback state.

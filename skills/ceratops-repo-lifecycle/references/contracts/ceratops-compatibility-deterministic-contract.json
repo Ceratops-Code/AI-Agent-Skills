@@ -29,11 +29,6 @@
       "template": "deploy-skills.py.tmpl",
       "required": "with_skills"
     },
-    "sdlc_runner": {
-      "path": "scripts/sdlc.py",
-      "template": "sdlc.py.tmpl",
-      "required": "always"
-    },
     "validation_project": {
       "path": "scripts/pyproject.toml",
       "template": "validation-pyproject.toml.tmpl",
@@ -45,11 +40,6 @@
       "required": "with_python_tests"
     }
   },
-  "ci_required_arguments": [
-    "--validate",
-    "--ci",
-    "--evidence-file"
-  ],
   "manifest_profiles": [
     "ceratops",
     "ceratops-compatible"
@@ -89,21 +79,9 @@
     "project": "scripts",
     "lockfile": "scripts/uv.lock",
     "environment": "scripts/.venv",
-    "payload_root": "scripts/runtime",
     "ignored_paths": [
       ".venv/",
       "**/__pycache__/"
-    ],
-    "payloads": [
-      "scripts/repository_operation.py",
-      "scripts/sdlc_handoffs.py",
-      "scripts/sdlc_results.py",
-      "scripts/github_pr_workflow/command.py",
-      "scripts/github_contract_engine/github_api.py",
-      "scripts/ceratops_repo_compatibility_engine/sdlc_contract_validation.py",
-      "references/schemas/sdlc.yml.schema.json",
-      "references/schemas/sdlc.v1.schema.json",
-      "references/schemas/sdlc.v2.schema.json"
     ]
   },
   "python_test_detection": {
@@ -132,6 +110,21 @@
   "dependency_updates": {
     "package-ecosystem": "uv",
     "directory": "/scripts",
+    "schedule": {
+      "interval": "weekly"
+    }
+  },
+  "ci_action": {
+    "uses": "Ceratops-Code/AI-Agent-Skills/skills/ceratops-repo-lifecycle",
+    "ref": "refs/heads/main",
+    "inputs": {
+      "repo-root": "${{ github.workspace }}",
+      "evidence-file": "${{ runner.temp }}/repository-validation.log"
+    }
+  },
+  "ci_dependency_updates": {
+    "package-ecosystem": "github-actions",
+    "directory": "/",
     "schedule": {
       "interval": "weekly"
     }

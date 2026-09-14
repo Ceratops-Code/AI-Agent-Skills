@@ -10,7 +10,6 @@ from __future__ import annotations
 import json
 import os
 import pathlib
-import re
 import runpy
 import tomllib
 from collections.abc import Mapping
@@ -18,6 +17,7 @@ from typing import Any, TypedDict
 
 import yaml
 
+from .ci_workflow import workflow_errors
 from .compatibility_contract import load_compatibility_contract, template_path
 from .python_tests import discover_python_tests
 from .sdlc_contract_validation import operation_entries, read_contract
@@ -36,39 +36,6 @@ def _regular_file_error(root: pathlib.Path, relative: pathlib.Path) -> str | Non
     if path.is_symlink() or not path.is_file():
         return f"{relative.as_posix()} must be a regular file"
     return None
-
-
-def _workflow_errors(
-    path: pathlib.Path, validator: str, required_arguments: list[str],
-) -> list[str]:
-    """Validate the CI-to-repository-validator edge from parsed YAML."""
-
-    try:
-        payload = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, yaml.YAMLError) as exc:
-        return [f"invalid CI validation workflow: {exc}"]
-    if not isinstance(payload, Mapping) or not isinstance(payload.get("jobs"), Mapping):
-        return ["CI validation workflow must declare jobs"]
-    commands: list[str] = []
-    for job in payload["jobs"].values():
-        if not isinstance(job, Mapping) or not isinstance(job.get("steps"), list):
-            continue
-        for step in job["steps"]:
-            if isinstance(step, Mapping) and isinstance(step.get("run"), str):
-                commands.append(step["run"])
-    invocation = re.compile(
-        rf"\b(?:python3?|uv\s+run\s+--locked)\s+(?:\./)?{re.escape(validator)}\b"
-    )
-    if not any(
-        invocation.search(command)
-        and all(argument in command for argument in required_arguments)
-        for command in commands
-    ):
-        return [
-            f"CI validation workflow must call {validator} "
-            f"with {' '.join(required_arguments)}"
-        ]
-    return []
 
 
 def _manifest_file_errors(
@@ -253,13 +220,13 @@ def _environment_errors(root: pathlib.Path, contract: Mapping[str, Any]) -> list
         errors.append("validator environment must contain its own Python interpreter; apply compatibility or run uv sync")
     try:
         dependabot = yaml.safe_load((root / ".github/dependabot.yml").read_text(encoding="utf-8"))
-        registration = contract["dependency_updates"]
-        if not isinstance(dependabot, Mapping) or not any(
-            isinstance(item, Mapping) and item.get("package-ecosystem") == registration["package-ecosystem"]
-            and (item.get("directory") == registration["directory"] or registration["directory"] in item.get("directories", []))
-            for item in dependabot.get("updates", [])
-        ):
-            errors.append("Dependabot must include the isolated validator project")
+        for registration in (contract["dependency_updates"], contract["ci_dependency_updates"]):
+            if not isinstance(dependabot, Mapping) or not any(
+                isinstance(item, Mapping) and item.get("package-ecosystem") == registration["package-ecosystem"]
+                and (item.get("directory") == registration["directory"] or registration["directory"] in item.get("directories", []))
+                for item in dependabot.get("updates", [])
+            ):
+                errors.append("Dependabot must include " + registration["package-ecosystem"] + " at " + registration["directory"])
     except (OSError, ValueError, TypeError, yaml.YAMLError) as exc:
         errors.append("invalid validator dependency-update registration: " + str(exc))
     return errors
@@ -297,10 +264,7 @@ def validate_ceratops_compatibility(repo_root: pathlib.Path) -> CompatibilityRes
             if error := _regular_file_error(root, paths[name]):
                 errors.append(error)
     if not _regular_file_error(root, paths["workflow"]):
-        errors.extend(_workflow_errors(
-            root / paths["workflow"], surfaces["sdlc_runner"]["path"],
-            contract["ci_required_arguments"],
-        ))
+        errors.extend(workflow_errors(root / paths["workflow"], contract["ci_action"]))
     if "skill_manifest" in present and not _regular_file_error(root, paths["skill_manifest"]):
         errors.extend(_manifest_errors(
             root, root / paths["skill_manifest"], source_skills, contract["manifest_profiles"],
@@ -327,7 +291,7 @@ def validate_ceratops_compatibility(repo_root: pathlib.Path) -> CompatibilityRes
             if python_tests and not any(".tests." in name and (entry.get("steps") or entry.get("handoff")) for name, entry in entries.items()):
                 errors.append("detected Python tests require an executable SDLC tests operation")
     errors.extend(_environment_errors(root, contract))
-    for relative in [contract["runtime"]["lockfile"], *[contract["runtime"]["payload_root"] + "/" + path for path in contract["runtime"]["payloads"]]]:
+    for relative in [contract["runtime"]["lockfile"]]:
         if error := _regular_file_error(root, pathlib.Path(relative)):
             errors.append(error)
 

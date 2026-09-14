@@ -69,20 +69,15 @@ def load_compatibility_contract(bundle_root: pathlib.Path | None = None) -> dict
         template = references / "templates" / surface["template"]
         if template.is_symlink() or not template.is_file():
             raise RuntimeError(f"missing regular compatibility template: {surface['template']}")
-    for relative in contract["runtime"]["payloads"]:
-        payload = bundle / relative
-        if payload.is_symlink() or not payload.is_file():
-            raise RuntimeError(f"missing regular compatibility runtime payload: {relative}")
     runtime = contract["runtime"]
     layout = {
         "project": "scripts", "lockfile": "scripts/uv.lock",
         "environment": "scripts/.venv",
-        "payload_root": "scripts/runtime",
     }
     if any(runtime[key] != value for key, value in layout.items()):
         raise RuntimeError("compatibility runtime paths must match the portable template layout")
     destinations = {
-        "sdlc_runner": "scripts/sdlc.py", "validation_project": "scripts/pyproject.toml",
+        "validation_project": "scripts/pyproject.toml",
         "validator": "scripts/validate-repository.py", "python_test_runner": "scripts/run-tests.py",
     }
     if any(contract["surfaces"][key]["path"] != value for key, value in destinations.items()):

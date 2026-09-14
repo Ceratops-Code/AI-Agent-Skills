@@ -31,7 +31,7 @@
     {
       "id": "ND.COMPATIBILITY.LIFECYCLE",
       "applies_when": "The repository declares lifecycle operations or deliverables.",
-      "review_required": "Owning helpers select and execute validation and tests from SDLC before the selected mutation, stop on failure, and clean their owned temporary artifacts. CI never dispatches skill handoffs and reports deferred routes separately. Skill callers may execute registered deterministic handoffs; unresolved routes remain pending and cannot authorize later mutation. Generic lifecycle helpers do not hardcode skill implementations. The copied SDLC runtime must work in a repository without installed Codex skills.",
+      "review_required": "Owning helpers select and execute validation and tests from SDLC before the selected mutation, stop on failure, and clean their owned temporary artifacts. CI never dispatches skill handoffs and reports deferred routes separately. Skill callers may execute registered deterministic handoffs; unresolved routes remain pending and cannot authorize later mutation. Generic lifecycle helpers do not hardcode skill implementations. SDLC execution and schemas stay in the lifecycle skill. CI obtains that implementation through its pinned GitHub action without installed Codex skills or generated engine copies. Confirm the pinned revision is published and custom CI conditions and inputs cover the intended repository and required gates.",
       "evidence_keys": [
         "sdlc.operations",
         "lifecycle.callers",

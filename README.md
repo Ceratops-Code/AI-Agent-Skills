@@ -458,19 +458,29 @@ a `uv` entry for `/scripts` without removing other entries.
 The same project template supplies Ruff lint rules and mypy checking defaults.
 Generated validators select those settings explicitly unless the repository
 provides root tool configuration. Existing settings remain authoritative;
-compatibility adds only absent tool tables. The bundled SDLC engine under
-`scripts/runtime` is excluded from default application lint and type checking.
+compatibility adds only absent tool tables.
 
 Initial application resolves the lock and syncs the environment. Later runs
 use the lock; missing dependencies are installed by uv before Python starts,
 while stale locks fail instead of changing dependency decisions during checks.
 
-The copied `scripts/sdlc.py` launches the same engine and schemas shipped by the
-repository-lifecycle skill. A target's CI needs uv and its own copied runtime,
-without installed Ceratops skills:
+SDLC execution and schemas stay in the repository-lifecycle skill. Target
+repositories receive no engine copy or SDLC launcher. CI sets up uv and calls
+`Ceratops-Code/AI-Agent-Skills/skills/ceratops-repo-lifecycle@<commit>` with
+`repo-root` and `evidence-file` inputs. GitHub obtains the action; no Codex skills
+installation is needed on the runner. The action uses its own locked Python
+project, while target scripts use their repository's project.
+
+Compatibility preserves an existing action pin. For new CI it resolves a
+published revision before writing files; `--ci-action-revision <commit>` selects
+an explicit revision for offline planning or a chosen release. That revision
+must contain the published action before CI can run. Dependabot maintains
+GitHub Actions pins as well as the scripts project.
+
+Skill callers invoke their bundled engine directly:
 
 ```powershell
-uv run --locked scripts/sdlc.py --validate --ci
+uv run --no-project --python 3.14 python "$env:CODEX_HOME/skills/ceratops-repo-lifecycle/scripts/run-skill.py" scripts/repository_operation.py --repo-root <repo> --validate
 ```
 
 `--validate` runs validation and tests as separate operations. `--tests` selects

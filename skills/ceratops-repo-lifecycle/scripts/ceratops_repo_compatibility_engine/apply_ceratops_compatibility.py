@@ -23,6 +23,7 @@ from dataclasses import dataclass
 
 import yaml
 
+from .ci_workflow import pinned_action, resolve_action, workflow_errors
 from .compatibility_contract import (
     load_compatibility_contract,
     surface_path,
@@ -350,7 +351,7 @@ def default_markdown_files(repo_root: pathlib.Path) -> dict[str, str]:
 def _validation_workflow(
     repo_root: pathlib.Path, checks: list[dict[str, object]],
     *, markdown_files: Mapping[str, str],
-) -> tuple[str, str, str]:
+) -> tuple[str, str]:
     """Render CI using target-owned dependency setup and Python requirements."""
 
     commands: list[str] = []
@@ -363,7 +364,6 @@ def _validation_workflow(
                 raise RuntimeError("repository-validation contract check command values must be text")
             commands.append(value)
     setup: list[str] = ["      - name: Set up uv", f"        uses: {SETUP_UV}"]
-    validation_python = "uv run --locked"
     package = (
         json.loads(markdown_files["package.json"])
         if markdown_files else _package_manifest(repo_root)
@@ -420,11 +420,11 @@ def _validation_workflow(
             ]
         )
     runner = "windows-latest" if "{pwsh}" in commands else "ubuntu-latest"
-    return runner, "\n".join(setup), validation_python
+    return runner, "\n".join(setup)
 
 
 def validation_surfaces(
-    repo_root: pathlib.Path,
+    repo_root: pathlib.Path, ci_action_revision: str | None = None,
 ) -> tuple[str | None, str | None, list[str], dict[str, str]]:
     """Create missing validators and reconcile the CI edge without losing custom steps."""
 
@@ -458,18 +458,21 @@ def validation_surfaces(
             pprint.pformat(checks, sort_dicts=False, width=72),
         )
     workflow_text = None
+    action = load_compatibility_contract()["ci_action"]
     if not workflow.is_file():
         template = template_path("workflow").read_text(encoding="utf-8")
-        markers = ("__RUNNER__", "      # __SETUP_STEPS__")
+        markers = ("__RUNNER__", "      # __SETUP_STEPS__", "__CI_ACTION__", "__CI_REPO_ROOT__", "__CI_EVIDENCE__")
         if any(template.count(marker) != 1 for marker in markers):
             raise RuntimeError("CI validation template markers are invalid")
-        runner, setup, validation_python = _validation_workflow(
+        runner, setup = _validation_workflow(
             repo_root, checks, markdown_files=markdown_files
         )
         workflow_text = (
             template.replace("__RUNNER__", runner)
             .replace("      # __SETUP_STEPS__", setup)
-            .replace("__VALIDATOR_PYTHON__", validation_python)
+            .replace("__CI_ACTION__", resolve_action(action, ci_action_revision))
+            .replace("__CI_REPO_ROOT__", action["inputs"]["repo-root"])
+            .replace("__CI_EVIDENCE__", action["inputs"]["evidence-file"])
         )
     if workflow.is_file():
         payload = yaml.safe_load(workflow.read_text(encoding="utf-8"))
@@ -479,18 +482,39 @@ def validation_surfaces(
             payload["on"] = payload.pop(True)
         changed = False
         found = False
+        resolved_action = None
         for job in payload["jobs"].values():
             if not isinstance(job, dict):
                 continue
             steps = job.get("steps", [])
+            if not isinstance(steps, list):
+                raise RuntimeError("existing CI job steps must be a list")
             for step in list(steps):
                 command = step.get("run", "") if isinstance(step, dict) else ""
-                if "scripts/sdlc.py" in command and "--ci" in command:
+                if not isinstance(command, str):
+                    raise RuntimeError("existing CI run command must be text")
+                if isinstance(step, dict) and str(step.get("uses", "")).startswith(action["uses"] + "@"):
+                    if not pinned_action(step["uses"], action):
+                        raise RuntimeError("existing lifecycle action must use a full commit pin")
+                    if errors := workflow_errors(workflow, action):
+                        raise RuntimeError("; ".join(errors))
                     found = True
+                    if ci_action_revision is not None:
+                        chosen = resolve_action(action, ci_action_revision)
+                        if step["uses"] != chosen:
+                            step["uses"] = chosen
+                            changed = True
                 elif surface_path("validator").as_posix() in command:
                     if "\n" in command.strip() or any(token in command for token in ("&&", ";", "|")):
                         raise RuntimeError("custom CI validation command requires explicit SDLC integration")
-                    step["run"] = "uv run --locked scripts/sdlc.py --validate --ci --evidence-file ${{ runner.temp }}/repository-validation.log"
+                    if step.get("working-directory") not in (None, "."):
+                        raise RuntimeError("custom CI working-directory requires explicit action integration")
+                    if resolved_action is None:
+                        resolved_action = resolve_action(action, ci_action_revision)
+                    step.pop("run")
+                    step.pop("shell", None)
+                    step.pop("working-directory", None)
+                    step.update(uses=resolved_action, **{"with": dict(action["inputs"])})
                     changed = found = True
                     if not any("astral-sh/setup-uv@" in item.get("uses", "") for item in steps if isinstance(item, dict)):
                         steps.insert(steps.index(step), {"name": "Set up uv", "uses": SETUP_UV.split(" #", 1)[0]})
@@ -759,6 +783,7 @@ def plan_ceratops_compatibility(
     existing: Mapping[str, object],
     *,
     apply_sdlc_contract: bool,
+    ci_action_revision: str | None = None,
 ) -> CompatibilityPlan:
     """Validate target evidence and compose writes without changing files."""
 
@@ -896,7 +921,7 @@ def plan_ceratops_compatibility(
         action_errors = action_assignment_errors(repo_root, manifest)
         if action_errors:
             raise RuntimeError("; ".join(action_errors))
-    validator_text, workflow_text, validation_checks, markdown_files = validation_surfaces(repo_root)
+    validator_text, workflow_text, validation_checks, markdown_files = validation_surfaces(repo_root, ci_action_revision)
     compatibility_contract = load_compatibility_contract()
     python_tests = discover_python_tests(repo_root, compatibility_contract["python_test_detection"])
     generated_runtime = runtime_files(repo_root, BUNDLE_ROOT, compatibility_contract, contract_checks(repo_root))
@@ -1006,6 +1031,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--target-repo-root", required=True, type=pathlib.Path)
     parser.add_argument("--runtime-source-id")
+    parser.add_argument("--ci-action-revision", help="Published lifecycle action commit; otherwise preserve or resolve its pin.")
     args = parser.parse_args(argv)
     repo_root = args.target_repo_root.resolve()
     phase = "preflight"
@@ -1035,6 +1061,7 @@ def main(argv: list[str] | None = None) -> int:
             template,
             existing,
             apply_sdlc_contract=True,
+            ci_action_revision=args.ci_action_revision,
         )
         skill_paths = sorted((repo_root / "skills").glob("*/SKILL.md"))
         mutable_paths = [*skill_paths, existing_path, *plan.runtime_files, repo_root / runtime["lockfile"]]

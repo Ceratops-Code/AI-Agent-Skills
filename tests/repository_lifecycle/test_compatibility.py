@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import io
 import json
 import os
 import pathlib
@@ -18,10 +19,15 @@ from tests.repository_lifecycle.support import (
     SECTION_MANIFEST_TEMPLATE,
 )
 from tests.skill_lifecycle.support import add_action_sections
-from tests.support.processes import COMPATIBILITY_ENGINE, run_compatibility_engine
+from tests.support.processes import (
+    CI_ACTION_REVISION,
+    COMPATIBILITY_ENGINE,
+    run_compatibility_engine,
+)
 from tests.support.repositories import (
     ROOT,
     create_compatible_repo,
+    run_ci_action,
     write_sdlc_contract,
 )
 
@@ -564,7 +570,10 @@ def test_compatibility_materializer_supports_repositories_without_skills(
         for step in uv_steps
         if step.get("name") == "Install Python validation dependencies"
     ] == []
-    assert "uv run --locked scripts/sdlc.py --validate --ci" in uv_workflow
+    action_step = next(step for step in yaml.safe_load(uv_workflow)["jobs"]["validate-repository"]["steps"]
+                       if step.get("uses", "").startswith("Ceratops-Code/"))
+    assert action_step["uses"].endswith("@" + CI_ACTION_REVISION)
+    assert set(action_step["with"]) == {"repo-root", "evidence-file"}
     assert (uv_repo / "uv.lock").read_text() == "version = 1\n"
 
     # Synthetic recipes exercise extension behavior without coupling the shipped
@@ -860,7 +869,7 @@ def test_compatibility_materializer_preserves_existing_validator_and_ci(
     assert preserved.stdout == "target-owned\n"
     assert validator.stat().st_mode == before[validator][1]
     workflow_steps = yaml.safe_load(workflow.read_text())["jobs"]["validate"]["steps"]
-    assert any("scripts/sdlc.py --validate --ci" in step.get("run", "") for step in workflow_steps)
+    assert any(step.get("uses", "").endswith("ceratops-repo-lifecycle@" + CI_ACTION_REVISION) for step in workflow_steps)
     assert json.loads(result.stdout)["custom_validation_review_required"] is True
     assert json.loads(result.stdout)["repository_validation"] == {
         "checks": [],
@@ -967,8 +976,8 @@ def test_compatibility_materializer_rolls_back_every_target_write_on_blocker(
     )
     workflow_template.write_text(
         workflow_template.read_text(encoding="utf-8").replace(
-            "uv run --locked scripts/sdlc.py",
-            "uv run --locked scripts/not-the-sdlc-runner.py",
+            "repo-root: __CI_REPO_ROOT__",
+            "wrong-input: __CI_REPO_ROOT__",
         ),
         encoding="utf-8",
         newline="\n",
@@ -1143,7 +1152,7 @@ def test_compatibility_materializes_action_assignments(tmp_path: pathlib.Path, i
 
 
 
-def test_generated_runtime_runs_without_installed_skills_and_keeps_tests_separate(
+def test_generated_scripts_and_skill_owned_ci_keep_environments_and_tests_separate(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repo = tmp_path / "independent"
@@ -1165,8 +1174,8 @@ def test_generated_runtime_runs_without_installed_skills_and_keeps_tests_separat
     custom.write_text(
         '"""A repository-owned script with imports before its main body."""\n'
         "from __future__ import annotations\n\n"
-        "import json\nimport os\nimport sys\n\nimport yaml\n\n"
-        "yaml.safe_load('ready: true')\n"
+        "import json\nimport os\nimport sys\nfrom importlib.metadata import version\n\n"
+        "version('ruff')\n"
         "print(json.dumps({'python':sys.executable,'prefix':sys.prefix,'cwd':os.getcwd(),'args':sys.argv[1:]}))\n"
     )
     original_custom = custom.read_bytes()
@@ -1177,6 +1186,12 @@ def test_generated_runtime_runs_without_installed_skills_and_keeps_tests_separat
     assert created.returncode == 0, created.stdout + created.stderr
     assert (repo / "pyproject.toml").read_text() == application
     assert (repo / "requirements.txt").read_text() == "# repository-owned\n"
+    assert not (repo / "scripts/sdlc.py").exists()
+    assert not (repo / "scripts/runtime").exists()
+    dependencies = tomllib.loads((repo / "scripts/pyproject.toml").read_text())["project"]["dependencies"]
+    assert "jsonschema" not in dependencies and "PyYAML" not in dependencies
+    updates = yaml.safe_load((repo / ".github/dependabot.yml").read_text())["updates"]
+    assert any(item["package-ecosystem"] == "github-actions" and item["directory"] == "/" for item in updates)
     assert not (repo / "uv.lock").exists()
     assert (repo / "scripts/.gitignore").read_text() == "/custom-output/\n.venv/\n**/__pycache__/\n"
     assert custom.read_bytes() == original_custom
@@ -1189,7 +1204,7 @@ def test_generated_runtime_runs_without_installed_skills_and_keeps_tests_separat
     assert pathlib.Path(actual["prefix"]) == repo / "scripts/.venv"
     assert pathlib.Path(actual["cwd"]) == tmp_path
     assert actual["args"] == ["two words"]
-    uninstalled = subprocess.run(["uv", "pip", "uninstall", "--python", actual["python"], "PyYAML"], capture_output=True, text=True)
+    uninstalled = subprocess.run(["uv", "pip", "uninstall", "--python", actual["python"], "ruff"], capture_output=True, text=True)
     assert uninstalled.returncode == 0, uninstalled.stderr
     repaired = subprocess.run(direct_command, cwd=tmp_path, env=child_environment, capture_output=True, text=True)
     assert repaired.returncode == 0, repaired.stderr
@@ -1215,8 +1230,8 @@ def test_generated_runtime_runs_without_installed_skills_and_keeps_tests_separat
     assert json.loads(type_failure.stdout)["check"] == "mypy"
     check_probe.write_text("def value() -> int:\n    return 1\n")
     evidence = tmp_path / "sdlc-failure.json"
-    command = [*prefix, "scripts/sdlc.py", "--validate", "--ci", "--evidence-file", str(evidence)]
-    failed = subprocess.run(command, cwd=repo, capture_output=True, text=True)
+    bundle = tmp_path / "ci-action"
+    failed = run_ci_action(repo, evidence, bundle)
     assert failed.returncode == 1, failed.stdout + failed.stderr
     result = json.loads(evidence.read_text())
     assert result["status"] == "tests_failed"
@@ -1229,7 +1244,7 @@ def test_generated_runtime_runs_without_installed_skills_and_keeps_tests_separat
     assert facts["valid"] is False
     assert [entry["status"] for entry in facts["gate_results"]] == ["completed", "tests_failed"]
     probe.write_text("def test_probe():\n    assert True\n")
-    passed = subprocess.run(command, cwd=repo, capture_output=True, text=True)
+    passed = run_ci_action(repo, evidence, bundle)
     assert passed.returncode == 0, passed.stdout + passed.stderr
     assert not evidence.exists()
     assert json.loads(passed.stdout)["completed_operations"] == ["repository.validate.repository", "repository.tests.python"]
@@ -1310,8 +1325,96 @@ def test_missing_uv_rolls_back_generated_files_before_compatibility_claim(tmp_pa
     runtime = importlib.import_module("ceratops_repo_compatibility_engine.validation_environment")
     (tmp_path / ".git").write_text("gitdir: test\n")
     monkeypatch.setattr(runtime.shutil, "which", lambda name: None)
-    assert generator.main(["--target-repo-root", str(tmp_path)]) == 1
+    assert generator.main(["--target-repo-root", str(tmp_path), "--ci-action-revision", CI_ACTION_REVISION]) == 1
     outcome = json.loads(capsys.readouterr().out)
     assert outcome["phase"] == "validator_environment_setup"
     assert outcome["rollback"] == "completed"
     assert {p.name for p in tmp_path.iterdir()} == {".git"}
+
+
+@pytest.mark.parametrize("failure", [None, "git", "ambiguous", "missing-action", "wrong-action"])
+def test_ci_action_resolution_requires_published_unambiguous_action(
+    monkeypatch: pytest.MonkeyPatch, failure: str | None,
+) -> None:
+    ci = importlib.import_module("ceratops_repo_compatibility_engine.ci_workflow")
+    contract = importlib.import_module("ceratops_repo_compatibility_engine.compatibility_contract").load_compatibility_contract()
+    action = contract["ci_action"]
+    calls = []
+
+    def git(argv, **kwargs):
+        calls.append(argv)
+        assert kwargs["timeout"] == 30
+        output = CI_ACTION_REVISION + "\t" + action["ref"] + "\n"
+        return subprocess.CompletedProcess(argv, 1 if failure == "git" else 0,
+                                           stdout=output * (2 if failure == "ambiguous" else 1), stderr="")
+
+    def published(url, **kwargs):
+        assert CI_ACTION_REVISION in url and url.endswith("/action.yml")
+        assert kwargs["timeout"] == 30
+        if failure == "missing-action":
+            raise OSError("not published")
+        return io.BytesIO(b"runs: {using: node24}" if failure == "wrong-action" else b"runs: {using: composite}")
+
+    monkeypatch.setattr(ci.subprocess, "run", git)
+    monkeypatch.setattr(ci.urllib.request, "urlopen", published)
+    if failure:
+        with pytest.raises(RuntimeError, match="publication is unavailable"):
+            ci.resolve_action(action)
+    else:
+        assert ci.resolve_action(action) == action["uses"] + "@" + CI_ACTION_REVISION
+    assert len(calls) == 1
+    # Explicit revisions support offline planning but never accept a floating ref.
+    assert ci.resolve_action(action, CI_ACTION_REVISION).endswith("@" + CI_ACTION_REVISION)
+    with pytest.raises(RuntimeError, match="full lowercase Git commit"):
+        ci.resolve_action(action, "main")
+    assert len(calls) == 1
+
+
+def test_ci_action_reconciliation_preserves_pins_and_rejects_unsafe_bindings(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ci = importlib.import_module("ceratops_repo_compatibility_engine.ci_workflow")
+    generator = importlib.import_module("ceratops_repo_compatibility_engine.apply_ceratops_compatibility")
+    action = generator.load_compatibility_contract()["ci_action"]
+    (tmp_path / "scripts").mkdir()
+    (tmp_path / "scripts/validate-repository.py").write_text("print('OK')\n")
+    workflow = tmp_path / ".github/workflows/validate.yml"
+    workflow.parent.mkdir(parents=True)
+    step = {"name": "Custom checks", "uses": action["uses"] + "@" + CI_ACTION_REVISION,
+            "with": dict(action["inputs"]), "if": "success()"}
+    payload = {"jobs": {"checks": {"runs-on": "ubuntu-latest", "steps": [step]}}}
+    workflow.write_text(yaml.safe_dump(payload))
+
+    def unexpected_resolution(*args, **kwargs):
+        raise AssertionError("existing pin must not resolve remote state")
+
+    monkeypatch.setattr(generator, "resolve_action", unexpected_resolution)
+    assert generator.validation_surfaces(tmp_path)[1] is None
+    assert not ci.workflow_errors(workflow, action)
+    step["continue-on-error"] = True
+    workflow.write_text(yaml.safe_dump(payload))
+    assert any("continue on error" in error for error in ci.workflow_errors(workflow, action))
+    del step["continue-on-error"], step["with"]["evidence-file"]
+    workflow.write_text(yaml.safe_dump(payload))
+    assert any("inputs" in error for error in ci.workflow_errors(workflow, action))
+    step["uses"] = action["uses"] + "@main"
+    workflow.write_text(yaml.safe_dump(payload))
+    with pytest.raises(RuntimeError, match="full commit pin"):
+        generator.validation_surfaces(tmp_path)
+
+
+def test_unpublished_ci_action_blocks_compatibility_before_target_writes(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    generator = importlib.import_module("ceratops_repo_compatibility_engine.apply_ceratops_compatibility")
+    (tmp_path / ".git").write_text("gitdir: fixture\n")
+
+    def unavailable(*args, **kwargs):
+        raise RuntimeError("CI action publication is unavailable")
+
+    monkeypatch.setattr(generator, "resolve_action", unavailable)
+    assert generator.main(["--target-repo-root", str(tmp_path)]) == 1
+    result = json.loads(capsys.readouterr().out)
+    assert result["phase"] == "compatibility_planning"
+    assert result["rollback"] == "not_started"
+    assert {path.name for path in tmp_path.iterdir()} == {".git"}

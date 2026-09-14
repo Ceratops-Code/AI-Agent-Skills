@@ -12,7 +12,6 @@ members = []
 
 [tool.ruff]
 target-version = "py311"
-extend-exclude = ["scripts/runtime"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B"]
@@ -20,7 +19,7 @@ ignore = ["E501"]
 
 [tool.mypy]
 files = ["."]
-exclude = ["(^|/)\\.venv/", "^scripts/runtime/"]
+exclude = ["(^|/)\\.venv/"]
 ignore_missing_imports = true
 check_untyped_defs = true
 warn_unused_configs = true

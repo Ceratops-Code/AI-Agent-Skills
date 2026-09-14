@@ -875,8 +875,8 @@ def _repository_validation_facts(
 ) -> dict[str, Any]:
     """Run SDLC validation and tests once, retaining the separate gate results.
 
-    Current targets use their uv-owned runner. Older SDLC uses this bundle's
-    same engine; without a validation-capable SDLC, retain the legacy validator.
+    Targets use this skill bundle's engine. Without a validation-capable SDLC,
+    retain the repository validator.
     The selected health action may execute deterministic skill bindings. CI has
     its own --ci boundary and never dispatches them.
     """
@@ -922,12 +922,10 @@ def _repository_validation_facts(
                     "valid": False, "errors": contract_errors or ["SDLC must be a regular repository file"]}
         if contract and contract["version"] >= 2:
             uses_sdlc = True
-            command = (
-                ["uv", "run", "--quiet", "--locked", "scripts/sdlc.py", "--validate"]
-                if contract["version"] >= 3 else
-                [sys.executable, str(pathlib.Path(__file__).resolve().parents[2] / "repository_operation.py"),
-                 "--repo-root", str(root), "--validate"]
-            )
+            command = [
+                sys.executable, str(pathlib.Path(__file__).resolve().parents[2] / "repository_operation.py"),
+                "--repo-root", str(root), "--validate",
+            ]
     command.extend(("--evidence-file", str(resolved_evidence)))
     gate_results: dict[str, Any] = {}
     try:

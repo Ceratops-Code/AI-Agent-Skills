@@ -10,14 +10,15 @@
     "description",
     "non_deterministic_review_file",
     "surfaces",
-    "ci_required_arguments",
     "manifest_profiles",
     "generated_manifest_profile",
     "managed_skill_operations",
     "sdlc_version",
     "runtime",
     "python_test_detection",
-    "dependency_updates"
+    "dependency_updates",
+    "ci_action",
+    "ci_dependency_updates"
   ],
   "properties": {
     "contract_format_version": {
@@ -47,7 +48,6 @@
         "sdlc",
         "skill_manifest",
         "skill_bootstrap",
-        "sdlc_runner",
         "validation_project",
         "python_test_runner"
       ],
@@ -67,9 +67,6 @@
         "skill_bootstrap": {
           "$ref": "#/$defs/surface"
         },
-        "sdlc_runner": {
-          "$ref": "#/$defs/surface"
-        },
         "validation_project": {
           "$ref": "#/$defs/surface"
         },
@@ -77,10 +74,6 @@
           "$ref": "#/$defs/surface"
         }
       }
-    },
-    "ci_required_arguments": {
-      "$ref": "#/$defs/strings",
-      "description": "Executable: checker requires these arguments on the CI validator invocation."
     },
     "manifest_profiles": {
       "$ref": "#/$defs/strings",
@@ -123,8 +116,6 @@
         "project",
         "lockfile",
         "environment",
-        "payload_root",
-        "payloads",
         "ignored_paths"
       ],
       "properties": {
@@ -137,22 +128,11 @@
         "environment": {
           "$ref": "#/$defs/relative_path"
         },
-        "payload_root": {
-          "$ref": "#/$defs/relative_path"
-        },
-        "payloads": {
-          "type": "array",
-          "minItems": 1,
-          "uniqueItems": true,
-          "items": {
-            "$ref": "#/$defs/relative_path"
-          }
-        },
         "ignored_paths": {
           "$ref": "#/$defs/strings"
         }
       },
-      "description": "Executable: generator creates the isolated uv project and copies this runner payload; checker verifies required files and lock."
+      "description": "Executable: generator creates and syncs the isolated scripts project; checker verifies declarations, lock and interpreter."
     },
     "python_test_detection": {
       "type": "object",
@@ -209,6 +189,78 @@
         }
       },
       "description": "Executable: generator registers the validator project with Dependabot without altering other ecosystem entries."
+    },
+    "ci_action": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "uses",
+        "ref",
+        "inputs"
+      ],
+      "description": "Executable: generator resolves this published action and supplies its inputs; checker requires its commit pin and input bindings.",
+      "properties": {
+        "uses": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/(?!.*\\.\\.)[A-Za-z0-9_./-]+$"
+        },
+        "ref": {
+          "type": "string",
+          "pattern": "^refs/heads/[A-Za-z0-9_./-]+$"
+        },
+        "inputs": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "repo-root",
+            "evidence-file"
+          ],
+          "properties": {
+            "repo-root": {
+              "type": "string",
+              "minLength": 1
+            },
+            "evidence-file": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      }
+    },
+    "ci_dependency_updates": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "package-ecosystem",
+        "directory",
+        "schedule"
+      ],
+      "properties": {
+        "package-ecosystem": {
+          "const": "github-actions"
+        },
+        "directory": {
+          "const": "/"
+        },
+        "schedule": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "interval"
+          ],
+          "properties": {
+            "interval": {
+              "enum": [
+                "daily",
+                "weekly",
+                "monthly"
+              ]
+            }
+          }
+        }
+      },
+      "description": "Executable: generator and checker require GitHub Actions dependency maintenance, preserving target schedules."
     }
   },
   "$defs": {

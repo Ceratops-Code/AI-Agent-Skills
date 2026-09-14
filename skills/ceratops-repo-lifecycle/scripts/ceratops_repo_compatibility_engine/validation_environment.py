@@ -23,11 +23,11 @@ from .python_tool_configuration import project_text
 
 
 def runtime_files(root: pathlib.Path, bundle: pathlib.Path, contract: Mapping[str, Any], checks: list[dict[str, Any]]) -> dict[pathlib.Path, str]:
-    """Render declarations and copy one engine implementation into the target."""
+    """Render repository tooling declarations without copying the SDLC engine."""
 
     runtime = contract["runtime"]
     files: dict[pathlib.Path, str] = {}
-    dependencies = {"jsonschema", "PyYAML"}
+    dependencies: set[str] = set()
     if discover_python_tests(root, contract["python_test_detection"]):
         dependencies.add("pytest")
     for check in checks:
@@ -48,27 +48,16 @@ def runtime_files(root: pathlib.Path, bundle: pathlib.Path, contract: Mapping[st
             raise RuntimeError("existing validator project must declare: " + ", ".join(sorted(missing)))
     if not project.is_file() or project.read_text(encoding="utf-8") != rendered:
         files[project] = rendered
-    for relative in runtime["payloads"]:
-        source = bundle / relative
-        if source.is_symlink() or not source.is_file():
-            raise RuntimeError(f"missing regular SDLC runtime payload: {relative}")
-        content = source.read_text(encoding="utf-8")
-        files[root / runtime["payload_root"] / relative] = content
     ignore = root / runtime["project"] / ".gitignore"
     existing_ignore = ignore.read_text(encoding="utf-8") if ignore.is_file() else ""
     missing_ignore = [value for value in runtime["ignored_paths"] if value not in existing_ignore.splitlines()]
     if missing_ignore:
         files[ignore] = existing_ignore.rstrip("\n") + ("\n" if existing_ignore else "") + "\n".join(missing_ignore) + "\n"
-    for key in ("sdlc_runner",):
-        surface = contract["surfaces"][key]
-        destination = root / surface["path"]
-        source = bundle / "references/templates" / surface["template"]
-        files[destination] = source.read_text(encoding="utf-8")
     dependabot = root / ".github/dependabot.yml"
     data = yaml.safe_load(dependabot.read_text(encoding="utf-8")) if dependabot.is_file() else {"version": 2, "updates": []}
     if not isinstance(data, dict) or data.get("version") != 2 or not isinstance(data.get("updates"), list):
         raise RuntimeError("Dependabot configuration must have version 2 and an updates list")
-    registrations = [dict(contract["dependency_updates"])]
+    registrations = [dict(contract["dependency_updates"]), dict(contract["ci_dependency_updates"])]
     if any((root / "skills").glob("*/SKILL.md")):
         registrations.append({**contract["dependency_updates"], "directory": "/skills/sections/python"})
     if not all(isinstance(item, dict) for item in data["updates"]):
