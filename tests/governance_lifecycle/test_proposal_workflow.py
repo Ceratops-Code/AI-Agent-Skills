@@ -3,8 +3,10 @@ from __future__ import annotations
 import hashlib
 import json
 import pathlib
+import runpy
 import subprocess
 import sys
+from unittest import mock
 
 import pytest
 
@@ -17,14 +19,17 @@ from tests.support.repositories import ROOT
 
 
 @pytest.mark.parametrize("target_name", ["contract.md", "automation.toml"])
+@pytest.mark.parametrize("prepare_mode", ["request", "construct"])
 def test_proposal_workflow_validates_context_and_owns_iteration_transition(
     tmp_path: pathlib.Path,
     target_name: str,
+    prepare_mode: str,
 ) -> None:
+    constructing = prepare_mode == "construct"
     task_temp_root = tmp_path / "task-temp"
     task_temp_root.mkdir()
-    original = task_temp_root / "original.md"
-    regressions = task_temp_root / "regressions.md"
+    original = task_temp_root / ("proposal-original.json" if constructing else "original.md")
+    regressions = task_temp_root / ("proposal-regressions.md" if constructing else "regressions.md")
     target_dir = tmp_path / "governed"
     target_dir.mkdir()
     target = target_dir / target_name
@@ -35,8 +40,9 @@ def test_proposal_workflow_validates_context_and_owns_iteration_transition(
     champion_output = task_temp_root / "validated-champion.json"
     iterations = task_temp_root / "iterations"
     undeclared_input = task_temp_root / "user-owned.md"
-    original.write_text("Observed failure\n", encoding="utf-8", newline="\n")
-    regressions.write_text("Preserve current scope\n", encoding="utf-8", newline="\n")
+    if not constructing:
+        original.write_text("Observed failure\n", encoding="utf-8", newline="\n")
+        regressions.write_text("Preserve current scope\n", encoding="utf-8", newline="\n")
     undeclared_input.write_text("Preserve me\n", encoding="utf-8", newline="\n")
     target.write_text(
         'prompt = "Current exact target."\n' if is_toml else "# Contract\n\nCurrent exact target.\n",
@@ -93,43 +99,85 @@ def test_proposal_workflow_validates_context_and_owns_iteration_transition(
         ],
         "sources": [history_source, target_source],
     }
-    request_path.write_text(
-        json.dumps(request) + "\n",
-        encoding="utf-8",
-        newline="\n",
-    )
+    spec_path = tmp_path / "caller-spec.json"
+    spec = {
+        "schema": "ceratops-governance-proposal-spec.v1",
+        "task_temp_root": str(task_temp_root),
+        "failure": "Observed failure",
+        "regressions": "Preserve current scope",
+        "max_iterations": 1,
+        "mutation_authorized": False,
+        "expected_side_effects": request["expected_side_effects"],
+        "sources": [
+            {"rules": history_source["rules"], "history": history_source["history"],
+             "rule_ids": history_source["rule_ids"], "replacements": []},
+            {"rules": str(target), "history": None, "rule_ids": [], "replacements": []},
+        ],
+    }
+
+    def prepare_proposal():
+        """Exercise both public entry points against the same workflow contract."""
+        if constructing:
+            spec["sources"][1]["replacements"] = [
+                {"expected_old": target_source["expected_text"][0],
+                 "replacement": "Seeded exact replacement."},
+            ]
+            spec_path.write_text(json.dumps(spec) + "\n", encoding="utf-8")
+            arguments = ["construct", "--spec", str(spec_path)]
+        else:
+            request_path.write_text(json.dumps(request) + "\n", encoding="utf-8")
+            arguments = ["prepare", "--request", str(request_path)]
+        return subprocess.run([sys.executable, str(PROPOSAL_WORKFLOW), *arguments],
+                              capture_output=True, text=True, check=False)
+
+    if constructing:
+        # A bad exact source must leave no generated inputs. An unrelated file
+        # and the caller's spec remain available for correction.
+        target_source["expected_text"] = ["Missing current target."]
+        rejected = prepare_proposal()
+        assert rejected.returncode == 2 and "found 0" in rejected.stderr
+        assert set(task_temp_root.iterdir()) == {undeclared_input}
+        assert spec_path.is_file()
+        target_source["expected_text"] = ["Current exact target."]
+        spec["sources"][0]["rule_ids"] = ["MISSING-01"]
+        rejected = prepare_proposal()
+        assert rejected.returncode == 2 and "unknown context rule ID" in rejected.stderr
+        assert set(task_temp_root.iterdir()) == {undeclared_input}
+        spec["sources"][0]["rule_ids"] = history_source["rule_ids"]
+        request_path.write_text("Caller-owned output\n", encoding="utf-8")
+        rejected = prepare_proposal()
+        assert rejected.returncode == 2 and "refusing to overwrite" in rejected.stderr
+        assert request_path.read_text(encoding="utf-8") == "Caller-owned output\n"
+        request_path.unlink()
     if not is_toml:
         valid_text = target.read_text(encoding="utf-8")
         # The first error is inside the planned edit. It must not hide a later
         # unchanged error, and rejection must precede controller artifacts.
         broken = "Current exact target. " + ("long word " * 18).rstrip()
         target_source["expected_text"] = [broken]
-        request_path.write_text(json.dumps(request) + "\n", encoding="utf-8")
         target.write_text(valid_text.replace("Current exact target.", broken)
                           + "\nUntouched " + ("word " * 25).rstrip() + "\n", encoding="utf-8")
-        rejected = subprocess.run([sys.executable, str(PROPOSAL_WORKFLOW), "prepare",
-                                   "--request", str(request_path)], capture_output=True, text=True)
+        rejected = prepare_proposal()
         assert rejected.returncode != 0
         assert "line=5" in rejected.stderr and "MD013" in rejected.stderr
         assert not state.exists() and not evidence.exists() and not iterations.exists()
         assert not list(task_temp_root.glob(".rule-candidate-*"))
         # Keeping only the in-range error is permitted; advance repairs it.
         target.write_text(valid_text.replace("Current exact target.", broken), encoding="utf-8")
-    prepared = subprocess.run(
-        [
-            sys.executable,
-            str(PROPOSAL_WORKFLOW),
-            "prepare",
-            "--request",
-            str(request_path),
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    target_before_prepare = target.read_bytes()
+    prepared = prepare_proposal()
     assert prepared.returncode == 0, prepared.stderr
+    assert target.read_bytes() == target_before_prepare
     pending = json.loads(prepared.stdout)
     assert pending["iteration"] == 1
+    if constructing:
+        assert pathlib.Path(pending["state"]) == state
+        assert pathlib.Path(pending["champion_output"]) == champion_output
+        original_spec = json.loads(original.read_text(encoding="utf-8"))
+        assert original_spec == json.loads(spec_path.read_text(encoding="utf-8"))
+        generated_request = json.loads(request_path.read_text(encoding="utf-8"))
+        assert generated_request["mutation_authorized"] is False
+        assert "Before proposing or editing" in generated_request["sources"][0]["expected_text"][0]
     context = json.loads(evidence.read_text(encoding="utf-8"))
     assert context["schema"] == "ceratops-governance-proposal-context.v3"
     assert context["history_lookup"]["unknown"] == []
@@ -166,6 +214,8 @@ def test_proposal_workflow_validates_context_and_owns_iteration_transition(
     assert iterations.is_dir() and undeclared_input.is_file()
     candidate_path = pathlib.Path(pending["candidate"])
     candidate_value = json.loads(candidate_path.read_text(encoding="utf-8"))
+    if constructing:
+        assert candidate_value["targets"][0]["replacements"][0]["replacement"] == "Seeded exact replacement."
     candidate_value["targets"][0]["replacements"][0]["replacement"] = (
         'Broken"quote' if is_toml else "https://example.test/" + "x" * 80
     )
@@ -300,6 +350,8 @@ def test_proposal_workflow_validates_context_and_owns_iteration_transition(
     assert not request_path.exists()
     assert not original.exists() and not regressions.exists() and not evidence.exists()
     assert undeclared_input.is_file() and outside_evidence.is_file()
+    if constructing:
+        assert spec_path.is_file()
 
     invalid_request = dict(request)
     invalid_run = task_temp_root / "invalid-run"
@@ -349,6 +401,43 @@ def test_proposal_workflow_validates_context_and_owns_iteration_transition(
     assert not invalid_iterations.exists()
     assert invalid_path.is_file()
     assert invalid_original.is_file() and invalid_regressions.is_file()
+
+    if constructing:
+        # A failed candidate write occurs after controller state exists. Keep
+        # that state and its inputs recoverable through advance/finalize.
+        recovery_root = task_temp_root / "recovery"
+        recovery_root.mkdir()
+        recovery_spec = {**spec, "task_temp_root": str(recovery_root)}
+        spec_path.write_text(json.dumps(recovery_spec) + "\n", encoding="utf-8")
+        with mock.patch.object(sys, "path", [str(PROPOSAL_WORKFLOW.parent), *sys.path]):
+            workflow = runpy.run_path(str(PROPOSAL_WORKFLOW))
+        construct = workflow["command_construct"]
+        write_atomic = construct.__globals__["_write_json_atomic"]
+
+        def failed_candidate_write(path, value):
+            if path.parent.name == "iterations":
+                raise OSError("simulated candidate write failure")
+            return write_atomic(path, value)
+
+        with mock.patch.dict(construct.__globals__, {"_write_json_atomic": failed_candidate_write}):
+            with pytest.raises(workflow["ProposalWorkflowError"], match="recover pending state") as failure:
+                construct(spec_path)
+        recovery_state = recovery_root / "proposal-state.json"
+        assert str(recovery_state) in str(failure.value)
+        assert (recovery_root / "proposal-request.json").is_file()
+        assert (recovery_root / "proposal-original.json").is_file()
+        assert target.read_bytes() == target_before_prepare
+        recovery_pending = json.loads(recovery_state.read_text(encoding="utf-8"))["pending"]
+        recovery_candidate = pathlib.Path(recovery_pending["candidate"])
+        value = json.loads(recovery_candidate.read_text(encoding="utf-8"))
+        value["targets"][0]["replacements"][0]["replacement"] = "Recovered replacement."
+        recovery_candidate.write_text(json.dumps(value) + "\n", encoding="utf-8")
+        pathlib.Path(recovery_pending["assessment"]).write_text("Preserved scope\n", encoding="utf-8")
+        result = json.loads(workflow["command_advance"](recovery_state, "improved", "passed"))
+        assert result["complete"] is True
+        assert workflow["command_finalize"](recovery_state) == "OK"
+        assert set(recovery_root.iterdir()) == {recovery_root / "validated-champion.json"}
+        assert spec_path.is_file() and target.read_bytes() == target_before_prepare
 
 
 def test_iteration_controller_direct_commands_record_validated_candidate(

@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Validate and orchestrate one governance proposal iteration run.
 
+``construct`` derives request artifacts and seeds the first candidate from a
+compact specification, then calls the same ``prepare`` path. The caller retains
+the specification; generated inputs belong to the workflow until finalization.
 ``prepare`` validates a closed request against exact current rule text and the
 existing structured history lookup, rejects untouched Markdown errors before
 opening proposal artifacts, writes detailed context evidence, records
@@ -27,6 +30,7 @@ import sys
 import tempfile
 from collections.abc import Mapping, Sequence
 
+from rule_graph import parse_rule_source
 from validate_rule_candidate import CONTEXT_SCHEMA as CANDIDATE_CONTEXT_SCHEMA
 from validate_rule_candidate import (
     RuleCandidateValidationError,
@@ -37,6 +41,12 @@ from validate_rule_candidate import (
 REQUEST_SCHEMA = "ceratops-governance-proposal-request.v3"
 CONTEXT_SCHEMA = "ceratops-governance-proposal-context.v3"
 CLEANUP_SCHEMA = "ceratops-governance-proposal-cleanup.v2"
+SPEC_SCHEMA = "ceratops-governance-proposal-spec.v1"
+SPEC_FIELDS = {
+    "schema", "task_temp_root", "sources", "failure", "regressions",
+    "max_iterations", "mutation_authorized", "expected_side_effects",
+}
+SPEC_SOURCE_FIELDS = {"rules", "history", "rule_ids", "replacements"}
 REQUEST_FIELDS = {
     "schema",
     "task_temp_root",
@@ -617,6 +627,137 @@ def _validated_request(path: pathlib.Path) -> dict[str, object]:
     }
 
 
+def _construction_sources(
+    value: object,
+) -> tuple[list[dict[str, object]], dict[str, list[str]]]:
+    """Resolve explicit sources and exact replacements without inferring scope."""
+    if not isinstance(value, list) or not value:
+        raise ProposalWorkflowError("spec sources must be a nonempty list")
+    sources: list[dict[str, object]] = []
+    replacements: dict[str, list[str]] = {}
+    for index, raw in enumerate(value, start=1):
+        if not isinstance(raw, Mapping):
+            raise ProposalWorkflowError(f"spec source {index} must be an object")
+        _closed_fields(raw, SPEC_SOURCE_FIELDS, f"spec source {index}")
+        rules = _input_path(raw["rules"], f"spec source {index} rules")
+        history = (
+            None if raw["history"] is None
+            else _input_path(raw["history"], f"spec source {index} history")
+        )
+        ids = _strings(raw["rule_ids"], f"spec source {index} rule_ids", allow_empty=True)
+        edits = raw["replacements"]
+        if not isinstance(edits, list):
+            raise ProposalWorkflowError(f"spec source {index} replacements must be a list")
+        old: list[str] = []
+        new: list[str] = []
+        for edit in edits:
+            if not isinstance(edit, Mapping):
+                raise ProposalWorkflowError("spec replacement must be an object")
+            _closed_fields(edit, {"expected_old", "replacement"}, "spec replacement")
+            old.extend(_strings([edit["expected_old"]], "spec expected_old"))
+            replacement = edit["replacement"]
+            if not isinstance(replacement, str) or "\0" in replacement:
+                raise ProposalWorkflowError("spec replacement must be text without NUL")
+            new.append(replacement)
+        if not edits:
+            if history is None or not ids:
+                raise ProposalWorkflowError("context sources require history and rule IDs")
+            parsed = parse_rule_source(rules)
+            if parsed.findings:
+                raise ProposalWorkflowError(f"context rule source has structural findings: {rules}")
+            bodies = {record.rule_id: "\n".join(record.body_lines).strip() for record in parsed.records}
+            missing = [rule_id for rule_id in ids if rule_id not in bodies]
+            if missing:
+                raise ProposalWorkflowError(f"unknown context rule ID: {missing[0]}")
+            old = [bodies[rule_id] for rule_id in ids]
+        sources.append({
+            "rules": str(rules), "history": str(history) if history else None,
+            "rule_ids": ids, "expected_text": old, "candidate_target": bool(edits),
+            "markdown_policy": None,
+        })
+        if edits:
+            replacements[str(rules)] = new
+    return sources, replacements
+
+
+def command_construct(spec_path: pathlib.Path) -> str:
+    """Construct and prepare one proposal, retaining recoverable pending state.
+
+    Only fixed workflow paths inside the verified task temp are created. Before
+    controller state exists, failed construction removes unchanged generated
+    inputs. After state creation, preserve its ownership records for recovery
+    through the normal workflow. The caller's spec is never modified or deleted.
+    """
+    spec_file = _input_path(str(spec_path), "construction spec")
+    spec = _read_json(spec_file, "construction spec")
+    _closed_fields(spec, SPEC_FIELDS, "construction spec")
+    if spec["schema"] != SPEC_SCHEMA:
+        raise ProposalWorkflowError(f"construction spec schema must be {SPEC_SCHEMA}")
+    root = _verified_task_temp_root(spec["task_temp_root"])
+    sources, replacements = _construction_sources(spec["sources"])
+    for key in ("failure", "regressions"):
+        if not isinstance(spec[key], str) or not str(spec[key]).strip():
+            raise ProposalWorkflowError(f"spec {key} must be nonempty text")
+    paths = {
+        "request": root / "proposal-request.json",
+        "original": root / "proposal-original.json",
+        "regressions": root / "proposal-regressions.md",
+        "state": root / "proposal-state.json",
+        "evidence": root / "proposal-context.json",
+        "champion": root / "validated-champion.json",
+    }
+    for label, path in paths.items():
+        _task_file(path, root, label, must_exist=False)
+        if path.exists():
+            raise ProposalWorkflowError(f"refusing to overwrite construction output: {path}")
+    _task_directory(root / "iterations", root, "iteration artifacts", may_exist=False)
+    request = {
+        "schema": REQUEST_SCHEMA, "task_temp_root": str(root),
+        "iteration_artifacts": str(root / "iterations"),
+        "disposable_artifacts": sorted(DISPOSABLE_ROLES),
+        "state": str(paths["state"]), "original": str(paths["original"]),
+        "regressions": str(paths["regressions"]),
+        "evidence_output": str(paths["evidence"]),
+        "champion_output": str(paths["champion"]),
+        "max_iterations": spec["max_iterations"],
+        "mutation_authorized": spec["mutation_authorized"],
+        "expected_side_effects": spec["expected_side_effects"], "sources": sources,
+    }
+    inputs = {
+        paths["original"]: (json.dumps(dict(spec), ensure_ascii=False, indent=2) + "\n").encode("utf-8"),
+        paths["regressions"]: (str(spec["regressions"]) + "\n").encode("utf-8"),
+        paths["request"]: (json.dumps(request, ensure_ascii=False, indent=2) + "\n").encode("utf-8"),
+    }
+    created: dict[pathlib.Path, str] = {}
+    try:
+        for path, content in inputs.items():
+            _write_bytes_atomic(path, content)
+            created[path] = hashlib.sha256(content).hexdigest()
+        pending = json.loads(command_prepare(paths["request"]))
+        candidate_path = _task_file(
+            pathlib.Path(pending["candidate"]), root, "pending candidate", must_exist=True
+        )
+        candidate = dict(_read_json(candidate_path, "pending candidate"))
+        targets = candidate["targets"]
+        assert isinstance(targets, list)
+        for target in targets:
+            values = replacements[target["rules"]]
+            for edit, replacement in zip(target["replacements"], values, strict=True):
+                edit["replacement"] = replacement
+        _write_json_atomic(candidate_path, candidate)
+        return json.dumps({**pending, "state": str(paths["state"]),
+                           "champion_output": str(paths["champion"])}, separators=(",", ":"))
+    except (ProposalWorkflowError, OSError, ValueError) as exc:
+        if paths["state"].exists():
+            raise ProposalWorkflowError(
+                f"construction incomplete; recover pending state at {paths['state']}: {exc}"
+            ) from exc
+        for path, digest in reversed(tuple(created.items())):
+            if path.is_file() and not path.is_symlink() and _file_hash(path) == digest:
+                path.unlink()
+        raise
+
+
 def command_prepare(request_path: pathlib.Path) -> str:
     request = _validated_request(request_path)
     sources = request["sources"]
@@ -1063,6 +1204,8 @@ def command_finalize(state: pathlib.Path) -> str:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
+    construct = commands.add_parser("construct", help="Construct and prepare from exact replacements")
+    construct.add_argument("--spec", required=True, type=pathlib.Path)
     prepare = commands.add_parser("prepare")
     prepare.add_argument("--request", required=True, type=pathlib.Path)
     advance = commands.add_parser("advance")
@@ -1085,7 +1228,9 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        if args.command == "prepare":
+        if args.command == "construct":
+            output = command_construct(args.spec)
+        elif args.command == "prepare":
             output = command_prepare(args.request)
         elif args.command == "advance":
             output = command_advance(args.state, args.outcome, args.regressions)
