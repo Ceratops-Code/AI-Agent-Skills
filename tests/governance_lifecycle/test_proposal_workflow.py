@@ -6,6 +6,7 @@ import pathlib
 import runpy
 import subprocess
 import sys
+from typing import Any
 from unittest import mock
 
 import pytest
@@ -66,7 +67,7 @@ def test_proposal_workflow_validates_context_and_owns_iteration_transition(
         "candidate_target": False,
         "markdown_policy": None,
     }
-    target_source: dict[str, object] = {
+    target_source: dict[str, Any] = {
         "rules": str(target),
         "history": None,
         "rule_ids": [],
@@ -100,7 +101,7 @@ def test_proposal_workflow_validates_context_and_owns_iteration_transition(
         "sources": [history_source, target_source],
     }
     spec_path = tmp_path / "caller-spec.json"
-    spec = {
+    spec: dict[str, Any] = {
         "schema": "ceratops-governance-proposal-spec.v1",
         "task_temp_root": str(task_temp_root),
         "failure": "Observed failure",
