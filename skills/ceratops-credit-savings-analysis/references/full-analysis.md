@@ -21,6 +21,8 @@ Preserve every confirmed finding and report every capacity omission.
   exact project name, absolute path, or repository URL. Freeze an exact UTC
   `as_of` boundary. Date selection uses thread-index `updated_at`; every
   selected thread is then analyzed over all of its completed runs.
+- Include unfinished and archived tasks in the requested selection. Report
+  still-running runs as not yet assessed.
 - Use the controller-owned batch request schema with action `full-analysis`,
   mode `per-thread-batch`, selector, `as_of`, caller-selected task root and
   retained manifest output inside that root, optional pricing profile, both
@@ -146,6 +148,12 @@ For a batch, every selected child must also be finalized and indexed exactly
 once before batch finalization succeeds.
 
 ## Output Contract
+
+Begin the chat report with selected and reviewed task counts. Then give total
+model calls, confirmed avoidable calls, and unassessed calls from retained
+results. Report confirmed context/output waste even when it saves no calls.
+If analysis is incomplete or blocked, report that state and the exact
+unassessed scope.
 
 Use the parent Output Contract for chat selection and presentation. Preserve
 all accounting and review evidence required by the Completion Gate in the

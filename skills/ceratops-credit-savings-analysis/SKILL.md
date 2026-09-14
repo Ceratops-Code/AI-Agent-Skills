@@ -216,10 +216,12 @@ applies them.
   Group findings only when the same fix addresses them without hiding a
   distinct owner or failure. Give the direct result first.
 - Prioritize supported recurring net savings and verified one- or two-line
-  fixes. Do not impose a fixed finding count or fill a quota. Keep minor and
-  verified-resolved findings in machine evidence; provide details on request.
+  fixes. By default, present at most five recommendations in chat; use a
+  different limit when the user specifies one. Do not fill a quota. Keep minor
+  and verified-resolved findings in machine evidence; provide details on request.
 - Give each selected finding a concrete title and three short parts:
-  - `Problem:` the observed episode, what failed, and the avoidable work.
+  - `Problem:` the observed episode, affected tasks and run dates, what failed,
+    and the avoidable work.
   - `Proposed fix:` the exact change and where it belongs.
   - `Benefit and effort:` supported savings and implementation effort, with
     material assumptions and any uncertainty that changes the recommendation.
@@ -242,6 +244,8 @@ applies them.
   savings separate from call savings, and state when credit or token savings
   cannot be quantified. Retain full cost and complexity analysis in machine
   evidence without reproducing every field in chat.
+- Report the audit's own recorded analysis-call count and token usage
+  separately from source-task usage; mark unavailable usage as unavailable.
 - Keep findings self-contained and use plain language before implementation
   terms. Show internal status labels or confidence ratings only on request.
   Show internal identifiers or helper taxonomy only on request. Give analysis
