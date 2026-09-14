@@ -183,9 +183,10 @@ required, targeted installation, staging, commit, and compensation.
 
 Promotion validates the assembled `release/local` commit.
 `promote-and-deploy` additionally runs explicitly selected `deploy-local`
-entries, with validation before deployment. Shipping validates again before
-remote changes, and validates the synchronized commit before pending publication
-or deployment. Successful earlier checks do not suppress a later lifecycle
+entries, with validation and tests before deployment. Shipping requires both
+results before remote changes and repeats both on the synchronized commit before
+pending publication or deployment. Successful earlier checks do not suppress
+a later lifecycle
 boundary. The agent repairs ordinary failures in the selected task worktree,
 commits and retries; a failed check never permits later mutation.
 
@@ -194,15 +195,19 @@ Operations are identified by their YAML location, such as
 `deliverables.skills.deploy-local.ceratops-managed`.
 There are no extra IDs, defaults or full flows in the contract. Prerequisites
 are setup metadata; only explicitly declared bootstrap commands install
-dependencies. Handoffs are advisory routing, not executable prose or proof of
-completed domain work. The runner never calls another skill automatically.
+dependencies. Version-3 handoffs name a skill/action. For skill callers, the
+engine resolves the installed skill's `references/action-executors.json` and
+runs its declared argv or ordered steps; unresolved routes block dependent work.
+CI uses `--ci`, never dispatches skills, and reports deferred handoffs separately.
+Earlier SDLC versions retain advisory handoffs.
 Ceratops skill handoffs use the operation name `ceratops-managed`, including
 skill and tool deployment. Skill source validation stays under the generic
 `validate` category: `deliverables.skills.validate.ceratops-managed` hands off
-to `ceratops-skill-lifecycle/source-validate`; the calling action must fulfill
-that handoff before claiming validation. The compatible-repository producer
+to `ceratops-skill-lifecycle/source-validate`; its skill-owned binding invokes
+the validator. Managed deployment binds source validation followed by the
+transactional installer. The compatible-repository producer
 adds these skill operations only for source skills in current-format contracts;
-the generic template retains repository validation alone.
+the generic template declares repository validation and an explicit test no-op.
 
 `ship` derives its optional pending-work scope from the staged branch. When
 present, the same generic scope is checked before the first remote
@@ -219,19 +224,17 @@ behavior remains unchanged.
 
 Each repository owns one lifecycle contract:
 
-- Newly materialized `sdlc/sdlc.yml` contracts use version 2: `repository`
-  owns prerequisites, bootstrap and validation; `deliverables` owns validation,
-  deployment, publication and artifact identities. Existing version 1 contracts
-  remain supported without migration. The shared loader validates each version
-  against its owned schema and indexes both formats for the same executor.
-  Version 1 uses `deploy.operations.NAME` and `release.operations.NAME`;
-  commands, parameters, step IDs and advisory handoffs retain their
-  declarations.
-  It has no validation category: operation names never imply checks or setup.
-  Its schema is recovered from repository commit `f49e575`; version 2 was
-  introduced in `97fb65b` . Materialization preserves supported existing
-  contracts.
-  Installer release-number differences alone do not require an upgrade.
+- Applying current compatibility creates `sdlc/sdlc.yml` version 3.
+  `repository` owns prerequisites, bootstrap, validation and shared tests;
+  every deliverable declares its own tests plus any validation, deployment,
+  publication and artifact identities. Each operation declares commands,
+  a skill handoff, or a nonempty `no-op` reason. Validation and tests are
+  separate gates; explicit selections cannot omit applicable version-3 gates.
+  The same engine still executes version 1 and 2 without automatic migration.
+  Version 1 uses `deploy.operations.NAME` and `release.operations.NAME`.
+  Applying current compatibility upgrades version 2; version 1 needs explicit
+  operation-ownership mapping before application. Installer release numbers
+  alone do not determine SDLC compatibility.
 - `skills/ceratops-repo-lifecycle/references/contracts/github-contract-source-docs.json`
   records official source documents and reference repositories used by GitHub,
   repo, PR readiness, code, artifact, and repository-validation contracts. Its
@@ -244,14 +247,14 @@ Each repository owns one lifecycle contract:
   and SDLC defaults before target mutation. Contract review checks both documents;
   compatibility application and health review apply the companion requirements
   from local declarations and execution results, without an external registry.
-  Structural success alone does not prove independent environment setup, test
-  coverage, or automatic handoff execution. Existing templates initialize the
-  validator and CI; setup helpers and test runners remain target-owned.
+  It also owns the isolated uv runtime, Python-test discovery and required
+  runner, SDLC version and CI execution boundary. Structural success alone
+  does not prove test coverage or custom-validator separation.
 - `skills/ceratops-repo-lifecycle/references/contracts/repository-validation-contract.json`
   owns the conditional checks used to generate missing repository validators
   and CI workflows. Its closed schema and loader validate all entries and
-  evidence scopes before selection. Fallback package requirements apply only
-  when the target repository does not declare the selected tool.
+  evidence scopes before selection. It contains validation behavior only;
+  tests and dependency versions belong to repository declarations.
 - `skills/ceratops-repo-lifecycle/references/contracts/github-org-deterministic-contract.json`
   defines deterministic organization settings, policy, identity, security,
   Dependabot, and default-logo/custom-logo checks.
@@ -415,6 +418,37 @@ is the local review rubric for high-quality skill design. It uses installed
 OpenAI skills from `$CODEX_HOME/plugins/cache/` as pattern examples only and
 keeps durable Ceratops obligations in the deterministic skill contract, shared
 sections, validator, or skill-local source.
+
+## Reusable Repository Runtime
+
+Compatibility templates create `scripts/validation/pyproject.toml`, `uv.lock`
+and an ignored `.venv` with a Python matching `requires-python`. This separate
+uv project owns validator dependencies; application `pyproject.toml` and
+requirements files remain where the repository maintains them. Dependabot gets
+a `uv` entry for `/scripts/validation` without removing other entries.
+Initial application resolves the lock and syncs the environment. Later runs
+use the lock; missing dependencies are installed by uv before Python starts,
+while stale locks fail instead of changing dependency decisions during checks.
+
+The copied `scripts/sdlc.py` launches the same engine and schemas shipped by the
+repository-lifecycle skill. A target's CI needs uv and its own copied runtime,
+without installed Ceratops skills:
+
+```powershell
+uv run --project scripts/validation --locked python scripts/sdlc.py --validate --ci
+```
+
+`--validate` runs validation and tests as separate operations. `--tests` selects
+only tests; `--return-handoffs` exposes unresolved routes to a skill caller.
+New repository validators never select test runners. Conventional Python tests
+or pytest configuration generate `scripts/run-tests.py` from its template when
+absent. That runner uses the caller's interpreter, owns its temporary pytest
+directories, and can be customized; SDLC owns its environment wrapper. Existing
+test implementations and non-Python test commands remain repository-owned.
+
+This source repository's live SDLC, CI, dependency files and test runner have
+not been migrated by this reusable change. The setup and Validate instructions
+below describe that existing repository configuration.
 
 ## Install For Codex
 

@@ -147,8 +147,11 @@ are applied.
 
 - For Ceratops compatibility, compare the internal pair with its templates,
   generator, checker, and behavior tests. Verify deterministic field consumers
-  and review evidence for independent environment setup, tests, and lifecycle
-  script orchestration. External standards research does not apply to this
+  and review evidence for the isolated uv validator project, mandatory Python
+  runner detection, separate SDLC test gates, copied runtime independence,
+  failure cleanup, and skill-owned action bindings. Keep test implementation
+  and application dependency versions outside the validation contract. External
+  standards research does not apply to this
   internal concept; use the following steps only for other selected surfaces.
 - Use the registered GitHub and artifact sources as the bounded checklist for
   the next evidence-gathering steps.
@@ -167,7 +170,8 @@ are applied.
 - For repository validation, read the registered `repository_validation`
   sources. Use tool documentation to check detection, invocation, and
   dependency assumptions; use the registered discovery indexes to find
-  candidates across languages, file formats, and build systems.
+  validation candidates across languages, file formats, and build systems.
+  Test execution belongs in SDLC tests, not repository-validator recipes.
 - During repository-validation review, run one batch of at most four web
   discovery queries per routine review,
   including ecosystems absent from the contract. Compare candidates with

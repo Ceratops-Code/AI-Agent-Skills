@@ -19,13 +19,13 @@ import yaml
 
 SKILL_ROOT = pathlib.Path(__file__).resolve().parents[2]
 SCHEMA = SKILL_ROOT / "references" / "schemas" / "sdlc.yml.schema.json"
-CURRENT_VERSION = 2
-VERSION_SCHEMAS = {1: SCHEMA.with_name("sdlc.v1.schema.json"), 2: SCHEMA}
-OPERATION_CATEGORIES = frozenset({"bootstrap", "validate", "deploy-local", "publish"})
+CURRENT_VERSION = 3
+VERSION_SCHEMAS = {1: SCHEMA.with_name("sdlc.v1.schema.json"), 2: SCHEMA.with_name("sdlc.v2.schema.json"), 3: SCHEMA}
+OPERATION_CATEGORIES = frozenset({"bootstrap", "validate", "tests", "deploy-local", "publish"})
 NAME = r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*"
 CURRENT_OPERATION_RE = re.compile(
-    rf"^(?:repository\.(?P<repository>bootstrap|validate)|"
-    rf"deliverables\.{NAME}\.(?P<deliverable>validate|deploy-local|publish))\.{NAME}$"
+    rf"^(?:repository\.(?P<repository>bootstrap|validate|tests)|"
+    rf"deliverables\.{NAME}\.(?P<deliverable>validate|tests|deploy-local|publish))\.{NAME}$"
 )
 V1_OPERATION_RE = re.compile(r"^(deploy|release)\.operations\.[a-z][a-z0-9_-]*$")
 
@@ -117,8 +117,8 @@ def migration_proposal(
         "current_version": version,
         "recommended_version": CURRENT_VERSION,
         "reason": (
-            "Version 2 explicitly groups repository validation and deliverable "
-            "capabilities; version 1 remains supported without migration."
+            "Version 3 separates validation and tests, requires deliverable tests, "
+            "and supports explicit no-op operations; versions 1 and 2 remain executable."
         ),
     }
 
@@ -162,7 +162,7 @@ def validation_errors(
         return ["SDLC contract must be a mapping"]
     version = value.get("version")
     if type(version) is not int or version not in VERSION_SCHEMAS:
-        return [f"unsupported SDLC version: {version!r}; supported versions: 1, 2"]
+        return [f"unsupported SDLC version: {version!r}; supported versions: 1, 2, 3"]
     selected_schema = (
         VERSION_SCHEMAS[version] if schema_path in (None, SCHEMA) else schema_path
     )

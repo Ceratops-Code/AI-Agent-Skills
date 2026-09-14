@@ -1174,7 +1174,7 @@ def ship_repository(args: argparse.Namespace) -> dict[str, object]:
         "deployment": deployment,
         "finalization": finalized,
     }
-    validation_handoffs = [item for item in validation["results"] if item.get("handoff")]
+    validation_handoffs = [item for item in validation["results"] if item.get("handoff") and not item.get("handoff_completed")]
     if validation_handoffs:
         result["validation_handoffs"] = validation_handoffs
     return _with_preserved_worktrees(result, preserved_worktrees)

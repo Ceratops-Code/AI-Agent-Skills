@@ -84,9 +84,10 @@ ambiguous, paid, or credential-bound.
 
 #### 5. Validate, publish, tag, and release
 
-- Run relevant local validation, ensure latest relevant CI and code-scanning
-  runs on the default branch are green, and publish the real external artifact
-  only when the project actually has one.
+- Run applicable SDLC validation and tests before publication; require both
+  results. Let the owning skill resolve SDLC handoffs, while CI executes only
+  command operations. Ensure relevant CI and code-scanning runs on the default
+  branch are green; publish only the project's declared external artifacts.
 - If a final hardening PR would deadlock on self-approval in a single-maintainer
   repo, merge it with `gh pr merge --admin` using the allowed method rather than
   weakening the review rule.

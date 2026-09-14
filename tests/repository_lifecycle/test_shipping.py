@@ -279,15 +279,26 @@ def test_repository_ship_prevalidates_and_executes_ordered_phase_selections(
     )
 
 
+@pytest.mark.parametrize("gate", ["validate", "tests"])
 def test_failed_checks_prevent_remote_work_and_succeed_after_committed_repair(
-    tmp_path: pathlib.Path,
+    tmp_path: pathlib.Path, gate: str,
 ) -> None:
     repo, loaded, args, log, state, _ = _setup(tmp_path)
+    if gate == "tests":
+        import yaml
+        path = repo / "sdlc/sdlc.yml"
+        document = yaml.safe_load(path.read_text())
+        document["version"] = 3
+        document["repository"]["tests"] = document["repository"].pop("validate")
+        document["repository"]["validate"] = {"none": {"no-op": "Fixture has no validation command."}}
+        for deliverable in document["deliverables"].values():
+            deliverable["tests"] = {"none": {"no-op": "Shared repository test covers this deliverable."}}
+        path.write_text(yaml.safe_dump(document))
     (repo / "code.txt").write_text("broken", encoding="utf-8")
     broken = _commit(repo)
     with pytest.raises(loaded["RepositoryShipError"]) as failure:
         loaded["ship_repository"](args)
-    assert failure.value.payload["status"] == "validation_failed"
+    assert failure.value.payload["status"] == ("validation_failed" if gate == "validate" else "tests_failed")
     assert failure.value.payload["phase"] == "before_remote"
     assert failure.value.payload["commit"] == broken
     assert failure.value.payload["diagnostic"]["stderr_tail"] == [

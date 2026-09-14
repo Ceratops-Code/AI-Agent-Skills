@@ -154,6 +154,7 @@ def test_compatibility_materializer_supplies_target_identity_and_assignments(
     assert skillless["deliverables"]["skills"] == {
         "validate": {"ceratops-managed": custom, "custom-check": custom},
         "deploy-local": {"ceratops-managed": {"handoff": "target-owned/deployment"}},
+        "tests": {"none": {"no-op": "No deliverable-specific test operation is declared; repository tests remain separately selectable."}},
     }
     assert (repo / "scripts" / "deploy-skills.py").is_file()
     assert (repo / "scripts" / "validate-repository.py").is_file()
@@ -351,12 +352,12 @@ def test_compatibility_materializer_supports_repositories_without_skills(
     assert not (repo / "skills").exists()
     contract = yaml.safe_load((repo / "sdlc" / "sdlc.yml").read_text())
     assert contract["repository"]["validate"]["repository"]["steps"] == [
-        {"run": ["python", "scripts/validate-repository.py"]}
+        {"run": ["uv", "run", "--project", "scripts/validation", "--locked", "python", "scripts/validate-repository.py"]}
     ]
     assert "deliverables" not in contract
     assert not (repo / "scripts" / "deploy-skills.py").exists()
     assert output["repository_validation"] == {
-        "checks": ["npm-lint", "unittest"],
+        "checks": ["npm-lint"],
         "validator": "applied",
         "workflow": "applied",
     }
@@ -384,24 +385,13 @@ def test_compatibility_materializer_supports_repositories_without_skills(
     assert validation.stdout == "OK\n"
     assert not validation_evidence.exists()
     assert not validation_temporary.exists()
-    assert not list(repo.rglob("__pycache__"))
+    assert not [path for path in repo.rglob("__pycache__") if ".venv" not in path.parts]
 
-    omitted = tmp_path / "empty-without-sdlc"
-    shutil.copytree(repo, omitted)
-    omitted_result = run_compatibility_engine(
-        engine_scripts,
-        "apply",
-        "--target-repo-root",
-        str(omitted),
-        "--no-sdlc-contract",
+    omitted = run_compatibility_engine(
+        engine_scripts, "apply", "--target-repo-root", str(repo), "--no-sdlc-contract",
     )
-    assert omitted_result.returncode == 0, omitted_result.stdout
-    assert (omitted / "sdlc" / "sdlc.yml").read_bytes() == (repo / "sdlc" / "sdlc.yml").read_bytes()
-    assert json.loads(omitted_result.stdout)["repository_validation"] == {
-        "checks": [],
-        "validator": "preserved",
-        "workflow": "preserved",
-    }
+    assert omitted.returncode != 0
+    assert (repo / "sdlc/sdlc.yml").is_file()
 
     def empty_repository(name: str) -> pathlib.Path:
         target = tmp_path / name
@@ -448,7 +438,6 @@ def test_compatibility_materializer_supports_repositories_without_skills(
     assert pnpm_result.returncode == 0, pnpm_result.stdout
     assert json.loads(pnpm_result.stdout)["repository_validation"]["checks"] == [
         "pnpm-build",
-        "pytest",
         "mypy",
     ]
     pnpm_workflow = (
@@ -457,14 +446,18 @@ def test_compatibility_materializer_supports_repositories_without_skills(
     assert "actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903" in pnpm_workflow
     assert "corepack prepare pnpm@10.33.4 --activate" in pnpm_workflow
     assert "pnpm install --frozen-lockfile" in pnpm_workflow
-    assert "python -m pip install -r requirements-dev.txt" in pnpm_workflow
+    assert "python -m pip install" not in pnpm_workflow
     pnpm_steps = yaml.safe_load(pnpm_workflow)["jobs"]["validate-repository"]["steps"]
     assert [
         step["run"].splitlines()
         for step in pnpm_steps
         if step.get("name") == "Install Python validation dependencies"
-    ] == [["python -m pip install -r requirements-dev.txt"]]
-    assert 'python-version: "3.12"' in pnpm_workflow
+    ] == []
+    assert 'python-version: "3.12"' not in pnpm_workflow
+    import tomllib
+    pnpm_runtime = tomllib.loads((pnpm_repo / "scripts/validation/pyproject.toml").read_text())
+    assert "mypy" in pnpm_runtime["project"]["dependencies"]
+    assert (pnpm_repo / "requirements-dev.txt").read_text() == "pytest==9.1.1\n"
 
     uv_repo = empty_repository("uv-compatible")
     (uv_repo / "uv.lock").write_text("version = 1\n", encoding="utf-8", newline="\n")
@@ -489,7 +482,6 @@ def test_compatibility_materializer_supports_repositories_without_skills(
     )
     assert uv_result.returncode == 0, uv_result.stdout
     assert json.loads(uv_result.stdout)["repository_validation"]["checks"] == [
-        "pytest",
         "ruff",
         "mypy",
         "yaml-lint",
@@ -498,16 +490,17 @@ def test_compatibility_materializer_supports_repositories_without_skills(
         encoding="utf-8"
     )
     assert "astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9" in uv_workflow
-    assert 'python-version-file: "pyproject.toml"' in uv_workflow
+    assert 'python-version-file: "pyproject.toml"' not in uv_workflow
     assert 'python-version: "3.12"' not in uv_workflow
-    assert "uv sync --extra dev --frozen" in uv_workflow
+    assert "uv sync --extra dev --frozen" not in uv_workflow
     uv_steps = yaml.safe_load(uv_workflow)["jobs"]["validate-repository"]["steps"]
     assert [
         step["run"].splitlines()
         for step in uv_steps
         if step.get("name") == "Install Python validation dependencies"
-    ] == [["uv sync --extra dev --frozen"]]
-    assert "uv run --no-sync python scripts/validate-repository.py" in uv_workflow
+    ] == []
+    assert "uv run --project scripts/validation --locked python scripts/sdlc.py --validate --ci" in uv_workflow
+    assert (uv_repo / "uv.lock").read_text() == "version = 1\n"
 
     # Synthetic recipes exercise extension behavior without coupling the shipped
     # contract to any repository's private check names or command conventions.
@@ -581,7 +574,6 @@ def test_compatibility_materializer_supports_repositories_without_skills(
     )
     assert unittest_result.returncode == 0, unittest_result.stdout
     assert json.loads(unittest_result.stdout)["repository_validation"]["checks"] == [
-        "unittest",
     ]
 
     docs_repo = empty_repository("docs-compatible")
@@ -605,7 +597,6 @@ def test_compatibility_materializer_supports_repositories_without_skills(
     )
     assert docs_result.returncode == 0, docs_result.stdout
     assert json.loads(docs_result.stdout)["repository_validation"]["checks"] == [
-        "unittest",
         "ruff",
     ]
     docs_workflow = (
@@ -673,8 +664,8 @@ def test_compatibility_materializer_supports_repositories_without_skills(
     assert "child_evidence: custom-validation.log" in retained_evidence
     assert "inner diagnostic" in retained_evidence
 
-    # Every documented pytest configuration form selects pytest and suppresses
-    # unittest, even when the target only declares the tool through its config.
+    # Every supported configuration identifies repository-owned Python tests;
+    # no test framework belongs to the generated repository validator.
     for index, (config, contents) in enumerate([
         ("pytest.toml", "[pytest]\n"),
         (".pytest.toml", "[pytest]\n"),
@@ -692,7 +683,9 @@ def test_compatibility_materializer_supports_repositories_without_skills(
             engine_scripts, "apply", "--target-repo-root", str(config_repo)
         )
         assert configured.returncode == 0, configured.stdout
-        assert json.loads(configured.stdout)["repository_validation"]["checks"] == ["pytest"]
+        assert json.loads(configured.stdout)["repository_validation"]["checks"] == []
+        assert (config_repo / "scripts/run-tests.py").is_file()
+        assert "python" in yaml.safe_load((config_repo / "sdlc/sdlc.yml").read_text())["repository"]["tests"]
 
     # Contract validation covers entries which do not match the target and
     # rejects broken metadata or evidence links before target mutation.
@@ -780,14 +773,14 @@ def test_compatibility_materializer_preserves_existing_validator_and_ci(
     )
 
     assert result.returncode == 0, result.stdout
-    assert {
-        path: (path.read_bytes(), path.stat().st_mode)
-        for path in (validator, workflow)
-    } == before
+    assert (validator.read_bytes(), validator.stat().st_mode) == before[validator]
+    workflow_steps = yaml.safe_load(workflow.read_text())["jobs"]["validate"]["steps"]
+    assert any("scripts/sdlc.py --validate --ci" in step.get("run", "") for step in workflow_steps)
+    assert json.loads(result.stdout)["custom_validation_review_required"] is True
     assert json.loads(result.stdout)["repository_validation"] == {
         "checks": [],
         "validator": "preserved",
-        "workflow": "preserved",
+        "workflow": "applied",
     }
 
 
@@ -860,8 +853,8 @@ def test_compatibility_materializer_rolls_back_every_target_write_on_blocker(
     )
     workflow_template.write_text(
         workflow_template.read_text(encoding="utf-8").replace(
-            "__VALIDATOR_PYTHON__ scripts/validate-repository.py",
-            "__VALIDATOR_PYTHON__ scripts/not-the-repository-validator.py",
+            "python scripts/sdlc.py",
+            "python scripts/not-the-sdlc-runner.py",
         ),
         encoding="utf-8",
         newline="\n",
@@ -1023,3 +1016,84 @@ def test_compatibility_materializes_action_assignments(tmp_path: pathlib.Path, i
         assert updated["skills"] == manifest["skills"]
         for relative in manifest["actions"]["alpha-tool"]:
             assert (repo / "skills/alpha-tool" / relative).read_bytes() == before[pathlib.Path("skills/alpha-tool") / relative]
+
+
+
+def test_generated_runtime_runs_without_installed_skills_and_keeps_tests_separate(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "independent"
+    repo.mkdir()
+    (repo / ".git").write_text("gitdir: test\n")
+    # A nested tooling workspace must not rewrite the application's lock or
+    # adopt its incompatible Python constraint.
+    application = '[project]\nname="application"\nversion="1.0"\nrequires-python=">=3.11"\n[tool.uv.workspace]\nmembers=[]\n'
+    (repo / "pyproject.toml").write_text(application)
+    (repo / "requirements.txt").write_text("# repository-owned\n")
+    tests = repo / "tests"
+    tests.mkdir()
+    probe = tests / "test_probe.py"
+    probe.write_text("def test_probe():\n    assert False, 'test-gate-evidence'\n")
+    # Leave application uv.lock absent: test setup remains independent of the
+    # generated validator's resolved dependency set.
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "no-installed-skills"))
+    created = run_compatibility_engine(REPOSITORY_LIFECYCLE_SCRIPTS, "apply", "--target-repo-root", str(repo))
+    assert created.returncode == 0, created.stdout + created.stderr
+    assert (repo / "pyproject.toml").read_text() == application
+    assert (repo / "requirements.txt").read_text() == "# repository-owned\n"
+    assert not (repo / "uv.lock").exists()
+    prefix = ["uv", "run", "--project", "scripts/validation", "--locked", "python"]
+    validation = subprocess.run([*prefix, "scripts/validate-repository.py"], cwd=repo, capture_output=True, text=True)
+    assert validation.returncode == 0, validation.stderr
+    evidence = tmp_path / "sdlc-failure.json"
+    command = [*prefix, "scripts/sdlc.py", "--validate", "--ci", "--evidence-file", str(evidence)]
+    failed = subprocess.run(command, cwd=repo, capture_output=True, text=True)
+    assert failed.returncode == 1, failed.stdout + failed.stderr
+    result = json.loads(evidence.read_text())
+    assert result["status"] == "tests_failed"
+    assert result["operation"] == "repository.tests.python"
+    assert any("test-gate-evidence" in line for line in result["diagnostic"]["stdout_tail"])
+    probe.write_text("def test_probe():\n    assert True\n")
+    passed = subprocess.run(command, cwd=repo, capture_output=True, text=True)
+    assert passed.returncode == 0, passed.stdout + passed.stderr
+    assert not evidence.exists()
+    assert json.loads(passed.stdout)["completed_operations"] == ["repository.validate.repository", "repository.tests.python"]
+    lock = (repo / "scripts/validation/uv.lock").read_bytes()
+    reapplied = run_compatibility_engine(REPOSITORY_LIFECYCLE_SCRIPTS, "apply", "--target-repo-root", str(repo))
+    assert reapplied.returncode == 0, reapplied.stdout
+    assert (repo / "scripts/validation/uv.lock").read_bytes() == lock
+
+
+def test_generated_python_runner_cleans_owned_temp_even_with_overrides(tmp_path: pathlib.Path) -> None:
+    repo = tmp_path / "runner"
+    (repo / "scripts").mkdir(parents=True)
+    marker = tmp_path / "observed.json"
+    (repo / "test_probe.py").write_text(
+        "import json, pathlib\n"
+        "def test_probe(tmp_path):\n"
+        f"    pathlib.Path({str(marker)!r}).write_text(json.dumps(str(tmp_path)))\n"
+        "    assert False\n"
+    )
+    template = (REPOSITORY_LIFECYCLE_SOURCE / "references/templates/run-tests.py.tmpl").read_text()
+    runner = repo / "scripts/run-tests.py"
+    runner.write_text(template.replace("__TEST_TARGETS__", "['test_probe.py']"))
+    outside = tmp_path / "caller-temp"
+    result = subprocess.run([
+        sys.executable, str(runner), "--pytest-arg=--basetemp", "--pytest-arg=" + str(outside),
+    ], cwd=repo, capture_output=True, text=True)
+    assert result.returncode == 1, result.stderr
+    observed = pathlib.Path(json.loads(marker.read_text()))
+    assert not observed.exists()
+    assert not outside.exists()
+
+
+def test_missing_uv_rolls_back_generated_files_before_compatibility_claim(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    generator = importlib.import_module("ceratops_repo_compatibility_engine.apply_ceratops_compatibility")
+    runtime = importlib.import_module("ceratops_repo_compatibility_engine.validation_environment")
+    (tmp_path / ".git").write_text("gitdir: test\n")
+    monkeypatch.setattr(runtime.shutil, "which", lambda name: None)
+    assert generator.main(["--target-repo-root", str(tmp_path)]) == 1
+    outcome = json.loads(capsys.readouterr().out)
+    assert outcome["phase"] == "validator_environment_setup"
+    assert outcome["rollback"] == "completed"
+    assert {p.name for p in tmp_path.iterdir()} == {".git"}

@@ -8,27 +8,47 @@
   "checks": [
     {
       "id": "ND.COMPATIBILITY.ENVIRONMENT",
-      "applies_when": "Repository entrypoints require dependencies or a particular runtime.",
-      "review_required": "Every independently callable validation or test entrypoint prepares or reuses the repository-owned environment from its dependency declarations and lockfiles. Standalone test execution must work without a prior aggregate run. Nested commands preserve the selected runtime through an absolute executable or the native environment manager. Dependency versions belong to the target repository; the shared contract neither selects packages nor pins versions. Reuse existing native tooling or a shared repository-owned setup helper instead of duplicating setup across entrypoints.",
-      "evidence_keys": ["repository.dependency_declarations", "repository.lockfiles", "entrypoints.setup", "entrypoints.execution_results"]
+      "applies_when": "The repository has the required validator environment.",
+      "review_required": "The repository validator runs through uv using its declared tooling project, compatible Python, and locked dependencies. uv owns setup before Python starts; validator code does not install dependencies. Application and test environments remain repository-owned and need not share the validator environment. Normal execution preserves the lock; dependency updates are explicit.",
+      "evidence_keys": [
+        "repository.dependency_declarations",
+        "repository.lockfiles",
+        "entrypoints.setup",
+        "entrypoints.execution_results"
+      ]
     },
     {
       "id": "ND.COMPATIBILITY.TESTS",
-      "applies_when": "The repository contains testable executable behavior.",
-      "review_required": "Repository validation runs the applicable test suites through repository-owned test runners or native test commands. Independently callable runners use the same environment preparation and test definitions. CI and local aggregate validation use the same repository entrypoint; any CI-separated test phase uses the same test runner without duplicating test execution. Require meaningful results, not merely runner file presence. Repositories without applicable tests must record the reason; no universal Python test-runner filename is required.",
-      "evidence_keys": ["repository.test_configuration", "validation.selected_checks", "ci.test_wiring", "tests.execution_results"]
+      "applies_when": "The repository declares deliverables or contains Python tests.",
+      "review_required": "Repository validation never executes tests. SDLC declares separate tests for each deliverable, with explicit no-op reasons when appropriate; repository tests may cover shared behavior. Python test repositories have the template-created run-tests.py and SDLC wiring. Review ambiguous detection and preserve repository-owned framework, test cases, custom commands, and environment choices. Promotion, shipping and CI require their applicable validation and test results separately.",
+      "evidence_keys": [
+        "repository.test_configuration",
+        "sdlc.tests",
+        "ci.test_results",
+        "tests.execution_results"
+      ]
     },
     {
       "id": "ND.COMPATIBILITY.LIFECYCLE",
       "applies_when": "The repository declares lifecycle operations or deliverables.",
-      "review_required": "Owning lifecycle helpers execute deterministic preparation, selected operations, validation, and owned temporary-artifact cleanup to the nearest safe boundary. SDLC declares repository capabilities and each deliverable's commands or specific skill/action handoffs. Generic promotion and deployment resolve that declaration without hardcoded knowledge of deliverable-specific skill implementations. A declared handoff alone does not prove executable dispatch. Identify model-mediated deterministic transitions as gaps, while preserving required judgment and approval boundaries. Direct helper invocation remains available for independent use and diagnostics.",
-      "evidence_keys": ["sdlc.operations", "lifecycle.callers", "lifecycle.execution_results", "lifecycle.cleanup_results"]
+      "review_required": "Owning helpers select and execute validation and tests from SDLC before the selected mutation, stop on failure, and clean their owned temporary artifacts. CI never dispatches skill handoffs and reports deferred routes separately. Skill callers may execute registered deterministic handoffs; unresolved routes remain pending and cannot authorize later mutation. Generic lifecycle helpers do not hardcode skill implementations. The copied SDLC runtime must work in a repository without installed Codex skills.",
+      "evidence_keys": [
+        "sdlc.operations",
+        "lifecycle.callers",
+        "lifecycle.execution_results",
+        "lifecycle.cleanup_results"
+      ]
     },
     {
       "id": "ND.COMPATIBILITY.APPLICATION",
-      "applies_when": "Ceratops compatibility is applied or its generator is changed.",
-      "review_required": "Create missing compatibility surfaces from the declared templates. Preserve existing validator and CI bytes and mode, supported SDLC formats, target-owned operations, and valid skill declarations. An explicit SDLC omission remains supported. Validate inside the rollback boundary and restore every changed target after a caught failure. Templates initialize repository-owned files; they do not supply an environment helper or test runner automatically. Resolve necessary target setup and test wiring under the owning change scope, and report unmet requirements without claiming full compatibility.",
-      "evidence_keys": ["compatibility.application_result", "compatibility.preservation_tests", "compatibility.rollback_tests", "repository.setup_and_test_wiring"]
+      "applies_when": "Ceratops compatibility is applied or its generator changes.",
+      "review_required": "Create or reconcile required files from declared templates and register the isolated validator project with dependency maintenance. SDLC is required in the current compatibility format; supported older formats remain executable outside application. Preserve target-owned operations, dependencies, test implementations, skill declarations, and file modes. Block ambiguous custom rewrites before mutation. Perform setup and structural verification inside the rollback boundary; restore changed target files after failure and remove newly created environments owned by the failed application. Report unresolved behavior without claiming full compatibility.",
+      "evidence_keys": [
+        "compatibility.application_result",
+        "compatibility.preservation_tests",
+        "compatibility.rollback_tests",
+        "repository.setup_and_test_wiring"
+      ]
     }
   ],
   "review_result_values": {

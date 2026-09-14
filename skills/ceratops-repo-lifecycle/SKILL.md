@@ -10,7 +10,8 @@ description: Route Ceratops repository lifecycle work to action references for r
 Route repository compatibility, local Git, GitHub, release publication, and
 deployment lifecycle work to the narrowest action reference. Keep repository
 state transitions in the skill while `sdlc/sdlc.yml` describes repository
-setup and validation, plus deliverable validation, deployment and publication.
+setup, validation and tests, plus deliverable validation, tests, deployment
+and publication.
 
 ## Context
 
@@ -63,17 +64,22 @@ setup and validation, plus deliverable validation, deployment and publication.
 - Use supported SDLC formats through the shared loader without migration.
   Require an upgrade only when the requested operation cannot run safely;
   installer release-number differences alone do not establish incompatibility.
-- Materialize new SDLC contracts in the current format and preserve supported
-  existing contracts.
+- Apply current compatibility with SDLC version 3 and separate validation and
+  tests. Preserve supported older formats during ordinary lifecycle execution;
+  compatibility application upgrades them only with clear operation ownership.
 - Read declared prerequisite metadata before setup; run only explicitly chosen
   bootstrap operations. Prerequisites and artifact identity are annotations,
   not inferred check or installation commands.
-- Treat handoffs as advisory routing within the requested action, not executable
-  prose, proof of deployment, or a completion-receipt protocol.
-- Keep ordinary repository-check failures, including `validation_failed`,
+- For SDLC version 3, run skill-owned deterministic action bindings through the
+  SDLC engine. Return unresolved routes as blockers before dependent mutation.
+  CI defers every skill handoff without claiming its action completed.
+- Require separate applicable validation and test results before promotion
+  continuation, shipping, publication, and deployment. Explicit selection cannot
+  omit version-3 gates; a declared no-op must include its reason.
+- Keep ordinary repository-check failures, including `validation_failed` and `tests_failed`,
   inside the active action: diagnose and repair in the selected task worktree,
   commit, then repeat promotion or restart shipping for the new commit. Do not
-  perform later deployment or remote mutation before successful validation.
+  perform later deployment or remote mutation before successful validation and tests.
   Stop only when safe authorized repair cannot proceed, naming the exact cause.
 - Use `references/merge-pr.md` for standalone PR finalization. Integrated ship
   must preserve every readiness, CI, Codex-review, and exact-head gate before

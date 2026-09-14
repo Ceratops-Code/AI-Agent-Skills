@@ -49,9 +49,9 @@ owns selected post-merge publication, deployment and cleanup.
   unchanged to shipping.
 - Ordered complete `deploy-local` locations for `promote-and-deploy`, and
   optional `publish` and `deploy-local` locations for composed shipping.
-- Optional ordered `--validation-operation LOCATION` flags replace validation
-  discovery for this invocation; otherwise use repository validation and
-  validation of selected deliverables in declaration order.
+- Optional ordered `--validation-operation LOCATION` flags select checks.
+  SDLC version 3 always retains repository and selected-deliverable validation
+  and tests; earlier formats preserve their original selection behavior.
 
 ## Constraints
 
@@ -72,16 +72,18 @@ owns selected post-merge publication, deployment and cleanup.
 2. For `promote`, run the helper with `--no-run-operation`.
 3. For `promote-and-deploy`, repeat `--run-operation LOCATION` in order.
    The helper accepts only `deliverables.<name>.deploy-local.<operation>`,
-   validates the entire selection before commands, and reruns validation before
-   deployment. Explicit missing locations are errors; absent validation is a
-   successful no-op.
+   validates the entire selection before commands, and reruns applicable
+   validation and tests before deployment. Explicit missing locations are
+   errors; version-3 tests require declared commands, handoffs, or reasoned no-ops.
 4. For composed shipping, use `--ship-after-promotion`, one optional
    `--sdlc-contract PATH`, and repeated `--publish-operation LOCATION` or
    `--deploy-operation LOCATION` for requested post-merge work. Omitted mutation
    selections do nothing. The helper records the exact head and scope, runs
-   promotion validation, then invokes shipping with the same inputs.
-5. Use advisory handoffs returned by selected operations within the requested
-   scope. The helper does not invoke skills or claim those handoffs completed.
+   promotion validation and tests, then invokes shipping with the same inputs.
+5. Let the SDLC engine execute registered deterministic skill actions for
+   version-3 handoffs. Resolve any returned judgment-required route within the
+   selected skill action; dependent mutation remains blocked. Preserve advisory
+   routing for older contracts and never claim a route alone completed work.
 6. Atomically normalize an exact version-1 pending-work scope to version 2
    before reuse. Retire a missing legacy source, keep a clean source contained
    in the legacy target as `retained`, and mark a dirty, unavailable, or
@@ -122,9 +124,9 @@ or deployment.
 - Every selected branch is contained in the reported release commit.
 - Every attempted automatic rebase either completed and reported both heads or
   restored the original clean source state before blocking.
-- The final assembled commit passed selected validation before continuation;
+- The final assembled commit passed applicable validation and tests before continuation;
   deployment ran during promotion only when requested. In composed mode,
-  shipping repeated its validation and ran only the selected post-merge work.
+  shipping repeated both gates and ran only the selected post-merge work.
   Advisory routing alone was never reported as completed domain work.
 - The exact pending-work scope is retained for standalone promotion or a
   shipping blocker; successful composed shipping finalizes it, cleans selected

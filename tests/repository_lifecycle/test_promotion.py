@@ -944,8 +944,9 @@ def test_promote_and_deploy_rejects_operation_created_repository_work(
     assert (repo / "generated-by-deploy.txt").is_file()
 
 
+@pytest.mark.parametrize("gate", ["validate", "tests"])
 def test_promotion_repairs_and_revalidates_the_final_commit_before_deployment(
-    tmp_path: pathlib.Path,
+    tmp_path: pathlib.Path, gate: str,
 ) -> None:
     repo, _, deployment_log, environment = prepare_repository_lifecycle_repo(tmp_path)
     checks = tmp_path / "checks.txt"
@@ -962,6 +963,18 @@ def test_promotion_repairs_and_revalidates_the_final_commit_before_deployment(
     }})
     assert run_git(repo, "add", ".").returncode == 0
     assert run_git(repo, "commit", "-m", "failing validation").returncode == 0
+    if gate == "tests":
+        import yaml
+        path = repo / "sdlc/sdlc.yml"
+        document = yaml.safe_load(path.read_text())
+        document["version"] = 3
+        document["repository"]["tests"] = document["repository"].pop("validate")
+        document["repository"]["validate"] = {"none": {"no-op": "Fixture has no validation command."}}
+        for deliverable in document.get("deliverables", {}).values():
+            deliverable["tests"] = {"none": {"no-op": "Shared repository test covers this deliverable."}}
+        path.write_text(yaml.safe_dump(document))
+        assert run_git(repo, "add", ".").returncode == 0
+        assert run_git(repo, "commit", "-m", "separate test gate").returncode == 0
     broken = run_git(repo, "rev-parse", "HEAD").stdout.strip()
     command = [
         sys.executable, str(PROMOTE_REPOSITORY), "--repo-root", str(repo),
@@ -971,7 +984,7 @@ def test_promotion_repairs_and_revalidates_the_final_commit_before_deployment(
     failed = subprocess.run(command, env=environment, capture_output=True, text=True, check=False)
     evidence = json.loads(failed.stderr)
     assert failed.returncode == 1
-    assert evidence["status"] == "validation_failed"
+    assert evidence["status"] == ("validation_failed" if gate == "validate" else "tests_failed")
     assert evidence["phase"] == "promotion_validation"
     assert evidence["commit"] == broken
     assert pathlib.Path(evidence["pending_work_scope"]).is_file()

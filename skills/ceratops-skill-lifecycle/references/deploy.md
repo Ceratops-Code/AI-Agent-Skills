@@ -46,6 +46,8 @@ deployment operations or the independent bootstrap installer.
 
 1. Follow `source-validate` in `full` mode for the exact source checkout.
    Reuse its passing result only while those source inputs remain unchanged.
+   The default SDLC action binding owns both full source validation and managed
+   installation; it stops before installation if source validation fails.
 2. Select exactly one runtime mode: all-managed by default, explicit selected
    and removed skills, or affected-set deployment from one full base revision.
 3. Run the managed runtime installer once and treat cleanup-blocked output as a

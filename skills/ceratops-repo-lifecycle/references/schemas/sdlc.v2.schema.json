@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/Ceratops-Code/AI-Agent-Skills/schemas/sdlc.yml.schema.json",
+  "$id": "https://github.com/Ceratops-Code/AI-Agent-Skills/schemas/sdlc.v2.schema.json",
   "title": "Ceratops repository SDLC contract",
   "type": "object",
   "additionalProperties": false,
@@ -10,7 +10,7 @@
   ],
   "properties": {
     "version": {
-      "const": 3
+      "const": 2
     },
     "kind": {
       "const": "ceratops-sdlc"
@@ -51,9 +51,6 @@
         },
         "validate": {
           "$ref": "#/$defs/operations"
-        },
-        "tests": {
-          "$ref": "#/$defs/operations"
         }
       }
     },
@@ -77,14 +74,8 @@
           "items": {
             "$ref": "#/$defs/artifact"
           }
-        },
-        "tests": {
-          "$ref": "#/$defs/operations"
         }
-      },
-      "required": [
-        "tests"
-      ]
+      }
     },
     "prerequisite": {
       "description": "Annotation-only setup requirements for the calling agent; never commands inferred from executable names, channels, or included tools.",
@@ -152,12 +143,23 @@
       },
       "additionalProperties": {
         "$ref": "#/$defs/operation"
-      },
-      "minProperties": 1
+      }
     },
     "operation": {
       "type": "object",
       "additionalProperties": false,
+      "anyOf": [
+        {
+          "required": [
+            "steps"
+          ]
+        },
+        {
+          "required": [
+            "handoff"
+          ]
+        }
+      ],
       "properties": {
         "prerequisites": {
           "type": "array",
@@ -182,35 +184,12 @@
           }
         },
         "handoff": {
-          "description": "Skill/action route executed only by a skill caller; CI records it as deferred without executing it. An unresolved handoff is not evidence of completion.",
+          "description": "Advisory routing to a skill/action or workflow. Not executable instructions, a receipt protocol, or proof of completion.",
           "type": "string",
           "minLength": 1,
           "maxLength": 500
-        },
-        "no-op": {
-          "type": "string",
-          "minLength": 1,
-          "pattern": "\\S",
-          "description": "Explicit reason this operation has no applicable work; never inferred from an absent declaration."
         }
-      },
-      "oneOf": [
-        {
-          "required": [
-            "steps"
-          ]
-        },
-        {
-          "required": [
-            "handoff"
-          ]
-        },
-        {
-          "required": [
-            "no-op"
-          ]
-        }
-      ]
+      }
     },
     "step": {
       "type": "object",

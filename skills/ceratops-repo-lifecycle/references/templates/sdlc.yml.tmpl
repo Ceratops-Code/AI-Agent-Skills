@@ -1,7 +1,18 @@
-version: 2
+version: 3
 kind: ceratops-sdlc
 repository:
+  prerequisites:
+    uv:
+      executable: uv
+  bootstrap:
+    validation:
+      prerequisites: [uv]
+      steps:
+        - run: [uv, sync, --project, scripts/validation, --locked]
   validate:
     repository:
       steps:
-        - run: [python, scripts/validate-repository.py]
+        - run: [uv, run, --project, scripts/validation, --locked, python, scripts/validate-repository.py]
+  tests:
+    none:
+      no-op: No repository test command has been detected or declared.

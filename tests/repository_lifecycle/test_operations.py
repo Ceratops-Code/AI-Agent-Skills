@@ -26,6 +26,64 @@ DEPLOY = "deliverables.sample.deploy-local."
 CHECK = "repository.validate."
 
 
+@pytest.mark.parametrize("mode", ["ci", "skill", "return"])
+def test_v3_tests_gate_mutations_and_ci_never_dispatches_handoffs(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, mode: str,
+) -> None:
+    """Real subprocess failure must stop the batch before a later mutation."""
+    declaration = {
+        "version": 3, "kind": "ceratops-sdlc",
+        "repository": {"validate": {"structure": {"no-op": "No extra structural checks."}}},
+        "deliverables": {"service": {
+            "tests": {"unit": {"steps": [{"run": [sys.executable, "-c", "raise SystemExit(7)"]}]}},
+            "validate": {"source": {"handoff": "example-skill/check"}},
+            "deploy-local": {"local": {"steps": [{"run": [sys.executable, "-c", "raise AssertionError('must not deploy')"]}]}},
+        }},
+    }
+    (tmp_path / "sdlc").mkdir()
+    (tmp_path / "sdlc/sdlc.yml").write_text(json.dumps(declaration))
+    location = "deliverables.service.deploy-local.local"
+    selected = runner.validation_operations(tmp_path, [location], ["repository.validate.structure"])
+    assert "deliverables.service.tests.unit" in selected
+    calls: list[str] = []
+    monkeypatch.setattr(runner, "execute_handoff", lambda route, root: calls.append(route) or {"status": "completed"})
+    handoff = runner.prepare_operations(tmp_path, [runner.OperationRequest("deliverables.service.validate.source")], context=mode)[0]
+    result = runner.execute_prepared_operation(handoff)
+    assert calls == (["example-skill/check"] if mode == "skill" else [])
+    assert result["status"] == {"ci": "deferred_handoff", "skill": "completed", "return": "handoff_required"}[mode]
+    prepared = runner.prepare_operations(tmp_path, [runner.OperationRequest(item) for item in selected] + [runner.OperationRequest(location)], context=mode)
+    failed = runner.execute_prepared_operations(prepared)
+    assert failed["status"] == "tests_failed"
+    assert location in failed["pending_operations"]
+    assert location not in failed["completed_operations"]
+
+
+@pytest.mark.parametrize("tests", [None, {}, {"none": {"no-op": " "}}, {"unit": {"steps": [], "no-op": "ambiguous"}}])
+def test_v3_requires_explicit_unambiguous_test_declarations(tests: object) -> None:
+    deliverable = {} if tests is None else {"tests": tests}
+    assert contracts.validation_errors({"version": 3, "kind": "ceratops-sdlc", "deliverables": {"service": deliverable}})
+    assert not contracts.validation_errors({"version": 3, "kind": "ceratops-sdlc", "deliverables": {"service": {"tests": {"none": {"no-op": "No executable behavior."}}}}})
+
+
+def test_registered_skill_executor_is_portable_and_failure_is_not_completion(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    handoffs = importlib.import_module("sdlc_handoffs")
+    skill = tmp_path / "skills/example-skill"
+    (skill / "references").mkdir(parents=True)
+    script = skill / "probe.py"
+    script.write_text("import pathlib, sys\npathlib.Path(sys.argv[1], 'called.txt').write_text('called')\nraise SystemExit(int(sys.argv[2]))\n")
+    binding = skill / "references/action-executors.json"
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+    repo = tmp_path / "repository"
+    repo.mkdir()
+    for code, expected in ((0, "completed"), (9, "operation_failed")):
+        binding.write_text(json.dumps({"version": 1, "actions": {"check": {"run": ["{python}", "{skill_root}/probe.py", "{repo_root}", str(code)]}}}))
+        assert handoffs.execute_handoff("example-skill/check", repo)["status"] == expected
+        assert (repo / "called.txt").read_text() == "called"
+    assert handoffs.execute_handoff("example-skill/unknown", repo)["status"] == "handoff_required"
+
+
 def _step(script: str, *arguments: str) -> dict[str, object]:
     return {"steps": [{"run": [sys.executable, script, *arguments]}]}
 
@@ -45,8 +103,9 @@ def test_sdlc_template_is_a_schema_valid_empty_skeleton(tmp_path: pathlib.Path) 
     contract = write_sdlc_contract(tmp_path)
     shutil.copy2(SDLC_CONTRACT_TEMPLATE, contract)
     document = contracts.load_contract(contract)
+    assert document["version"] == 3
     assert document["repository"]["validate"]["repository"]["steps"] == [
-        {"run": ["python", "scripts/validate-repository.py"]}
+        {"run": ["uv", "run", "--project", "scripts/validation", "--locked", "python", "scripts/validate-repository.py"]}
     ]
     assert "deliverables" not in document
     live = contracts.load_contract(ROOT / "sdlc" / "sdlc.yml")
@@ -844,7 +903,7 @@ def test_v1_absent_section_and_optional_operation_remain_no_ops(tmp_path: pathli
         runner.prepare_operations(tmp_path, [runner.OperationRequest("deploy.operations.absent")])
 
 
-@pytest.mark.parametrize("version", [None, True, 1.0, "1", 0, 3, [], {}])
+@pytest.mark.parametrize("version", [None, True, 1.0, "1", 0, 4, [], {}])
 def test_loader_rejects_unsupported_or_unversioned_contracts(
     tmp_path: pathlib.Path, version: object,
 ) -> None:
@@ -925,9 +984,10 @@ def test_supported_v1_compatibility_is_independent_of_installer_release(
         "      - run: python scripts/validate-repository.py --evidence-file evidence.log\n",
         encoding="utf-8",
     )
-    assert checker.validate_ceratops_compatibility(tmp_path) == {
-        "applicable": True, "valid": True, "errors": [],
-    }
+    result = checker.validate_ceratops_compatibility(tmp_path)
+    assert result["valid"] is False
+    assert "current Ceratops compatibility requires SDLC version 3" in result["errors"]
+    assert all("INSTALLER_VERSION" not in error for error in result["errors"])
 
 
 def test_materialization_preserves_supported_v1_without_migration(tmp_path: pathlib.Path) -> None:
@@ -935,9 +995,10 @@ def test_materialization_preserves_supported_v1_without_migration(tmp_path: path
     path = _write_v1(tmp_path, deploy={"deploy": {"handoff": "ceratops-skill-lifecycle/deploy"}})
     original = path.read_bytes()
     for has_skills in (True, False):
-        assert materializer.build_sdlc_contract_candidate(
-            tmp_path, has_skills=has_skills, apply_contract=True,
-        ) is None
+        with pytest.raises(RuntimeError, match="operation ownership must be mapped"):
+            materializer.build_sdlc_contract_candidate(
+                tmp_path, has_skills=has_skills, apply_contract=True,
+            )
     assert path.read_bytes() == original
 
 
@@ -971,7 +1032,7 @@ def test_health_migration_proposal_is_advisory_and_reaches_automation_summary(
         path.write_text("version: 3\nkind: ceratops-sdlc\n", encoding="utf-8")
     original = path.read_bytes()
     facts = collector._sdlc_contract_facts({"available": True, "root": str(tmp_path)})
-    assert facts["valid"] is (version in (1, 2))
+    assert facts["valid"] is True
     desired = {
         "parameters": {"owner": "owner", "repo": "sample"}, "contract_paths": {},
         "selected_ids": {"repo": ["content.sdlc_contract"]},
@@ -982,14 +1043,14 @@ def test_health_migration_proposal_is_advisory_and_reaches_automation_summary(
     # These are the exact levels requested by Global Repo Health Consistency.
     summary = reports.build_summary_report(report, ["ERROR", "WARN", "NEEDS_AI_AGENT_REVIEW"])
     proposals = [f for f in summary["findings"] if f["check_id"] == "content.sdlc_migration"]
-    assert len(proposals) == (1 if version == 1 else 0)
+    assert len(proposals) == (1 if version in (1, 2) else 0)
     if proposals:
         assert proposals[0]["actual"] == {
-            "repository": "owner/sample", "current_version": 1, "recommended_version": 2,
+            "repository": "owner/sample", "current_version": version, "recommended_version": 3,
             "reason": facts["migration_proposal"]["reason"],
         }
         assert "owner/sample" in proposals[0]["message"]
-        assert "version 1 to 2" in proposals[0]["message"]
+        assert f"version {version} to 3" in proposals[0]["message"]
         assert "do not automatically migrate" in proposals[0]["message"]
         assert not levels.has_blocking_findings(proposals)
     assert comparison == {"findings": [], "approved_drift": []}

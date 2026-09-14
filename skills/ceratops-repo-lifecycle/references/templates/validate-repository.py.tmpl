@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Run checks, retain first-failure evidence, and remove it after success."""
+"""Run repository validation, excluding tests, in the caller's uv environment.
+
+SDLC invokes this script with the locked project under scripts/validation.
+The environment wrapper owns installation; this entrypoint never installs
+dependencies or runs test suites. Failed-check evidence survives for diagnosis
+and is removed after success. Test commands belong in SDLC tests operations.
+"""
 
 from __future__ import annotations
 

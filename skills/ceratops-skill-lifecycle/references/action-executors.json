@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "actions": {
+    "source-validate": {
+      "run": [
+        "{python}",
+        "{skill_root}/scripts/skills-consistency-source-validator.py",
+        "--repo-root",
+        "{repo_root}",
+        "--mode",
+        "full"
+      ]
+    },
+    "deploy": {
+      "steps": [
+        {
+          "run": [
+            "{python}",
+            "{skill_root}/scripts/skills-consistency-source-validator.py",
+            "--repo-root",
+            "{repo_root}",
+            "--mode",
+            "full"
+          ]
+        },
+        {
+          "run": [
+            "{python}",
+            "{skill_root}/scripts/runtime/install-managed-skills.py",
+            "--repo-root",
+            "{repo_root}"
+          ]
+        }
+      ]
+    }
+  }
+}

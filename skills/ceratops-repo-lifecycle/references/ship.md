@@ -47,8 +47,8 @@ selected-source cleanup. YAML declares capabilities; this action owns timing.
   Preserve supplied fields exactly and existing PR fields without overrides.
 - Whether the head is reusable after merge.
 - Optional SDLC path and ordered complete YAML locations for requested work.
-  Without explicit validation locations, run repository validation and
-  validation of selected deliverables in declaration order.
+  Run repository and selected-deliverable validation and tests in declaration
+  order. Version-3 explicit selections retain every applicable gate.
 
 ## Constraints
 
@@ -86,9 +86,11 @@ selected-source cleanup. YAML declares capabilities; this action owns timing.
    exact version-1 record, then the helper checks the canonical version-2 scope.
    Prevalidate all selected entries, parameters, exact argv and
    repository-bounded working directories from `sdlc/sdlc.yml`, then run
-   selected validation. An absent default contract or validation category is a
-   no-op; explicitly missing locations are errors. Only `validate` entries may
-   be selected as checks.
+   applicable validation and tests. Historical contracts retain their no-op
+   behavior; version-3 deliverables explicitly declare tests. Only `validate`
+   and `tests` entries may be selected as checks; missing locations are errors.
+   Registered skill actions execute through the SDLC engine. An unresolved
+   handoff blocks dependent mutation; CI never executes skill handoffs.
    During the same preflight it validates every registered selected worktree's
    resolved path. A worktree is cleanup-eligible only when its parent chain
    contains a case-insensitive `worktrees` directory component; otherwise the
@@ -109,8 +111,8 @@ selected-source cleanup. YAML declares capabilities; this action owns timing.
    and critical recovery semantics; ship contains no independent toggle logic.
 6. After merge, the helper synchronizes local main and restores a reusable
    integration branch when selected.
-7. After synchronization and selected-work recheck, validate before each pending
-   publication or deployment batch.
+7. After synchronization and selected-work recheck, run applicable validation
+   and tests before each pending publication or deployment batch.
    Failed checks stop the batch before any later side effect. Keep the action
    active for repair and a fresh committed attempt; repository scripts need
    only normal exit codes and diagnostics, not special JSON.

@@ -8,16 +8,19 @@ mapping; repository health owns aggregate execution separately.
 from __future__ import annotations
 
 import json
+import os
 import pathlib
 import re
 import runpy
+import tomllib
 from collections.abc import Mapping
-from typing import TypedDict
+from typing import Any, TypedDict
 
 import yaml
 
 from .compatibility_contract import load_compatibility_contract, template_path
-from .sdlc_contract_validation import read_contract
+from .python_tests import discover_python_tests
+from .sdlc_contract_validation import operation_entries, read_contract
 
 
 class CompatibilityResult(TypedDict):
@@ -221,6 +224,47 @@ def _manifest_errors(
     return errors
 
 
+
+def _environment_errors(root: pathlib.Path, contract: Mapping[str, Any]) -> list[str]:
+    """Check declarations and the installed runtime without installing or running it.
+
+    uv sync/run enforces Python and dependency resolution. Structural health
+    checks only assert the declared locked project and local interpreter exist.
+    """
+
+    errors: list[str] = []
+    runtime = contract["runtime"]
+    project = root / runtime["project"]
+    try:
+        declaration = tomllib.loads((project / "pyproject.toml").read_text(encoding="utf-8"))
+        metadata = declaration.get("project", {})
+        if not isinstance(metadata.get("requires-python"), str) or not metadata["requires-python"].strip():
+            errors.append("validator project must declare requires-python")
+        if not isinstance(metadata.get("dependencies"), list):
+            errors.append("validator project must declare dependencies")
+        lock = tomllib.loads((root / runtime["lockfile"]).read_text(encoding="utf-8"))
+        if not isinstance(lock.get("version"), int) or not lock.get("package"):
+            errors.append("validator uv.lock must contain resolved packages")
+    except (OSError, ValueError, TypeError) as exc:
+        errors.append("invalid validator project or lock: " + str(exc))
+    environment = root / runtime["environment"]
+    interpreter = environment / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    if environment.is_symlink() or not (environment / "pyvenv.cfg").is_file() or not interpreter.is_file():
+        errors.append("validator environment must contain its own Python interpreter; apply compatibility or run uv sync")
+    try:
+        dependabot = yaml.safe_load((root / ".github/dependabot.yml").read_text(encoding="utf-8"))
+        registration = contract["dependency_updates"]
+        if not isinstance(dependabot, Mapping) or not any(
+            isinstance(item, Mapping) and item.get("package-ecosystem") == registration["package-ecosystem"]
+            and (item.get("directory") == registration["directory"] or registration["directory"] in item.get("directories", []))
+            for item in dependabot.get("updates", [])
+        ):
+            errors.append("Dependabot must include the isolated validator project")
+    except (OSError, ValueError, TypeError, yaml.YAMLError) as exc:
+        errors.append("invalid validator dependency-update registration: " + str(exc))
+    return errors
+
+
 def validate_ceratops_compatibility(repo_root: pathlib.Path) -> CompatibilityResult:
     """Return read-only compatibility status for one repository root."""
 
@@ -244,16 +288,17 @@ def validate_ceratops_compatibility(repo_root: pathlib.Path) -> CompatibilityRes
         return {"applicable": False, "valid": None, "errors": []}
 
     errors: list[str] = []
+    python_tests = discover_python_tests(root, contract["python_test_detection"])
     for name, surface in surfaces.items():
         required = surface["required"] == "always" or (
             surface["required"] == "with_skills" and bool(source_skills)
-        )
+        ) or (surface["required"] == "with_python_tests" and bool(python_tests))
         if required or name in present:
             if error := _regular_file_error(root, paths[name]):
                 errors.append(error)
     if not _regular_file_error(root, paths["workflow"]):
         errors.extend(_workflow_errors(
-            root / paths["workflow"], surfaces["validator"]["path"],
+            root / paths["workflow"], surfaces["sdlc_runner"]["path"],
             contract["ci_required_arguments"],
         ))
     if "skill_manifest" in present and not _regular_file_error(root, paths["skill_manifest"]):
@@ -261,8 +306,25 @@ def validate_ceratops_compatibility(repo_root: pathlib.Path) -> CompatibilityRes
             root, root / paths["skill_manifest"], source_skills, contract["manifest_profiles"],
         ))
     if "sdlc" in present and not _regular_file_error(root, paths["sdlc"]):
-        _, sdlc_errors = read_contract(root / paths["sdlc"])
+        sdlc, sdlc_errors = read_contract(root / paths["sdlc"])
         errors.extend(sdlc_errors)
+        if sdlc and sdlc["version"] != contract["sdlc_version"]:
+            errors.append("current Ceratops compatibility requires SDLC version " + str(contract["sdlc_version"]))
+        elif sdlc:
+            entries = operation_entries(sdlc)
+            expected = load_compatibility_contract()["runtime"]["project"]
+            validator_command = ["uv", "run", "--project", expected, "--locked", "python", surfaces["validator"]["path"]]
+            commands = [step["run"] for name, entry in entries.items() if ".validate." in name for step in entry.get("steps", [])]
+            if validator_command not in commands:
+                errors.append("SDLC must invoke the repository validator through its locked uv project")
+            if not sdlc.get("repository", {}).get("tests"):
+                errors.append("SDLC must declare repository tests or an explicit no-op")
+            if python_tests and not any(".tests." in name and (entry.get("steps") or entry.get("handoff")) for name, entry in entries.items()):
+                errors.append("detected Python tests require an executable SDLC tests operation")
+    errors.extend(_environment_errors(root, contract))
+    for relative in [contract["runtime"]["lockfile"], *[contract["runtime"]["payload_root"] + "/" + path for path in contract["runtime"]["payloads"]]]:
+        if error := _regular_file_error(root, pathlib.Path(relative)):
+            errors.append(error)
 
     unique_errors = list(dict.fromkeys(error for error in errors if error))
     return {

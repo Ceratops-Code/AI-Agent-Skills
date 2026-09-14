@@ -549,7 +549,7 @@ def _ship_after_promotion(
         return shipped
     if ship_code == 1:
         message = shipped.get("message")
-        if status not in {"blocked", "error", "operation_failed", "validation_failed", "state_changed"} or not isinstance(message, str):
+        if status not in {"blocked", "error", "operation_failed", "validation_failed", "tests_failed", "handoff_required", "state_changed"} or not isinstance(message, str):
             raise PromotionError("Shipping returned an incomplete blocker.")
         raise PromotionError(message, shipped)
     raise PromotionError(f"Shipping returned unsupported exit code: {ship_code}")
@@ -748,7 +748,7 @@ def promote(args: argparse.Namespace) -> dict[str, object]:
                  "pending_work_scope": record["pending_work_scope"]},
             )
         for operation_result in operations.get("results", []):
-            if operation_result.get("handoff"):
+            if operation_result.get("handoff") and not operation_result.get("handoff_completed"):
                 handoffs.append({
                     "operation": operation_result["operation"],
                     "handoff": operation_result["handoff"],
@@ -777,7 +777,7 @@ def promote(args: argparse.Namespace) -> dict[str, object]:
         result["preserved_sources"] = record["preserved_sources"]
     if handoffs:
         result["handoffs"] = handoffs
-    validation_handoffs = [item for item in validation["results"] if item.get("handoff")]
+    validation_handoffs = [item for item in validation["results"] if item.get("handoff") and not item.get("handoff_completed")]
     if validation_handoffs:
         result["validation_handoffs"] = validation_handoffs
     return result

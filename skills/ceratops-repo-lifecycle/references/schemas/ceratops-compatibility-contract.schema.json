@@ -4,51 +4,257 @@
   "title": "Internal Ceratops compatibility contract",
   "type": "object",
   "additionalProperties": false,
-  "required": ["contract_format_version", "kind", "description", "non_deterministic_review_file", "surfaces", "ci_required_arguments", "manifest_profiles", "generated_manifest_profile", "managed_skill_operations"],
+  "required": [
+    "contract_format_version",
+    "kind",
+    "description",
+    "non_deterministic_review_file",
+    "surfaces",
+    "ci_required_arguments",
+    "manifest_profiles",
+    "generated_manifest_profile",
+    "managed_skill_operations",
+    "sdlc_version",
+    "runtime",
+    "python_test_detection",
+    "dependency_updates"
+  ],
   "properties": {
-    "contract_format_version": {"const": 1, "description": "Executable: loader dispatch format."},
-    "kind": {"const": "ceratops_compatibility_contract", "description": "Executable: loader identity check."},
-    "description": {"type": "string", "minLength": 1, "description": "Annotation-only: internal scope and ownership."},
-    "non_deterministic_review_file": {"$ref": "#/$defs/filename", "description": "Executable: loader validates the companion and reverse reference."},
+    "contract_format_version": {
+      "const": 1,
+      "description": "Executable: loader dispatch format."
+    },
+    "kind": {
+      "const": "ceratops_compatibility_contract",
+      "description": "Executable: loader identity check."
+    },
+    "description": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Annotation-only: internal scope and ownership."
+    },
+    "non_deterministic_review_file": {
+      "$ref": "#/$defs/filename",
+      "description": "Executable: loader validates the companion and reverse reference."
+    },
     "surfaces": {
       "description": "Executable: generator destinations/templates and checker applicability/required files.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["validator", "workflow", "sdlc", "skill_manifest", "skill_bootstrap"],
+      "required": [
+        "validator",
+        "workflow",
+        "sdlc",
+        "skill_manifest",
+        "skill_bootstrap",
+        "sdlc_runner",
+        "validation_project",
+        "python_test_runner"
+      ],
       "properties": {
-        "validator": {"$ref": "#/$defs/surface"},
-        "workflow": {"$ref": "#/$defs/surface"},
-        "sdlc": {"$ref": "#/$defs/surface"},
-        "skill_manifest": {"$ref": "#/$defs/surface"},
-        "skill_bootstrap": {"$ref": "#/$defs/surface"}
+        "validator": {
+          "$ref": "#/$defs/surface"
+        },
+        "workflow": {
+          "$ref": "#/$defs/surface"
+        },
+        "sdlc": {
+          "$ref": "#/$defs/surface"
+        },
+        "skill_manifest": {
+          "$ref": "#/$defs/surface"
+        },
+        "skill_bootstrap": {
+          "$ref": "#/$defs/surface"
+        },
+        "sdlc_runner": {
+          "$ref": "#/$defs/surface"
+        },
+        "validation_project": {
+          "$ref": "#/$defs/surface"
+        },
+        "python_test_runner": {
+          "$ref": "#/$defs/surface"
+        }
       }
     },
-    "ci_required_arguments": {"$ref": "#/$defs/strings", "description": "Executable: checker requires these arguments on the CI validator invocation."},
-    "manifest_profiles": {"$ref": "#/$defs/strings", "description": "Executable: checker and generator accept only these manifest profiles."},
-    "generated_manifest_profile": {"type": "string", "minLength": 1, "description": "Executable: generator default; loader verifies it is accepted."},
+    "ci_required_arguments": {
+      "$ref": "#/$defs/strings",
+      "description": "Executable: checker requires these arguments on the CI validator invocation."
+    },
+    "manifest_profiles": {
+      "$ref": "#/$defs/strings",
+      "description": "Executable: checker and generator accept only these manifest profiles."
+    },
+    "generated_manifest_profile": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Executable: generator default; loader verifies it is accepted."
+    },
     "managed_skill_operations": {
       "type": "object",
       "description": "Executable: generator supplies undeclared skill operations and removes only exact owned definitions when source skills disappear; loader validates against the SDLC schema.",
       "additionalProperties": false,
-      "required": ["validate", "deploy-local"],
+      "required": [
+        "validate",
+        "deploy-local",
+        "tests"
+      ],
       "properties": {
-        "validate": {"$ref": "#/$defs/operations"},
-        "deploy-local": {"$ref": "#/$defs/operations"}
+        "validate": {
+          "$ref": "#/$defs/operations"
+        },
+        "deploy-local": {
+          "$ref": "#/$defs/operations"
+        },
+        "tests": {
+          "$ref": "#/$defs/operations"
+        }
       }
+    },
+    "sdlc_version": {
+      "const": 3,
+      "description": "Executable: generated SDLC version and current-compatibility checker requirement."
+    },
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "project",
+        "lockfile",
+        "environment",
+        "payload_root",
+        "payloads",
+        "ignored_paths"
+      ],
+      "properties": {
+        "project": {
+          "$ref": "#/$defs/relative_path"
+        },
+        "lockfile": {
+          "$ref": "#/$defs/relative_path"
+        },
+        "environment": {
+          "$ref": "#/$defs/relative_path"
+        },
+        "payload_root": {
+          "$ref": "#/$defs/relative_path"
+        },
+        "payloads": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/relative_path"
+          }
+        },
+        "ignored_paths": {
+          "$ref": "#/$defs/strings"
+        }
+      },
+      "description": "Executable: generator creates the isolated uv project and copies this runner payload; checker verifies required files and lock."
+    },
+    "python_test_detection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "patterns",
+        "configuration_files",
+        "excluded_directories"
+      ],
+      "properties": {
+        "patterns": {
+          "$ref": "#/$defs/strings"
+        },
+        "configuration_files": {
+          "$ref": "#/$defs/strings"
+        },
+        "excluded_directories": {
+          "$ref": "#/$defs/strings"
+        }
+      },
+      "description": "Executable: deterministic test candidate discovery used by generator and checker; custom configurations still require repository review."
+    },
+    "dependency_updates": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "package-ecosystem",
+        "directory",
+        "schedule"
+      ],
+      "properties": {
+        "package-ecosystem": {
+          "const": "uv"
+        },
+        "directory": {
+          "type": "string",
+          "pattern": "^/"
+        },
+        "schedule": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "interval"
+          ],
+          "properties": {
+            "interval": {
+              "enum": [
+                "daily",
+                "weekly",
+                "monthly"
+              ]
+            }
+          }
+        }
+      },
+      "description": "Executable: generator registers the validator project with Dependabot without altering other ecosystem entries."
     }
   },
   "$defs": {
-    "strings": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
-    "filename": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"},
-    "relative_path": {"type": "string", "pattern": "^(?!/)(?!.*(?:^|/)\\.{1,2}(?:/|$))[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*$"},
+    "strings": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "filename": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+    },
+    "relative_path": {
+      "type": "string",
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.{1,2}(?:/|$))[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*$"
+    },
     "surface": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["path", "template", "required"],
+      "required": [
+        "path",
+        "template",
+        "required"
+      ],
       "properties": {
-        "path": {"$ref": "#/$defs/relative_path", "description": "Executable: repository-relative destination and checker target."},
-        "template": {"$ref": "#/$defs/filename", "description": "Executable: trusted filename inside the bundle templates directory."},
-        "required": {"enum": ["always", "with_skills", "when_present"], "description": "Executable: required-file condition within an applicable repository."}
+        "path": {
+          "$ref": "#/$defs/relative_path",
+          "description": "Executable: repository-relative destination and checker target."
+        },
+        "template": {
+          "$ref": "#/$defs/filename",
+          "description": "Executable: trusted filename inside the bundle templates directory."
+        },
+        "required": {
+          "enum": [
+            "always",
+            "with_skills",
+            "when_present",
+            "with_python_tests"
+          ],
+          "description": "Executable: required-file condition within an applicable repository."
+        }
       }
     },
     "operations": {
@@ -59,13 +265,23 @@
           {
             "type": "object",
             "additionalProperties": false,
-            "required": ["handoff"],
-            "properties": {"handoff": {"type": "string", "pattern": "^[a-z0-9-]+/[a-z0-9-]+$", "description": "Executable: SDLC skill/action route supplied by the generator."}}
+            "required": [
+              "handoff"
+            ],
+            "properties": {
+              "handoff": {
+                "type": "string",
+                "pattern": "^[a-z0-9-]+/[a-z0-9-]+$",
+                "description": "Executable: SDLC skill/action route supplied by the generator."
+              }
+            }
           },
           {
             "type": "object",
             "additionalProperties": false,
-            "required": ["steps"],
+            "required": [
+              "steps"
+            ],
             "properties": {
               "steps": {
                 "type": "array",
@@ -74,9 +290,34 @@
                 "items": {
                   "type": "object",
                   "additionalProperties": false,
-                  "required": ["run"],
-                  "properties": {"run": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}, "description": "Executable: command argv passed to the SDLC runner."}}
+                  "required": [
+                    "run"
+                  ],
+                  "properties": {
+                    "run": {
+                      "type": "array",
+                      "minItems": 1,
+                      "items": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "description": "Executable: command argv passed to the SDLC runner."
+                    }
+                  }
                 }
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "no-op"
+            ],
+            "properties": {
+              "no-op": {
+                "type": "string",
+                "minLength": 1
               }
             }
           }

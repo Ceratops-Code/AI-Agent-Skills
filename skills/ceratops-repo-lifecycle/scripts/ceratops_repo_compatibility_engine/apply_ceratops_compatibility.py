@@ -28,11 +28,17 @@ from .compatibility_contract import (
     surface_path,
     template_path,
 )
+from .python_tests import discover_python_tests, test_operation
 from .repository_validation_contract import load_validation_contract
 from .sdlc_contract_validation import load_contract, validation_errors
 from .validate_ceratops_compatibility import (
     action_assignment_errors,
     validate_ceratops_compatibility,
+)
+from .validation_environment import (
+    remove_created_environment,
+    runtime_files,
+    setup_runtime,
 )
 
 BUNDLE_ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -82,6 +88,8 @@ class CompatibilityPlan:
     validation_checks: list[str]
     skills: list[str]
     updated_markers: list[str]
+    runtime_files: dict[pathlib.Path, str]
+    python_tests: list[str]
 
 
 def require_linked_worktree(repo_root: pathlib.Path) -> None:
@@ -273,65 +281,12 @@ def _validation_workflow(
             if not isinstance(value, str):
                 raise RuntimeError("repository-validation contract check command values must be text")
             commands.append(value)
-    pyproject = _pyproject(repo_root)
-    project = pyproject.get("project", {})
-    requires_python = (
-        project.get("requires-python") if isinstance(project, Mapping) else None
-    )
-    if requires_python is not None and (
-        not isinstance(requires_python, str) or not requires_python.strip()
-    ):
-        raise RuntimeError("project.requires-python must be nonempty text")
-    python_selector = (
-        'python-version-file: "pyproject.toml"'
-        if requires_python is not None
-        else 'python-version: "3.12"'
-    )
-    setup: list[str] = [
-        "      - name: Set up Python",
-        f"        uses: {SETUP_PYTHON}",
-        "        with:",
-        f"          {python_selector}",
-    ]
-    validation_python = "python"
-    python_setup: list[str] = []
-    if (repo_root / "uv.lock").is_file() and "{python}" in commands:
-        setup.extend(
-            [
-                "      - name: Set up uv",
-                f"        uses: {SETUP_UV}",
-            ]
-        )
-        optional = project.get("optional-dependencies", {}) if isinstance(project, Mapping) else {}
-        groups = pyproject.get("dependency-groups", {})
-        if isinstance(optional, Mapping) and "dev" in optional:
-            python_setup.append("uv sync --extra dev --frozen")
-        elif isinstance(groups, Mapping) and "dev" in groups:
-            python_setup.append("uv sync --group dev --frozen")
-        else:
-            python_setup.append("uv sync --frozen")
-        validation_python = "uv run --no-sync python"
-    elif "{python}" in commands:
-        if (repo_root / "requirements-dev.txt").is_file():
-            python_setup.append("python -m pip install -r requirements-dev.txt")
-        elif (repo_root / "requirements.txt").is_file():
-            python_setup.append("python -m pip install -r requirements.txt")
-        elif (repo_root / "pyproject.toml").is_file():
-            optional = project.get("optional-dependencies", {}) if isinstance(project, Mapping) else {}
-            if isinstance(optional, Mapping) and "dev" in optional:
-                python_setup.append('python -m pip install -e ".[dev]"')
-            elif isinstance(project, Mapping) and project:
-                python_setup.append('python -m pip install -e "."')
-    if python_setup:
-        setup.extend(
-            [
-                "      - name: Install Python validation dependencies",
-                "        run: |",
-                *(f"          {command}" for command in python_setup),
-            ]
-        )
+    setup: list[str] = ["      - name: Set up uv", f"        uses: {SETUP_UV}"]
+    validation_python = "uv run --project scripts/validation --locked python"
     package = _package_manifest(repo_root)
     manager, manager_version = _package_manager(repo_root, package)
+    if "test" in _package_scripts(package):
+        commands.append("{" + (manager or "npm") + "}")
     if "{npm}" in commands and "{pnpm}" in commands:
         raise RuntimeError("one validation workflow cannot mix npm and pnpm checks")
     if "{npm}" in commands:
@@ -387,7 +342,7 @@ def _validation_workflow(
 def validation_surfaces(
     repo_root: pathlib.Path,
 ) -> tuple[str | None, str | None, list[str]]:
-    """Render only missing validation files and preserve existing files exactly."""
+    """Create missing validators and reconcile the CI edge without losing custom steps."""
 
     validator = repo_root / surface_path("validator")
     workflow = repo_root / surface_path("workflow")
@@ -398,8 +353,6 @@ def validation_surfaces(
         if path.exists() or path.is_symlink():
             if path.is_symlink() or not path.is_file():
                 raise RuntimeError(f"existing {label} must be a regular file: {path}")
-    if validator.is_file() and workflow.is_file():
-        return None, None, []
 
     checks = contract_checks(repo_root)
     validator_text = None
@@ -415,7 +368,7 @@ def validation_surfaces(
     workflow_text = None
     if not workflow.is_file():
         template = template_path("workflow").read_text(encoding="utf-8")
-        markers = ("__RUNNER__", "      # __SETUP_STEPS__", "__VALIDATOR_PYTHON__")
+        markers = ("__RUNNER__", "      # __SETUP_STEPS__")
         if any(template.count(marker) != 1 for marker in markers):
             raise RuntimeError("CI validation template markers are invalid")
         runner, setup, validation_python = _validation_workflow(repo_root, checks)
@@ -424,6 +377,33 @@ def validation_surfaces(
             .replace("      # __SETUP_STEPS__", setup)
             .replace("__VALIDATOR_PYTHON__", validation_python)
         )
+    if workflow.is_file():
+        payload = yaml.safe_load(workflow.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict) or not isinstance(payload.get("jobs"), dict):
+            raise RuntimeError("existing CI workflow has no jobs; reconcile its SDLC invocation explicitly")
+        if True in payload:
+            payload["on"] = payload.pop(True)
+        changed = False
+        found = False
+        for job in payload["jobs"].values():
+            if not isinstance(job, dict):
+                continue
+            steps = job.get("steps", [])
+            for step in list(steps):
+                command = step.get("run", "") if isinstance(step, dict) else ""
+                if "scripts/sdlc.py" in command and "--ci" in command:
+                    found = True
+                elif surface_path("validator").as_posix() in command:
+                    if "\n" in command.strip() or any(token in command for token in ("&&", ";", "|")):
+                        raise RuntimeError("custom CI validation command requires explicit SDLC integration")
+                    step["run"] = "uv run --project scripts/validation --locked python scripts/sdlc.py --validate --ci --evidence-file ${{ runner.temp }}/repository-validation.log"
+                    changed = found = True
+                    if not any("astral-sh/setup-uv@" in item.get("uses", "") for item in steps if isinstance(item, dict)):
+                        steps.insert(steps.index(step), {"name": "Set up uv", "uses": SETUP_UV.split(" #", 1)[0]})
+        if not found:
+            raise RuntimeError("existing CI workflow must expose a repository validation invocation before integration")
+        if changed:
+            workflow_text = yaml.dump(payload, Dumper=IndentedSafeDumper, sort_keys=False)
     return validator_text, workflow_text, [str(check["id"]) for check in checks]
 
 
@@ -468,17 +448,41 @@ def build_sdlc_contract_candidate(
     """
 
     if not apply_contract:
-        return None
+        raise RuntimeError("SDLC is required for current Ceratops compatibility")
     reusable = load_contract(template_path("sdlc"))
     target = repo_root / surface_path("sdlc")
     contract = load_contract(target) if target.is_file() else dict(reusable)
-    if contract["version"] != reusable["version"]:
-        # Compatibility work must not turn a supported contract into a migration.
-        # Returning no candidate leaves its exact bytes and operation locations.
-        return None
-    candidate = dict(contract)
+    if contract["version"] == 1:
+        raise RuntimeError("SDLC version 1 operation ownership must be mapped to deliverables before applying current compatibility")
+    candidate = dict(contract, version=reusable["version"])
     repository = dict(candidate.get("repository", {}))
-    repository.setdefault("validate", reusable["repository"]["validate"])
+    validations = dict(repository.get("validate", {}))
+    existing_validation = validations.get("repository")
+    if existing_validation is None or existing_validation == {"steps": [{"run": ["python", "scripts/validate-repository.py"]}]}:
+        validations["repository"] = reusable["repository"]["validate"]["repository"]
+    elif existing_validation != reusable["repository"]["validate"]["repository"]:
+        # A custom wrapper can carry arguments or setup that cannot safely be
+        # replaced or duplicated. The action must first separate that behavior.
+        raise RuntimeError("custom repository validation operation requires explicit integration with the uv validator command")
+    repository["validate"] = validations
+    repository.setdefault("prerequisites", {}).setdefault("uv", {"executable": "uv"})
+    repository.setdefault("bootstrap", {}).setdefault("validation", reusable["repository"]["bootstrap"]["validation"])
+    tests = dict(repository.get("tests", {}))
+    infer_tests = not tests or tests == reusable["repository"]["tests"]
+    if infer_tests:
+        tests = {}
+    detected = discover_python_tests(repo_root, load_compatibility_contract()["python_test_detection"])
+    if detected and infer_tests:
+        tests["python"] = test_operation(repo_root, surface_path("python_test_runner").as_posix())
+    package = _package_manifest(repo_root)
+    manager, _ = _package_manager(repo_root, package)
+    if "test" in _package_scripts(package) and infer_tests:
+        tests["package"] = {"steps": [{"run": [manager or "npm", "test"]}]}
+    if (repo_root / "go.mod").is_file() and infer_tests:
+        tests["go"] = {"steps": [{"run": ["go", "test", "./..."]}]}
+    if (repo_root / "Cargo.toml").is_file() and infer_tests:
+        tests["rust"] = {"steps": [{"run": ["cargo", "test"]}]}
+    repository["tests"] = tests or reusable["repository"]["tests"]
     candidate["repository"] = repository
     deliverables = dict(candidate.get("deliverables", {}))
     skills = dict(deliverables.get("skills", {}))
@@ -499,6 +503,8 @@ def build_sdlc_contract_candidate(
     else:
         deliverables.pop("skills", None)
     if deliverables:
+        for deliverable in deliverables.values():
+            deliverable.setdefault("tests", {"none": {"no-op": "No deliverable-specific test operation is declared; repository tests remain separately selectable."}})
         candidate["deliverables"] = deliverables
     else:
         candidate.pop("deliverables", None)
@@ -795,6 +801,12 @@ def plan_ceratops_compatibility(
         if action_errors:
             raise RuntimeError("; ".join(action_errors))
     validator_text, workflow_text, validation_checks = validation_surfaces(repo_root)
+    compatibility_contract = load_compatibility_contract()
+    python_tests = discover_python_tests(repo_root, compatibility_contract["python_test_detection"])
+    generated_runtime = runtime_files(repo_root, BUNDLE_ROOT, compatibility_contract, contract_checks(repo_root))
+    test_runner = repo_root / surface_path("python_test_runner")
+    if python_tests and not test_runner.is_file():
+        generated_runtime[test_runner] = template_path("python_test_runner").read_text(encoding="utf-8").replace("__TEST_TARGETS__", repr(python_tests))
     return CompatibilityPlan(
         manifest=manifest,
         skill_updates=skill_updates,
@@ -809,6 +821,8 @@ def plan_ceratops_compatibility(
         validation_checks=validation_checks,
         skills=sorted(assignments),
         updated_markers=sorted(updated_markers),
+        runtime_files=generated_runtime,
+        python_tests=python_tests,
     )
 
 
@@ -818,6 +832,10 @@ def apply_compatibility_plan(
 ) -> None:
     """Apply one fully validated plan inside the caller's rollback boundary."""
 
+    for destination, content in plan.runtime_files.items():
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        newline = "\r\n" if destination.is_file() and b"\r\n" in destination.read_bytes() else "\n"
+        destination.write_text(content, encoding="utf-8", newline=newline)
     if plan.canonical_sources:
         sections_dir = repo_root / "skills" / "sections"
         sections_dir.mkdir(parents=True, exist_ok=True)
@@ -884,11 +902,6 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--target-repo-root", required=True, type=pathlib.Path)
     parser.add_argument("--runtime-source-id")
-    parser.add_argument(
-        "--no-sdlc-contract",
-        action="store_true",
-        help="Leave sdlc/sdlc.yml absent or unchanged.",
-    )
     args = parser.parse_args(argv)
     repo_root = args.target_repo_root.resolve()
     phase = "preflight"
@@ -896,7 +909,10 @@ def main(argv: list[str] | None = None) -> int:
     snapshots: list[FileSnapshot] = []
     created_dirs: list[pathlib.Path] = []
     mutation_started = False
+    environment_created = False
+    runtime = {}
     try:
+        runtime = load_compatibility_contract()["runtime"]
         require_linked_worktree(repo_root)
         template = load_mapping(template_path("skill_manifest"))
         validate_template(template)
@@ -914,10 +930,10 @@ def main(argv: list[str] | None = None) -> int:
             source_id,
             template,
             existing,
-            apply_sdlc_contract=not args.no_sdlc_contract,
+            apply_sdlc_contract=True,
         )
         skill_paths = sorted((repo_root / "skills").glob("*/SKILL.md"))
-        mutable_paths = [*skill_paths, existing_path]
+        mutable_paths = [*skill_paths, existing_path, *plan.runtime_files, repo_root / runtime["lockfile"]]
         mutable_paths.extend(
             repo_root / "skills" / "sections" / f"{section_name}.md"
             for section_name in plan.canonical_sources
@@ -959,6 +975,19 @@ def main(argv: list[str] | None = None) -> int:
                 or plan.workflow_text is not None
             )
         ]
+        # Include every new ancestor before writing payloads. Rollback removes
+        # only empty directories after restoring files and the owned environment.
+        new_directories = set(created_dirs)
+        for target in mutable_paths:
+            current = target.parent
+            while current != repo_root and current.is_relative_to(repo_root):
+                if not current.exists():
+                    new_directories.add(current)
+                current = current.parent
+        created_dirs = sorted(new_directories, key=lambda item: len(item.parts))
+        for target in mutable_paths:
+            if target.is_symlink() or not target.resolve().is_relative_to(repo_root):
+                raise RuntimeError(f"unsafe compatibility destination: {target}")
         phase = "compatibility_application"
         mutation_started = True
         apply_compatibility_plan(repo_root, plan)
@@ -977,6 +1006,11 @@ def main(argv: list[str] | None = None) -> int:
                 raise RuntimeError("bootstrap synchronizer returned an invalid result")
             bootstrap_status = bootstrap_status_value
 
+        phase = "validator_environment_setup"
+        environment_created = not (repo_root / runtime["environment"]).exists()
+        if (repo_root / runtime["environment"]).is_symlink():
+            raise RuntimeError("validator environment must not be a directory link")
+        setup_runtime(repo_root, runtime)
         phase = "compatibility_validation"
         compatibility = validate_ceratops_compatibility(repo_root)
         if (
@@ -990,7 +1024,11 @@ def main(argv: list[str] | None = None) -> int:
         reason = str(exc)
         if mutation_started:
             try:
+                if environment_created:
+                    remove_created_environment(repo_root, runtime["environment"])
                 restore_snapshots(snapshots, created_dirs)
+                if not environment_created and (repo_root / runtime["lockfile"]).is_file():
+                    setup_runtime(repo_root, runtime)
                 rollback = "completed"
             except RuntimeError as rollback_exc:
                 rollback = "failed"
@@ -1032,6 +1070,9 @@ def main(argv: list[str] | None = None) -> int:
                         else "preserved"
                     ),
                 },
+                "python_tests": plan.python_tests,
+                "validator_environment": runtime["environment"],
+                "custom_validation_review_required": plan.validator_text is None,
                 "markers_removed": plan.updated_markers,
                 "rollback": "not_needed",
                 "runtime_source_id": source_id,

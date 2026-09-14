@@ -13,9 +13,9 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # __SETUP_STEPS__
-      - name: Validate repository
+      - name: Validate and test through SDLC
         run: >-
-          __VALIDATOR_PYTHON__ scripts/validate-repository.py
+          uv run --project scripts/validation --locked python scripts/sdlc.py --validate --ci
           --evidence-file ${{ runner.temp }}/repository-validation.log
 
       - name: Upload validation evidence
