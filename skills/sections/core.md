@@ -42,9 +42,10 @@
   user already explicitly requested that tradeoff.
 - Treat audits, diagnostics, recommendations, requested wording, and other
   advisory requests as non-mutating.
-- Mutate only when the user or the selected execution action explicitly requests
-  the target class. In a mixed request, mutate only the expressly requested
-  targets.
+- Mutate only within the action and target scope of an execution request,
+  confirmation, or standing instruction; choosing a workflow supplies no
+  additional authorization. In a mixed request, mutate only the expressly
+  requested targets.
 - Do not update this `SKILL.md` or other skill/control files during a routine
   run unless the user explicitly asked for skill maintenance or the task cannot
   be completed safely without a narrow in-scope fix.
