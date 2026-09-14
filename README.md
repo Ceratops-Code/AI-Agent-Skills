@@ -521,7 +521,8 @@ The launcher also accepts `-m MODULE`. The first uv command selects the
 dependency-free bootstrap interpreter. The launcher then invokes uv with the
 bundled project's locked dependencies and required Python version. It preserves
 the caller's working directory and the helper's output and exit status.
-Nested Python commands inherit that environment.
+Nested plain Python commands inherit that environment. Repository uv commands
+select their own projects; the launcher does not forward its setup override.
 
 The shared environment resides at `$CODEX_HOME/runtimes/ceratops/.venv`.
 When `CODEX_HOME` is unset, the launcher uses `~/.codex`. uv reads declarations

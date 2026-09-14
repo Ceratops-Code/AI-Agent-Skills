@@ -158,6 +158,10 @@ def run_helper(skill_root: pathlib.Path, arguments: Sequence[str]) -> int:
     # invoke other skills without holding this lock for their entire lifetime.
     scripts = runtime / ".venv" / ("Scripts" if os.name == "nt" else "bin")
     python = scripts / ("python.exe" if os.name == "nt" else "python")
+    # The override belongs only to skill preparation. Forwarding it would make
+    # repository uv commands synchronize the shared skill environment instead
+    # of the repository's declared project environment.
+    environment.pop("UV_PROJECT_ENVIRONMENT")
     environment["VIRTUAL_ENV"] = str(runtime / ".venv")
     environment["PATH"] = str(scripts) + os.pathsep + environment.get("PATH", "")
     return subprocess.run([str(python), *args], env=environment, check=False).returncode

@@ -1090,6 +1090,39 @@ def test_shared_skill_python_environment_reuses_lock_and_repairs_missing_package
     assert repaired.returncode == 0, repaired.stderr
     assert json.loads(repaired.stdout)["python"] == str(interpreter)
 
+    # A lifecycle engine launched from an installed skill must let target uv
+    # commands select scripts/.venv, even though the engine itself uses the
+    # fixed shared environment. A later skill import must remain usable.
+    repository = tmp_path / "target repository"
+    scripts = repository / "scripts"
+    scripts.mkdir(parents=True)
+    (scripts / "pyproject.toml").write_text(
+        '[project]\nname="target-tools"\nversion="0.0.0"\n'
+        'requires-python=">=3.14,<3.15"\ndependencies=[]\n'
+        '[tool.uv]\npackage=false\n'
+    )
+    locked_target = subprocess.run([uv, "lock", "--project", str(scripts)], capture_output=True, text=True)
+    assert locked_target.returncode == 0, locked_target.stderr
+    (scripts / "probe.py").write_text(
+        "import json, pathlib, sys\n"
+        "pathlib.Path('target-python.json').write_text(json.dumps(sys.prefix))\n"
+    )
+    (repository / "sdlc").mkdir()
+    (repository / "sdlc/sdlc.yml").write_text(json.dumps({
+        "version": 3, "kind": "ceratops-sdlc", "repository": {
+            "validate": {"target": {"steps": [{"run": [uv, "run", "--locked", "scripts/probe.py"]}]}},
+            "tests": {"none": {"no-op": "Environment boundary fixture."}},
+        },
+    }))
+    through_skill = subprocess.run([
+        sys.executable, str(launcher_path), "scripts/repository_operation.py",
+        "--repo-root", str(repository), "--validate", "--ci",
+    ], cwd=tmp_path, env=environment, capture_output=True, text=True)
+    assert through_skill.returncode == 0, through_skill.stderr
+    assert pathlib.Path(json.loads((repository / "target-python.json").read_text())) == scripts / ".venv"
+    shared_import = subprocess.run([str(interpreter), "-c", "import jsonschema, yaml"], capture_output=True, text=True)
+    assert shared_import.returncode == 0, shared_import.stderr
+
     project = destination / names[1] / "scripts/python-runtime"
     pyproject = project / "pyproject.toml"
     pyproject.write_text(pyproject.read_text().replace('version = "0.0.0"', 'version = "0.1.0"'))
