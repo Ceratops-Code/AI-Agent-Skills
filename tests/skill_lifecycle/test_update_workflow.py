@@ -8,6 +8,7 @@ import shlex
 import stat
 import sys
 from contextlib import contextmanager
+from typing import Any
 
 import pytest
 
@@ -219,6 +220,121 @@ def test_skill_update_scratch_preserves_unowned_paths(
     assert sentinel.read_text(encoding="utf-8") == "keep"
     assert unrecorded.is_dir()
     assert set(root.iterdir()) == ({unrecorded} if invalid == "options" else {unrecorded, marker})
+
+
+@pytest.mark.parametrize("declaration", [
+    "skill-section", "action-section", "payload", "payload-glob", "payload-directory",
+    "wildcard-payload", "wildcard-glob", "new-payload", "deleted-payload", "manifest",
+    "unrelated-skill", "extra-skill", "unmanaged-skill", "target-only", "wrong-glob",
+    "mapped-directory", "unsafe-payload", "unsafe-section", "invalid-json", "missing-manifest",
+])
+def test_skill_update_workflow_resolves_manifest_source_owners(
+    tmp_path: pathlib.Path, declaration: str,
+) -> None:
+    worktree, _scope, task_temp_root = prepare_skill_update_workflow_worktree(tmp_path)
+    shared = "skills/sections/shared.md" if declaration in {"skill-section", "action-section", "unsafe-section"} else "skills/sections/scripts/shared.py"
+    source = worktree / shared
+    source.parent.mkdir(parents=True)
+    source.write_text("VALUE = 1\n", encoding="utf-8")
+    manifest_path = worktree / "skills/skill-sections.json"
+    manifest: dict[str, Any] = {
+        "runtime_source_id": "example/shared-ownership", "validation_profile": "ceratops-compatible",
+        "sections": {"shared": shared}, "skills": {"alpha-tool": [], "beta-tool": []},
+        "actions": {}, "runtime_payloads": {},
+    }
+    selected = ["alpha-tool"]
+    allowed = [shared]
+    rejection = None
+    payload = {"source": shared, "target": "scripts/shared.py"}
+    manifest["runtime_payloads"] = {"alpha-tool": [payload]}
+    if declaration in {"skill-section", "action-section", "unsafe-section"}:
+        manifest["runtime_payloads"] = {}
+        if declaration == "action-section":
+            manifest["actions"] = {"alpha-tool": {"references/change.md": ["shared"]}}
+        else:
+            manifest["skills"]["alpha-tool"] = ["shared"]
+        if declaration == "unsafe-section":
+            manifest["sections"]["shared"] = "../outside.md"
+            rejection = "section source"
+    elif declaration == "payload-glob":
+        manifest["runtime_payloads"] = {"alpha-tool": ["skills/sections/**/*.py"]}
+    elif declaration == "payload-directory":
+        manifest["runtime_payloads"] = {"alpha-tool": ["skills/sections"]}
+    elif declaration in {"wildcard-payload", "wildcard-glob", "unmanaged-skill"}:
+        selected = ["alpha-tool", "beta-tool"]
+        manifest["runtime_payloads"] = {"*": ["skills/sections/**/*.py" if declaration == "wildcard-glob" else payload]}
+        if declaration == "unmanaged-skill":
+            del manifest["skills"]["beta-tool"]
+            rejection = "selected skill has no allowed source path: beta-tool"
+    elif declaration == "new-payload":
+        source.unlink()
+    elif declaration == "manifest":
+        selected = ["alpha-tool", "beta-tool"]
+        allowed = ["skills/skill-sections.json"]
+    elif declaration in {"unrelated-skill", "extra-skill"}:
+        selected = ["beta-tool"] if declaration == "unrelated-skill" else ["alpha-tool", "beta-tool"]
+        rejection = "selected skill has no allowed source path: beta-tool"
+    elif declaration in {"target-only", "wrong-glob", "mapped-directory"}:
+        manifest["runtime_payloads"] = {"alpha-tool": [
+            {"source": "skills/sections/other.py", "target": shared} if declaration == "target-only"
+            else {"source": "skills/sections/scripts", "target": "scripts/shared"} if declaration == "mapped-directory"
+            else "skills/sections/*.py"
+        ]}
+        rejection = "selected skill has no allowed source path"
+    elif declaration == "unsafe-payload":
+        payload["source"] = "../outside.py"
+        rejection = "unsafe exact mapping"
+    elif declaration == "invalid-json":
+        rejection = "section manifest is unreadable"
+    elif declaration == "missing-manifest":
+        rejection = "selected skill has no allowed source path"
+    if declaration != "missing-manifest":
+        manifest_path.write_text("{" if declaration == "invalid-json" else json.dumps(manifest) + "\n", encoding="utf-8")
+    assert run_git(worktree, "add", "skills").returncode == 0
+    assert run_git(worktree, "commit", "-m", "declare shared source consumers").returncode == 0
+    request_path = task_temp_root / "request.json"
+    state_path = task_temp_root / "state.json"
+    evidence_path = task_temp_root / "evidence.json"
+    request_path.write_text(json.dumps({
+        "schema": "ceratops-skill-update-request.v2", "repo_root": str(worktree),
+        "task_temp_root": str(task_temp_root), "evidence_output": str(evidence_path),
+        "disposable_artifacts": ["request", "state", "evidence"],
+        "selected_skills": selected, "allowed_paths": allowed,
+        "change_groups": [{"name": "shared-source", "paths": allowed}],
+        "checks": [{"kind": "command", "argv": [sys.executable, "-c", "print('OK')"]}],
+    }) + "\n", encoding="utf-8")
+    prepared = run_skill_update_workflow("prepare", "--request", str(request_path), "--state", str(state_path))
+    if rejection is not None:
+        assert prepared.returncode == 2 and rejection in prepared.stderr, prepared.stderr
+        assert sorted(path.name for path in task_temp_root.iterdir()) == ["request.json"]
+        return
+    assert prepared.returncode == 0, prepared.stderr
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["selected_skills"] == selected and state["allowed_paths"] == allowed
+    if declaration == "deleted-payload":
+        source.unlink()
+        assert run_git(worktree, "add", shared).returncode == 0
+    elif declaration == "manifest":
+        manifest["maintenance_workflows"] = {"skill_local_or_metadata_changes": []}
+        manifest_path.write_text(json.dumps(manifest) + "\n", encoding="utf-8")
+    else:
+        source.write_text("VALUE = 2\n", encoding="utf-8")
+        # Ownership must not let an undeclared manifest edit authorize verification.
+        original_manifest = manifest_path.read_bytes()
+        manifest["runtime_source_id"] = "example/changed"
+        manifest_path.write_text(json.dumps(manifest) + "\n", encoding="utf-8")
+        rejected = run_skill_update_workflow("verify", "--state", str(state_path), "--evidence-output", str(evidence_path))
+        assert rejected.returncode == 2, rejected.stdout
+        assert state_path.exists() and request_path.exists()
+        manifest_path.write_bytes(original_manifest)
+    verified = run_skill_update_workflow("verify", "--state", str(state_path), "--evidence-output", str(evidence_path))
+    assert verified.returncode == 0, verified.stderr
+    evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+    assert evidence["changed_paths"] == allowed
+    assert evidence["status"] == "passed"
+    finalized = run_skill_update_workflow("finalize", "--state", str(state_path))
+    assert finalized.returncode == 0, finalized.stderr
+    assert not task_temp_root.exists()
 
 
 @pytest.mark.parametrize("new_source", ["skills/sections/scripts/shared-helper.py", "scripts/example_helper.py", "unowned/new.py"])

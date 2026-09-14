@@ -100,6 +100,9 @@ repo docs, then update the narrowest correct source that exists.
   declared checks, preserve retryable pending state on failure, reject unchanged
   retries and scope broadening, and permanently invalidate state changed after
   the correction generation. Do not use it for skill-local text-only updates.
+- The update helper must count manifest-declared shared sources as ownership
+  for their selected skill consumers and reject selected skills without an
+  owned allowed path.
 - Update skills, shared sections, manifest, runtime payloads, runtime generation
   or validation scripts, helper-runtime files or claims, contracts, and repo
   docs only where ownership requires it.

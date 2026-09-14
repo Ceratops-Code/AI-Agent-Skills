@@ -3,10 +3,12 @@
 
 The helper records the caller's pre-existing Git baseline before source edits,
 then verifies that only declared paths changed and that undeclared dirty state
-was preserved. One changed in-scope snapshot may start a correction generation
-after success; it invalidates the earlier success before checks and cannot be
-reopened after passing. Prepare collects declared pytest nodes without running
-tests. Git whitespace preflight includes tracked and new files before declared
+was preserved. Selected skills may own shared sources through the repository's
+section assignments and runtime payload mappings. One changed in-scope snapshot
+may start a correction generation after success; it invalidates the earlier
+success before checks and cannot be reopened after passing. Prepare collects
+declared pytest nodes without running tests. Git whitespace preflight includes
+tracked and new files before declared
 checks, which use closed structured forms and run without a shell.
 Collection and verification own temporary check folders and remove them on exit.
 Source files are never patched, staged, committed, installed, promoted, or
@@ -32,6 +34,7 @@ import sys
 import tempfile
 from collections.abc import Mapping, Sequence
 
+from runtime.managed_runtime_builder import IGNORE_NAMES, payload_parts
 from skill_update_scratch import check_environment
 
 REQUEST_SCHEMA = "ceratops-skill-update-request.v2"
@@ -563,6 +566,72 @@ def _collect_declared_pytest_nodes(
         raise UpdateExecutionError(f"{message}: {detail}" if detail else message)
 
 
+def _shared_source_owners(
+    repo_root: pathlib.Path, allowed: list[str], selected: set[str],
+) -> set[str]:
+    """Resolve selected consumers without expanding the caller's allowed paths.
+
+    Match declarations, not existing files, so a declared new file or a staged
+    deletion retains its ownership. Payload parents model recursive directory
+    copies; exact source-target mappings only own their source file. The normal
+    baseline checks still reject undeclared manifest or source changes.
+    """
+
+    if not selected:
+        return set()
+    manifest_path = _target(repo_root, "skills/skill-sections.json")
+    if not manifest_path.exists():
+        return set()
+    manifest = _read_json(manifest_path, "section manifest")
+
+    def mapping(name: str) -> Mapping[str, object]:
+        value = manifest.get(name, {})
+        if not isinstance(value, Mapping):
+            raise UpdateExecutionError(f"section manifest {name} must be an object")
+        return value
+
+    sections, assignments = mapping("sections"), mapping("skills")
+    actions, payloads = mapping("actions"), mapping("runtime_payloads")
+    paths = {pathlib.PurePosixPath(value) for value in allowed}
+    owners: set[str] = set()
+    for skill in sorted(selected.intersection(assignments)):
+        if "skills/skill-sections.json" in allowed:
+            owners.add(skill)
+        skill_actions = actions.get(skill, {})
+        if not isinstance(skill_actions, Mapping):
+            raise UpdateExecutionError(f"section manifest actions.{skill} must be an object")
+        for names in (assignments[skill], *skill_actions.values()):
+            if not isinstance(names, list) or not all(isinstance(name, str) for name in names):
+                raise UpdateExecutionError(f"section assignments for {skill} must be string lists")
+            for name in names:
+                source = sections.get(name)
+                if not isinstance(source, str):
+                    raise UpdateExecutionError(f"unknown section assignment for {skill}: {name}")
+                if _safe_relative(source, "section source") in paths:
+                    owners.add(skill)
+        for key in ("*", skill):
+            declarations = payloads.get(key, [])
+            if not isinstance(declarations, list):
+                raise UpdateExecutionError(f"runtime_payloads.{key} must be a list")
+            for index, declaration in enumerate(declarations):
+                try:
+                    pattern, mapped_target = payload_parts(declaration, f"runtime_payloads.{key}[{index}]")
+                except ValueError as exc:
+                    raise UpdateExecutionError(str(exc)) from exc
+                pattern = pattern.replace("\\", "/")
+                for path in paths:
+                    candidates = (path,) if mapped_target is not None else (path, *path.parents)
+                    if any(
+                        source != pathlib.PurePosixPath(".")
+                        and ".git" not in source.parts
+                        and source.full_match(pattern, case_sensitive=os.name != "nt")
+                        and not any(part in IGNORE_NAMES for part in path.relative_to(source).parts)
+                        for source in candidates
+                    ):
+                        owners.add(skill)
+    return owners
+
+
 def _validated_request(
     path: pathlib.Path,
 ) -> tuple[
@@ -662,6 +731,7 @@ def _validated_request(
             raise UpdateExecutionError(f"allowed path must be a regular file target: {value}")
         if not target.exists() and not target.parent.is_dir():
             raise UpdateExecutionError(f"allowed path parent does not exist: {value}")
+    owners.update(_shared_source_owners(repo_root, allowed, set(selected) - owners))
     missing_owners = sorted(set(selected) - owners)
     if missing_owners:
         raise UpdateExecutionError(
@@ -981,6 +1051,7 @@ def _validated_state(path: pathlib.Path) -> dict[str, object]:
                 raise UpdateExecutionError(
                     f"state ancillary path is not tracked at the prepared commit: {value}"
                 )
+    owners.update(_shared_source_owners(repo_root, allowed, set(selected) - owners))
     if owners != set(selected):
         raise UpdateExecutionError("state selected skills lack allowed source paths")
     cleanup = _validated_cleanup(
