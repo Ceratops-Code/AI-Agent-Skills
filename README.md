@@ -2,6 +2,10 @@
 
 Reusable Ceratops skills for Codex and other agents compatible with `SKILL.md`.
 
+The [design draft](docs/design-draft.md) records decisions from the repository
+lifecycle discussion. It is a thread-scoped draft, not an architecture review
+or another governing contract.
+
 ## Skills
 
 | Skill | Purpose |
@@ -134,7 +138,7 @@ without repository deduplication.
 | `scripts/deploy-tool-manager.py` | Install the checkout's declared tool-manager version, including over an existing installation, from the scripts environment; uses the manager's global Python and uv prerequisites, temporary locked libraries, and packaging and deployment code. Never changes Codex settings. |
 | `scripts/testing/run-tests.py` | Sole test-selection, collection-reconciliation, and pytest-execution owner; validates `tests/test-impact.json`, explains deterministic Git-diff selection, rejects mapping gaps before pytest collection or execution, supports explicit committed-diff, worktree, collection, and `--all` modes, adds `--select-only` to check diff/worktree mapping without pytest, and saves failed-pytest streams and structured pre-test failures with captured command output through `--diagnostic-output`; pytest output remains bounded in the console. |
 | `scripts/testing/pytest-diagnostics.py` | Extracts bounded failure summaries using exact pytest identities and source-file evidence; ambiguous or missing tracebacks use only that test's summary reason. Full diagnostic files remain owned by the runner. |
-| `scripts/validate-repository.py` | Local non-test validation coordinator; checks the running Python against `scripts/pyproject.toml`, captures first-failure evidence, and never selects or runs test suites. |
+| `scripts/validate-repository.py` | Local validation coordinator; checks the running Python against `scripts/pyproject.toml`, runs repository lint and type checks, and captures first-failure evidence. Tests run separately through `scripts/testing/run-tests.py`. |
 | `skills/ceratops-repo-lifecycle/references/templates/deploy-skills.py.tmpl` | Authoritative standalone installer copied into compatible skill repositories as `scripts/deploy-skills.py`; invoke it through uv using the scripts project. |
 | `skills/ceratops-repo-lifecycle/references/contracts/repository-validation-contract.json` | Schema-validated repository checks used by compatibility generation and included in repository contract review and validator discovery. |
 | `skills/ceratops-repo-lifecycle/references/contracts/ceratops-compatibility-*-contract.json` | Internal structural contract consumed by compatibility generation/checking, plus a behavioral review rubric for environment setup, tests, and lifecycle orchestration; no external source registry. |
@@ -174,9 +178,9 @@ without repository deduplication.
 | `skills/ceratops-skill-lifecycle/scripts/skill_update_state.py` | Owns update state, filesystem boundaries and cleanup-record validation; successful successor finalization removes only unchanged inherited disposable records and preserves protected inputs. |
 | `skills/ceratops-skill-lifecycle/scripts/fast-change.py` | Classifies exact structured replacements, generates their diff, and owns the eligible direct-release change through declared Markdown lint, exact helper tests, targeted installation, commit, and failure compensation. |
 
-Lifecycle helpers suppress successful subcommand output and print only compact
-JSON on success. This repo keeps scripts only where they add reusable safety
-logic or bundle nontrivial evidence collection.
+Lifecycle helpers suppress successful subcommand output and return `OK` or
+compact structured results. This repo keeps scripts only where they add
+reusable safety logic or bundle nontrivial evidence collection.
 
 New shipping PRs use non-merge commit subjects from the base-to-head range for
 their title, shortened to 120 characters, and all those commit messages for
@@ -209,8 +213,9 @@ Operations are identified by their YAML location, such as
 `repository.bootstrap.runtime` or
 `deliverables.skills.deploy-local.ceratops-managed`.
 There are no extra IDs, defaults or full flows in the contract. Prerequisites
-are setup metadata; only explicitly declared bootstrap commands install
-dependencies. Version-3 handoffs name a skill/action. For skill callers, the
+are setup metadata; declaring them does not install dependencies. Bootstrap
+operations perform declared setup, and uv prepares the environment for commands
+invoked through it. Version-3 handoffs name a skill/action. For skill callers, the
 engine resolves the installed skill's `references/action-executors.json` and
 runs its declared argv or ordered steps; unresolved routes block dependent work.
  CI uses `--ci`, never dispatches skills, and reports deferred handoffs
@@ -225,6 +230,12 @@ transactional installer. The compatible-repository producer
 adds these skill operations only for source skills in current-format contracts;
 the generic template declares repository validation and an explicit test no-op.
 
+Tool deployment at `deliverables.tools.deploy-local.ceratops-managed` routes to
+`ceratops-tool-lifecycle/install`. That skill's installed executable binding
+calls the installed tool manager with `--source` set to the selected repository.
+The manager reads the tool name and version from that checkout's `pyproject.toml`.
+There is no separate command named "SDLC install."
+
 `ship` derives its optional pending-work scope from the staged branch. When
 present, the same generic scope is checked before the first remote
 push, after synchronization before release publication and local deployment,
@@ -238,7 +249,8 @@ behavior remains unchanged.
 
 ### Governance proposal construction
 
-Run `python skills/ceratops-governance-lifecycle/scripts/proposal-workflow.py
+Run `uv run --project scripts --locked python
+skills/ceratops-governance-lifecycle/scripts/proposal-workflow.py
 construct --spec SPEC` from the repository root. The caller retains the UTF-8
 JSON spec, whose complete shape is:
 
@@ -402,7 +414,7 @@ python -m github_pr_workflow ship --help
 python -m github_contract_engine codeql-disposition --help
 python -m github_contract_engine validate consistency
 Pop-Location
-python .\skills\ceratops-skill-lifecycle\scripts\skills-consistency-source-validator.py --mode full
+uv run --project scripts --locked python skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py --mode full
 ```
 
 The organization and repository/artifact commands are package operations over
@@ -616,12 +628,12 @@ Codex discovers personal skills from:
 $CODEX_HOME/skills/<skill-name>/SKILL.md
 ```
 
-Install uv and a global Python matching `scripts/pyproject.toml`. The shared
-bootstrap selects that Python and creates `scripts/.venv` with the committed
-lock; it does not install packages globally or download another interpreter.
+Install uv. It selects a Python matching `scripts/pyproject.toml`, obtaining
+the interpreter when needed, and prepares `scripts/.venv` from `scripts/uv.lock`.
+Run the repository installer with that locked project:
 
 ```powershell
-python .\scripts\deploy-skills.py
+uv run --locked scripts/deploy-skills.py
 ```
 
 The deployed skills' separate project includes timezone data for date-based
@@ -638,10 +650,10 @@ For validated deployment with managed retirement and rollback, use
 For another Ceratops-compatible repo, run its versioned repository installer:
 
 ```powershell
-python <target-repo>\scripts\deploy-skills.py --repo-root <target-repo>
+uv run --locked <target-repo>/scripts/deploy-skills.py --repo-root <target-repo>
 ```
 
-An external repository's copied bootstrap is independent: it uses only the
+An external repository's standalone installer is independent: it uses only the
 Python standard library, reads declared skills, resolves shared sections and
 payloads, and overlays the requested output under the install root. It retains
 destination-only files and other skills. It does not locate or run Ceratops,
@@ -653,7 +665,7 @@ manifest entries and malformed-entry blockers without comparing runtime files
 to source:
 
 ```powershell
-python .\skills\ceratops-skill-lifecycle\scripts\runtime\install-managed-skills.py --inventory-output <file>
+uv run --project scripts --locked python skills/ceratops-skill-lifecycle/scripts/runtime/install-managed-skills.py --inventory-output <file>
 ```
 
 Installed Ceratops skills should be generated from the skills repo checkout: the
@@ -693,7 +705,7 @@ with `$skill-name`.
 From the installed `ceratops-repo-lifecycle` skill directory, preview a rename:
 
 ```powershell
-python scripts/rename-repository-path.py --repo-root PATH --rename scripts/old.py scripts/new.py
+uv run --no-project --python 3.14 python scripts/run-skill.py scripts/rename-repository-path.py --repo-root PATH --rename scripts/old.py scripts/new.py
 ```
 
 Add `--apply` to change files. Repeat `--rename OLD NEW` for independent pairs.
@@ -778,8 +790,8 @@ is available through
 The validator does not invoke skill-local validators. Generic compatibility and
 health validate lifecycle definitions through the repository-lifecycle
 `ceratops_repo_compatibility_engine.sdlc_contract_validation` module. Runtime
-rendering is owned only by bootstrap and managed deployment under the selected
-install root.
+rendering is owned only by standalone installation and managed deployment under
+the selected install root.
 
 Each pytest subprocess gets temporary-directory defaults in its own disposable
 directory beneath `PYTEST_DEBUG_TEMPROOT` when set, otherwise the system
@@ -825,21 +837,21 @@ source repository. During source maintenance, the equivalent full-mode command
 from the source checkout is:
 
 ```powershell
-python .\skills\ceratops-skill-lifecycle\scripts\skills-consistency-source-validator.py --mode full
+uv run --project scripts --locked python skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py --mode full
 ```
 
 To explicitly validate selected skill sources and their rendering inputs,
 run the source validator separately from installation:
 
 ```powershell
-python .\skills\ceratops-skill-lifecycle\scripts\skills-consistency-source-validator.py --mode skill --skill <skill-name>
+uv run --project scripts --locked python skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py --mode skill --skill <skill-name>
 ```
 
 Run section validation only when shared section source files or
 `skills/skill-sections.json` assignments changed:
 
 ```powershell
-python .\skills\ceratops-skill-lifecycle\scripts\skills-consistency-source-validator.py --mode sections
+uv run --project scripts --locked python skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py --mode sections
 ```
 
 The section mode validates that source skills are delta-only;
@@ -885,10 +897,10 @@ requirements, including repository validator discovery, remain in their action
 references. Scripts, checkers, contracts, and evidence registries retain their
 owning skill paths and remain available to other actions.
 
-The managed renderer and standalone bootstrap produce identical action content;
-the bootstrap and its template remain independent of installed lifecycle code.
-The compatibility checker uses its own bundled bootstrap parser and preserves
-action assignments during materialization. Source validation checks action
+The managed renderer and standalone installer produce identical action content;
+the installer and its template remain independent of installed lifecycle code.
+The compatibility checker uses its own bundled parser and preserves
+action assignments during compatibility application. Source validation checks action
 assignments in skill, sections, and full modes. Changes to an action assignment
 or its section source select its skill in both the old and new manifest; they
 do not select unrelated skills.

@@ -82,6 +82,12 @@ needs no Git. Otherwise Git enumerates tracked and non-ignored untracked
 `--tool-name`; duplicate names, absent matches, and failed queries stop before
 building. Ignored environments are excluded.
 
+Repository lifecycle deployment can select this install through
+`sdlc/sdlc.yml`: the tool deliverable names `ceratops-tool-lifecycle/install`,
+whose installed binding invokes the manager with `--source` set to that
+repository. The selected checkout still determines the tool name and version;
+the YAML does not supply a version override.
+
 For example, from a repository root:
 
 ```powershell
