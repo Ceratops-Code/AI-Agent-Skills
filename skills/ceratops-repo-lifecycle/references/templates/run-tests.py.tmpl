@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Run repository-owned Python tests in the scripts project's locked environment.
 
-The shared bootstrap selects the environment even for direct invocation. Edit this generated runner
-when the repository's suites need different behavior; compatibility never
-replaces an existing test implementation. Each run owns and removes its pytest
-temporary directories after the child exits, including when tests fail.
+Run with ``uv run --locked scripts/run-tests.py`` to select the scripts project's
+environment. Edit this generated runner when the repository's suites need different
+behavior; compatibility never replaces an existing test implementation. Each run
+owns and removes its pytest temporary directories after the child exits, including
+when tests fail.
 """
 
 from __future__ import annotations
