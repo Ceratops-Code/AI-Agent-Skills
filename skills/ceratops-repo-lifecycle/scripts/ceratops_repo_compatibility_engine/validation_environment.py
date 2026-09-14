@@ -19,6 +19,9 @@ from typing import Any
 
 import yaml
 
+from .python_entrypoints import bind_entrypoint, existing_entrypoints
+from .python_tests import discover_python_tests
+
 
 def runtime_files(root: pathlib.Path, bundle: pathlib.Path, contract: Mapping[str, Any], checks: list[dict[str, Any]]) -> dict[pathlib.Path, str]:
     """Render declarations and copy one engine implementation into the target."""
@@ -26,6 +29,8 @@ def runtime_files(root: pathlib.Path, bundle: pathlib.Path, contract: Mapping[st
     runtime = contract["runtime"]
     files: dict[pathlib.Path, str] = {}
     dependencies = {"jsonschema", "PyYAML"}
+    if discover_python_tests(root, contract["python_test_detection"]):
+        dependencies.add("pytest")
     for check in checks:
         command = check["command"]
         if len(command) >= 3 and command[:2] == ["{python}", "-m"]:
@@ -47,13 +52,15 @@ def runtime_files(root: pathlib.Path, bundle: pathlib.Path, contract: Mapping[st
         source = bundle / relative
         if source.is_symlink() or not source.is_file():
             raise RuntimeError(f"missing regular SDLC runtime payload: {relative}")
-        files[root / runtime["payload_root"] / relative] = source.read_text(encoding="utf-8")
+        content = source.read_text(encoding="utf-8")
+        files[root / runtime["payload_root"] / relative] = bind_entrypoint(content) if source.suffix == ".py" else content
     ignore = root / runtime["project"] / ".gitignore"
     existing_ignore = ignore.read_text(encoding="utf-8") if ignore.is_file() else ""
     missing_ignore = [value for value in runtime["ignored_paths"] if value not in existing_ignore.splitlines()]
     if missing_ignore:
         files[ignore] = existing_ignore.rstrip("\n") + ("\n" if existing_ignore else "") + "\n".join(missing_ignore) + "\n"
-    for key in ("sdlc_runner",):
+    files.update(existing_entrypoints(root))
+    for key in ("sdlc_runner", "python_environment"):
         surface = contract["surfaces"][key]
         destination = root / surface["path"]
         source = bundle / "references/templates" / surface["template"]

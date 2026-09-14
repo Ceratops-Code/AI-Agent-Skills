@@ -6,7 +6,7 @@
 
 - [ ] `npm ci`
 - [ ] `npm run lint:markdown`
-- [ ] `python -m pip install -r requirements-dev.txt`
+- [ ] `uv sync --project scripts --locked`
 - [ ] `python -m yamllint .`
 - [ ] `python -m mypy`
 - [ ] `python scripts/validate-repository.py`

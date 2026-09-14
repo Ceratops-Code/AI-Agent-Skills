@@ -2,14 +2,14 @@
 
 ## Invocation
 
-Run from the skill directory with Python 3.11+, `markdown-it-py` 4.x, and
-`jsonschema` 4.x. Repository development installs these through
-`requirements-runtime.txt`; other hosts may install the two published packages
-into their chosen Python environment. The helper makes no model or network
-calls and never edits a reviewed document.
+Run through the bundled `scripts/run-skill.py` launcher. The installed
+`scripts/python-runtime/pyproject.toml` and `uv.lock` declare its dependencies;
+uv synchronizes the fixed shared skills environment. Source development uses
+the repository's `scripts/pyproject.toml`. The validator itself makes no model
+or network calls and never edits a reviewed document.
 
 ```text
-python scripts/validate_design_document.py validate --repo-root REPO --document docs/design.md --evidence-file EVIDENCE
+uv run --no-project --python 3.14 python scripts/run-skill.py scripts/validate_design_document.py validate --repo-root REPO --document docs/design.md --evidence-file EVIDENCE
 ```
 
 `--document` is relative to the repository. Embedded metadata uses one fenced

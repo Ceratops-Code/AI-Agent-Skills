@@ -181,8 +181,11 @@ def test_committed_diff_mode_collects_and_invokes_only_selected_suite(
 
 
 def test_failure_summary_matches_real_long_pytest_titles(
-    test_runner_module: Any, tmp_path: pathlib.Path
+    test_runner_module: Any, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # This fixture owns its pytest arguments and output format; the enclosing
+    # workflow's basetemp must not become the nested invocation's ancestor.
+    monkeypatch.delenv("PYTEST_ADDOPTS", raising=False)
     names = ["test_before", "test_" + "long_name_" * 12, "test_after"]
     path = tmp_path / "test_failures.py"
     path.write_text(
@@ -1059,6 +1062,7 @@ def test_pytest_cleanup_error_preserves_output_and_test_exit_code(
     test_runner_module: Any, tmp_path: pathlib.Path,
     monkeypatch: pytest.MonkeyPatch, failure: bool,
 ) -> None:
+    monkeypatch.delenv("PYTEST_ADDOPTS", raising=False)
     runner = test_runner_module
     test = tmp_path / "test_example.py"
     test.write_text(

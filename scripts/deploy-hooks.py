@@ -15,6 +15,21 @@ settings and running sessions are never modified.
 
 from __future__ import annotations
 
+# Bootstrap precedes dependency imports; imported modules keep their caller's Python.
+# ruff: noqa: E402
+if __name__ == "__main__":
+    import pathlib as _bootstrap_pathlib
+    import runpy as _bootstrap_runpy
+
+    _bootstrap = next((parent / "scripts/python_environment.py"
+                       for parent in _bootstrap_pathlib.Path(__file__).resolve().parents
+                       if (parent / "scripts/python_environment.py").is_file()), None)
+    if _bootstrap is None:
+        raise SystemExit(
+            "error: missing scripts/python_environment.py; apply repository setup first"
+        )
+    _bootstrap_runpy.run_path(str(_bootstrap))["ensure_environment"](__file__)
+
 import argparse
 import copy
 import json

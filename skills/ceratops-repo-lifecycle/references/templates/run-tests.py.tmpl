@@ -1,13 +1,28 @@
 #!/usr/bin/env python3
-"""Run repository-owned Python tests using the caller's Python environment.
+"""Run repository-owned Python tests in the scripts project's locked environment.
 
-SDLC owns the invocation and any environment wrapper. Edit this generated runner
+The shared bootstrap selects the environment even for direct invocation. Edit this generated runner
 when the repository's suites need different behavior; compatibility never
 replaces an existing test implementation. Each run owns and removes its pytest
 temporary directories after the child exits, including when tests fail.
 """
 
 from __future__ import annotations
+
+# Bootstrap precedes dependency imports; imported modules keep their caller's Python.
+# ruff: noqa: E402
+if __name__ == "__main__":
+    import pathlib as _bootstrap_pathlib
+    import runpy as _bootstrap_runpy
+
+    _bootstrap = next((parent / "scripts/python_environment.py"
+                       for parent in _bootstrap_pathlib.Path(__file__).resolve().parents
+                       if (parent / "scripts/python_environment.py").is_file()), None)
+    if _bootstrap is None:
+        raise SystemExit(
+            "error: missing scripts/python_environment.py; apply repository setup first"
+        )
+    _bootstrap_runpy.run_path(str(_bootstrap))["ensure_environment"](__file__)
 
 import argparse
 import os

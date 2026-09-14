@@ -46,31 +46,5 @@ def discover_python_tests(root: pathlib.Path, rules: Mapping[str, Any]) -> list[
 
 
 def test_operation(root: pathlib.Path, runner: str) -> dict[str, Any]:
-    """Choose a portable default; existing SDLC test operations keep ownership.
-
-A native locked project is reused when present. Requirements-only repositories
-use uv's standard requirements wrapper. This default may be replaced by the
-repository without changing the compatibility contract.
-"""
-
-    if (root / "uv.lock").is_file():
-        command = ["uv", "run", "--project", ".", "--locked", "python", runner]
-    else:
-        command = ["uv", "run", "--no-project", "--with", "pytest"]
-        for requirements in ("requirements-dev.txt", "requirements.txt"):
-            if (root / requirements).is_file():
-                command.extend(("--with-requirements", requirements))
-                break
-        project = root / "pyproject.toml"
-        if project.is_file():
-            metadata = tomllib.loads(project.read_text(encoding="utf-8"))
-            requirement = metadata.get("project", {}).get("requires-python")
-            if requirement:
-                command.extend(("--python", requirement))
-            if "build-system" in metadata:
-                command.extend(("--with-editable", "."))
-            else:
-                for dependency in metadata.get("project", {}).get("dependencies", []):
-                    command.extend(("--with", dependency))
-        command.extend(("python", runner))
-    return {"steps": [{"run": command}]}
+    """Use the scripts project for generated tests; preserve explicit SDLC operations."""
+    return {"steps": [{"run": ["uv", "run", "--project", "scripts", "--locked", "python", runner]}]}

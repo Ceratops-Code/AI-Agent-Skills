@@ -9,6 +9,22 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 INSTALLER_TEMPLATE = ROOT / "skills" / "ceratops-repo-lifecycle" / "references" / "templates" / "deploy-skills.py.tmpl"
 
 
+def prepare_script_environment(repo: pathlib.Path) -> None:
+    """Give an entrypoint fixture its declared uv project without installed skills."""
+    templates = INSTALLER_TEMPLATE.parent
+    scripts = repo / "scripts"
+    scripts.mkdir(exist_ok=True)
+    shutil.copyfile(templates / "python_environment.py.tmpl", scripts / "python_environment.py")
+    (scripts / "pyproject.toml").write_text(
+        (templates / "validation-pyproject.toml.tmpl").read_text(encoding="utf-8").replace(
+            "__DEPENDENCIES__", '["jsonschema", "PyYAML"]'
+        ), encoding="utf-8",
+    )
+    (scripts / ".gitignore").write_text(".venv/\n__pycache__/\n", encoding="utf-8")
+    result = subprocess.run(["uv", "lock", "--project", str(scripts)], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+
+
 def run_git(repo: pathlib.Path, *args: str) -> subprocess.CompletedProcess[str]:
     """Run one isolated test-repository Git command."""
 

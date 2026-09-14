@@ -187,8 +187,9 @@ readiness execution is not a sandbox for untrusted wheels.
 first-install and packaging boundaries, checkout-independent packaging,
 failures, locks, path rejection, and
 self-update state. The normal repository validator selects it through
-`tests/test-impact.json`. Development dependencies are in
-`requirements-dev.txt`.
+`tests/test-impact.json`. Development dependencies are declared in
+ `scripts/pyproject.toml` and resolved in `scripts/uv.lock` at the repository
+root.
 
 Unit tests use temporary wheel inputs and simulated deployment commands; they
 do not install test versions of the manager. Real self-update and reconnection

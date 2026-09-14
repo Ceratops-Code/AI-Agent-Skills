@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import os
 import pathlib
 import shutil
 import subprocess
@@ -841,7 +842,15 @@ def test_compatibility_materializer_preserves_existing_validator_and_ci(
     )
 
     assert result.returncode == 0, result.stdout
-    assert (validator.read_bytes(), validator.stat().st_mode) == before[validator]
+    # Setup adds the shared bootstrap while preserving the custom validator's
+    # behavior and executable mode.
+    preserved = subprocess.run(
+        [sys.executable, str(validator)], cwd=tmp_path,
+        capture_output=True, text=True, check=False,
+    )
+    assert preserved.returncode == 0, preserved.stderr
+    assert preserved.stdout == "target-owned\n"
+    assert validator.stat().st_mode == before[validator][1]
     workflow_steps = yaml.safe_load(workflow.read_text())["jobs"]["validate"]["steps"]
     assert any("scripts/sdlc.py --validate --ci" in step.get("run", "") for step in workflow_steps)
     assert json.loads(result.stdout)["custom_validation_review_required"] is True
@@ -1143,8 +1152,16 @@ def test_generated_runtime_runs_without_installed_skills_and_keeps_tests_separat
     tests.mkdir()
     probe = tests / "test_probe.py"
     probe.write_text("def test_probe():\n    assert False, 'test-gate-evidence'\n")
-    # Leave application uv.lock absent: test setup remains independent of the
-    # generated validator's resolved dependency set.
+    custom = repo / "scripts/nested/probe.py"
+    custom.parent.mkdir()
+    custom.write_text(
+        '"""A repository-owned script with imports before its main body."""\n'
+        "from __future__ import annotations\n"
+        "import json, os, subprocess, sys, yaml\n"
+        "print(json.dumps({'python':sys.executable,'prefix':sys.prefix,'cwd':os.getcwd(),'args':sys.argv[1:]}))\n"
+    )
+    # Test and validation commands share scripts/.venv while the application's
+    # own declarations remain untouched.
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "no-installed-skills"))
     created = run_compatibility_engine(REPOSITORY_LIFECYCLE_SCRIPTS, "apply", "--target-repo-root", str(repo))
     assert created.returncode == 0, created.stdout + created.stderr
@@ -1152,6 +1169,28 @@ def test_generated_runtime_runs_without_installed_skills_and_keeps_tests_separat
     assert (repo / "requirements.txt").read_text() == "# repository-owned\n"
     assert not (repo / "uv.lock").exists()
     assert (repo / "scripts/.gitignore").read_text() == "/custom-output/\n.venv/\n**/__pycache__/\n"
+    child_environment = {**os.environ, "UV_PROJECT_ENVIRONMENT": str(tmp_path / "unrelated")}
+    child_environment.pop("CERATOPS_SCRIPTS_PROJECT", None)
+    direct_command = [sys.executable, str(custom), "two words"]
+    direct = subprocess.run(direct_command, cwd=tmp_path, env=child_environment, capture_output=True, text=True)
+    assert direct.returncode == 0, direct.stderr
+    actual = json.loads(direct.stdout)
+    assert pathlib.Path(actual["prefix"]) == repo / "scripts/.venv"
+    assert pathlib.Path(actual["cwd"]) == tmp_path
+    assert actual["args"] == ["two words"]
+    uninstalled = subprocess.run(["uv", "pip", "uninstall", "--python", actual["python"], "PyYAML"], capture_output=True, text=True)
+    assert uninstalled.returncode == 0, uninstalled.stderr
+    repaired = subprocess.run(direct_command, cwd=tmp_path, env=child_environment, capture_output=True, text=True)
+    assert repaired.returncode == 0, repaired.stderr
+    assert json.loads(repaired.stdout) == actual
+    project = repo / "scripts/pyproject.toml"
+    project_before = project.read_bytes()
+    lock_before = (repo / "scripts/uv.lock").read_bytes()
+    project.write_text(project.read_text().replace('version = "0.0.0"', 'version = "0.1.0"'))
+    stale = subprocess.run(direct_command, cwd=tmp_path, env=child_environment, capture_output=True, text=True)
+    assert stale.returncode != 0 and not stale.stdout.strip()
+    assert (repo / "scripts/uv.lock").read_bytes() == lock_before
+    project.write_bytes(project_before)
     prefix = ["uv", "run", "--project", "scripts", "--locked", "python"]
     validation = subprocess.run([*prefix, "scripts/validate-repository.py"], cwd=repo, capture_output=True, text=True)
     assert validation.returncode == 0, validation.stderr
@@ -1196,6 +1235,12 @@ def test_generated_python_runner_cleans_owned_temp_even_with_overrides(
     template = (REPOSITORY_LIFECYCLE_SOURCE / "references/templates/run-tests.py.tmpl").read_text()
     runner = repo / "scripts/run-tests.py"
     runner.write_text(template.replace("__TEST_TARGETS__", "['test_probe.py']"))
+    templates = REPOSITORY_LIFECYCLE_SOURCE / "references/templates"
+    shutil.copyfile(templates / "python_environment.py.tmpl", repo / "scripts/python_environment.py")
+    (repo / "scripts/pyproject.toml").write_text(
+        (templates / "validation-pyproject.toml.tmpl").read_text().replace("__DEPENDENCIES__", '["pytest"]')
+    )
+    subprocess.run(["uv", "lock", "--project", str(repo / "scripts")], check=True, capture_output=True)
     outside = tmp_path / "caller-temp"
     inherited = f'--basetemp="{tmp_path}"' if inherited_form == "joined" else f'--basetemp "{tmp_path}"'
     monkeypatch.setenv("PYTEST_ADDOPTS", "-q " + inherited)

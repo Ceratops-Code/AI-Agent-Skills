@@ -123,11 +123,12 @@ without repository deduplication.
 | `hooks/windows-shell-sanity.py` | Repository-owned source for the user-global Windows PowerShell preflight; rewrites exact command defects, annotates ordinary failures, and blocks unreliable or policy-prohibited forms. |
 | `scripts/deploy-skills.py` | Independent installation and updates; renders selected skills and overlays their files without validation, retirement, or lifecycle runtime calls. |
 | `scripts/deploy-hooks.py` | Independent hook installation and updates; copies the repository hook payloads and merges their registrations while preserving unrelated files and configuration. Does not grant trust or restart Codex. |
-| `scripts/deploy-tool-manager.py` | Standalone first tool-manager installation using global Python and uv, temporary locked libraries, and the manager's own packaging and deployment code; never changes Codex settings. |
+| `scripts/deploy-tool-manager.py` | First tool-manager installation, launched in the scripts environment; uses the manager's global Python and uv prerequisites, temporary locked libraries, and packaging and deployment code. Never changes Codex settings. |
 | `scripts/testing/run-tests.py` | Sole test-selection, collection-reconciliation, and pytest-execution owner; validates `tests/test-impact.json`, explains deterministic Git-diff selection, rejects mapping gaps before pytest collection or execution, supports explicit committed-diff, worktree, collection, and `--all` modes, adds `--select-only` to check diff/worktree mapping without pytest, and saves failed-pytest streams and structured pre-test failures with captured command output through `--diagnostic-output`; pytest output remains bounded in the console. |
 | `scripts/testing/pytest-diagnostics.py` | Extracts bounded failure summaries using exact pytest identities and source-file evidence; ambiguous or missing tracebacks use only that test's summary reason. Full diagnostic files remain owned by the runner. |
-| `scripts/validate-repository.py` | Local validation coordinator; checks the running Python against `pyproject.toml`, captures first-failure evidence, delegates its default full test phase to `scripts/testing/run-tests.py --all`, and supports CI's separate runner-owned test phase. |
-| `skills/ceratops-repo-lifecycle/references/templates/deploy-skills.py.tmpl` | Authoritative standard-library-only bootstrap copied into compatible skill repositories as `scripts/deploy-skills.py`. |
+| `scripts/python_environment.py` | Shared bootstrap for repository Python entrypoints; uv selects and synchronizes the locked scripts environment before execution. Generated from the compatibility template. |
+| `scripts/validate-repository.py` | Local validation coordinator; checks the running Python against `scripts/pyproject.toml`, captures first-failure evidence, delegates its default full test phase to `scripts/testing/run-tests.py --all`, and supports CI's separate runner-owned test phase. |
+| `skills/ceratops-repo-lifecycle/references/templates/deploy-skills.py.tmpl` | Authoritative standalone installer copied into compatible skill repositories as `scripts/deploy-skills.py`; its shared bootstrap selects the scripts environment. |
 | `skills/ceratops-repo-lifecycle/references/contracts/repository-validation-contract.json` | Schema-validated repository checks used by compatibility generation and included in repository contract review and validator discovery. |
 | `skills/ceratops-repo-lifecycle/references/contracts/ceratops-compatibility-*-contract.json` | Internal structural contract consumed by compatibility generation/checking, plus a behavioral review rubric for environment setup, tests, and lifecycle orchestration; no external source registry. |
 | `skills/ceratops-repo-lifecycle/references/templates/validate-repository.py.tmpl` and `validate.yml.tmpl` | Repository-neutral validator and CI templates created only when their target files are absent; new validation setups without JavaScript package-manager files also receive locked Markdown dependencies and default rules from the Markdown templates. Existing tooling, Markdown settings, and exclusive validators are preserved. |
@@ -469,13 +470,19 @@ uv run --project scripts --locked python scripts/sdlc.py --validate --ci
 only tests; `--return-handoffs` exposes unresolved routes to a skill caller.
 New repository validators never select test runners. Conventional Python tests
 or pytest configuration generate `scripts/run-tests.py` from its template when
-absent. That runner uses the caller's interpreter, owns its temporary pytest
-directories, and can be customized; SDLC owns its environment wrapper. Existing
+absent. That runner uses the scripts project, owns its temporary pytest
+directories, and can be customized. Every Python entrypoint under `scripts`
+calls the shared `python_environment.py` bootstrap before dependencies load,
+so a direct `python scripts/<entrypoint>.py` call selects the same locked
+environment from any working directory. uv owns dependency installation and
+Python selection; the scripts contain no package-installation logic. Existing
 test implementations and non-Python test commands remain repository-owned.
 
-This source repository's live SDLC/CI entrypoints, root Python dependency
-declarations and test runner have not been migrated. The setup and Validate
-instructions below describe that existing repository configuration.
+This source repository uses `scripts/pyproject.toml` and `scripts/uv.lock` for
+its maintenance scripts and Python tests. The root `pyproject.toml` holds Ruff
+and mypy settings. Its existing SDLC format and test-selection behavior remain
+repository-owned; this environment migration does not apply every compatibility
+template to the source repository.
 
 ## Shared Skill Python Environment
 
@@ -498,15 +505,16 @@ bundled project's locked dependencies and required Python version. It preserves
 the caller's working directory and the helper's output and exit status.
 Nested Python commands inherit that environment.
 
-The shared project resides at
-`$CODEX_HOME/runtimes/ceratops/<project-and-lock-sha256>/`, with its Python
-executable inside `.venv`. When `CODEX_HOME` is unset, the launcher uses
-`~/.codex`. Identical declaration pairs share one environment; different locks
-get separate environments. Deployment copies declarations, never a `.venv`.
-Missing packages are synchronized before helper execution; stale locks block
-execution. Published environments remain reusable across runs and deployments;
-the launcher always removes unpublished staging directories. Existing external
-tools keep the environments managed by their own installers.
+The shared environment resides at `$CODEX_HOME/runtimes/ceratops/.venv`.
+When `CODEX_HOME` is unset, the launcher uses `~/.codex`. uv reads declarations
+from the installed skill and synchronizes that fixed environment before helper
+execution. Different installed locks update the same active dependency set;
+managed skills should therefore be deployed with consistent declarations.
+The fixed `runtime.lock` file serializes setup across installed bundles;
+helper execution releases that lock so skills can call one another.
+Deployment copies declarations, never a `.venv`. Missing packages are repaired;
+stale locks block execution. The environment remains reusable after success or
+failure. Existing external tools retain their installer-owned environments.
 
 ## Install For Codex
 
@@ -516,20 +524,17 @@ Codex discovers personal skills from:
 $CODEX_HOME/skills/<skill-name>/SKILL.md
 ```
 
-Use an installed global Python matching `project.requires-python` in
-`pyproject.toml`. Local setup uses uv to read that requirement and select the
-existing global interpreter; it does not download another Python installation.
-The root project is a non-packaged development workspace, not a release artifact.
-Install the runtime dependencies, then use the independent installer:
+Install uv and a global Python matching `scripts/pyproject.toml`. The shared
+bootstrap selects that Python and creates `scripts/.venv` with the committed
+lock; it does not install packages globally or download another interpreter.
 
 ```powershell
-$repoPython = uv python find --system
-& $repoPython -m pip install -r requirements-runtime.txt
-& $repoPython .\scripts\deploy-skills.py
+python .\scripts\deploy-skills.py
 ```
 
-Runtime requirements include timezone data for date-based skills on Windows.
-The installer is self-contained and never calls installed lifecycle code. It
+The deployed skills' separate project includes timezone data for date-based
+helpers on Windows. The standalone installer uses the scripts environment and
+never calls installed lifecycle code. It
 renders the selected batch in a hidden staging directory and copies its files
 over existing installations without source or staged-content validation.
 Destination-only files and unselected or retired skills remain untouched.
@@ -631,17 +636,16 @@ CI:
 
 ```powershell
 npm ci
-$repoPython = uv python find --system
-& $repoPython -m pip install -r requirements-dev.txt
 $validationEvidence = Join-Path $env:TEMP "repository-validation.log"
-& $repoPython scripts/validate-repository.py --evidence-file $validationEvidence
+python scripts/validate-repository.py --evidence-file $validationEvidence
 ```
 
-CI selects Python from the same `pyproject.toml` requirement. The validator
-checks its running interpreter against that requirement before starting any
-repository checks. Ruff infers its target from the requirement; mypy uses the
-checked running interpreter. On POSIX, likewise run the interpreter path
-returned by `uv python find --system`.
+CI selects Python from `scripts/pyproject.toml` and runs
+`uv sync --project scripts --locked`. Local entrypoints synchronize that same
+project automatically before loading dependencies. The validator checks the
+selected interpreter against the project's requirement before repository
+checks; mypy uses that interpreter. Root Ruff and mypy settings configure the
+checks independently of dependency installation.
 
 Without the flag, evidence defaults to
 `build/deploy-validation/repository-validation.log`.

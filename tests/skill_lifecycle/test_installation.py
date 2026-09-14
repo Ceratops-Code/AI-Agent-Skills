@@ -32,6 +32,7 @@ from tests.support.processes import COMPATIBILITY_ENGINE, run_compatibility_engi
 from tests.support.repositories import (
     ROOT,
     create_compatible_repo,
+    prepare_script_environment,
 )
 
 
@@ -92,6 +93,7 @@ def test_external_installer_needs_no_ceratops_bundle(tmp_path: pathlib.Path) -> 
     codex_home = tmp_path / "codex-home"
     install_root = tmp_path / "installed"
     create_compatible_repo(repo, "example/external", ["alpha-tool"])
+    prepare_script_environment(repo)
     env = {**os.environ, "CODEX_HOME": str(codex_home)}
 
     result = subprocess.run(
@@ -121,6 +123,7 @@ def test_external_installer_rejects_unresolved_or_malformed_input_without_fallba
     install_root = tmp_path / "installed"
     installed_bundle = codex_home / "skills" / "ceratops-skill-lifecycle"
     create_compatible_repo(repo, "example/external", ["alpha-tool"])
+    prepare_script_environment(repo)
     shutil.copytree(LIFECYCLE_SOURCE, installed_bundle)
     (installed_bundle / "scripts" / "runtime" / "install-managed-skills.py").write_text(
         "raise SystemExit('installed runtime was selected')\n",
@@ -266,6 +269,7 @@ def test_bootstrap_retains_retired_skills_without_content_validation(
     repo = tmp_path / "compatible"
     install_root = tmp_path / "installed"
     create_compatible_repo(repo, "example/external", ["alpha-tool"])
+    prepare_script_environment(repo)
     manifest = json.loads((repo / "skills" / "skill-sections.json").read_text())
     section = repo / next(iter(manifest["sections"].values()))
     marker = "<!-- CERATOPS_SHARED_SECTIONS_START -->"
@@ -302,6 +306,7 @@ def test_bootstrap_does_not_follow_existing_destination_links(
 ) -> None:
     repo = tmp_path / "compatible"
     create_compatible_repo(repo, "example/external", ["alpha-tool"])
+    prepare_script_environment(repo)
     outside = tmp_path / "outside"
     outside.mkdir()
     sentinel = outside / "SKILL.md"
@@ -333,6 +338,7 @@ def test_bootstrap_cleans_owned_state_after_copy_failure(
 ) -> None:
     repo = tmp_path / "compatible"
     create_compatible_repo(repo, "example/external", ["alpha-tool"])
+    prepare_script_environment(repo)
     install_root = tmp_path / "installed"
     target = install_root / "alpha-tool"
     target.mkdir(parents=True)
@@ -444,6 +450,7 @@ def test_bootstrap_full_install_materializes_self_contained_lifecycle_bundle(
     ).is_file()
     target_repo = tmp_path / "installed-bundle-target"
     create_compatible_repo(target_repo, "stale/source", ["alpha-tool"])
+    prepare_script_environment(target_repo)
     (target_repo / ".git").write_text(
         "gitdir: test\n", encoding="utf-8", newline="\n"
     )
@@ -505,6 +512,7 @@ def test_lifecycle_only_installed_bundle_materializes_compatible_repo(
     )
     assert installed.returncode == 0, installed.stderr
     create_compatible_repo(target_repo, "stale/source", ["alpha-tool"])
+    prepare_script_environment(target_repo)
     (target_repo / ".git").write_text(
         "gitdir: test\n", encoding="utf-8", newline="\n"
     )
@@ -546,6 +554,7 @@ def test_bootstrap_ignores_stale_broken_installed_bundle(
 
     repo = tmp_path / "compatible"
     create_compatible_repo(repo, "example/external", ["alpha-tool"])
+    prepare_script_environment(repo)
     result = subprocess.run(
         [
             sys.executable,
@@ -575,6 +584,7 @@ def test_runtime_manifest_uses_schema_without_installer_version(
         "example/compatible",
         ["alpha-tool", "beta-tool"],
     )
+    prepare_script_environment(repo)
     shared = repo / "skills" / "sections" / "scripts" / "shared.py"
     shared.parent.mkdir()
     shared.write_text("VALUE = 1\n", encoding="utf-8", newline="\n")
@@ -648,6 +658,7 @@ def test_full_install_does_not_run_source_validation(tmp_path: pathlib.Path) -> 
     installed_bundle = codex_home / "skills" / "ceratops-skill-lifecycle"
     repository_bundle = codex_home / "skills" / "ceratops-repo-lifecycle"
     create_compatible_repo(repo, "example/external", ["alpha-tool"])
+    prepare_script_environment(repo)
     shutil.copytree(LIFECYCLE_SOURCE, installed_bundle)
     shutil.copytree(
         REPOSITORY_LIFECYCLE_SOURCE,
@@ -690,6 +701,7 @@ def test_targeted_install_checks_only_selected_rendering_inputs(
     install_root = tmp_path / "installed"
     installed_bundle = codex_home / "skills" / "ceratops-skill-lifecycle"
     create_compatible_repo(repo, "example/external", ["alpha-tool", "broken-tool"])
+    prepare_script_environment(repo)
     shutil.copytree(LIFECYCLE_SOURCE, installed_bundle)
     shutil.copytree(
         REPOSITORY_LIFECYCLE_SOURCE,
@@ -838,6 +850,7 @@ def test_runtime_inventory_lists_direct_manifests_and_malformed_blockers(
     repo = tmp_path / "compatible"
     install_root = tmp_path / "installed"
     create_compatible_repo(repo, "example/compatible", ["alpha-tool", "beta-tool"])
+    prepare_script_environment(repo)
     assert run_builder(repo, install_root, "--all-managed").returncode == 0
     malformed = install_root / "broken-tool"
     malformed.mkdir()
@@ -885,6 +898,7 @@ def test_action_sections_match_across_installation_paths(
 ) -> None:
     repo = tmp_path / "compatible"
     create_compatible_repo(repo, "example/actions", ["alpha-tool", "beta-tool"])
+    prepare_script_environment(repo)
     add_action_sections(repo)
     action = repo / "skills/alpha-tool/references/review.md"
     action.write_text(action.read_text(encoding="utf-8"), encoding="utf-8", newline=newline)
@@ -925,6 +939,7 @@ def test_action_sections_match_across_installation_paths(
 def test_action_sections_reject_invalid_assignments(tmp_path: pathlib.Path, renderer: pathlib.Path, case: str) -> None:
     repo = tmp_path / "compatible"
     create_compatible_repo(repo, "example/actions", ["alpha-tool"])
+    prepare_script_environment(repo)
     manifest = add_action_sections(repo)
     actions = manifest["actions"]["alpha-tool"]
     if case == "map-type":
@@ -1015,7 +1030,7 @@ def test_contract_review_adoption_and_all_managed_output(tmp_path: pathlib.Path)
 
 @pytest.mark.skipif(shutil.which("uv") is None, reason="uv is required for the deployed runtime integration")
 def test_shared_skill_python_environment_reuses_lock_and_repairs_missing_package(tmp_path: pathlib.Path) -> None:
-    """Two installed skills share one environment and retain independent locks."""
+    """Installed skills synchronize their declared locks into one fixed environment."""
     from concurrent.futures import ThreadPoolExecutor
 
     codex_home = tmp_path / "codex home"
@@ -1054,7 +1069,7 @@ def test_shared_skill_python_environment_reuses_lock_and_repairs_missing_package
     assert first["args"] == ["two words"]
     assert first["python"] == first["nested"]
     interpreter = pathlib.Path(first["python"])
-    assert interpreter.is_relative_to(codex_home / "runtimes/ceratops")
+    assert interpreter.parent.parent == codex_home / "runtimes/ceratops/.venv"
     assert ".venv" in interpreter.parts
     assert not list((codex_home / "runtimes/ceratops").glob(".prepare-*"))
     launcher_path = destination / names[0] / "scripts/run-skill.py"
@@ -1085,20 +1100,23 @@ def test_shared_skill_python_environment_reuses_lock_and_repairs_missing_package
     assert locked.returncode == 0, locked.stderr
     separate = invoke(names[1])
     assert separate.returncode == 0, separate.stderr
-    assert json.loads(separate.stdout)["python"] != str(interpreter)
+    assert json.loads(separate.stdout)["python"] == str(interpreter)
     assert json.loads(invoke(names[0]).stdout)["python"] == str(interpreter)
 
     launcher = runpy.run_path(str(destination / names[0] / "scripts/run-skill.py"))
-    shared = launcher["shared_project"](destination / names[0], codex_home)
-    (shared / "pyproject.toml").write_text("changed = true\n")
-    with pytest.raises(ValueError, match="declaration changed"):
-        launcher["shared_project"](destination / names[0], codex_home)
+    bundled = launcher["runtime_project"](destination / names[0])
+    assert bundled == destination / names[0] / "scripts/python-runtime"
+    (bundled / "pyproject.toml").write_text("changed = true\n")
+    with pytest.raises(ValueError, match="requires-python"):
+        launcher["runtime_project"](destination / names[0])
+    assert {path.name for path in (codex_home / "runtimes/ceratops").iterdir()} == {".venv", "runtime.lock"}
 
 
 @pytest.mark.parametrize("renderer", [BOOTSTRAP, INSTALLER_TEMPLATE, BUILDER], ids=["repository", "compatible", "managed"])
 def test_action_removal_and_selected_input_boundary(tmp_path: pathlib.Path, renderer: pathlib.Path) -> None:
     repo = tmp_path / "compatible"
     create_compatible_repo(repo, "example/actions", ["alpha-tool", "beta-tool"])
+    prepare_script_environment(repo)
     manifest = add_action_sections(repo)
     # An unrelated malformed sibling declaration must not block a selected install.
     manifest["actions"]["beta-tool"] = []
@@ -1126,6 +1144,7 @@ def test_installer_completion_receipt_identifies_actual_transaction(tmp_path: pa
     repo = tmp_path / "source"
     destination = tmp_path / "installed"
     create_compatible_repo(repo, "example/receipt", ["alpha-tool", "beta-tool"])
+    prepare_script_environment(repo)
     for args in (("init", "-b", "main"), ("config", "user.email", "test@example.invalid"),
                  ("config", "user.name", "Test Agent"), ("add", "."), ("commit", "-m", "source")):
         assert run_git(repo, *args).returncode == 0

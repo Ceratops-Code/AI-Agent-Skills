@@ -6,27 +6,80 @@ HELPER is relative to the installed skill, or ``-m MODULE``. The caller's cwd,
 arguments, output streams, and exit status are preserved. uv creates the Python
 environment at its final location; virtual environments are never copied.
 
-The installed pyproject/lock pair is authoritative. Its content identity selects
-one persistent cache project under CODEX_HOME/runtimes/ceratops. Identical pairs
-share an environment; different locks cannot mutate each other's environments.
-Only unpublished staging directories are temporary and owned by this launcher.
-Published cache projects remain reusable after success or failure; uv owns
-environment synchronization and locking, including recovery on the next launch.
+The installed pyproject/lock pair is authoritative. uv synchronizes one fixed
+environment at CODEX_HOME/runtimes/ceratops/.venv for every managed skill.
+All skills share its active dependency set; launching a different locked bundle
+can update that set. The launcher serializes environment preparation across
+bundles; uv owns dependency synchronization. No
+environment or declaration copy is deployed, and this launcher owns no temporary
+staging directory. Existing environments remain reusable after helper failure.
 """
 
 from __future__ import annotations
 
-import hashlib
+import contextlib
+import errno
 import os
 import pathlib
 import shutil
 import subprocess
 import sys
-import tempfile
+import time
 import tomllib
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 
 DECLARATIONS = ("pyproject.toml", "uv.lock")
+
+
+@contextlib.contextmanager
+def preparation_lock(runtime: pathlib.Path) -> Iterator[None]:
+    """Serialize setup before uv's environment-internal lock can exist.
+
+    Bundles have different project directories, so their uv project locks do
+    not protect shared environment creation. Use an OS lock, released even if
+    this process dies. Its fixed file remains as reusable coordination state.
+    The bootstrap cannot depend on a package inside the unprepared environment.
+    """
+    lock_path = checked_path(runtime / "runtime.lock")
+    with lock_path.open("a+b") as handle:
+        if sys.platform == "win32":
+            import msvcrt
+
+            if handle.seek(0, os.SEEK_END) == 0:
+                handle.write(b"\0")
+                handle.flush()
+
+            def acquire() -> None:
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+
+            def release() -> None:
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            def acquire() -> None:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+            def release() -> None:
+                fcntl.flock(handle, fcntl.LOCK_UN)
+
+        deadline = time.monotonic() + 300
+        while True:
+            try:
+                acquire()
+                break
+            except OSError as exc:
+                if exc.errno not in (errno.EACCES, errno.EAGAIN):
+                    raise
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("Shared skills environment preparation is busy") from exc
+                time.sleep(0.1)
+        try:
+            yield
+        finally:
+            release()
 
 
 def checked_path(path: pathlib.Path) -> pathlib.Path:
@@ -38,47 +91,17 @@ def checked_path(path: pathlib.Path) -> pathlib.Path:
     return absolute
 
 
-def shared_project(skill_root: pathlib.Path, codex_home: pathlib.Path) -> pathlib.Path:
-    """Publish immutable declarations atomically; uv manages the final .venv."""
+def runtime_project(skill_root: pathlib.Path) -> pathlib.Path:
+    """Validate the installed declarations without copying or renaming them."""
     source = checked_path(skill_root / "scripts/python-runtime")
-    contents: dict[str, bytes] = {}
-    identity = hashlib.sha256()
     for name in DECLARATIONS:
         path = checked_path(source / name)
         if not path.is_file():
             raise ValueError(f"Missing bundled Python runtime declaration: {path}")
-        data = path.read_bytes().replace(b"\r\n", b"\n")
-        document = tomllib.loads(data.decode("utf-8"))
+        document = tomllib.loads(path.read_text(encoding="utf-8"))
         if name == "pyproject.toml" and not document.get("project", {}).get("requires-python"):
             raise ValueError("Bundled Python runtime must declare project.requires-python")
-        contents[name] = data
-        identity.update(name.encode() + b"\0" + len(data).to_bytes(8, "big") + data)
-    parent = checked_path(codex_home / "runtimes/ceratops")
-    parent.mkdir(parents=True, exist_ok=True)
-    target = checked_path(parent / identity.hexdigest())
-    if not target.exists():
-        staging = pathlib.Path(tempfile.mkdtemp(prefix=".prepare-", dir=parent))
-        try:
-            for name, data in contents.items():
-                (staging / name).write_bytes(data)
-            try:
-                staging.rename(target)
-            except OSError:
-                # Concurrent first callers publish the same complete bytes.
-                # Never replace a previously published project or environment.
-                if not target.is_dir():
-                    raise
-        finally:
-            if staging.exists():
-                if checked_path(staging).parent != parent:
-                    raise ValueError("Unsafe Python runtime staging cleanup")
-                shutil.rmtree(staging)
-    for name, data in contents.items():
-        path = checked_path(target / name)
-        if not path.is_file() or path.read_bytes() != data:
-            raise ValueError(f"Shared Python runtime declaration changed: {path}")
-    checked_path(target / ".venv")
-    return target
+    return source
 
 
 def helper_arguments(skill_root: pathlib.Path, arguments: Sequence[str]) -> list[str]:
@@ -110,18 +133,34 @@ def run_helper(skill_root: pathlib.Path, arguments: Sequence[str]) -> int:
     if uv is None:
         raise ValueError("uv is required to run this skill's Python helpers")
     codex_home = pathlib.Path(os.environ.get("CODEX_HOME", str(pathlib.Path.home() / ".codex")))
-    project = shared_project(root, codex_home)
+    project = runtime_project(root)
+    runtime = checked_path(codex_home / "runtimes/ceratops")
+    runtime.mkdir(parents=True, exist_ok=True)
+    checked_path(runtime / ".venv")
     environment = os.environ.copy()
     for key in ("PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV", "UV_PROJECT", "UV_WORKING_DIRECTORY",
                 "UV_NO_SYNC", "UV_FROZEN", "UV_PYTHON", "UV_PYTHON_DOWNLOADS"):
         environment.pop(key, None)
-    environment["UV_PROJECT_ENVIRONMENT"] = str(project / ".venv")
+    environment["UV_PROJECT_ENVIRONMENT"] = str(runtime / ".venv")
     environment["PYTHONNOUSERSITE"] = "1"
     environment["PYTHONDONTWRITEBYTECODE"] = "1"
     environment["PYTHONPATH"] = str(root / "scripts")
-    command = [uv, "run", "--quiet", "--project", str(project), "--locked", "--exact",
-               "--no-active", "python", *args]
-    return subprocess.run(command, env=environment, check=False).returncode
+    with preparation_lock(runtime):
+        checked_path(runtime / ".venv")
+        prepared = subprocess.run(
+            [uv, "sync", "--quiet", "--project", str(project), "--locked", "--no-active"],
+            env=environment, check=False,
+        )
+        if prepared.returncode:
+            return prepared.returncode
+    # Sync is exact by default. Launch directly so a second uv operation cannot
+    # recreate the shared environment outside the preparation lock. Helpers can
+    # invoke other skills without holding this lock for their entire lifetime.
+    scripts = runtime / ".venv" / ("Scripts" if os.name == "nt" else "bin")
+    python = scripts / ("python.exe" if os.name == "nt" else "python")
+    environment["VIRTUAL_ENV"] = str(runtime / ".venv")
+    environment["PATH"] = str(scripts) + os.pathsep + environment.get("PATH", "")
+    return subprocess.run([str(python), *args], env=environment, check=False).returncode
 
 
 def main(argv: list[str] | None = None) -> int:

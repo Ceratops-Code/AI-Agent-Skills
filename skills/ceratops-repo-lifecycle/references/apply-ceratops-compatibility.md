@@ -95,13 +95,15 @@ Infer the source identity from stable repository evidence before asking.
 - Generate a missing validator and CI workflow only from checks declared in
   `references/contracts/repository-validation-contract.json`; obtain approval
   before adding an undeclared check.
-- Ensure uv is available before applying compatibility. Generate the validator
-  project, lock and local `.venv` under `scripts`; uv selects a
-  Python matching that project's `requires-python` and installs its locked
-  dependencies. Keep application manifests in their existing locations.
-- Generate `scripts/run-tests.py` when Python tests are detected; preserve an
-  existing runner. Test implementation and environment remain repository-owned.
-  CI runs SDLC validation and tests without executing skill handoffs.
+- Generate one uv project, lock and `.venv` under `scripts`; uv selects the
+  declared Python and installs locked dependencies. Keep application manifests
+  in their existing locations.
+- Bind Python entrypoints under `scripts` to `python_environment.py` before
+  loading their dependencies. Direct invocation must select this project
+  independently of the caller's interpreter and working directory.
+- Generate `scripts/run-tests.py` when Python tests are detected. Preserve
+  repository-owned test implementation; generated Python test commands use the
+  scripts project. CI runs validation and tests without executing skill handoffs.
 - Review custom validators and configuration-defined scripts to ensure they
   never run tests. Move test execution into SDLC test operations without losing
   target behavior before claiming compatibility. Detection cannot prove this

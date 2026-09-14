@@ -84,6 +84,7 @@ def load_compatibility_contract(bundle_root: pathlib.Path | None = None) -> dict
     destinations = {
         "sdlc_runner": "scripts/sdlc.py", "validation_project": "scripts/pyproject.toml",
         "validator": "scripts/validate-repository.py", "python_test_runner": "scripts/run-tests.py",
+        "python_environment": "scripts/python_environment.py",
     }
     if any(contract["surfaces"][key]["path"] != value for key, value in destinations.items()):
         raise RuntimeError("compatibility surface paths must match the portable template layout")
