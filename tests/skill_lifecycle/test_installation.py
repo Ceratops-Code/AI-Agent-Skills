@@ -1116,3 +1116,33 @@ def test_action_removal_and_selected_input_boundary(tmp_path: pathlib.Path, rend
     assert result.returncode == 0, result.stderr
     assert installed.read_bytes() == (repo / "skills/alpha-tool/references/review.md").read_bytes()
     assert not (destination / "beta-tool").exists()
+
+
+
+@pytest.mark.parametrize("mode", ["all", "selected", "dirty", "no-op"])
+def test_installer_completion_receipt_identifies_actual_transaction(tmp_path: pathlib.Path, mode: str) -> None:
+    from tests.support.repositories import run_git
+
+    repo = tmp_path / "source"
+    destination = tmp_path / "installed"
+    create_compatible_repo(repo, "example/receipt", ["alpha-tool", "beta-tool"])
+    for args in (("init", "-b", "main"), ("config", "user.email", "test@example.invalid"),
+                 ("config", "user.name", "Test Agent"), ("add", "."), ("commit", "-m", "source")):
+        assert run_git(repo, *args).returncode == 0
+    commit = run_git(repo, "rev-parse", "HEAD").stdout.strip()
+    if mode == "dirty":
+        (repo / "untracked.txt").write_text("dirty source")
+    flags = ["--skill", "alpha-tool"] if mode == "selected" else ["--base-revision", commit] if mode == "no-op" else []
+    result = subprocess.run([sys.executable, str(RUNTIME_INSTALLER), "--repo-root", str(repo),
+                             "--install-root", str(destination), *flags], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    receipt = json.loads(result.stdout)
+    assert receipt["schema"] == "ceratops-deployment-completion.v1"
+    assert receipt["commit"] == (None if mode == "dirty" else commit)
+    assert receipt["repo_root"] == str(repo) and receipt["install_root"] == str(destination)
+    assert receipt["status"] == ("no_op" if mode == "no-op" else "completed")
+    expected = [] if mode == "no-op" else ["alpha-tool"] if mode == "selected" else ["alpha-tool", "beta-tool"]
+    assert receipt["deployed"] == expected and receipt["removed"] == []
+    assert receipt["cleanup_debt"] == [] and receipt["promotion"] is None
+    for skill in expected:
+        assert (destination / skill / "SKILL.md").is_file()

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import fnmatch
+import hashlib
 import json
 import os
 import pathlib
@@ -592,6 +593,103 @@ def write_inventory(runtime_root: pathlib.Path, output: pathlib.Path) -> None:
     )
 
 
+def _source_commit(repo_root: pathlib.Path) -> str | None:
+    """Only a clean Git root can attest an exact deployed commit.
+
+    Ordinary uncommitted installations remain supported, but their receipts
+    cannot finalize a promotion. No installed-content scan is needed.
+    """
+    result = subprocess.run(["git", "-C", str(repo_root), "rev-parse", "--show-toplevel"],
+                            capture_output=True, text=True, check=False)
+    if result.returncode == 128:
+        return None
+    if result.returncode:
+        raise InstallerError("could not inspect the deployment source")
+    if pathlib.Path(result.stdout.strip()).resolve() != repo_root:
+        return None
+    if _git_text(repo_root, "status", "--porcelain").strip():
+        return None
+    return _git_text(repo_root, "rev-parse", "HEAD").strip()
+
+
+def _plain_path(path: pathlib.Path) -> pathlib.Path:
+    """Reject path redirection before reading an explicitly supplied record."""
+    path = pathlib.Path(os.path.abspath(path.expanduser()))
+    if any(part.is_symlink() or part.is_junction() for part in (path, *path.parents)):
+        raise InstallerError("promotion cleanup rejects linked paths")
+    return path
+
+
+def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise InstallerError("duplicate completion-record field")
+        result[key] = value
+    return result
+
+
+def _promotion_binding(args: argparse.Namespace, repo_root: pathlib.Path, commit: str | None) -> dict[str, Any] | None:
+    """Bind new transaction evidence to one existing, unchanged handoff record.
+
+    Preflight does not complete, rewrite, or delete the old record. Only the
+    caller-selected repository lifecycle helper owns its eventual finalization.
+    """
+    options = (args.promotion_result, args.operation, args.task_temp_root, args.finalize_promotion_with)
+    if not any(options):
+        return None
+    if not all(options):
+        raise InstallerError("promotion cleanup requires promotion-result, operation, task-temp-root, and finalize-promotion-with")
+    if commit is None:
+        raise InstallerError("promotion deployment requires an exact clean source commit")
+    path = _plain_path(args.promotion_result)
+    task = _plain_path(args.task_temp_root)
+    helper = _plain_path(args.finalize_promotion_with)
+    common = pathlib.Path(_git_text(repo_root, "rev-parse", "--path-format=absolute", "--git-common-dir").strip())
+    if common.name != ".git" or task.parent != common.parent.parent / "tmp" / common.parent.name:
+        raise InstallerError("promotion cleanup requires the repository's task temp directory")
+    if not task.is_dir() or not path.is_relative_to(task) or not path.is_file() or path.stat().st_nlink != 1:
+        raise InstallerError("promotion record must be an unlinked file inside task-temp-root")
+    if not helper.is_file() or helper.suffix != ".py":
+        raise InstallerError("selected promotion finalizer is unavailable")
+    identity_fields = ("st_dev", "st_ino", "st_mtime_ns", "st_size", "st_mode", "st_nlink")
+    before = path.stat()
+    identity = [getattr(before, field) for field in identity_fields]
+    data = path.read_bytes()
+    if [getattr(path.stat(), field) for field in identity_fields] != identity:
+        raise InstallerError("promotion record changed during preflight")
+    record = json.loads(data, object_pairs_hook=_unique_object)
+    if not isinstance(record, dict) or record.get("status") != "ready" or record.get("head") != commit:
+        raise InstallerError("promotion record does not identify this ready source commit")
+    operations = record.get("operations")
+    if not isinstance(operations, dict) or operations.get("status") != "completed" or operations.get("pending_operations") != []:
+        raise InstallerError("promotion record has incomplete repository operations")
+    if not isinstance(operations.get("results"), list):
+        raise InstallerError("promotion operation results are missing")
+    matches = [item for item in operations["results"] if isinstance(item, dict) and item.get("operation") == args.operation]
+    if len(matches) != 1 or matches[0].get("handoff") != "ceratops-skill-lifecycle/deploy" or matches[0].get("handoff_completed"):
+        raise InstallerError("promotion record does not contain the selected pending skill deployment")
+    if (matches[0].get("status") not in {"completed", "advisory"} or matches[0].get("commit") != commit
+            or (matches[0].get("status") == "advisory" and matches[0].get("steps"))):
+        raise InstallerError("promotion handoff has not completed its repository phase")
+    return {"result_file": str(path), "sha256": hashlib.sha256(data).hexdigest(),
+            "identity": identity, "operation": args.operation}
+
+
+def _completion_receipt(result: runtime_builder.TransactionResult, repo_root: pathlib.Path,
+                        install_root: pathlib.Path, commit: str | None,
+                        promotion: dict[str, Any] | None) -> dict[str, Any]:
+    """Serialize the transaction's actual result, never inferred runtime state."""
+    return {
+        "schema": "ceratops-deployment-completion.v1", "producer": "ceratops-skill-lifecycle/deploy",
+        "status": "completed" if result.status == "ok" else result.status,
+        "repo_root": str(repo_root), "commit": commit, "install_root": str(install_root),
+        "deployed": list(result.deployed), "removed": list(result.removed),
+        "transaction_id": result.transaction_id, "cleanup_debt": list(result.retained_retired),
+        "promotion": promotion,
+    }
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Create the runtime installer CLI."""
 
@@ -604,6 +702,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--remove-skill", action="append")
     parser.add_argument("--base-revision")
     parser.add_argument("--inventory-output", type=pathlib.Path)
+    parser.add_argument("--promotion-result", type=pathlib.Path)
+    parser.add_argument("--operation", help="Exact pending SDLC deployment location.")
+    parser.add_argument("--task-temp-root", type=pathlib.Path)
+    parser.add_argument("--finalize-promotion-with", type=pathlib.Path,
+                        help="Caller-selected promotion helper; invoked only for cleanup, never deployment.")
     return parser
 
 
@@ -619,7 +722,8 @@ def main(argv: list[str] | None = None) -> int:
                 args.repo_root,
                 args.skill,
                 args.remove_skill,
-                args.base_revision,
+                args.base_revision, args.promotion_result, args.operation,
+                args.task_temp_root, args.finalize_promotion_with,
             )
         ):
             raise SystemExit(
@@ -654,6 +758,8 @@ def main(argv: list[str] | None = None) -> int:
         # A Windows process cannot retire a directory held as its own CWD.
         # The required source repository is outside every runtime target.
         os.chdir(repo_root)
+        commit = _source_commit(repo_root)
+        promotion = _promotion_binding(args, repo_root, commit)
         if args.base_revision is not None:
             affected = affected_from_base(repo_root, args.base_revision)
         elif args.skill is not None or args.remove_skill is not None:
@@ -663,7 +769,10 @@ def main(argv: list[str] | None = None) -> int:
         else:
             affected = AffectedSet((), (), True)
         if not affected.all_managed and not affected.deploy and not affected.remove:
-            print("OK")
+            receipt = _completion_receipt(runtime_builder.TransactionResult("ok", (), (), ""),
+                                          repo_root, install_root, commit, promotion)
+            receipt["status"] = "no_op"
+            print(json.dumps(receipt, separators=(",", ":")))
             return 0
         result = runtime_builder.install_transaction(
             repo_root,
@@ -688,14 +797,33 @@ def main(argv: list[str] | None = None) -> int:
             payload = InstallerError(str(exc)).result()
         print(json.dumps(payload, separators=(",", ":")), file=sys.stderr)
         return 2 if payload.get("status") == "decision_required" else 1
-    if result.status == "cleanup_blocked":
-        print(
-            json.dumps(result.as_dict(), separators=(",", ":")),
-            file=sys.stderr,
-        )
-        return 2
-    print("OK")
-    return 0
+    receipt = _completion_receipt(result, repo_root, install_root, commit, promotion)
+    try:
+        if _source_commit(repo_root) != commit:
+            receipt["status"] = "source_changed"
+    except (InstallerError, OSError) as exc:
+        receipt["status"] = "source_changed"
+        receipt["message"] = str(exc)
+    if promotion is not None and receipt["status"] == "completed":
+        # Pass the actual receipt directly. No additional temp file is needed.
+        # A failed cleanup returns the receipt for finalizer-only retries.
+        try:
+            finalized = subprocess.run(
+                [sys.executable, str(args.finalize_promotion_with), "--repo-root", str(repo_root),
+                 "--finalize-result", "--result-file", promotion["result_file"],
+                 "--task-temp-root", str(args.task_temp_root), "--expected-commit", str(commit),
+                 "--deployment-evidence", "-"], input=json.dumps(receipt), cwd=repo_root,
+                capture_output=True, text=True, check=False,
+            )
+            receipt["promotion_cleanup"] = {"status": "completed" if finalized.returncode == 0 else "failed",
+                                            "replay_required": False}
+            if finalized.returncode:
+                receipt["promotion_cleanup"]["message"] = finalized.stderr.strip()[-4096:]
+        except OSError as exc:
+            receipt["promotion_cleanup"] = {"status": "failed", "message": str(exc), "replay_required": False}
+    failed = receipt["status"] != "completed" or receipt.get("promotion_cleanup", {}).get("status") == "failed"
+    print(json.dumps(receipt, separators=(",", ":")), file=sys.stderr if failed else sys.stdout)
+    return 2 if failed else 0
 
 
 if __name__ == "__main__":

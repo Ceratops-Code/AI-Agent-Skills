@@ -763,3 +763,63 @@ def test_action_section_changes_select_exact_consumers(tmp_path: pathlib.Path, c
     assert affected.deploy == ("alpha-tool",)
     assert affected.remove == ()
     assert not affected.all_managed
+
+
+
+@pytest.mark.parametrize("failure", ["cleanup", "activation", "source-change"])
+def test_installer_preserves_transaction_failures_and_cleanup_evidence(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str], failure: str,
+) -> None:
+    repo = tmp_path / "source"
+    destination = tmp_path / "installed"
+    create_compatible_repo(repo, "example/receipt-debt", ["alpha-tool"])
+    assert run_builder(repo, destination, "--all-managed").returncode == 0
+    original = (destination / "alpha-tool/SKILL.md").read_bytes()
+    (repo / "skills/alpha-tool/notes.txt").write_text("new payload")
+    for args in (("init", "-b", "main"), ("config", "user.email", "test@example.invalid"),
+                 ("config", "user.name", "Test Agent"), ("add", "."), ("commit", "-m", "source")):
+        assert run_git(repo, *args).returncode == 0
+    monkeypatch.chdir(tmp_path)
+    installer = load_runtime_installer()
+    builder = installer["runtime_builder"]
+    remove = builder._remove_tree
+    rename = builder.rename_with_retry
+    install = builder.install_transaction
+
+    def cleanup(path: pathlib.Path, root: pathlib.Path) -> None:
+        if "-retired-" in path.name:
+            raise PermissionError("retired directory locked")
+        remove(path, root)
+
+    def activate(source: pathlib.Path, target: pathlib.Path, *args: object, **kwargs: object) -> None:
+        if "-deployed-" in source.name:
+            raise PermissionError("activation denied")
+        rename(source, target, *args, **kwargs)
+
+    def mutate(*args: object, **kwargs: object) -> object:
+        result = install(*args, **kwargs)
+        (repo / "during-install.txt").write_text("source drift")
+        return result
+
+    if failure == "cleanup":
+        monkeypatch.setattr(builder, "_remove_tree", cleanup)
+    elif failure == "activation":
+        monkeypatch.setattr(builder, "rename_with_retry", activate)
+    else:
+        monkeypatch.setattr(builder, "install_transaction", mutate)
+    code = installer["main"](["--repo-root", str(repo), "--install-root", str(destination)])
+    evidence = json.loads(capsys.readouterr().err)
+    assert code != 0
+    if failure == "activation":
+        assert evidence["status"] == "error" and evidence["rollback"] == "complete"
+        assert (destination / "alpha-tool/SKILL.md").read_bytes() == original
+        assert "schema" not in evidence
+    else:
+        assert evidence["schema"] == "ceratops-deployment-completion.v1"
+        assert evidence["status"] == ("cleanup_blocked" if failure == "cleanup" else "source_changed")
+        assert evidence["deployed"] == ["alpha-tool"]
+        assert (destination / "alpha-tool/notes.txt").read_text() == "new payload"
+        if failure == "cleanup":
+            assert evidence["cleanup_debt"]
+            assert all((destination / name).is_dir() for name in evidence["cleanup_debt"])

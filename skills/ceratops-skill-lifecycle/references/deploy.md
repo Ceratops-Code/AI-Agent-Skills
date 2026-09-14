@@ -50,8 +50,17 @@ deployment operations or the independent bootstrap installer.
    installation; it stops before installation if source validation fails.
 2. Select exactly one runtime mode: all-managed by default, explicit selected
    and removed skills, or affected-set deployment from one full base revision.
-3. Run the managed runtime installer once and treat cleanup-blocked output as a
-   deployed result with retained cleanup debt.
+3. Run the installer once. Its JSON completion receipt identifies the source
+   commit, installation destination, exact changed skills, and cleanup debt.
+   Cleanup-blocked output means deployment completed with retained debt.
+4. For a saved promotion handoff, pass `--promotion-result PATH --operation
+   LOCATION --task-temp-root ROOT --finalize-promotion-with HELPER`, where
+   HELPER is the promotion helper selected by repository lifecycle. The
+   installer
+   binds its receipt to the original record before deployment and invokes that
+   helper's finalization once after debt-free completion. If cleanup fails,
+   retain the returned receipt and retry finalization with it; never reinstall
+   solely to recover evidence or delete the record.
 
 ## Done When
 

@@ -59,11 +59,11 @@ owns selected post-merge publication, deployment and cleanup.
 
 - Promote only explicitly selected task branches.
 - Keep unrelated branches and worktrees outside inspection and cleanup scope.
-- Before promotion, automatically rebase a selected clean, unpublished,
-  linear-history task branch onto current `release/local`. If rebasing fails,
-  abort it, verify the original head and clean worktree were restored, and
-  block with the conflicting paths. Apply the parent's local repair/retry rule
-  to ordinary check failures; keep unrelated source edits outside this action.
+- Before promotion, identify the selected task's unique linear commit range
+  beyond main and release. Check live remote branch and commit publication
+  before rewriting it. Preserve shared main and release history; abort a failed
+  rebase and verify restoration of the original clean source state. Apply the
+  parent's local repair/retry rule to ordinary check failures.
 
 ### Workflow
 
@@ -100,11 +100,14 @@ owns selected post-merge publication, deployment and cleanup.
    it leaves a worktree and branch untouched when the worktree's parent chain
    has no `worktrees` directory component and reports the exact preserved path.
 
-The helper refreshes the remote, fast-forwards main, reuses an existing local
-`release/local` without merging main into it, and creates it from main when
-missing. When release `HEAD` is not an ancestor, it rebases only an unpublished,
-linear selected branch in its existing clean worktree. It refuses published or
-nonlinear history. A failed attempt must restore the original branch head and
+The helper refreshes the remote, fast-forwards main, and reuses the existing
+release batch. It checks live remote heads and tags for the branch and any task
+commit that would be rewritten; an inherited upstream alone is not publication.
+The unique task boundary excludes history shared with main or release. If that
+boundary contains main history absent from release, Git merges the shared bases
+without changing either worktree before rebasing only task commits. Ambiguous
+ancestry, task merge commits, conflicts, and failed Git queries
+block. A failed attempt must restore the original branch head and
 clean worktree before it reports the failure and conflicting paths. The helper
 then runs `git diff --check`, fast-forwards each selected branch, records the
 scope and validates the final commit. A failed check returns its YAML location,
@@ -121,19 +124,24 @@ Use `--result-file PATH` outside the repository to atomically retain the exact
 JSON outcome, including operation receipts and phase durations in seconds. The
 helper records successful and failed attempts without replaying operations.
 
-After validating every deployment receipt against its producer schema, success
-status, requested commit and required fields, finalize the verified saved result
-with `--finalize-result --result-file PATH --task-temp-root ROOT
---expected-commit COMMIT --verified-result-sha256 SHA256`. The digest identifies
-the exact bytes just validated; it does not replace producer validation. ROOT
-must be one task directory under `<repo-parent>/tmp/<repo-name>/`.
+Finalize a saved result with `--finalize-result --result-file PATH
+--task-temp-root ROOT --expected-commit COMMIT --verified-result-sha256 SHA256`.
+ROOT must be one task directory under `<repo-parent>/tmp/<repo-name>/`.
+The digest binds cleanup to the exact saved bytes. Ordinary command receipts
+still require caller validation against their producer contracts.
 
-Finalization accepts only complete promote-and-deploy results for that commit,
-rejects changed files and linked or out-of-scope paths, and deletes only the
-named receipt. It preserves failed, incomplete, promotion-only and shipping
-results, other task artifacts and pending-work state. Success prints `OK`;
-cleanup failure preserves the receipt and reports `replay_required: false`.
-Finalization never runs promotion, deployment or publication.
+For a completed handoff, add `--deployment-evidence FILE` or pass its JSON on
+stdin with `--deployment-evidence -`. Bound evidence permits omission of the
+caller digest when every outcome uses this protocol. The receipt must bind the
+original record digest and operation to its producer, repository, clean commit,
+installation destination, exact deployed and removed skills, transaction, and
+cleanup debt. Finalization validates these fields and requires completed status
+with no debt; a handoff or `OK` alone cannot establish completion.
+
+Finalization deletes only the named promotion record. It preserves failed,
+incomplete, mismatched, changed, linked, and out-of-scope records, other task
+artifacts, and pending-work state. Success prints `OK`; failure reports
+`replay_required: false`. Finalization never executes lifecycle operations.
 
 ## Done When
 
