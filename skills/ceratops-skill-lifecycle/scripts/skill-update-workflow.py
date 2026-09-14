@@ -646,10 +646,16 @@ def _validated_request(
         new_shared_source = (
             shared_source and not target.exists() and target.parent.is_dir()
         )
-        if not matches and not existing_ancillary and not new_shared_source:
+        # Explicitly declared repository tooling belongs to the same update as
+        # its skill-owned templates. Missing files still get a baseline snapshot.
+        new_maintenance = (
+            pure.is_relative_to(pathlib.PurePosixPath("scripts"))
+            and not target.exists() and target.parent.is_dir()
+        )
+        if not matches and not existing_ancillary and not new_shared_source and not new_maintenance:
             raise UpdateExecutionError(
                 "allowed path must be selected-skill source, an existing "
-                "tracked ancillary file, or a new shared-section source: "
+                "tracked ancillary file, or declared new shared/maintenance source: "
                 + value
             )
         if target.is_symlink() or (target.exists() and not target.is_file()):
@@ -961,7 +967,8 @@ def _validated_state(path: pathlib.Path) -> dict[str, object]:
         snapshot = baseline_targets_value.get(value)
         content = snapshot.get("content") if isinstance(snapshot, Mapping) else None
         new_shared_source = (
-            pure.is_relative_to(pathlib.PurePosixPath("skills/sections"))
+            (pure.is_relative_to(pathlib.PurePosixPath("skills/sections"))
+             or pure.is_relative_to(pathlib.PurePosixPath("scripts")))
             and isinstance(content, Mapping)
             and content.get("kind") == "missing"
         )

@@ -221,16 +221,16 @@ def test_skill_update_scratch_preserves_unowned_paths(
     assert set(root.iterdir()) == ({unrecorded} if invalid == "options" else {unrecorded, marker})
 
 
+@pytest.mark.parametrize("new_source", ["skills/sections/scripts/shared-helper.py", "scripts/python_environment.py", "unowned/new.py"])
 def test_skill_update_workflow_accepts_new_shared_section_source(
     tmp_path: pathlib.Path,
+    new_source: str,
 ) -> None:
     worktree, _scope, task_temp_root = prepare_skill_update_workflow_worktree(
         tmp_path
     )
-    shared_source = (
-        worktree / "skills" / "sections" / "scripts" / "shared-helper.py"
-    )
-    shared_source.parent.mkdir(parents=True)
+    shared_source = worktree / new_source
+    shared_source.parent.mkdir(parents=True, exist_ok=True)
     request_path = task_temp_root / "request.json"
     state_path = task_temp_root / "state.json"
     evidence_path = task_temp_root / "evidence.json"
@@ -243,14 +243,14 @@ def test_skill_update_workflow_accepts_new_shared_section_source(
         "selected_skills": ["alpha-tool"],
         "allowed_paths": [
             "skills/alpha-tool/scripts/tool.py",
-            "skills/sections/scripts/shared-helper.py",
+            new_source,
         ],
         "change_groups": [
             {
                 "name": "shared-helper",
                 "paths": [
                     "skills/alpha-tool/scripts/tool.py",
-                    "skills/sections/scripts/shared-helper.py",
+                    new_source,
                 ],
             }
         ],
@@ -258,7 +258,7 @@ def test_skill_update_workflow_accepts_new_shared_section_source(
             {
                 "kind": "search",
                 "pattern": "SHARED_PAYLOAD",
-                "paths": ["skills/sections/scripts/shared-helper.py"],
+                "paths": [new_source],
                 "expected_matches": 1,
             }
         ],
@@ -276,6 +276,11 @@ def test_skill_update_workflow_accepts_new_shared_section_source(
         "--state",
         str(state_path),
     )
+    if new_source.startswith("unowned/"):
+        assert prepared.returncode != 0
+        assert "allowed path must be" in prepared.stderr
+        assert not state_path.exists()
+        return
     assert prepared.returncode == 0, prepared.stderr
     retention_marker = task_temp_root / ".ceratops-skill-update-active.json"
     assert json.loads(retention_marker.read_text(encoding="utf-8")) == {
@@ -326,9 +331,7 @@ def test_skill_update_workflow_accepts_new_shared_section_source(
     )
     assert verified.returncode == 0, verified.stderr
     evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
-    assert evidence["changed_paths"] == [
-        "skills/sections/scripts/shared-helper.py"
-    ]
+    assert evidence["changed_paths"] == [new_source]
     shared_source.write_text("SHARED_PAYLOAD = True\n\n", encoding="utf-8", newline="\n")
     assert run_git(worktree, "add", str(shared_source)).returncode == 0
     assert run_git(worktree, "commit", "-m", "new helper").returncode == 0
