@@ -58,7 +58,12 @@ def test_v3_tests_gate_mutations_and_ci_never_dispatches_handoffs(
     selected = runner.validation_operations(tmp_path, [location], ["repository.validate.structure"])
     assert "deliverables.service.tests.unit" in selected
     calls: list[str] = []
-    monkeypatch.setattr(runner, "execute_handoff", lambda route, root: calls.append(route) or {"status": "completed"})
+
+    def record_handoff(route: str, root: pathlib.Path) -> dict[str, str]:
+        calls.append(route)
+        return {"status": "completed"}
+
+    monkeypatch.setattr(runner, "execute_handoff", record_handoff)
     handoff = runner.prepare_operations(tmp_path, [runner.OperationRequest("deliverables.service.validate.source")], context=mode)[0]
     result = runner.execute_prepared_operation(handoff)
     assert calls == (["example-skill/check"] if mode == "skill" else [])
