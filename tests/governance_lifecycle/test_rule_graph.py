@@ -60,6 +60,27 @@ class RuleGraphTests(unittest.TestCase):
         )
 
     def test_governance_snapshot_uses_source_repo_and_checks_both_effort_scopes(self):
+        classify = GOVERNANCE_SNAPSHOT["classify_memory_contract"]
+        memory_cases = {
+            "Do not read, create, append, or rely on automation memory.": "forbidden",
+            "Do not read, create, append, or rely on\n automation memory.": "forbidden",
+            "- Do not read, create, append, or rely on\n"
+            "  `$CODEX_HOME/automations/global-dev-tools-update/memory.md`. If a\n"
+            "  higher-priority runtime instruction requires automation memory, state that\n"
+            "  conflict instead of writing memory.": "forbidden",
+            "Do not\n read `$CODEX_HOME\\automations\\update\\memory.md`.": "forbidden",
+            "Always read\n automation memory before starting.": "required",
+            "Do not use memory.\nRead memory before starting.": "conflicting",
+            "- Do not use memory\n- Read memory before starting": "conflicting",
+            "Do not read memory\n\nRead memory before starting": "conflicting",
+            "Do not update dependencies.\nRead memory.": "required",
+            "Reference: `$CODEX_HOME/automations/global-dev-tools-update/memory.md`.": "not_mentioned",
+            "Use memory as an example in the report.": "not_mentioned",
+            "Audit deterministically.": "not_mentioned",
+        }
+        for prompt, expected in memory_cases.items():
+            with self.subTest(prompt=prompt):
+                self.assertEqual(classify(prompt)["contract"], expected)
         with tempfile.TemporaryDirectory() as temporary:
             root = pathlib.Path(temporary)
             projects_root = root / "projects"

@@ -97,22 +97,32 @@ under the history contract in [rule-design.md](rule-design.md).
 
 ## Iterative optimization
 
-- (D) For every proposal, create one request naming applicable rule sources and
-  histories, rule IDs, every candidate target and exact expected-old text,
-  original and regression inputs, controller and evidence paths, a
-  caller-selected champion output, mutation authority, side effects, the
-  verified task-temp root, iteration artifacts, and disposable roles; set
-  `markdown_policy` to null for every source because the helper must resolve and
-  hash the skill-owned `references/.markdownlint.json` for Markdown targets;
-  TOML targets retain null policy and must parse without reformatting;
-  use null history only when none exists and include one history-backed source.
-  Run `python scripts/proposal-workflow.py prepare --request REQUEST`. The
-  helper must verify current source and skill-policy hashes, write compact
-  context evidence, initialize the controller's candidate-validation state, and
-  open iteration 1 without mutating a governed target.
-  Before writing context or opening an iteration, reject existing Markdown
-  errors outside the declared replacement ranges. Errors within those ranges
-  may be repaired by the proposal; final whole-target validation still applies.
+- (D) Construct each proposal with
+  `python scripts/proposal-workflow.py construct --spec SPEC`.
+
+Use `ceratops-governance-proposal-spec.v1` with the complete ordered rule sources,
+histories, selected rule IDs, exact replacements, failure and regression
+evidence, mutation authority, expected side effects, iteration limit, and
+verified task-temp root. Use null history only when none exists and include one
+history-backed source. Context-only sources have no replacements and require
+history and selected rule IDs.
+
+The helper derives request paths and disposable ownership, captures current
+context rule text, and seeds the first candidate. It preserves the caller's
+spec; finalization removes generated inputs and retains the validated champion.
+For a supplied complete request with explicit paths or ownership, use
+`python scripts/proposal-workflow.py prepare --request REQUEST` instead.
+
+Both paths set `markdown_policy` to null in requests. The helper must resolve
+and hash the skill-owned `references/.markdownlint.json` for Markdown targets;
+TOML targets retain null policy and must parse without reformatting. It must
+verify current source and skill-policy hashes, write compact context evidence,
+initialize candidate-validation state, and open iteration 1 without mutating a
+governed target. Before writing context or opening an iteration, reject existing
+Markdown errors outside the declared replacement ranges. Errors within those
+ranges may be repaired by the proposal; final whole-target validation still
+applies.
+
 - (D) After writing each pending structured candidate and semantic assessment,
   run `python scripts/proposal-workflow.py advance --state STATE --outcome
   OUTCOME --regressions RESULT`. Before hashing or recording, the controller

@@ -149,7 +149,7 @@ without repository deduplication.
 | `skills/ceratops-governance-lifecycle/scripts/apply_rules_update.py` | Applies approved rule and TOML text with required rule-history appends or exact ID migrations, supports validated history-only identity repairs, rolls back mixed writes, and cleans only explicitly disposable artifacts after success. |
 | `skills/ceratops-governance-lifecycle/scripts/validate_rule_candidate.py` | Preflights untouched Markdown before proposal preparation, safely repairs candidate-only whitespace, parses complete TOML targets without reflow, preserves shared rule/history checks, proves idempotence, and writes caller-selected evidence. |
 | `skills/ceratops-governance-lifecycle/scripts/rule_candidate_source.py` | Owns exact UTF-8 source loading, encoding and line-ending preservation, shared candidate data, and input-integrity checks used by governance validation and application. |
-| `skills/ceratops-governance-lifecycle/scripts/proposal-workflow.py` | Validates exact proposal inputs, histories, target policies, and hashes; rejects untouched formatting errors before opening artifacts; records task-temp ownership; delegates validated controller transitions; and preserves the exact champion while finalizing owned artifacts. |
+| `skills/ceratops-governance-lifecycle/scripts/proposal-workflow.py` | Constructs requests and seeds the first candidate from exact replacements, or prepares a supplied complete request; validates inputs, histories, target policies, and hashes; rejects untouched formatting errors before opening artifacts; records task-temp ownership; delegates validated controller transitions; and preserves the exact champion while finalizing owned artifacts. |
 | `skills/ceratops-governance-lifecycle/scripts/iteration_controller.py` | Opens structured candidates, invokes mechanical validation before recording, retains the exact validated champion, enforces stopping, and safely finalizes owned artifacts. |
 | `skills/ceratops-governance-lifecycle/scripts/rule_graph.py` | Parses canonical AGENTS rules and rejects structural syntax or rule-local explicit-user override escape clauses. |
 | `skills/ceratops-repo-lifecycle/scripts/github_contract_engine/` | Package CLI for compact local audit snapshots, contract evaluation, shared GitHub API access, sanitized evidence, and evidence-gated CodeQL disposition. |
@@ -224,6 +224,63 @@ because the merge already occurred. The initial integrated ship request
 authorizes the complete workflow. Its final merge uses admin only after
 readiness, CI, Codex-review, and exact-head gates pass; standalone merge
 behavior remains unchanged.
+
+### Governance proposal construction
+
+Run `python skills/ceratops-governance-lifecycle/scripts/proposal-workflow.py
+construct --spec SPEC` from the repository root. The caller retains the UTF-8
+JSON spec, whose complete shape is:
+
+```json
+{
+  "schema": "ceratops-governance-proposal-spec.v1",
+  "task_temp_root": "<absolute existing task-temp directory>",
+  "sources": [
+    {
+      "rules": "AGENTS.md",
+      "history": "AGENTS.history.json",
+      "rule_ids": ["SKILLS-HELP-01"],
+      "replacements": []
+    },
+    {
+      "rules": "skills/skill-name/references/action.md",
+      "history": null,
+      "rule_ids": [],
+      "replacements": [
+        {
+          "expected_old": "<exact current text>",
+          "replacement": "<approved replacement text>"
+        }
+      ]
+    }
+  ],
+  "failure": "<observed failure and relevant evidence>",
+  "regressions": "<behavior and scope to preserve>",
+  "max_iterations": 1,
+  "mutation_authorized": false,
+  "expected_side_effects": ["write proposal artifacts in task-temp"]
+}
+```
+
+List the complete applicable sources in precedence order, including the global
+source when applicable. Paths to sources resolve from the working directory.
+Context sources require history and selected rule IDs; the helper captures their
+current rule text. Targets require exact replacements, with null history only
+when none exists. The existing preparation checks validate histories, exact
+matches, source integrity and skill-owned Markdown policy; TOML is parsed
+without reformatting. The constructor never changes governed sources, including
+when mutation is authorized.
+
+Inside the verified task-temp root, construction creates `proposal-request.json`,
+`proposal-original.json`, `proposal-regressions.md`, `proposal-state.json`,
+`proposal-context.json` and `iterations/`. It refuses existing output paths.
+Stdout returns the pending iteration paths plus `state` and `champion_output`.
+Continue with the existing `advance` and `finalize` commands. Finalization
+removes generated inputs and controller artifacts while retaining
+`validated-champion.json` and the caller's spec. A failure before state creation
+removes only unchanged generated inputs; a later failure reports the preserved
+state path for recovery. Callers needing explicit output paths or ownership can
+continue using `prepare --request REQUEST` with the complete request format.
 
 ## Contracts
 

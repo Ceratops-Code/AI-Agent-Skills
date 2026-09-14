@@ -44,13 +44,13 @@ D_FORCE_PRESERVATION_RE = re.compile(
 )
 MEMORY_TERM_RE = re.compile(r"\bmemory(?:\.md)?\b", re.IGNORECASE)
 MEMORY_FORBIDDEN_RE = re.compile(
-    r"\b(?:do\s+not|must\s+not)\b[^\n.]*\b(?:read|use|create|append|update|write|rely\s+on)\b[^\n.]*\bmemory(?:\.md)?\b"
+    r"\b(?:do\s+not|must\s+not)\b[^\n]*\b(?:read|use|create|append|update|write|rely\s+on)\b[^\n]*\bmemory(?:\.md)?\b"
     r"|\bdo\s+not\s+use\s+automation\s+memory\b",
     re.IGNORECASE,
 )
 MEMORY_REQUIRED_RE = re.compile(
-    r"\b(?:must|always|required\s+to)\b[^\n.]*\b(?:read|use|create|append|update|write)\b[^\n.]*\bmemory(?:\.md)?\b"
-    r"|\b(?:read|create|append|update|write)\b[^\n.]*\bmemory(?:\.md)?\b",
+    r"\b(?:must|always|required\s+to)\b[^\n]*\b(?:read|use|create|append|update|write)\b[^\n]*\bmemory(?:\.md)?\b"
+    r"|\b(?:read|create|append|update|write)\b[^\n]*\bmemory(?:\.md)?\b",
     re.IGNORECASE,
 )
 REFERENCE_RE = re.compile(
@@ -133,6 +133,17 @@ def parse_automation(path: pathlib.Path, root: pathlib.Path) -> dict[str, object
     }
 
 
+def memory_statements(prompt: str) -> Iterable[str]:
+    """Join wrapped prose without letting one directive mask another.
+
+    Bullets, paragraphs, and sentences bound separate instructions. Dots inside
+    paths are not sentence boundaries, because they are not followed by space.
+    """
+    for block in re.split(r"\n\s*\n|\n(?=[ \t]*(?:[-*+]|\d+[.)])\s)", prompt):
+        joined = " ".join(block.split())
+        yield from re.split(r"(?<=[.!?])\s+", joined)
+
+
 def classify_memory_contract(prompt: str) -> dict[str, object]:
     mention_count = len(MEMORY_TERM_RE.findall(prompt))
     if mention_count == 0:
@@ -141,13 +152,18 @@ def classify_memory_contract(prompt: str) -> dict[str, object]:
     forbidden = False
     required = False
     incidental_mentions = 0
-    for line in prompt.splitlines():
+    for line in memory_statements(prompt):
         if not MEMORY_TERM_RE.search(line):
             continue
-        if MEMORY_FORBIDDEN_RE.search(line):
+        # A path component such as "tools-update" is not a policy verb. Keep
+        # its memory referent while evaluating the surrounding instruction.
+        policy_line = re.sub(
+            r"\S*[/\\]\S*\bmemory(?:\.md)?\b\S*", "memory", line, flags=re.IGNORECASE
+        )
+        if MEMORY_FORBIDDEN_RE.search(policy_line):
             forbidden = True
             continue
-        if MEMORY_REQUIRED_RE.search(line):
+        if MEMORY_REQUIRED_RE.search(policy_line):
             required = True
             continue
         incidental_mentions += len(MEMORY_TERM_RE.findall(line))
