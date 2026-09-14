@@ -970,6 +970,8 @@ def _completed_deployment(result: object, commit: str, *, repo_root: pathlib.Pat
 
     Arbitrary command receipts retain the caller-validation gate. The closed
     completion protocol is checked here and never inferred from OK or a route.
+    The runner records steps only after zero exits; structured output is optional
+    and its receipts form an ordered subset of those completed steps.
     """
     if not isinstance(result, dict) or result.get("status") != "ready":
         raise PromotionError("Result is not a successful promote-and-deploy outcome.")
@@ -1006,7 +1008,7 @@ def _completed_deployment(result: object, commit: str, *, repo_root: pathlib.Pat
         elif outcome.get("handoff") and not outcome.get("handoff_completed"):
             raise PromotionError("Deployment handoff lacks bound completion evidence.")
         steps = outcome.get("steps")
-        receipts = outcome.get("step_results")
+        receipts = outcome.get("step_results", [])
         if outcome.get("handoff_completed") and isinstance(receipts, list) and receipts:
             last = receipts[-1]
             if (isinstance(last, dict) and isinstance(last.get("result"), dict)
@@ -1018,18 +1020,24 @@ def _completed_deployment(result: object, commit: str, *, repo_root: pathlib.Pat
                 assert repo_root is not None
                 _validate_completion(last["result"], repo_root=repo_root, commit=commit, outcome=outcome, binding=None)
                 continue
-        if not caller_verified:
-            raise PromotionError("Ordinary producer receipts require caller validation before cleanup.")
         if (not isinstance(steps, list) or not steps
                 or not all((type(step) is int and step > 0)
                            or (isinstance(step, str) and step.strip()) for step in steps)
-                or len(set(steps)) != len(steps)
-                or not isinstance(receipts, list) or len(receipts) != len(steps)):
-            raise PromotionError(f"Complete step receipts are required for cleanup: {operation}")
-        for step, item in zip(steps, receipts, strict=True):
-            if (not isinstance(item, dict) or item.get("step") != step
-                    or type(item.get("step")) is not type(step) or set(item) != {"step", "result"}):
-                raise PromotionError(f"Step receipt is missing or ambiguous: {operation}, step {step}")
+                or len(set(steps)) != len(steps)):
+            raise PromotionError(f"Completed step evidence is required for cleanup: {operation}")
+        if not isinstance(receipts, list):
+            raise PromotionError(f"Step receipts must be a list: {operation}")
+        if receipts and not caller_verified:
+            raise PromotionError("Ordinary producer receipts require caller validation before cleanup.")
+        remaining_steps = iter(steps)
+        for item in receipts:
+            # Advancing the iterator rejects unknown, duplicate and reordered
+            # receipts while allowing successful steps that emitted no JSON.
+            if (not isinstance(item, dict) or set(item) != {"step", "result"}
+                    or not any(item["step"] == step and type(item["step"]) is type(step)
+                               for step in remaining_steps)):
+                raise PromotionError(f"Step receipt is missing or ambiguous: {operation}")
+            step = item["step"]
             receipt = item["result"]
             if not isinstance(receipt, dict) or not all(
                 isinstance(receipt.get(field), str) and receipt[field].strip()

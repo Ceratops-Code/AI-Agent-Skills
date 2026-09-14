@@ -124,6 +124,9 @@ Use `--result-file PATH` outside the repository to atomically retain the exact
 JSON outcome, including operation receipts and phase durations in seconds. The
 helper records successful and failed attempts without replaying operations.
 
+Validate completed operations and their recorded steps. Steps without structured
+output use the recorded command completion evidence.
+
 Finalize a saved result with `--finalize-result --result-file PATH
 --task-temp-root ROOT --expected-commit COMMIT --verified-result-sha256 SHA256`.
 ROOT must be one task directory under `<repo-parent>/tmp/<repo-name>/`.

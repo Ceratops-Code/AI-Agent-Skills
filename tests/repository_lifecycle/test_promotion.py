@@ -83,6 +83,21 @@ from tests.support.repositories import (
             "ceratops-skill-lifecycle/deploy",
             False,
         ),
+        (
+            ["--run-operation", "deploy.operations.deploy"],
+            False,
+            True,
+            "ceratops-skill-lifecycle/deploy",
+            {
+                "status": "completed",
+                "operation": "deploy.operations.deploy",
+                "steps": ["install-python-requirements"],
+                "handoff": "ceratops-skill-lifecycle/deploy",
+            },
+            True,
+            "ceratops-skill-lifecycle/deploy",
+            False,
+        ),
     ],
 )
 def test_promote_repository_requires_an_explicit_deployment_choice(
@@ -102,12 +117,40 @@ def test_promote_repository_requires_an_explicit_deployment_choice(
         managed_skills=managed_skills,
         handoff=declared_handoff,
     )
+    if expected_operation and expected_operation["operation"] == "deploy.operations.deploy":
+        # Match the supported v1 pip deployment: ordinary stdout, a named
+        # completed step and an advisory managed-skill handoff, without JSON.
+        (repo / "sdlc/sdlc.yml").write_text(json.dumps({
+            "version": 1, "kind": "ceratops-sdlc", "deploy": {"operations": {
+                "deploy": {
+                    "steps": [{"id": "install-python-requirements", "run": [
+                        sys.executable, "deploy-probe.py",
+                    ]}],
+                    "handoff": declared_handoff,
+                },
+            }},
+        }), encoding="utf-8")
+        (repo / "deploy-probe.py").write_text(
+            "import os, pathlib\n"
+            "with pathlib.Path(os.environ['DEPLOY_TEST_LOG']).open('a', encoding='utf-8') as stream:\n"
+            "    stream.write('no-base\\n')\n"
+            "print('Requirement already satisfied')\n",
+            encoding="utf-8",
+        )
+        assert run_git(repo, "add", ".").returncode == 0
+        assert run_git(repo, "commit", "-m", "declare v1 deployment").returncode == 0
+        approved_head = run_git(repo, "rev-parse", "HEAD").stdout.strip()
     release_start = run_git(repo, "rev-parse", "main").stdout.strip()
+    task_temp = repo.parent / "tmp" / repo.name / "non-json-deployment"
+    task_temp.mkdir(parents=True)
+    result_file = task_temp / "result.json"
 
     promoted = subprocess.run(
         [
             sys.executable,
             str(PROMOTE_REPOSITORY),
+            "--result-file",
+            str(result_file),
             "--repo-root",
             str(repo),
             "--source-branch",
@@ -132,7 +175,7 @@ def test_promote_repository_requires_an_explicit_deployment_choice(
     else:
         assert result["operations"] == {
             "status": "completed",
-            "completed_operations": ["deliverables.sample.deploy-local.deploy"],
+            "completed_operations": [expected_operation["operation"]],
             "pending_operations": [],
             "results": [
                 {
@@ -142,10 +185,11 @@ def test_promote_repository_requires_an_explicit_deployment_choice(
             ],
         }
     assert "managed_skills" not in result
-    assert result.get("handoffs", []) == (
-        [] if expected_handoff is None
-        else [{"operation": "deliverables.sample.deploy-local.deploy", "handoff": expected_handoff}]
-    )
+    expected_handoffs = []
+    if expected_handoff is not None:
+        assert expected_operation is not None
+        expected_handoffs = [{"operation": expected_operation["operation"], "handoff": expected_handoff}]
+    assert result.get("handoffs", []) == expected_handoffs
     scope_path = pathlib.Path(result["pending_work_scope"])
     assert json.loads(scope_path.read_text(encoding="utf-8")) == {
         "sources": [
@@ -167,6 +211,37 @@ def test_promote_repository_requires_an_explicit_deployment_choice(
         assert log.read_text(encoding="utf-8") == f"{release_start}\n"
     else:
         assert log.read_text(encoding="utf-8") == "no-base\n"
+
+    # The caller validated command completion and the saved envelope above.
+    # Finalization must not require output the producer never emitted.
+    data = result_file.read_bytes()
+    assert json.loads(data) == result
+    scope_before = scope_path.read_bytes()
+    finalized = subprocess.run(
+        [sys.executable, str(PROMOTE_REPOSITORY), "--repo-root", str(repo),
+         "--finalize-result", "--result-file", str(result_file),
+         "--task-temp-root", str(task_temp), "--expected-commit", approved_head,
+         "--verified-result-sha256", hashlib.sha256(data).hexdigest()],
+        capture_output=True, text=True, check=False, env=environment,
+    )
+    if expected_operation is None:
+        assert finalized.returncode == 1
+        assert json.loads(finalized.stderr)["replay_required"] is False
+        assert result_file.read_bytes() == data
+        assert not log.exists()
+    elif expected_handoff is not None:
+        assert finalized.returncode == 1
+        assert "lacks bound completion evidence" in json.loads(finalized.stderr)["message"]
+        assert result_file.read_bytes() == data
+        assert log.read_text(encoding="utf-8") == "no-base\n"
+    else:
+        assert "step_results" not in result["operations"]["results"][0]
+        assert finalized.returncode == 0, finalized.stderr
+        assert finalized.stdout == "OK\n"
+        assert not result_file.exists()
+        assert log.read_text(encoding="utf-8") == "no-base\n"
+    assert scope_path.read_bytes() == scope_before
+    assert run_git(repo, "rev-parse", "HEAD").stdout.strip() == approved_head
 
 
 @pytest.mark.parametrize(
@@ -334,9 +409,21 @@ def test_promote_repository_runs_explicit_operation_ids_in_order(
         (["operations", "results"], [], "ambiguous"),
         (["operations", "results", 0, "commit"], "0" * 40, "different commit"),
         (["operations", "results", 0, "status"], "failed", "incomplete"),
-        (["operations", "results", 0, "steps"], [True], "Complete step receipts"),
-        (["operations", "results", 0, "step_results"], [], "Complete step receipts"),
+        (["operations", "results", 0, "steps"], [True], "Completed step evidence"),
+        (["operations", "results", 0, "steps"], [], "Completed step evidence"),
+        (["operations", "results", 0, "steps"], [1, 1], "Completed step evidence"),
+        (["operations", "results", 0, "steps"], None, "Completed step evidence"),
+        (["operations", "results", 0, "step_results"], None, "must be a list"),
+        (["operations", "results", 0, "step_results"], {}, "must be a list"),
+        (["operations", "results", 0, "step_results"], [None], "Step receipt"),
+        (["operations", "results", 0, "step_results"], [
+            {"step": 1, "result_omitted": "stdout_limit"},
+        ], "Step receipt"),
+        (["operations", "results", 0, "step_results"],
+         result["operations"]["results"][0]["step_results"] * 2, "Step receipt"),
         (["operations", "results", 0, "step_results", 0, "step"], 2, "Step receipt"),
+        (["operations", "results", 0, "step_results", 0, "step"], True, "Step receipt"),
+        (["operations", "results", 0, "step_results", 0, "step"], "1", "Step receipt"),
         (["operations", "results", 0, "step_results", 0, "result"], {}, "schema/status"),
     ]
     for field_path, value, message in variations:
@@ -349,6 +436,36 @@ def test_promote_repository_runs_explicit_operation_ids_in_order(
         case_file.write_text(json.dumps(modified), encoding="utf-8")
         rejected(["--result-file", str(case_file), "--verified-result-sha256",
                   hashlib.sha256(case_file.read_bytes()).hexdigest()], message, case_file)
+
+    # Structured output can be an ordered subset of numbered or named steps.
+    # Every retained receipt still has to be well formed, even after gaps.
+    receipt = result["operations"]["results"][0]["step_results"][0]["result"]
+    for steps in ([1, 2, 3, 4, 5], ["prepare", "install", "check", "finish", "cleanup"]):
+        for selected in ([], [1], [1, 3], [3, 1]):
+            mixed = copy.deepcopy(result)
+            outcome = mixed["operations"]["results"][0]
+            outcome["steps"] = steps
+            outcome["step_results"] = [
+                {"step": steps[index], "result": receipt} for index in selected
+            ]
+            mixed_file = task_temp / "mixed-result.json"
+            mixed_file.write_text(json.dumps(mixed), encoding="utf-8")
+            extra = ["--result-file", str(mixed_file), "--verified-result-sha256",
+                     hashlib.sha256(mixed_file.read_bytes()).hexdigest()]
+            if selected == [3, 1]:
+                rejected(extra, "Step receipt", mixed_file)
+                continue
+            finalized = finalize(extra)
+            assert finalized.returncode == 0, finalized.stderr
+            assert finalized.stdout == "OK\n"
+            assert not mixed_file.exists()
+            assert log.read_text(encoding="utf-8") == operation_log
+
+            outcome["status"] = "state_changed"
+            outcome.pop("step_results")
+            mixed_file.write_text(json.dumps(mixed), encoding="utf-8")
+            rejected(["--result-file", str(mixed_file), "--verified-result-sha256",
+                      hashlib.sha256(mixed_file.read_bytes()).hexdigest()], "incomplete", mixed_file)
 
     duplicate = task_temp / "duplicate-result.json"
     duplicate.write_bytes(data.replace(b'"status": "ready"', b'"status": "ready", "status": "ready"', 1))
@@ -1451,27 +1568,44 @@ def test_automatic_rebase_refuses_uncertain_git_evidence(
 
 
 @pytest.mark.parametrize("cleanup_failure", [False, True])
+@pytest.mark.parametrize("deployment_case", ["advisory", "v1-plain", "v2-plain", "v2-json"])
 def test_managed_installer_finalizes_only_its_bound_promotion_record(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str], cleanup_failure: bool,
+    capsys: pytest.CaptureFixture[str], cleanup_failure: bool, deployment_case: str,
 ) -> None:
     from tests.skill_lifecycle.support import load_runtime_installer
     from tests.support.repositories import create_compatible_repo
 
     repo, _, _, environment = prepare_repository_lifecycle_repo(tmp_path)
     create_compatible_repo(repo, "example/completion", ["alpha-tool", "beta-tool"])
+    operation = "deliverables.skills.deploy-local.managed"
+    structured = deployment_case == "v2-json"
+    if deployment_case != "advisory":
+        output = json.dumps({"schema": "test.install.v1", "status": "OK"}) if structured else "Requirement already satisfied"
+        step: dict[str, Any] = {"run": [sys.executable, "-c", f"print({output!r})"]}
+        deploy = {"steps": [step], "handoff": "ceratops-skill-lifecycle/deploy"}
+        if deployment_case == "v1-plain":
+            operation = "deploy.operations.deploy"
+            step["id"] = "install-python-requirements"
+            (repo / "sdlc/sdlc.yml").write_text(json.dumps({
+                "version": 1, "kind": "ceratops-sdlc", "deploy": {"operations": {"deploy": deploy}},
+            }), encoding="utf-8")
+        else:
+            write_sdlc_contract(repo, deliverables={"skills": {"deploy-local": {"managed": deploy}}})
     assert run_git(repo, "add", ".").returncode == 0
     assert run_git(repo, "commit", "-m", "managed deployment").returncode == 0
     task = repo.parent / "tmp" / repo.name / "promotion-completion"
     task.mkdir(parents=True)
     record = task / "promotion.json"
-    operation = "deliverables.skills.deploy-local.managed"
     promoted = subprocess.run([sys.executable, str(PROMOTE_REPOSITORY), "--repo-root", str(repo),
                               "--source-branch", "approved", "--run-operation", operation,
                               "--result-file", str(record)], env=environment, capture_output=True, text=True)
     assert promoted.returncode == 0, promoted.stderr
     original = record.read_bytes()
     promotion = json.loads(original)
+    outcome = promotion["operations"]["results"][0]
+    assert outcome["status"] == ("advisory" if deployment_case == "advisory" else "completed")
+    assert bool(outcome.get("step_results")) is structured
     scope = pathlib.Path(promotion["pending_work_scope"])
     scope_bytes = scope.read_bytes()
     retained = task / "caller-owned.txt"
@@ -1496,8 +1630,9 @@ def test_managed_installer_finalizes_only_its_bound_promotion_record(
                                "--promotion-result", str(record), "--operation", operation,
                                "--task-temp-root", str(task), "--finalize-promotion-with", str(PROMOTE_REPOSITORY)])
     captured = capsys.readouterr()
-    assert code == (2 if cleanup_failure else 0), (captured.out, captured.err)
-    receipt = json.loads(captured.err if cleanup_failure else captured.out)
+    cleanup_blocked = cleanup_failure or structured
+    assert code == (2 if cleanup_blocked else 0), (captured.out, captured.err)
+    receipt = json.loads(captured.err if cleanup_blocked else captured.out)
     assert finalizations == 1
     assert receipt["commit"] == promotion["head"]
     assert receipt["install_root"] == str(destination)
@@ -1505,12 +1640,20 @@ def test_managed_installer_finalizes_only_its_bound_promotion_record(
     assert receipt["removed"] == [] and receipt["cleanup_debt"] == []
     assert receipt["promotion"]["sha256"] == hashlib.sha256(original).hexdigest()
     assert (destination / "alpha-tool/SKILL.md").is_file()
-    if cleanup_failure:
+    if cleanup_blocked:
         assert record.read_bytes() == original
         assert receipt["promotion_cleanup"]["replay_required"] is False
         command = [sys.executable, str(PROMOTE_REPOSITORY), "--repo-root", str(repo), "--finalize-result",
                    "--result-file", str(record), "--task-temp-root", str(task),
                    "--expected-commit", promotion["head"], "--deployment-evidence", "-"]
+        if structured:
+            # Bound handoff evidence cannot validate an arbitrary producer's
+            # receipt. The caller checks that receipt before acknowledging it.
+            assert outcome["step_results"][0]["result"] == {"schema": "test.install.v1", "status": "OK"}
+            unverified = process(command, input=json.dumps(receipt), capture_output=True, text=True)
+            assert unverified.returncode == 1 and record.read_bytes() == original
+            assert "require caller validation" in unverified.stderr
+            command.extend(["--verified-result-sha256", hashlib.sha256(original).hexdigest()])
         invalid = [
             ("status", "failed"), ("cleanup_debt", ["retired-folder"]), ("commit", "a" * 40),
             ("repo_root", str(tmp_path)), ("install_root", "relative"), ("producer", "another-skill/deploy"),
