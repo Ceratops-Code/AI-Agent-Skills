@@ -515,6 +515,9 @@ def validate_workflow_target(command: str, skill_names: set[str]) -> list[str]:
     parts = normalized.split()
     if not parts:
         return ["section manifest maintenance workflow contains an empty command"]
+    # The locked uv script form selects the script's declared project.
+    if parts[:3] == ["uv", "run", "--locked"]:
+        parts = ["python", *parts[3:]]
 
     if normalized.startswith("$"):
         target = normalized[1:]
@@ -523,7 +526,10 @@ def validate_workflow_target(command: str, skill_names: set[str]) -> list[str]:
         return errors
 
     if len(parts) >= 2 and parts[0] in {"python", "py"} and (parts[1].startswith("scripts/") or parts[1].startswith("skills/")):
-        script_path = ROOT / parts[1]
+        python_script = pathlib.PurePosixPath(parts[1])
+        if ".." in python_script.parts:
+            return [f"section manifest maintenance workflow uses a non-portable script path: {parts[1]}"]
+        script_path = ROOT / python_script
         if not script_path.is_file():
             errors.append(f"section manifest maintenance workflow points to missing script {parts[1]}")
         return errors

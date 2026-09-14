@@ -115,7 +115,7 @@
     }
   },
   "ci_action": {
-    "uses": "Ceratops-Code/AI-Agent-Skills/skills/ceratops-repo-lifecycle",
+    "uses": "Ceratops-Code/AI-Agent-Skills/skills/ceratops-repo-lifecycle/scripts",
     "ref": "refs/heads/main",
     "inputs": {
       "repo-root": "${{ github.workspace }}",

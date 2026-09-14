@@ -298,15 +298,11 @@ def load_runtime_builder() -> dict[str, Any]:
 
 
 def load_runtime_installer() -> dict[str, Any]:
-    """Load the runtime installer with its sibling builder import available."""
+    """Load a fresh runtime package through the installer's direct entrypoint."""
 
-    runtime_dir = str(RUNTIME_INSTALLER.parent)
-    sys.modules.pop("managed_runtime_builder", None)
-    sys.path.insert(0, runtime_dir)
-    try:
-        return runpy.run_path(str(RUNTIME_INSTALLER))
-    finally:
-        sys.path.remove(runtime_dir)
+    sys.modules.pop("runtime.managed_runtime_builder", None)
+    sys.modules.pop("runtime", None)
+    return runpy.run_path(str(RUNTIME_INSTALLER))
 
 
 def runtime_skill_text(install_root: pathlib.Path, skill_name: str) -> str:

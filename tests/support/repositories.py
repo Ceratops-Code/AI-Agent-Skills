@@ -39,6 +39,7 @@ def run_ci_action(
         project.mkdir(parents=True)
         for name in ("pyproject.toml", "uv.lock"):
             shutil.copy2(ROOT / "skills/sections/python" / name, project / name)
+    action_root = action_root / "scripts"
     action = yaml.safe_load((action_root / "action.yml").read_text(encoding="utf-8"))
     assert action["runs"]["using"] == "composite"
     step, = action["runs"]["steps"]

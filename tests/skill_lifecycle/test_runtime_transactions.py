@@ -50,9 +50,19 @@ def test_runtime_installer_releases_installed_working_directory(
         newline="\n",
     )
 
+    # A Windows venv redirector remains in its launch directory while the child
+    # runs. Start it outside the target, then exercise the actual installer's
+    # change away from an installed working directory in the Python process.
+    invocation = (
+        "import os,runpy,sys; os.chdir(sys.argv.pop(1)); "
+        "sys.argv[0]=sys.argv.pop(1); runpy.run_path(sys.argv[0],run_name='__main__')"
+    )
     result = subprocess.run(
         [
             sys.executable,
+            "-c",
+            invocation,
+            str(installed_skill),
             str(installed_runtime / RUNTIME_INSTALLER.name),
             "--repo-root",
             str(repo),
@@ -61,7 +71,7 @@ def test_runtime_installer_releases_installed_working_directory(
             "--skill",
             skill,
         ],
-        cwd=installed_skill,
+        cwd=repo,
         capture_output=True,
         text=True,
         check=False,

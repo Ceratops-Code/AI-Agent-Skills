@@ -21,6 +21,35 @@ from tests.support.repositories import (
 )
 
 
+@pytest.mark.parametrize(
+    ("command", "error"),
+    [
+        ("uv run --locked scripts/check.py --worktree", None),
+        ("uv run --locked skills/alpha-tool/scripts/check.py", None),
+        ("python scripts/check.py", None),
+        ("uv run --locked scripts/missing.py", "missing script"),
+        ("uv run scripts/check.py", "unsupported command form"),
+        ("uv run --locked scripts/../outside.py", "non-portable script path"),
+        ("uv run --locked /outside/check.py", "unsupported command form"),
+    ],
+)
+def test_manifest_maintenance_commands_validate_locked_uv_script_targets(
+    tmp_path: pathlib.Path, command: str, error: str | None,
+) -> None:
+    for relative in ("scripts/check.py", "skills/alpha-tool/scripts/check.py"):
+        script = tmp_path / relative
+        script.parent.mkdir(parents=True, exist_ok=True)
+        script.write_text("print('OK')\n", encoding="utf-8")
+    validator = load_source_validator(tmp_path / "skills")
+    check = validator["validate_workflow_target"]
+    check.__globals__["ROOT"] = tmp_path
+    errors = check(command, {"alpha-tool"})
+    if error is None:
+        assert errors == []
+    else:
+        assert len(errors) == 1 and error in errors[0]
+
+
 def test_compatible_full_validation_accepts_arbitrary_skill_names(tmp_path: pathlib.Path) -> None:
     repo = tmp_path / "compatible"
     create_compatible_repo(repo, "example/compatible", ["alpha-tool"])

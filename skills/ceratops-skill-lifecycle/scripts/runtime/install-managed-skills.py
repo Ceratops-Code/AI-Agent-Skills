@@ -23,7 +23,14 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, cast
 
-import managed_runtime_builder as runtime_builder
+# Direct script execution and maintenance imports must use one package identity.
+# Limit the import-path change to loading this bundle's runtime package.
+scripts_root = str(pathlib.Path(__file__).resolve().parents[1])
+sys.path.insert(0, scripts_root)
+try:
+    from runtime import managed_runtime_builder as runtime_builder
+finally:
+    sys.path.remove(scripts_root)
 
 BUNDLE_ROOT = pathlib.Path(__file__).resolve().parents[2]
 MANIFEST_RELATIVE = pathlib.PurePosixPath("skills/skill-sections.json")

@@ -18,8 +18,8 @@ runs:
         CERATOPS_EVIDENCE: ${{ inputs.evidence-file }}
       run: |
         uv run --quiet --locked \
-          --project "$CERATOPS_ACTION_ROOT/../sections/python" \
-          python "$CERATOPS_ACTION_ROOT/scripts/repository_operation.py" \
+          --project "$CERATOPS_ACTION_ROOT/../../sections/python" \
+          python "$CERATOPS_ACTION_ROOT/repository_operation.py" \
           --repo-root "${CERATOPS_REPOSITORY:?repo-root input is required}" \
           --validate --ci \
           --evidence-file "${CERATOPS_EVIDENCE:?evidence-file input is required}"
