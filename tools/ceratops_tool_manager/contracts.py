@@ -43,8 +43,8 @@ def fields(value: Any, names: set[str]) -> dict[str, Any]:
     return value
 
 
-def schema(value: dict[str, Any]) -> None:
-    if type(value["schema"]) is not int or value["schema"] != 1:
+def schema(value: dict[str, Any], *, expected: int = 1) -> None:
+    if type(value["schema"]) is not int or value["schema"] != expected:
         raise DeploymentError("unsupported schema")
 
 

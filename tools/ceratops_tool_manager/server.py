@@ -19,7 +19,7 @@ class DeploymentServer(MCPServer):
         return tools
 
     async def call_tool(self, name, arguments, context=None):
-        expected = {"versions": {"tool_id"}, "install": {"tool_id", "version"}, "update": {"tool_id", "version"}}
+        expected = {"versions": {"tool_name"}, "install": {"tool_name", "version"}, "update": {"tool_name", "version"}}
         if name not in expected or set(arguments) - expected[name]:
             return CallToolResult(is_error=True, content=[TextContent(type="text", text="Unknown operation or argument.")])
         return await super().call_tool(name, arguments, context)
@@ -34,18 +34,18 @@ def build_server() -> MCPServer:
     engine = Engine()
 
     @server.tool(annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False, open_world_hint=False))
-    def install(tool_id: str, version: str) -> CallToolResult:
+    def install(tool_name: str, version: str) -> CallToolResult:
         """Install an exact registered release, including a selected previous version."""
-        return result(engine.install(tool_id, version))
+        return result(engine.install(tool_name, version))
 
     @server.tool(annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False, open_world_hint=False))
-    def update(tool_id: str, version: str) -> CallToolResult:
+    def update(tool_name: str, version: str) -> CallToolResult:
         """Update an installed tool to an exact registered release; reconnect after a self-update."""
-        return result(engine.update(tool_id, version))
+        return result(engine.update(tool_name, version))
 
     @server.tool(annotations=ToolAnnotations(read_only_hint=True, destructive_hint=False, open_world_hint=False))
-    def versions(tool_id: str = "ceratops_tool_manager") -> CallToolResult:
+    def versions(tool_name: str = "ceratops_tool_manager") -> CallToolResult:
         """Inspect installed, available, and this manager process's running versions."""
-        return result(engine.versions(tool_id))
+        return result(engine.versions(tool_name))
 
     return server

@@ -106,7 +106,7 @@ def test_underscore_identity_installs_with_normalized_wheel_metadata(deployment,
     make_release(tmp_path, "1.0.0", tool=tool, metadata_name=metadata_name)
     engine, _, _ = deployment
     result = engine.install(tool, "1.0.0")
-    assert result["tool_id"] == tool
+    assert result["tool_name"] == tool
     assert engine.versions(tool)["installed_version"] == "1.0.0"
     assert (tmp_path / tool / "current.json").is_file()
 
@@ -253,12 +253,13 @@ def test_lock_prevents_concurrent_deployment_and_releases(deployment, tmp_path):
 
 def test_cli_uses_shared_engine_and_rejects_extra_operation(deployment, tmp_path, capsys):
     make_release(tmp_path, "1.0.0")
-    assert cli.main(["install", "fixture", "1.0.0"]) == 0
+    deployment[0].install("fixture", "1.0.0")
+    assert cli.main(["update", "fixture", "1.0.0"]) == 0
     assert json.loads(capsys.readouterr().out)["installed_version"] == "1.0.0"
     with pytest.raises(SystemExit):
         cli.main(["rollback", "fixture"])
     with pytest.raises(SystemExit):
-        cli.main(["install", "fixture", "1.0.0", "--root", "C:/escape"])
+        cli.main(["update", "fixture", "1.0.0", "--root", "C:/escape"])
 
 
 def test_linked_root_is_rejected(tmp_path, monkeypatch):

@@ -23,7 +23,7 @@ Reusable Ceratops skills for Codex and other agents compatible with `SKILL.md`.
 
 The independent [tool deployment manager](tools/ceratops_tool_manager/README.md)
 keeps its editable source under `tools/`. Every deployed tool owns
-`C:\AI-Agents-Tools\<tool-id>` with its packages, environments, and state;
+`C:\AI-Agents-Tools\<tool-name>` with its packages, environments, and state;
 Python and uv are validated global
 prerequisites. Its CLI and local MCP adapters share
 one engine. The tool lifecycle skill contains instructions only; the existing
@@ -123,7 +123,7 @@ without repository deduplication.
 | `hooks/windows-shell-sanity.py` | Repository-owned source for the user-global Windows PowerShell preflight; rewrites exact command defects, annotates ordinary failures, and blocks unreliable or policy-prohibited forms. |
 | `scripts/deploy-skills.py` | Independent installation and updates; renders selected skills and overlays their files without validation, retirement, or lifecycle runtime calls. |
 | `scripts/deploy-hooks.py` | Independent hook installation and updates; copies the repository hook payloads and merges their registrations while preserving unrelated files and configuration. Does not grant trust or restart Codex. |
-| `scripts/deploy-tool-manager.py` | First tool-manager installation, launched in the scripts environment; uses the manager's global Python and uv prerequisites, temporary locked libraries, and packaging and deployment code. Never changes Codex settings. |
+| `scripts/deploy-tool-manager.py` | Install the checkout's declared tool-manager version, including over an existing installation, from the scripts environment; uses the manager's global Python and uv prerequisites, temporary locked libraries, and packaging and deployment code. Never changes Codex settings. |
 | `scripts/testing/run-tests.py` | Sole test-selection, collection-reconciliation, and pytest-execution owner; validates `tests/test-impact.json`, explains deterministic Git-diff selection, rejects mapping gaps before pytest collection or execution, supports explicit committed-diff, worktree, collection, and `--all` modes, adds `--select-only` to check diff/worktree mapping without pytest, and saves failed-pytest streams and structured pre-test failures with captured command output through `--diagnostic-output`; pytest output remains bounded in the console. |
 | `scripts/testing/pytest-diagnostics.py` | Extracts bounded failure summaries using exact pytest identities and source-file evidence; ambiguous or missing tracebacks use only that test's summary reason. Full diagnostic files remain owned by the runner. |
 | `scripts/validate-repository.py` | Local validation coordinator; checks the running Python against `scripts/pyproject.toml`, captures first-failure evidence, delegates its default full test phase to `scripts/testing/run-tests.py --all`, and supports CI's separate runner-owned test phase. |
@@ -202,7 +202,8 @@ are setup metadata; only explicitly declared bootstrap commands install
 dependencies. Version-3 handoffs name a skill/action. For skill callers, the
 engine resolves the installed skill's `references/action-executors.json` and
 runs its declared argv or ordered steps; unresolved routes block dependent work.
-CI uses `--ci`, never dispatches skills, and reports deferred handoffs separately.
+ CI uses `--ci`, never dispatches skills, and reports deferred handoffs
+separately.
 Earlier SDLC versions retain advisory handoffs.
 Ceratops skill handoffs use the operation name `ceratops-managed`, including
 skill and tool deployment. Skill source validation stays under the generic
@@ -269,7 +270,8 @@ Each repository owns one lifecycle contract:
   owns compatibility destination/template mappings, required-file conditions,
   accepted manifest profiles, CI arguments, and managed-skill routing defaults.
   Its closed schema and loader validate the internal companion review contract
-  and SDLC defaults before target mutation. Contract review checks both documents;
+  and SDLC defaults before target mutation. Contract review checks both
+  documents;
   compatibility application and health review apply the companion requirements
   from local declarations and execution results, without an external registry.
   It also owns the isolated uv runtime, Python-test discovery and required
@@ -336,7 +338,8 @@ python .\skills\ceratops-skill-lifecycle\scripts\skills-consistency-source-valid
 ```
 
 The organization and repository/artifact commands are package operations over
-the shared `scripts/github_contract_engine/` state engine. `compose_desired_state.py`
+ the shared `scripts/github_contract_engine/` state engine.
+`compose_desired_state.py`
 selects and parameterizes the JSON contract assertions;
 `collect_observed_states.py` calls reusable collectors once and composes one
 observed-states JSON document; `compare_states.py` applies generic operators;
@@ -449,7 +452,8 @@ sections, validator, or skill-local source.
 ## Reusable Repository Tooling
 
 Compatibility templates create `scripts/pyproject.toml`, `scripts/uv.lock`
-and an ignored `scripts/.venv` with a Python matching `requires-python`. This separate
+ and an ignored `scripts/.venv` with a Python matching `requires-python`. This
+separate
 uv project owns tooling dependencies. `pyproject.toml` and `uv.lock` suffice
 for that environment; no parallel requirements file is needed. Existing
 application manifests retain their owners and locations. Dependabot gets
@@ -467,7 +471,8 @@ while stale locks fail instead of changing dependency decisions during checks.
 SDLC execution and schemas stay in the repository-lifecycle skill. Target
 repositories receive no engine copy or SDLC launcher. CI sets up uv and calls
 `Ceratops-Code/AI-Agent-Skills/skills/ceratops-repo-lifecycle@<commit>` with
-`repo-root` and `evidence-file` inputs. GitHub obtains the action; no Codex skills
+ `repo-root` and `evidence-file` inputs. GitHub obtains the action; no Codex
+skills
 installation is needed on the runner. The action uses its own locked Python
 project, while target scripts use their repository's project.
 
@@ -624,7 +629,8 @@ python scripts/rename-repository-path.py --repo-root PATH --rename scripts/old.p
 ```
 
 Add `--apply` to change files. Repeat `--rename OLD NEW` for independent pairs.
-Use `--from-git` for staged renames, or add `--base BASE --head HEAD` for committed
+ Use `--from-git` for staged renames, or add `--base BASE --head HEAD` for
+committed
 renames. Git's similarity detection can miss a heavily rewritten file; supply
 the explicit pair in that case. The helper creates no permanent rename catalog
 and leaves staging and committing to the caller.
@@ -642,8 +648,10 @@ Case-only renames need an explicitly staged intermediate filename.
 An existing worktree's edited content is preserved outside the planned changes.
 
 Use `--report PATH` for a new report outside the repository; the caller owns its
-retention and cleanup. Without a report, preview prints the plan and a successful
-apply prints `OK`. Caught file errors restore original bytes and paths and remove
+ retention and cleanup. Without a report, preview prints the plan and a
+successful
+ apply prints `OK`. Caught file errors restore original bytes and paths and
+remove
 only newly created empty directories. After process termination, inspect Git's
 working-tree diff before retrying; no crash-recovery journal is maintained.
 
@@ -808,7 +816,8 @@ assignments in skill, sections, and full modes. Changes to an action assignment
 or its section source select its skill in both the old and new manifest; they
 do not select unrelated skills.
 
-Runtime payload strings preserve their repository-relative installed paths; an exact
+ Runtime payload strings preserve their repository-relative installed paths; an
+exact
 `{"source": "...", "target": "..."}` entry maps one shared source file to
 an installed-skill-relative target. Single-skill executable sources belong to
 that skill, while multi-skill executable sources belong under

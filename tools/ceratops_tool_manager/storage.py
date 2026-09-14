@@ -17,7 +17,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from . import TOOL_ID
+from . import TOOL_NAME
 from .contracts import DeploymentError, token
 
 INSTALL_ROOT = Path("C:/AI-Agents-Tools")
@@ -26,8 +26,8 @@ INSTALL_ROOT = Path("C:/AI-Agents-Tools")
 class Layout:
     """The internal root seam exists for isolated tests, never public inputs."""
 
-    def __init__(self, tool_id: str = TOOL_ID) -> None:
-        self.root = INSTALL_ROOT / token(tool_id)
+    def __init__(self, tool_name: str = TOOL_NAME) -> None:
+        self.root = INSTALL_ROOT / token(tool_name)
 
     def path(self, *parts: str) -> Path:
         target = self.root.joinpath(*parts)

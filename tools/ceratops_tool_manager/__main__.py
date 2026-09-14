@@ -3,13 +3,13 @@
 import json
 import sys
 
-from . import TOOL_ID, __version__
+from . import TOOL_NAME, __version__
 
 if sys.argv[1:] == ["--deployment-check"]:
     from .server import build_server
 
     build_server()
-    print(json.dumps({"tool_id": TOOL_ID, "version": __version__, "ready": True}))
+    print(json.dumps({"tool_id": TOOL_NAME, "version": __version__, "ready": True}))
 elif sys.argv[1:] == ["--mcp"]:
     from .server import build_server
 

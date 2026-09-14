@@ -20,7 +20,7 @@ from email.parser import BytesParser
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from . import TOOL_ID, __version__
+from . import TOOL_NAME, __version__
 from .contracts import (
     DeploymentError,
     active,
@@ -157,35 +157,35 @@ class Engine:
             raise DeploymentError("selected installation receipt mismatch")
         return value
 
-    def versions(self, tool_id: str = TOOL_ID) -> dict[str, Any]:
+    def versions(self, tool_name: str = TOOL_NAME) -> dict[str, Any]:
         """Inspect registry selections and this process without launching a tool."""
-        token(tool_id)
-        selected = self.selected(tool_id)
-        registry_path = Layout(tool_id).path("registry.json")
-        catalog = registry(read_json(registry_path), tool_id) if registry_path.exists() else {"versions": {}}
+        token(tool_name)
+        selected = self.selected(tool_name)
+        registry_path = Layout(tool_name).path("registry.json")
+        catalog = registry(read_json(registry_path), tool_name) if registry_path.exists() else {"versions": {}}
         available = sorted(catalog["versions"], key=lambda v: tuple(map(int, v.split("."))))
         installed = selected["version"] if selected else None
-        running = self.running_version if tool_id == TOOL_ID else None
-        return {"tool_id": tool_id, "installed_version": installed,
+        running = self.running_version if tool_name == TOOL_NAME else None
+        return {"tool_name": tool_name, "installed_version": installed,
                 "running_version": running, "available_versions": available,
                 "manifest_sha256": selected["manifest_sha256"] if selected else None,
                 "reconnection_required": bool(running and installed and running != installed)}
 
-    def install(self, tool_id: str, version: str) -> dict[str, Any]:
-        return self._deploy(tool_id, version, require_installed=False)
+    def install(self, tool_name: str, version: str) -> dict[str, Any]:
+        return self._deploy(tool_name, version, require_installed=False)
 
-    def update(self, tool_id: str, version: str) -> dict[str, Any]:
-        return self._deploy(tool_id, version, require_installed=True)
+    def update(self, tool_name: str, version: str) -> dict[str, Any]:
+        return self._deploy(tool_name, version, require_installed=True)
 
-    def _deploy(self, tool_id: str, version: str, *, require_installed: bool) -> dict[str, Any]:
-        token(tool_id)
+    def _deploy(self, tool_name: str, version: str, *, require_installed: bool) -> dict[str, Any]:
+        token(tool_name)
         token(version, "version")
-        layout = Layout(tool_id)
+        layout = Layout(tool_name)
         with layout.lock("deployment"):
-            previous = self.selected(tool_id)
+            previous = self.selected(tool_name)
             if require_installed and previous is None:
                 raise DeploymentError("update requires an installed tool; use install first")
-            catalog = registry(read_json(layout.path("registry.json")), tool_id)
+            catalog = registry(read_json(layout.path("registry.json")), tool_name)
             sha256 = catalog["versions"].get(version)
             if sha256 is None:
                 raise DeploymentError("exact tool version is not registered")
@@ -193,9 +193,9 @@ class Engine:
             if digest(manifest_path) != sha256:
                 raise DeploymentError("manifest digest mismatch")
             release = manifest(read_json(manifest_path))
-            if (release["tool_id"], release["version"]) != (tool_id, version):
+            if (release["tool_id"], release["version"]) != (tool_name, version):
                 raise DeploymentError("release selection mismatch")
-            if tool_id == TOOL_ID and (release["module"], release["distribution"]) != ("ceratops_tool_manager", TOOL_ID):
+            if tool_name == TOOL_NAME and (release["module"], release["distribution"]) != ("ceratops_tool_manager", TOOL_NAME):
                 raise DeploymentError("manager entry point is fixed")
             requirements = []
             distributions: dict[str, str] = {}
@@ -232,10 +232,10 @@ class Engine:
                     ready = json.loads(output)
                 except json.JSONDecodeError as exc:
                     raise DeploymentError("invalid readiness response") from exc
-                if ready != {"tool_id": tool_id, "version": version, "ready": True}:
+                if ready != {"tool_id": tool_name, "version": version, "ready": True}:
                     raise DeploymentError("tool readiness failed")
                 layout.remove_scratch(temporary)
-                selection = {"schema": 1, "tool_id": tool_id, "version": version, "manifest_sha256": sha256,
+                selection = {"schema": 1, "tool_id": tool_name, "version": version, "manifest_sha256": sha256,
                              "instance": instance, "module": release["module"]}
                 layout.atomic_json(candidate / "receipt.json", selection)
                 layout.atomic_json(layout.path("current.json"), selection)
@@ -244,6 +244,6 @@ class Engine:
                 if not committed:
                     layout.remove_candidate(candidate)
             # No fallible post-commit registry reads:  a successful activation is success.
-            running = self.running_version if tool_id == TOOL_ID else None
-            return {"tool_id": tool_id, "installed_version": version, "running_version": running,
+            running = self.running_version if tool_name == TOOL_NAME else None
+            return {"tool_name": tool_name, "installed_version": version, "running_version": running,
                     "manifest_sha256": sha256, "reconnection_required": bool(running and running != version)}

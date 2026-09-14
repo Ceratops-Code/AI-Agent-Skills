@@ -2,7 +2,9 @@
 
 One deterministic engine installs exact local Python tool releases, updates
 installed tools, and inspects versions. CLI and stdio MCP use that same engine.
-The manager also owns explicit source packaging through its CLI. It makes no
+Repository installation selects a tool and reads its name and version from
+ `pyproject.toml`, then packages and installs that release through the CLI. It
+makes no
 model/API calls and has no UI.
 
 ## Layout and supported runtime
@@ -18,7 +20,7 @@ directory is `C:\AI-Agents-Tools\ceratops_tool_manager`. Skills and Codex
 configuration stay in `.codex`; the skill installer owns skill deployment.
 
 ```text
-C:\AI-Agents-Tools\<tool-id>\
+C:\AI-Agents-Tools\<tool-name>\
   bin\                              stable launchers (manager)
   artifacts\<version>\<manifest-sha256>\
   versions\<version>\<instance>\environment\
@@ -40,16 +42,17 @@ are installed offline with uv's hash enforcement, followed by dependency and
 package readiness checks. A manager update changes its wheel dependencies;
 global Python and uv remain independently maintained prerequisites.
 
-## First installation and use
+## Source installation and use
 
 From an active AI-Agent-Skills source checkout:
 
 ```powershell
-python scripts/deploy-tool-manager.py
+uv run --locked scripts/deploy-tool-manager.py
 C:\AI-Agents-Tools\ceratops_tool_manager\bin\ceratops_tool_manager.cmd versions
 ```
 
-The deployment script is a first-install development command. It validates global
+The deployment script installs the source checkout's declared manager version,
+including when a manager is already installed. It validates global
 prerequisites, builds and registers the source release, prepares the launchers,
 and calls the same packaging and deployment code used after installation. It
 provisions hash-locked Python libraries in temporary storage and removes that
@@ -61,19 +64,32 @@ writes installation files.
 | CLI command | MCP tool | Inputs |
 | --- | --- | --- |
 | `package --source <directory> [--lock]` | Not exposed | Reviewed tool source; optional lock refresh |
-| `install <tool-id> <version>` | `install` | `tool_id`, `version` |
-| `update <tool-id> <version>` | `update` | `tool_id`, `version` |
-| `versions [tool-id]` | `versions` | optional `tool_id` |
+| `install [--source <directory>] [--tool-name <name>]` | Not exposed | Repository or tool source; defaults to the current directory |
+| Not exposed | `install` | `tool_name`, `version` for an exact registered release |
+| `update <tool-name> <version>` | `update` | `tool_name`, `version` |
+| `versions [tool-name]` | `versions` | optional `tool_name` |
 
-Omitting a version-inspection identity selects `ceratops_tool_manager`.
-Update requires an existing installation. Both modifying operations accept an
-explicitly selected previous version through the same installation mechanism.
+Omitting a version-inspection name selects `ceratops_tool_manager`.
+Update requires an existing installation. MCP install and CLI/MCP update accept
+an explicitly selected previous registered version through the same engine.
 There is no separate rollback operation, automatic rollback subsystem,
 create-tool endpoint, shell/script input, or installation/output path input.
-The source directory accepted by `package` is a reviewed build input, not an
-installation destination. Packaging never runs implicitly during `install`.
+Source directories accepted by CLI install and package are reviewed build
+inputs. Install accepts no version override: it packages the selected source
+release and activates exactly that name and version. A direct tool directory
+needs no Git. Otherwise Git enumerates tracked and non-ignored untracked
+`tool.json` declarations below the selected directory. Multiple tools require
+`--tool-name`; duplicate names, absent matches, and failed queries stop before
+building. Ignored environments are excluded.
 
-MCP returns structured result data and a compact equivalent JSON text block.
+For example, from a repository root:
+
+```powershell
+C:\AI-Agents-Tools\ceratops_tool_manager\bin\ceratops_tool_manager.cmd install --tool-name example_tool
+```
+
+Public CLI and MCP results identify the tool with `tool_name`. MCP returns
+structured result data and a compact equivalent JSON text block.
 CLI writes JSON to stdout and returns exit code 2 with a diagnostic on stderr
 for a failed operation. `installed_version` is the selected next-launch
 version. `running_version` is the responding manager process version; it is
@@ -83,25 +99,29 @@ digest. `reconnection_required` reports a manager version difference.
 
 ## Development and release contracts
 
-A source project contains normal `pyproject.toml` wheel packaging and a
-`tool.json` object:
+A source project declares `[project].name` and a static `[project].version`
+in `pyproject.toml`, plus normal wheel packaging. Its `tool.json` declares only
+the readiness module:
 
 ```json
 {
-  "schema": 1,
-  "tool_id": "example_tool",
-  "distribution": "example_tool",
+  "schema": 2,
   "module": "example_tool"
 }
 ```
 
-`tool_id` and distribution names use lowercase identifiers starting with a
+The project name supplies both the tool and distribution names. It starts with a
+lowercase
 letter, with single hyphens or underscores between alphanumeric segments.
 Tool identities stay exact; distribution matching uses package-name
 normalization. Release versions are exact numeric `major.minor.patch`
 values. Module names use lowercase Python import components. Windows device
 names, separators, traversal, malformed identities, and unknown fields fail
-validation. The source distribution and built wheel version must agree.
+ validation. Source metadata must remain stable during the build, and its name
+and version
+must agree with the built wheel. Metadata and locks must stay inside the tool
+ directory. Installation requires the existing `pylock.toml` and never refreshes
+it.
 
 Use a pinned maintained build backend. The module's fixed readiness invocation
 is `python -I -B -m <module> --deployment-check`. It must return exactly:
@@ -128,10 +148,13 @@ and registers one immutable local artifact record without installing or
 activating it. Both commands are implemented inside the installed manager.
 Packaging executes reviewed build code and downloads dependencies; it is an
 explicit CLI capability, not an MCP operation or public-repository upload.
-The standalone installer reuses this implementation from source only for the
-first manager installation. Manager self-updates use the installed CLI to
-package a new source version, followed by ordinary `install` and reconnection.
+The source installer uses this same implementation for first installation and
+manager updates, including upgrades from an older CLI. Other repository tools
+use CLI install. Reconnect after selecting a new manager version.
 
+Persistent records and the fixed readiness response retain the schema-1
+`tool_id` field required by existing launchers and installed tools. Its value
+is the project name; it is not a separate identifier or source declaration.
 The release manifest is a closed JSON object containing `schema`, `tool_id`,
 `version`, `distribution`, `module`, and `wheels`. Each wheel has exactly a
 `filename` and `sha256`. The engine validates every field, digest, wheel
@@ -184,12 +207,12 @@ readiness execution is not a sandbox for untrusted wheels.
 ## Validation
 
 `tests/tool_manager` covers the shared engine, CLI, actual SDK dispatch,
-first-install and packaging boundaries, checkout-independent packaging,
+ source selection, installation and packaging boundaries, checkout-independent
+commands,
 failures, locks, path rejection, and
-self-update state. The normal repository validator selects it through
+ self-update state. The repository test runner selects it through
 `tests/test-impact.json`. Development dependencies are declared in
- `scripts/pyproject.toml` and resolved in `scripts/uv.lock` at the repository
-root.
+`scripts/pyproject.toml` and resolved in `scripts/uv.lock`.
 
 Unit tests use temporary wheel inputs and simulated deployment commands; they
 do not install test versions of the manager. Real self-update and reconnection
@@ -198,5 +221,6 @@ validation does not change the installed manager or switch versions for tests.
 
 Packaging uses [uv](https://docs.astral.sh/uv/pip/compile/) and the
 [official Python MCP SDK](https://github.com/modelcontextprotocol/python-sdk).
-Codex's [MCP documentation](https://learn.chatgpt.com/docs/extend/mcp?surface=cli)
+ Codex's
+[MCP documentation](https://learn.chatgpt.com/docs/extend/mcp?surface=cli)
 defines project configuration and tool allowlists.

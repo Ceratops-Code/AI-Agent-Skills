@@ -15,13 +15,14 @@ Guide tool development and exact local release deployment through one manager.
 
 - Create and package a tool: `references/create.md`
 - Install the first deployment manager: `references/bootstrap.md`
-- Install an exact tool release: `references/install.md`
+- Install a repository tool or registered release: `references/install.md`
 - Update an installed tool: `references/update.md`
 - Inspect tool versions: `references/versions.md`
 
 ### Inputs To Capture
 
-- Selected action, tool identity, and exact numeric release version.
+- Selected action and source checkout; tool name when selection is ambiguous.
+- Exact numeric version only for explicitly selected registered releases.
 - Owning source repository and available registered releases.
 - Whether Codex has reconnected to the selected manager version.
 
@@ -30,7 +31,7 @@ Guide tool development and exact local release deployment through one manager.
 ### Skill-Specific Rules
 
 - Keep editable source in its owning repository and each tool's deployments
-  and state in `C:\AI-Agents-Tools\<tool-id>`. Use validated global Python and
+  and state in `C:\AI-Agents-Tools\<tool-name>`. Use validated global Python and
   uv with dependencies isolated in each installed version's environment.
 - Keep skills and Codex registration under `.codex`; deploy this skill through
   `ceratops-skill-lifecycle` without copying tool executables into skill
@@ -40,10 +41,13 @@ Guide tool development and exact local release deployment through one manager.
 
 ### Boundaries
 
-- Create source in its owning repository. Use the manager's CLI for packaging;
-  MCP accepts only installation, update, and version inspection.
-- Use exact registered releases. A selected previous version uses ordinary
-  install or update. Failed candidates leave the active selection intact.
+- Create source in its owning repository. Repository installation uses the
+  manager CLI to select, package, and install its declared name and version.
+  MCP accepts only registered-release installation, update, and inspection.
+- Read repository tool names and versions from `pyproject.toml`; never choose
+  a separate version for repository installation. Explicit registered-release
+  requests use MCP install or CLI/MCP update. Failed candidates leave the
+  active selection intact.
 - Keep Git promotion and release publication in `ceratops-repo-lifecycle`;
   keep tool packaging and deployment in this skill.
 
