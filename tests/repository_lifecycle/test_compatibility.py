@@ -869,7 +869,7 @@ def test_compatibility_materializer_preserves_existing_validator_and_ci(
     assert preserved.stdout == "target-owned\n"
     assert validator.stat().st_mode == before[validator][1]
     workflow_steps = yaml.safe_load(workflow.read_text())["jobs"]["validate"]["steps"]
-    assert any(step.get("uses", "").endswith("ceratops-repo-lifecycle@" + CI_ACTION_REVISION) for step in workflow_steps)
+    assert any(step.get("uses", "").endswith("ceratops-repo-lifecycle/scripts@" + CI_ACTION_REVISION) for step in workflow_steps)
     assert json.loads(result.stdout)["custom_validation_review_required"] is True
     assert json.loads(result.stdout)["repository_validation"] == {
         "checks": [],
