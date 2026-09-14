@@ -39,6 +39,9 @@
     ]
   },
   "skills": {
+    "codex-desktop-upgrade": [
+      "core"
+    ],
     "design-document-lifecycle": [
       "core",
       "multi-action-skill"
