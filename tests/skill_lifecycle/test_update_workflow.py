@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import pathlib
@@ -557,6 +558,215 @@ def test_skill_update_workflow_accepts_new_shared_section_source(
     assert not task_temp_root.exists()
 
 
+def test_skill_update_workflow_amends_failed_scope_and_reuses_only_searches(
+    tmp_path: pathlib.Path,
+) -> None:
+    worktree, scope, task_temp_root = prepare_skill_update_workflow_worktree(
+        tmp_path
+    )
+    unrelated = worktree / "preexisting.txt"
+    unrelated.write_text("preserve\n", encoding="utf-8", newline="\n")
+    pass_log = scope / "pass.log"
+    pass_script = scope / "pass-check.py"
+    pass_script.write_text(
+        "import pathlib\n"
+        "log = pathlib.Path(__file__).with_name('pass.log')\n"
+        "prior = log.read_text(encoding='utf-8') if log.exists() else ''\n"
+        "log.write_text(prior + 'run\\n', encoding='utf-8')\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    integration_log = scope / "integration.log"
+    integration_script = scope / "integration-check.py"
+    integration_script.write_text(
+        "import pathlib\n"
+        "import sys\n"
+        "root = pathlib.Path(sys.argv[1])\n"
+        "log = pathlib.Path(__file__).with_name('integration.log')\n"
+        "prior = log.read_text(encoding='utf-8') if log.exists() else ''\n"
+        "log.write_text(prior + 'run\\n', encoding='utf-8')\n"
+        "namespace = {}\n"
+        "source = root / 'skills' / 'beta-tool' / 'scripts' / 'tool.py'\n"
+        "exec(source.read_text(encoding='utf-8'), namespace)\n"
+        "raise SystemExit(0 if namespace['VALUE'] == 2 else 1)\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    request_path = task_temp_root / "request.json"
+    state_path = task_temp_root / "state.json"
+    evidence_path = task_temp_root / "evidence.json"
+    request = {
+        "schema": "ceratops-skill-update-request.v2",
+        "repo_root": str(worktree),
+        "task_temp_root": str(task_temp_root),
+        "evidence_output": str(evidence_path),
+        "disposable_artifacts": ["request", "state", "evidence"],
+        "selected_skills": ["alpha-tool"],
+        "allowed_paths": [
+            "skills/alpha-tool/scripts/tool.py",
+            "skills/alpha-tool/SKILL.md",
+        ],
+        "change_groups": [
+            {
+                "name": "helper-runtime",
+                "paths": [
+                    "skills/alpha-tool/scripts/tool.py",
+                    "skills/alpha-tool/SKILL.md",
+                ],
+            }
+        ],
+        "checks": [
+            {
+                "kind": "search",
+                "pattern": "Test skill",
+                "paths": ["skills/alpha-tool/SKILL.md"],
+                "expected_matches": 1,
+            },
+            {
+                "kind": "search",
+                "pattern": "VALUE = 2",
+                "paths": ["skills/alpha-tool/scripts/tool.py"],
+                "expected_matches": 1,
+            },
+            {"kind": "command", "argv": [sys.executable, str(pass_script)]},
+            {
+                "kind": "command",
+                "argv": [sys.executable, str(integration_script), str(worktree)],
+            },
+        ],
+    }
+    request_path.write_text(
+        json.dumps(request) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    prepared = run_skill_update_workflow(
+        "prepare", "--request", str(request_path), "--state", str(state_path)
+    )
+    assert prepared.returncode == 0, prepared.stderr
+    prepared_state = json.loads(state_path.read_text(encoding="utf-8"))
+    prepared_head = prepared_state["head"]
+
+    alpha = worktree / "skills" / "alpha-tool" / "scripts" / "tool.py"
+    alpha.write_text("VALUE = 2\n", encoding="utf-8", newline="\n")
+    failed = run_skill_update_workflow(
+        "verify",
+        "--state",
+        str(state_path),
+        "--evidence-output",
+        str(evidence_path),
+    )
+    assert failed.returncode == 2
+    assert "command check failed" in failed.stderr
+    failed_state = json.loads(state_path.read_text(encoding="utf-8"))
+    failed_evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+    failed_evidence_sha256 = failed_state["verification"]["evidence_sha256"]
+    assert failed_state["verification"] == {
+        "status": "pending",
+        "evidence_sha256": failed_evidence_sha256,
+        "input_sha256": failed_evidence["input_sha256"],
+        "generation": 0,
+    }
+    assert failed_evidence["checks"][0]["applicability_sha256"]
+    assert pass_log.read_text(encoding="utf-8").splitlines() == ["run"]
+    assert integration_log.read_text(encoding="utf-8").splitlines() == ["run"]
+
+    beta_path = "skills/beta-tool/scripts/tool.py"
+    beta = worktree / "skills" / "beta-tool" / "scripts" / "tool.py"
+    alpha.write_text(
+        "VALUE = 2\n# caller integration\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    beta.write_text("VALUE = 2\n", encoding="utf-8", newline="\n")
+    assert run_git(worktree, "add", beta_path).returncode == 0
+    assert run_git(worktree, "commit", "-m", "update caller").returncode == 0
+    amended_request = json.loads(json.dumps(request))
+    amended_request["selected_skills"].append("beta-tool")
+    amended_request["allowed_paths"].append(beta_path)
+    amended_request["change_groups"].append(
+        {"name": "caller", "paths": [beta_path]}
+    )
+    amended_request["checks"].append(
+        {
+            "kind": "search",
+            "pattern": "VALUE = 2",
+            "paths": [beta_path],
+            "expected_matches": 1,
+        }
+    )
+    nonmonotonic = json.loads(json.dumps(amended_request))
+    nonmonotonic["checks"][0]["pattern"] = "Different skill"
+    request_path.write_text(
+        json.dumps(nonmonotonic) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    rejected = run_skill_update_workflow(
+        "amend", "--request", str(request_path), "--state", str(state_path)
+    )
+    assert rejected.returncode == 2
+    assert "changed existing checks" in rejected.stderr
+
+    request_path.write_text(
+        json.dumps(amended_request) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    amended = run_skill_update_workflow(
+        "amend", "--request", str(request_path), "--state", str(state_path)
+    )
+    assert amended.returncode == 0, amended.stderr
+    amended_state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert amended_state["head"] == prepared_head
+    assert amended_state["verification"]["status"] == "pending"
+    assert amended_state["verification"]["generation"] == 0
+    beta_baseline = amended_state["baseline_targets"][beta_path]
+    assert beta_baseline["content"] == {
+        "kind": "file",
+        "size": len("VALUE = 1\n"),
+        "sha256": hashlib.sha256(b"VALUE = 1\n").hexdigest(),
+    }
+    assert beta_baseline["status"] == ""
+    assert unrelated.read_text(encoding="utf-8") == "preserve\n"
+
+    verified = run_skill_update_workflow(
+        "verify",
+        "--state",
+        str(state_path),
+        "--evidence-output",
+        str(evidence_path),
+    )
+    assert verified.returncode == 0, verified.stderr
+    evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+    assert evidence["changed_paths"] == [
+        "skills/alpha-tool/scripts/tool.py",
+        beta_path,
+    ]
+    assert evidence["checks"][0]["reused"] is True
+    assert evidence["checks"][0]["source_evidence_sha256"] == (
+        failed_evidence_sha256
+    )
+    assert [check["reused"] for check in evidence["checks"]] == [
+        True,
+        False,
+        False,
+        False,
+        False,
+    ]
+    assert pass_log.read_text(encoding="utf-8").splitlines() == ["run", "run"]
+    assert integration_log.read_text(encoding="utf-8").splitlines() == [
+        "run",
+        "run",
+    ]
+    assert unrelated.read_text(encoding="utf-8") == "preserve\n"
+    finalized = run_skill_update_workflow(
+        "finalize", "--state", str(state_path)
+    )
+    assert finalized.returncode == 0, finalized.stderr
+    assert not task_temp_root.exists()
+
+
 def test_skill_update_workflow_preserves_baseline_runs_checks_once_and_finalizes(
     tmp_path: pathlib.Path,
 ) -> None:
@@ -716,7 +926,7 @@ def test_skill_update_workflow_preserves_baseline_runs_checks_once_and_finalizes
     assert verified.returncode == 0, verified.stderr
     assert verified.stdout.strip() == "OK"
     evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
-    assert evidence["schema"] == "ceratops-skill-update-evidence.v2"
+    assert evidence["schema"] == "ceratops-skill-update-evidence.v3"
     assert evidence["status"] == "passed"
     assert evidence["changed_paths"] == ["skills/alpha-tool/scripts/tool.py"]
     assert [check["kind"] for check in evidence["checks"]] == [

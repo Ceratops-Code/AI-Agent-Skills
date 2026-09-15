@@ -129,6 +129,7 @@ def _run_check(
     environment: Mapping[str, str],
     *,
     resolve_target: Callable[[pathlib.Path, str], pathlib.Path],
+    search_applicability: Callable[[Mapping[str, object]], str],
 ) -> dict[str, object]:
     kind = check.get("kind")
     if kind == "pytest":
@@ -160,6 +161,7 @@ def _run_check(
             "returncode": result.returncode,
             "stdout": _bounded(result.stdout),
             "stderr": _bounded(result.stderr),
+            "reused": False,
         }
         if kind == "pytest":
             failures, report_error = _pytest_failures(report)
@@ -187,6 +189,7 @@ def _run_check(
     ):
         raise UpdateExecutionError("state search check is invalid")
     regex = re.compile(pattern)
+    applicability_sha256 = search_applicability(check)
     matches = 0
     for path in paths:
         target = resolve_target(repo_root, path)
@@ -197,6 +200,7 @@ def _run_check(
         except (OSError, UnicodeError) as exc:
             raise UpdateExecutionError(f"search path is unreadable: {path}: {exc}") from exc
         matches += sum(1 for _ in regex.finditer(text))
+    final_applicability_sha256 = search_applicability(check)
     evidence = {
         "kind": kind,
         "pattern": pattern,
@@ -204,7 +208,12 @@ def _run_check(
         "expected_matches": expected,
         "actual_matches": matches,
         "returncode": 0 if matches == expected else 1,
+        "applicability_sha256": applicability_sha256,
+        "reused": False,
     }
+    if applicability_sha256 != final_applicability_sha256:
+        evidence["returncode"] = 1
+        raise CheckFailure("search inputs changed while check was running", evidence)
     if matches != expected:
         raise CheckFailure(
             f"search expected {expected} matches, found {matches}", evidence

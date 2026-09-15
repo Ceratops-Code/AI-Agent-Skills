@@ -90,16 +90,28 @@ repo docs, then update the narrowest correct source that exists.
   recorded pre-existing worktree baseline, reject undeclared new changes or
   source drift, collect every declared pytest node before edits without
   executing tests, reject Git whitespace errors in changed tracked and new files
-  before running the declared checks once, treat declared zero-match searches as
-  success, write detailed evidence, and emit only `OK` or one
-  compact actionable error. After a passed verification, `verify` may start one
-  correction generation only when the current task HEAD or complete prepared
-  scope snapshot differs from the passed evidence. It must atomically make the
-  earlier success non-finalizable before correction checks, accept only the
-  prepared HEAD or a descendant whose committed paths stay declared, rerun the
-  declared checks, preserve retryable pending state on failure, reject unchanged
-  retries and scope broadening, and permanently invalidate state changed after
-  the correction generation. Do not use it for skill-local text-only updates.
+  before executing each required check once for its applicable input, treat
+  declared zero-match searches as success, write detailed evidence, and emit
+  only `OK` or one compact actionable error.
+- (D) After a failed verification records pending state, the caller may replace
+  the prepared request with a monotonic expansion and run
+  `python scripts/skill-update-workflow.py amend --request REQUEST --state
+  STATE`. The helper must preserve the original HEAD and dirty baselines,
+  branch,
+  correction generation, artifact ownership, and existing scope; accept only
+  added selected skills, allowed paths, group paths or groups, and checks that
+  pass the original ownership, path, link, committed-scope, and collection
+  gates; and reuse an earlier successful check only when its hashed failed
+  evidence and deterministic declared inputs still match. Failed, invalidated,
+  non-deterministic, and added checks must run on the next `verify`. After a
+  passed verification, `verify` may start one correction generation only when
+  the current task HEAD or complete prepared scope snapshot differs from the
+  passed evidence. It must atomically make the earlier success non-finalizable
+  before correction checks, accept only the prepared HEAD or a descendant whose
+  committed paths stay declared, rerun the declared checks, preserve retryable
+  pending state on failure, reject unchanged retries and scope broadening, and
+  permanently invalidate state changed after the correction generation. Do not
+  use the workflow for skill-local text-only updates.
 - For failed pytest checks, print test identities and reported errors in the
   compact error; retain complete failure details in evidence and mark omitted
   output.
