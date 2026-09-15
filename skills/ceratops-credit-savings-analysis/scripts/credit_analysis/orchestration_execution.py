@@ -158,8 +158,6 @@ def _corrective_prompt(
         instructions += f" Keep the complete result within {task['output_byte_limit']} UTF-8 bytes."
     response_schema = _current_response_schema(state, task, input_sha)
     schema = correction_response_schema(prior, response_schema)
-    if not schema["properties"]["edits"]["maxItems"]:
-        raise CreditAnalysisError("rejected response has no permitted correction edits; no further model call was made")
     feedback = {"instructions": instructions, "prior_attempt": attempt["attempt_number"],
                 "validation_errors": [attempt["error"]], "prior_response": prior,
                 "correction_scope": response_correction_scope(prior, response_schema)}

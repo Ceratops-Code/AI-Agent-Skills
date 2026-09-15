@@ -86,10 +86,23 @@ class FakeCreditModelRunner:
             # edit full synthetic judgments before the fake transport encodes them.
             result = full_response(**kwargs)
             if "baseline_sha256" in kwargs["schema"].get("properties", {}) and "baseline_sha256" not in result:
-                from credit_analysis.model_response_contract import project_response_correction
+                from credit_analysis.model_response_contract import _call_details, project_response_correction
 
                 feedback = json.loads(kwargs["prompt"].split("\nCorrection request:\n", 1)[1])
-                return project_response_correction(feedback["prior_response"], result, kwargs["schema"])
+                prior = feedback["prior_response"]
+                correction = project_response_correction(prior, result, kwargs["schema"])
+                permitted_calls = {identity for branch in kwargs["schema"]["properties"]["edits"]["items"].get("anyOf", [])
+                                   for identity in branch["properties"].get("call_id", {}).get("enum", [])}
+                current_calls = _call_details(result)
+                for index, group in enumerate(prior.get("call_classifications") or []):
+                    for identity in group["call_ids"]:
+                        if (identity not in permitted_calls and identity in current_calls
+                                and group["classification"] != current_calls[identity]["classification"]):
+                            # Preserve adversarial judgment changes as invalid
+                            # transport instead of silently filtering the defect.
+                            correction["edits"].append({"path": f"/call_classifications/{index}/classification",
+                                                        "value": current_calls[identity]["classification"]})
+                return correction
             return result
 
         self.run = transport  # type: ignore[method-assign]
