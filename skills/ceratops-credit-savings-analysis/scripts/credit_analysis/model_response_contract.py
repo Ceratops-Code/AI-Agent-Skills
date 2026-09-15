@@ -206,7 +206,7 @@ def response_correction_scope(
     if not isinstance(findings, list) or not properties:
         return {"invalid_recurrence_finding_ids": []}
     invalid, conflicts = [], []
-    by_call = {}
+    by_call: dict[str, set[str]] = {}
     groups = prior.get("call_classifications")
     for group in groups if isinstance(groups, list) else []:
         if isinstance(group, Mapping) and isinstance(group.get("call_ids"), list):
@@ -223,7 +223,7 @@ def response_correction_scope(
         ):
             continue
         calls = finding.get("affected_call_ids")
-        if Draft202012Validator(properties["affected_call_ids"]).is_valid(calls) and all(len(by_call.get(call, set())) == 1 for call in calls):
+        if isinstance(calls, list) and Draft202012Validator(properties["affected_call_ids"]).is_valid(calls) and all(len(by_call.get(call, set())) == 1 for call in calls):
             judgments = {next(iter(by_call[call])) for call in calls}
             avoidable = {"avoidable_implemented", "avoidable_unimplemented"}
             if (
@@ -232,7 +232,7 @@ def response_correction_scope(
                 or finding.get("implementation_status") != "implemented" and "avoidable_unimplemented" not in judgments
             ):
                 conflicts.append(identity)
-        if not Draft202012Validator(properties["recurrence"]).is_valid(recurrence):
+        if not isinstance(recurrence, Mapping) or not Draft202012Validator(properties["recurrence"]).is_valid(recurrence):
             continue
         saved = recurrence["calls_saved_per_affected_run"]
         added = recurrence["additional_recurring_calls_per_affected_run"]
@@ -302,7 +302,7 @@ def _correction_comparison_values(
     def by_call(groups: Any) -> dict[str, Any] | None:
         if not isinstance(groups, list):
             return None
-        result = {}
+        result: dict[str, Any] = {}
         for group in groups:
             if not isinstance(group, Mapping) or not isinstance(group.get("call_ids"), list):
                 return None
