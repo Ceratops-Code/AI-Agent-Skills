@@ -41,14 +41,14 @@ Run before opening a pull request:
 npm ci
 uv sync --project scripts --locked
 $validationEvidence = Join-Path $env:TEMP "repository-validation.log"
-python scripts/validate-repository.py --evidence-file $validationEvidence
+uv run --locked scripts/validate-repository.py --evidence-file $validationEvidence
+uv run --locked scripts/testing/run-tests.py --all
 ```
 
-This is the same validation entrypoint used by CI. Its shared bootstrap selects
-the locked scripts environment before validation. Complete first-failure
- diagnostics go only to the selected evidence file. It does not invoke
-skill-local
-validators.
+These are the same validation and test entrypoints used by CI. The validator
+never runs tests. Its shared bootstrap selects the locked scripts environment
+before validation. Complete first-failure diagnostics go only to the selected
+evidence file. It does not invoke skill-local validators.
 
 Run full skill-source validation separately when skill source, metadata, shared
 sections, runtime inputs, or skill contracts change:

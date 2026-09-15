@@ -10,6 +10,7 @@
 - [ ] `uv run --project scripts --locked python -m yamllint .`
 - [ ] `uv run --project scripts --locked python -m mypy`
 - [ ] `uv run --locked scripts/validate-repository.py`
+- [ ] `uv run --locked scripts/testing/run-tests.py --all`
 
 ## Release impact
 

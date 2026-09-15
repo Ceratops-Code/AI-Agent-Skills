@@ -33,7 +33,6 @@ jobs:
       - name: Validate repository
         run: >-
           uv run --locked scripts/validate-repository.py
-          --without-tests
           --evidence-file ${{ runner.temp }}/repository-validation.log
 
       - name: Run pull-request impact tests

@@ -134,7 +134,7 @@ without repository deduplication.
 | `scripts/deploy-tool-manager.py` | Install the checkout's declared tool-manager version, including over an existing installation, from the scripts environment; uses the manager's global Python and uv prerequisites, temporary locked libraries, and packaging and deployment code. Never changes Codex settings. |
 | `scripts/testing/run-tests.py` | Sole test-selection, collection-reconciliation, and pytest-execution owner; validates `tests/test-impact.json`, explains deterministic Git-diff selection, rejects mapping gaps before pytest collection or execution, supports explicit committed-diff, worktree, collection, and `--all` modes, adds `--select-only` to check diff/worktree mapping without pytest, and saves failed-pytest streams and structured pre-test failures with captured command output through `--diagnostic-output`; pytest output remains bounded in the console. |
 | `scripts/testing/pytest-diagnostics.py` | Extracts bounded failure summaries using exact pytest identities and source-file evidence; ambiguous or missing tracebacks use only that test's summary reason. Full diagnostic files remain owned by the runner. |
-| `scripts/validate-repository.py` | Local validation coordinator; checks the running Python against `scripts/pyproject.toml`, captures first-failure evidence, delegates its default full test phase to `scripts/testing/run-tests.py --all`, and supports CI's separate runner-owned test phase. |
+| `scripts/validate-repository.py` | Local non-test validation coordinator; checks the running Python against `scripts/pyproject.toml`, captures first-failure evidence, and never selects or runs test suites. |
 | `skills/ceratops-repo-lifecycle/references/templates/deploy-skills.py.tmpl` | Authoritative standalone installer copied into compatible skill repositories as `scripts/deploy-skills.py`; invoke it through uv using the scripts project. |
 | `skills/ceratops-repo-lifecycle/references/contracts/repository-validation-contract.json` | Schema-validated repository checks used by compatibility generation and included in repository contract review and validator discovery. |
 | `skills/ceratops-repo-lifecycle/references/contracts/ceratops-compatibility-*-contract.json` | Internal structural contract consumed by compatibility generation/checking, plus a behavioral review rubric for environment setup, tests, and lifecycle orchestration; no external source registry. |
@@ -723,13 +723,14 @@ working-tree diff before retrying; no crash-recovery journal is maintained.
 ## Validate
 
 Install the declared Python and Node development dependencies, optionally
-select a failure-evidence path, then run the same repository validator used by
-CI:
+select a failure-evidence path, then run the same repository validator and
+explicit test runner used by CI:
 
 ```powershell
 npm ci
 $validationEvidence = Join-Path $env:TEMP "repository-validation.log"
 uv run --locked scripts/validate-repository.py --evidence-file $validationEvidence
+uv run --locked scripts/testing/run-tests.py --all
 ```
 
 CI runs `uv sync --project scripts --locked`; local commands use
@@ -744,10 +745,11 @@ Without the flag, evidence defaults to
 Failure evidence remains available for diagnosis until the next successful run,
 which removes the selected evidence file and prunes the dedicated default
 directory when it is empty.
-The validator runs Markdown and YAML lint, Ruff, mypy for Linux and Win32, and
-`scripts/testing/run-tests.py --all`. Pull-request CI calls the same runner
-with exact base and head commit SHAs. Local uncommitted selection is explicit
-through `uv run --locked scripts/testing/run-tests.py --worktree`.
+The validator runs Markdown and YAML lint, Ruff, and mypy for Linux and Win32;
+it never runs tests. Tests run only through an explicit
+`scripts/testing/run-tests.py` command. Pull-request CI calls that runner with
+exact base and head commit SHAs. Local uncommitted selection is explicit through
+`uv run --locked scripts/testing/run-tests.py --worktree`.
 Add `--select-only` to either diff or worktree mode to validate the same mapping
 without collecting or running pytest; success reports `selection-valid` and
 pytest `not-run`, including when no tests are selected. Failures retain the
