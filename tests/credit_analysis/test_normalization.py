@@ -210,10 +210,6 @@ def test_credit_analysis_normalizes_sol_transport_without_changing_judgments(
             for review in result["temporary_control_reviews"]:
                 if review["finding_id"] is not None:
                     review["finding_id"] = finding_ids[review["finding_id"]]
-            result["helper_category_reviews"] = [
-                dict(review) for prior in packet["prior_adjudication_results"]
-                for review in prior["helper_category_reviews"]
-            ]
             # Reviews already carry the decisions; the final transport can
             # omit their redundant merge links without another model call.
             result["temporary_control_merges"] = []
@@ -858,7 +854,7 @@ def test_credit_analysis_normalizes_sol_transport_without_changing_judgments(
 
     categories = canonical["helper_category_reviews"]
     assert [item["category"] for item in categories] == contract["helper_categories"]
-    assert len(json.loads(raw_bytes)["helper_category_reviews"]) > len(categories)
+    assert json.loads(raw_bytes)["helper_category_reviews"] == []
     category = categories[0]
     assert {source["review"]["applies"] for source in category["source_reviews"]} == {False, True}
     assert category["applies"] is True

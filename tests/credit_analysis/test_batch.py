@@ -89,6 +89,9 @@ def test_credit_analysis_workflow_each_surface_is_independently_callable(
     assert final_call["schema"]["properties"]["helper_category_reviews"][
         "description"
     ].startswith("Return an empty array.")
+    assert final_call["schema"]["properties"]["helper_category_reviews"][
+        "maxItems"
+    ] == 0
     final = json.loads(
         pathlib.Path(complete["final_result_path"]).read_text(encoding="utf-8")
     )

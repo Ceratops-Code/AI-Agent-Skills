@@ -977,6 +977,7 @@ def build_sol_schema(
     )
     if final_synthesis:
         category_reviews.update(
+            maxItems=0,
             description=(
                 "Return an empty array. The controller copies accepted shard "
                 "assessments and assembles the final category summaries."
