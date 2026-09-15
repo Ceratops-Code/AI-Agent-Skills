@@ -1428,6 +1428,7 @@ def command_amend(request_path: pathlib.Path, state_path: pathlib.Path) -> None:
     evidence_sha256 = verification.get("evidence_sha256")
     if not _valid_sha256(evidence_sha256):
         raise UpdateExecutionError("pending verification lacks trusted failed evidence")
+    assert isinstance(evidence_sha256, str)
     cleanup = state["cleanup"]
     assert isinstance(cleanup, Mapping)
     owned_artifacts = cleanup["owned_artifacts"]
