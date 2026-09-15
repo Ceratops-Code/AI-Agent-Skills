@@ -14,7 +14,7 @@ or another governing contract.
 | `design-document-lifecycle` | Create or review an authoritative software design document using a tailored arc42 contract, C4 views, scoped implementation evidence, and mechanical validation. |
 | `ceratops-repo-lifecycle` | Route repository lifecycle work across compatibility, local promotion, structured deployment, guarded shipping, GitHub creation and inspection, PR publication, review follow-up, CI repair, contracts, health, dependencies, and PR merge actions. |
 | `ceratops-governance-lifecycle` | Route prompt optimization, advisory skill optimization, regression-safe instruction updates, and cross-scope governance consistency audits across action references. |
-| `ceratops-credit-savings-analysis` | Analyze one credit-waste surface or run fixed per-thread analyses for the current, named, or recent project-filtered threads while preserving every confirmed finding. |
+| [`ceratops-credit-savings-analysis`](skills/ceratops-credit-savings-analysis/README.md) | Analyze one credit-waste surface or run fixed per-thread analyses for the current, named, or recent project-filtered threads while preserving every confirmed finding. |
 | `ceratops-misunderstanding-audit` | Audit N days of misunderstandings or one exchange, preserve exact evidence and repeated clarifications, and propose targeted communication or workflow repairs without applying them. |
 | `ceratops-skill-lifecycle` | Route skill-domain work across create, source-validate, deploy, preferred eligible fast-change, update, skills-contract-review, and skills-consistency-review actions. |
 | `ceratops-tool-lifecycle` | Create and package local Python tools, bootstrap the deployment manager, install exact releases, update tools, and inspect versions. |

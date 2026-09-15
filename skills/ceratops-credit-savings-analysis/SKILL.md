@@ -12,6 +12,12 @@ Analyze completed model-call evidence for avoidable credit spend. Use
 surface only when the user names it. This skill recommends controls but never
 applies them.
 
+## Design Reference
+
+`README.md` is the authoritative architecture and maintenance reference. Read
+it before changing or diagnosing this skill's workflow, schemas, persistence,
+retry, recovery, or deployment behavior.
+
 ## Public Action Routing
 
 ### Action References
