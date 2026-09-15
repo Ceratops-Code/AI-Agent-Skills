@@ -6,8 +6,8 @@ from __future__ import annotations
 from .execution_outcomes import has_failure_telemetry, has_nonzero_process_result
 from .model_response_contract import (
     _holistic_luna_schema,
+    _holistic_sol_schema,
     _validate_holistic_transport_value,
-    build_sol_schema,
     validate_classification_reason,
 )
 
@@ -2874,25 +2874,6 @@ def _holistic_result_refs(value: Any, label: str, *, empty: bool = False) -> lis
     if any(not ref.startswith(("evidence://", "analysis://")) for ref in refs):
         raise CreditAnalysisError(f"{label} contains a non-evidence reference")
     return refs
-
-
-def _holistic_sol_schema(
-    *,
-    state: Mapping[str, Any],
-    task: Mapping[str, Any],
-    input_sha256: str,
-    contract: Mapping[str, Any],
-    luna_candidate_ids: Sequence[str],
-    alias_record: Mapping[str, Any],
-) -> dict[str, Any]:
-    """Bind frozen transport aliases to the shared response contract."""
-    canonical_to_alias, _ = _holistic_alias_lookups(alias_record)
-    return build_sol_schema(
-        contract=contract,
-        luna_aliases=[canonical_to_alias[item] for item in luna_candidate_ids],
-        call_aliases=list(alias_record["aliases"]["calls"]),
-        evidence_aliases=list(alias_record["aliases"]["evidence"]),
-    )
 
 
 def _validate_holistic_luna_result(

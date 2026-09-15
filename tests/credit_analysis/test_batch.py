@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import contextlib
+import copy
 import hashlib
+import io
 import json
 import os
 import pathlib
@@ -29,19 +32,28 @@ from tests.credit_analysis.workflow import run_credit_analysis_workflow
 
 
 @pytest.mark.parametrize(
-    "action",
+    "action,correction",
     [
-        "helper-contracts",
-        "context-evidence",
-        "rework-validation",
-        "tool-flow",
-        "instruction-reasoning",
+        ("helper-contracts", None),
+        ("context-evidence", None),
+        ("rework-validation", None),
+        ("tool-flow", None),
+        ("instruction-reasoning", None),
+        *[("full-analysis", case) for case in (
+            "estimate", "final-estimate", "withdraw", "withdraw-temporary",
+            "conflict", "protected", "foreign-call", "malformed",
+        )],
     ],
 )
 def test_credit_analysis_workflow_each_surface_is_independently_callable(
     tmp_path: pathlib.Path,
     action: str,
+    correction: str | None,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    if correction is not None:
+        _exercise_corrective_cli(tmp_path, monkeypatch, correction)
+        return
     request, _, _ = credit_analysis_request(tmp_path, action=action)
     workflow = load_credit_analysis_workflow_module()
     runner = FakeCreditModelRunner(temporary_controls=False)
@@ -856,3 +868,138 @@ def test_credit_analysis_batch_resumes_and_preserves_every_thread_finding(
     )
     assert complete.returncode == 0, complete.stderr
     assert json.loads(complete.stdout)["complete"] is True
+
+
+def _exercise_corrective_cli(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, defect: str,
+) -> None:
+    """Exercise public CLI routing, queue, feedback, validation and checkpoints.
+
+    Only model transport is injected; no live model or API call is permitted.
+    pytest owns and removes the synthetic session and retained attempt files.
+    """
+    workflow = load_credit_analysis_workflow_module()
+    from credit_analysis import luna_sol_analysis as analysis
+    from credit_analysis import orchestration_execution as execution
+
+    request, _, _ = credit_analysis_request(tmp_path, extra_completed_turns=1)
+    plan = workflow.command_plan_orchestration(request, available_models=holistic_model_catalog())
+    state_path = pathlib.Path(plan["state_path"])
+
+    class CorrectingRunner(FakeCreditModelRunner):
+        def __init__(self) -> None:
+            super().__init__()
+            self.target: str | None = None
+            self.responses: list[dict[str, Any]] = []
+            self.feedback: dict[str, Any] | None = None
+            self.withdrawn: str | None = None
+
+        def run(self, **kwargs: Any) -> dict[str, Any]:
+            raw = super().run(**kwargs)
+            task = kwargs["task"]
+            phase = "sol-adjudication" if defect in {"foreign-call", "withdraw", "withdraw-temporary"} else "sol-final"
+            eligible = True
+            if defect in {"withdraw", "withdraw-temporary"}:
+                eligible = sum(item["waste_kind"] == "model-calls" for item in raw.get("confirmed_findings", [])) >= 2
+                if defect == "withdraw-temporary":
+                    eligible = eligible and any(item["id"].endswith("temporary-control-gap") for item in raw.get("confirmed_findings", []))
+            if task["phase"] == phase and self.target is None and eligible:
+                self.target = task["task_id"]
+            if task["task_id"] != self.target:
+                return raw
+            findings = [item for item in raw["confirmed_findings"] if item["waste_kind"] == "model-calls"]
+            assert len(findings) >= (1 if defect == "foreign-call" else 2)
+            selected = next((item for item in findings if item["id"].endswith("temporary-control-gap")), findings[0]) if defect == "withdraw-temporary" else findings[0]
+            if not self.responses:
+                if defect == "foreign-call":
+                    aliases = analysis._holistic_read_sol_aliases(task, kwargs["input_sha256"])
+                    calls = aliases["aliases"]["calls"]
+                    allowed = kwargs["schema"]["properties"]["confirmed_findings"]["items"]["properties"]["affected_call_ids"]["items"]["enum"]
+                    assert {calls[item] for item in allowed} == set(task["call_ids"])
+                    foreign = next(value for value in calls.values() if value not in task["call_ids"])
+                    raw["call_classifications"][0]["call_ids"].append(foreign)
+                elif defect == "malformed":
+                    raw["call_classifications"] = None
+                elif defect == "conflict":
+                    groups = []
+                    for group in raw["call_classifications"]:
+                        for identity in group["call_ids"]:
+                            part = {**group, "call_ids": [identity]}
+                            if identity in selected["affected_call_ids"]:
+                                part.update(classification="reviewed_no_confirmed_waste", reason_code=None)
+                            groups.append(part)
+                    raw["call_classifications"] = groups
+                else:
+                    targets = findings[:2] if defect in {"estimate", "final-estimate"} else [selected]
+                    for finding in targets:
+                        recurrence = finding["recurrence"]
+                        recurrence["additional_recurring_calls_per_affected_run"] = recurrence["calls_saved_per_affected_run"]
+            else:
+                self.feedback = json.loads(kwargs["prompt"].split("\nCorrection request:\n", 1)[1])
+                if defect in {"withdraw", "withdraw-temporary"}:
+                    self.withdrawn = selected["id"]
+                    raw["confirmed_findings"] = [item for item in raw["confirmed_findings"] if item["id"] != self.withdrawn]
+                    for decision in raw["candidate_decisions"]:
+                        if self.withdrawn in decision["finding_ids"]:
+                            decision["finding_ids"].remove(self.withdrawn)
+                            decision["disposition"] = "confirmed-finding" if decision["finding_ids"] else "plausible-risk" if decision["risk_ids"] else "dismissed-candidate"
+                            decision["reason"] = "Retained evidence does not support positive recurring savings."
+                    for review in raw["temporary_control_reviews"]:
+                        if review["finding_id"] == self.withdrawn:
+                            review["finding_id"] = None
+                            review["no_finding_reason"] = "Positive savings remain unconfirmed."
+                    raw["temporary_control_merges"] = [item for item in raw["temporary_control_merges"] if item["finding_id"] != self.withdrawn]
+                elif defect == "protected":
+                    other = next(item for item in findings if item["id"] != selected["id"])
+                    other["recurrence"]["calls_saved_per_affected_run"] += 3
+                elif defect == "estimate":
+                    # Regrouping carries no new judgment and must not break repair.
+                    raw["call_classifications"] = [
+                        {**group, "call_ids": [identity]}
+                        for group in reversed(raw["call_classifications"])
+                        for identity in reversed(group["call_ids"])
+                    ]
+            self.responses.append(copy.deepcopy(raw))
+            return raw
+
+    runner = CorrectingRunner()
+    original = execution._holistic_model_attempt
+
+    def model_boundary(**kwargs: Any) -> Any:
+        kwargs["runner"] = runner
+        return original(**kwargs)
+
+    monkeypatch.setattr(execution, "_holistic_model_attempt", model_boundary)
+    output, errors = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
+        exit_code = workflow.main(["execute", "--state", str(state_path)])
+    saved = json.loads(state_path.read_text(encoding="utf-8"))
+    assert runner.target is not None
+    target = saved["execution"][runner.target]
+    attempts = target["attempts"]
+    assert len(attempts) == 2, (errors.getvalue(), attempts)
+    assert attempts[0]["outcome"] == "validation-error"
+    assert runner.feedback is not None
+    scope = runner.feedback["correction_scope"]
+    if defect in {"estimate", "final-estimate"}:
+        assert len(scope["invalid_recurrence_finding_ids"]) == 2
+    if defect == "conflict":
+        assert len(scope["conflicting_call_finding_ids"]) >= 1
+    if defect == "protected":
+        assert attempts[1]["outcome"] == "validation-error"
+        assert "protected response field" in attempts[1]["error"]
+        assert target["status"] == "pending"
+        assert exit_code != 0
+    else:
+        assert attempts[1]["outcome"] == "accepted", (errors.getvalue(), attempts)
+        accepted = json.loads(pathlib.Path(target["result"]["path"]).read_text(encoding="utf-8"))
+        assert len(accepted["candidate_decisions"]) == len(runner.responses[0]["candidate_decisions"])
+        if runner.withdrawn:
+            assert runner.withdrawn not in {item["id"] for item in accepted["confirmed_findings"]}
+            assert len(accepted["confirmed_findings"]) == len(runner.responses[0]["confirmed_findings"]) - 1
+            assert len(accepted["temporary_control_reviews"]) == len(runner.responses[0]["temporary_control_reviews"])
+        assert exit_code == 0, errors.getvalue()
+    before = len(runner.calls)
+    workflow.command_execute_orchestration(state_path, runner=runner, task_limit=0)
+    assert len(runner.calls) == before
+    assert max(len(item["attempts"]) for item in saved["execution"].values()) <= 2

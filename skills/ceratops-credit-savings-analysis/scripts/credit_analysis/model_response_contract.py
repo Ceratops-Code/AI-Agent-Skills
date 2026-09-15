@@ -8,6 +8,8 @@ independent responsibilities; this module never changes model judgments.
 
 from __future__ import annotations
 
+import copy
+import math
 import re
 from collections.abc import Mapping, Sequence
 from typing import Any
@@ -186,20 +188,168 @@ def _correction_schema(
     raise CreditAnalysisError("corrective retry has no unambiguous response form")
 
 
+def response_correction_scope(
+    prior: Mapping[str, Any], schema: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Diagnose invalid recurrence and finding/accounting conflicts together.
+
+    This grants no new evidence or call budget. Only uniquely identified model-
+    call findings qualify. Well-formed non-positive estimates permit recurrence
+    reconsideration; contradictory call accounting permits reconsidering those
+    calls or withdrawing the claim. Malformed fields retain structural repair.
+    The semantic validator independently checks the complete corrected result.
+    """
+
+    findings = prior.get("confirmed_findings", [])
+    definition = schema.get("properties", {}).get("confirmed_findings", {}).get("items", {})
+    properties = definition.get("properties", {})
+    if not isinstance(findings, list) or not properties:
+        return {"invalid_recurrence_finding_ids": []}
+    invalid, conflicts = [], []
+    by_call = {}
+    groups = prior.get("call_classifications")
+    for group in groups if isinstance(groups, list) else []:
+        if isinstance(group, Mapping) and isinstance(group.get("call_ids"), list):
+            for call in group["call_ids"]:
+                if isinstance(call, str):
+                    by_call.setdefault(call, set()).add(str(group.get("classification")))
+    for finding in findings:
+        if not isinstance(finding, Mapping) or finding.get("waste_kind") != "model-calls":
+            continue
+        identity, recurrence = finding.get("id"), finding.get("recurrence")
+        if (
+            not Draft202012Validator(properties["id"]).is_valid(identity)
+            or sum(isinstance(item, Mapping) and item.get("id") == identity for item in findings) != 1
+        ):
+            continue
+        calls = finding.get("affected_call_ids")
+        if Draft202012Validator(properties["affected_call_ids"]).is_valid(calls) and all(len(by_call.get(call, set())) == 1 for call in calls):
+            judgments = {next(iter(by_call[call])) for call in calls}
+            avoidable = {"avoidable_implemented", "avoidable_unimplemented"}
+            if (
+                not judgments <= avoidable
+                or finding.get("implementation_status") == "implemented" and judgments != {"avoidable_implemented"}
+                or finding.get("implementation_status") != "implemented" and "avoidable_unimplemented" not in judgments
+            ):
+                conflicts.append(identity)
+        if not Draft202012Validator(properties["recurrence"]).is_valid(recurrence):
+            continue
+        saved = recurrence["calls_saved_per_affected_run"]
+        added = recurrence["additional_recurring_calls_per_affected_run"]
+        frequency = recurrence["affected_similar_run_frequency"]
+        if all(math.isfinite(value) for value in (saved, added, frequency)) and (saved - added) * frequency <= 0:
+            invalid.append(identity)
+    return {"invalid_recurrence_finding_ids": invalid, "conflicting_call_finding_ids": conflicts}
+
+
+def _correction_comparison_values(
+    prior: Mapping[str, Any], current: Mapping[str, Any], schema: Mapping[str, Any],
+) -> tuple[Mapping[str, Any], Mapping[str, Any]]:
+    """Build comparison copies permitting only diagnosed claim-local changes.
+
+    The actual model result is never mutated or accepted here. Withdrawals must
+    retain every other finding and every candidate decision; only their exact
+    dependent links may change. Grouping is transport, so classifications are
+    compared by call identity and out-of-scope aliases carry no protected claim.
+    """
+
+    old, new = copy.deepcopy(dict(prior)), copy.deepcopy(dict(current))
+    arrays = ("confirmed_findings", "candidate_decisions", "temporary_control_reviews", "temporary_control_merges", "call_classifications")
+    if any(not isinstance(value.get(key), list) for value in (old, new) for key in arrays):
+        return old, new
+    scope = response_correction_scope(prior, schema)
+    invalid = set(scope["invalid_recurrence_finding_ids"])
+    conflicts = set(scope.get("conflicting_call_finding_ids", []))
+    current_findings = current.get("confirmed_findings", [])
+    if isinstance(current_findings, list):
+        current_by_id = {item.get("id"): item for item in current_findings if isinstance(item, Mapping) and isinstance(item.get("id"), str)}
+        withdrawn = (invalid | conflicts) - current_by_id.keys()
+        for finding in old.get("confirmed_findings", []):
+            if isinstance(finding, dict) and finding.get("id") in invalid & current_by_id.keys():
+                corrected = current_by_id[finding["id"]]
+                if "recurrence" in corrected:
+                    finding["recurrence"] = copy.deepcopy(corrected["recurrence"])
+        if withdrawn:
+            old["confirmed_findings"] = [item for item in old["confirmed_findings"] if not isinstance(item, Mapping) or item.get("id") not in withdrawn]
+            current_decisions = {item.get("luna_candidate_id"): item for item in new.get("candidate_decisions", []) if isinstance(item, Mapping)}
+            for decision in old.get("candidate_decisions", []):
+                ids = decision.get("finding_ids", []) if isinstance(decision, dict) else []
+                if not isinstance(ids, list) or not withdrawn.intersection(ids):
+                    continue
+                decision["finding_ids"] = [identity for identity in ids if identity not in withdrawn]
+                decision["disposition"] = (
+                    "confirmed-finding" if decision["finding_ids"] else
+                    "plausible-risk" if decision.get("risk_ids") else "dismissed-candidate"
+                )
+                corrected = current_decisions.get(decision.get("luna_candidate_id"), {})
+                if "reason" in corrected:
+                    decision["reason"] = corrected["reason"]
+            current_reviews = {item.get("id"): item for item in new.get("temporary_control_reviews", []) if isinstance(item, Mapping)}
+            for review in old.get("temporary_control_reviews", []):
+                if isinstance(review, dict) and review.get("finding_id") in withdrawn:
+                    review["finding_id"] = None
+                    review["no_finding_reason"] = current_reviews.get(review.get("id"), {}).get("no_finding_reason")
+            old["temporary_control_merges"] = [item for item in old.get("temporary_control_merges", []) if not isinstance(item, Mapping) or item.get("finding_id") not in withdrawn]
+    else:
+        withdrawn = set()
+
+    group_schema = schema.get("properties", {}).get("call_classifications", {}).get("items", {})
+    branches = group_schema.get("anyOf", [])
+    allowed = branches[0].get("properties", {}).get("call_ids", {}).get("items", {}).get("enum") if branches else None
+    if not isinstance(allowed, list):
+        return old, new
+
+    def by_call(groups: Any) -> dict[str, Any] | None:
+        if not isinstance(groups, list):
+            return None
+        result = {}
+        for group in groups:
+            if not isinstance(group, Mapping) or not isinstance(group.get("call_ids"), list):
+                return None
+            for identity in group["call_ids"]:
+                if not isinstance(identity, str):
+                    return None
+                detail = {key: value for key, value in group.items() if key != "call_ids"}
+                if identity in result and result[identity] != detail:
+                    raise CreditAnalysisError("corrective retry has conflicting prior call judgments")
+                result[identity] = detail
+        return result
+
+    before, after = by_call(old.get("call_classifications")), by_call(new.get("call_classifications"))
+    if before is None or after is None:
+        return old, new
+    surviving_calls = {call for item in old.get("confirmed_findings", []) if isinstance(item, Mapping) and item.get("waste_kind") == "model-calls" for call in item.get("affected_call_ids", [])}
+    withdrawn_calls = {call for item in prior.get("confirmed_findings", []) if isinstance(item, Mapping) and item.get("id") in withdrawn for call in item.get("affected_call_ids", [])} - surviving_calls
+    retained = [identity for identity in allowed if identity in before]
+    if any(identity not in after for identity in retained):
+        raise CreditAnalysisError("corrective retry changed protected response field $response.call_classifications: removed prior call coverage")
+    protected_calls = {call for item in prior.get("confirmed_findings", []) if isinstance(item, Mapping) and item.get("waste_kind") == "model-calls" and item.get("id") not in invalid | conflicts for call in item.get("affected_call_ids", [])}
+    conflicting_calls = {call for item in prior.get("confirmed_findings", []) if isinstance(item, Mapping) and item.get("id") in conflicts for call in item.get("affected_call_ids", [])} - protected_calls
+    for identity in conflicting_calls & before.keys() & after.keys():
+        for key in ("classification", "reason_code", "rationale"):
+            before[identity][key] = after[identity].get(key)
+    for identity in withdrawn_calls & before.keys() & after.keys():
+        if before[identity].get("classification") in {"avoidable_implemented", "avoidable_unimplemented"} and after[identity].get("classification") == "unassessed":
+            for key in ("classification", "reason_code", "rationale"):
+                before[identity][key] = after[identity].get(key)
+    old["call_classifications"] = [{"call_ids": [identity], **before[identity]} for identity in retained]
+    new["call_classifications"] = [{"call_ids": [identity], **after[identity]} for identity in retained]
+    return old, new
+
+
 def validate_response_correction(
     prior: Mapping[str, Any], current: Mapping[str, Any], schema: Mapping[str, Any],
 ) -> None:
-    """Protect unaffected response fields while repairing structural invalidity.
+    """Protect unaffected judgments through structural and diagnosed ROI repair.
 
-    Callers supply the current authoritative schema even when an older transport
-    schema is frozen on disk, and independently validate current semantics and
-    evidence. The first retained rejection is the baseline across every retry.
-    Corrections retain array ordering and coverage; only an invalid length can
-    add missing trailing items or remove excess trailing items. Schema-invalid
-    identifiers may change together with their exact identifier references.
-    Global byte overflow alone never grants permission to rewrite valid text.
+    Callers supply the authoritative schema and independently validate current
+    semantics and evidence. The first rejection remains the baseline. Invalid
+    ROI claims may be reconsidered or withdrawn with their dependent links;
+    valid findings stay protected. Schema-invalid identifiers may change with
+    their references. Byte overflow never permits rewriting valid text.
     """
 
+    prior, current = _correction_comparison_values(prior, current, schema)
     identifier_pattern = identifier_schema()["pattern"]
     replacements: dict[str, str] = {}
 
@@ -411,9 +561,18 @@ def build_sol_schema(
 
     recurrence = closed(
         {
-            "calls_saved_per_affected_run": number(),
-            "additional_recurring_calls_per_affected_run": number(),
-            "affected_similar_run_frequency": number(),
+            "calls_saved_per_affected_run": {
+                **number(),
+                "description": "Gross model calls prevented in one affected run, supported by the supplied evidence.",
+            },
+            "additional_recurring_calls_per_affected_run": {
+                **number(),
+                "description": "New model calls required on every affected run by the proposed control; use zero for deterministic controls that make no model calls. Exclude one-time implementation work.",
+            },
+            "affected_similar_run_frequency": {
+                **number(),
+                "description": "Evidence-supported frequency of affected similar runs; positive model-call savings require (saved minus new recurring calls) times frequency to exceed zero.",
+            },
             "affected_similar_run_frequency_range": {
                 "type": "array",
                 "minItems": 2,
@@ -567,3 +726,37 @@ def build_sol_schema(
         "required": list(properties),
         "additionalProperties": False,
     }
+
+
+def _holistic_sol_schema(
+    *,
+    state: Mapping[str, Any],
+    task: Mapping[str, Any],
+    input_sha256: str,
+    contract: Mapping[str, Any],
+    luna_candidate_ids: Sequence[str],
+    alias_record: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Bind aliases to the exact call scope independently enforced by Sol.
+
+    Deferred imports avoid a schema/analysis initialization cycle. The caller
+    verifies the frozen alias record against input_sha256 before binding.
+    """
+    from .luna_sol_analysis import (
+        _holistic_alias_lookups, _holistic_runtime_task, _routed_call_ids,
+    )
+
+    canonical_to_alias, _ = _holistic_alias_lookups(alias_record)
+    if task["phase"] == "sol-adjudication":
+        # Saved slots acquire their exact assignment through the same owner
+        # used at launch; recovery tasks already carry their narrower scope.
+        scoped_task = task if "call_ids" in task else _holistic_runtime_task(state, task)
+        call_ids = list(scoped_task["call_ids"])
+    else:
+        call_ids = _routed_call_ids(state)
+    return build_sol_schema(
+        contract=contract,
+        luna_aliases=[canonical_to_alias[item] for item in luna_candidate_ids],
+        call_aliases=[canonical_to_alias[item] for item in call_ids],
+        evidence_aliases=list(alias_record["aliases"]["evidence"]),
+    )

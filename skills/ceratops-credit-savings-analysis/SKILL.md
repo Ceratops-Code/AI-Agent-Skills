@@ -119,11 +119,16 @@ applies them.
   malformed or changes admitted run, part, or candidate coverage.
   Generate model-facing schemas and Python shape checks from one shared response
   contract, preserving independent evidence and semantic validation. Give each
-  corrective retry its complete retained prior response and exact validation
-  errors inside the proven input envelope. Preserve accepted results, evidence,
-  coverage and unaffected judgments; keep valid identifiers unchanged and repair
-  invalid finding identifiers consistently with their references. Never change a
-  semantic judgment merely to satisfy validation.
+  existing corrective retry its complete retained prior response,
+  exact validation errors, and deterministically diagnosed invalid-claim scope
+  inside the proven input envelope. Reconsider only those invalid claims against
+  the same evidence: correct supported estimates or withdraw unsupported
+  findings
+  with their dependent references and call accounting. Preserve accepted
+  results,
+  complete coverage, valid identifiers, and unaffected judgments; repair invalid
+  identifiers consistently with their references. Do not invent savings to pass
+  validation.
 - The planner attempts every completed run. When the seventy-Luna cap prevents
   complete transport, retain exact partial-coverage records by run and part
   identity, record count, input bytes, candidate count, and output bytes.

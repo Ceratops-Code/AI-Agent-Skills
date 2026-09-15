@@ -12,7 +12,7 @@ import pathlib
 from typing import Any, Mapping
 
 from . import luna_sol_analysis as analysis
-from .model_response_contract import validate_response_correction
+from .model_response_contract import response_correction_scope, validate_response_correction
 from .single_thread_analysis import CreditAnalysisError
 
 
@@ -131,20 +131,31 @@ def _corrective_prompt(
         "validation errors. Preserve the complete admitted call/candidate coverage, "
         "evidence references, accepted sibling results, and every unaffected judgment. "
         "Keep valid identifiers unchanged; repair an invalid finding identifier and all "
-        "its references consistently without changing the finding. Do not change a "
-        "classification or other semantic judgment merely to satisfy validation. "
-        "Return the complete corrected response."
+        "its references consistently without changing the finding. Only the diagnosed "
+        "invalid_recurrence_finding_ids may have recurrence inputs and assumptions "
+        "reconsidered against the same supplied evidence. For diagnosed "
+        "conflicting_call_finding_ids, reconsider only their conflicting call "
+        "judgments against that evidence or withdraw the inconsistent finding; "
+        "preserve calls supported by unaffected findings. Correct a supported estimate "
+        "or withdraw the unsupported finding, remove its dependent links, and explain "
+        "the withdrawal in its retained candidate decision. Keep linked existing risks. "
+        "Retain temporary-control reviews with a null finding_id and explicit "
+        "no_finding_reason; remove only merges for withdrawn findings. Leave affected "
+        "calls unassessed when no retained finding supports their avoidability. "
+        "Preserve every other finding, estimate and call judgment. Do not invent "
+        "savings to pass validation. Return the complete corrected response."
     )
     if task["phase"] == "luna-discovery":
         task["output_byte_limit"] = max(1_000, int(task["output_byte_limit"]) * 9 // 10)
         instructions += f" Keep the complete result within {task['output_byte_limit']} UTF-8 bytes."
+    schema = _current_response_schema(state, task, input_sha)
     feedback = {"instructions": instructions, "prior_attempt": attempt["attempt_number"],
-                "validation_errors": [attempt["error"]], "prior_response": prior}
+                "validation_errors": [attempt["error"]], "prior_response": prior,
+                "correction_scope": response_correction_scope(prior, schema)}
     prompt = prompt_path.read_text(encoding="utf-8") + "\nCorrection request:\n" + json.dumps(
         feedback, ensure_ascii=False, separators=(",", ":"),
     ) + "\n"
     role = analysis._holistic_role(task)
-    schema = _current_response_schema(state, task, input_sha)
     size = len(prompt.encode("utf-8")) + analysis._json_bytes(schema)
     if size > int(state["model_specs"][role]["input_byte_budget"]):
         raise CreditAnalysisError("corrective retry exceeds its proven UTF-8 byte envelope; retained response was not truncated")
