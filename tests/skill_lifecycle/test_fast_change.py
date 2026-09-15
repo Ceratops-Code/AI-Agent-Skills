@@ -6,6 +6,8 @@ import pathlib
 import subprocess
 import sys
 
+import pytest
+
 from tests.skill_lifecycle.support import (
     FAST_CHANGE,
     enable_test_markdown_lint,
@@ -19,11 +21,21 @@ from tests.support.repositories import (
 )
 
 
+@pytest.mark.parametrize("package_directory", [".", "scripts"])
 def test_fast_change_commits_cohesive_rules_only_multi_skill_scope(
     tmp_path: pathlib.Path,
+    package_directory: str,
 ) -> None:
     repo = prepare_fast_change_repo(tmp_path)
     lint_log = enable_test_markdown_lint(repo)
+    if package_directory == "scripts":
+        package = json.loads((repo / "package.json").read_text())
+        package["scripts"]["lint:markdown"] = "python ../markdown-lint.py"
+        (repo / "scripts").mkdir(exist_ok=True)
+        (repo / "scripts/package.json").write_text(json.dumps(package) + "\n", encoding="utf-8", newline="\n")
+        (repo / "package.json").unlink()
+        assert run_git(repo, "add", "-A").returncode == 0
+        assert run_git(repo, "commit", "-m", "Move tooling under scripts").returncode == 0
     paths = {
         "skills/alpha-tool/SKILL.md": ("description: Test", "description: Updated"),
         "skills/alpha-tool/references/change.md": ("# Change", "# Updated"),

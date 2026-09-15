@@ -147,8 +147,13 @@ def _safe_validation_path(value: object, label: str) -> pathlib.PurePosixPath:
     return path
 
 
+def _package_root(repo_root: pathlib.Path) -> pathlib.Path:
+    """Preserve root application ownership; default standalone tooling to scripts."""
+    return repo_root if (repo_root / "package.json").exists() else repo_root / "scripts"
+
+
 def _package_manifest(repo_root: pathlib.Path) -> dict[str, object]:
-    path = repo_root / "package.json"
+    path = _package_root(repo_root) / "package.json"
     if not path.is_file() or path.is_symlink():
         return {}
     return load_mapping(path)
@@ -176,7 +181,7 @@ def _package_manager(repo_root: pathlib.Path, payload: Mapping[str, object]) -> 
     lock_managers = [
         name
         for name, filename in (("npm", "package-lock.json"), ("pnpm", "pnpm-lock.yaml"))
-        if (repo_root / filename).is_file()
+        if (_package_root(repo_root) / filename).is_file()
     ]
     if len(lock_managers) > 1:
         raise RuntimeError("multiple JavaScript package-manager lockfiles are unsupported")
@@ -276,6 +281,11 @@ def contract_checks(
                 }
             )
             tool = check["id"]
+            if check["command"][0] in {"{npm}", "{pnpm}"} and _package_root(repo_root) != repo_root:
+                # npm/pnpm execute package scripts in their selected project,
+                # while the contract's working directory stays repository-relative.
+                flag = "--prefix" if check["command"][0] == "{npm}" else "--dir"
+                selected[-1]["command"] = [check["command"][0], flag, "scripts", *check["command"][1:]]
             if tool in {"ruff", "mypy"} and not repository_configured(repo_root, tool):
                 # Root-owned configuration retains normal tool discovery. The
                 # generated fallback lives beside the scripts dependencies and
@@ -311,16 +321,16 @@ def default_markdown_files(repo_root: pathlib.Path) -> dict[str, str]:
         "pnpm-lock.yaml", "pnpm-workspace.yaml", "yarn.lock", "bun.lock", "bun.lockb",
     )
     if any(
-        (repo_root / name).exists() or (repo_root / name).is_symlink()
-        for name in package_files
+        (directory / name).exists() or (directory / name).is_symlink()
+        for directory in (repo_root, repo_root / "scripts") for name in package_files
     ):
         return {}
     templates = BUNDLE_ROOT / "references" / "templates"
     files = {
         name: (templates / template).read_text(encoding="utf-8")
         for name, template in (
-            ("package.json", "markdown-package.json.tmpl"),
-            ("package-lock.json", "markdown-package-lock.json.tmpl"),
+            ("scripts/package.json", "markdown-package.json.tmpl"),
+            ("scripts/package-lock.json", "markdown-package-lock.json.tmpl"),
         )
     }
     configurations = (
@@ -342,11 +352,13 @@ def default_markdown_files(repo_root: pathlib.Path) -> dict[str, str]:
     else:
         # Bind the preserved configuration explicitly, including nested files
         # and formats that the CLI does not discover automatically.
-        package = json.loads(files["package.json"])
+        package = json.loads(files["scripts/package.json"])
+        configuration = pathlib.PurePosixPath(existing[0])
+        selected_config = configuration.name if configuration.parent.as_posix() == "scripts" else "../" + existing[0]
         package["scripts"]["lint:markdown"] = package["scripts"]["lint:markdown"].replace(
-            "--config scripts/.markdownlint.json", f"--config {existing[0]}",
+            "--config .markdownlint.json", f"--config {selected_config}",
         )
-        files["package.json"] = json.dumps(package, indent=2) + "\n"
+        files["scripts/package.json"] = json.dumps(package, indent=2) + "\n"
     ignore = repo_root / ".gitignore"
     prior = ""
     if ignore.exists() or ignore.is_symlink():
@@ -357,7 +369,7 @@ def default_markdown_files(repo_root: pathlib.Path) -> dict[str, str]:
     # Append after existing rules so a prior negation cannot expose dependencies.
     files[".gitignore"] = (
         prior + (newline if prior and not prior.endswith("\n") else "")
-        + "/node_modules/" + newline
+        + "/scripts/node_modules/" + newline
     )
     return files
 
@@ -379,7 +391,7 @@ def _validation_workflow(
             commands.append(value)
     setup: list[str] = ["      - name: Set up uv", f"        uses: {SETUP_UV}"]
     package = (
-        json.loads(markdown_files["package.json"])
+        json.loads(markdown_files["scripts/package.json"])
         if markdown_files else _package_manifest(repo_root)
     )
     manager, manager_version = _package_manager(repo_root, package)
@@ -390,7 +402,7 @@ def _validation_workflow(
     if "{npm}" in commands:
         if manager != "npm":
             raise RuntimeError("npm validation checks require npm repository ownership")
-        if not markdown_files and not (repo_root / "package-lock.json").is_file():
+        if not markdown_files and not (_package_root(repo_root) / "package-lock.json").is_file():
             raise RuntimeError(
                 "npm validation checks require package-lock.json for "
                 "deterministic npm ci setup"
@@ -402,13 +414,13 @@ def _validation_workflow(
                 "        with:",
                 f'          node-version: "{"24" if markdown_files else "20"}"',
                 "      - name: Install npm validation dependencies",
-                "        run: npm ci",
+                "        run: npm " + ("--prefix scripts " if _package_root(repo_root) != repo_root else "") + "ci",
             ]
         )
     if "{pnpm}" in commands:
         if manager != "pnpm" or not manager_version:
             raise RuntimeError("pnpm validation checks require packageManager pnpm@<version>")
-        if not (repo_root / "pnpm-lock.yaml").is_file():
+        if not (_package_root(repo_root) / "pnpm-lock.yaml").is_file():
             raise RuntimeError("pnpm validation checks require pnpm-lock.yaml")
         setup.extend(
             [
@@ -420,7 +432,7 @@ def _validation_workflow(
                 "        run: |",
                 "          corepack enable",
                 f"          corepack prepare pnpm@{manager_version} --activate",
-                "          pnpm install --frozen-lockfile",
+                "          pnpm " + ("--dir scripts " if _package_root(repo_root) != repo_root else "") + "install --frozen-lockfile",
             ]
         )
     if any(check["id"] == "powershell-lint" for check in checks):
@@ -460,7 +472,7 @@ def validation_surfaces(
         else {}
     )
     if markdown_files:
-        checks = contract_checks(repo_root, package=json.loads(markdown_files["package.json"]))
+        checks = contract_checks(repo_root, package=json.loads(markdown_files["scripts/package.json"]))
     validator_text = None
     if not validator.is_file():
         template = template_path("validator").read_text(encoding="utf-8")
@@ -611,7 +623,8 @@ def build_sdlc_contract_candidate(
     package = _package_manifest(repo_root)
     manager, _ = _package_manager(repo_root, package)
     if "test" in _package_scripts(package) and infer_tests:
-        tests["package"] = {"steps": [{"run": [manager or "npm", "test"]}]}
+        binding = [] if _package_root(repo_root) == repo_root else ["--dir" if manager == "pnpm" else "--prefix", "scripts"]
+        tests["package"] = {"steps": [{"run": [manager or "npm", *binding, "test"]}]}
     if (repo_root / "go.mod").is_file() and infer_tests:
         tests["go"] = {"steps": [{"run": ["go", "test", "./..."]}]}
     if (repo_root / "Cargo.toml").is_file() and infer_tests:
@@ -938,7 +951,11 @@ def plan_ceratops_compatibility(
     validator_text, workflow_text, validation_checks, markdown_files = validation_surfaces(repo_root, ci_action_revision)
     compatibility_contract = load_compatibility_contract()
     python_tests = discover_python_tests(repo_root, compatibility_contract["python_test_detection"])
-    generated_runtime = runtime_files(repo_root, BUNDLE_ROOT, compatibility_contract, contract_checks(repo_root))
+    generated_runtime = runtime_files(
+        repo_root, BUNDLE_ROOT, compatibility_contract, contract_checks(repo_root),
+        planned_files=markdown_files,
+    )
+    markdown_files.pop(".gitignore", None)
     if manifest is not None:
         # The manifest and payload files share the compatibility rollback scope.
         updated_payloads = dict(runtime_payloads)
@@ -976,7 +993,7 @@ def apply_compatibility_plan(
     for destination, content in plan.runtime_files.items():
         destination.parent.mkdir(parents=True, exist_ok=True)
         newline = "\r\n" if destination.is_file() and b"\r\n" in destination.read_bytes() else "\n"
-        destination.write_text(content, encoding="utf-8", newline=newline)
+        destination.write_text(content.replace("\r\n", "\n"), encoding="utf-8", newline=newline)
     for relative, text in plan.markdown_files.items():
         (repo_root / relative).write_text(text, encoding="utf-8", newline="")
     if plan.canonical_sources:

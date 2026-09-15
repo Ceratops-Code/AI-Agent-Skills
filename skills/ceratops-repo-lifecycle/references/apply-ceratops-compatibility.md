@@ -111,8 +111,8 @@ Infer the source identity from stable repository evidence before asking.
   compatibility review contract using local declarations and execution results.
   Report failed or unverified requirements; file presence alone is insufficient.
 - When creating both validation files in a repository without JavaScript
-  package-manager files, create the locked Markdown setup from templates with
-  its configuration under `scripts`. Preserve existing Markdown configuration
+  package-manager files, create the locked Markdown setup and
+  configuration from templates under `scripts`. Preserve existing Markdown configuration
   and exclusive validators, and ignore installed dependencies.
 - Generated CI uses target-owned dependency setup, including Node 24 for the
   generated Markdown setup; the validation contract supplies no package

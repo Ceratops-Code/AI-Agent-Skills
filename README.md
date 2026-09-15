@@ -581,8 +581,8 @@ contain no environment bootstrap or package-installation logic. Existing
 test implementations and non-Python test commands remain repository-owned.
 
 This source repository uses `scripts/pyproject.toml` and `scripts/uv.lock` for
-its maintenance scripts and Python tests. The root `pyproject.toml` holds Ruff
-and mypy settings. Its SDLC v3 contract runs validation and tests separately.
+its maintenance scripts, Python tests, and Ruff and mypy settings. Its SDLC v3
+contract runs validation and tests separately.
 CI uses the local composite action in this checkout, preserving PR test selection;
 local and push gates run the full test suite. Other repositories use the same
 skill-owned action pinned to a published commit.
@@ -590,9 +590,12 @@ skill-owned action pinned to a published commit.
 Repository-wide Markdown and YAML lint settings live in
 `scripts/.markdownlint.json` and `scripts/.yamllint.yml`. The npm Markdown
 command and repository validator select these files explicitly while checking
-files from the repository root; CI uses the same commands. Compatibility
-generation puts its default Markdown configuration under `scripts`, preserves
-existing settings, and selects nested YAML configurations explicitly.
+the whole repository; CI uses the same commands. Node tooling is declared in
+`scripts/package.json` and `scripts/package-lock.json`; invoke it with
+`npm --prefix scripts run lint:markdown`. Compatibility
+generation puts its default npm manifests and Markdown configuration under
+`scripts`, preserves existing settings, and selects nested YAML configurations
+explicitly.
 
 ## Shared Skill Python Environment
 
@@ -749,7 +752,7 @@ select a failure-evidence path, then run the same repository validator and
 explicit test runner used by CI:
 
 ```powershell
-npm ci
+npm --prefix scripts ci
 $validationEvidence = Join-Path $env:TEMP "repository-validation.log"
 uv run --locked scripts/validate-repository.py --evidence-file $validationEvidence
 uv run --locked scripts/testing/run-tests.py --all
@@ -759,11 +762,11 @@ CI runs `uv sync --project scripts --locked`; local commands use
 `uv run --locked <script.py>`. In both cases uv selects Python from
 `scripts/pyproject.toml` and synchronizes its locked dependencies before
 execution. The validator checks the selected interpreter against the project's
-requirement before repository checks; mypy uses that interpreter. Root Ruff and
-mypy settings configure the checks independently of dependency installation.
+requirement before repository checks; mypy uses that interpreter. Ruff and mypy
+explicitly select `scripts/pyproject.toml` while running from the repository root.
 
 Without the flag, evidence defaults to
-`build/deploy-validation/repository-validation.log`.
+`.build/deploy-validation/repository-validation.log`.
 Failure evidence remains available for diagnosis until the next successful run,
 which removes the selected evidence file and prunes the dedicated default
 directory when it is empty.
@@ -809,7 +812,7 @@ from a private copy of Git's selected template, preserving the template's
 other files and configuration.
 
 Failed pytest runs write complete stdout and stderr to
-`build/test-diagnostics/pytest-failure.json` by default. Use
+`.build/test-diagnostics/pytest-failure.json` by default. Use
 `--diagnostic-output PATH` to select another file; the terminal JSON contains a
 bounded failing-test summary plus the file path, byte count, and SHA-256 hash.
 A successful pytest run removes stale evidence at the selected path.

@@ -26,9 +26,10 @@ installed-runtime surface.
 - After approved bootstrap repair, follow `references/source-validate.md`
   with `<task-worktree>` as the source repository and `full` mode.
 - (D) Markdown lint when the repository declares it and skill Markdown is in
-  scope: `npm run lint:markdown`.
+  scope: `npm --prefix <package-directory> run lint:markdown`.
 - (D) Python type check when the repository declares it and skill helpers or
-  validators are in scope: `python -m mypy`.
+  validators are in scope: `python -m mypy --config-file
+  <configuration>`.
 
 ### References
 

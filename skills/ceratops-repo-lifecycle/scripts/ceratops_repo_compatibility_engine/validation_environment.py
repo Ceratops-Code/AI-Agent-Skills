@@ -22,10 +22,14 @@ from .python_tests import discover_python_tests
 from .python_tool_configuration import project_text
 
 
-def runtime_files(root: pathlib.Path, bundle: pathlib.Path, contract: Mapping[str, Any], checks: list[dict[str, Any]]) -> dict[pathlib.Path, str]:
+def runtime_files(
+    root: pathlib.Path, bundle: pathlib.Path, contract: Mapping[str, Any],
+    checks: list[dict[str, Any]], *, planned_files: Mapping[str, str] | None = None,
+) -> dict[pathlib.Path, str]:
     """Render repository tooling declarations without copying the SDLC engine."""
 
     runtime = contract["runtime"]
+    planned_files = planned_files or {}
     files: dict[pathlib.Path, str] = {}
     dependencies: set[str] = set()
     if discover_python_tests(root, contract["python_test_detection"]):
@@ -53,11 +57,28 @@ def runtime_files(root: pathlib.Path, bundle: pathlib.Path, contract: Mapping[st
     missing_ignore = [value for value in runtime["ignored_paths"] if value not in existing_ignore.splitlines()]
     if missing_ignore:
         files[ignore] = existing_ignore.rstrip("\n") + ("\n" if existing_ignore else "") + "\n".join(missing_ignore) + "\n"
+    # Merge the same transaction's npm ignore plan before adding diagnostics;
+    # neither writer may overwrite the other's ignored paths or existing bytes.
+    root_ignore = root / ".gitignore"
+    existing_root_ignore = planned_files.get(".gitignore")
+    if existing_root_ignore is None:
+        existing_root_ignore = root_ignore.read_bytes().decode("utf-8") if root_ignore.is_file() else ""
+    if "/.build/" not in existing_root_ignore.splitlines():
+        newline = "\r\n" if "\r\n" in existing_root_ignore else "\n"
+        existing_root_ignore += (newline if existing_root_ignore and not existing_root_ignore.endswith("\n") else "") + "/.build/" + newline
+    if ".gitignore" in planned_files or not root_ignore.is_file() or root_ignore.read_bytes().decode("utf-8") != existing_root_ignore:
+        files[root_ignore] = existing_root_ignore
     dependabot = root / ".github/dependabot.yml"
     data = yaml.safe_load(dependabot.read_text(encoding="utf-8")) if dependabot.is_file() else {"version": 2, "updates": []}
     if not isinstance(data, dict) or data.get("version") != 2 or not isinstance(data.get("updates"), list):
         raise RuntimeError("Dependabot configuration must have version 2 and an updates list")
     registrations = [dict(contract["dependency_updates"]), dict(contract["ci_dependency_updates"])]
+    npm_directory = "/" if (root / "package.json").is_file() else "/scripts"
+    if (root / npm_directory.lstrip("/") / "package.json").is_file() or "scripts/package.json" in planned_files:
+        registrations.append({
+            "package-ecosystem": "npm", "directory": npm_directory,
+            "schedule": dict(contract["dependency_updates"]["schedule"]),
+        })
     if any((root / "skills").glob("*/SKILL.md")):
         registrations.append({**contract["dependency_updates"], "directory": "/skills/sections/python"})
     if not all(isinstance(item, dict) for item in data["updates"]):

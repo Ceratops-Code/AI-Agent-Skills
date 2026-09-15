@@ -41,7 +41,7 @@ NODE_MAP_SCHEMA = "ai-agent-skills-pytest-node-map.v1"
 PYTEST_DIAGNOSTIC_SCHEMA = "ai-agent-skills-pytest-diagnostic.v1"
 RUNNER_DIAGNOSTIC_SCHEMA = "ai-agent-skills-test-runner-diagnostic.v1"
 DEFAULT_DIAGNOSTIC_PATH = pathlib.Path(
-    "build", "test-diagnostics", "pytest-failure.json"
+    ".build", "test-diagnostics", "pytest-failure.json"
 )
 MANIFEST_VERSION = 1
 MAPPING_GAP_EXIT_CODE = 3
@@ -538,9 +538,8 @@ def is_executable_production_path(path: str) -> bool:
     }:
         return True
     return path in {
-        "package-lock.json",
-        "package.json",
-        "pyproject.toml",
+        "scripts/package-lock.json",
+        "scripts/package.json",
         "scripts/pyproject.toml",
         "scripts/uv.lock",
     }
@@ -956,7 +955,7 @@ def validate_manifest(
             )
     required_full = {
         ".github/workflows/validate.yml",
-        "pyproject.toml",
+        "scripts/pyproject.toml",
         "scripts/testing/run-tests.py",
         "scripts/validate-repository.py",
         "tests/__init__.py",

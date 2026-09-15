@@ -102,7 +102,7 @@ def build_checks(
     python = python_executable or sys.executable
     npm = npm_executable or ("npm.cmd" if sys.platform == "win32" else "npm")
     checks: tuple[Check, ...] = (
-        Check("markdown-lint", (npm, "run", "lint:markdown"), repo_root),
+        Check("markdown-lint", (npm, "--prefix", "scripts", "run", "lint:markdown"), repo_root),
         Check(
             "yaml-lint",
             (
@@ -123,6 +123,8 @@ def build_checks(
                 "-m",
                 "ruff",
                 "check",
+                "--config",
+                "scripts/pyproject.toml",
                 "scripts",
                 "tools",
                 "skills/ceratops-repo-lifecycle/references/templates/"
@@ -132,13 +134,13 @@ def build_checks(
         ),
         Check(
             "mypy",
-            (python, "-m", "mypy", "--platform", "linux"),
+            (python, "-m", "mypy", "--config-file", "scripts/pyproject.toml", "--platform", "linux"),
             repo_root,
             "linux",
         ),
         Check(
             "mypy",
-            (python, "-m", "mypy", "--platform", "win32"),
+            (python, "-m", "mypy", "--config-file", "scripts/pyproject.toml", "--platform", "win32"),
             repo_root,
             "win32",
         ),
@@ -280,7 +282,7 @@ def main(
         parsed.evidence_file.expanduser().resolve()
         if parsed.evidence_file
         else repo_root
-        / "build"
+        / ".build"
         / "deploy-validation"
         / "repository-validation.log"
     )

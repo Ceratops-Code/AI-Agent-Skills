@@ -180,11 +180,11 @@ def test_compatibility_materializer_supplies_target_identity_and_assignments(
         "validator": "applied",
         "workflow": "applied",
     }
-    package = json.loads((repo / "package.json").read_text(encoding="utf-8"))
-    lock = json.loads((repo / "package-lock.json").read_text(encoding="utf-8"))
+    package = json.loads((repo / "scripts/package.json").read_text(encoding="utf-8"))
+    lock = json.loads((repo / "scripts/package-lock.json").read_text(encoding="utf-8"))
     assert package["private"] is True
     assert package["scripts"]["lint:markdown"] == (
-        'markdownlint "**/*.md" --ignore node_modules --config scripts/.markdownlint.json'
+        'markdownlint "../**/*.md" --ignore "../**/node_modules/**" --config .markdownlint.json'
     )
     assert package["devDependencies"] == {"markdownlint-cli": "0.49.1"}
     assert lock["packages"][""]["devDependencies"] == package["devDependencies"]
@@ -217,7 +217,7 @@ def test_compatibility_materializer_supplies_target_identity_and_assignments(
         root_configuration.unlink()
         configuration.unlink()
     probe.unlink()
-    assert (repo / ".gitignore").read_text(encoding="utf-8").endswith("/node_modules/\n")
+    assert (repo / ".gitignore").read_text(encoding="utf-8").endswith("/scripts/node_modules/\n/.build/\n")
     steps = yaml.safe_load(
         (repo / ".github/workflows/validate.yml").read_text(encoding="utf-8")
     )["jobs"]["validate-repository"]["steps"]
@@ -226,7 +226,7 @@ def test_compatibility_materializer_supplies_target_identity_and_assignments(
     }
     assert next(
         step["run"] for step in steps if step["name"] == "Install npm validation dependencies"
-    ) == "npm ci"
+    ) == "npm --prefix scripts ci"
     payload = repo / "skills" / "sections" / "scripts" / "shared.py"
     payload.parent.mkdir(exist_ok=True)
     payload.write_text("VALUE = True\n", encoding="utf-8", newline="\n")
@@ -466,6 +466,25 @@ def test_compatibility_materializer_supports_repositories_without_skills(
             newline="\n",
         )
         return target
+
+    materializer = importlib.import_module("ceratops_repo_compatibility_engine.apply_ceratops_compatibility")
+    for manager, flag, lockfile in (("npm", "--prefix", "package-lock.json"), ("pnpm", "--dir", "pnpm-lock.yaml")):
+        nested = tmp_path / f"nested-{manager}"
+        (nested / "scripts").mkdir(parents=True)
+        (nested / "scripts/package.json").write_text(json.dumps({
+            "packageManager": manager + "@10.33.4",
+            "scripts": {"lint": "echo lint", "test": "echo test"},
+        }), encoding="utf-8")
+        (nested / "scripts" / lockfile).write_text("{}\n", encoding="utf-8")
+        check = next(item for item in materializer.contract_checks(nested) if item["id"] == manager + "-lint")
+        assert check["command"] == ["{" + manager + "}", flag, "scripts", "run", "lint"]
+        assert materializer.default_markdown_files(nested) == {}
+        _, setup = materializer._validation_workflow(nested, [check], markdown_files={})
+        assert f"{manager} {flag} scripts " in setup
+        (nested / ".build").mkdir()
+        (nested / ".build/test_diagnostic.py").write_text("raise AssertionError\n", encoding="utf-8")
+        rules = materializer.load_compatibility_contract()["python_test_detection"]
+        assert materializer.discover_python_tests(nested, rules) == []
 
     # A transpiling build does not establish type safety. Preserve an explicit
     # typecheck for either package manager, with or without a build script.
@@ -965,14 +984,15 @@ def test_compatibility_materializer_preserves_existing_identity_and_custom_secti
     )
     assert markdown_config.read_bytes() == configuration_bytes
     assert not (repo / ".markdownlint.json").exists()
-    assert ignore.read_bytes() == b"build/\r\n!node_modules/\r\n/node_modules/\r\n"
-    package = json.loads((repo / "package.json").read_text(encoding="utf-8"))
-    assert package["scripts"]["lint:markdown"].endswith(f" --config {configuration}")
+    assert ignore.read_bytes() == b"build/\r\n!node_modules/\r\n/scripts/node_modules/\r\n/.build/\r\n"
+    package = json.loads((repo / "scripts/package.json").read_text(encoding="utf-8"))
+    selected_configuration = pathlib.PurePosixPath(configuration).name if configuration.startswith("scripts/") else "../" + configuration
+    assert package["scripts"]["lint:markdown"].endswith(f" --config {selected_configuration}")
     if not configuration.startswith("scripts/"):
         assert not (repo / "scripts/.markdownlint.json").exists()
     preserved = {
         name: (repo / name).read_bytes()
-        for name in (configuration, ".gitignore", "package.json", "package-lock.json")
+        for name in (configuration, ".gitignore", "scripts/package.json", "scripts/package-lock.json")
     }
 
     overridden = run_compatibility_engine(
@@ -1054,7 +1074,7 @@ def test_compatibility_materializer_rolls_back_every_target_write_on_blocker(
     assert not (repo / "scripts" / "validate-repository.py").exists()
     assert not (repo / ".github" / "workflows" / "validate.yml").exists()
     assert all(not (repo / name).exists() for name in (
-        "package.json", "package-lock.json", "scripts/.markdownlint.json",
+        "scripts/package.json", "scripts/package-lock.json", "scripts/.markdownlint.json",
     ))
     if existing_ignore:
         assert ignore.read_bytes() == b"build/\r\n"
@@ -1222,6 +1242,7 @@ def test_generated_scripts_and_skill_owned_ci_keep_environments_and_tests_separa
     assert "jsonschema" not in dependencies and "PyYAML" not in dependencies
     updates = yaml.safe_load((repo / ".github/dependabot.yml").read_text())["updates"]
     assert any(item["package-ecosystem"] == "github-actions" and item["directory"] == "/" for item in updates)
+    assert any(item["package-ecosystem"] == "npm" and item["directory"] == "/scripts" for item in updates)
     assert not (repo / "uv.lock").exists()
     assert (repo / "scripts/.gitignore").read_text() == "/custom-output/\n.venv/\n**/__pycache__/\n"
     assert custom.read_bytes() == original_custom

@@ -29,7 +29,7 @@ def sample_manifest(
             runner.Rule("beta-source", ("skills/beta/**",), ("beta",)),
         ),
         full_suite_paths=(
-            "pyproject.toml",
+            "scripts/pyproject.toml",
             "scripts/testing/run-tests.py",
             "scripts/testing/pytest-diagnostics.py",
             "tests/conftest.py",
@@ -100,7 +100,7 @@ def test_multiple_domains_produce_sorted_deterministic_union(
         "tests/test-impact.json",
         "scripts/testing/run-tests.py",
         "scripts/testing/pytest-diagnostics.py",
-        "pyproject.toml",
+        "scripts/pyproject.toml",
     ],
 )
 def test_selection_infrastructure_and_shared_support_select_full_suite(
@@ -117,8 +117,13 @@ def test_selection_infrastructure_and_shared_support_select_full_suite(
     assert {reason.path for reason in selection.reasons} == {path}
 
 
+@pytest.mark.parametrize("changed_path", [
+    "AGENTS.history.json", "scripts/package.json", "scripts/package-lock.json",
+    "scripts/pyproject.toml", "scripts/uv.lock",
+])
 def test_agents_history_selects_full_suite_from_repository_manifest(
     test_runner_module: Any,
+    changed_path: str,
 ) -> None:
     runner = test_runner_module
     root = pathlib.Path(__file__).resolve().parents[2]
@@ -126,13 +131,13 @@ def test_agents_history_selects_full_suite_from_repository_manifest(
 
     selection = runner.selection_from_changes(
         manifest,
-        (runner.ChangedFile("M", ("AGENTS.history.json",)),),
+        (runner.ChangedFile("M", (changed_path,)),),
     )
 
     assert selection.full_suite
     assert not selection.full_suite_fallback
     assert {reason.rule for reason in selection.reasons} == {
-        "full-suite:AGENTS.history.json"
+        f"full-suite:{changed_path}"
     }
 
 
@@ -315,7 +320,7 @@ def test_stale_rule_globs_are_rejected(test_runner_module: Any, tmp_path: pathli
         rules=(runner.Rule("stale-source", ("skills/missing/**",), ("alpha",)),),
         full_suite_paths=(
             ".github/workflows/**",
-            "pyproject.toml",
+            "scripts/pyproject.toml",
             "scripts/testing/run-tests.py",
             "scripts/validate-repository.py",
             "tests/__init__.py",
@@ -350,7 +355,7 @@ def test_worktree_manifest_validation_includes_untracked_paths(
         rules=(runner.Rule("new-source", ("skills/new/**",), ("alpha",)),),
         full_suite_paths=(
             ".github/workflows/**",
-            "pyproject.toml",
+            "scripts/pyproject.toml",
             "scripts/testing/run-tests.py",
             "scripts/validate-repository.py",
             "tests/__init__.py",

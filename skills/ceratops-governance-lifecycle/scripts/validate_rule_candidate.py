@@ -118,7 +118,9 @@ def _markdownlint_executable() -> str:
     command = "markdownlint.cmd" if os.name == "nt" else "markdownlint"
     source_repository = SKILL_ROOT.parents[1]
     source_manifest = source_repository / "skills" / "skill-sections.json"
-    source_executable = source_repository / "node_modules" / ".bin" / command
+    source_executable = source_repository / "scripts" / "node_modules" / ".bin" / command
+    if not source_executable.is_file():
+        source_executable = source_repository / "node_modules" / ".bin" / command
     executable = (
         str(source_executable.resolve())
         if source_manifest.is_file() and source_executable.is_file()

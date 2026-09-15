@@ -349,6 +349,7 @@ def test_pytest_failure_writes_full_diagnostic_and_emits_bounded_summary(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     runner = test_runner_module
+    assert runner.DEFAULT_DIAGNOSTIC_PATH == pathlib.Path(".build/test-diagnostics/pytest-failure.json")
     stdout = (
         "___________________________ test_contract ____________________________\n"
         ">       assert 1 == 2\n"
@@ -525,7 +526,7 @@ def test_committed_diff_treats_deleted_test_as_intentional_full_suite(
     [
         None,
         "skills/ceratops-credit-savings-analysis/scripts/credit_analysis/luna_sol_analysis.py",
-        "pyproject.toml",
+        "scripts/pyproject.toml",
     ],
 )
 @pytest.mark.parametrize("unmapped_path", ["src/unmapped.py", "tests/unmapped/test_new.py"])

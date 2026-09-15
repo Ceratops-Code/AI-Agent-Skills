@@ -155,6 +155,11 @@ def test_rule_candidate_repairs_multiple_targets_and_is_idempotent(
     assert (first.read_bytes(), second.read_bytes()) == original_sources
     detail = json.loads(evidence.read_text(encoding="utf-8"))
     assert detail["status"] == "passed" and detail["idempotent"] is True
+    # The policy engine uses this source checkout's npm dependency, regardless
+    # of target configuration. Verify the resolved command can validate Markdown.
+    command = pathlib.Path(fixed["targets"][0]["markdown_policy"]["validate_command"][0])
+    source_root = RULE_CANDIDATE_VALIDATOR.parents[3]
+    assert command == (source_root / "scripts/node_modules/.bin" / ("markdownlint.cmd" if os.name == "nt" else "markdownlint")).resolve()
     first_hash = hashlib.sha256(candidate.read_bytes()).hexdigest()
     second_evidence = tmp_path / "second-evidence.json"
     repeated = run_rule_candidate_validator(candidate, second_evidence)

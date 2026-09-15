@@ -68,6 +68,8 @@ def test_build_checks_owns_order_both_platforms_and_space_safe_paths(
         "-m",
         "ruff",
         "check",
+        "--config",
+        "scripts/pyproject.toml",
         "scripts",
         "tools",
         "skills/ceratops-repo-lifecycle/references/templates/"
@@ -75,6 +77,9 @@ def test_build_checks_owns_order_both_platforms_and_space_safe_paths(
     )
     assert checks[3].command[-2:] == ("--platform", "linux")
     assert checks[4].command[-2:] == ("--platform", "win32")
+    assert checks[0].command == ("npm executable", "--prefix", "scripts", "run", "lint:markdown")
+    assert all(check.cwd == repo_root for check in checks)
+    assert all(check.command[3:5] == ("--config-file", "scripts/pyproject.toml") for check in checks[3:])
 
 
 def test_ci_runs_repository_validator_that_owns_both_mypy_platforms() -> None:
@@ -88,15 +93,17 @@ def test_ci_runs_repository_validator_that_owns_both_mypy_platforms() -> None:
     installation_step = next(step for step in steps if step.get("name") == "Install development validators")
     assert steps.index(uv_step) < steps.index(installation_step)
     assert "uv sync --project scripts --locked" in installation_step["run"]
+    assert "npm --prefix scripts ci" in installation_step["run"]
     gate = next(step for step in steps if step.get("name") == "Validate and test through SDLC")
     assert gate["uses"] == "./skills/ceratops-repo-lifecycle/scripts"
     assert gate["with"] == {"repo-root": ".", "evidence-file": "${{ runner.temp }}/sdlc-validation.json"}
     assert steps.index(installation_step) < steps.index(gate)
     upload = next(step for step in steps if step.get("name") == "Upload validation evidence")
+    assert upload["with"]["include-hidden-files"] is True
     assert upload["with"]["path"].splitlines() == [
         "${{ runner.temp }}/sdlc-validation.json",
-        "build/deploy-validation/repository-validation.log",
-        "build/test-diagnostics/pytest-failure.json",
+        ".build/deploy-validation/repository-validation.log",
+        ".build/test-diagnostics/pytest-failure.json",
     ]
 
     checks = VALIDATOR.build_checks(
@@ -248,7 +255,7 @@ def test_omitted_evidence_flag_keeps_repository_default(
     result = VALIDATOR.main([], process_runner=failing_runner)
 
     payload = json.loads(capsys.readouterr().out)
-    expected = repo_root / "build" / "deploy-validation" / "repository-validation.log"
+    expected = repo_root / ".build" / "deploy-validation" / "repository-validation.log"
     assert result == 3
     assert payload["evidence_file"] == str(expected)
     assert expected.is_file()
@@ -343,8 +350,8 @@ def test_repository_entrypoints_run_through_uv(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, entrypoint: str,
 ) -> None:
     metadata = tomllib.loads((ROOT / "scripts/pyproject.toml").read_text(encoding="utf-8"))
-    tool_settings = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-    assert "project" not in tool_settings
+    tool_settings = metadata
+    assert not (ROOT / "pyproject.toml").exists()
     assert metadata["tool"]["uv"].get("python-preference") != "only-system"
     assert metadata["tool"]["uv"].get("python-downloads") != "never"
     assert metadata["tool"]["uv"]["package"] is False

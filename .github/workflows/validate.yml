@@ -28,7 +28,7 @@ jobs:
       - name: Install development validators
         run: |
           uv sync --project scripts --locked
-          npm ci
+          npm --prefix scripts ci
 
       - name: Validate and test through SDLC
         uses: ./skills/ceratops-repo-lifecycle/scripts
@@ -42,7 +42,8 @@ jobs:
         with:
           if-no-files-found: ignore
           name: repository-validation-evidence
+          include-hidden-files: true
           path: |
             ${{ runner.temp }}/sdlc-validation.json
-            build/deploy-validation/repository-validation.log
-            build/test-diagnostics/pytest-failure.json
+            .build/deploy-validation/repository-validation.log
+            .build/test-diagnostics/pytest-failure.json

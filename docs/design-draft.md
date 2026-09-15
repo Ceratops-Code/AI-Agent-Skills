@@ -67,8 +67,10 @@ template. Test bodies and their implementation remain repository-specific.
 
 One environment does not need both requirements files and a pyproject dependency
 list. The thread selected pyproject plus its lockfile and removal of the root
-requirements files. In AI-Agent-Skills, the root `pyproject.toml` remains for
-Ruff and mypy configuration; Python tooling dependencies live under `scripts`.
+requirements files. In AI-Agent-Skills, `scripts/pyproject.toml` owns both
+Python tooling dependencies and Ruff and mypy settings. Node tooling manifests
+and Markdown/YAML lint settings also live under `scripts`; generated diagnostic
+files live under the ignored `.build` directory.
 Dependabot must address the directories containing the dependency projects,
 including `/scripts` and the separate shared skill project.
 

@@ -123,7 +123,7 @@ def main() -> int:
     evidence_file = (
         args.evidence_file.expanduser().resolve()
         if args.evidence_file
-        else repo_root / "build" / "deploy-validation" / "repository-validation.log"
+        else repo_root / ".build" / "deploy-validation" / "repository-validation.log"
     )
     with tempfile.TemporaryDirectory(prefix="repository-validation-") as temporary:
         temporary_root = pathlib.Path(temporary)
