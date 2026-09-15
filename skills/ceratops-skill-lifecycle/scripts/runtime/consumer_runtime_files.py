@@ -10,11 +10,11 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-from pathlib import Path, PurePosixPath, PureWindowsPath
 import re
 import stat
 import tomllib
 from collections.abc import Mapping
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 IGNORED = {".git", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", "node_modules"}
 
@@ -90,7 +90,7 @@ def _safe_file(path: Path, root: Path) -> None:
 
 def files(root: Path, manifest: Mapping, kind: str, name: str) -> dict[str, str]:
     """Return destination-to-source files, rejecting missing groups and collisions."""
-    result = {}
+    result: dict[str, str] = {}
     for item in declarations(manifest, kind, name):
         source = item if isinstance(item, str) else item["source"]
         target = None if isinstance(item, str) else item["target"]

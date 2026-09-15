@@ -377,6 +377,8 @@ def _expand_payload_items(manifest: Mapping[str, object], items: list[object], p
         raise ValueError("payload_groups must be an object")
     result: list[object] = []
     for item in items:
+        source: str
+        target: str | None
         if isinstance(item, Mapping) and "group" in item:
             if set(item) != {"group", "target"} or not isinstance(item["group"], str) or not isinstance(item["target"], str):
                 raise ValueError("group assignment requires group and target")
@@ -421,7 +423,7 @@ def consumer_runtime_files(repo_root: pathlib.Path, manifest: Mapping[str, objec
                 if not child.is_file() or any(part in IGNORED_NAMES for part in child.relative_to(repo_root).parts):
                     continue
                 require_inside(child, repo_root)
-                relative = pathlib.PurePosixPath(target)
+                relative = pathlib.PurePosixPath(target or source)
                 if match.is_dir():
                     relative /= child.relative_to(match).as_posix()
                 key = relative.as_posix()
