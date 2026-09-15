@@ -100,6 +100,9 @@ repo docs, then update the narrowest correct source that exists.
   declared checks, preserve retryable pending state on failure, reject unchanged
   retries and scope broadening, and permanently invalidate state changed after
   the correction generation. Do not use it for skill-local text-only updates.
+- For failed pytest checks, print test identities and reported errors in the
+  compact error; retain complete failure details in evidence and mark omitted
+  output.
 - The update helper must count manifest-declared shared sources as ownership
   for their selected skill consumers and reject selected skills without an
   owned allowed path.

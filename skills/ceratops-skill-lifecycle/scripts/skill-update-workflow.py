@@ -29,12 +29,18 @@ import json
 import os
 import pathlib
 import re
-import subprocess
 import sys
 import tempfile
 from collections.abc import Mapping, Sequence
 
 from runtime.managed_runtime_builder import IGNORE_NAMES, payload_parts
+from skill_update_checks import (
+    MAX_COMPACT_DETAIL,
+    CheckFailure,
+    UpdateExecutionError,
+    _run,
+    _run_check,
+)
 from skill_update_scratch import check_environment
 
 REQUEST_SCHEMA = "ceratops-skill-update-request.v2"
@@ -88,37 +94,6 @@ SKILL_NAME_RE = re.compile(
     r"^(?![a-z0-9-]*--)[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$"
 )
 PYTEST_NODE_RE = re.compile(r"^tests/[A-Za-z0-9_./-]+\.py::\S+$")
-MAX_CAPTURE = 32_000
-MAX_COMPACT_DETAIL = 1_000
-
-
-class UpdateExecutionError(RuntimeError):
-    """One compact request, baseline, check, or evidence failure."""
-
-
-def _run(
-    arguments: Sequence[str],
-    *,
-    cwd: pathlib.Path,
-    environment: Mapping[str, str] | None = None,
-) -> subprocess.CompletedProcess[str]:
-    """Run one declared process without shell interpretation."""
-
-    try:
-        return subprocess.run(
-            list(arguments),
-            cwd=cwd,
-            env=environment,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            check=False,
-        )
-    except OSError as exc:
-        raise UpdateExecutionError(
-            f"could not start {arguments[0]}: {exc}"
-        ) from exc
 
 
 def _git(repo_root: pathlib.Path, *arguments: str) -> str:
@@ -1256,90 +1231,6 @@ def _check_whitespace(
             raise UpdateExecutionError(f"Git whitespace check failed for {path}: {detail}")
 
 
-def _bounded(value: str) -> str:
-    return value if len(value) <= MAX_CAPTURE else value[:MAX_CAPTURE] + "\n[truncated]"
-
-
-def _run_check(
-    repo_root: pathlib.Path,
-    check: Mapping[str, object],
-    environment: Mapping[str, str],
-) -> dict[str, object]:
-    kind = check.get("kind")
-    if kind == "pytest":
-        nodes = check.get("nodes")
-        if not isinstance(nodes, list) or not all(isinstance(node, str) for node in nodes):
-            raise UpdateExecutionError("state pytest check is invalid")
-        argv = [sys.executable, "-m", "pytest", "-q", *nodes]
-        selection: dict[str, object] = {"nodes": nodes}
-    elif kind == "command":
-        raw_argv = check.get("argv")
-        if not isinstance(raw_argv, list) or not all(
-            isinstance(item, str) for item in raw_argv
-        ):
-            raise UpdateExecutionError("state command check is invalid")
-        argv = [str(item) for item in raw_argv]
-        selection = {"argv": argv}
-    if kind in {"pytest", "command"}:
-        result = _run(argv, cwd=repo_root, environment=environment)
-        evidence = {
-            "kind": kind,
-            **selection,
-            "returncode": result.returncode,
-            "stdout": _bounded(result.stdout),
-            "stderr": _bounded(result.stderr),
-        }
-        if result.returncode:
-            message = "pytest check failed" if kind == "pytest" else f"command check failed with {result.returncode}"
-            raise CheckFailure(message, evidence)
-        return evidence
-    if kind != "search":
-        raise UpdateExecutionError("state check kind is invalid")
-    pattern = check.get("pattern")
-    paths = check.get("paths")
-    expected = check.get("expected_matches")
-    if (
-        not isinstance(pattern, str)
-        or not isinstance(paths, list)
-        or not all(isinstance(path, str) for path in paths)
-        or not isinstance(expected, int)
-        or isinstance(expected, bool)
-    ):
-        raise UpdateExecutionError("state search check is invalid")
-    regex = re.compile(pattern)
-    matches = 0
-    for path in paths:
-        target = _target(repo_root, path)
-        if target.is_symlink() or not target.is_file():
-            raise UpdateExecutionError(f"search path does not exist: {path}")
-        try:
-            text = target.read_text(encoding="utf-8")
-        except (OSError, UnicodeError) as exc:
-            raise UpdateExecutionError(f"search path is unreadable: {path}: {exc}") from exc
-        matches += sum(1 for _ in regex.finditer(text))
-    evidence = {
-        "kind": kind,
-        "pattern": pattern,
-        "paths": paths,
-        "expected_matches": expected,
-        "actual_matches": matches,
-        "returncode": 0 if matches == expected else 1,
-    }
-    if matches != expected:
-        raise CheckFailure(
-            f"search expected {expected} matches, found {matches}", evidence
-        )
-    return evidence
-
-
-class CheckFailure(UpdateExecutionError):
-    """A check failure that carries its detailed evidence record."""
-
-    def __init__(self, message: str, evidence: dict[str, object]) -> None:
-        super().__init__(message)
-        self.evidence = evidence
-
-
 def command_verify(state_path: pathlib.Path, evidence_path: pathlib.Path) -> None:
     state = _validated_state(state_path)
     repo_root = pathlib.Path(str(state["repo_root"]))
@@ -1414,7 +1305,9 @@ def command_verify(state_path: pathlib.Path, evidence_path: pathlib.Path) -> Non
                         failures.append("state check is invalid")
                         break
                     try:
-                        results.append(_run_check(repo_root, raw_check, environment))
+                        results.append(_run_check(
+                            repo_root, raw_check, environment, resolve_target=_target,
+                        ))
                     except CheckFailure as exc:
                         results.append(exc.evidence)
                         failures.append(str(exc))

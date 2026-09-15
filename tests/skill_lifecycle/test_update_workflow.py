@@ -23,7 +23,12 @@ from tests.support.repositories import (
 
 
 @pytest.mark.parametrize(
-    "outcome", ["passed", "collection_failed", "command_failed", "pytest_failed", "cleanup_failed"]
+    "outcome", [
+        "passed", "collection_failed", "command_failed", "pytest_failed",
+        "cleanup_failed", "pytest_setup_failed", "pytest_teardown_failed",
+        "pytest_multiple_failed", "pytest_long_failed", "pytest_many_failed",
+        "pytest_report_missing", "pytest_report_invalid",
+    ]
 )
 def test_skill_update_scratch_is_owned_through_collection_and_verification(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, outcome: str,
@@ -39,7 +44,8 @@ def test_skill_update_scratch_is_owned_through_collection_and_verification(
     retained = task_temp_root / "keep.txt"
     retained.write_text("unrelated", encoding="utf-8")
     monkeypatch.setenv("SCRATCH_CHECK_LOG", str(log))
-    inherited_options = "--maxfail=1 --basetemp " + shlex.quote(str(caller_temp))
+    multiple = outcome in {"pytest_multiple_failed", "pytest_many_failed"}
+    inherited_options = f"--maxfail={0 if multiple else 1} --basetemp " + shlex.quote(str(caller_temp))
     monkeypatch.setenv("PYTEST_ADDOPTS", inherited_options)
     monkeypatch.setenv("PYTEST_DEBUG_TEMPROOT", str(caller_temp))
     probe = (
@@ -55,14 +61,46 @@ def test_skill_update_scratch_is_owned_through_collection_and_verification(
         "        log.write(json.dumps(value) + '\\n')\n"
     )
     test_file = worktree / "tests" / "test_helper.py"
+    case_count = 20 if outcome == "pytest_many_failed" else 2 if multiple else 1
+    fixture = (
+        "import pytest\n"
+        "@pytest.fixture\n"
+        "def diagnostic_fixture():\n"
+        + ("    raise RuntimeError('exact setup failure')\n" if outcome == "pytest_setup_failed" else "")
+        + "    yield\n"
+        + ("    raise RuntimeError('exact teardown failure')\n" if outcome == "pytest_teardown_failed" else "")
+    )
+    if outcome == "pytest_long_failed":
+        assertion = (
+            "    print('captured-noise-' * 6000)\n"
+            "    raise ValueError('visible-error ' + 'x' * 40000 + ' complete-error-tail')\n"
+        )
+    elif multiple:
+        assertion = "    assert index < 0, f'exact case {index} failure'\n"
+    else:
+        failing = outcome in {"pytest_failed", "pytest_report_missing", "pytest_report_invalid"}
+        assertion = f"    assert {not failing}\n"
     test_file.write_text(
         probe + "record('collection')\n"
         + ("raise RuntimeError('collection failed')\n" if outcome == "collection_failed" else "")
-        + "def test_helper_value(tmp_path):\n"
+        + fixture
+        + f"@pytest.mark.parametrize('index', range({case_count}), ids=lambda value: f'case.{{value}}::part')\n"
+        + "def test_helper_value(tmp_path, diagnostic_fixture, index):\n"
         + "    record('test', tmp_path)\n"
-        + f"    assert {outcome != 'pytest_failed'}\n",
+        + assertion,
         encoding="utf-8", newline="\n",
     )
+    if outcome in {"pytest_report_missing", "pytest_report_invalid"}:
+        report_action = "unlink()" if outcome == "pytest_report_missing" else "write_text('<broken', encoding='utf-8')"
+        (worktree / "tests" / "conftest.py").write_text(
+            "import pathlib, pytest\n"
+            "@pytest.hookimpl(wrapper=True, tryfirst=True)\n"
+            "def pytest_sessionfinish(session):\n"
+            "    yield\n"
+            "    if session.config.option.xmlpath:\n"
+            f"        pathlib.Path(session.config.option.xmlpath).{report_action}\n",
+            encoding="utf-8", newline="\n",
+        )
     check_script = scope / "check.py"
     check_script.write_text(
         probe + "record('command')\nprint('probe-finished')\n"
@@ -124,11 +162,55 @@ def test_skill_update_scratch_is_owned_through_collection_and_verification(
     assert evidence["status"] == ("passed" if outcome == "passed" else "failed")
     assert evidence["checks"][0]["returncode"] == (7 if outcome == "command_failed" else 0)
     assert "probe-finished" in evidence["checks"][0]["stdout"]
+    if outcome.startswith("pytest_"):
+        check = evidence["checks"][-1]
+        assert check["returncode"] == 1
+        assert verified.stdout == ""
+        assert "pytest check failed (exit 1)" in verified.stderr
+        assert len(verified.stderr) < 4500
+        assert len(verified.stderr.splitlines()) == 1
+        if outcome in {"pytest_report_missing", "pytest_report_invalid"}:
+            assert check["failures"] == []
+            assert "pytest failure report is" in verified.stderr
+            assert "assert False" in verified.stderr
+            assert "test_helper_value" in verified.stderr
+            assert check["failure_diagnostic"]
+        else:
+            failures = check["failures"]
+            assert len(failures) == case_count
+            assert failures[0]["test"].endswith("test_helper_value[case.0::part]")
+            assert failures[0]["test"] in verified.stderr
+            assert failures[0]["detail"]
+            expected_error = {
+                "pytest_failed": "assert False",
+                "pytest_setup_failed": "RuntimeError: exact setup failure",
+                "pytest_teardown_failed": "RuntimeError: exact teardown failure",
+                "pytest_multiple_failed": "exact case 0 failure",
+                "pytest_many_failed": "exact case 0 failure",
+                "pytest_long_failed": "ValueError: visible-error",
+            }[outcome]
+            assert expected_error in verified.stderr
+            if multiple:
+                assert all(f"exact case {index} failure" in failure["message"] for index, failure in enumerate(failures))
+                assert failures[1]["test"] in verified.stderr
+            if outcome == "pytest_long_failed":
+                assert "captured-noise-" not in verified.stderr
+                assert "complete-error-tail" in failures[0]["message"]
+                assert "complete-error-tail" in failures[0]["detail"]
+                assert len(failures[0]["message"]) > 32000
+                assert "output omitted; full details in evidence" in verified.stderr
+    if outcome == "passed":
+        assert verified.stdout == "OK\n" and verified.stderr == ""
+        assert evidence["checks"][-1]["failures"] == []
     if outcome == "cleanup_failed":
         assert len(evidence["checks"]) == 2
         assert all(check["returncode"] == 0 for check in evidence["checks"])
         assert evidence["failures"] == ["simulated scratch cleanup failure"]
     records = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+    assert sum(record["phase"] == "collection" for record in records) == (1 if outcome == "command_failed" else 2)
+    assert sum(record["phase"] == "command" for record in records) == 1
+    expected_runs = 0 if outcome in {"command_failed", "pytest_setup_failed"} else case_count
+    assert sum(record["phase"] == "test" for record in records) == expected_runs
     for record in records:
         scratch = pathlib.Path(record["root"])
         assert scratch.parent == task_temp_root
