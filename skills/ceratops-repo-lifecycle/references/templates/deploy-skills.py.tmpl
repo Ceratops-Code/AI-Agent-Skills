@@ -19,8 +19,8 @@ import re
 import shutil
 import stat
 import sys
-import uuid
 import tomllib
+import uuid
 from collections.abc import Mapping, Sequence
 from typing import cast
 
