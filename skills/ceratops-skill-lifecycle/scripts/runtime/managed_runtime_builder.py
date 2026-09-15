@@ -23,6 +23,7 @@ import json
 import os
 import pathlib
 import re
+import runpy
 import shutil
 import stat
 import subprocess
@@ -32,6 +33,10 @@ import uuid
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, cast
+
+CONSUMER_RUNTIME_FILES = runpy.run_path(
+    str(pathlib.Path(__file__).with_name("consumer_runtime_files.py"))
+)
 
 ROOT = pathlib.Path(__file__).resolve().parents[4]
 SECTION_MANIFEST = ROOT / "skills" / "skill-sections.json"
@@ -245,7 +250,27 @@ def validate_manifest(
             if assigned not in source_names:
                 errors.append(f"unknown skill section assignment: {assigned}")
 
-    if isinstance(payloads, Mapping):
+    if "payload_groups" in manifest:
+        for name in sorted(checked_skills):
+            try:
+                CONSUMER_RUNTIME_FILES["files"](ROOT, manifest, "skill", name)
+                CONSUMER_RUNTIME_FILES["versions"](ROOT, manifest, "skill", name)
+                CONSUMER_RUNTIME_FILES["requirements"](ROOT, manifest, "skill", name)
+            except (OSError, ValueError, KeyError, TypeError) as exc:
+                errors.append(str(exc))
+        if all_managed:
+            tools = manifest.get("tools", {})
+            if not isinstance(tools, Mapping):
+                errors.append("section manifest tools must be an object")
+            else:
+                for name in sorted(tools):
+                    try:
+                        CONSUMER_RUNTIME_FILES["files"](ROOT, manifest, "tool", name)
+                        CONSUMER_RUNTIME_FILES["versions"](ROOT, manifest, "tool", name)
+                        CONSUMER_RUNTIME_FILES["requirements"](ROOT, manifest, "tool", name)
+                    except (OSError, ValueError, KeyError, TypeError) as exc:
+                        errors.append(str(exc))
+    elif isinstance(payloads, Mapping):
         payload_keys = {"*", *checked_skills}
         for key in sorted(payload_keys):
             values = payloads.get(key, [])
@@ -529,6 +554,9 @@ def payload_declarations_for(
 ) -> list[object]:
     """Return global and skill-specific runtime payload declarations."""
 
+    if "payload_groups" in manifest:
+        return [{"source": source, "target": target} for target, source in
+                CONSUMER_RUNTIME_FILES["files"](ROOT, manifest, "skill", skill_name).items()]
     payloads = manifest.get("runtime_payloads", {})
     if not isinstance(payloads, Mapping):
         return []
@@ -642,6 +670,10 @@ def write_expected_skill(
         destination = target_skill.joinpath(*relative.parts)
         _assert_inside(destination, target_skill)
         if destination.exists() or destination.is_symlink():
+            if (payload.is_file() and destination.is_file()
+                    and not _unsafe_link(destination)
+                    and payload.read_bytes() == destination.read_bytes()):
+                continue
             raise ValueError(
                 "runtime payload target collides with skill source: "
                 f"{relative.as_posix()}"
@@ -658,6 +690,9 @@ def write_expected_skill(
         "generated_from": SECTION_MANIFEST.relative_to(ROOT).as_posix(),
         "payload_patterns": declarations,
     }
+    if "payload_groups" in manifest:
+        runtime_manifest["consumer_runtime"] = CONSUMER_RUNTIME_FILES["receipt"](
+            ROOT, manifest, "skill", skill_name)
     (target_skill / MANIFEST_NAME).write_text(
         json.dumps(runtime_manifest, indent=2, sort_keys=True) + "\n",
         encoding="utf-8", newline="\n",

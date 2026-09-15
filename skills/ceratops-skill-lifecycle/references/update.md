@@ -115,12 +115,13 @@ repo docs, then update the narrowest correct source that exists.
 - For failed pytest checks, print test identities and reported errors in the
   compact error; retain complete failure details in evidence and mark omitted
   output.
-- The update helper must count manifest-declared shared sources as ownership
-  for their selected skill consumers and reject selected skills without an
-  owned allowed path.
-- Update skills, shared sections, manifest, runtime payloads, runtime generation
-  or validation scripts, helper-runtime files or claims, contracts, and repo
-  docs only where ownership requires it.
+- The update helper must count manifest-declared runtime file groups as ownership
+  for their selected skill and tool consumers and reject a selected consumer
+  without an owned allowed path.
+- Update skills, tools, shared sections, manifest runtime file groups and consumer
+  assignments, runtime generation or validation scripts, helper-runtime files
+  or claims, contracts, and repo docs only where ownership requires it. Keep
+  each consumer's build, staging, receipt, and activation independent.
 - When addressing review feedback, patch the referenced artifact first. Touch
   adjacent skills, action references, contracts, or docs only when targeted
   evidence proves the same source-of-truth defect applies there; otherwise

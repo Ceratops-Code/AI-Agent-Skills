@@ -33,6 +33,9 @@ PROFILE_CERATOPS = "ceratops"
 PROFILE_COMPATIBLE = "ceratops-compatible"
 VALIDATION_PROFILES = {PROFILE_CERATOPS, PROFILE_COMPATIBLE}
 ALLOWED_EXTERNAL_PYTHON_MODULES = {"mypy", "pytest", "yamllint"}
+CONSUMER_RUNTIME_FILES = runpy.run_path(
+    str(pathlib.Path(__file__).parent / "runtime" / "consumer_runtime_files.py")
+)
 BOOTSTRAP_INSTALLER = ROOT / "scripts" / "deploy-skills.py"
 SOURCE_CANONICAL_SECTIONS = (
     LIFECYCLE_BUNDLE_ROOT.parents[1] / "skills" / "sections"
@@ -295,6 +298,28 @@ def check_runtime_payloads(
     """Validate applicable runtime payload paths without copying any files."""
 
     errors: list[str] = []
+    if "payload_groups" in manifest:
+        selected = skill_names if selected_skill_names is None else selected_skill_names & skill_names
+        for skill_name in sorted(selected):
+            try:
+                CONSUMER_RUNTIME_FILES["files"](ROOT, manifest, "skill", skill_name)
+                CONSUMER_RUNTIME_FILES["versions"](ROOT, manifest, "skill", skill_name)
+                CONSUMER_RUNTIME_FILES["requirements"](ROOT, manifest, "skill", skill_name)
+            except (OSError, ValueError, KeyError, TypeError) as exc:
+                errors.append(str(exc))
+        if selected_skill_names is None:
+            tools = manifest.get("tools", {})
+            if not isinstance(tools, Mapping):
+                errors.append("section manifest tools must be an object")
+            else:
+                for tool_name in sorted(tools):
+                    try:
+                        CONSUMER_RUNTIME_FILES["files"](ROOT, manifest, "tool", tool_name)
+                        CONSUMER_RUNTIME_FILES["versions"](ROOT, manifest, "tool", tool_name)
+                        CONSUMER_RUNTIME_FILES["requirements"](ROOT, manifest, "tool", tool_name)
+                    except (OSError, ValueError, KeyError, TypeError) as exc:
+                        errors.append(str(exc))
+        return errors
     normalized: dict[str, list[tuple[str, str | None]]] = {}
     payloads = manifest.get("runtime_payloads", {})
     if not isinstance(payloads, dict):
@@ -470,6 +495,18 @@ def manifest_runtime_input_paths(
                 path = ROOT / rel_path
                 if path.exists():
                     paths.add(path)
+
+    if "payload_groups" in manifest:
+        consumers = [("skill", name) for name in sorted(selected)]
+        if selected_skill_names is None and isinstance(manifest.get("tools", {}), Mapping):
+            consumers.extend(("tool", name) for name in sorted(cast(Mapping, manifest["tools"])))
+        for kind, name in consumers:
+            try:
+                for source in CONSUMER_RUNTIME_FILES["files"](ROOT, manifest, kind, name).values():
+                    paths.add(ROOT / source)
+            except (OSError, ValueError, KeyError, TypeError):
+                pass
+        return sorted(paths)
 
     payloads = manifest.get("runtime_payloads", {})
     if isinstance(payloads, dict):

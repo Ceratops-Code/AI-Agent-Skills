@@ -39,8 +39,10 @@ deployment operations or the independent bootstrap installer.
   this action.
 - Do not pass bootstrap version metadata into the runtime transaction. Runtime
   ownership compatibility is governed by `RUNTIME_MANIFEST_SCHEMA`.
-- Stage and validate the complete selected runtime batch in hidden transaction
-  directories under the install root before activation.
+- Stage and validate the complete selected skill runtime batch in hidden
+  transaction directories under the install root before activation. Keep tool
+  build, staging, and activation independent even when a runtime file group is
+  shared with the selected skill.
 
 ## Workflow
 

@@ -35,6 +35,8 @@ from tests.support.repositories import (
     prepare_script_environment,
 )
 
+RUNTIME_FILE_RESOLVER = ROOT / "skills/ceratops-skill-lifecycle/scripts/runtime/consumer_runtime_files.py"
+
 
 def rendered_snapshot(destination: pathlib.Path) -> dict[pathlib.Path, bytes]:
     """Compare skill output while excluding the root's persistent POSIX lock."""
@@ -46,6 +48,55 @@ def rendered_snapshot(destination: pathlib.Path) -> dict[pathlib.Path, bytes]:
             and re.fullmatch(r"\.ceratops-install-[0-9a-f]{64}\.lock", item.name)
         )
     }
+
+
+def test_one_payload_manifest_drives_skill_and_tool_consumers(tmp_path: pathlib.Path) -> None:
+    repo = tmp_path / "repo"
+    (repo / "skills/example/scripts").mkdir(parents=True)
+    (repo / "skills/example/SKILL.md").write_text("---\nname: example\ndescription: Example.\n---\n", encoding="utf-8")
+    (repo / "skills/example/scripts/worker.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (repo / "tools/example/src/example_tool").mkdir(parents=True)
+    (repo / "tools/example/pyproject.toml").write_text(
+        "[project]\nname='example-tool'\nversion='1.2.3'\n"
+        "requires-python='>=3.14'\ndependencies=['example-dependency==4.5.6']\n",
+        encoding="utf-8",
+    )
+    manifest = {
+        "runtime_source_id": "example/repo", "skills": {"example": []},
+        "runtime_payloads": {"example": [{"group": "runtime", "target": "scripts"}]},
+        "payload_groups": {"runtime": {
+            "version_source": "tools/example/pyproject.toml",
+            "files": [{"source": "skills/example/scripts", "target": "."}] }},
+        "tools": {"example-tool": {"source": "tools/example", "package": "example_tool/runtime",
+            "payloads": [{"group": "runtime", "target": "example_tool/runtime"}]}}}
+    resolver = runpy.run_path(str(RUNTIME_FILE_RESOLVER))
+    expected_skill = {"scripts/worker.py": "skills/example/scripts/worker.py"}
+    expected_tool = {"example_tool/runtime/worker.py": "skills/example/scripts/worker.py"}
+    assert resolver["files"](repo, manifest, "skill", "example") == expected_skill
+    assert resolver["files"](repo, manifest, "tool", "example-tool") == expected_tool
+    bootstrap = runpy.run_path(str(BOOTSTRAP))
+    assert bootstrap["consumer_runtime_files"](repo, manifest, "skill", "example") == expected_skill
+    assert bootstrap["consumer_runtime_files"](repo, manifest, "tool", "example-tool") == expected_tool
+    staged_skill = tmp_path / "staged-skill"
+    shutil.copytree(repo / "skills/example", staged_skill)
+    for declaration in bootstrap["payload_declarations"](repo, manifest, "example"):
+        bootstrap["copy_payload"](repo, declaration, staged_skill)
+    assert (staged_skill / "scripts/worker.py").read_text(encoding="utf-8") == "VALUE = 1\n"
+    evidence = resolver["receipt"](repo, manifest, "tool", "example-tool")
+    assert evidence["versions"] == {"runtime": "1.2.3"}
+    assert evidence["requirements"] == {"runtime": {
+        "source": "tools/example/pyproject.toml",
+        "requires_python": ">=3.14",
+        "dependencies": ["example-dependency==4.5.6"],
+    }}
+    installed = tmp_path / "installed"
+    for target, source in expected_tool.items():
+        destination = installed / target
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(repo / source, destination)
+    assert resolver["inspect"](installed, evidence)["ready"] is True
+    (installed / "example_tool/runtime/worker.py").write_text("VALUE = 2\n", encoding="utf-8")
+    assert resolver["inspect"](installed, evidence)["stale"] == ["example_tool/runtime/worker.py"]
 
 
 @pytest.mark.parametrize("renderer", [BOOTSTRAP, INSTALLER_TEMPLATE, BUILDER, VALIDATOR], ids=["repository", "compatible", "managed", "validator"])
