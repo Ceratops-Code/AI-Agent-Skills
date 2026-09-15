@@ -395,7 +395,6 @@ def _recover_prepared_batch_item(
         or pathlib.Path(str(evidence.get("session"))).resolve()
         != pathlib.Path(candidate["session"]).resolve()
         or evidence.get("source_fingerprint") != child_state["source"]["fingerprint"]
-        or evidence.get("collection", {}).get("session_reads") != 1
         or not isinstance(projected_calls, int)
         or isinstance(projected_calls, bool)
         or projected_calls < 2
@@ -492,8 +491,7 @@ def _resume_batch_preparation(
             pathlib.Path(child_status["state_path"])
         )
         if (
-            evidence.get("collection", {}).get("session_reads") != 1
-            or pathlib.Path(str(evidence.get("session"))).resolve()
+            pathlib.Path(str(evidence.get("session"))).resolve()
             != pathlib.Path(candidate["session"]).resolve()
         ):
             raise CreditAnalysisError("batch holistic child collection is invalid")

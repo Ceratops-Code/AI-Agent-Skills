@@ -22,6 +22,7 @@ from tests.credit_analysis.paths import (
     CREDIT_ANALYSIS_CONTRACT,
 )
 from tests.credit_analysis.sessions import (
+    _attach_persistent_descendants,
     canonical_credit_task_root,
     credit_analysis_batch_request,
     credit_analysis_request,
@@ -484,11 +485,15 @@ def test_credit_analysis_batch_selects_recent_threads_and_projects_once(
         workflow.command_prepare_batch(ambiguous_request)
 
 
-@pytest.mark.parametrize("api_failure_event", [None, "error", "turn.failed"])
+@pytest.mark.parametrize(
+    "api_failure_event,include_descendant",
+    [(None, False), (None, True), ("error", False), ("turn.failed", False)],
+)
 def test_credit_analysis_batch_resumes_and_preserves_every_thread_finding(
     tmp_path: pathlib.Path,
     monkeypatch: pytest.MonkeyPatch,
     api_failure_event: str | None,
+    include_descendant: bool,
 ) -> None:
     workflow = load_credit_analysis_workflow_module()
     monkeypatch.setattr(
@@ -512,6 +517,18 @@ def test_credit_analysis_batch_resumes_and_preserves_every_thread_finding(
         )
         for index, thread_id in enumerate(ids, start=1)
     ]
+    if include_descendant:
+        descendant_id = "00000000-0000-4000-8000-000000000023"
+        sessions.append(indexed_credit_analysis_session(
+            codex_home,
+            thread_id=descendant_id,
+            thread_name="Persistent child",
+            updated_at="2026-08-01T00:00:00Z",
+            project_name="alpha",
+        ))
+        _attach_persistent_descendants(
+            sessions[0], child_session_ids=[descendant_id, descendant_id],
+        )
     monkeypatch.setenv("CODEX_HOME", str(codex_home))
     request = credit_analysis_batch_request(
         tmp_path,
@@ -523,10 +540,39 @@ def test_credit_analysis_batch_resumes_and_preserves_every_thread_finding(
         },
         name="finalize",
     )
+    if include_descendant:
+        # Per-session enforcement belongs to collection, before tree merging.
+        collector = workflow._load_evidence_collector()
+        collect = collector.collect_session_evidence_from_rows
+        for index, overread_session in enumerate((sessions[0], sessions[-1])):
+            def overread(*args: Any, **kwargs: Any) -> dict[str, Any]:
+                result = collect(*args, **kwargs)
+                if pathlib.Path(kwargs["session"]) == overread_session:
+                    result["collection"]["session_reads"] = 2
+                return result
+
+            with monkeypatch.context() as faulty_collector:
+                faulty_collector.setattr(
+                    collector, "collect_session_evidence_from_rows", overread,
+                )
+                faulty_request = credit_analysis_batch_request(
+                    tmp_path,
+                    selector=json.loads(request.read_text(encoding="utf-8"))["selector"],
+                    name=f"overread-{index}",
+                )
+                with pytest.raises(workflow.CreditAnalysisError, match="exactly one read"):
+                    workflow.command_prepare_batch(faulty_request)
     status = workflow.command_prepare_batch(request)
     state_path = pathlib.Path(status["batch_state_path"])
     prepared_state = json.loads(state_path.read_text(encoding="utf-8"))
     prepared_items = prepared_state["items"]
+    if include_descendant:
+        evidence_path = pathlib.Path(prepared_items[0]["evidence_path"])
+        original_evidence = evidence_path.read_bytes()
+        evidence = json.loads(original_evidence)
+        assert evidence["collection"]["session_reads"] == 2
+        assert evidence["analysis_lineage"]["included_session_reads"] == 2
+        assert len(evidence["analysis_lineage"]["included_descendant_sessions"]) == 1
     pathlib.Path(prepared_state["paths"]["manifest"]).unlink()
     prepared_state["phase"] = "preparing"
     prepared_state["candidate_index"] = 0
@@ -535,9 +581,20 @@ def test_credit_analysis_batch_resumes_and_preserves_every_thread_finding(
     write_json_file(state_path, prepared_state)
     for index, session in enumerate(sessions):
         session.rename(session.with_name(f"retired-{index}.jsonl"))
+    if include_descendant:
+        # Recovery must reject altered evidence, then reuse the frozen tree
+        # even when neither the parent nor its persistent child is available.
+        evidence["collection"]["session_reads"] = 1
+        write_json_file(evidence_path, evidence)
+        with pytest.raises(workflow.CreditAnalysisError, match="immutable artifact changed: evidence"):
+            workflow.command_prepare_batch(request)
+        evidence_path.write_bytes(original_evidence)
     status = workflow.command_prepare_batch(request)
     resumed_state = json.loads(state_path.read_text(encoding="utf-8"))
     assert resumed_state["items"] == prepared_items
+    if include_descendant:
+        assert evidence_path.read_bytes() == original_evidence
+        return
 
     if api_failure_event is not None:
         runner = FakeCreditModelRunner()
