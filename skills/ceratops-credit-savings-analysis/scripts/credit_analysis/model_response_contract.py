@@ -814,6 +814,7 @@ def build_sol_schema(
     luna_aliases: Sequence[str],
     call_aliases: Sequence[str],
     evidence_aliases: Sequence[str],
+    final_synthesis: bool = False,
 ) -> dict[str, Any]:
     """Build the one model-facing Sol contract from frozen alias inventories."""
 
@@ -964,6 +965,23 @@ def build_sol_schema(
             "no_finding_reason": nullable_string(360),
         }
     )
+    category_reviews = objects(
+        closed(
+            {
+                "category": {"type": "string", "enum": contract["helper_categories"]},
+                "applies": boolean(),
+                "evidence_refs": aliases(evidence_aliases),
+                "reason": string(320),
+            }
+        )
+    )
+    if final_synthesis:
+        category_reviews.update(
+            description=(
+                "Return an empty array. The controller copies accepted shard "
+                "assessments and assembles the final category summaries."
+            ),
+        )
     properties = {
         "candidate_decisions": objects(
             closed(
@@ -996,16 +1014,7 @@ def build_sol_schema(
                 }
             )
         ),
-        "helper_category_reviews": objects(
-            closed(
-                {
-                    "category": {"type": "string", "enum": contract["helper_categories"]},
-                    "applies": boolean(),
-                    "evidence_refs": aliases(evidence_aliases),
-                    "reason": string(320),
-                }
-            )
-        ),
+        "helper_category_reviews": category_reviews,
         "call_classifications": objects(
             classification_reason_schema(
                 contract,
@@ -1058,4 +1067,5 @@ def _holistic_sol_schema(
         luna_aliases=[canonical_to_alias[item] for item in luna_candidate_ids],
         call_aliases=[canonical_to_alias[item] for item in call_ids],
         evidence_aliases=list(alias_record["aliases"]["evidence"]),
+        final_synthesis=task["phase"] == "sol-final",
     )

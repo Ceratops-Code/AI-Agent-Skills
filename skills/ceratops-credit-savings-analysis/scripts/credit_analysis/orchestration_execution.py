@@ -100,7 +100,13 @@ def _prior_rejection(
 def _current_response_schema(
     state: Mapping[str, Any], task: Mapping[str, Any], digest: str,
 ) -> dict[str, Any]:
-    """Bind today's structural enforcement to the run's frozen contract and aliases."""
+    """Bind current enforcement while preserving a prepared task's transport shape.
+
+    Final category output became controller-owned after some resumable analyses
+    had frozen their schemas. Their retained responses must remain structurally
+    valid long enough for current semantic validation to rebuild that category
+    section from accepted reviewer records.
+    """
     contract = analysis._read_json(
         pathlib.Path(state["immutable_artifacts"]["surface_contract"]["path"]),
         "frozen response contract",
@@ -110,11 +116,25 @@ def _current_response_schema(
             state=state, task=task, input_sha256=digest, contract=contract,
         )
     aliases = analysis._holistic_read_sol_aliases(task, digest)
-    return analysis._holistic_sol_schema(
+    schema = analysis._holistic_sol_schema(
         state=state, task=task, input_sha256=digest, contract=contract,
         luna_candidate_ids=list(aliases["aliases"]["luna_candidates"].values()),
         alias_record=aliases,
     )
+    frozen_path = pathlib.Path(str(task["artifacts"]["schema"]))
+    if task["phase"] == "sol-final" and frozen_path.is_file():
+        frozen = analysis._read_json(frozen_path, "frozen response schema")
+        frozen_categories = frozen.get("properties", {}).get(
+            "helper_category_reviews"
+        )
+        if (
+            isinstance(frozen_categories, Mapping)
+            and frozen_categories.get("maxItems") != 0
+        ):
+            schema["properties"]["helper_category_reviews"] = copy.deepcopy(
+                frozen_categories
+            )
+    return schema
 
 
 def _corrective_prompt(

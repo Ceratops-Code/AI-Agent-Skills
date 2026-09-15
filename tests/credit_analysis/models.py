@@ -466,14 +466,13 @@ class FakeCreditModelRunner:
                 classifications[-1]["call_ids"].append(call_id)
             else:
                 classifications.append({"call_ids": [call_id], **detail})
-        categories = list(prior[0]["helper_category_reviews"]) if prior else []
         return {
             "candidate_decisions": decisions,
             "confirmed_findings": findings,
             "plausible_risks": risks,
             "temporary_control_reviews": reviews,
             "temporary_control_merges": list(merge_index.values()),
-            "helper_category_reviews": categories,
+            "helper_category_reviews": [],
             "call_classifications": classifications,
         }
 

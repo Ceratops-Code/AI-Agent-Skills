@@ -111,9 +111,12 @@ applies them.
   initial calls, retries, and corrective attempts. The final Sol does not
   re-adjudicate every candidate or receive the complete source tree.
 - Restore canonical identifiers and derive nonsemantic summaries, ordering,
-  surfaces, workstreams, repeated evidence, and savings arithmetic in code. Sol
-  adjudicators merge overlaps and temporary controls, apply recurrence and ROI
-  rules, and classify source calls in grouped form. Persist result-size,
+  surfaces, workstreams, repeated evidence, final helper-category summaries,
+  and savings arithmetic in code. The final Sol returns an empty
+  helper-category review array; copy exact accepted reviewer records and
+  assemble that section in the controller. Sol adjudicators merge overlaps and
+  temporary controls, apply recurrence and ROI rules, and classify source calls
+  in grouped form. Persist result-size,
   duration, visible-token, and reasoning-token telemetry as diagnostics. Run no
   model bookkeeping calls; stop before execution when the finite plan is
   malformed or changes admitted run, part, or candidate coverage.

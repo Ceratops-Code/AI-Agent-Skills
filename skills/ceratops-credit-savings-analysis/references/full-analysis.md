@@ -94,7 +94,9 @@ Preserve every confirmed finding and report every capacity omission.
    final Sol. It merges compact judgments, temporary-control reviews,
    classifications, risks, and ROI inputs; deduplicates likely owner/control
    identity; and deeply verifies and expands the top three findings without
-   suppressing other confirmed findings. Each rejected Sol task receives one
+   suppressing other confirmed findings. Its helper-category review array stays
+   empty; the controller copies exact accepted reviewer records and assembles
+   their final summaries. Each rejected Sol task receives one
    automatic corrective retry when the sixteen-attempt ceiling permits. After a
    non-final task fails validation twice, mark its exact candidate, call, and
    byte

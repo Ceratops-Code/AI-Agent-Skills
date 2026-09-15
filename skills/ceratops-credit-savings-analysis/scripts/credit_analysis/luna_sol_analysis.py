@@ -4335,8 +4335,9 @@ classification.
     else:
         instructions = f"""
 Act as the final synthesis tier. Preserve every prior shard candidate decision,
-confirmed finding, risk, temporary-control review, helper-category review, and
-call classification. When `recovery_result` is present, use its validated
+confirmed finding, risk, temporary-control review, and call classification. Do
+not emit helper-category reviews; the controller copies accepted reviewer
+records and assembles their summaries. When `recovery_result` is present, use its validated
 findings and risks and replace the matching preliminary `unassessed` call
 classifications. Adjudicate only separate direct-evidence candidates. Merge true
 duplicates by likely owning producer and durable control without dropping a

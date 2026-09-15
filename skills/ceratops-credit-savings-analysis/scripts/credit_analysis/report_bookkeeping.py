@@ -434,18 +434,18 @@ def _holistic_category_reviews(
     categories: Sequence[str],
     prior_results: Sequence[Mapping[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
-    """Consolidate copied, scope-specific checklists without adjudicating them.
+    """Assemble final category summaries from accepted reviewer records.
 
     The caller validates each record's fields, evidence, boolean, and reason.
-    Child reviewers must return one record per category. Final output can copy
-    multiple accepted source assessments; differing records must be traceable
-    to those sources before they can be combined. Applicability across reviewed
-    portions is existential, never a vote. A new final assessment may add support
-    but cannot erase applicability established by an accepted source.
+    Child reviewers must return one record per category. Final model transport
+    contributes no category judgment: an empty current response and a retained
+    legacy response without controller provenance both resolve from the accepted
+    reviewer records. Applicability across reviewed portions is existential,
+    never a vote.
 
     Controller-generated ``source_reviews`` retains every original assessment
-    and its task identity, even when the final model copies only one checklist.
-    Canonical revalidation checks supplied provenance against accepted records.
+    and its task identity. Canonical revalidation checks supplied provenance and
+    the deterministic summary against those accepted records.
     """
 
     grouped: dict[str, list[Mapping[str, Any]]] = {category: [] for category in categories}
@@ -454,6 +454,46 @@ def _holistic_category_reviews(
         if not isinstance(category, str) or category not in grouped:
             raise CreditAnalysisError("helper category review references an unknown category")
         grouped[category].append(review)
+
+    def source_records(category: str) -> list[dict[str, Any]]:
+        return [
+            {"task_id": result["task_id"], "review": copy.deepcopy(dict(review))}
+            for result in prior_results or []
+            for review in result["helper_category_reviews"]
+            if review["category"] == category
+        ]
+
+    def inherited_summary(
+        category: str, sources: Sequence[Mapping[str, Any]]
+    ) -> dict[str, Any]:
+        applies = any(source["review"]["applies"] for source in sources)
+        return {
+            "category": category,
+            "applies": applies,
+            "evidence_refs": list(dict.fromkeys(
+                ref for source in sources for ref in source["review"]["evidence_refs"]
+            )),
+            "reason": (
+                "Applicable in at least one reviewed portion; original assessments are retained."
+                if applies else
+                "No reviewed portion establishes applicability; original assessments are retained."
+            ),
+        }
+
+    if prior_results is not None and not any(
+        "source_reviews" in review for review in reviews
+    ):
+        assembled = []
+        for category in categories:
+            sources = source_records(category)
+            assembled.append(
+                {
+                    **inherited_summary(category, sources),
+                    "source_reviews": sources,
+                }
+            )
+        return assembled
+
     missing = [category for category, group in grouped.items() if not group]
     if missing:
         raise CreditAnalysisError("helper category reviews are missing: " + ", ".join(missing))
@@ -465,12 +505,7 @@ def _holistic_category_reviews(
                 raise CreditAnalysisError(f"helper category {category} is reviewed more than once")
             normalized.append(dict(group[0]))
             continue
-        sources = [
-            {"task_id": result["task_id"], "review": copy.deepcopy(dict(review))}
-            for result in prior_results
-            for review in result["helper_category_reviews"]
-            if review["category"] == category
-        ]
+        sources = source_records(category)
         distinct = []
         for review in group:
             if "source_reviews" in review and (
@@ -488,18 +523,7 @@ def _holistic_category_reviews(
             raise CreditAnalysisError(f"helper category {category} has untraceable repeated assessments")
         prior_applies = any(source["review"]["applies"] for source in sources)
         if copied:
-            summary = {
-                "category": category,
-                "applies": prior_applies,
-                "evidence_refs": list(dict.fromkeys(
-                    ref for source in sources for ref in source["review"]["evidence_refs"]
-                )),
-                "reason": (
-                    "Applicable in at least one reviewed portion; original assessments are retained."
-                    if prior_applies else
-                    "No reviewed portion establishes applicability; original assessments are retained."
-                ),
-            }
+            summary = inherited_summary(category, sources)
         else:
             summary = distinct[0]
             if prior_applies and not summary["applies"]:

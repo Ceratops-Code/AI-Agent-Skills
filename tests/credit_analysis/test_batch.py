@@ -84,12 +84,18 @@ def test_credit_analysis_workflow_each_surface_is_independently_callable(
     assert "every supplied surface section" in next(
         call["prompt"] for call in runner.calls if call["phase"] == "sol-adjudication"
     )
+    final_call = next(call for call in runner.calls if call["phase"] == "sol-final")
+    assert "not emit helper-category reviews" in final_call["prompt"]
+    assert final_call["schema"]["properties"]["helper_category_reviews"][
+        "description"
+    ].startswith("Return an empty array.")
     final = json.loads(
         pathlib.Path(complete["final_result_path"]).read_text(encoding="utf-8")
     )
     assert [item["surface_id"] for item in final["surface_summaries"]] == [
         action
     ]
+    assert all(item["source_reviews"] for item in final["helper_category_reviews"])
 
 
 def test_credit_analysis_workflow_resolves_current_and_named_threads(
