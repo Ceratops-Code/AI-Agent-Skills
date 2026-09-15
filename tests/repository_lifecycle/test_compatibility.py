@@ -184,14 +184,39 @@ def test_compatibility_materializer_supplies_target_identity_and_assignments(
     lock = json.loads((repo / "package-lock.json").read_text(encoding="utf-8"))
     assert package["private"] is True
     assert package["scripts"]["lint:markdown"] == (
-        'markdownlint "**/*.md" --ignore node_modules'
+        'markdownlint "**/*.md" --ignore node_modules --config scripts/.markdownlint.json'
     )
     assert package["devDependencies"] == {"markdownlint-cli": "0.49.1"}
     assert lock["packages"][""]["devDependencies"] == package["devDependencies"]
     assert lock["packages"]["node_modules/markdownlint-cli"]["version"] == "0.49.1"
-    assert json.loads((repo / ".markdownlint.json").read_text(encoding="utf-8"))["MD013"] == {
+    assert not (repo / ".markdownlint.json").exists()
+    assert json.loads((repo / "scripts/.markdownlint.json").read_text(encoding="utf-8"))["MD013"] == {
         "line_length": 80, "code_blocks": False, "tables": False,
     }
+    # Exercise the selected YAML command with a rule override that would fail
+    # under default discovery, then prove existing root configuration still wins.
+    probe = repo / "lint-probe.yaml"
+    probe.write_text("value: " + "x" * 120 + "\n", encoding="utf-8", newline="\n")
+    for name in (".yamllint", ".yamllint.yaml", ".yamllint.yml"):
+        configuration = repo / "scripts" / name
+        configuration.write_text(
+            "extends: default\nrules:\n  document-start: disable\n  line-length: disable\n",
+            encoding="utf-8", newline="\n",
+        )
+        check = next(item for item in materializer.contract_checks(repo) if item["id"] == "yaml-lint")
+        command = [sys.executable if value == "{python}" else probe.name if value == "." else value for value in check["command"]]
+        assert command[-2:] == ["--config-file", f"scripts/{name}"]
+        lint = subprocess.run(command, cwd=repo, capture_output=True, text=True, check=False)
+        assert lint.returncode == 0, lint.stdout + lint.stderr
+        root_configuration = repo / ".yamllint"
+        root_configuration.write_text("extends: default\n", encoding="utf-8", newline="\n")
+        root_check = next(item for item in materializer.contract_checks(repo) if item["id"] == "yaml-lint")
+        root_command = [sys.executable if value == "{python}" else probe.name if value == "." else value for value in root_check["command"]]
+        root_lint = subprocess.run(root_command, cwd=repo, capture_output=True, text=True, check=False)
+        assert root_lint.returncode == 1 and "line-length" in root_lint.stdout
+        root_configuration.unlink()
+        configuration.unlink()
+    probe.unlink()
     assert (repo / ".gitignore").read_text(encoding="utf-8").endswith("/node_modules/\n")
     steps = yaml.safe_load(
         (repo / ".github/workflows/validate.yml").read_text(encoding="utf-8")
@@ -882,6 +907,7 @@ def test_compatibility_materializer_preserves_existing_validator_and_ci(
 
 @pytest.mark.parametrize("configuration", [
     ".markdownlint.jsonc", ".markdownlint.yaml", ".markdownlint.cjs", ".markdownlintrc",
+    "scripts/.markdownlint.json", "scripts/.markdownlint.cjs",
 ])
 def test_compatibility_materializer_preserves_existing_identity_and_custom_sections(
     tmp_path: pathlib.Path,
@@ -896,7 +922,10 @@ def test_compatibility_materializer_preserves_existing_identity_and_custom_secti
         ".markdownlint.yaml": b"MD013: false\r\n",
         ".markdownlint.cjs": b"module.exports = { MD013: false };\r\n",
         ".markdownlintrc": b'{"MD013": false}\r\n',
+        "scripts/.markdownlint.json": b'{"MD013": false}\r\n',
+        "scripts/.markdownlint.cjs": b"module.exports = { MD013: false };\r\n",
     }[configuration]
+    markdown_config.parent.mkdir(parents=True, exist_ok=True)
     markdown_config.write_bytes(configuration_bytes)
     ignore = repo / ".gitignore"
     ignore.write_bytes(b"build/\r\n!node_modules/")
@@ -938,8 +967,9 @@ def test_compatibility_materializer_preserves_existing_identity_and_custom_secti
     assert not (repo / ".markdownlint.json").exists()
     assert ignore.read_bytes() == b"build/\r\n!node_modules/\r\n/node_modules/\r\n"
     package = json.loads((repo / "package.json").read_text(encoding="utf-8"))
-    if configuration == ".markdownlint.cjs":
-        assert package["scripts"]["lint:markdown"].endswith(" --config .markdownlint.cjs")
+    assert package["scripts"]["lint:markdown"].endswith(f" --config {configuration}")
+    if not configuration.startswith("scripts/"):
+        assert not (repo / "scripts/.markdownlint.json").exists()
     preserved = {
         name: (repo / name).read_bytes()
         for name in (configuration, ".gitignore", "package.json", "package-lock.json")
@@ -1024,7 +1054,7 @@ def test_compatibility_materializer_rolls_back_every_target_write_on_blocker(
     assert not (repo / "scripts" / "validate-repository.py").exists()
     assert not (repo / ".github" / "workflows" / "validate.yml").exists()
     assert all(not (repo / name).exists() for name in (
-        "package.json", "package-lock.json", ".markdownlint.json",
+        "package.json", "package-lock.json", "scripts/.markdownlint.json",
     ))
     if existing_ignore:
         assert ignore.read_bytes() == b"build/\r\n"

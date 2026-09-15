@@ -282,6 +282,17 @@ def contract_checks(
                 # must be selected explicitly because checks run from repo root.
                 flag = "--config" if tool == "ruff" else "--config-file"
                 selected[-1]["command"] = [*check["command"], flag, surface_path("validation_project").as_posix()]
+            elif tool == "yaml-lint":
+                # Root settings retain yamllint's discovery precedence. Select
+                # a nested configuration explicitly from the contract's paths.
+                configuration = next((
+                    value for condition in check["when"]
+                    if condition["kind"] == "path-any"
+                    for value in condition["value"]
+                    if (repo_root / value).is_file() and not (repo_root / value).is_symlink()
+                ), None)
+                if configuration and pathlib.PurePosixPath(configuration).parent != pathlib.PurePosixPath("."):
+                    selected[-1]["command"] = [*check["command"], "--config-file", configuration]
     exclusive_checks = [check for check in selected if check["exclusive"]]
     if len(exclusive_checks) > 1:
         raise RuntimeError("multiple exclusive repository validators matched")
@@ -318,20 +329,23 @@ def default_markdown_files(repo_root: pathlib.Path) -> dict[str, str]:
         ".markdownlint.toml", ".markdownlintrc",
     )
     existing = []
-    for name in configurations:
+    for name in (*configurations, *(f"scripts/{name}" for name in configurations)):
         path = repo_root / name
         if path.exists() or path.is_symlink():
             if path.is_symlink() or not path.is_file():
                 raise RuntimeError(f"existing Markdown configuration must be a regular file: {path}")
             existing.append(name)
     if not existing:
-        files[".markdownlint.json"] = (templates / "markdownlint.json.tmpl").read_text(
+        files["scripts/.markdownlint.json"] = (templates / "markdownlint.json.tmpl").read_text(
             encoding="utf-8"
         )
-    elif existing[0].endswith((".cjs", ".js", ".toml")):
-        # The CLI deliberately requires an explicit option for these formats.
+    else:
+        # Bind the preserved configuration explicitly, including nested files
+        # and formats that the CLI does not discover automatically.
         package = json.loads(files["package.json"])
-        package["scripts"]["lint:markdown"] += f" --config {existing[0]}"
+        package["scripts"]["lint:markdown"] = package["scripts"]["lint:markdown"].replace(
+            "--config scripts/.markdownlint.json", f"--config {existing[0]}",
+        )
         files["package.json"] = json.dumps(package, indent=2) + "\n"
     ignore = repo_root / ".gitignore"
     prior = ""

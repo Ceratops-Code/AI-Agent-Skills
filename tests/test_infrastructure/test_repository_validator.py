@@ -62,6 +62,7 @@ def test_build_checks_owns_order_both_platforms_and_space_safe_paths(
         ROOT / "skills/ceratops-repo-lifecycle/references/templates/sdlc.yml.tmpl"
     ).resolve() in yaml_paths
     assert (ROOT / "sdlc/sdlc.yml").resolve() in yaml_paths
+    assert all(".venv" not in path.parts and "node_modules" not in path.parts for path in yaml_paths)
     assert checks[2].command == (
         "python executable",
         "-m",

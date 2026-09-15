@@ -222,7 +222,10 @@
           "value": [
             ".yamllint",
             ".yamllint.yml",
-            ".yamllint.yaml"
+            ".yamllint.yaml",
+            "scripts/.yamllint",
+            "scripts/.yamllint.yaml",
+            "scripts/.yamllint.yml"
           ]
         }
       ],

@@ -109,6 +109,8 @@ def build_checks(
                 python,
                 "-m",
                 "yamllint",
+                "--config-file",
+                "scripts/.yamllint.yml",
                 ".",
                 "skills/ceratops-repo-lifecycle/references/templates/sdlc.yml.tmpl",
             ),

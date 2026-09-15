@@ -587,6 +587,13 @@ CI uses the local composite action in this checkout, preserving PR test selectio
 local and push gates run the full test suite. Other repositories use the same
 skill-owned action pinned to a published commit.
 
+Repository-wide Markdown and YAML lint settings live in
+`scripts/.markdownlint.json` and `scripts/.yamllint.yml`. The npm Markdown
+command and repository validator select these files explicitly while checking
+files from the repository root; CI uses the same commands. Compatibility
+generation puts its default Markdown configuration under `scripts`, preserves
+existing settings, and selects nested YAML configurations explicitly.
+
 ## Shared Skill Python Environment
 
 All managed skills receive `scripts/run-skill.py` and a small
