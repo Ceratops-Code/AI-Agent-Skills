@@ -1,4 +1,4 @@
-version: 3
+version: 2
 kind: ceratops-sdlc
 
 repository:
@@ -50,10 +50,6 @@ repository:
     repository:
       steps:
         - run: [uv, run, --locked, scripts/validate-repository.py]
-
-  tests:
-    all:
-      steps:
         - run: [uv, run, --locked, scripts/testing/run-tests.py, --all]
 
 deliverables:
@@ -61,12 +57,6 @@ deliverables:
     validate:
       ceratops-managed:
         handoff: ceratops-skill-lifecycle/source-validate
-
-    tests:
-      none:
-        no-op: >-
-          No deliverable-specific test operation is declared; repository tests
-          remain separately selectable.
 
     deploy-local:
       ceratops-managed:
@@ -77,24 +67,12 @@ deliverables:
           - run: [uv, run, --locked, scripts/deploy-skills.py]
 
   hooks:
-    tests:
-      none:
-        no-op: >-
-          No deliverable-specific test operation is declared; repository tests
-          remain separately selectable.
-
     deploy-local:
       standalone:
         steps:
           - run: [uv, run, --locked, scripts/deploy-hooks.py]
 
   tools:
-    tests:
-      none:
-        no-op: >-
-          No deliverable-specific test operation is declared; repository tests
-          remain separately selectable.
-
     deploy-local:
       ceratops-managed:
         handoff: ceratops-tool-lifecycle/install

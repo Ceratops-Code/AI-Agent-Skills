@@ -187,7 +187,7 @@ def test_sdlc_template_is_a_schema_valid_empty_skeleton(tmp_path: pathlib.Path) 
     ]
     assert "deliverables" not in document
     live = contracts.load_contract(ROOT / "sdlc" / "sdlc.yml")
-    assert live["version"] == 3
+    assert live["version"] == 2
     entries = contracts.operation_entries(live)
     expected = {
         "deliverables.skills.validate.ceratops-managed":
@@ -206,15 +206,15 @@ def test_sdlc_template_is_a_schema_valid_empty_skeleton(tmp_path: pathlib.Path) 
         "uv", "run", "--locked", "scripts/testing/run-tests.py", "--select-only",
         "--base", "{base}", "--head", "{head}",
     ]
-    assert entries["repository.tests.all"]["steps"][0]["run"] == [
-        "uv", "run", "--locked", "scripts/testing/run-tests.py", "--all",
+    assert entries["repository.validate.repository"]["steps"] == [
+        {"run": ["uv", "run", "--locked", "scripts/validate-repository.py"]},
+        {
+            "run": [
+                "uv", "run", "--locked", "scripts/testing/run-tests.py", "--all",
+            ]
+        },
     ]
-    validation_operations = runner.validation_operations(ROOT)
-    assert validation_operations[:2] == [
-        "repository.validate.repository",
-        "repository.tests.all",
-    ]
-    assert "repository.test-selection.ci" not in validation_operations
+    assert runner.validation_operations(ROOT) == ["repository.validate.repository"]
 
 
 def test_absent_sdlc_section_is_a_successful_no_op(tmp_path: pathlib.Path) -> None:
