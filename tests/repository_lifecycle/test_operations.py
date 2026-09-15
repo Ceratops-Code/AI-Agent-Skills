@@ -76,7 +76,7 @@ def test_v3_tests_gate_mutations_and_ci_never_dispatches_handoffs(
     assert result["status"] == {"ci": "deferred_handoff", "skill": "completed", "return": "handoff_required"}[mode]
     prepared = runner.prepare_operations(tmp_path, [runner.OperationRequest(item) for item in selected] + [runner.OperationRequest(location)], context=mode)
     failed = runner.execute_prepared_operations(prepared)
-    assert failed["status"] == "tests_failed"
+    assert failed["status"] == ("handoff_required" if mode == "return" else "tests_failed")
     assert location in failed["pending_operations"]
     assert location not in failed["completed_operations"]
 
@@ -633,7 +633,7 @@ def test_execute_prepared_operations_stops_after_failure_with_a_ledger(
         },
     )
     commit = _repository(tmp_path)
-    failure = run_operation_cli(tmp_path, DEPLOY + "local")
+    failure = run_operation_cli(tmp_path, (CHECK + "repository", DEPLOY + "local"))
     assert failure.returncode == 1
     evidence = json.loads(failure.stderr)
     assert evidence["status"] == "validation_failed"
@@ -656,9 +656,9 @@ def test_execute_prepared_operations_stops_after_failure_with_a_ledger(
     (tmp_path / "fixed").touch()
     assert run_git(tmp_path, "add", "fixed").returncode == 0
     assert run_git(tmp_path, "commit", "-m", "repair").returncode == 0
-    repaired = run_operation_cli(tmp_path, DEPLOY + "local")
+    repaired = run_operation_cli(tmp_path, (CHECK + "repository", DEPLOY + "local"))
     assert repaired.returncode == 0, repaired.stderr
-    assert len(repaired.stdout) < 600
+    assert len(repaired.stdout) < 2500
     assert "line-" not in repaired.stdout and "xxxx" not in repaired.stdout
     assert (tmp_path / "deployed").exists()
 
@@ -758,10 +758,11 @@ def test_bootstrap_and_advisory_handoffs_need_no_skill_runtime(
         payload = json.loads(result.stdout)
         assert payload["results"][0]["status"] == "advisory"
         assert payload["results"][0]["handoff"]
-        assert payload["validation_handoffs"] == [{
+        expected_handoffs = [{
             "operation": check, "commit": None, "steps": [],
             "status": "advisory", "handoff": handoff,
         }]
+        assert payload.get("validation_handoffs", []) == (expected_handoffs if ".publish." in name else [])
     result = run_operation_cli(tmp_path, source_check)
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout)["results"][0]["status"] == "advisory"

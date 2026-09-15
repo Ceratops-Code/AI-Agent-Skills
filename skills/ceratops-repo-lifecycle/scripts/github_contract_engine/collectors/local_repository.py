@@ -924,7 +924,7 @@ def _repository_validation_facts(
             uses_sdlc = True
             command = [
                 sys.executable, str(pathlib.Path(__file__).resolve().parents[2] / "repository_operation.py"),
-                "--repo-root", str(root), "--validate",
+                "--repo-root", str(root), "--validate", "--tests",
             ]
     command.extend(("--evidence-file", str(resolved_evidence)))
     gate_results: dict[str, Any] = {}

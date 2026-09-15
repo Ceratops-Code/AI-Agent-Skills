@@ -73,9 +73,11 @@ and publication.
 - For SDLC version 3, run skill-owned deterministic action bindings through the
   SDLC engine. Return unresolved routes as blockers before dependent mutation.
   CI defers every skill handoff without claiming its action completed.
-- Require separate applicable validation and test results before promotion
-  continuation, shipping, publication, and deployment. Explicit selection cannot
-  omit version-3 gates; a declared no-op must include its reason.
+- Require successful validation followed by separate tests before promotion
+  continuation, shipping, publication, and deployment. Test commands may reuse
+  matching saved results; deployment only verifies the saved successful stages.
+  Explicit selection cannot omit version-3 gates; a declared no-op must include
+  its reason.
 - Treat `completed` as command completion; validate retained
   `step_results[].result` independently against the producer's schema and
   status.

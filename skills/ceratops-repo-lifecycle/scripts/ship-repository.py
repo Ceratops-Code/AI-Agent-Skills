@@ -887,15 +887,15 @@ def _validate_phase(
 ) -> dict[str, Any]:
     """Recheck the current committed checkout at each safe lifecycle boundary.
 
-    No validation checkpoint is reusable across boundaries or repaired commits.
-    The calling agent repairs ordinary failures and restarts the lifecycle.
+    Validation runs before tests; matching test outcomes can be reused. The
+    calling agent repairs ordinary failures and restarts the lifecycle.
     """
 
     command = _operation_command(
         repo_root=repo_root, contract=args.sdlc_contract,
         operations=operations,
     )
-    command.append("--validate")
+    command.extend(("--validate", "--tests"))
     commit = repository_commit(repo_root)
     if commit:
         command.extend(("--commit", commit))

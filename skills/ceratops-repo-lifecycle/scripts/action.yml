@@ -21,5 +21,5 @@ runs:
           --project "$CERATOPS_ACTION_ROOT/../../sections/python" \
           python "$CERATOPS_ACTION_ROOT/repository_operation.py" \
           --repo-root "${CERATOPS_REPOSITORY:?repo-root input is required}" \
-          --validate --ci \
+          --validate --tests --ci \
           --evidence-file "${CERATOPS_EVIDENCE:?evidence-file input is required}"

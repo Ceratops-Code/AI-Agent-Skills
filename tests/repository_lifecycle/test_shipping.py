@@ -995,3 +995,107 @@ def test_repository_ship_checks_declared_test_selection_before_remote_work(
             assert failure.value.payload["diagnostic"]["exit_code"] == 3
             assert failure.value.payload["base"] == base
             assert failure.value.payload["head"] == head
+
+
+def _saved_stage_fixture(root: pathlib.Path) -> tuple[pathlib.Path, str]:
+    """Use real subprocesses and Git identities without any remote or app effects."""
+    repo = root / "stage repository"
+    (repo / "sdlc").mkdir(parents=True)
+    (repo / ".gitignore").write_text(".build/\n", encoding="utf-8")
+    (repo / "probe.py").write_text(
+        "import pathlib,sys\n"
+        "root=pathlib.Path('.build'); root.mkdir(exist_ok=True)\n"
+        "with (root/'events').open('a') as stream: stream.write(sys.argv[1]+'\\n')\n"
+        "raise SystemExit(7 if sys.argv[1]=='tests' and (root/'fail').exists() else 0)\n",
+        encoding="utf-8",
+    )
+
+    def command(phase: str) -> dict[str, object]:
+        return {"steps": [{"run": [sys.executable, "probe.py", phase]}]}
+
+    # Deliberately put tests before validation in the data: execution must order
+    # the phases by their responsibility, while preserving each phase's order.
+    contract = {"version": 3, "kind": "ceratops-sdlc", "repository": {
+        "tests": {"behavior": command("tests")}, "validate": {"source": command("validation")},
+    }, "deliverables": {"fixture": {
+        "tests": {"covered": {"no-op": "Repository tests cover this deliverable."}},
+        "deploy-local": {"install": command("deploy")},
+    }}}
+    (repo / "sdlc/sdlc.yml").write_text(json.dumps(contract), encoding="utf-8")
+    assert run_git(repo, "init", "--quiet").returncode == 0
+    assert run_git(repo, "add", ".").returncode == 0
+    assert run_git(repo, "-c", "user.name=Fixture", "-c", "user.email=fixture@invalid",
+                   "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null",
+                   "commit", "--quiet", "-m", "stage fixture").returncode == 0
+    return repo, "deliverables.fixture.deploy-local.install"
+
+
+@pytest.mark.parametrize("repository_ignores_build", [False, True])
+def test_delivery_uses_saved_stages_without_running_checks(
+    tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str],
+    repository_ignores_build: bool,
+) -> None:
+    import importlib
+    runner = importlib.import_module("repository_operation")
+    repo, deploy = _saved_stage_fixture(tmp_path)
+    if not repository_ignores_build:
+        (repo / ".gitignore").write_text(".build/events\n.build/fail\n")
+        assert run_git(repo, "add", "-u").returncode == 0
+        assert run_git(repo, "-c", "user.name=Fixture", "-c", "user.email=fixture@invalid",
+                       "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null",
+                       "commit", "--quiet", "-m", "older repository without build exclusion").returncode == 0
+    base = ["--repo-root", str(repo)]
+    assert runner.main([*base, "--validate"]) == 0
+    assert (repo / ".build/events").read_text().splitlines() == ["validation"]
+    assert runner.main([*base, "--operation", deploy]) == 1
+    assert (repo / ".build/events").read_text().splitlines() == ["validation"]
+    assert runner.main([*base, "--tests"]) == 0
+    capsys.readouterr()
+    assert runner.main([*base, "--tests"]) == 0
+    assert any(row.get("reused") for row in json.loads(capsys.readouterr().out)["results"])
+    assert (repo / ".build/events").read_text().splitlines() == ["validation", "tests"]
+    assert runner.main([*base, "--operation", deploy]) == 0
+    assert (repo / ".build/events").read_text().splitlines() == ["validation", "tests", "deploy"]
+    assert list((repo / ".build/sdlc").glob("*.json"))
+    assert not list((repo / ".build/sdlc").glob(".stage-*.tmp"))
+    assert run_git(repo, "status", "--porcelain").stdout == ""
+    assert run_git(repo, "add", ".", "--dry-run").stdout == ""
+
+
+@pytest.mark.parametrize("change", ["missing", "failed", "corrupt", "running", "source", "commit", "environment"])
+def test_delivery_rejects_inapplicable_latest_stage_without_retesting(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, change: str,
+) -> None:
+    import importlib
+    runner = importlib.import_module("repository_operation")
+    evidence = importlib.import_module("sdlc_gate_evidence")
+    repo, deploy = _saved_stage_fixture(tmp_path)
+    base = ["--repo-root", str(repo)]
+    assert runner.main([*base, "--validate", "--tests"]) == 0
+    assert (repo / ".build/events").read_text().splitlines() == ["validation", "tests"]
+    stage = runner.prepare_operations(repo, [runner.OperationRequest("repository.tests.behavior")])[0]
+    if change == "missing":
+        evidence._path(stage).unlink()
+    elif change == "failed":
+        (repo / ".build/fail").touch()
+        assert runner.main([*base, "--tests", "--fresh"]) == 1
+        (repo / ".build/fail").unlink()
+    elif change == "corrupt":
+        evidence._path(stage).write_text("{broken", encoding="utf-8")
+    elif change == "running":
+        record = evidence._read(stage)
+        assert record is not None
+        record.update(status="running", reusable=False)
+        evidence._write(stage, record)
+    elif change in {"source", "commit"}:
+        (repo / "source.txt").write_text("new input", encoding="utf-8")
+        if change == "commit":
+            assert run_git(repo, "add", "source.txt").returncode == 0
+            assert run_git(repo, "-c", "user.name=Fixture", "-c", "user.email=fixture@invalid",
+                           "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null",
+                           "commit", "--quiet", "-m", "changed input").returncode == 0
+    else:
+        monkeypatch.setenv("NODE_OPTIONS", "--no-warnings")
+    before = (repo / ".build/events").read_text()
+    assert runner.main([*base, "--operation", deploy]) == 1
+    assert (repo / ".build/events").read_text() == before

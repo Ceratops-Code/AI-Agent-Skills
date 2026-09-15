@@ -567,8 +567,10 @@ Skill callers invoke their bundled engine directly:
 uv run --no-project --python 3.14 python "$env:CODEX_HOME/skills/ceratops-repo-lifecycle/scripts/run-skill.py" scripts/repository_operation.py --repo-root <repo> --validate
 ```
 
-`--validate` runs validation and tests as separate operations. `--tests` selects
-only tests; `--return-handoffs` exposes unresolved routes to a skill caller.
+`--validate` runs validation only. `--tests` runs the separate test stage;
+select both flags to validate first and then test. A deployment invocation
+verifies the saved stages without executing either one. `--return-handoffs`
+exposes unresolved routes to a skill caller.
 New repository validators never select test runners. Conventional Python tests
 or pytest configuration generate `scripts/run-tests.py` from its template when
 absent. That runner uses the scripts project, owns its temporary pytest
@@ -579,6 +581,34 @@ absolute script path when calling from outside the repository. Module
 commands select the project with `--project scripts`. Repository scripts
 contain no environment bootstrap or package-installation logic. Existing
 test implementations and non-Python test commands remain repository-owned.
+
+For Git checkouts, the SDLC engine retains the latest outcome of each declared
+validation or test operation in `.build/sdlc`. Each record binds the clean
+commit, contract, expanded command, checkout, and execution environment. The
+engine writes a running record before execution and then saves the outcome;
+interruption or failure cannot expose an older passing result. These records
+describe command completion. Artifact-specific qualification and its evidence
+remain owned by the deliverable's existing helper.
+
+The test stage reuses matching successful records and executes tests when the
+record is absent, failed, or no longer applicable. `--fresh` executes the test
+command again; that command owns its finer cache controls. Repository test
+runners may additionally retain finer test-group
+results under `.build/tests`, binding them to the inputs and environment that
+affect those tests. This permits reuse across unrelated source changes while
+the new complete stage result identifies the current commit. Validation and
+test output directories belong in `.gitignore`; compatibility supplies that
+entry. The engine also ignores its own result directory locally, so existing
+repositories cannot accidentally commit its generated records. Standalone
+non-Git capability calls do not create reusable stage records.
+
+Deployment holds the applicable stage records while checking their successful
+completion and exact current identities. Missing, incomplete, failed or changed
+records stop delivery and identify the stage to run; delivery does not run that
+stage itself. A test pass does not replace the delivery operation's immediate
+destination checks or its producer-specific completion receipt. Run validation,
+then tests, then the explicitly requested deployment. Saved records are local
+working data, not a substitute for CI or an authorization to deploy.
 
 This source repository uses `scripts/pyproject.toml` and `scripts/uv.lock` for
 its maintenance scripts, Python tests, and Ruff and mypy settings. Its SDLC v3
