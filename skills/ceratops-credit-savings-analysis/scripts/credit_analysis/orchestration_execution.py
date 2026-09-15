@@ -12,7 +12,12 @@ import pathlib
 from typing import Any, Mapping
 
 from . import luna_sol_analysis as analysis
-from .model_response_contract import response_correction_scope, validate_response_correction
+from .model_response_contract import (
+    apply_response_correction,
+    correction_response_schema,
+    project_response_correction,
+    response_correction_scope,
+)
 from .single_thread_analysis import CreditAnalysisError
 
 
@@ -122,7 +127,7 @@ def _corrective_prompt(
     the caller removes the analysis root, including across interrupted runs.
     A request that cannot fit the proven byte envelope stops before child launch.
     """
-    rejected = _prior_rejection(state, task, input_sha)
+    rejected = _prior_rejection(state, task, input_sha, oldest=True)
     if rejected is None:
         return prompt_path, schema_path
     attempt, prior = rejected
@@ -143,15 +148,25 @@ def _corrective_prompt(
         "no_finding_reason; remove only merges for withdrawn findings. Leave affected "
         "calls unassessed when no retained finding supports their avoidability. "
         "Preserve every other finding, estimate and call judgment. Do not invent "
-        "savings to pass validation. Return the complete corrected response."
+        "savings to pass validation. Return only the permitted edits in the correction "
+        "schema; the controller copies every protected field from the retained response. "
+        "A withdrawal reason is copied to its dependent decisions and reviews; the "
+        "controller removes its links and marks unsupported orphan calls unassessed."
     )
     if task["phase"] == "luna-discovery":
         task["output_byte_limit"] = max(1_000, int(task["output_byte_limit"]) * 9 // 10)
         instructions += f" Keep the complete result within {task['output_byte_limit']} UTF-8 bytes."
-    schema = _current_response_schema(state, task, input_sha)
+    response_schema = _current_response_schema(state, task, input_sha)
+    schema = correction_response_schema(prior, response_schema)
+    if not schema["properties"]["edits"]["maxItems"]:
+        raise CreditAnalysisError("rejected response has no permitted correction edits; no further model call was made")
     feedback = {"instructions": instructions, "prior_attempt": attempt["attempt_number"],
                 "validation_errors": [attempt["error"]], "prior_response": prior,
-                "correction_scope": response_correction_scope(prior, schema)}
+                "correction_scope": response_correction_scope(prior, response_schema)}
+    latest = _prior_rejection(state, task, input_sha)
+    if latest is not None and latest[0]["attempt_number"] != attempt["attempt_number"]:
+        feedback["rejected_response"] = latest[1]
+        feedback["validation_errors"] = [latest[0]["error"]]
     prompt = prompt_path.read_text(encoding="utf-8") + "\nCorrection request:\n" + json.dumps(
         feedback, ensure_ascii=False, separators=(",", ":"),
     ) + "\n"
@@ -167,17 +182,38 @@ def _corrective_prompt(
     return target, schema_path
 
 
-def _preserve_correction_judgments(
+def _corrected_response(
     state: Mapping[str, Any], task: Mapping[str, Any], digest: str,
-    raw: Mapping[str, Any],
-) -> None:
-    """Reject a schema repair that changes previously stated call judgments."""
-    rejected = _prior_rejection(state, task, digest, oldest=True)
-    if rejected is None:
-        return
-    _, prior = rejected
+    raw: Mapping[str, Any], attempt: Mapping[str, Any], *, retained: bool = False,
+) -> Mapping[str, Any]:
+    """Reconstruct edits before validation or size checks, without changing evidence.
 
-    validate_response_correction(prior, raw, _current_response_schema(state, task, digest))
+    A frozen full-response retry can be projected only during retained recovery,
+    after checking its original schema and output artifacts. Newly invoked retries
+    must use the edit contract. The first rejection always owns protected values.
+    """
+    rejected = _prior_rejection(state, task, digest, oldest=True)
+    result = raw
+    if rejected is not None and attempt["attempt_number"] != rejected[0]["attempt_number"]:
+        _, prior = rejected
+        response_schema = _current_response_schema(state, task, digest)
+        if retained:
+            values = {}
+            for name in ("schema", "raw_output"):
+                artifact = attempt["artifacts"][name]
+                path = pathlib.Path(artifact["path"])
+                if path.is_symlink() or not path.is_file() or analysis._file_hash(path) != artifact["sha256"]:
+                    raise CreditAnalysisError(f"retained corrective {name} changed")
+                values[name] = analysis._read_json(path, f"retained corrective {name}")
+            if values["raw_output"] != raw:
+                raise CreditAnalysisError("retained corrective response does not match its attempt")
+            if "baseline_sha256" not in values["schema"].get("properties", {}):
+                result = project_response_correction(prior, raw, correction_response_schema(prior, response_schema))
+        result = apply_response_correction(prior, result, response_schema)
+    if (task["phase"] == "luna-discovery" and analysis._json_bytes(result)
+            > int(attempt.get("output_byte_limit") or task["output_byte_limit"])):
+        raise CreditAnalysisError("Luna result exceeds its output byte target")
+    return result
 
 
 def _diagnosed_luna_retry(error: CreditAnalysisError) -> bool:
@@ -422,18 +458,7 @@ def _consume_attempt(
                 )
         )
     try:
-        if (
-            task["phase"] == "luna-discovery"
-            and analysis._json_bytes(raw)
-            > int(
-                attempt.get("output_byte_limit")
-                or task["output_byte_limit"]
-            )
-        ):
-            raise CreditAnalysisError(
-                "Luna result exceeds its output byte target"
-            )
-        _preserve_correction_judgments(state, task, digest, raw)
+        raw = _corrected_response(state, task, digest, raw, attempt)
         validated = analysis._validate_holistic_task_result(
             raw,
             state=state,
@@ -703,10 +728,11 @@ def command_execute_orchestration(
                 )
                 progressed += 1
                 continue
-            recoverable = analysis._holistic_recoverable_raw(state, task, digest)
-            if recoverable is not None:
+            recoverable_attempt = _prior_rejection(state, task, digest)
+            recovery_error: CreditAnalysisError | None = None
+            if recoverable_attempt is not None:
                 try:
-                    _preserve_correction_judgments(state, task, digest, recoverable)
+                    recoverable = _corrected_response(state, task, digest, recoverable_attempt[1], recoverable_attempt[0], retained=True)
                     validated = analysis._validate_holistic_task_result(
                         recoverable,
                         state=state,
@@ -716,8 +742,8 @@ def command_execute_orchestration(
                         compact=compact,
                         luna_candidate_ids=candidate_ids,
                     )
-                except CreditAnalysisError:
-                    pass
+                except CreditAnalysisError as error:
+                    recovery_error = error
                 else:
                     analysis._holistic_accept_result(
                         state=state,
@@ -735,6 +761,7 @@ def command_execute_orchestration(
                 if analysis._sol_validation_error_count(state["execution"][task["task_id"]]) > sol_retry_limit:
                     raise CreditAnalysisError(
                         "final Sol failed validation after its automatic retry"
+                        + (f"; retained response revalidation: {recovery_error}" if recovery_error else "")
                     )
                 if analysis._sol_attempt_capacity(state, contract, task) == 0:
                     raise CreditAnalysisError(
@@ -754,18 +781,7 @@ def command_execute_orchestration(
                 state["model_attempts"][role] += 1
                 execution = state["execution"][task["task_id"]]
                 try:
-                    _preserve_correction_judgments(state, task, digest, raw)
-                    if (
-                        task["phase"] == "luna-discovery"
-                        and analysis._json_bytes(raw)
-                        > int(
-                            attempt.get("output_byte_limit")
-                            or task["output_byte_limit"]
-                        )
-                    ):
-                        raise CreditAnalysisError(
-                            "Luna result exceeds its output byte target"
-                        )
+                    raw = _corrected_response(state, task, digest, raw, attempt, retained=True)
                     validated = analysis._validate_holistic_task_result(
                         raw,
                         state=state,

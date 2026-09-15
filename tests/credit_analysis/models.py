@@ -79,6 +79,20 @@ class FakeCreditModelRunner:
     def __init__(self, *, temporary_controls: bool = True) -> None:
         self.calls: list[dict[str, Any]] = []
         self.temporary_controls = temporary_controls
+        full_response = self.run
+
+        def transport(**kwargs: Any) -> dict[str, Any]:
+            # Wrap the outermost override so defect-injecting subclasses still
+            # edit full synthetic judgments before the fake transport encodes them.
+            result = full_response(**kwargs)
+            if "baseline_sha256" in kwargs["schema"].get("properties", {}) and "baseline_sha256" not in result:
+                from credit_analysis.model_response_contract import project_response_correction
+
+                feedback = json.loads(kwargs["prompt"].split("\nCorrection request:\n", 1)[1])
+                return project_response_correction(feedback["prior_response"], result, kwargs["schema"])
+            return result
+
+        self.run = transport  # type: ignore[method-assign]
 
     @staticmethod
     def _records(packet: Mapping[str, Any]) -> list[dict[str, Any]]:

@@ -9,6 +9,8 @@ independent responsibilities; this module never changes model judgments.
 from __future__ import annotations
 
 import copy
+import hashlib
+import json
 import math
 import re
 from collections.abc import Mapping, Sequence
@@ -257,6 +259,11 @@ def _correction_comparison_values(
     arrays = ("confirmed_findings", "candidate_decisions", "temporary_control_reviews", "temporary_control_merges", "call_classifications")
     if any(not isinstance(value.get(key), list) for value in (old, new) for key in arrays):
         return old, new
+    if any(not isinstance(item, Mapping) or not isinstance(item.get("affected_call_ids"), list)
+           for value in (old, new) for item in value["confirmed_findings"]):
+        # Structural repair must finish before claim-local call permissions can
+        # be derived from malformed finding coverage.
+        return old, new
     scope = response_correction_scope(prior, schema)
     invalid = set(scope["invalid_recurrence_finding_ids"])
     conflicts = set(scope.get("conflicting_call_finding_ids", []))
@@ -416,6 +423,298 @@ def validate_response_correction(
 
     collect_ids(prior, current, schema)
     compare(prior, current, schema, "$response")
+
+
+def _closed_object(properties: Mapping[str, Any]) -> dict[str, Any]:
+    return {"type": "object", "properties": dict(properties),
+            "required": list(properties), "additionalProperties": False}
+
+
+def _list_field(value: Mapping[str, Any], key: str) -> list[Any]:
+    field = value.get(key)
+    return field if isinstance(field, list) else []
+
+
+def _pointer(parts: Sequence[str | int]) -> str:
+    return "".join("/" + str(part).replace("~", "~0").replace("/", "~1") for part in parts)
+
+
+def _pointer_parts(path: str) -> list[str]:
+    return [part.replace("~1", "/").replace("~0", "~") for part in path.split("/")[1:]]
+
+
+def _at_pointer(value: Any, path: str) -> Any:
+    for part in _pointer_parts(path):
+        value = value[int(part)] if isinstance(value, list) else value[part]
+    return value
+
+
+def _corresponding_value(prior: Any, current: Any, path: str) -> Any:
+    """Match identified array members before projecting a retained full result."""
+    for part in _pointer_parts(path):
+        if isinstance(prior, list):
+            index = int(part)
+            old = prior[index]
+            identity = old.get("id") if isinstance(old, Mapping) else None
+            if isinstance(identity, str) and IDENTIFIER_RE.fullmatch(identity):
+                matches = [item for item in current if isinstance(item, Mapping) and item.get("id") == identity]
+                if len(matches) != 1:
+                    raise KeyError("retained correction target is absent or ambiguous")
+                current = matches[0]
+            else:
+                current = current[index]
+            prior = old
+        else:
+            current = current[part]
+            prior = prior.get(part) if isinstance(prior, Mapping) else None
+    return current
+
+
+def correction_response_schema(
+    prior: Mapping[str, Any], schema: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Compile a closed edit vocabulary from the rejected immutable response.
+
+    This is deliberately not general JSON Patch: only schema-invalid locations
+    and diagnosed claim-local judgments are expressible. The controller owns
+    protected content, dependent links, and grouping. No new evidence is granted.
+    """
+    edits: list[dict[str, Any]] = []
+
+    def replacement(path: Sequence[str | int], definition: Mapping[str, Any]) -> None:
+        edits.append(_closed_object({"path": {"type": "string", "const": _pointer(path)},
+                                     "value": dict(definition)}))
+
+    def removal(path: Sequence[str | int]) -> None:
+        edits.append(_closed_object({"remove": {"type": "string", "const": _pointer(path)}}))
+
+    def visit(value: Any, definition: Mapping[str, Any], path: list[str | int]) -> None:
+        if Draft202012Validator(definition).is_valid(value):
+            return
+        try:
+            selected = _correction_schema(definition, value, value)
+        except CreditAnalysisError:
+            replacement(path, definition)
+            return
+        if isinstance(value, Mapping) and selected.get("type") == "object":
+            properties = selected.get("properties", {})
+            for key, child in properties.items():
+                if key in value:
+                    visit(value[key], child, [*path, key])
+                elif key in selected.get("required", []):
+                    replacement([*path, key], child)
+            if selected.get("additionalProperties") is False:
+                for key in sorted(value.keys() - properties.keys()):
+                    removal([*path, key])
+        elif isinstance(value, list) and selected.get("type") == "array":
+            if any(not error.path and error.validator in {"minItems", "maxItems"}
+                   for error in Draft202012Validator(selected).iter_errors(value)):
+                replacement(path, selected)
+                return
+            child = selected.get("items", {})
+            for index, item in enumerate(value):
+                # An out-of-scope accounting alias carries no admitted judgment.
+                if (len(path) == 3 and path[0] == "call_classifications"
+                        and path[2] == "call_ids" and "enum" in child
+                        and not Draft202012Validator(child).is_valid(item)):
+                    removal([*path, index])
+                else:
+                    visit(item, child, [*path, index])
+        else:
+            replacement(path, selected)
+
+    visit(prior, schema, [])
+    scope = response_correction_scope(prior, schema)
+    invalid = set(scope["invalid_recurrence_finding_ids"])
+    diagnosed = invalid | set(scope.get("conflicting_call_finding_ids", []))
+    findings = prior.get("confirmed_findings", [])
+    findings = findings if isinstance(findings, list) else []
+    finding_schema = schema.get("properties", {}).get("confirmed_findings", {}).get("items", {})
+    for index, finding in enumerate(findings):
+        if isinstance(finding, Mapping) and finding.get("id") in invalid:
+            replacement(["confirmed_findings", index, "recurrence"], finding_schema["properties"]["recurrence"])
+    if diagnosed:
+        edits.append(_closed_object({
+            "withdraw_finding": {"type": "string", "enum": sorted(diagnosed)},
+            "reason": {"type": "string", "minLength": 1, "maxLength": 2_000},
+        }))
+    protected_calls = {call for finding in findings if isinstance(finding, Mapping)
+                       and finding.get("waste_kind") == "model-calls" and finding.get("id") not in diagnosed
+                       for call in _list_field(finding, "affected_call_ids")}
+    calls = {call for finding in findings if isinstance(finding, Mapping) and finding.get("id") in diagnosed
+             for call in _list_field(finding, "affected_call_ids")} - protected_calls
+    groups = schema.get("properties", {}).get("call_classifications", {}).get("items", {})
+    for branch in groups.get("anyOf", []) if calls else []:
+        properties = branch["properties"]
+        edits.append(_closed_object({
+            "call_id": {"type": "string", "enum": sorted(calls)},
+            **{key: properties[key] for key in ("classification", "reason_code", "rationale")},
+        }))
+    digest = hashlib.sha256(json.dumps(prior, sort_keys=True, ensure_ascii=False,
+                                      separators=(",", ":")).encode("utf-8")).hexdigest()
+    return _closed_object({
+        "baseline_sha256": {"type": "string", "const": digest},
+        "edits": {"type": "array", "items": {"anyOf": edits} if edits else {"type": "null"},
+                  "maxItems": len(edits) + len(diagnosed) + len(calls)},
+    })
+
+
+def _call_details(value: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    groups = value.get("call_classifications", [])
+    result: dict[str, dict[str, Any]] = {}
+    for group in groups if isinstance(groups, list) else []:
+        if not isinstance(group, Mapping) or not isinstance(group.get("call_ids"), list):
+            continue
+        for identity in group["call_ids"]:
+            if not isinstance(identity, str):
+                continue
+            detail = {key: copy.deepcopy(item) for key, item in group.items() if key != "call_ids"}
+            if identity in result and result[identity] != detail:
+                raise CreditAnalysisError("corrective retry has conflicting prior call judgments")
+            result[identity] = detail
+    return result
+
+
+def project_response_correction(
+    prior: Mapping[str, Any], current: Mapping[str, Any], edit_schema: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Extract permitted edits from an already retained full-response attempt.
+
+    The caller must verify the recorded attempt used a full-response schema.
+    Live retries use edits directly. Projection copies no protected prose and
+    mutates neither retained response; ordinary reconstruction validates it next.
+    """
+    edits: list[dict[str, Any]] = []
+    calls: set[str] = set()
+    withdrawals: set[str] = set()
+    for branch in edit_schema["properties"]["edits"]["items"].get("anyOf", []):
+        properties = branch["properties"]
+        if "path" in properties:
+            path = properties["path"]["const"]
+            try:
+                value = _corresponding_value(prior, current, path)
+            except (KeyError, IndexError, TypeError, ValueError):
+                continue
+            try:
+                unchanged = value == _at_pointer(prior, path)
+            except (KeyError, IndexError, TypeError, ValueError):
+                unchanged = False
+            if not unchanged:
+                edits.append({"path": path, "value": copy.deepcopy(value)})
+        elif "remove" in properties:
+            edits.append({"remove": properties["remove"]["const"]})
+        elif "call_id" in properties:
+            calls.update(properties["call_id"]["enum"])
+        elif "withdraw_finding" in properties:
+            withdrawals.update(properties["withdraw_finding"]["enum"])
+    current_ids = {finding.get("id") for finding in _list_field(current, "confirmed_findings")
+                   if isinstance(finding, Mapping)}
+    decisions = {item.get("luna_candidate_id"): item for item in _list_field(current, "candidate_decisions")
+                 if isinstance(item, Mapping)}
+    for identity in sorted(withdrawals - current_ids):
+        reasons = [decisions.get(item.get("luna_candidate_id"), {}).get("reason")
+                   for item in _list_field(prior, "candidate_decisions")
+                   if isinstance(item, Mapping) and identity in _list_field(item, "finding_ids")]
+        reason = next((value for value in reasons if isinstance(value, str) and value.strip()), None)
+        if reason is None:
+            raise CreditAnalysisError("retained withdrawal has no candidate explanation")
+        edits.append({"withdraw_finding": identity, "reason": reason})
+    before, after = _call_details(prior), _call_details(current)
+    for identity in sorted(calls & before.keys() & after.keys()):
+        keys = ("classification", "reason_code", "rationale")
+        if any(before[identity].get(key) != after[identity].get(key) for key in keys):
+            edits.append({"call_id": identity, **{key: after[identity].get(key) for key in keys}})
+    return {"baseline_sha256": edit_schema["properties"]["baseline_sha256"]["const"], "edits": edits}
+
+
+def apply_response_correction(
+    prior: Mapping[str, Any], correction: Mapping[str, Any], schema: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Reconstruct one full response, retaining every unaffected original value.
+
+    The original response and raw edit attempt remain immutable evidence. Closed
+    transport validation precedes writes, then preservation and full structural
+    checks precede the caller's independent evidence and accounting validation.
+    """
+    edit_schema = correction_response_schema(prior, schema)
+    allowed_paths = {branch["properties"]["path"]["const"]
+                     for branch in edit_schema["properties"]["edits"]["items"].get("anyOf", [])
+                     if "path" in branch["properties"]}
+    supplied = correction.get("edits", [])
+    for edit in supplied if isinstance(supplied, list) else []:
+        if isinstance(edit, Mapping) and "path" in edit and edit["path"] not in allowed_paths:
+            raise CreditAnalysisError("corrective retry changed protected response field " + str(edit["path"]))
+    _validate_holistic_transport_value(correction, edit_schema, "$correction")
+    result = copy.deepcopy(dict(prior))
+    seen: set[tuple[str, str]] = set()
+    removals: list[str] = []
+    withdrawals: dict[str, str] = {}
+    call_edits: dict[str, dict[str, Any]] = {}
+    for edit in correction["edits"]:
+        kind = next(key for key in ("path", "remove", "withdraw_finding", "call_id") if key in edit)
+        target = edit[kind]
+        if (kind, target) in seen:
+            raise CreditAnalysisError("corrective retry contains duplicate edit targets")
+        seen.add((kind, target))
+        if kind == "path":
+            parts = _pointer_parts(target)
+            if not parts:
+                result = copy.deepcopy(edit["value"])
+            else:
+                parent = _at_pointer(result, _pointer(parts[:-1]))
+                key = int(parts[-1]) if isinstance(parent, list) else parts[-1]
+                parent[key] = copy.deepcopy(edit["value"])
+        elif kind == "remove":
+            removals.append(target)
+        elif kind == "withdraw_finding":
+            withdrawals[target] = edit["reason"]
+        else:
+            call_edits[target] = {key: edit[key] for key in ("classification", "reason_code", "rationale")}
+    # Descending numeric indices retain the original address of every deletion.
+    for path in sorted(removals, key=lambda item: [f"{int(part):020d}" if part.isdecimal() else part
+                                                 for part in _pointer_parts(item)], reverse=True):
+        parts = _pointer_parts(path)
+        parent = _at_pointer(result, _pointer(parts[:-1]))
+        del parent[int(parts[-1]) if isinstance(parent, list) else parts[-1]]
+    draft = copy.deepcopy(result)
+    if withdrawals:
+        draft["confirmed_findings"] = [item for item in draft["confirmed_findings"] if item["id"] not in withdrawals]
+        for decision in draft["candidate_decisions"]:
+            reasons = [withdrawals[identity] for identity in decision["finding_ids"] if identity in withdrawals]
+            if reasons:
+                decision["reason"] = " ".join(dict.fromkeys(reasons))
+        for review in draft["temporary_control_reviews"]:
+            if review["finding_id"] in withdrawals:
+                review["no_finding_reason"] = withdrawals[review["finding_id"]]
+        surviving = {call for item in draft["confirmed_findings"] if item["waste_kind"] == "model-calls"
+                     for call in item["affected_call_ids"]}
+        orphan_reasons = {call: withdrawals[item["id"]] for item in result["confirmed_findings"]
+                          if item["id"] in withdrawals for call in item["affected_call_ids"] if call not in surviving}
+        calls = _call_details(draft)
+        for identity, reason in orphan_reasons.items():
+            if identity in calls and calls[identity].get("classification") in {"avoidable_implemented", "avoidable_unimplemented"}:
+                calls[identity].update(classification="unassessed", reason_code=None, rationale=reason)
+        draft["call_classifications"] = [{"call_ids": [identity], **detail} for identity, detail in calls.items()]
+    if call_edits:
+        calls = _call_details(draft)
+        for identity, detail in call_edits.items():
+            if identity not in calls:
+                raise CreditAnalysisError("corrective retry cannot introduce call coverage")
+            calls[identity].update(detail)
+        draft["call_classifications"] = [{"call_ids": [identity], **detail} for identity, detail in calls.items()]
+    if withdrawals or call_edits:
+        reconstructed, _ = _correction_comparison_values(result, draft, schema)
+        result = dict(reconstructed)
+    actual_calls = _call_details(result)
+    for identity, detail in call_edits.items():
+        if any(actual_calls.get(identity, {}).get(key) != value for key, value in detail.items()):
+            raise CreditAnalysisError("corrective retry call edit lacks a diagnosed conflict or unsupported withdrawal")
+    for identity in withdrawals:
+        if any(item["id"] == identity for item in result["confirmed_findings"]):
+            raise CreditAnalysisError("corrective retry withdrawal changed its diagnosed basis")
+    validate_response_correction(prior, result, schema)
+    _validate_holistic_transport_value(result, schema, "$response")
+    return result
 
 
 def _holistic_luna_schema(

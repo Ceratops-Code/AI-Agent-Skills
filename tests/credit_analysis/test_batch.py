@@ -42,7 +42,7 @@ from tests.credit_analysis.workflow import run_credit_analysis_workflow
         ("instruction-reasoning", None),
         *[("full-analysis", case) for case in (
             "estimate", "final-estimate", "withdraw", "withdraw-temporary",
-            "conflict", "protected", "foreign-call", "malformed",
+            "conflict", "retained-conflict", "protected", "foreign-call", "malformed",
         )],
     ],
 )
@@ -938,6 +938,12 @@ def _exercise_corrective_cli(
     workflow = load_credit_analysis_workflow_module()
     from credit_analysis import luna_sol_analysis as analysis
     from credit_analysis import orchestration_execution as execution
+    from credit_analysis.model_response_contract import (
+        apply_response_correction,
+        correction_response_schema,
+        project_response_correction,
+        validate_response_correction,
+    )
 
     request, _, _ = credit_analysis_request(tmp_path, extra_completed_turns=1)
     plan = workflow.command_plan_orchestration(request, available_models=holistic_model_catalog())
@@ -977,7 +983,7 @@ def _exercise_corrective_cli(
                     raw["call_classifications"][0]["call_ids"].append(foreign)
                 elif defect == "malformed":
                     raw["call_classifications"] = None
-                elif defect == "conflict":
+                elif defect in {"conflict", "retained-conflict"}:
                     groups = []
                     for group in raw["call_classifications"]:
                         for identity in group["call_ids"]:
@@ -1008,7 +1014,12 @@ def _exercise_corrective_cli(
                     raw["temporary_control_merges"] = [item for item in raw["temporary_control_merges"] if item["finding_id"] != self.withdrawn]
                 elif defect == "protected":
                     other = next(item for item in findings if item["id"] != selected["id"])
-                    other["recurrence"]["calls_saved_per_affected_run"] += 3
+                    self.responses.append(copy.deepcopy(raw))
+                    return {"baseline_sha256": kwargs["schema"]["properties"]["baseline_sha256"]["const"],
+                            "edits": [{"path": f"/confirmed_findings/{raw['confirmed_findings'].index(other)}/recurrence",
+                                       "value": {**other["recurrence"], "calls_saved_per_affected_run": 99}}]}
+                elif defect in {"conflict", "retained-conflict"}:
+                    selected["problem_summary"] += " unrelated prose drift"
                 elif defect == "estimate":
                     # Regrouping carries no new judgment and must not break repair.
                     raw["call_classifications"] = [
@@ -1027,6 +1038,23 @@ def _exercise_corrective_cli(
         return original(**kwargs)
 
     monkeypatch.setattr(execution, "_holistic_model_attempt", model_boundary)
+    corrective_prompt = execution._corrective_prompt
+    corrected_response = execution._corrected_response
+    if defect == "retained-conflict":
+        def recorded_full_prompt(**kwargs: Any) -> Any:
+            prompt, _ = corrective_prompt(**kwargs)
+            return prompt, kwargs["schema_path"]
+
+        def recorded_full_guard(state: Any, task: Any, digest: Any, raw: Any, attempt: Any, **kwargs: Any) -> Any:
+            rejected = execution._prior_rejection(state, task, digest, oldest=True)
+            if rejected is not None:
+                validate_response_correction(rejected[1], raw, execution._current_response_schema(state, task, digest))
+            return raw
+
+        # Recreate a run recorded by the full-response protocol, including its
+        # original preservation failure, before resuming with today's controller.
+        monkeypatch.setattr(execution, "_corrective_prompt", recorded_full_prompt)
+        monkeypatch.setattr(execution, "_corrected_response", recorded_full_guard)
     output, errors = io.StringIO(), io.StringIO()
     with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
         exit_code = workflow.main(["execute", "--state", str(state_path)])
@@ -1034,13 +1062,44 @@ def _exercise_corrective_cli(
     assert runner.target is not None
     target = saved["execution"][runner.target]
     attempts = target["attempts"]
+    if defect == "retained-conflict":
+        assert exit_code != 0
+        assert attempts[-1]["outcome"] == "validation-error"
+        assert "protected response field" in attempts[-1]["error"]
+        retained = {item["artifacts"]["raw_output"]["path"]: pathlib.Path(item["artifacts"]["raw_output"]["path"]).read_bytes()
+                    for item in attempts}
+        calls_before, budget_before = len(runner.calls), copy.deepcopy(saved["model_attempts"])
+        monkeypatch.setattr(execution, "_corrective_prompt", corrective_prompt)
+        monkeypatch.setattr(execution, "_corrected_response", corrected_response)
+        validate_result = analysis._validate_holistic_task_result
+
+        def reject_saved_result(*args: Any, **kwargs: Any) -> Any:
+            if kwargs["task"]["task_id"] == runner.target:
+                raise workflow.CreditAnalysisError("exact retained semantic failure")
+            return validate_result(*args, **kwargs)
+
+        monkeypatch.setattr(analysis, "_validate_holistic_task_result", reject_saved_result)
+        with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
+            assert workflow.main(["execute", "--state", str(state_path)]) != 0
+        assert "retained response revalidation: exact retained semantic failure" in errors.getvalue()
+        assert len(runner.calls) == calls_before
+        monkeypatch.setattr(analysis, "_validate_holistic_task_result", validate_result)
+        with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
+            exit_code = workflow.main(["execute", "--state", str(state_path)])
+        saved = json.loads(state_path.read_text(encoding="utf-8"))
+        target = saved["execution"][runner.target]
+        assert len(runner.calls) == calls_before
+        assert saved["model_attempts"] == budget_before
+        assert target["attempts"] == attempts
+        assert target["result"]["recovered_without_model_call"] is True
+        assert all(pathlib.Path(path).read_bytes() == value for path, value in retained.items())
     assert len(attempts) == 2, (errors.getvalue(), attempts)
     assert attempts[0]["outcome"] == "validation-error"
     assert runner.feedback is not None
     scope = runner.feedback["correction_scope"]
     if defect in {"estimate", "final-estimate"}:
         assert len(scope["invalid_recurrence_finding_ids"]) == 2
-    if defect == "conflict":
+    if defect in {"conflict", "retained-conflict"}:
         assert len(scope["conflicting_call_finding_ids"]) >= 1
     if defect == "protected":
         assert attempts[1]["outcome"] == "validation-error"
@@ -1048,13 +1107,42 @@ def _exercise_corrective_cli(
         assert target["status"] == "pending"
         assert exit_code != 0
     else:
-        assert attempts[1]["outcome"] == "accepted", (errors.getvalue(), attempts)
+        assert attempts[1]["outcome"] == ("validation-error" if defect == "retained-conflict" else "accepted"), attempts[1].get("error")
         accepted = json.loads(pathlib.Path(target["result"]["path"]).read_text(encoding="utf-8"))
         assert len(accepted["candidate_decisions"]) == len(runner.responses[0]["candidate_decisions"])
         if runner.withdrawn:
             assert runner.withdrawn not in {item["id"] for item in accepted["confirmed_findings"]}
             assert len(accepted["confirmed_findings"]) == len(runner.responses[0]["confirmed_findings"]) - 1
             assert len(accepted["temporary_control_reviews"]) == len(runner.responses[0]["temporary_control_reviews"])
+        if defect in {"conflict", "retained-conflict"}:
+            summaries = {item["id"]: item["problem_summary"] for item in runner.responses[0]["confirmed_findings"]}
+            assert all(item["problem_summary"] == summaries[item["id"]] for item in accepted["confirmed_findings"])
+            task = analysis._holistic_task_map(saved["manifest"])[runner.target]
+            full_schema = execution._current_response_schema(saved, task, attempts[0]["input_sha256"])
+            prior = runner.responses[0]
+            edit_schema = correction_response_schema(prior, full_schema)
+            patch = project_response_correction(prior, runner.responses[1], edit_schema)
+            assert patch["edits"] and all("call_id" in edit for edit in patch["edits"])
+            unchanged_inputs = copy.deepcopy((prior, patch))
+            repaired = apply_response_correction(prior, patch, full_schema)
+            assert (prior, patch) == unchanged_inputs
+            assert repaired["confirmed_findings"] == prior["confirmed_findings"]
+            with pytest.raises(workflow.CreditAnalysisError, match="frozen constant"):
+                apply_response_correction(prior, {**patch, "baseline_sha256": "0" * 64}, full_schema)
+            with pytest.raises(workflow.CreditAnalysisError, match="duplicate edit targets"):
+                apply_response_correction(prior, {**patch, "edits": [*patch["edits"], patch["edits"][0]]}, full_schema)
+            with pytest.raises(workflow.CreditAnalysisError, match="protected response field"):
+                apply_response_correction(prior, {**patch, "edits": [{"path": "/confirmed_findings/0/problem_summary", "value": "changed"}]}, full_schema)
+            valid = runner.responses[1]
+            for field in ("candidate_decisions", "call_classifications", "affected_call_ids"):
+                malformed = copy.deepcopy(valid)
+                if field == "affected_call_ids":
+                    malformed["confirmed_findings"][0][field] = None
+                else:
+                    malformed[field] = None
+                repair_schema = correction_response_schema(malformed, full_schema)
+                repair = project_response_correction(malformed, valid, repair_schema)
+                assert apply_response_correction(malformed, repair, full_schema) == valid
         assert exit_code == 0, errors.getvalue()
     before = len(runner.calls)
     workflow.command_execute_orchestration(state_path, runner=runner, task_limit=0)
