@@ -16,10 +16,14 @@ import json
 import pathlib
 import re
 import runpy
+import shlex
 import subprocess
 import sys
 from collections.abc import Mapping, Sequence
 from typing import cast
+
+from jsonschema import Draft202012Validator
+from jsonschema.exceptions import SchemaError
 
 LIFECYCLE_BUNDLE_ROOT = pathlib.Path(__file__).resolve().parents[1]
 SOURCE_REPOSITORY_ROOT = pathlib.Path(__file__).resolve().parents[3]
@@ -731,6 +735,65 @@ def contract_remediation_ids(path: pathlib.Path) -> set[str]:
     return classified
 
 
+def check_skill_deterministic_contract() -> list[str]:
+    """Validate declarations without running commands supplied by a contract.
+
+    The bundle owns the schema and supported command forms. Repositories supply
+    data, never an executable validator or schema selected by that data. Keep
+    CLI behavior tests alongside these declarations when helper arguments change.
+    """
+
+    schema_path = LIFECYCLE_BUNDLE_ROOT / "references/schemas/skill-deterministic-contract.schema.json"
+    try:
+        contract = read_json(ROOT / SKILL_DETERMINISTIC_CONTRACT)
+        schema = read_json(schema_path)
+        Draft202012Validator.check_schema(schema)
+        validator = Draft202012Validator(schema)
+        errors = [
+            f"{SKILL_DETERMINISTIC_CONTRACT}: {error.json_path}: {error.message}"
+            for error in validator.iter_errors(contract)
+        ]
+    except (OSError, ValueError, SchemaError) as exc:
+        return [f"{SKILL_DETERMINISTIC_CONTRACT}: cannot validate contract: {exc}"]
+    if errors:
+        return errors
+
+    # These are canonical argv declarations, not shell fragments. Reject every
+    # extra flag or helper rather than executing data to discover its behavior.
+    bundle = SKILL_CONTRACT_DIR.parents[1]
+    source_validator = (bundle / "scripts" / pathlib.Path(__file__).name).as_posix()
+    inventory = (bundle / "scripts/runtime/install-managed-skills.py").as_posix()
+    execution = cast(dict[str, str], contract["execution"])
+    if execution["source_validator"] != source_validator:
+        errors.append(f"{SKILL_DETERMINISTIC_CONTRACT}: execution.source_validator must be {source_validator}")
+    commands = {
+        "skill_validation_command": ["python", source_validator, "--mode", "skill", "--skill", "<skill-name>"],
+        "full_validation_command": ["python", source_validator, "--mode", "full"],
+        "section_validation_command": ["python", source_validator, "--mode", "sections"],
+        "runtime_inventory_command": ["python", inventory, "--inventory-output", "<caller-selected-file>"],
+    }
+    for field, expected in commands.items():
+        try:
+            arguments = shlex.split(execution[field])
+        except ValueError:
+            arguments = []
+        if arguments != expected:
+            errors.append(f"{SKILL_DETERMINISTIC_CONTRACT}: execution.{field} must declare {' '.join(expected)}")
+    for relative in (source_validator, inventory):
+        target = ROOT / relative
+        if not target.is_file() or not target.resolve().is_relative_to(ROOT.resolve()):
+            errors.append(f"{SKILL_DETERMINISTIC_CONTRACT}: missing or external helper: {relative}")
+    registry = ROOT / SKILL_CONTRACT_DIR / str(contract["source_docs_ref"])
+    if not registry.is_file():
+        errors.append(f"{SKILL_DETERMINISTIC_CONTRACT}: missing source_docs_ref: {registry.name}")
+    checks = cast(list[dict[str, object]], contract["checks"])
+    ids = [str(check["id"]) for check in checks]
+    if len(ids) != len(set(ids)):
+        errors.append(f"{SKILL_DETERMINISTIC_CONTRACT}: duplicate deterministic check ID")
+    errors.extend(check_skill_contract_remediation_policy())
+    return errors
+
+
 def check_skill_contract_remediation_policy() -> list[str]:
     """Ensure the skill deterministic contract classifies each deterministic check."""
 
@@ -916,8 +979,10 @@ def check_source_governance_consistency(
     errors.extend(check_multi_action_skill_contract(manifest))
     errors.extend(check_action_sections(manifest))
     if profile == PROFILE_CERATOPS:
-        errors.extend(check_skill_contract_remediation_policy())
-        errors.extend(check_skill_nondeterministic_contract())
+        contract_errors = check_skill_deterministic_contract()
+        errors.extend(contract_errors)
+        if not contract_errors:
+            errors.extend(check_skill_nondeterministic_contract())
 
     assignments = manifest.get("skills", {})
     payloads = manifest.get("runtime_payloads", {})
@@ -1107,6 +1172,11 @@ def check_selected_skills(
         selected_skill_names,
     )
     errors.extend(check_runtime_input_safety(runtime_inputs))
+    if profile == PROFILE_CERATOPS and "ceratops-skill-lifecycle" in selected_skill_names:
+        contract_errors = check_skill_deterministic_contract()
+        errors.extend(contract_errors)
+        if not contract_errors:
+            errors.extend(check_skill_nondeterministic_contract())
     return errors
 
 

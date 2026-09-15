@@ -23,9 +23,8 @@ installed-runtime surface.
   repository-lifecycle bundle's `scripts` folder: `python -m
   ceratops_repo_compatibility_engine synchronize-bootstrap --target-repo-root
   <task-worktree>`; it only compares and copies bootstrap versions.
-- (D) Full source validation after approved bootstrap repair, run from the
-  skill-lifecycle folder: `python skills-consistency-source-validator.py --repo-root
-  <task-worktree> --mode full`.
+- After approved bootstrap repair, follow `references/source-validate.md`
+  with `<task-worktree>` as the source repository and `full` mode.
 - (D) Markdown lint when the repository declares it and skill Markdown is in
   scope: `npm run lint:markdown`.
 - (D) Python type check when the repository declares it and skill helpers or

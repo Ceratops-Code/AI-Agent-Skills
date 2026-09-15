@@ -1,4 +1,5 @@
 {
+  "$schema": "../schemas/skill-deterministic-contract.schema.json",
   "contract_format_version": 1,
   "kind": "skill_design_contract",
   "name": "ceratops_skill_deterministic_contract",

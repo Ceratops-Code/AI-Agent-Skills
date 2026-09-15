@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 import pathlib
+import shlex
 import subprocess
 import sys
 
@@ -48,6 +50,119 @@ def test_manifest_maintenance_commands_validate_locked_uv_script_targets(
         assert errors == []
     else:
         assert len(errors) == 1 and error in errors[0]
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("execution.source_validator", "scripts/missing.py", "source_validator must be"),
+        ("execution.skill_validation_command", [123, None], "is not of type 'string'"),
+        ("execution.full_validation_command", "python scripts/missing.py --mode full", "full_validation_command must declare"),
+        ("execution.section_validation_command", "python skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py --mode full", "section_validation_command must declare"),
+        ("execution.skill_validation_command", "python skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py --mode skill", "skill_validation_command must declare"),
+        ("execution.runtime_inventory_command", "python skills/ceratops-skill-lifecycle/scripts/runtime/install-managed-skills.py --skill example", "runtime_inventory_command must declare"),
+        ("execution.full_validation_command", "python 'unterminated", "full_validation_command must declare"),
+        ("execution.full_validation_command", "python skills/ceratops-skill-lifecycle/scripts/skills-consistency-source-validator.py --mode full; echo OK", "full_validation_command must declare"),
+        ("execution.extra_command", "python scripts/other.py", "Additional properties"),
+        ("execution.result_contract", ["OK"], "is not of type 'string'"),
+        ("execution", {}, "is a required property"),
+        ("unexpected", True, "Additional properties"),
+        ("parameters.validation_mode.default", "sections", "'full' was expected"),
+        ("parameters.skill_name.extra", True, "Additional properties"),
+        ("remediation_policy.apply_flag", "--apply", "None was expected"),
+        ("remediation_policy.ai_agent_check_ids", [], "should be non-empty"),
+        ("checks.0.pass_condition", {}, "is not of type 'string'"),
+        ("checks.0.id", "skill.unknown", "is not one of"),
+        ("checks.1.id", "skill.repository_identity_and_profile", "duplicate deterministic check ID"),
+        ("source_docs_ref", "../../outside.json", "'skill-contract-source-docs.json' was expected"),
+        ("non_deterministic_review_file", "other.json", "'skill-nondeterministic-contract.json' was expected"),
+    ],
+)
+def test_skill_contract_rejects_unsupported_declarations(
+    monkeypatch: pytest.MonkeyPatch, field: str, value: object, message: str,
+) -> None:
+    validator = load_source_validator(ROOT / "skills")
+    check = validator["check_skill_deterministic_contract"]
+    contract_path = ROOT / validator["SKILL_DETERMINISTIC_CONTRACT"]
+    data = json.loads(contract_path.read_text(encoding="utf-8"))
+    target = data
+    parts = field.split(".")
+    for part in parts[:-1]:
+        target = target[int(part)] if isinstance(target, list) else target[part]
+    target[parts[-1]] = value
+    read_json = validator["read_json"]
+    monkeypatch.setitem(check.__globals__, "read_json", lambda path: data if path == contract_path else read_json(path))
+    assert any(message in error for error in check())
+
+
+@pytest.mark.parametrize("mode", ["skill", "full", "sections"])
+def test_skill_contract_validation_is_wired_to_owning_modes(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], mode: str,
+) -> None:
+    validator = load_source_validator(ROOT / "skills")
+    main = validator["main"]
+    contract_path = ROOT / validator["SKILL_DETERMINISTIC_CONTRACT"]
+    read_json = validator["read_json"]
+    # A malformed root must become a reported contract error, not a crash or a
+    # false pass from only checking remediation IDs. Sections remain independent.
+    monkeypatch.setitem(main.__globals__, "read_json", lambda path: [] if path == contract_path else read_json(path))
+    argv = ["--repo-root", str(ROOT), "--mode", mode]
+    if mode == "skill":
+        argv.extend(["--skill", "ceratops-skill-lifecycle"])
+    result = main(argv)
+    output = capsys.readouterr()
+    if mode == "sections":
+        assert result == 0, output.err
+    else:
+        assert result == 1 and "is not of type 'object'" in output.err
+
+
+@pytest.mark.parametrize("missing", ["source", "inventory", "registry", "schema"])
+def test_skill_contract_rejects_missing_declared_files(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, missing: str,
+) -> None:
+    validator = load_source_validator(tmp_path / "skills")
+    check = validator["check_skill_deterministic_contract"]
+    contract_relative = validator["SKILL_DETERMINISTIC_CONTRACT"]
+    data = json.loads((ROOT / contract_relative).read_text(encoding="utf-8"))
+    schema_relative = pathlib.Path("skills/ceratops-skill-lifecycle/references/schemas/skill-deterministic-contract.schema.json")
+    fixtures = {
+        "source": pathlib.Path(data["execution"]["source_validator"]),
+        "inventory": pathlib.Path(shlex.split(data["execution"]["runtime_inventory_command"])[1]),
+        "registry": contract_relative.parent / data["source_docs_ref"],
+        "schema": schema_relative,
+        "contract": contract_relative,
+    }
+    for key, relative in fixtures.items():
+        if key == missing:
+            continue
+        destination = tmp_path / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes((ROOT / relative).read_bytes())
+    monkeypatch.setitem(check.__globals__, "ROOT", tmp_path)
+    monkeypatch.setitem(check.__globals__, "LIFECYCLE_BUNDLE_ROOT", tmp_path / "skills/ceratops-skill-lifecycle")
+    errors = check()
+    assert errors and any(fixtures[missing].name in error for error in errors)
+
+
+def test_skill_contract_commands_execute_the_declared_operations(tmp_path: pathlib.Path) -> None:
+    validator = load_source_validator(ROOT / "skills")
+    assert validator["check_skill_deterministic_contract"]() == []
+    contract = json.loads((ROOT / validator["SKILL_DETERMINISTIC_CONTRACT"]).read_text(encoding="utf-8"))
+    environment = dict(os.environ, CODEX_HOME=str(tmp_path / "codex"))
+    (tmp_path / "codex/skills").mkdir(parents=True)
+    inventory_path = tmp_path / "inventory.json"
+    values = {"python": sys.executable, "<skill-name>": "ceratops-skill-lifecycle", "<caller-selected-file>": str(inventory_path)}
+    for field in ("skill_validation_command", "full_validation_command", "section_validation_command", "runtime_inventory_command"):
+        argv = [values.get(token, token) for token in shlex.split(contract["execution"][field])]
+        result = subprocess.run(argv, cwd=ROOT, env=environment, capture_output=True, text=True, check=False)
+        assert result.returncode == 0, (field, result.stderr)
+        if field == "runtime_inventory_command":
+            assert result.stdout.strip() == "OK"
+            inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
+            assert inventory["status"] == "inventory" and inventory["managed"] == 0
+        else:
+            assert result.stdout.startswith("ok:")
 
 
 def test_compatible_full_validation_accepts_arbitrary_skill_names(tmp_path: pathlib.Path) -> None:
