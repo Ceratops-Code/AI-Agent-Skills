@@ -932,9 +932,9 @@ def test_repository_bootstrap_resolves_platform_npm_and_preserves_failure(
 
     executable = tmp_path / ("npm.cmd" if os.name == "nt" else "npm")
     executable.write_text(
-        f"@echo SDLC-npm-%1\n@exit /b {exit_code}\n"
+        f"@echo SDLC-npm-%*\n@exit /b {exit_code}\n"
         if os.name == "nt"
-        else f"#!/bin/sh\nprintf 'SDLC-npm-%s\\n' \"$1\"\nexit {exit_code}\n",
+        else f"#!/bin/sh\nprintf 'SDLC-npm-%s\\n' \"$*\"\nexit {exit_code}\n",
         encoding="utf-8",
     )
     executable.chmod(0o755)
@@ -952,7 +952,7 @@ def test_repository_bootstrap_resolves_platform_npm_and_preserves_failure(
         check=False,
     )
     assert (result.returncode == 0) is (exit_code == 0)
-    assert "SDLC-npm-ci" in result.stdout
+    assert result.stdout.strip() == "SDLC-npm---prefix scripts ci"
     if exit_code:
         assert str(exit_code) in result.stderr
     command = importlib.import_module("github_pr_workflow.command")
