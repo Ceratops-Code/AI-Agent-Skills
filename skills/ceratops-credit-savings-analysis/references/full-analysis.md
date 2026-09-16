@@ -120,12 +120,15 @@ Every child Codex execution uses an explicit model, a read-only sandbox, no
 approvals, a self-contained no-tools prompt, and controller-owned schema, event,
 and result files. Launch Luna from the verified source cwd for its run with
 retained native state. Launch Sol from the source's primary cwd with retained
-native state, and include retained effective-rule hashes plus the text of any differing
-run-local rules in its handoff. Bind the applicable rule-chain hash to every task
-and attempt. The controller waits internally and emits periodic
-non-model progress. Resume the exact request. Alternatively use
-`execute --state STATE`; never recollect prepared evidence or overwrite an
-accepted result. Use `plan` only for planning-only inspection.
+native state, and include retained effective-rule hashes plus the frozen text of
+any differing run-local rules in its handoff. Bind the applicable frozen
+rule-chain hash to every task and attempt. Validate each retained rule snapshot
+from its stored text and hashes without rereading live `AGENTS.md`; later live
+instruction changes do not invalidate accepted or pending tasks. The controller
+waits internally and emits periodic non-model progress. Resume the exact
+request. Alternatively use `execute --state STATE`; never recollect prepared
+evidence or overwrite an accepted result. Use `plan` only for planning-only
+inspection.
 
 For a batch, run `prepare-batch` once; it freezes selection and plans one
 ordinary holistic child per selected thread. For the pending child returned by

@@ -978,7 +978,8 @@ def test_credit_analysis_workflow_end_to_end_uses_sharded_semantic_calls(
     )
     automation_root.mkdir(parents=True)
     installed_skill_root.mkdir(parents=True)
-    (codex_home / "AGENTS.md").write_text(
+    global_rules = codex_home / "AGENTS.md"
+    global_rules.write_text(
         "CURRENT_GLOBAL_CONTROL_SENTINEL\n",
         encoding="utf-8",
         newline="\n",
@@ -995,7 +996,8 @@ def test_credit_analysis_workflow_end_to_end_uses_sharded_semantic_calls(
     )
     alternate_cwd = tmp_path / "alternate-cwd"
     alternate_cwd.mkdir()
-    (alternate_cwd / "AGENTS.md").write_text(
+    alternate_rules = alternate_cwd / "AGENTS.md"
+    alternate_rules.write_text(
         "RUN_LOCAL_CONTROL_SENTINEL\n",
         encoding="utf-8",
         newline="\n",
@@ -1173,6 +1175,18 @@ def test_credit_analysis_workflow_end_to_end_uses_sharded_semantic_calls(
     assert [(call["model"], call["reasoning_effort"]) for call in runner.calls] == [
         ("gpt-5.6-luna", "max")
     ]
+    global_rules.write_text(
+        "LATER_GLOBAL_CONTROL_SENTINEL\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    alternate_rules.write_text(
+        "LATER_RUN_LOCAL_CONTROL_SENTINEL\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    drifted_status = workflow.command_orchestration_status(state_path)
+    assert drifted_status["completed_tasks"] == 1
     after_luna_state = json.loads(state_path.read_text(encoding="utf-8"))
     accepted_luna = json.loads(
         pathlib.Path(
@@ -1329,6 +1343,11 @@ def test_credit_analysis_workflow_end_to_end_uses_sharded_semantic_calls(
         for chain in rule_context["source_chains"]
         for item in chain["differing_from_primary"]
     )
+    assert not any(
+        "LATER_RUN_LOCAL_CONTROL_SENTINEL" in item["text"]
+        for chain in rule_context["source_chains"]
+        for item in chain["differing_from_primary"]
+    )
     final_path = pathlib.Path(completed["final_result_path"])
     final_before = final_path.read_bytes()
     final = json.loads(final_before)
@@ -1339,12 +1358,27 @@ def test_credit_analysis_workflow_end_to_end_uses_sharded_semantic_calls(
         for chain in completed_state["execution_context"]["instruction_chains"]
         for item in chain["files"]
     ]
-    global_rules = codex_home / "AGENTS.md"
     assert any(
         pathlib.Path(item["path"]) == global_rules.resolve()
-        and item["sha256"] == hashlib.sha256(global_rules.read_bytes()).hexdigest()
+        and item["text"] == "CURRENT_GLOBAL_CONTROL_SENTINEL\n"
+        and item["sha256"]
+        == hashlib.sha256(item["text"].encode("utf-8")).hexdigest()
         for item in frozen_rule_files
     )
+    assert global_rules.read_text(encoding="utf-8") == (
+        "LATER_GLOBAL_CONTROL_SENTINEL\n"
+    )
+    corrupted_context = json.loads(
+        json.dumps(completed_state["execution_context"])
+    )
+    corrupted_context["instruction_chains"][0]["files"][0]["text"] += "changed"
+    with pytest.raises(
+        workflow.CreditAnalysisError,
+        match="frozen instruction file identity changed",
+    ):
+        workflow.command_orchestration_status.__globals__[
+            "_validate_execution_context"
+        ](corrupted_context)
     tasks_by_id = {
         item["task_id"]: item
         for item in [

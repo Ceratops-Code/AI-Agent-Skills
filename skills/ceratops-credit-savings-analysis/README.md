@@ -203,7 +203,7 @@ deployed services.
 | CLI dispatcher | Parses `run`, `plan`, `execute`, compatibility, and batch commands | [command_line_interface.py](scripts/credit_analysis/command_line_interface.py) |
 | Contract loader and evidence core | Validates the contract and requests, collects single-thread evidence, and retains the sequential compatibility controller | [single_thread_analysis.py](scripts/credit_analysis/single_thread_analysis.py) |
 | Session collector | Resolves active or archived sessions, descendant lineage, completed runs, model calls, token usage, and evidence references | [session_evidence_collector.py](scripts/credit_analysis/session_evidence_collector.py) |
-| Source execution context | Resolves run working directories, recovers identity-matched deleted worktrees, and freezes effective `AGENTS.md` chains | [source_execution_context.py](scripts/credit_analysis/source_execution_context.py) |
+| Source execution context | Resolves run working directories, recovers identity-matched deleted worktrees, and snapshots effective `AGENTS.md` text and hashes once | [source_execution_context.py](scripts/credit_analysis/source_execution_context.py) |
 | Capacity planner | Partitions oversized runs, admits Luna tasks, sizes Sol reviewer bins, and enforces attempt capacity | [model_capacity_planning.py](scripts/credit_analysis/model_capacity_planning.py) |
 | Model input preparation | Builds bounded evidence packets and compact final-review transport | [model_input_preparation.py](scripts/credit_analysis/model_input_preparation.py) |
 | Holistic planner and assembler | Builds the current manifest and state, validates Luna/Sol domain results, freezes routing, reconciles judgments, and assembles the final machine result | [luna_sol_analysis.py](scripts/credit_analysis/luna_sol_analysis.py) |
@@ -233,7 +233,7 @@ that design; it does not override the executable sources.
 validate request and contract
         -> resolve source and descendants
         -> collect completed-run evidence once
-        -> freeze evidence, rule chains, manifest, capacity, and state
+        -> freeze evidence, rule text and hashes, manifest, capacity, and state
         -> run admitted Luna tasks concurrently
         -> validate each result; correct once or record an omission
         -> freeze Sol routing and exact byte allowances
@@ -278,10 +278,12 @@ process tree rather than leaving an untracked model process running.
 
 Running the same request again finds its existing state and enters `execute`
 instead of planning again. Before reuse, the controller revalidates request and
-contract hashes, evidence, rule chains, prompt identity, task input, schema,
-and complete attempt artifacts. Accepted tasks are not launched again.
-Incomplete or conflicting artifacts block the resume because their identity
-cannot be proved.
+contract hashes, evidence, the retained rule snapshot's internal text and
+hashes, prompt identity, task input, schema, and complete attempt artifacts. It
+does not reopen live `AGENTS.md` files after planning, so later instruction
+changes do not invalidate accepted or pending analysis tasks. Accepted tasks
+are not launched again. Incomplete or conflicting artifacts block the resume
+because their identity cannot be proved.
 
 State writes are checkpointed atomically. Result files are write-once in
 meaning: an existing file is accepted only when its content matches the
@@ -497,8 +499,9 @@ needed to claim a measured result.
   require a narrower selection or later continuation.
 - **Local session availability is required.** Missing or malformed thread-index
   records, session files, source directories, or instruction chains can exclude
-  or block analysis. Identity-matched worktree recovery covers only canonical
-  deleted-worktree cases.
+  or block planning. Identity-matched worktree recovery covers only canonical
+  deleted-worktree cases. After planning, retained instruction text is the
+  immutable analysis snapshot; later live edits do not block execution.
 - **The model catalog and real provider envelopes can change.** Planning checks
   the live catalog and uses reserves, but external limit changes can still
   cause a bounded failure.

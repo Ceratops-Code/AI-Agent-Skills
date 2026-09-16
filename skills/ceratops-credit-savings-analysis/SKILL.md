@@ -65,14 +65,17 @@ retry, recovery, or deployment behavior.
   identities, candidate membership, prompts, results, and attempt telemetry as
   authoritative. Execution never recollects the session. Never skip, repeat,
   reorder, or add a semantic task outside the manifest.
-- Before freezing child tasks, resolve and hash the effective global and
-  run-local `AGENTS.md` chain. If a recorded canonical worktree cwd is gone, use
-  its primary checkout only after exact repository-identity verification and
-  record the substitution. Launch Luna from each verified run cwd and Sol from
-  the verified primary cwd; retain the effective chain hash on every task and
-  attempt and give Sol the hash and any differing run-local rule text. Stop on
-  an unresolved source or rule-evidence omission; never fall back to task
-  temporary root.
+- Before freezing child tasks, read and retain the complete effective global
+  and run-local `AGENTS.md` chain once. If a recorded canonical worktree cwd is
+  gone, use its primary checkout only after exact repository-identity
+  verification and record the substitution. Launch Luna from each verified run
+  cwd and Sol from the verified primary cwd; retain the frozen chain hash on
+  every task and attempt and give Sol the frozen hash and frozen differing
+  run-local rule text. During execution and resume, validate the retained rule
+  snapshot from its stored text and hashes without rereading live `AGENTS.md`;
+  later live instruction changes do not invalidate accepted or pending analysis
+  tasks. Stop on an unresolved source or rule-snapshot omission; never fall
+  back to task temporary root.
 - The controller validates `gpt-5.6-luna` and `gpt-5.6-sol` at maximum effort
   from the local Codex catalog. Luna and Sol children retain native rollout
   state. Every child is approval-free and read-only. The
