@@ -468,7 +468,7 @@ def _validated_request(
 
 
 def command_prepare(request_path: pathlib.Path, state_path: pathlib.Path) -> None:
-    state, repo_root, task_temp_root, evidence_path, disposable = _validated_request(
+    state, _repo_root, task_temp_root, evidence_path, disposable = _validated_request(
         request_path
     )
     resolved_request = _absolute(request_path)
@@ -1325,7 +1325,14 @@ def command_supersede(state_path: pathlib.Path, request_path: pathlib.Path, new_
     targets, previous_targets = state["baseline_targets"], old["baseline_targets"]
     assert isinstance(targets, dict) and isinstance(previous_targets, dict)
     targets.update(previous_targets)
-    state["verification"] = old["verification"]
+    # The previous evidence remains inherited cleanup-owned data. It cannot
+    # identify the successor's still-unwritten evidence or revised checks.
+    state["verification"] = {
+        "status": "pending",
+        "evidence_sha256": None,
+        "input_sha256": _verification_surface_sha256(state),
+        "generation": generation,
+    }
     state["failure_evidence_sha256"] = None
     state["superseded_artifacts"] = [
         {"path": str(item["path"]), "sha256": _file_sha256(item["path"])} for item in previous

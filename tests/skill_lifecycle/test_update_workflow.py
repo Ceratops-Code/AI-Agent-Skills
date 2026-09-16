@@ -76,6 +76,10 @@ def test_supersede_preserves_baseline_failed_records_and_transfers_cleanup(tmp_p
     transferred = json.loads(successor.read_text())
     assert transferred["baseline_targets"] == initial["baseline_targets"]
     assert transferred["baseline_dirty"] == initial["baseline_dirty"]
+    assert transferred["verification"]["status"] == "pending"
+    assert transferred["verification"]["evidence_sha256"] is None
+    assert transferred["verification"]["generation"] == initial["verification"]["generation"]
+    assert not new_evidence.exists()
     assert json.loads((state.parent / ".ceratops-skill-update-active.json").read_text())["state"] == str(successor)
     blocked = run_skill_update_workflow("finalize", "--state", str(state))
     assert blocked.returncode == 2

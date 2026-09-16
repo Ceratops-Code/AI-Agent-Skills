@@ -50,7 +50,6 @@ repository:
     repository:
       steps:
         - run: [uv, run, --locked, scripts/validate-repository.py]
-        - run: [uv, run, --locked, scripts/testing/run-tests.py, --all]
 
   tests:
     python:
