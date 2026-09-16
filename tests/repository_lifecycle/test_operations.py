@@ -231,7 +231,7 @@ def test_sdlc_template_is_a_schema_valid_empty_skeleton(tmp_path: pathlib.Path) 
     ]
     assert "deliverables" not in document
     live = contracts.load_contract(ROOT / "sdlc" / "sdlc.yml")
-    assert live["version"] == 2
+    assert live["version"] == 3
     entries = contracts.operation_entries(live)
     expected = {
         "deliverables.skills.validate.ceratops-managed":
@@ -252,13 +252,22 @@ def test_sdlc_template_is_a_schema_valid_empty_skeleton(tmp_path: pathlib.Path) 
     ]
     assert entries["repository.validate.repository"]["steps"] == [
         {"run": ["uv", "run", "--locked", "scripts/validate-repository.py"]},
+    ]
+    assert entries["repository.tests.python"]["steps"] == [
         {
             "run": [
-                "uv", "run", "--locked", "scripts/testing/run-tests.py", "--all",
+                "uv", "run", "--locked", "scripts/testing/run-tests.py", "--auto",
             ]
         },
     ]
-    assert runner.validation_operations(ROOT) == ["repository.validate.repository"]
+    assert runner.validation_operations(ROOT) == [
+        "repository.validate.repository",
+        "repository.tests.python",
+        "deliverables.skills.tests.repository",
+        "deliverables.skills.validate.ceratops-managed",
+        "deliverables.hooks.tests.repository",
+        "deliverables.tools.tests.repository",
+    ]
 
 
 def test_absent_sdlc_section_is_a_successful_no_op(tmp_path: pathlib.Path) -> None:
