@@ -24,7 +24,7 @@ explains how those parts work together and must be updated when they change.
     },
     {
       "path": "skills/ceratops-credit-savings-analysis/scripts/credit_analysis/orchestration_execution.py",
-      "role": "Current attempt execution, correction, retry, omission, concurrency, and resume behavior"
+      "role": "Current attempt execution, mechanical Sol normalization, correction, retry, omission, incomplete-state, concurrency, and resume behavior"
     },
     {
       "path": "skills/ceratops-credit-savings-analysis/scripts/credit_analysis/multi_thread_analysis.py",
@@ -207,8 +207,8 @@ deployed services.
 | Capacity planner | Partitions oversized runs, admits Luna tasks, sizes Sol reviewer bins, and enforces attempt capacity | [model_capacity_planning.py](scripts/credit_analysis/model_capacity_planning.py) |
 | Model input preparation | Builds bounded evidence packets and compact final-review transport | [model_input_preparation.py](scripts/credit_analysis/model_input_preparation.py) |
 | Holistic planner and assembler | Builds the current manifest and state, validates Luna/Sol domain results, freezes routing, reconciles judgments, and assembles the final machine result | [luna_sol_analysis.py](scripts/credit_analysis/luna_sol_analysis.py) |
-| Attempt executor | Runs ready tasks concurrently, records attempts, applies narrow response corrections, retries diagnosed failures, records omissions, and checkpoints state | [orchestration_execution.py](scripts/credit_analysis/orchestration_execution.py) |
-| Response contract | Builds closed model-output schemas and limits corrective responses to the rejected fields | [model_response_contract.py](scripts/credit_analysis/model_response_contract.py) |
+| Attempt executor | Runs ready tasks concurrently, records attempts, normalizes mechanical Sol fields, applies narrow response corrections, retries diagnosed failures, records omissions, stops zero-review runs as incomplete, and checkpoints state | [orchestration_execution.py](scripts/credit_analysis/orchestration_execution.py) |
+| Response contract | Builds closed model-output schemas, assigns canonical result-owned IDs, bounds explanatory classification rationale, and limits corrective responses to the rejected fields | [model_response_contract.py](scripts/credit_analysis/model_response_contract.py) |
 | Final record transport | Copies and validates accepted source records so final synthesis cannot silently drop them | [report_bookkeeping.py](scripts/credit_analysis/report_bookkeeping.py) |
 | Report renderer | Produces the compact human runs table while leaving full detail in machine evidence | [report_rendering.py](scripts/credit_analysis/report_rendering.py) |
 | Batch controller | Freezes recent-thread selection, prepares one holistic child per thread, indexes accepted child results, and aggregates them | [multi_thread_analysis.py](scripts/credit_analysis/multi_thread_analysis.py) |
@@ -235,7 +235,7 @@ validate request and contract
         -> collect completed-run evidence once
         -> freeze evidence, rule text and hashes, manifest, capacity, and state
         -> run admitted Luna tasks concurrently
-        -> validate each result; correct once or record an omission
+        -> normalize mechanical Sol fields; validate each result; correct once or record an omission
         -> freeze Sol routing and exact byte allowances
         -> run Sol reviewers in parallel
         -> optionally run focused recovery or direct-evidence review
@@ -258,17 +258,26 @@ included in call-savings arithmetic.
 
 ### 6.2 Correction, retry, and omission
 
-The response schema is closed. When a model response fails validation, the
-controller derives a correction schema that permits changes only at the
-rejected paths and verifies that every other value remains unchanged. A valid
-retained corrected result can complete the task without a new model call.
+The response schema is closed. Before Sol validation, the controller assigns
+canonical IDs to result-owned findings, risks, and temporary-control reviews,
+rewrites their internal references, and bounds only explanatory classification
+rationale. The raw response remains unchanged as attempt evidence, and the
+classification and reason code remain intact. Ambiguous identifiers still fail
+normal validation rather than being guessed.
+
+When a model response fails validation, the controller derives a correction
+schema that permits changes only at the rejected paths and verifies that every
+other value remains unchanged. A valid retained corrected result can complete
+the task without a new model call.
 
 Each Luna task gets at most one smaller-output retry for a diagnosed output
 size or schema failure. Each rejected Sol task gets one corrective retry while
 the global Sol attempt cap permits it. If validation still fails, the
 controller records the exact task, call inventory, byte inventory, and reason
 as omitted or unassessed and continues when the workflow can still produce an
-honest final result.
+honest final result. If eligible calls exist but no Sol reviewer result was
+accepted, the controller stops at phase `incomplete`, skips final synthesis,
+and publishes no complete result.
 
 Sibling attempts that finished before one concurrent failure are checkpointed
 before that failure is surfaced. Timeouts and interruption terminate the child
@@ -466,7 +475,7 @@ reported rather than hidden by unlimited retries.
 | Use Luna discovery followed by Sol review | Accepted. It combines broad candidate recall with stronger adjudication under explicit limits. | One large synthesis call, which is harder to fit, validate, and recover. |
 | Analyze all surfaces together | Accepted. Cross-surface causes and fixes remain connected. | One model pass per surface, which multiplies calls and creates duplicate findings. |
 | Make the controller own accepted-record transport | Accepted. Models judge and summarize; code preserves exact accepted findings, classifications, evidence, and references. | Asking the final model to copy every accepted record, which can omit valid results and cause avoidable diagnostic reruns. |
-| Reject rather than truncate oversized output | Accepted. Coverage loss stays explicit and evidence remains intact. | Silent truncation, which can corrupt identities and accounting. |
+| Preserve semantic output; bound explanatory rationale deterministically | Accepted. Raw responses remain immutable, result-owned IDs are canonicalized, and only explanatory rationale is bounded before validation. | Rejecting an otherwise valid classification for overlong prose, which spends retries and loses coverage. |
 | Persist file-backed state after each boundary | Accepted. It supports inspection and idempotent resume without a service. | Memory-only orchestration or a database service, which adds operational complexity. |
 | Preserve the sequential command interface | Accepted for existing callers while new full analyses use holistic orchestration. | Immediate removal, which would break retained callers and task roots. |
 | Keep analysis read-only | Accepted. Findings must not change the evidence or producer they assess. | Automatic remediation, which would mix diagnosis, authorization, and mutation. |
@@ -482,7 +491,7 @@ needed to claim a measured result.
 | Unfinished-thread coverage | A selected active thread contains completed runs and one running run | All completed runs enter evidence; the running run is reported unassessed | Session collector and batch tests |
 | Bounded discovery | Prepared evidence exceeds one Luna input but fits the global budget | The minimum ordered parts are admitted, no more than 15 run concurrently, and attempts never exceed 70 | Capacity and orchestration tests plus state totals |
 | Invalid Luna output | A Luna result violates schema or its byte allowance | The exact task is retried at most once with a smaller allowance, then omitted with identity, bytes, and reason | Response and retry tests |
-| Invalid Sol output | A Sol result violates its frozen schema or semantic contract | Only diagnosed fields or claims may change; an invalid temporary-control ROI subclaim is detached without withdrawing its independent finding; at most one corrective retry is used per task; and total Sol invocations never exceed 16 | Correction-scope and attempt-budget tests |
+| Invalid Sol output | A Sol result contains noncanonical result-owned IDs, oversized explanatory rationale, or a remaining schema or semantic violation | Code repairs deterministic IDs and references and bounds rationale without a retry; only diagnosed remaining fields or claims may change; an invalid temporary-control ROI subclaim is detached without withdrawing its independent finding; at most one corrective retry is used per task; zero accepted reviewers end at `incomplete`; and total Sol invocations never exceed 16 | Mechanical-normalization, correction-scope, zero-review, and attempt-budget tests |
 | Interrupted run | The controller stops after some sibling tasks complete | Completed siblings are checkpointed; resume reuses accepted outputs and launches only proven pending work | Resume and sibling-failure tests |
 | No silent copying loss | Final Sol returns synthesis judgments after reviewers accepted findings | Controller assembly contains every accepted source record exactly once or fails validation | Report bookkeeping and finalization tests |
 | Honest capacity shortfall | A run part or reviewer cannot fit or validate within limits | Final coverage is incomplete and the exact omitted calls, records, and bytes are retained; no zero is substituted for unreviewed work | Omission and final-accounting tests |

@@ -123,7 +123,7 @@ def test_completion_checkpoint_precedes_slow_sibling_and_replays(
     assert len(runner.calls) == call_count
 
 
-@pytest.mark.parametrize("defect", ["identifier", "reason", "judgment", "interrupted", "legacy"])
+@pytest.mark.parametrize("defect", ["reason", "judgment", "interrupted", "legacy"])
 def test_correction_feedback_retains_rejected_response_and_exact_errors(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, defect: str,
 ) -> None:
@@ -143,20 +143,8 @@ def test_correction_feedback_retains_rejected_response_and_exact_errors(
             if kwargs["task"]["phase"] != "sol-adjudication":
                 return raw
             if not self.responses:
-                if defect == "identifier":
-                    old = raw["confirmed_findings"][0]["id"]
-
-                    def rename(value: Any) -> Any:
-                        if isinstance(value, dict):
-                            return {key: rename(item) for key, item in value.items()}
-                        if isinstance(value, list):
-                            return [rename(item) for item in value]
-                        return "F01" if value == old else value
-
-                    raw = rename(raw)
-                else:
-                    group = next(item for item in raw["call_classifications"] if item["classification"] == "avoidable_implemented")
-                    group["reason_code"] = "ordinary-model-error"
+                group = next(item for item in raw["call_classifications"] if item["classification"] == "avoidable_implemented")
+                group["reason_code"] = "ordinary-model-error"
             elif self.feedback is None:
                 self.feedback = json.loads(kwargs["prompt"].split("\nCorrection request:\n", 1)[1])
                 assert self.feedback["prior_response"] == self.responses[0]
@@ -1675,6 +1663,181 @@ def test_credit_analysis_workflow_end_to_end_uses_sharded_semantic_calls(
     )["complete"] is True
     assert recovered_result_path.read_bytes() == final_bytes
     assert len(capped_runner.calls) == capped_call_count
+
+    mechanical_root = tmp_path / "mechanical-sol-repair"
+    mechanical_root.mkdir()
+    mechanical_request, _, _ = credit_analysis_request(
+        mechanical_root,
+        extra_completed_turns=3,
+        extra_calls_per_turn=4,
+    )
+    mechanical_plan = workflow.command_plan_orchestration(
+        mechanical_request,
+        available_models=holistic_model_catalog(),
+    )
+
+    class MechanicalSolRunner(FakeCreditModelRunner):
+        def __init__(self) -> None:
+            super().__init__()
+            self.rationale_task_id: str | None = None
+            self.review_task_id: str | None = None
+            self.invalid_review_id = "Invalid Review ID"
+
+        def _sol(
+            self,
+            task: Mapping[str, Any],
+            packet: Mapping[str, Any],
+            digest: str,
+        ) -> dict[str, Any]:
+            result = super()._sol(task, packet, digest)
+            if self.rationale_task_id is None and result["call_classifications"]:
+                self.rationale_task_id = str(task["task_id"])
+                result["call_classifications"][0]["rationale"] = "r" * 400
+            if self.review_task_id is None and result["temporary_control_reviews"]:
+                self.review_task_id = str(task["task_id"])
+                referenced = {
+                    review_id
+                    for merge in result["temporary_control_merges"]
+                    for review_id in merge["review_ids"]
+                }
+                review = next(
+                    (
+                        item
+                        for item in result["temporary_control_reviews"]
+                        if item["id"] in referenced
+                    ),
+                    result["temporary_control_reviews"][0],
+                )
+                original_id = review["id"]
+                review["id"] = self.invalid_review_id
+                for merge in result["temporary_control_merges"]:
+                    merge["review_ids"] = [
+                        self.invalid_review_id if item == original_id else item
+                        for item in merge["review_ids"]
+                    ]
+            return result
+
+    mechanical_runner = MechanicalSolRunner()
+    mechanical_state_path = pathlib.Path(mechanical_plan["state_path"])
+    mechanical_status = workflow.command_execute_orchestration(
+        mechanical_state_path,
+        runner=mechanical_runner,
+        available_models=mechanical_runner.available_models,
+    )
+    assert mechanical_status["complete"] is True
+    assert mechanical_runner.rationale_task_id is not None
+    assert mechanical_runner.review_task_id is not None
+    mechanical_state = json.loads(
+        mechanical_state_path.read_text(encoding="utf-8")
+    )
+    assert (
+        mechanical_state["model_attempts"]["sol"]
+        == mechanical_state["model_calls"]["sol"]
+    )
+    rationale_execution = mechanical_state["execution"][
+        mechanical_runner.rationale_task_id
+    ]
+    assert [item["outcome"] for item in rationale_execution["attempts"]] == [
+        "accepted"
+    ]
+    raw_rationale = json.loads(
+        pathlib.Path(
+            rationale_execution["attempts"][0]["artifacts"]["raw_output"]["path"]
+        ).read_text(encoding="utf-8")
+    )
+    accepted_rationale = json.loads(
+        pathlib.Path(rationale_execution["result"]["path"]).read_text(
+            encoding="utf-8"
+        )
+    )
+    assert len(raw_rationale["call_classifications"][0]["rationale"]) == 400
+    assert all(
+        len(item["rationale"]) <= 240
+        for item in accepted_rationale["call_classifications"]
+    )
+    review_execution = mechanical_state["execution"][
+        mechanical_runner.review_task_id
+    ]
+    assert [item["outcome"] for item in review_execution["attempts"]] == [
+        "accepted"
+    ]
+    raw_review = json.loads(
+        pathlib.Path(
+            review_execution["attempts"][0]["artifacts"]["raw_output"]["path"]
+        ).read_text(encoding="utf-8")
+    )
+    accepted_review = json.loads(
+        pathlib.Path(review_execution["result"]["path"]).read_text(
+            encoding="utf-8"
+        )
+    )
+    assert mechanical_runner.invalid_review_id in {
+        item["id"] for item in raw_review["temporary_control_reviews"]
+    }
+    accepted_review_ids = {
+        item["id"] for item in accepted_review["temporary_control_reviews"]
+    }
+    assert mechanical_runner.invalid_review_id not in accepted_review_ids
+    assert "review-0001" in accepted_review_ids
+    assert all(
+        set(merge["review_ids"]).issubset(accepted_review_ids)
+        for merge in accepted_review["temporary_control_merges"]
+    )
+
+    zero_review_root = tmp_path / "zero-accepted-reviewers"
+    zero_review_root.mkdir()
+    zero_review_request, _, _ = credit_analysis_request(zero_review_root)
+    zero_review_plan = workflow.command_plan_orchestration(
+        zero_review_request,
+        available_models=holistic_model_catalog(),
+    )
+
+    class AllInvalidSolRunner(FakeCreditModelRunner):
+        def _sol(
+            self,
+            task: Mapping[str, Any],
+            packet: Mapping[str, Any],
+            digest: str,
+        ) -> dict[str, Any]:
+            result = super()._sol(task, packet, digest)
+            result["candidate_decisions"][0]["reason"] = "x" * 321
+            return result
+
+    zero_review_runner = AllInvalidSolRunner()
+    zero_review_state_path = pathlib.Path(zero_review_plan["state_path"])
+    zero_review_status = workflow.command_execute_orchestration(
+        zero_review_state_path,
+        runner=zero_review_runner,
+        available_models=zero_review_runner.available_models,
+    )
+    assert zero_review_status["phase"] == "incomplete"
+    assert zero_review_status["complete"] is False
+    assert zero_review_status["next_task"] is None
+    assert zero_review_status["final_result_path"] is None
+    assert zero_review_status["report_path"] is None
+    assert not any(
+        call["phase"] == "sol-final" for call in zero_review_runner.calls
+    )
+    zero_review_state = json.loads(
+        zero_review_state_path.read_text(encoding="utf-8")
+    )
+    assert zero_review_state["execution"]["sol.final"]["status"] == "skipped"
+    assert not any(
+        zero_review_state["execution"][task["task_id"]]["status"] == "complete"
+        for task in zero_review_state["manifest"]["sol_tasks"]
+        if task["phase"] == "sol-adjudication"
+    )
+    assert any(
+        item["reason"] == "sol-invalid-output"
+        for item in zero_review_state["omissions"]
+    )
+    zero_review_call_count = len(zero_review_runner.calls)
+    assert workflow.command_execute_orchestration(
+        zero_review_state_path,
+        runner=zero_review_runner,
+        available_models=zero_review_runner.available_models,
+    )["phase"] == "incomplete"
+    assert len(zero_review_runner.calls) == zero_review_call_count
 
     persistent_root = tmp_path / "persistent-invalid-sol"
     persistent_root.mkdir()

@@ -15,6 +15,7 @@ from . import luna_sol_analysis as analysis
 from .model_response_contract import (
     apply_response_correction,
     correction_response_schema,
+    normalize_sol_transport_mechanics,
     project_response_correction,
     response_correction_scope,
 )
@@ -31,6 +32,19 @@ def _checkpoint_state(state: dict[str, Any]) -> None:
     _order_omissions(state)
     analysis._holistic_sync_child_lineage(state)
     analysis._holistic_save_state(state)
+
+
+def _stop_without_accepted_reviewers(state: dict[str, Any]) -> None:
+    """Publish a terminal incomplete state without spending a final Sol call."""
+
+    for task in state["manifest"]["sol_tasks"]:
+        if task["phase"] != "sol-final":
+            continue
+        execution = state["execution"][task["task_id"]]
+        if execution["status"] == "pending":
+            execution["status"] = "skipped"
+    state["phase"] = "incomplete"
+    _checkpoint_state(state)
 
 
 def _schema_rejection(attempt: Mapping[str, Any]) -> str | None:
@@ -251,6 +265,8 @@ def _corrected_response(
                         }
                     )
         result = apply_response_correction(prior, result, response_schema)
+    if task["phase"] in {"sol-adjudication", "sol-final"}:
+        result = normalize_sol_transport_mechanics(result)
     if (task["phase"] == "luna-discovery" and analysis._json_bytes(result)
             > int(attempt.get("output_byte_limit") or task["output_byte_limit"])):
         raise CreditAnalysisError("Luna result exceeds its output byte target")
@@ -589,7 +605,7 @@ def command_execute_orchestration(
                 schema_error = _schema_rejection(attempt)
                 if schema_error is not None:
                     raise CreditAnalysisError(schema_error)
-    if state["phase"] == "complete":
+    if state["phase"] in {"complete", "incomplete"}:
         return analysis._holistic_public_status(state)
     catalog = (
         available_models
@@ -706,6 +722,13 @@ def command_execute_orchestration(
         if not ready:
             break
         phase = ready[0]["phase"]
+        if (
+            phase == "sol-final"
+            and state["manifest"]["call_ids"]
+            and not analysis._routed_call_ids(state)
+        ):
+            _stop_without_accepted_reviewers(state)
+            return analysis._holistic_public_status(state)
         if phase == "luna-discovery":
             ready = [task for task in ready if task["phase"] == phase]
             concurrency = int(
@@ -976,7 +999,10 @@ def command_execute_orchestration(
         in {"complete", "skipped", "omitted"}
         for task_id in state["task_order"]
     ):
-        analysis._finalize_holistic(state, evidence, compact)
+        if state["manifest"]["call_ids"] and not analysis._routed_call_ids(state):
+            _stop_without_accepted_reviewers(state)
+        else:
+            analysis._finalize_holistic(state, evidence, compact)
     else:
         analysis._holistic_save_state(state)
     return analysis._holistic_public_status(state)

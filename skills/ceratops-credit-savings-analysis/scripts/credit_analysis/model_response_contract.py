@@ -3,7 +3,8 @@
 Schemas travel unchanged through Codex CLI --output-schema and are also
 validated locally with the repository's existing jsonschema dependency.
 Evidence membership, coverage, and semantic consistency remain the callers'
-independent responsibilities; this module never changes model judgments.
+independent responsibilities. Mechanical transport normalization never changes
+model judgments, and callers retain the raw response separately.
 """
 
 from __future__ import annotations
@@ -53,6 +54,98 @@ def identifiers(*, nonempty: bool = False) -> dict[str, Any]:
     }
     if nonempty:
         result["minItems"] = 1
+    return result
+
+
+def normalize_sol_transport_mechanics(
+    response: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Canonicalize code-owned IDs and bound explanatory Sol transport text.
+
+    The returned copy is suitable for validation and persistence as the accepted
+    result. The caller keeps the unmodified raw response as attempt evidence.
+    Ambiguous identifier collections remain unchanged so ordinary validation and
+    corrective retry can diagnose them instead of guessing at references.
+    """
+
+    result = copy.deepcopy(dict(response))
+
+    def canonicalize(field: str, prefix: str) -> dict[str, str]:
+        items = result.get(field)
+        if not isinstance(items, list):
+            return {}
+        identities: list[str] = []
+        for item in items:
+            if (
+                not isinstance(item, Mapping)
+                or not isinstance(item.get("id"), str)
+                or not item["id"]
+            ):
+                return {}
+            identities.append(item["id"])
+        if len(identities) != len(set(identities)):
+            return {}
+        used = {
+            identity
+            for identity in identities
+            if len(identity) <= 96 and IDENTIFIER_RE.fullmatch(identity)
+        }
+        mapping: dict[str, str] = {}
+        next_index = 1
+        for identity in identities:
+            if identity in used:
+                mapping[identity] = identity
+                continue
+            candidate = f"{prefix}-{next_index:04d}"
+            while candidate in used:
+                next_index += 1
+                candidate = f"{prefix}-{next_index:04d}"
+            mapping[identity] = candidate
+            used.add(candidate)
+            next_index += 1
+        for item, identity in zip(items, identities, strict=True):
+            item["id"] = mapping[identity]
+        return mapping
+
+    finding_ids = canonicalize("confirmed_findings", "finding")
+    risk_ids = canonicalize("plausible_risks", "risk")
+    review_ids = canonicalize("temporary_control_reviews", "review")
+
+    def rewrite_list(item: Any, field: str, mapping: Mapping[str, str]) -> None:
+        if not isinstance(item, dict) or not isinstance(item.get(field), list):
+            return
+        item[field] = [
+            mapping.get(identity, identity) if isinstance(identity, str) else identity
+            for identity in item[field]
+        ]
+
+    decisions = result.get("candidate_decisions")
+    for decision in decisions if isinstance(decisions, list) else []:
+        rewrite_list(decision, "finding_ids", finding_ids)
+        rewrite_list(decision, "risk_ids", risk_ids)
+
+    reviews = result.get("temporary_control_reviews")
+    for review in reviews if isinstance(reviews, list) else []:
+        if isinstance(review, dict) and isinstance(review.get("finding_id"), str):
+            review["finding_id"] = finding_ids.get(
+                review["finding_id"], review["finding_id"]
+            )
+
+    merges = result.get("temporary_control_merges")
+    for merge in merges if isinstance(merges, list) else []:
+        rewrite_list(merge, "review_ids", review_ids)
+        if isinstance(merge, dict) and isinstance(merge.get("finding_id"), str):
+            merge["finding_id"] = finding_ids.get(
+                merge["finding_id"], merge["finding_id"]
+            )
+
+    classifications = result.get("call_classifications")
+    for classification in classifications if isinstance(classifications, list) else []:
+        if not isinstance(classification, dict):
+            continue
+        rationale = classification.get("rationale")
+        if isinstance(rationale, str) and len(rationale) > 240:
+            classification["rationale"] = rationale[:237].rstrip() + "..."
     return result
 
 

@@ -96,17 +96,21 @@ Preserve every confirmed finding and report every capacity omission.
    identity; and deeply verifies and expands the top three findings without
    suppressing other confirmed findings. Its helper-category review array stays
    empty; the controller copies exact accepted reviewer records and assembles
-   their final summaries. Each rejected Sol task receives one
-   automatic corrective retry when the sixteen-attempt ceiling permits. After a
-   non-final task fails validation twice, mark its exact candidate, call, and
-   byte
-   inventory unreviewed and continue to the final merger. A revalidated retained
-   result completes its task without a new model call; an invalid retained
-   result
-   follows the same automatic retry and omission policy. Plan at most eight
-   Sol calls, excluding retries and corrective attempts; allow at most sixteen
-   actual Sol invocations including initial calls, retries, and corrective
-   attempts.
+   their final summaries. Before validation, code assigns canonical IDs to
+   Sol-owned outcomes and rewrites their internal references. It bounds only
+   explanatory classification rationale while retaining the raw response and
+   preserving classification and reason code. Each rejected Sol task receives
+   one automatic corrective retry for any remaining diagnosed field when the
+   sixteen-attempt ceiling permits. After a non-final task fails validation
+   twice, mark its exact candidate, call, and byte inventory unreviewed and
+   continue to the final merger. If eligible calls exist but no Sol reviewer
+   result was accepted, stop with phase `incomplete`; do not run the final
+   merger
+   or publish a complete result. A revalidated retained result completes its
+   task without a new model call; an invalid retained result follows the same
+   automatic retry and omission policy. Plan at most eight Sol calls, excluding
+   retries and corrective attempts; allow at most sixteen actual Sol invocations
+   including initial calls, retries, and corrective attempts.
 6. Persist immutable identities, prompts, results, attempts, latency, and usage.
    Before surfacing one parallel sibling failure, record every already-completed
    sibling attempt. On resume, revalidate complete task-owned attempt artifacts
