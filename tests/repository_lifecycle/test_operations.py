@@ -7,6 +7,7 @@ import pathlib
 import shutil
 import subprocess
 import sys
+from typing import Any
 
 import pytest
 
@@ -132,7 +133,7 @@ def _v4_action(*steps: dict[str, object]) -> dict[str, object]:
     return {"requires": {"capabilities": []}, "steps": list(steps)}
 
 
-def _v4_fixture() -> dict[str, object]:
+def _v4_fixture() -> dict[str, Any]:
     """Exercise package dependency records and separate lifecycle ownership."""
 
     return {
