@@ -959,19 +959,20 @@ def apply_response_correction(
     for identity in withdrawals:
         if any(item["id"] == identity for item in result["confirmed_findings"]):
             raise CreditAnalysisError("corrective retry withdrawal changed its diagnosed basis")
-    final_reviews = {
-        item["id"]: item for item in result["temporary_control_reviews"]
-    }
-    for identity, reason in review_dismissals.items():
-        review = final_reviews.get(identity)
-        if (
-            review is None
-            or review.get("finding_id") is not None
-            or review.get("no_finding_reason") != reason
-        ):
-            raise CreditAnalysisError(
-                "corrective retry temporary-review dismissal changed its diagnosed basis"
-            )
+    if review_dismissals:
+        final_reviews = {
+            item["id"]: item for item in result["temporary_control_reviews"]
+        }
+        for identity, reason in review_dismissals.items():
+            review = final_reviews.get(identity)
+            if (
+                review is None
+                or review.get("finding_id") is not None
+                or review.get("no_finding_reason") != reason
+            ):
+                raise CreditAnalysisError(
+                    "corrective retry temporary-review dismissal changed its diagnosed basis"
+                )
     validate_response_correction(prior, result, schema)
     _validate_holistic_transport_value(result, schema, "$response")
     return result

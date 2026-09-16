@@ -194,12 +194,13 @@ def test_explicit_credit_analysis_defaults_to_full_analysis() -> None:
         "instruction-reasoning",
     ]
     assert full.startswith("# Full Analysis Action\n")
+    normalized_full = " ".join(full.split())
     assert "every completed run as one semantic unit" in full
     assert "assign the admitted tasks among `A = min(6," in full
     assert "Plan at most eight" in full
-    assert "Sol calls, excluding retries and corrective attempts" in full
-    assert "allow at most sixteen" in full
-    assert "actual Sol invocations including initial calls, retries" in full
+    assert "Sol calls, excluding retries and corrective attempts" in normalized_full
+    assert "allow at most sixteen" in normalized_full
+    assert "actual Sol invocations including initial calls, retries" in normalized_full
     assert contract["end_to_end_controller_commands"] == [
         "run",
         "plan",
