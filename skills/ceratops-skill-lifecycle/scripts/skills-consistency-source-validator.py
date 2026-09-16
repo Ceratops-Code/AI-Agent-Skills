@@ -22,6 +22,7 @@ import sys
 from collections.abc import Mapping, Sequence
 from typing import cast
 
+import tomllib
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError
 
@@ -306,6 +307,29 @@ def check_runtime_payloads(
     if not isinstance(payloads, dict):
         errors.append("section manifest runtime_payloads must be an object")
         return errors
+    project = ROOT / "skills/sections/python"
+    declaration = project / "pyproject.toml"
+    lock = project / "uv.lock"
+    if declaration.is_file() != lock.is_file():
+        errors.append("source skill Python runtime requires both pyproject.toml and uv.lock")
+    elif declaration.is_file():
+        try:
+            parsed = tomllib.loads(declaration.read_text(encoding="utf-8"))
+            if not parsed.get("project", {}).get("requires-python"):
+                errors.append("source skill Python runtime must declare project.requires-python")
+            tomllib.loads(lock.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError, AttributeError) as exc:
+            errors.append(f"source skill Python runtime declaration is invalid: {exc}")
+    retired_sources = {
+        "skills/sections/scripts/run-skill.py",
+        "skills/sections/python/pyproject.toml",
+        "skills/sections/python/uv.lock",
+    }
+    retired_targets = {
+        "scripts/run-skill.py",
+        "scripts/python-runtime/pyproject.toml",
+        "scripts/python-runtime/uv.lock",
+    }
     for skill_name, values in payloads.items():
         if (
             selected_skill_names is not None
@@ -332,6 +356,9 @@ def check_runtime_payloads(
                 source, target = raw_source, raw_target
             else:
                 errors.append(f"{label} must be a path or source-target mapping")
+                continue
+            if source in retired_sources or target in retired_targets:
+                errors.append(f"{label} still deploys the retired per-skill Python runtime")
                 continue
             source_posix = pathlib.PurePosixPath(source.replace("\\", "/"))
             source_windows = pathlib.PureWindowsPath(source)

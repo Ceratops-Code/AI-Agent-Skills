@@ -571,7 +571,7 @@ GitHub Actions pins as well as the scripts project.
 Skill callers invoke their bundled engine directly:
 
 ```powershell
-uv run --no-project --python 3.14 python "$env:CODEX_HOME/skills/ceratops-repo-lifecycle/scripts/run-skill.py" scripts/repository_operation.py --repo-root <repo> --validate
+uv run --no-project --python <python_runtime> python "$env:CODEX_HOME/skills/ceratops-repo-lifecycle/scripts/repository_operation.py" --repo-root <repo> --validate
 ```
 
 `--validate` runs validation only. `--tests` runs the separate test stage;
@@ -627,36 +627,32 @@ explicitly.
 
 ## Shared Skill Python Environment
 
-All managed skills receive `scripts/run-skill.py` and a small
-`scripts/python-runtime/pyproject.toml` and `uv.lock` pair through the section
-manifest. The source declarations live under `skills/sections/python`.
-Dependabot maintains this project's lock independently of repository tooling.
-Compatibility setup copies these starter inputs into skill-bearing targets;
-their owners declare any additional dependencies their skills need.
+The sole dependency declarations for managed skill helpers are
+`skills/sections/python/pyproject.toml` and `uv.lock` in the source repository.
+Dependabot maintains this lock independently of repository tooling.
+Compatibility setup adds these source files to skill-bearing targets; their
+owners declare any additional dependencies their skills need. When compatibility
+setup runs from an installed lifecycle skill, its original source repository
+must remain available for those starter declarations. Deployment uses
+uv to prepare an environment under `$CODEX_HOME/runtimes/ceratops/versions/`.
+Each installed skill's `.runtime-manifest.json` records its exact
+`python_runtime` interpreter path. No launcher or declarations are copied into
+individual installed skills.
 
-Run an installed Python helper through its launcher, preserving its arguments:
+Run an installed Python helper with that interpreter, preserving its arguments:
 
 ```text
-uv run --no-project --python 3.14 python <skill-root>/scripts/run-skill.py scripts/<helper>.py
+uv run --no-project --python <python_runtime> python <skill-root>/scripts/<helper>.py
 ```
 
-The launcher also accepts `-m MODULE`. The first uv command selects the
-dependency-free bootstrap interpreter. The launcher then invokes uv with the
-bundled project's locked dependencies and required Python version. It preserves
-the caller's working directory and the helper's output and exit status.
-Nested plain Python commands inherit that environment. Repository uv commands
-select their own projects; the launcher does not forward its setup override.
-
-The shared environment resides at `$CODEX_HOME/runtimes/ceratops/.venv`.
-When `CODEX_HOME` is unset, the launcher uses `~/.codex`. uv reads declarations
-from the installed skill and synchronizes that fixed environment before helper
-execution. Different installed locks update the same active dependency set;
-managed skills should therefore be deployed with consistent declarations.
-The fixed `runtime.lock` file serializes setup across installed bundles;
-helper execution releases that lock so skills can call one another.
-Deployment copies declarations, never a `.venv`. Missing packages are repaired;
-stale locks block execution. The environment remains reusable after success or
-failure. Existing external tools retain their installer-owned environments.
+The command preserves the caller's working directory and the helper's output
+and exit status. Repository uv commands select their own projects because the
+deployment-only `UV_PROJECT_ENVIRONMENT` override is not forwarded.
+Deployment checks an existing version without modifying it; if it is damaged
+or the source lock changes, deployment builds a new version and pins newly
+installed skills to it. Running helpers retain their original environment.
+Old versions remain until an idle cleanup. External tools retain their own
+installer-managed environments.
 
 ## Install For Codex
 
@@ -743,7 +739,7 @@ with `$skill-name`.
 From the installed `ceratops-repo-lifecycle` skill directory, preview a rename:
 
 ```powershell
-uv run --no-project --python 3.14 python scripts/run-skill.py scripts/rename-repository-path.py --repo-root PATH --rename scripts/old.py scripts/new.py
+uv run --no-project --python <python_runtime> python scripts/rename-repository-path.py --repo-root PATH --rename scripts/old.py scripts/new.py
 ```
 
 Add `--apply` to change files. Repeat `--rename OLD NEW` for independent pairs.

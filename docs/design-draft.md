@@ -62,7 +62,7 @@ template. Test bodies and their implementation remain repository-specific.
 | Environment | Declarations | Execution and ownership |
 | --- | --- | --- |
 | Repository Python scripts and tests | `scripts/pyproject.toml` and `scripts/uv.lock` | uv selects the required Python and prepares ignored `scripts/.venv`; repository entrypoints use this project. |
-| Installed Ceratops skill helpers | Shared source declarations under `skills/sections/python`, deployed with small `scripts/python-runtime` metadata | The installed `scripts/run-skill.py` launcher uses the fixed `$CODEX_HOME/runtimes/ceratops/.venv`. Environments are not copied into every skill or named by a hash. |
+| Installed Ceratops skill helpers | Source-only declarations under `skills/sections/python` | Deployment prepares a versioned venv under `$CODEX_HOME/runtimes/ceratops/versions/`; each installed skill manifest pins its interpreter. Direct uv commands run helpers, and old versions remain available to running helpers. |
 | Installed external tools | The selected tool's declarations and installer | The tool manager owns the installed tool environment, separately from the shared skill environment. |
 
 One environment does not need both requirements files and a pyproject dependency

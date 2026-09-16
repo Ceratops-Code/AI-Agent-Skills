@@ -7,15 +7,16 @@ the verified target; an existing environment is never recursively discarded.
 
 from __future__ import annotations
 
+import json
 import os
 import pathlib
 import re
 import shutil
 import subprocess
-import tomllib
 from collections.abc import Mapping
 from typing import Any
 
+import tomllib
 import yaml
 
 from .python_tests import discover_python_tests
@@ -93,33 +94,51 @@ def runtime_files(
 
 
 def skill_runtime_files(root: pathlib.Path, canonical: pathlib.Path, payloads: dict[str, Any]) -> dict[pathlib.Path, str]:
-    """Seed portable skill launchers while preserving existing runtime ownership.
+    """Keep one source project and retire its former per-skill payload mapping."""
 
-    The section manifest owns copying, so both installers use their existing
-    payload path. These small declarations are templates for compatible skill
-    repositories; their owners maintain added dependencies and the resulting lock.
-    """
-    defaults = {
-        "scripts/run-skill.py": "scripts/run-skill.py",
-        "python/pyproject.toml": "scripts/python-runtime/pyproject.toml",
-        "python/uv.lock": "scripts/python-runtime/uv.lock",
+    retired = {
+        "skills/sections/scripts/run-skill.py": "scripts/run-skill.py",
+        "skills/sections/python/pyproject.toml": "scripts/python-runtime/pyproject.toml",
+        "skills/sections/python/uv.lock": "scripts/python-runtime/uv.lock",
     }
-    declarations = payloads.setdefault("*", [])
-    if not isinstance(declarations, list):
-        raise RuntimeError("shared skill runtime payloads must be a list")
+    for key, declarations in payloads.items():
+        if not isinstance(declarations, list):
+            raise RuntimeError(f"runtime_payloads.{key} must be a list")
+        kept: list[Any] = []
+        for item in declarations:
+            if isinstance(item, str) and item in retired:
+                continue
+            if isinstance(item, dict) and item.get("source") in retired:
+                if item.get("target") != retired[item["source"]]:
+                    raise RuntimeError("former skill runtime source has a custom target")
+                continue
+            kept.append(item)
+        payloads[key] = kept
     files: dict[pathlib.Path, str] = {}
-    for relative, target in defaults.items():
-        mapping = {"source": "skills/sections/" + relative, "target": target}
-        owners = [item for item in declarations if isinstance(item, dict) and item.get("target") == target]
-        if owners and owners != [mapping]:
-            raise RuntimeError(f"shared skill runtime target requires explicit ownership integration: {target}")
-        if not owners:
-            declarations.append(mapping)
-        destination = root / mapping["source"]
+    source_root: pathlib.Path | None = None
+    for relative in ("python/pyproject.toml", "python/uv.lock"):
+        destination = root / "skills/sections" / relative
         if destination.is_symlink() or (destination.exists() and not destination.is_file()):
             raise RuntimeError(f"skill runtime source must be a regular file: {destination}")
         if not destination.is_file():
             source = canonical / relative
+            if not source.is_file():
+                if source_root is None:
+                    installed_manifest = canonical.parent.parent / ".runtime-manifest.json"
+                    if not installed_manifest.is_file() or installed_manifest.is_symlink():
+                        raise RuntimeError("installed lifecycle bundle cannot locate its source skill runtime")
+                    ownership = json.loads(installed_manifest.read_text(encoding="utf-8"))
+                    source_value = ownership.get("source_repository_root")
+                    if not isinstance(source_value, str):
+                        raise RuntimeError("installed lifecycle bundle has no source repository")
+                    source_root = pathlib.Path(source_value)
+                    source_manifest = source_root / "skills/skill-sections.json"
+                    if not source_manifest.is_file() or source_manifest.is_symlink():
+                        raise RuntimeError("installed lifecycle source repository is unavailable")
+                    source_identity = json.loads(source_manifest.read_text(encoding="utf-8"))
+                    if source_identity.get("runtime_source_id") != ownership.get("runtime_source_id"):
+                        raise RuntimeError("installed lifecycle source identity differs")
+                source = source_root / "skills/sections" / relative
             if source.is_symlink() or not source.is_file():
                 raise RuntimeError(f"canonical skill runtime input is missing: {source}")
             files[destination] = source.read_text(encoding="utf-8")

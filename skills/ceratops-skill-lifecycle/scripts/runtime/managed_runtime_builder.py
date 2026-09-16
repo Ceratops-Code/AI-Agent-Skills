@@ -27,6 +27,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from collections.abc import Iterator, Mapping, Sequence
@@ -448,6 +449,92 @@ def _unsafe_link(path: pathlib.Path) -> bool:
     )
 
 
+def prepare_python_runtime(install_root: pathlib.Path) -> pathlib.Path | None:
+    """Prepare one immutable dependency version from source-only declarations.
+
+    Existing versions receive a read-only uv check. A damaged version is
+    replaced at a fresh path, so an already running helper keeps its files.
+    Failed new versions and index scratch files are removed by this call.
+    """
+
+    project = ROOT / "skills/sections/python"
+    declaration = project / "pyproject.toml"
+    lock = project / "uv.lock"
+    if not declaration.exists() and not lock.exists():
+        return None
+    if not declaration.is_file() or not lock.is_file() or any(_unsafe_link(path) for path in (project, declaration, lock)):
+        raise ValueError("source skill runtime requires regular pyproject.toml and uv.lock")
+    uv = shutil.which("uv")
+    if uv is None:
+        raise ValueError("uv is required to prepare the shared skill Python runtime")
+    digest = hashlib.sha256(declaration.read_bytes() + b"\0" + lock.read_bytes()).hexdigest()
+    root = install_root.parent / "runtimes/ceratops"
+    versions = root / "versions"
+    if any(_unsafe_link(path) for path in (root, versions)):
+        raise ValueError("shared skill runtime path cannot be a link")
+    versions.mkdir(parents=True, exist_ok=True)
+    index = root / "current.json"
+    if index.is_symlink() or index.is_junction() or _unsafe_link(index):
+        raise ValueError("shared skill runtime index cannot be a link")
+    current: dict[str, object] = {}
+    if index.is_file():
+        current = json.loads(index.read_text(encoding="utf-8"))
+        if not isinstance(current, dict):
+            raise ValueError("shared skill runtime index is invalid")
+    # A 96-bit directory key keeps nested Windows test and task paths below
+    # CreateProcess path limits; current.json retains the full lock digest.
+    version = digest[:24]
+    if current.get("digest") == digest:
+        recorded = current.get("version")
+        if isinstance(recorded, str) and re.fullmatch(r"[0-9a-f]{24}(?:-[0-9a-f]{8})?", recorded):
+            version = recorded
+    environment = os.environ.copy()
+    for key in ("PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV", "UV_PROJECT", "UV_PROJECT_ENVIRONMENT", "UV_WORKING_DIRECTORY", "UV_NO_SYNC", "UV_FROZEN", "UV_PYTHON"):
+        environment.pop(key, None)
+    environment["PYTHONNOUSERSITE"] = "1"
+    environment["PYTHONDONTWRITEBYTECODE"] = "1"
+    scripts = "Scripts" if os.name == "nt" else "bin"
+    executable = "python.exe" if os.name == "nt" else "python"
+
+    def interpreter(name: str) -> pathlib.Path:
+        return versions / name / ".venv" / scripts / executable
+
+    selected = versions / version
+    environment["UV_PROJECT_ENVIRONMENT"] = str(selected / ".venv")
+    if selected.is_symlink() or selected.is_junction():
+        raise ValueError("shared skill runtime version cannot be a link")
+    if selected.exists():
+        if _unsafe_link(selected):
+            raise ValueError("shared skill runtime version cannot be a link")
+        checked = subprocess.run(
+            [uv, "sync", "--quiet", "--project", str(project), "--locked", "--check", "--no-active"],
+            env=environment, capture_output=True, text=True, check=False,
+        )
+        if checked.returncode or not interpreter(version).is_file():
+            version = digest[:24] + "-" + uuid.uuid4().hex[:8]
+            selected = versions / version
+            environment["UV_PROJECT_ENVIRONMENT"] = str(selected / ".venv")
+    if not selected.exists():
+        result = subprocess.run(
+            [uv, "sync", "--quiet", "--project", str(project), "--locked", "--no-active"],
+            env=environment, capture_output=True, text=True, check=False,
+        )
+        if result.returncode or not interpreter(version).is_file():
+            if selected.exists():
+                shutil.rmtree(selected)
+            raise ValueError("shared skill runtime setup failed: " + (result.stderr or result.stdout).strip()[-1000:])
+    temporary: pathlib.Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=root, prefix=".current-", suffix=".tmp", delete=False) as handle:
+            temporary = pathlib.Path(handle.name)
+            json.dump({"digest": digest, "version": version}, handle, sort_keys=True)
+        os.replace(temporary, index)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+    return interpreter(version)
+
+
 def validate_tree_links(root: pathlib.Path) -> None:
     """Reject links or reparse points anywhere in one generated tree."""
 
@@ -610,6 +697,7 @@ def write_expected_skill(
     manifest: Mapping[str, object],
     *,
     source_repository_root: pathlib.Path | None = None,
+    python_runtime: pathlib.Path | None = None,
 ) -> None:
     """Write one canonical managed runtime tree into an empty target."""
 
@@ -658,6 +746,8 @@ def write_expected_skill(
         "generated_from": SECTION_MANIFEST.relative_to(ROOT).as_posix(),
         "payload_patterns": declarations,
     }
+    if python_runtime is not None:
+        runtime_manifest["python_runtime"] = str(python_runtime)
     (target_skill / MANIFEST_NAME).write_text(
         json.dumps(runtime_manifest, indent=2, sort_keys=True) + "\n",
         encoding="utf-8", newline="\n",
@@ -1026,6 +1116,11 @@ def install_transaction(
                     error, phase="preflight", skill=skill
                 )
 
+        try:
+            python_runtime = prepare_python_runtime(install_root) if deploy_names else None
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            raise TransactionError(str(exc), phase="runtime_prepare") from exc
+
         transaction_id = uuid.uuid4().hex
         deployed_paths: dict[str, pathlib.Path] = {}
         retired_paths: dict[str, pathlib.Path] = {}
@@ -1038,7 +1133,7 @@ def install_transaction(
                 current_skill = skill
                 staged = install_root / f".{skill}-deployed-{transaction_id}"
                 deployed_paths[skill] = staged
-                write_expected_skill(skill, staged, manifest)
+                write_expected_skill(skill, staged, manifest, python_runtime=python_runtime)
                 enable_windows_acl_inheritance(staged)
                 staged_manifest = read_runtime_manifest(staged)
                 if (

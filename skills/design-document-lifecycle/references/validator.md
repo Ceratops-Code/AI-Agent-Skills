@@ -2,14 +2,15 @@
 
 ## Invocation
 
-Run through the bundled `scripts/run-skill.py` launcher. The installed
-`scripts/python-runtime/pyproject.toml` and `uv.lock` declare its dependencies;
-uv synchronizes the fixed shared skills environment. Source development uses
-the repository's `scripts/pyproject.toml`. The validator itself makes no model
-or network calls and never edits a reviewed document.
+Read `python_runtime` from the installed skill's `.runtime-manifest.json` and
+run the helper with that interpreter through uv. The declarations remain in
+the skills source repository under `skills/sections/python`; deployment prepares
+a versioned shared environment. Source development uses the repository's
+`scripts/pyproject.toml`. The validator itself makes no model or network calls
+and never edits a reviewed document.
 
 ```text
-uv run --no-project --python 3.14 python scripts/run-skill.py scripts/validate_design_document.py validate --repo-root REPO --document docs/design.md --evidence-file EVIDENCE
+uv run --no-project --python <python_runtime> python scripts/validate_design_document.py validate --repo-root REPO --document docs/design.md --evidence-file EVIDENCE
 ```
 
 `--document` is relative to the repository. Embedded metadata uses one fenced

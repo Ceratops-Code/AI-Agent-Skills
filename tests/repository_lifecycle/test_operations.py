@@ -380,15 +380,18 @@ def test_v4_schema_rejects_ambiguous_steps_or_wrong_deliverable_actions(change) 
     assert contracts.validation_errors(fixture)
 
 
+@pytest.mark.skipif(shutil.which("uv") is None, reason="uv is required for installed Python actions")
 def test_registered_skill_executor_is_portable_and_failure_is_not_completion(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    handoffs = importlib.import_module("sdlc_handoffs")
+    handoffs = runner
     skill = tmp_path / "skills/example-skill"
     (skill / "references").mkdir(parents=True)
     (skill / "scripts").mkdir()
-    shutil.copyfile(ROOT / "skills/sections/scripts/run-skill.py", skill / "scripts/run-skill.py")
-    shutil.copytree(ROOT / "skills/sections/python", skill / "scripts/python-runtime")
+    python = tmp_path / "runtimes/ceratops/versions/test/.venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    created = subprocess.run(["uv", "venv", "--python", "3.14", str(python.parent.parent)], capture_output=True, text=True)
+    assert created.returncode == 0, created.stderr
+    (skill / ".runtime-manifest.json").write_text(json.dumps({"python_runtime": str(python)}))
     script = skill / "probe.py"
     script.write_text("import pathlib, sys\npathlib.Path(sys.argv[1], 'called.txt').write_text('called')\nraise SystemExit(int(sys.argv[2]))\n")
     binding = skill / "references/action-executors.json"
@@ -410,14 +413,14 @@ def test_registered_skill_executor_is_portable_and_failure_is_not_completion(
     assert result["status"] == "operation_failed"
     assert result["steps"] == [1]
     assert result["step_results"] == [{"step": 1, "result": receipt}]
-    (skill / "scripts/run-skill.py").unlink()
+    (skill / ".runtime-manifest.json").unlink()
     assert handoffs.execute_handoff("example-skill/check", repo)["status"] == "handoff_required"
 
 
 def test_registered_skill_executor_uses_installed_authorized_source_bundle(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    handoffs = importlib.import_module("sdlc_handoffs")
+    handoffs = runner
     codex_home = tmp_path / "codex"
     installed = codex_home / "skills" / "example-skill"
     source_repo = tmp_path / "repository"
@@ -437,7 +440,6 @@ def test_registered_skill_executor_uses_installed_authorized_source_bundle(
     for root in (installed, source):
         (root / "references" / "action-executors.json").write_text(encoded)
         (root / "scripts" / "probe.py").write_text("print('OK')\n")
-    (installed / "scripts" / "run-skill.py").write_text("# launcher\n")
     monkeypatch.setenv("CODEX_HOME", str(codex_home))
     monkeypatch.setattr(handoffs.shutil, "which", lambda name: "uv" if name == "uv" else None)
     calls: list[list[str]] = []
@@ -452,7 +454,6 @@ def test_registered_skill_executor_uses_installed_authorized_source_bundle(
         source / "scripts" / "probe.py"
     ).resolve()
     assert calls[0][0] == sys.executable
-    assert str(installed / "scripts" / "run-skill.py") not in calls[0]
 
     changed_binding = json.loads(encoded)
     changed_binding["actions"]["check"]["run"].append("changed")
@@ -472,7 +473,7 @@ def test_registered_skill_executor_uses_installed_authorized_source_bundle(
 def test_tool_install_binding_uses_checkout_metadata_and_propagates_failures(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, failure: str | None,
 ) -> None:
-    handoffs = importlib.import_module("sdlc_handoffs")
+    handoffs = runner
     skill = tmp_path / "skills/ceratops-tool-lifecycle/references"
     skill.mkdir(parents=True)
     shutil.copyfile(ROOT / "skills/ceratops-tool-lifecycle/references/action-executors.json", skill / "action-executors.json")

@@ -131,9 +131,9 @@ def test_compatibility_materializer_supplies_target_identity_and_assignments(
             "steps": [{"run": [sys.executable, "-V"]}]
         }
     }
-    assert {item["target"] for item in manifest["runtime_payloads"]["*"]} == {
-        "scripts/run-skill.py", "scripts/python-runtime/pyproject.toml", "scripts/python-runtime/uv.lock",
-    }
+    assert manifest["runtime_payloads"] == {}
+    assert not (repo / "skills/sections/scripts/run-skill.py").exists()
+    assert (repo / "skills/sections/python/pyproject.toml").is_file()
     assert (repo / "skills/sections/python/uv.lock").is_file()
     updates = yaml.safe_load((repo / ".github/dependabot.yml").read_text())["updates"]
     assert {item["directory"] for item in updates if item["package-ecosystem"] == "uv"} == {

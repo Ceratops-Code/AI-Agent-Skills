@@ -8,6 +8,7 @@ import runpy
 import shutil
 import subprocess
 import sys
+import time
 
 import pytest
 
@@ -404,7 +405,7 @@ def test_bootstrap_rejects_undeclared_selection_without_runtime_fallback(
     assert "installed runtime failed" not in result.stderr
 
 
-def test_bootstrap_full_install_materializes_self_contained_lifecycle_bundle(
+def test_bootstrap_full_install_materializes_lifecycle_bundle_with_source_runtime(
     tmp_path: pathlib.Path,
 ) -> None:
     codex_home = tmp_path / "empty-codex-home"
@@ -1030,7 +1031,7 @@ def test_contract_review_adoption_and_all_managed_output(tmp_path: pathlib.Path)
 
 @pytest.mark.skipif(shutil.which("uv") is None, reason="uv is required for the deployed runtime integration")
 def test_shared_skill_python_environment_reuses_lock_and_repairs_missing_package(tmp_path: pathlib.Path) -> None:
-    """Installed skills synchronize their declared locks into one fixed environment."""
+    """Install once per lock, invoke directly, and repair at a new path."""
     from concurrent.futures import ThreadPoolExecutor
 
     codex_home = tmp_path / "codex home"
@@ -1041,12 +1042,20 @@ def test_shared_skill_python_environment_reuses_lock_and_repairs_missing_package
         "--skill", names[0], "--skill", names[1],
     ], capture_output=True, text=True)
     assert installed.returncode == 0, installed.stderr
+    assert INSTALLER_VERSION == runpy.run_path(str(BOOTSTRAP))["INSTALLER_VERSION"]
     uv = shutil.which("uv")
     assert uv is not None
     environment = {**os.environ, "CODEX_HOME": str(codex_home)}
+    manifests = [json.loads((destination / name / ".runtime-manifest.json").read_text()) for name in names]
+    runtimes = [pathlib.Path(item["python_runtime"]) for item in manifests]
+    assert runtimes[0] == runtimes[1]
+    assert runtimes[0].is_file()
+    assert runtimes[0].parent.parent.parent.parent == codex_home / "runtimes/ceratops/versions"
     for name in names:
         skill = destination / name
         assert not (skill / ".venv").exists()
+        assert not (skill / "scripts/run-skill.py").exists()
+        assert not (skill / "scripts/python-runtime").exists()
         (skill / "scripts/probe.py").write_text(
             "import json, jsonschema, yaml, markdown_it, sys, subprocess\n"
             "from zoneinfo import ZoneInfo\n"
@@ -1057,8 +1066,8 @@ def test_shared_skill_python_environment_reuses_lock_and_repairs_missing_package
 
     def invoke(name: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run([
-            uv, "run", "--no-project", "--python", "3.14", "python",
-            str(destination / name / "scripts/run-skill.py"), "scripts/probe.py", "two words",
+            uv, "run", "--no-project", "--python", str(runtimes[names.index(name)]), "python",
+            str(destination / name / "scripts/probe.py"), "two words",
         ], cwd=tmp_path, env=environment, capture_output=True, text=True)
 
     with ThreadPoolExecutor(max_workers=2) as pool:
@@ -1069,30 +1078,17 @@ def test_shared_skill_python_environment_reuses_lock_and_repairs_missing_package
     assert first["args"] == ["two words"]
     assert first["python"] == first["nested"]
     interpreter = pathlib.Path(first["python"])
-    assert interpreter.parent.parent == codex_home / "runtimes/ceratops/.venv"
-    assert ".venv" in interpreter.parts
-    assert not list((codex_home / "runtimes/ceratops").glob(".prepare-*"))
-    launcher_path = destination / names[0] / "scripts/run-skill.py"
-    module_result = subprocess.run([
-        sys.executable, str(launcher_path), "-m", "probe", "two words",
-    ], cwd=tmp_path, env=environment, capture_output=True, text=True)
-    assert module_result.returncode == 0, module_result.stderr
-    assert json.loads(module_result.stdout) == first
-    (launcher_path.parent / "failed.py").write_text("import sys\nprint('helper failure', file=sys.stderr)\nraise SystemExit(7)\n")
+    assert interpreter == runtimes[0]
+    assert json.loads(invoke(names[0]).stdout) == first
+    failed_script = destination / names[0] / "scripts/failed.py"
+    failed_script.write_text("import sys\nprint('helper failure', file=sys.stderr)\nraise SystemExit(7)\n")
     failed = subprocess.run([
-        sys.executable, str(launcher_path), "scripts/failed.py",
+        uv, "run", "--no-project", "--python", str(interpreter), "python", str(failed_script),
     ], cwd=tmp_path, env=environment, capture_output=True, text=True)
-    assert failed.returncode == 7 and failed.stderr == "helper failure\n"
+    assert failed.returncode == 7 and "helper failure" in failed.stderr
 
-    removed = subprocess.run([uv, "pip", "uninstall", "--python", str(interpreter), "jsonschema"], capture_output=True, text=True)
-    assert removed.returncode == 0, removed.stderr
-    repaired = invoke(names[0])
-    assert repaired.returncode == 0, repaired.stderr
-    assert json.loads(repaired.stdout)["python"] == str(interpreter)
-
-    # A lifecycle engine launched from an installed skill must let target uv
-    # commands select scripts/.venv, even though the engine itself uses the
-    # fixed shared environment. A later skill import must remain usable.
+    # A skill helper may run a target repository's uv command without sending
+    # that target into the shared skill environment.
     repository = tmp_path / "target repository"
     scripts = repository / "scripts"
     scripts.mkdir(parents=True)
@@ -1115,34 +1111,95 @@ def test_shared_skill_python_environment_reuses_lock_and_repairs_missing_package
         },
     }))
     through_skill = subprocess.run([
-        sys.executable, str(launcher_path), "scripts/repository_operation.py",
+        uv, "run", "--no-project", "--python", str(interpreter), "python",
+        str(destination / names[0] / "scripts/repository_operation.py"),
         "--repo-root", str(repository), "--validate", "--ci",
     ], cwd=tmp_path, env=environment, capture_output=True, text=True)
     assert through_skill.returncode == 0, through_skill.stderr
     assert pathlib.Path(json.loads((repository / "target-python.json").read_text())) == scripts / ".venv"
     shared_import = subprocess.run([str(interpreter), "-c", "import jsonschema, yaml"], capture_output=True, text=True)
     assert shared_import.returncode == 0, shared_import.stderr
+    removed = subprocess.run([uv, "pip", "uninstall", "--python", str(interpreter), "jsonschema"], capture_output=True, text=True)
+    assert removed.returncode == 0, removed.stderr
+    legacy_scripts = destination / names[0] / "scripts"
+    (legacy_scripts / "run-skill.py").write_text("# retired launcher\n")
+    legacy_project = legacy_scripts / "python-runtime"
+    legacy_project.mkdir()
+    (legacy_project / "pyproject.toml").write_text("# retired declaration\n")
+    (legacy_project / "uv.lock").write_text("# retired lock\n")
+    redeployed = subprocess.run([
+        sys.executable, str(BOOTSTRAP), "--repo-root", str(ROOT), "--install-root", str(destination),
+        "--skill", names[0], "--skill", names[1],
+    ], capture_output=True, text=True)
+    assert redeployed.returncode == 0, redeployed.stderr
+    assert not (legacy_scripts / "run-skill.py").exists()
+    assert not legacy_project.exists()
+    new_paths = [pathlib.Path(json.loads((destination / name / ".runtime-manifest.json").read_text())["python_runtime"]) for name in names]
+    assert new_paths[0] == new_paths[1] != interpreter
+    assert new_paths[0].is_file() and interpreter.is_file()
+    repaired = subprocess.run([
+        uv, "run", "--no-project", "--python", str(new_paths[0]), "python",
+        str(destination / names[0] / "scripts/probe.py"), "two words",
+    ], cwd=tmp_path, env=environment, capture_output=True, text=True)
+    assert repaired.returncode == 0, repaired.stderr
+    assert json.loads(repaired.stdout)["python"] == str(new_paths[0])
 
-    project = destination / names[1] / "scripts/python-runtime"
-    pyproject = project / "pyproject.toml"
-    pyproject.write_text(pyproject.read_text().replace('version = "0.0.0"', 'version = "0.1.0"'))
-    stale = invoke(names[1])
-    assert stale.returncode != 0
-    assert not stale.stdout.strip()
-    locked = subprocess.run([uv, "lock", "--project", str(project)], capture_output=True, text=True)
-    assert locked.returncode == 0, locked.stderr
-    separate = invoke(names[1])
-    assert separate.returncode == 0, separate.stderr
-    assert json.loads(separate.stdout)["python"] == str(interpreter)
-    assert json.loads(invoke(names[0]).stdout)["python"] == str(interpreter)
 
-    launcher = runpy.run_path(str(destination / names[0] / "scripts/run-skill.py"))
-    bundled = launcher["runtime_project"](destination / names[0])
-    assert bundled == destination / names[0] / "scripts/python-runtime"
-    (bundled / "pyproject.toml").write_text("changed = true\n")
-    with pytest.raises(ValueError, match="requires-python"):
-        launcher["runtime_project"](destination / names[0])
-    assert {path.name for path in (codex_home / "runtimes/ceratops").iterdir()} == {".venv", "runtime.lock"}
+@pytest.mark.skipif(shutil.which("uv") is None, reason="uv is required for the deployed runtime integration")
+def test_runtime_update_preserves_an_active_helper_environment(tmp_path: pathlib.Path) -> None:
+    """A lock change creates a new venv while an old helper still imports."""
+
+    repo = tmp_path / "source"
+    create_compatible_repo(repo, "example/versioned-runtime", ["alpha-tool"])
+    project = repo / "skills/sections/python"
+    shutil.copytree(ROOT / "skills/sections/python", project)
+    script = repo / "skills/alpha-tool/scripts/probe.py"
+    script.parent.mkdir(exist_ok=True)
+    script.write_text(
+        "import pathlib,sys,time\n"
+        "ready=pathlib.Path(sys.argv[1]); release=pathlib.Path(sys.argv[2])\n"
+        "ready.write_text('ready')\n"
+        "while not release.exists(): time.sleep(0.05)\n"
+        "import jsonschema\nprint('old runtime survived')\n",
+    )
+    installed = tmp_path / "codex/skills"
+    command = [sys.executable, str(BOOTSTRAP), "--repo-root", str(repo), "--install-root", str(installed), "--skill", "alpha-tool"]
+    first = subprocess.run(command, capture_output=True, text=True)
+    assert first.returncode == 0, first.stderr
+    manifest = installed / "alpha-tool/.runtime-manifest.json"
+    old_python = pathlib.Path(json.loads(manifest.read_text())["python_runtime"])
+    ready, release = tmp_path / "ready", tmp_path / "release"
+    uv = shutil.which("uv")
+    assert uv is not None
+    helper = subprocess.Popen(
+        [uv, "run", "--no-project", "--python", str(old_python), "python", str(installed / "alpha-tool/scripts/probe.py"), str(ready), str(release)],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )
+    try:
+        deadline = time.monotonic() + 10
+        while not ready.exists() and helper.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert ready.exists()
+        pyproject = project / "pyproject.toml"
+        pyproject.write_text(pyproject.read_text().replace(
+            'dependencies = ["jsonschema", "markdown-it-py", "PyYAML", "tzdata"]',
+            "dependencies = []",
+        ))
+        locked = subprocess.run([uv, "lock", "--project", str(project)], capture_output=True, text=True)
+        assert locked.returncode == 0, locked.stderr
+        second = subprocess.run(command, capture_output=True, text=True)
+        assert second.returncode == 0, second.stderr
+        new_python = pathlib.Path(json.loads(manifest.read_text())["python_runtime"])
+        assert new_python != old_python and new_python.is_file() and old_python.is_file()
+        release.write_text("go")
+        stdout, stderr = helper.communicate(timeout=10)
+        assert helper.returncode == 0, stderr
+        assert stdout.strip() == "old runtime survived"
+    finally:
+        release.write_text("go")
+        if helper.poll() is None:
+            helper.kill()
+            helper.communicate()
 
 
 @pytest.mark.parametrize("renderer", [BOOTSTRAP, INSTALLER_TEMPLATE, BUILDER], ids=["repository", "compatible", "managed"])
