@@ -59,7 +59,9 @@ SKILL_NAME_PATTERN = r"(?![a-z0-9-]*--)[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?"
 NAME_RE = re.compile(rf"^{SKILL_NAME_PATTERN}$")
 SKILL_REF_RE = re.compile(r"\$([a-z0-9]+(?:-[a-z0-9]+)+)(?![A-Za-z0-9_-])")
 README_SKILL_ROW_RE = re.compile(
-    rf"^\|\s*`(?P<name>{SKILL_NAME_PATTERN})`\s*\|",
+    rf"^\|\s*(?:`(?P<plain>{SKILL_NAME_PATTERN})`|"
+    rf"\[`(?P<linked>{SKILL_NAME_PATTERN})`\]"
+    rf"\(skills/(?P=linked)/README\.md\))\s*\|",
     re.MULTILINE,
 )
 ACTION_REFERENCES_HEADING = "### Action References"
@@ -540,7 +542,10 @@ def readme_skill_rows(readme_text: str) -> set[str]:
     match = re.search(r"^## Skills\s*$\n(?P<body>.*?)(?=^##\s|\Z)", readme_text, re.MULTILINE | re.DOTALL)
     if match is None:
         return set()
-    return {row.group("name") for row in README_SKILL_ROW_RE.finditer(match.group("body"))}
+    return {
+        str(row.group("plain") or row.group("linked"))
+        for row in README_SKILL_ROW_RE.finditer(match.group("body"))
+    }
 
 
 def validate_workflow_target(command: str, skill_names: set[str]) -> list[str]:
@@ -1186,7 +1191,7 @@ def check_resource_layout(skill_dir: pathlib.Path, profile: str) -> list[str]:
     errors: list[str] = []
     allowed_dirs = ALLOWED_SKILL_RESOURCE_DIRS if profile == PROFILE_CERATOPS else ALLOWED_SKILL_RESOURCE_DIRS | {"tests"}
     for child in skill_dir.iterdir():
-        if child.is_file() and child.name != "SKILL.md":
+        if child.is_file() and child.name not in {"SKILL.md", "README.md"}:
             errors.append(f"{skill_dir.name}: unsupported top-level file {child.name}")
         if child.is_dir() and child.name not in allowed_dirs:
             errors.append(f"{skill_dir.name}: unsupported top-level directory {child.name}")

@@ -180,6 +180,37 @@ def test_compatible_full_validation_accepts_arbitrary_skill_names(tmp_path: path
     assert result.stdout.strip() == "ok: 1"
 
 
+def test_source_validator_accepts_skill_readme_and_linked_root_row(
+    tmp_path: pathlib.Path,
+) -> None:
+    repo = tmp_path / "compatible"
+    create_compatible_repo(repo, "example/compatible", ["alpha-tool"])
+    (repo / "skills" / "alpha-tool" / "README.md").write_text(
+        "# Alpha Tool Design\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    root_readme = repo / "README.md"
+    root_readme.write_text(
+        root_readme.read_text(encoding="utf-8").replace(
+            "| `alpha-tool` | Test skill. |",
+            "| [`alpha-tool`](skills/alpha-tool/README.md) | Test skill. |",
+        ),
+        encoding="utf-8",
+        newline="\n",
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(VALIDATOR), "--repo-root", str(repo), "--mode", "full"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "ok: 1"
+
+
 def test_source_validator_ignores_shared_sections_directory(tmp_path: pathlib.Path) -> None:
     repo = tmp_path / "compatible"
     create_compatible_repo(repo, "example/compatible", ["alpha-tool"])
