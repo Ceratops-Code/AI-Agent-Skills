@@ -1035,6 +1035,7 @@ def test_delivery_uses_saved_stages_without_running_checks(
     tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str],
     repository_ignores_build: bool,
 ) -> None:
+    """Repository scripts may reuse results; the lifecycle still invokes them."""
     import importlib
     runner = importlib.import_module("repository_operation")
     repo, deploy = _saved_stage_fixture(tmp_path)
@@ -1043,59 +1044,40 @@ def test_delivery_uses_saved_stages_without_running_checks(
         assert run_git(repo, "add", "-u").returncode == 0
         assert run_git(repo, "-c", "user.name=Fixture", "-c", "user.email=fixture@invalid",
                        "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null",
-                       "commit", "--quiet", "-m", "older repository without build exclusion").returncode == 0
+                       "commit", "--quiet", "-m", "only repository-owned exclusions").returncode == 0
     base = ["--repo-root", str(repo)]
     assert runner.main([*base, "--validate"]) == 0
-    assert (repo / ".build/events").read_text().splitlines() == ["validation"]
-    assert runner.main([*base, "--operation", deploy]) == 1
-    assert (repo / ".build/events").read_text().splitlines() == ["validation"]
     assert runner.main([*base, "--tests"]) == 0
-    capsys.readouterr()
     assert runner.main([*base, "--tests"]) == 0
-    assert any(row.get("reused") for row in json.loads(capsys.readouterr().out)["results"])
-    assert (repo / ".build/events").read_text().splitlines() == ["validation", "tests"]
+    assert (repo / ".build/events").read_text().splitlines() == ["validation", "tests", "tests"]
     assert runner.main([*base, "--operation", deploy]) == 0
-    assert (repo / ".build/events").read_text().splitlines() == ["validation", "tests", "deploy"]
-    assert list((repo / ".build/sdlc").glob("*.json"))
-    assert not list((repo / ".build/sdlc").glob(".stage-*.tmp"))
+    assert (repo / ".build/events").read_text().splitlines() == ["validation", "tests", "tests", "validation", "tests", "deploy"]
+    assert not (repo / ".build/sdlc").exists()
     assert run_git(repo, "status", "--porcelain").stdout == ""
-    assert run_git(repo, "add", ".", "--dry-run").stdout == ""
+    capsys.readouterr()
 
 
 @pytest.mark.parametrize("change", ["missing", "failed", "corrupt", "running", "source", "commit", "environment"])
 def test_delivery_rejects_inapplicable_latest_stage_without_retesting(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, change: str,
 ) -> None:
+    """The repository owns stale-result policy; its nonzero exit stops delivery."""
     import importlib
     runner = importlib.import_module("repository_operation")
-    evidence = importlib.import_module("sdlc_gate_evidence")
     repo, deploy = _saved_stage_fixture(tmp_path)
     base = ["--repo-root", str(repo)]
     assert runner.main([*base, "--validate", "--tests"]) == 0
-    assert (repo / ".build/events").read_text().splitlines() == ["validation", "tests"]
-    stage = runner.prepare_operations(repo, [runner.OperationRequest("repository.tests.behavior")])[0]
-    if change == "missing":
-        evidence._path(stage).unlink()
-    elif change == "failed":
-        (repo / ".build/fail").touch()
-        assert runner.main([*base, "--tests", "--fresh"]) == 1
-        (repo / ".build/fail").unlink()
-    elif change == "corrupt":
-        evidence._path(stage).write_text("{broken", encoding="utf-8")
-    elif change == "running":
-        record = evidence._read(stage)
-        assert record is not None
-        record.update(status="running", reusable=False)
-        evidence._write(stage, record)
-    elif change in {"source", "commit"}:
-        (repo / "source.txt").write_text("new input", encoding="utf-8")
-        if change == "commit":
-            assert run_git(repo, "add", "source.txt").returncode == 0
-            assert run_git(repo, "-c", "user.name=Fixture", "-c", "user.email=fixture@invalid",
-                           "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null",
-                           "commit", "--quiet", "-m", "changed input").returncode == 0
-    else:
-        monkeypatch.setenv("NODE_OPTIONS", "--no-warnings")
-    before = (repo / ".build/events").read_text()
+    if change == "source":
+        (repo / "probe.py").write_text("changed source")
+        assert runner.main([*base, "--operation", deploy]) == 1
+        assert (repo / ".build/events").read_text().splitlines() == ["validation", "tests"]
+        return
+    # Model the repository deciding that its saved result is unusable. Generic
+    # orchestration receives only the exit code, never the result schema.
+    (repo / ".build/fail").write_text(change)
     assert runner.main([*base, "--operation", deploy]) == 1
-    assert (repo / ".build/events").read_text() == before
+    assert (repo / ".build/events").read_text().splitlines() == ["validation", "tests", "validation", "tests"]
+    (repo / ".build/fail").unlink()
+    assert runner.main([*base, "--operation", deploy]) == 0
+    assert (repo / ".build/events").read_text().splitlines()[-3:] == ["validation", "tests", "deploy"]
+    assert not (repo / ".build/sdlc").exists()

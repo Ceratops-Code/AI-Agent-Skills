@@ -1,8 +1,8 @@
 version: 3
 kind: ceratops-sdlc
 # Lifecycle order: validation, tests, then explicitly requested deployment.
-# The SDLC runner saves stage completion in .build/sdlc. Test commands may
-# reuse applicable passing results; deployment verifies the saved stages only.
+# The SDLC runner invokes repository validation and tests before deployment.
+# Repository scripts own result storage, reuse and applicability; success is exit 0.
 # Keep behavioral test commands under tests, never under validate or deploy-local.
 repository:
   prerequisites:

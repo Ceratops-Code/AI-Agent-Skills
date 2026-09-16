@@ -582,33 +582,23 @@ commands select the project with `--project scripts`. Repository scripts
 contain no environment bootstrap or package-installation logic. Existing
 test implementations and non-Python test commands remain repository-owned.
 
-For Git checkouts, the SDLC engine retains the latest outcome of each declared
-validation or test operation in `.build/sdlc`. Each record binds the clean
-commit, contract, expanded command, checkout, and execution environment. The
-engine writes a running record before execution and then saves the outcome;
-interruption or failure cannot expose an older passing result. These records
-describe command completion. Artifact-specific qualification and its evidence
-remain owned by the deliverable's existing helper.
+The lifecycle runner invokes the declared repository validation and test
+scripts before deployment and continues only when they succeed. It does not
+store another results cache or interpret repository reports. A script's zero
+exit code means its complete requested scope passed, either through execution
+or through applicable saved results verified by that script.
 
-The test stage reuses matching successful records and executes tests when the
-record is absent, failed, or no longer applicable. `--fresh` executes the test
-command again; that command owns its finer cache controls. Repository test
-runners may additionally retain finer test-group
-results under `.build/tests`, binding them to the inputs and environment that
-affect those tests. This permits reuse across unrelated source changes while
-the new complete stage result identifies the current commit. Validation and
-test output directories belong in `.gitignore`; compatibility supplies that
-entry. The engine also ignores its own result directory locally, so existing
-repositories cannot accidentally commit its generated records. Standalone
-non-Git capability calls do not create reusable stage records.
+The validator owns validation checks and reporting. The test runner owns test
+execution, result storage and reuse. Repository runners can overwrite the latest
+result per test or group in `.test-results/`, with supporting screenshots and
+logs in its ignored `evidence/` subdirectory. A targeted rerun replaces its own
+results, including failures, and preserves other results only when their inputs
+and execution context still match. An interrupted attempt cannot leave an older
+pass reusable. Package/build metadata and approval belong in `.build/`.
 
-Deployment holds the applicable stage records while checking their successful
-completion and exact current identities. Missing, incomplete, failed or changed
-records stop delivery and identify the stage to run; delivery does not run that
-stage itself. A test pass does not replace the delivery operation's immediate
-destination checks or its producer-specific completion receipt. Run validation,
-then tests, then the explicitly requested deployment. Saved records are local
-working data, not a substitute for CI or an authorization to deploy.
+Repository scripts own their output paths and Git ignore rules. Saved results
+are local working data and do not authorize deployment. Deployment retains its
+immediate destination checks and producer-specific completion result.
 
 This source repository uses `scripts/pyproject.toml` and `scripts/uv.lock` for
 its maintenance scripts, Python tests, and Ruff and mypy settings. Its SDLC v3
