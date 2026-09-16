@@ -288,7 +288,12 @@ and publishes no complete result.
 
 Sibling attempts that finished before one concurrent failure are checkpointed
 before that failure is surfaced. Timeouts and interruption terminate the child
-process tree rather than leaving an untracked model process running.
+process tree rather than leaving an untracked model process running. Sol children
+time out after 600 seconds; Luna keeps its 1,200-second timeout. A Sol timeout
+with no result is checkpointed and retried once with the same frozen task when
+the existing Sol attempt cap permits. A second timeout stops the run. Other
+runner failures do not receive this retry. The extra attempt can increase model
+call spend, and a valid Sol response taking over ten minutes may be cut off.
 
 ### 6.3 Resume and idempotency
 

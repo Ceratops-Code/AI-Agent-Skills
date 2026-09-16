@@ -116,9 +116,11 @@ Preserve every confirmed finding and report every capacity omission.
    sibling attempt. On resume, revalidate complete task-owned attempt artifacts
    against the frozen prompt, schema, identity, input hash, and result contract
    before launching; block incomplete or conflicting artifacts. Wait without
-   model polling, terminate the complete child process tree on interruption or
-   timeout, and resume accepted phases idempotently. Run no model bookkeeping
-   calls.
+   model polling and terminate the complete child process tree on interruption
+   or timeout. Set the Sol child timeout to 600 seconds. When a Sol child times
+   out without a result, checkpoint it and retry that frozen task once within
+   the existing Sol attempt cap; stop if it times out again. Resume accepted
+   phases idempotently. Run no model bookkeeping calls.
 
 Every child Codex execution uses an explicit model, a read-only sandbox, no
 approvals, a self-contained no-tools prompt, and controller-owned schema, event,

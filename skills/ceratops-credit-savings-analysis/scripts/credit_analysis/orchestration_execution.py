@@ -90,6 +90,15 @@ def _schema_rejection(attempt: Mapping[str, Any]) -> str | None:
     return None
 
 
+def _sol_timeout_count(execution: Mapping[str, Any]) -> int:
+    """Count recorded no-result Sol timeouts across controller resumes."""
+
+    return sum(
+        attempt.get("outcome") == "runner-error" and attempt.get("timed_out") is True
+        for attempt in execution["attempts"]
+    )
+
+
 def _prior_rejection(
     state: Mapping[str, Any], task: Mapping[str, Any], input_sha: str,
     *, oldest: bool = False,
@@ -336,6 +345,7 @@ def _holistic_model_attempt(
             schema_path=schema_path,
             attempt_dir=attempt_dir,
             execution_cwd=pathlib.Path(str(task["execution_cwd"])),
+            timeout_seconds=600 if task["phase"].startswith("sol-") else 1200,
         )
     else:
         raw, attempt = analysis._invoke_injected_runner(
@@ -498,6 +508,13 @@ def _consume_attempt(
         )
         if schema_error is not None:
             raise CreditAnalysisError(schema_error)
+        if (
+            task["phase"].startswith("sol-")
+            and attempt.get("timed_out") is True
+            and _sol_timeout_count(execution) == 1
+            and analysis._sol_attempt_capacity(state, contract, task) > 0
+        ):
+            return 0
         if task["phase"] == "luna-discovery":
             _omit_luna_task(
                 state,
@@ -720,6 +737,10 @@ def command_execute_orchestration(
                 continue
             if base_task["phase"].startswith("sol-") and state.get("routing") is None:
                 continue
+            if base_task["phase"].startswith("sol-") and _sol_timeout_count(execution) > 1:
+                raise CreditAnalysisError(
+                    f"{task_id} timed out twice; stopped before another model call"
+                )
             ready.append(analysis._holistic_runtime_task(state, base_task))
 
         if not ready:

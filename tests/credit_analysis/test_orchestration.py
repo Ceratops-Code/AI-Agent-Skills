@@ -123,6 +123,111 @@ def test_completion_checkpoint_precedes_slow_sibling_and_replays(
     assert len(runner.calls) == call_count
 
 
+@pytest.mark.parametrize("outcome", ["recovered", "timed-out-twice", "other-error"])
+def test_sol_timeout_retries_only_once_for_no_result(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, outcome: str,
+) -> None:
+    workflow = load_credit_analysis_workflow_module()
+    request, _, _ = credit_analysis_request(tmp_path)
+    plan = workflow.command_plan_orchestration(request, available_models=holistic_model_catalog())
+    state_path = pathlib.Path(plan["state_path"])
+    runner = FakeCreditModelRunner()
+    workflow.command_execute_orchestration(
+        state_path, runner=runner, task_limit=plan["projected_luna_calls"],
+    )
+    original_invoke = workflow._invoke_injected_runner
+    launches: list[str] = []
+
+    def invoke(runner_arg: Any, **kwargs: Any) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+        raw, attempt = original_invoke(runner_arg, **kwargs)
+        if kwargs["task"]["phase"] != "sol-adjudication":
+            return raw, attempt
+        launches.append(pathlib.Path(kwargs["attempt_dir"]).name)
+        if outcome == "recovered" and len(launches) == 2:
+            return raw, attempt
+        pathlib.Path(attempt["raw_output_path"]).unlink()
+        events = pathlib.Path(attempt["events_path"])
+        events.write_text(
+            '{"type":"thread.started","thread_id":"synthetic"}\n'
+            '{"type":"turn.started"}\n',
+            encoding="utf-8", newline="\n",
+        )
+        attempt.update(
+            timed_out=outcome != "other-error",
+            terminated=True,
+            exit_code=1,
+            error="timed out after 600s" if outcome != "other-error" else "other runner error",
+            event_summary=workflow._jsonl_event_summary(events),
+        )
+        return None, attempt
+
+    monkeypatch.setattr(workflow, "_invoke_injected_runner", invoke)
+    if outcome == "recovered":
+        workflow.command_execute_orchestration(
+            state_path, runner=runner, task_limit=1, stop_on_validation_error=True,
+        )
+    else:
+        message = "timed out" if outcome == "timed-out-twice" else "other runner error"
+        with pytest.raises(workflow.CreditAnalysisError, match=message):
+            workflow.command_execute_orchestration(
+                state_path, runner=runner, task_limit=1, stop_on_validation_error=True,
+            )
+    saved = json.loads(state_path.read_text(encoding="utf-8"))
+    task_id = next(
+        task["task_id"] for task in saved["manifest"]["sol_tasks"]
+        if task["phase"] == "sol-adjudication"
+    )
+    attempts = saved["execution"][task_id]["attempts"]
+    assert len(attempts) == (1 if outcome == "other-error" else 2)
+    assert launches == [f"attempt-{index:03d}" for index in range(1, len(attempts) + 1)]
+    assert attempts[0]["outcome"] == "runner-error"
+    assert attempts[0]["artifacts"]["raw_output"] is None
+    if outcome == "recovered":
+        assert saved["execution"][task_id]["status"] == "complete"
+        assert attempts[1]["outcome"] == "accepted"
+        assert attempts[0]["input_sha256"] == attempts[1]["input_sha256"]
+        assert attempts[0]["prompt_path"] == attempts[1]["prompt_path"]
+    elif outcome == "timed-out-twice":
+        assert attempts[1]["outcome"] == "runner-error"
+        assert saved["execution"][task_id]["status"] == "pending"
+        with pytest.raises(workflow.CreditAnalysisError, match="timed out twice"):
+            workflow.command_execute_orchestration(state_path, runner=runner, task_limit=1)
+        assert len(launches) == 2
+
+
+def test_sol_timeout_is_ten_minutes_without_changing_luna(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from credit_analysis import luna_sol_analysis
+    from credit_analysis.orchestration_execution import _holistic_model_attempt
+
+    deadlines: list[int] = []
+
+    def capture(**kwargs: Any) -> None:
+        deadlines.append(kwargs["timeout_seconds"])
+        raise RuntimeError("captured child deadline")
+
+    monkeypatch.setattr(luna_sol_analysis, "_run_codex_child", capture)
+    for phase, role in (("luna-discovery", "luna"), ("sol-adjudication", "sol")):
+        task_id = f"{role}.test"
+        task = {
+            "task_id": task_id, "phase": phase,
+            "artifacts": {"attempts": str(tmp_path / task_id)},
+            "execution_cwd": str(tmp_path),
+        }
+        state = {
+            "analysis_id": "test", "execution": {task_id: {"attempts": []}},
+            "model_specs": {role: {"model": f"gpt-5.6-{role}", "reasoning_effort": "max"}},
+        }
+        with pytest.raises(RuntimeError, match="captured child deadline"):
+            _holistic_model_attempt(
+                runner=None, state=state, task=task, payload={}, input_sha="test",
+                prompt_path=tmp_path / "prompt.md", schema_path=tmp_path / "schema.json",
+                attempt_number=1,
+            )
+    assert deadlines == [1200, 600]
+
+
 @pytest.mark.parametrize("defect", ["reason", "judgment", "interrupted", "legacy"])
 def test_correction_feedback_retains_rejected_response_and_exact_errors(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, defect: str,
