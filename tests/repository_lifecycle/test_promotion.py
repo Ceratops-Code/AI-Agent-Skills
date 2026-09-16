@@ -326,15 +326,6 @@ def test_promote_repository_runs_explicit_operation_ids_in_order(
         assert "deliverables.sample.deploy-local.missing" in failure["message"]
         assert not log.exists()
         return
-    if validation_mode in {"discovered", "explicit"}:
-        # An unexecuted legacy handoff cannot supply successful validation.
-        assert promoted.returncode == 1
-        failure = json.loads(promoted.stderr)
-        assert failure["phase"] == "deployment"
-        assert failure["status"] == "validation_failed"
-        assert failure["required_operation"] == "deliverables.sample.validate.advisory"
-        assert log.read_text(encoding="utf-8").splitlines() == checks
-        return
     assert promoted.returncode == 0, promoted.stderr
     result = json.loads(promoted.stdout)
     assert json.loads(result_file.read_text(encoding="utf-8")) == result
@@ -350,8 +341,21 @@ def test_promote_repository_runs_explicit_operation_ids_in_order(
         *checks, "promotion-check", "custom-deploy",
     ]
     assert result["operations"]["status"] == "completed"
-    assert "validation_handoffs" not in result
-    assert "validation_handoffs" not in result["operations"]
+    if validation_mode != "absent":
+        # Older SDLC versions retain advisory routing without claiming the
+        # handed-off action completed. Version 3 enforces executable gates.
+        expected_handoffs = [{
+            "operation": "deliverables.sample.validate.advisory",
+            "commit": result["head"],
+            "steps": [],
+            "status": "advisory",
+            "handoff": "ceratops-skill-lifecycle/source-validate",
+        }]
+        assert result["validation_handoffs"] == expected_handoffs
+        assert result["operations"]["validation_handoffs"] == expected_handoffs
+    else:
+        assert "validation_handoffs" not in result
+        assert "validation_handoffs" not in result["operations"]
     for operation_result, name in zip(
         result["operations"]["results"], ("promotion-check", "custom-deploy"), strict=True
     ):

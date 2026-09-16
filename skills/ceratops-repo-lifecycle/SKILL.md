@@ -74,10 +74,10 @@ and publication.
   SDLC engine. Return unresolved routes as blockers before dependent mutation.
   CI defers every skill handoff without claiming its action completed.
 - Require successful validation followed by separate tests before promotion
-  continuation, shipping, publication, and deployment. Test commands may reuse
-  matching saved results; deployment only verifies the saved successful stages.
-  Explicit selection cannot omit version-3 gates; a declared no-op must include
-  its reason.
+  continuation, shipping, publication, and deployment. Invoke repository
+  runners for these gates; test runners own saved-result reuse. Explicit
+  selection cannot omit version-3 gates; a declared no-op must include its
+  reason.
 - Treat `completed` as command completion; validate retained
   `step_results[].result` independently against the producer's schema and
   status.

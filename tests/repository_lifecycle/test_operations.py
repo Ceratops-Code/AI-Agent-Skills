@@ -262,9 +262,9 @@ def test_sdlc_template_is_a_schema_valid_empty_skeleton(tmp_path: pathlib.Path) 
     ]
     assert runner.validation_operations(ROOT) == [
         "repository.validate.repository",
+        "deliverables.skills.validate.ceratops-managed",
         "repository.tests.python",
         "deliverables.skills.tests.repository",
-        "deliverables.skills.validate.ceratops-managed",
         "deliverables.hooks.tests.repository",
         "deliverables.tools.tests.repository",
     ]

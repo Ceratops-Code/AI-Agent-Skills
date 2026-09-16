@@ -569,8 +569,8 @@ uv run --no-project --python 3.14 python "$env:CODEX_HOME/skills/ceratops-repo-l
 
 `--validate` runs validation only. `--tests` runs the separate test stage;
 select both flags to validate first and then test. A deployment invocation
-verifies the saved stages without executing either one. `--return-handoffs`
-exposes unresolved routes to a skill caller.
+runs both stages before deployment. `--return-handoffs` exposes unresolved
+routes to a skill caller.
 New repository validators never select test runners. Conventional Python tests
 or pytest configuration generate `scripts/run-tests.py` from its template when
 absent. That runner uses the scripts project, owns its temporary pytest
