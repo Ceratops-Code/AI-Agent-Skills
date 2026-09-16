@@ -243,21 +243,28 @@ def test_committed_diff_mode_collects_and_invokes_only_selected_suite(
     )
 
 
+@pytest.mark.parametrize("shared_value", ["short", "shared" * 200])
 def test_failure_summary_matches_real_long_pytest_titles(
     test_runner_module: Any, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
+    shared_value: str,
 ) -> None:
     # This fixture owns its pytest arguments and output format; the enclosing
     # workflow's basetemp must not become the nested invocation's ancestor.
     monkeypatch.delenv("PYTEST_ADDOPTS", raising=False)
     names = ["test_before", "test_" + "long_name_" * 12, "test_after"]
     path = tmp_path / "test_failures.py"
-    path.write_text(
-        "\n".join(
-            f"def {name}():\n    raise AssertionError('{index}-only')\n"
-            for index, name in enumerate(names)
-        ),
-        encoding="utf-8",
-    )
+    source: list[str] = []
+    assertion_lines: list[int] = []
+    for index, name in enumerate(names):
+        source.append(f"def {name}():")
+        source.extend(f"    assert {setup} == {setup}" for setup in range(10))
+        source.append(
+            f"    assert [{shared_value!r}, 'actual-{index}'] == "
+            f"[{shared_value!r}, 'expected-{index}'], '{index}-only'"
+        )
+        assertion_lines.append(len(source))
+        source.append("")
+    path.write_text("\n".join(source), encoding="utf-8")
     result = subprocess.run(
         [sys.executable, "-m", "pytest", "-q", "--color=no", "-o", "addopts=", path.name],
         cwd=tmp_path, capture_output=True, text=True, check=False,
@@ -266,9 +273,14 @@ def test_failure_summary_matches_real_long_pytest_titles(
     summary = test_runner_module.pytest_diagnostics.pytest_failure_summary(result.stdout, result.stderr)
     assert summary["failed_tests"] == [f"{path.name}::{name}" for name in names]
     for index, failure in enumerate(summary["failures"]):
-        assert failure["source_location"] == f"{path.name}:{index * 3 + 2}"
+        assert failure["source_location"] == f"{path.name}:{assertion_lines[index]}"
         assert f"{index}-only" in failure["excerpt"]
+        assert f"At index 1 diff: 'actual-{index}' != 'expected-{index}'" in failure["excerpt"]
+        assert "assert 0 == 0" not in failure["excerpt"]
+        assert len(failure["excerpt"].encode("utf-8")) <= 800
         assert all(f"{other}-only" not in failure["excerpt"] for other in range(3) if other != index)
+    assert "At index 1 diff: 'actual-0' != 'expected-0'" in summary["decisive_excerpt"]
+    assert "assert 0 == 0" not in summary["decisive_excerpt"]
 
 
 @pytest.mark.parametrize(
@@ -281,14 +293,23 @@ def test_failure_summary_matches_real_long_pytest_titles(
         ("ERROR collecting tests/test_a.py", "tests/test_a.py"),
     ],
 )
+@pytest.mark.parametrize(
+    ("traceback_line", "expected_excerpt"),
+    [
+        ("E       exact-match", "E       exact-match"),
+        (">       assert actual == expected", ">       assert actual == expected"),
+        ("assert setup_ok", "exact-reason"),
+    ],
+)
 def test_failure_summary_matches_exact_identities_without_order_fallback(
-    test_runner_module: Any, title: str, identity: str
+    test_runner_module: Any, title: str, identity: str,
+    traceback_line: str, expected_excerpt: str,
 ) -> None:
     output = (
         "___ test_prefix ___\nE       wrong-prefix\ntests/test_a.py:10: AssertionError\n"
         "___ TestOther.test_same[a::b] ___\nE       wrong-class\ntests/test_a.py:20: AssertionError\n"
         "___ TestExample.test_same[other] ___\nE       wrong-parameter\ntests/test_a.py:30: AssertionError\n"
-        f"_ {title} _\nE       exact-match\ntests/test_a.py:40: AssertionError\n"
+        f"_ {title} _\n{traceback_line}\ntests/test_a.py:40: AssertionError\n"
         "=== short test summary info ===\n"
         "FAILED tests/test_a.py::test_missing - missing-reason\n"
         f"FAILED {identity} - exact-reason\n"
@@ -297,9 +318,12 @@ def test_failure_summary_matches_exact_identities_without_order_fallback(
     summary = test_runner_module.pytest_diagnostics.pytest_failure_summary(output, "")
     assert summary["failures"] == [
         {"test": "tests/test_a.py::test_missing", "source_location": None, "excerpt": "missing-reason"},
-        {"test": identity, "source_location": "tests/test_a.py:40", "excerpt": "E       exact-match"},
+        {"test": identity, "source_location": "tests/test_a.py:40", "excerpt": expected_excerpt},
         {"test": "tests/test_a.py::test_prefix", "source_location": "tests/test_a.py:10", "excerpt": "E       wrong-prefix"},
     ]
+    assert "wrong-class" not in summary["decisive_excerpt"]
+    assert "wrong-parameter" not in summary["decisive_excerpt"]
+    assert "assert setup_ok" not in summary["decisive_excerpt"]
 
 
 @pytest.mark.parametrize("with_locations", [True, False])
@@ -326,11 +350,13 @@ def test_failure_summary_requires_evidence_for_duplicate_titles(
     ]
 
 
-def test_failure_summary_bounds_multibyte_fields(test_runner_module: Any) -> None:
+@pytest.mark.parametrize("error_lines", [1, 6])
+def test_failure_summary_bounds_multibyte_fields(test_runner_module: Any, error_lines: int) -> None:
     diagnostics = test_runner_module.pytest_diagnostics
     identity = "tests/" + "界" * 250 + ".py::test_long"
     output = (
-        "_ test_long _\nE       " + "界" * 1_000 + "\n"
+        "_ test_long _\n"
+        + "\n".join(f"E       {index}: " + "界" * 1_000 for index in range(error_lines)) + "\n"
         + identity.partition("::")[0] + ":10: AssertionError\n"
         + "=== short test summary info ===\nFAILED " + identity + "\n"
     )
@@ -339,6 +365,7 @@ def test_failure_summary_bounds_multibyte_fields(test_runner_module: Any) -> Non
     for field, limit in (("test", 400), ("source_location", 500), ("excerpt", 800)):
         assert len(failure[field].encode("utf-8")) <= limit
         assert failure[field].endswith("...")
+    assert len(failure["excerpt"].splitlines()) == error_lines
     assert len(summary["decisive_excerpt"].encode("utf-8")) <= 2_000
     assert len(summary["context_excerpt"].encode("utf-8")) <= 2_000
 
@@ -403,15 +430,12 @@ def test_pytest_failure_writes_full_diagnostic_and_emits_bounded_summary(
         {
             "test": "tests/test_example.py::test_contract",
             "source_location": "tests/test_example.py:41",
-            "excerpt": ">       assert 1 == 2\nE       assert 1 == 2",
+            "excerpt": "E       assert 1 == 2",
         },
         {
             "test": "tests/test_other.py::test_configuration",
             "source_location": "tests/test_other.py:23",
-            "excerpt": (
-                ">       raise RuntimeError('bad configuration')\n"
-                "E       RuntimeError: bad configuration"
-            ),
+            "excerpt": "E       RuntimeError: bad configuration",
         },
     ]
     assert result["pytest"]["decisive_excerpt"] == (

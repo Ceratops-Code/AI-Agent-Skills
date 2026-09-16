@@ -137,7 +137,7 @@ without repository deduplication.
 | `scripts/deploy-hooks.py` | Independent hook installation and updates; copies the repository hook payloads and merges their registrations while preserving unrelated files and configuration. Does not grant trust or restart Codex. |
 | `scripts/deploy-tool-manager.py` | Install the checkout's declared tool-manager version, including over an existing installation, from the scripts environment; uses the manager's global Python and uv prerequisites, temporary locked libraries, and packaging and deployment code. Never changes Codex settings. |
 | `scripts/testing/run-tests.py` | Sole test-selection, collection-reconciliation, and pytest-execution owner; validates `tests/test-impact.json`, explains deterministic Git-diff selection, rejects mapping gaps before pytest collection or execution, supports explicit committed-diff, worktree, collection, and `--all` modes, adds `--select-only` to check diff/worktree mapping without pytest, and saves failed-pytest streams and structured pre-test failures with captured command output through `--diagnostic-output`; pytest output remains bounded in the console. |
-| `scripts/testing/pytest-diagnostics.py` | Extracts bounded failure summaries using exact pytest identities and source-file evidence; ambiguous or missing tracebacks use only that test's summary reason. Full diagnostic files remain owned by the runner. |
+| `scripts/testing/pytest-diagnostics.py` | Extracts bounded failure summaries using exact pytest identities and source-file evidence; prioritizes reported exceptions and assertion differences over source context. Ambiguous or missing tracebacks use only that test's summary reason. Full diagnostic files remain owned by the runner. |
 | `scripts/validate-repository.py` | Local validation coordinator; checks the running Python against `scripts/pyproject.toml`, runs repository lint and type checks, and captures first-failure evidence. Tests run separately through `scripts/testing/run-tests.py`. |
 | `skills/ceratops-repo-lifecycle/references/templates/deploy-skills.py.tmpl` | Authoritative standalone installer copied into compatible skill repositories as `scripts/deploy-skills.py`; invoke it through uv using the scripts project. |
 | `skills/ceratops-repo-lifecycle/references/contracts/repository-validation-contract.json` | Schema-validated repository checks used by compatibility generation and included in repository contract review and validator discovery. |
@@ -574,7 +574,8 @@ routes to a skill caller.
 New repository validators never select test runners. Conventional Python tests
 or pytest configuration generate `scripts/run-tests.py` from its template when
 absent. That runner uses the scripts project, owns its temporary pytest
-directories, and can be customized. Invoke Python entrypoints with
+directories, streams pytest's failure details directly, and can be customized.
+Invoke Python entrypoints with
 `uv run --locked <path-to-script.py>`; uv discovers their project from the
 script location and prepares its environment before execution. Use an
 absolute script path when calling from outside the repository. Module
@@ -835,6 +836,9 @@ Failed pytest runs write complete stdout and stderr to
 `.build/test-diagnostics/pytest-failure.json` by default. Use
 `--diagnostic-output PATH` to select another file; the terminal JSON contains a
 bounded failing-test summary plus the file path, byte count, and SHA-256 hash.
+Compact summaries prioritize pytest's reported assertion differences and
+exceptions; passing setup assertions cannot displace them. Each selected line
+gets a share of the byte budget so a long value cannot hide later differences.
 A successful pytest run removes stale evidence at the selected path.
 
 For a structural test migration, capture the pre-migration collection and
