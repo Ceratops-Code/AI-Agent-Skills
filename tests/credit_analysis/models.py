@@ -483,9 +483,10 @@ class FakeCreditModelRunner:
                 0.0 if volume_only else float(call_count)
             ),
             "additional_recurring_calls_per_affected_run": 0.0,
-            "affected_similar_run_frequency": 0.5,
-            "affected_similar_run_frequency_range": [0.25, 0.75],
-            "assumptions": ["synthetic recurrence evidence"],
+            # Large orchestration fixtures must still exercise accepted findings.
+            "affected_similar_run_frequency": 10.0,
+            "affected_similar_run_frequency_range": [8.0, 12.0],
+            "assumptions": ["synthetic evidence of ten affected comparable runs"],
         }
 
     @classmethod
