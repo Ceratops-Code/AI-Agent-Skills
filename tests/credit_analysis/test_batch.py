@@ -967,6 +967,7 @@ def _exercise_corrective_cli(
             self.withdrawn: str | None = None
             self.dismissed_review: str | None = None
             self.dismissed_finding: str | None = None
+            self.dismissed_source: dict[str, Any] | None = None
 
         def run(self, **kwargs: Any) -> dict[str, Any]:
             raw = super().run(**kwargs)
@@ -1007,10 +1008,16 @@ def _exercise_corrective_cli(
                     review = next(
                         item
                         for item in raw["temporary_control_reviews"]
-                        if item["finding_id"] is not None
+                        if item["finding_id"] is None
                     )
+                    self.dismissed_source = copy.deepcopy(review)
                     self.dismissed_review = review["id"]
-                    self.dismissed_finding = review["finding_id"]
+                    self.dismissed_finding = selected["id"]
+                    review["finding_id"] = self.dismissed_finding
+                    review["disposition"] = "durable-control-missing"
+                    review["no_finding_reason"] = None
+                    review["owning_producer"] += " repurposed"
+                    review["recurrence_inputs"]["likely"] = True
                     review["savings_inputs"].update(
                         expected_calls_saved=0,
                         maintenance_model_calls=0,
@@ -1147,24 +1154,20 @@ def _exercise_corrective_cli(
         accepted = json.loads(pathlib.Path(target["result"]["path"]).read_text(encoding="utf-8"))
         assert len(accepted["candidate_decisions"]) == len(runner.responses[0]["candidate_decisions"])
         if defect == "temporary-roi":
+            assert runner.dismissed_source is not None
             assert runner.dismissed_finding in {
                 item["id"] for item in accepted["confirmed_findings"]
             }
             review = next(
                 item
                 for item in accepted["temporary_control_reviews"]
-                if item["finding_id"] is None
-                and item["no_finding_reason"]
-                == (
-                    "The retained temporary-control subclaim does not show positive "
-                    "recurring model-call savings beyond maintenance."
-                )
+                if item["observed_temporary_control"]
+                == runner.dismissed_source["observed_temporary_control"]
             )
             assert review["finding_id"] is None
-            assert (
-                "does not show positive recurring model-call savings"
-                in review["no_finding_reason"]
-            )
+            assert review["disposition"] == runner.dismissed_source["disposition"]
+            assert review["owning_producer"] == runner.dismissed_source["owning_producer"]
+            assert review["no_finding_reason"] == runner.dismissed_source["no_finding_reason"]
             assert all(
                 review["id"] not in merge["review_ids"]
                 for merge in accepted["temporary_control_merges"]

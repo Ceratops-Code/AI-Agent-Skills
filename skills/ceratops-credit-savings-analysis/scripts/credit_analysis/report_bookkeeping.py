@@ -372,7 +372,13 @@ def _holistic_preserve_review_sources(
     decision_by_candidate = {
         decision["luna_candidate_id"]: decision for decision in decisions
     }
-    sources: dict[str, list[dict[str, Any]]] = {review_id: [] for review_id in reviews}
+    resolved_reviews = {
+        review_id: copy.deepcopy(dict(review))
+        for review_id, review in reviews.items()
+    }
+    sources: dict[str, list[dict[str, Any]]] = {
+        review_id: [] for review_id in resolved_reviews
+    }
     prior_by_id: dict[str, Mapping[str, Any]] = {}
     for result in prior_results:
         for prior in result["temporary_control_reviews"]:
@@ -383,14 +389,43 @@ def _holistic_preserve_review_sources(
                 continue
             prior_by_id[review_id] = prior
             candidates = set(prior["source_luna_candidate_ids"])
+            if review_id in resolved_reviews:
+                same_id = resolved_reviews[review_id]
+                coverage_fields = (
+                    "affected_call_ids",
+                    "final_canonical_evidence_refs",
+                    "contributing_surfaces",
+                )
+                same_no_finding = (
+                    prior["finding_id"] is None
+                    and same_id["finding_id"] is None
+                )
+                preserves_source = (
+                    candidates <= set(same_id["source_luna_candidate_ids"])
+                    and (
+                        prior["owning_producer"] is None
+                        or prior["owning_producer"] == same_id["owning_producer"]
+                    )
+                    and prior["disposition"] == same_id["disposition"]
+                    and all(
+                        set(prior[field]) <= set(same_id[field])
+                        for field in coverage_fields
+                    )
+                )
+                if same_no_finding and not preserves_source:
+                    # A corrected final review may retract a repurposed ID. The
+                    # accepted same-ID no-finding source is then authoritative;
+                    # copying it preserves evidence without reviving the rejected
+                    # final subclaim or changing any independent finding.
+                    resolved_reviews[review_id] = copy.deepcopy(dict(prior))
             destinations = [
-                review for review in reviews.values()
+                review for review in resolved_reviews.values()
                 if candidates <= set(review["source_luna_candidate_ids"])
                 and (review_id == review["id"] or prior["owning_producer"] is None
                      or prior["owning_producer"] == review["owning_producer"])
             ]
-            if review_id in reviews:
-                destination = reviews[review_id]
+            if review_id in resolved_reviews:
+                destination = resolved_reviews[review_id]
             elif len(destinations) == 1:
                 destination = destinations[0]
             else:
@@ -437,7 +472,7 @@ def _holistic_preserve_review_sources(
             sources[destination["id"]].append(copy.deepcopy(dict(prior)))
 
     preserved = {}
-    for review_id, review in reviews.items():
+    for review_id, review in resolved_reviews.items():
         expected_sources = sources[review_id]
         if "source_reviews" in review and review["source_reviews"] != expected_sources:
             raise CreditAnalysisError(f"temporary-control review {review_id} source records changed")
