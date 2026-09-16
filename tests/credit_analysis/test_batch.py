@@ -41,7 +41,7 @@ from tests.credit_analysis.workflow import run_credit_analysis_workflow
         ("tool-flow", None),
         ("instruction-reasoning", None),
         *[("full-analysis", case) for case in (
-            "estimate", "final-estimate", "withdraw", "withdraw-temporary",
+            "estimate", "final-estimate", "temporary-roi", "withdraw", "withdraw-temporary",
             "conflict", "retained-conflict", "protected", "foreign-call", "malformed",
         )],
     ],
@@ -965,6 +965,8 @@ def _exercise_corrective_cli(
             self.responses: list[dict[str, Any]] = []
             self.feedback: dict[str, Any] | None = None
             self.withdrawn: str | None = None
+            self.dismissed_review: str | None = None
+            self.dismissed_finding: str | None = None
 
         def run(self, **kwargs: Any) -> dict[str, Any]:
             raw = super().run(**kwargs)
@@ -1001,6 +1003,19 @@ def _exercise_corrective_cli(
                                 part.update(classification="reviewed_no_confirmed_waste", reason_code=None)
                             groups.append(part)
                     raw["call_classifications"] = groups
+                elif defect == "temporary-roi":
+                    review = next(
+                        item
+                        for item in raw["temporary_control_reviews"]
+                        if item["finding_id"] is not None
+                    )
+                    self.dismissed_review = review["id"]
+                    self.dismissed_finding = review["finding_id"]
+                    review["savings_inputs"].update(
+                        expected_calls_saved=0,
+                        maintenance_model_calls=0,
+                        justifies_maintenance=True,
+                    )
                 else:
                     targets = findings[:2] if defect in {"estimate", "final-estimate"} else [selected]
                     for finding in targets:
@@ -1008,7 +1023,15 @@ def _exercise_corrective_cli(
                         recurrence["additional_recurring_calls_per_affected_run"] = recurrence["calls_saved_per_affected_run"]
             else:
                 self.feedback = json.loads(kwargs["prompt"].split("\nCorrection request:\n", 1)[1])
-                if defect in {"withdraw", "withdraw-temporary"}:
+                if defect == "temporary-roi":
+                    self.responses.append(copy.deepcopy(raw))
+                    return {
+                        "baseline_sha256": kwargs["schema"]["properties"][
+                            "baseline_sha256"
+                        ]["const"],
+                        "edits": [],
+                    }
+                elif defect in {"withdraw", "withdraw-temporary"}:
                     self.withdrawn = selected["id"]
                     raw["confirmed_findings"] = [item for item in raw["confirmed_findings"] if item["id"] != self.withdrawn]
                     for decision in raw["candidate_decisions"]:
@@ -1108,6 +1131,10 @@ def _exercise_corrective_cli(
     scope = runner.feedback["correction_scope"]
     if defect in {"estimate", "final-estimate"}:
         assert len(scope["invalid_recurrence_finding_ids"]) == 2
+    if defect == "temporary-roi":
+        assert scope["invalid_temporary_control_review_ids"] == [
+            runner.dismissed_review
+        ]
     if defect in {"conflict", "retained-conflict"}:
         assert len(scope["conflicting_call_finding_ids"]) >= 1
     if defect == "protected":
@@ -1119,6 +1146,29 @@ def _exercise_corrective_cli(
         assert attempts[1]["outcome"] == ("validation-error" if defect == "retained-conflict" else "accepted"), attempts[1].get("error")
         accepted = json.loads(pathlib.Path(target["result"]["path"]).read_text(encoding="utf-8"))
         assert len(accepted["candidate_decisions"]) == len(runner.responses[0]["candidate_decisions"])
+        if defect == "temporary-roi":
+            assert runner.dismissed_finding in {
+                item["id"] for item in accepted["confirmed_findings"]
+            }
+            review = next(
+                item
+                for item in accepted["temporary_control_reviews"]
+                if item["finding_id"] is None
+                and item["no_finding_reason"]
+                == (
+                    "The retained temporary-control subclaim does not show positive "
+                    "recurring model-call savings beyond maintenance."
+                )
+            )
+            assert review["finding_id"] is None
+            assert (
+                "does not show positive recurring model-call savings"
+                in review["no_finding_reason"]
+            )
+            assert all(
+                review["id"] not in merge["review_ids"]
+                for merge in accepted["temporary_control_merges"]
+            )
         if runner.withdrawn:
             assert runner.withdrawn not in {item["id"] for item in accepted["confirmed_findings"]}
             assert len(accepted["confirmed_findings"]) == len(runner.responses[0]["confirmed_findings"]) - 1

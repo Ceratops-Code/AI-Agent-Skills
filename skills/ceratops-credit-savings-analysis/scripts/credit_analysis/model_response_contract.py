@@ -193,20 +193,27 @@ def _correction_schema(
 def response_correction_scope(
     prior: Mapping[str, Any], schema: Mapping[str, Any],
 ) -> dict[str, Any]:
-    """Diagnose invalid recurrence and finding/accounting conflicts together.
+    """Diagnose invalid recurrence, review ROI, and accounting conflicts.
 
     This grants no new evidence or call budget. Only uniquely identified model-
     call findings qualify. Well-formed non-positive estimates permit recurrence
-    reconsideration; contradictory call accounting permits reconsidering those
-    calls or withdrawing the claim. Malformed fields retain structural repair.
-    The semantic validator independently checks the complete corrected result.
+    reconsideration. A well-formed temporary-control subclaim that fails its ROI
+    gate may be dismissed without withdrawing its independent finding.
+    Contradictory call accounting permits reconsidering those calls or
+    withdrawing the claim. Malformed fields retain structural repair. The
+    semantic validator independently checks the complete corrected result.
     """
 
+    scope: dict[str, list[str]] = {
+        "invalid_recurrence_finding_ids": [],
+        "conflicting_call_finding_ids": [],
+        "invalid_temporary_control_review_ids": [],
+    }
     findings = prior.get("confirmed_findings", [])
     definition = schema.get("properties", {}).get("confirmed_findings", {}).get("items", {})
     properties = definition.get("properties", {})
     if not isinstance(findings, list) or not properties:
-        return {"invalid_recurrence_finding_ids": []}
+        return scope
     invalid, conflicts = [], []
     by_call: dict[str, set[str]] = {}
     groups = prior.get("call_classifications")
@@ -241,7 +248,57 @@ def response_correction_scope(
         frequency = recurrence["affected_similar_run_frequency"]
         if all(math.isfinite(value) for value in (saved, added, frequency)) and (saved - added) * frequency <= 0:
             invalid.append(identity)
-    return {"invalid_recurrence_finding_ids": invalid, "conflicting_call_finding_ids": conflicts}
+    scope["invalid_recurrence_finding_ids"] = invalid
+    scope["conflicting_call_finding_ids"] = conflicts
+
+    finding_ids = {
+        finding.get("id")
+        for finding in findings
+        if isinstance(finding, Mapping) and isinstance(finding.get("id"), str)
+    }
+    reviews = prior.get("temporary_control_reviews", [])
+    if not isinstance(reviews, list):
+        return scope
+    for review in reviews:
+        if not isinstance(review, Mapping):
+            continue
+        identity = review.get("id")
+        finding_id = review.get("finding_id")
+        recurrence = review.get("recurrence_inputs")
+        savings = review.get("savings_inputs")
+        if (
+            not isinstance(identity, str)
+            or sum(
+                isinstance(item, Mapping) and item.get("id") == identity
+                for item in reviews
+            )
+            != 1
+            or finding_id not in finding_ids
+            or not isinstance(recurrence, Mapping)
+            or not isinstance(savings, Mapping)
+        ):
+            continue
+        expected = savings.get("expected_calls_saved")
+        maintenance = savings.get("maintenance_model_calls")
+        numeric = (
+            isinstance(expected, (int, float))
+            and not isinstance(expected, bool)
+            and math.isfinite(expected)
+            and expected >= 0
+            and isinstance(maintenance, (int, float))
+            and not isinstance(maintenance, bool)
+            and math.isfinite(maintenance)
+            and maintenance >= 0
+        )
+        if numeric and (
+            review.get("disposition") != "durable-control-missing"
+            or recurrence.get("likely") is not True
+            or savings.get("justifies_maintenance") is not True
+            or expected <= maintenance
+            or review.get("no_finding_reason") is not None
+        ):
+            scope["invalid_temporary_control_review_ids"].append(identity)
+    return scope
 
 
 def _correction_comparison_values(
@@ -267,6 +324,7 @@ def _correction_comparison_values(
     scope = response_correction_scope(prior, schema)
     invalid = set(scope["invalid_recurrence_finding_ids"])
     conflicts = set(scope.get("conflicting_call_finding_ids", []))
+    dismissed_reviews = set(scope.get("invalid_temporary_control_review_ids", []))
     current_findings = current.get("confirmed_findings", [])
     if isinstance(current_findings, list):
         current_by_id = {item.get("id"): item for item in current_findings if isinstance(item, Mapping) and isinstance(item.get("id"), str)}
@@ -299,6 +357,34 @@ def _correction_comparison_values(
             old["temporary_control_merges"] = [item for item in old.get("temporary_control_merges", []) if not isinstance(item, Mapping) or item.get("finding_id") not in withdrawn]
     else:
         withdrawn = set()
+
+    if dismissed_reviews:
+        current_reviews = {
+            item.get("id"): item
+            for item in new.get("temporary_control_reviews", [])
+            if isinstance(item, Mapping)
+        }
+        for review in old.get("temporary_control_reviews", []):
+            if isinstance(review, dict) and review.get("id") in dismissed_reviews:
+                review["finding_id"] = None
+                review["no_finding_reason"] = current_reviews.get(
+                    review.get("id"), {}
+                ).get("no_finding_reason")
+        retained_merges = []
+        for merge in old.get("temporary_control_merges", []):
+            if not isinstance(merge, dict) or not isinstance(
+                merge.get("review_ids"), list
+            ):
+                retained_merges.append(merge)
+                continue
+            merge["review_ids"] = [
+                identity
+                for identity in merge["review_ids"]
+                if identity not in dismissed_reviews
+            ]
+            if merge["review_ids"]:
+                retained_merges.append(merge)
+        old["temporary_control_merges"] = retained_merges
 
     group_schema = schema.get("properties", {}).get("call_classifications", {}).get("items", {})
     branches = group_schema.get("anyOf", [])
@@ -527,6 +613,7 @@ def correction_response_schema(
     scope = response_correction_scope(prior, schema)
     invalid = set(scope["invalid_recurrence_finding_ids"])
     diagnosed = invalid | set(scope.get("conflicting_call_finding_ids", []))
+    invalid_reviews = set(scope.get("invalid_temporary_control_review_ids", []))
     findings = prior.get("confirmed_findings", [])
     findings = findings if isinstance(findings, list) else []
     finding_schema = schema.get("properties", {}).get("confirmed_findings", {}).get("items", {})
@@ -536,6 +623,14 @@ def correction_response_schema(
     if diagnosed:
         edits.append(_closed_object({
             "withdraw_finding": {"type": "string", "enum": sorted(diagnosed)},
+            "reason": {"type": "string", "minLength": 1, "maxLength": 2_000},
+        }))
+    if invalid_reviews:
+        edits.append(_closed_object({
+            "dismiss_temporary_review": {
+                "type": "string",
+                "enum": sorted(invalid_reviews),
+            },
             "reason": {"type": "string", "minLength": 1, "maxLength": 2_000},
         }))
     protected_calls = {call for finding in findings if isinstance(finding, Mapping)
@@ -555,7 +650,7 @@ def correction_response_schema(
     return _closed_object({
         "baseline_sha256": {"type": "string", "const": digest},
         "edits": {"type": "array", "items": {"anyOf": edits} if edits else {"type": "null"},
-                  "maxItems": len(edits) + len(diagnosed) + len(calls)},
+                  "maxItems": len(edits) + len(diagnosed) + len(invalid_reviews) + len(calls)},
     })
 
 
@@ -587,6 +682,7 @@ def project_response_correction(
     edits: list[dict[str, Any]] = []
     calls: set[str] = set()
     withdrawals: set[str] = set()
+    review_dismissals: set[str] = set()
     for branch in edit_schema["properties"]["edits"]["items"].get("anyOf", []):
         properties = branch["properties"]
         if "path" in properties:
@@ -607,6 +703,10 @@ def project_response_correction(
             calls.update(properties["call_id"]["enum"])
         elif "withdraw_finding" in properties:
             withdrawals.update(properties["withdraw_finding"]["enum"])
+        elif "dismiss_temporary_review" in properties:
+            review_dismissals.update(
+                properties["dismiss_temporary_review"]["enum"]
+            )
     current_ids = {finding.get("id") for finding in _list_field(current, "confirmed_findings")
                    if isinstance(finding, Mapping)}
     decisions = {item.get("luna_candidate_id"): item for item in _list_field(current, "candidate_decisions")
@@ -619,6 +719,29 @@ def project_response_correction(
         if reason is None:
             raise CreditAnalysisError("retained withdrawal has no candidate explanation")
         edits.append({"withdraw_finding": identity, "reason": reason})
+    prior_reviews = {
+        item.get("id"): item
+        for item in _list_field(prior, "temporary_control_reviews")
+        if isinstance(item, Mapping)
+    }
+    current_reviews = {
+        item.get("id"): item
+        for item in _list_field(current, "temporary_control_reviews")
+        if isinstance(item, Mapping)
+    }
+    for identity in sorted(review_dismissals):
+        before_review = prior_reviews.get(identity)
+        after_review = current_reviews.get(identity)
+        if (
+            not isinstance(before_review, Mapping)
+            or not isinstance(after_review, Mapping)
+            or before_review.get("finding_id") is None
+            or after_review.get("finding_id") is not None
+        ):
+            continue
+        reason = after_review.get("no_finding_reason")
+        if isinstance(reason, str) and reason.strip():
+            edits.append({"dismiss_temporary_review": identity, "reason": reason})
     before, after = _call_details(prior), _call_details(current)
     for identity in sorted(calls & before.keys() & after.keys()):
         keys = ("classification", "reason_code", "rationale")
@@ -649,9 +772,20 @@ def apply_response_correction(
     seen: set[tuple[str, str]] = set()
     removals: list[str] = []
     withdrawals: dict[str, str] = {}
+    review_dismissals: dict[str, str] = {}
     call_edits: dict[str, dict[str, Any]] = {}
     for edit in correction["edits"]:
-        kind = next(key for key in ("path", "remove", "withdraw_finding", "call_id") if key in edit)
+        kind = next(
+            key
+            for key in (
+                "path",
+                "remove",
+                "withdraw_finding",
+                "dismiss_temporary_review",
+                "call_id",
+            )
+            if key in edit
+        )
         target = edit[kind]
         if (kind, target) in seen:
             raise CreditAnalysisError("corrective retry contains duplicate edit targets")
@@ -668,6 +802,8 @@ def apply_response_correction(
             removals.append(target)
         elif kind == "withdraw_finding":
             withdrawals[target] = edit["reason"]
+        elif kind == "dismiss_temporary_review":
+            review_dismissals[target] = edit["reason"]
         else:
             call_edits[target] = {key: edit[key] for key in ("classification", "reason_code", "rationale")}
     # Descending numeric indices retain the original address of every deletion.
@@ -695,6 +831,21 @@ def apply_response_correction(
             if identity in calls and calls[identity].get("classification") in {"avoidable_implemented", "avoidable_unimplemented"}:
                 calls[identity].update(classification="unassessed", reason_code=None, rationale=reason)
         draft["call_classifications"] = [{"call_ids": [identity], **detail} for identity, detail in calls.items()]
+    if review_dismissals:
+        for review in draft["temporary_control_reviews"]:
+            if review["id"] in review_dismissals:
+                review["finding_id"] = None
+                review["no_finding_reason"] = review_dismissals[review["id"]]
+        retained_merges = []
+        for merge in draft["temporary_control_merges"]:
+            merge["review_ids"] = [
+                identity
+                for identity in merge["review_ids"]
+                if identity not in review_dismissals
+            ]
+            if merge["review_ids"]:
+                retained_merges.append(merge)
+        draft["temporary_control_merges"] = retained_merges
     if call_edits:
         calls = _call_details(draft)
         for identity, detail in call_edits.items():
@@ -702,7 +853,7 @@ def apply_response_correction(
                 raise CreditAnalysisError("corrective retry cannot introduce call coverage")
             calls[identity].update(detail)
         draft["call_classifications"] = [{"call_ids": [identity], **detail} for identity, detail in calls.items()]
-    if withdrawals or call_edits:
+    if withdrawals or review_dismissals or call_edits:
         reconstructed, _ = _correction_comparison_values(result, draft, schema)
         result = dict(reconstructed)
     actual_calls = _call_details(result)
@@ -712,6 +863,19 @@ def apply_response_correction(
     for identity in withdrawals:
         if any(item["id"] == identity for item in result["confirmed_findings"]):
             raise CreditAnalysisError("corrective retry withdrawal changed its diagnosed basis")
+    final_reviews = {
+        item["id"]: item for item in result["temporary_control_reviews"]
+    }
+    for identity, reason in review_dismissals.items():
+        review = final_reviews.get(identity)
+        if (
+            review is None
+            or review.get("finding_id") is not None
+            or review.get("no_finding_reason") != reason
+        ):
+            raise CreditAnalysisError(
+                "corrective retry temporary-review dismissal changed its diagnosed basis"
+            )
     validate_response_correction(prior, result, schema)
     _validate_holistic_transport_value(result, schema, "$response")
     return result

@@ -164,8 +164,10 @@ def _corrective_prompt(
         "preserve calls supported by unaffected findings. Correct a supported estimate "
         "or withdraw the unsupported finding, remove its dependent links, and explain "
         "the withdrawal in its retained candidate decision. Keep linked existing risks. "
-        "Retain temporary-control reviews with a null finding_id and explicit "
-        "no_finding_reason; remove only merges for withdrawn findings. Leave affected "
+        "For diagnosed invalid_temporary_control_review_ids, dismiss only those "
+        "subclaims with an explicit no_finding_reason while retaining their independent "
+        "findings; update only their merge membership. Retain reviews for withdrawn "
+        "findings with a null finding_id and explicit no_finding_reason. Leave affected "
         "calls unassessed when no retained finding supports their avoidability. "
         "Preserve every other finding, estimate and call judgment. Do not invent "
         "savings to pass validation. Return only the permitted edits in the correction "
@@ -227,6 +229,27 @@ def _corrected_response(
                 raise CreditAnalysisError("retained corrective response does not match its attempt")
             if "baseline_sha256" not in values["schema"].get("properties", {}):
                 result = project_response_correction(prior, raw, correction_response_schema(prior, response_schema))
+        if isinstance(result.get("edits"), list):
+            result = copy.deepcopy(dict(result))
+            existing = {
+                edit.get("dismiss_temporary_review")
+                for edit in result["edits"]
+                if isinstance(edit, Mapping)
+            }
+            for review_id in response_correction_scope(
+                prior, response_schema
+            ).get("invalid_temporary_control_review_ids", []):
+                if review_id not in existing:
+                    result["edits"].append(
+                        {
+                            "dismiss_temporary_review": review_id,
+                            "reason": (
+                                "The retained temporary-control subclaim does not "
+                                "show positive recurring model-call savings beyond "
+                                "maintenance."
+                            ),
+                        }
+                    )
         result = apply_response_correction(prior, result, response_schema)
     if (task["phase"] == "luna-discovery" and analysis._json_bytes(result)
             > int(attempt.get("output_byte_limit") or task["output_byte_limit"])):

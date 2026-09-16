@@ -363,7 +363,8 @@ def _holistic_preserve_review_sources(
     ID disambiguates multiple controls for the same candidates. Coverage and
     disposition must still agree. A renamed review also needs agreement with
     an already identified owner. A prior finding must remain linked through
-    its validated candidate decisions.
+    its validated candidate decisions even when the final review dismisses only
+    its temporary-control subclaim with an explicit reason.
     ``source_reviews`` preserves the original wording, unknown owners, and ROI
     inputs without replacing the final model's independently validated judgment.
     """
@@ -411,11 +412,26 @@ def _holistic_preserve_review_sources(
                     decision["luna_candidate_id"] for decision in result["candidate_decisions"]
                     if prior["finding_id"] in decision["finding_ids"]
                 }
-                finding_preserved = bool(finding_candidates) and all(
-                    candidate in decision_by_candidate
-                    and destination["finding_id"] in decision_by_candidate[candidate]["finding_ids"]
-                    for candidate in finding_candidates
-                )
+                final_destinations: set[str] | None = None
+                for candidate in finding_candidates:
+                    if candidate not in decision_by_candidate:
+                        final_destinations = set()
+                        break
+                    candidate_destinations = set(
+                        decision_by_candidate[candidate]["finding_ids"]
+                    )
+                    final_destinations = (
+                        candidate_destinations
+                        if final_destinations is None
+                        else final_destinations & candidate_destinations
+                    )
+                final_destinations = final_destinations or set()
+                if destination["finding_id"] is None:
+                    finding_preserved = bool(final_destinations) and isinstance(
+                        destination.get("no_finding_reason"), str
+                    ) and bool(destination["no_finding_reason"].strip())
+                else:
+                    finding_preserved = destination["finding_id"] in final_destinations
             if not finding_preserved:
                 raise CreditAnalysisError(f"prior temporary-control review {review_id} finding ownership changed")
             sources[destination["id"]].append(copy.deepcopy(dict(prior)))
