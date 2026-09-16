@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import re
+
 from .execution_outcomes import has_failure_telemetry, has_nonzero_process_result
 from .model_response_contract import (
     _holistic_luna_schema,
@@ -5158,6 +5160,8 @@ def _validate_holistic_sol_result(
 
 
 def _holistic_restore_alias_value(value: Any, aliases: Mapping[str, str]) -> Any:
+    """Restore whole alias tokens without changing result-owned identifiers."""
+
     if isinstance(value, Mapping):
         return {
             str(key): _holistic_restore_alias_value(item, aliases)
@@ -5171,7 +5175,10 @@ def _holistic_restore_alias_value(value: Any, aliases: Mapping[str, str]) -> Any
         result = value
         for alias in sorted(aliases, key=len, reverse=True):
             if alias in result:
-                result = result.replace(alias, aliases[alias])
+                result = re.sub(
+                rf"(?<![\w.-]){re.escape(alias)}(?![\w-]|\.[\w-])",
+                lambda _: aliases[alias], result,
+            )
         return result
     return value
 
