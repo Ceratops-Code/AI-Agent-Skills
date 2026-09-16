@@ -11,7 +11,6 @@ partial updates; this helper cleans only its own staging directory and lock.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import pathlib
@@ -19,7 +18,6 @@ import re
 import shutil
 import stat
 import sys
-import tomllib
 import uuid
 from collections.abc import Mapping, Sequence
 from typing import cast
@@ -331,13 +329,9 @@ def payload_parts(
 
 
 def payload_declarations(
-    repo_root: pathlib.Path, manifest: Mapping[str, object], skill: str
+    manifest: Mapping[str, object], skill: str
 ) -> list[object]:
     """Return validated global and skill-specific payload declarations."""
-
-    if "payload_groups" in manifest:
-        return [{"source": source, "target": target} for target, source in
-                consumer_runtime_files(repo_root, manifest, "skill", skill).items()]
 
     payloads = cast(Mapping[str, object], manifest.get("runtime_payloads", {}))
     result: list[object] = []
@@ -349,121 +343,6 @@ def payload_declarations(
             payload_parts(value, f"runtime_payloads.{key}[{index}]")
             result.append(value)
     return result
-
-
-def _payload_items(manifest: Mapping[str, object], kind: str, name: str) -> list[object]:
-    """Select one consumer without giving tools implicit skill payloads."""
-    if kind == "skill":
-        payloads = cast(Mapping[str, object], manifest.get("runtime_payloads", {}))
-        return [*cast(list[object], payloads.get("*", [])), *cast(list[object], payloads.get(name, []))]
-    if kind != "tool":
-        raise ValueError("consumer kind must be skill or tool")
-    tools = manifest.get("tools", {})
-    if not isinstance(tools, Mapping) or not isinstance(tools.get(name), Mapping):
-        raise ValueError(f"unknown tool consumer: {name}")
-    tool = cast(Mapping[str, object], tools[name])
-    if set(tool) != {"source", "package", "payloads"} or not all(
-            isinstance(tool.get(key), str) and safe_relative(cast(str, tool[key])) for key in ("source", "package")):
-        raise ValueError(f"invalid tool consumer: {name}")
-    if not isinstance(tool["payloads"], list):
-        raise ValueError(f"invalid tool payloads: {name}")
-    return cast(list[object], tool["payloads"])
-
-
-def _expand_payload_items(manifest: Mapping[str, object], items: list[object], prefix: str = "",
-                          parents: tuple[str, ...] = ()) -> list[object]:
-    groups = manifest.get("payload_groups", {})
-    if not isinstance(groups, Mapping):
-        raise ValueError("payload_groups must be an object")
-    result: list[object] = []
-    for item in items:
-        source: str
-        target: str | None
-        if isinstance(item, Mapping) and "group" in item:
-            if set(item) != {"group", "target"} or not isinstance(item["group"], str) or not isinstance(item["target"], str):
-                raise ValueError("group assignment requires group and target")
-            group, target = cast(str, item["group"]), cast(str, item["target"])
-            if group in parents or group not in groups or not safe_relative(target):
-                raise ValueError(f"unknown or cyclic payload group: {group}")
-            definition = groups[group]
-            if not isinstance(definition, Mapping) or "files" not in definition or set(definition) - {"files", "version_source"} or not isinstance(definition["files"], list):
-                raise ValueError(f"invalid payload group: {group}")
-            child_prefix = pathlib.PurePosixPath(prefix, target).as_posix()
-            result.extend(_expand_payload_items(manifest, cast(list[object], definition["files"]), child_prefix, (*parents, group)))
-            continue
-        if isinstance(item, Mapping) and set(item) == {"source", "target"} and prefix:
-            source, target = item["source"], item["target"]
-            if (not isinstance(source, str) or not isinstance(target, str)
-                    or not safe_relative(source) or not safe_relative(target)
-                    or any(token in source + target for token in "*?[")):
-                raise ValueError("payload group contains an unsafe exact mapping")
-        else:
-            source, target = payload_parts(item, "runtime payload")
-        destination = target or source
-        if prefix:
-            destination = pathlib.PurePosixPath(prefix, destination).as_posix()
-        result.append({"source": source, "target": destination})
-    return result
-
-
-def consumer_runtime_files(repo_root: pathlib.Path, manifest: Mapping[str, object], kind: str, name: str) -> dict[str, str]:
-    """Resolve the single manifest declaration into exact package mappings."""
-    result: dict[str, str] = {}
-    for item in _expand_payload_items(manifest, _payload_items(manifest, kind, name)):
-        source, target = payload_parts(item, "runtime payload")
-        matches = sorted(repo_root.glob(source))
-        if not matches:
-            raise ValueError(f"runtime payload does not exist: {source}")
-        for match in matches:
-            require_inside(match, repo_root)
-            if unsafe_link(match):
-                raise ValueError(f"runtime payload cannot be a link: {match}")
-            children = sorted(match.rglob("*")) if match.is_dir() else [match]
-            for child in children:
-                if not child.is_file() or any(part in IGNORED_NAMES for part in child.relative_to(repo_root).parts):
-                    continue
-                require_inside(child, repo_root)
-                relative = pathlib.PurePosixPath(target or source)
-                if match.is_dir():
-                    relative /= child.relative_to(match).as_posix()
-                key = relative.as_posix()
-                prior = result.get(key)
-                actual = child.relative_to(repo_root).as_posix()
-                if prior is not None and prior != actual:
-                    raise ValueError(f"runtime payload target has multiple sources: {key}")
-                result[key] = actual
-    return dict(sorted(result.items()))
-
-
-def consumer_runtime_record(repo_root: pathlib.Path, manifest: Mapping[str, object], kind: str, name: str) -> dict[str, object]:
-    mapping = consumer_runtime_files(repo_root, manifest, kind, name)
-    versions: dict[str, str] = {}
-    requirements: dict[str, object] = {}
-    groups = cast(Mapping[str, object], manifest.get("payload_groups", {}))
-    for item in _payload_items(manifest, kind, name):
-        if isinstance(item, Mapping) and isinstance(item.get("group"), str):
-            definition = cast(Mapping[str, object], groups[item["group"]])
-            source = definition.get("version_source")
-            if isinstance(source, str):
-                project = tomllib.loads((repo_root / source).read_text(encoding="utf-8"))["project"]
-                version = project["version"]
-                if not isinstance(version, str) or re.fullmatch(r"\d+\.\d+\.\d+", version) is None:
-                    raise ValueError("payload version must be numeric major.minor.patch")
-                requires_python = project.get("requires-python")
-                dependencies = project.get("dependencies", [])
-                if not isinstance(requires_python, str) or not isinstance(dependencies, list) or not all(
-                    isinstance(dependency, str) for dependency in dependencies
-                ):
-                    raise ValueError("runtime project has invalid Python requirements")
-                group = cast(str, item["group"])
-                versions[group] = version
-                requirements[group] = {"source": source, "requires_python": requires_python,
-                                       "dependencies": dependencies}
-    return {"schema": "ceratops-consumer-runtime.v1", "consumer": {"kind": kind, "name": name},
-            "runtime_source_id": manifest["runtime_source_id"], "versions": versions,
-            "requirements": requirements,
-            "files": {target: {"source": source, "sha256": hashlib.sha256((repo_root / source).read_bytes()).hexdigest()}
-                      for target, source in mapping.items()}}
 
 
 def copy_payload(
@@ -492,12 +371,12 @@ def copy_payload(
         )
         destination = target.joinpath(*relative.parts)
         require_inside(destination, target)
-        if mapped_target is not None and (destination.exists() or destination.is_symlink()):
-            if (source.is_file() and destination.is_file()
-                    and not unsafe_link(destination)
-                    and source.read_bytes() == destination.read_bytes()):
-                continue
-            raise ValueError(f"runtime payload target collides with skill source: {mapped_target}")
+        if mapped_target is not None and (
+            destination.exists() or destination.is_symlink()
+        ):
+            raise ValueError(
+                f"runtime payload target collides with skill source: {mapped_target}"
+            )
         if source.is_dir():
             shutil.copytree(
                 source,
@@ -543,7 +422,7 @@ def build_skill(
             render_action(action_text, section_block(repo_root, manifest, skill, names), f"{skill}: {relative}"),
             encoding="utf-8", newline="\n",
         )
-    declarations = payload_declarations(repo_root, manifest, skill)
+    declarations = payload_declarations(manifest, skill)
     for declaration in declarations:
         copy_payload(repo_root, declaration, target)
     metadata = {
@@ -558,8 +437,6 @@ def build_skill(
         "generated_from": "skills/skill-sections.json",
         "payload_patterns": declarations,
     }
-    if "payload_groups" in manifest:
-        metadata["consumer_runtime"] = consumer_runtime_record(repo_root, manifest, "skill", skill)
     (target / MANIFEST_NAME).write_text(
         json.dumps(metadata, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",

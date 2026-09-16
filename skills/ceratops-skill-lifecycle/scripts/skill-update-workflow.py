@@ -3,8 +3,8 @@
 
 The helper records the caller's pre-existing Git baseline before source edits,
 then verifies that only declared paths changed and that undeclared dirty state
-was preserved. Selected consumers may own shared sources through the repository's
-section assignments and runtime-file consumer mappings. A failed preparation may
+was preserved. Selected skills may own shared sources through the repository's
+section assignments and runtime payload mappings. A failed preparation may
 accept monotonic request expansions without replacing that baseline or cleanup
 ownership. Deterministic search evidence is reused only while its declared
 inputs still match; other checks rerun. One changed in-scope snapshot may start
@@ -394,13 +394,8 @@ def _validated_request(
             pure.is_relative_to(pathlib.PurePosixPath("scripts"))
             and not target.exists() and target.parent.is_dir()
         )
-        new_consumer_source = (
-            pure.parts[0] in {"tools", "tests", "docs"}
-            and not target.exists() and target.parent.is_dir()
-        )
         if (not matches and not existing_ancillary and not new_shared_source
-                and not new_maintenance and not new_consumer_source
-                and value not in carried_paths):
+                and not new_maintenance and value not in carried_paths):
             raise UpdateExecutionError(
                 "allowed path must be selected-skill source, an existing "
                 "tracked ancillary file, or declared new shared/maintenance source: "
