@@ -7,27 +7,33 @@ validation.
 
 ## SDLC execution
 
-`sdlc/sdlc.yml` routes tool deployment to `ceratops-tool-lifecycle/install`.
-This action's executor invokes the installed tool manager with `--source` set
-to the selected repository. Tool name and version come from that checkout's
-`pyproject.toml`. The manager's stable launcher selects its installed Python
-runtime. Missing manager installation or ambiguous tool selection fails before
-deployment is reported complete.
+`sdlc/sdlc.yml` routes tool installation to this action; the manager itself
+reads tool `pyproject.toml` and `tool.json`, not SDLC. Earlier SDLC bindings use
+`--source` to build a tool directly. SDLC v4 returns the selected tool and its
+package prerequisite records to this action. For a package-backed tool, run the
+package's declared build action and require its wheel validation to pass. Select
+exactly one wheel matching its artifact directory and filename pattern. The tool
+source must declare that package at the wheel's exact version. Pass the wheel
+and the package's `pylock.toml` to the manager; do not pass package source as
+tool source. A tool without a package prerequisite keeps the source-build path.
 
 ## Workflow
 
 1. For repository installation, use the selected checkout's `pyproject.toml`
    name and version. If it declares several tools, select by tool name.
    Run the installed manager from that checkout, or supply `--source` with
-   its repository or tool directory:
+   its repository or tool directory. For a package-backed tool, supply its
+   already validated wheel and package lock as well:
 
    ```powershell
-   C:\AI-Agents-Tools\ceratops_tool_manager\bin\ceratops_tool_manager.cmd install [--source <directory>] [--tool-name <name>]
+   C:\AI-Agents-Tools\ceratops_tool_manager\bin\ceratops_tool_manager.cmd install --source <tool-directory> [--tool-name <name>] --package-wheel <package-wheel.whl> --package-lock <package-pylock.toml>
    ```
 
-   The command discovers declared tools, builds and registers the selected
-   release, then installs it. It rejects ambiguous names before building and
-   accepts no version override, artifact URL, command, or output path.
+   Omit both package flags for a source-built tool without a package
+   prerequisite. The manager builds only the selected tool source, registers
+   the tool wheel with the supplied package wheel and locked third-party
+   wheels, then installs that exact set. It rejects ambiguous names before
+   building and accepts no version override, artifact URL, or output path.
 2. In an active AI-Agent-Skills checkout, install its manager source with
    `uv run --locked scripts/deploy-tool-manager.py`; this supports both first
    installation and an existing manager. Other tools use the installed CLI.

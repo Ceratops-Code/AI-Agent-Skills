@@ -27,9 +27,13 @@ Create a tool's editable source and a reproducible release in its owning repo.
    ```
 
    Review `pylock.toml` between these commands. The first records locked
-   dependencies; the second builds and registers that exact package without
-   activating it. An AI-Agent-Skills checkout is not required. If the manager
-   is absent, use bootstrap only when first installation is authorized.
+   dependencies; the second builds and registers that exact tool without
+   activating it. For a tool declaring a separate SDLC package prerequisite,
+   build and validate that package wheel first; register the tool with
+   `package --source <tool-source> --package-wheel <wheel> --package-lock
+   <package-pylock.toml>`. Keep the package source and lock in its package
+   directory. An AI-Agent-Skills checkout is not required. If the manager is
+   absent, use bootstrap only when first installation is authorized.
 6. Hand authorized deployment to this skill's install action. Use a new version
    when artifact contents change; a published identity/version is immutable.
 

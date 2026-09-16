@@ -29,6 +29,7 @@ from ceratops_repo_compatibility_engine.sdlc_contract_validation import (
     SdlcContractError,
     load_contract,
     operation_entries,
+    operation_prerequisites,
 )
 from ceratops_repo_compatibility_engine.sdlc_contract_validation import (
     operation_category as contract_operation_category,
@@ -43,6 +44,7 @@ PLACEHOLDER_RE = re.compile(r"^\{(?P<name>[a-z][a-z0-9_]*)\}$")
 FAILURE_TAIL_LINES = 8
 FAILURE_TAIL_CHARS = 4096
 FAILED_STATUSES = frozenset({"operation_failed", "validation_failed", "tests_failed", "state_changed", "handoff_required", "error"})
+MUTATION_CATEGORIES = frozenset({"build", "deploy-local", "publish"})
 
 
 @dataclass(frozen=True)
@@ -57,11 +59,12 @@ class OperationRequest:
 
 @dataclass(frozen=True)
 class PreparedStep:
-    """One bounded command identified by its v1 step ID or v2 YAML position."""
+    """One bounded command or structured lifecycle handoff."""
 
     position: int | str
-    argv: tuple[str, ...]
+    argv: tuple[str, ...] | None
     cwd: pathlib.Path
+    handoff: Mapping[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -86,7 +89,7 @@ class OperationError(RuntimeError):
 
 
 def operation_category(operation: str) -> str:
-    """Validate a complete YAML location and return its structural category."""
+    """Validate a complete versioned YAML location and return its category."""
 
     try:
         return contract_operation_category(operation)
@@ -181,6 +184,23 @@ def _working_directory(repo_root: pathlib.Path, raw: str) -> pathlib.Path:
     return cwd
 
 
+def _prepared_step(
+    repo_root: pathlib.Path,
+    step: Mapping[str, Any],
+    position: int,
+    parameters: Mapping[str, str],
+) -> PreparedStep:
+    """Bind one schema-validated step without dispatching lifecycle work."""
+
+    if "handoff" in step:
+        return PreparedStep(position, None, repo_root, dict(step["handoff"]))
+    return PreparedStep(
+        step.get("id", position),
+        _expanded_argv(step["run"], parameters),
+        _working_directory(repo_root, step.get("cwd", ".")),
+    )
+
+
 def repository_commit(repo_root: pathlib.Path) -> str | None:
     """Return HEAD for a Git worktree, or None for standalone capability use."""
 
@@ -223,7 +243,6 @@ def prepare_operations(
     root = repo_root.expanduser().resolve(strict=True)
     contract = read_repository_contract(root, contract_path)
     entries = operation_entries(contract)
-    requirements = contract.get("repository", {}).get("prerequisites", {})
     commit = repository_commit(root)
     prepared: list[PreparedOperation] = []
     for request in requests:
@@ -255,11 +274,7 @@ def prepare_operations(
             continue
         parameters = _parameters(selected, request)
         steps = tuple(
-            PreparedStep(
-                step.get("id", position),
-                _expanded_argv(step["run"], parameters),
-                _working_directory(root, step.get("cwd", ".")),
-            )
+            _prepared_step(root, step, position, parameters)
             for position, step in enumerate(selected.get("steps", []), start=1)
         )
         prepared.append(
@@ -270,10 +285,7 @@ def prepare_operations(
                 commit,
                 steps,
                 selected.get("handoff"),
-                {
-                    name: requirements[name]
-                    for name in selected.get("prerequisites", [])
-                },
+                operation_prerequisites(contract, request.operation),
                 selected.get("no-op"),
                 context if contract.get("version", 2) >= 3 or context == "ci" else "legacy",
                 contract_path,
@@ -291,8 +303,9 @@ def validation_operations(
 ) -> list[str]:
     """Select repository checks and checks of selected deliverables, in YAML order.
 
-    Version 3 keeps every applicable gate even with an explicit order. Historical
-    versions preserve their selection behavior. Categories own gate semantics.
+    Versions 3 and 4 keep every applicable gate even with an explicit order.
+    Historical versions preserve their selection behavior. Categories own gate
+    semantics.
     """
 
     contract = read_repository_contract(repo_root, contract_path)
@@ -304,7 +317,9 @@ def validation_operations(
         if not current:
             return list(explicit)
     selected_deliverables = {
-        operation.split(".")[1]
+        tuple(operation.split(".")[1:3])
+        if contract.get("version") == 4
+        else (operation.split(".")[1],)
         for operation in (*selected_operations, *(explicit or ()))
         if operation.startswith("deliverables.")
     }
@@ -314,7 +329,11 @@ def validation_operations(
         if operation_category(operation) in {"validate", "tests"}
         and (
             operation.startswith("repository.")
-            or operation.split(".")[1] in selected_deliverables
+            or (
+                tuple(operation.split(".")[1:3])
+                if contract.get("version") == 4
+                else (operation.split(".")[1],)
+            ) in selected_deliverables
             or (current and not selected_deliverables)
         )
     ]
@@ -336,6 +355,8 @@ def _execute_prepared_operation(prepared: PreparedOperation) -> dict[str, object
         "commit": prepared.commit,
         "steps": [],
     }
+    if prepared.prerequisites:
+        base["prerequisites"] = dict(prepared.prerequisites)
     if prepared.no_op_reason is not None:
         return {**base, "status": "no_op", "reason": prepared.no_op_reason}
     if repository_commit(prepared.repo_root) != prepared.commit:
@@ -349,7 +370,26 @@ def _execute_prepared_operation(prepared: PreparedOperation) -> dict[str, object
     completed: list[int | str] = []
     step_results: list[dict[str, Any]] = []
     for step in prepared.steps:
-        if prepared.commit and prepared.category in {"deploy-local", "publish"}:
+        if step.handoff is not None:
+            if prepared.commit and prepared.category in MUTATION_CATEGORIES:
+                try:
+                    require_clean_commit(prepared.repo_root, prepared.commit)
+                except OperationError as exc:
+                    return {
+                        **base,
+                        "steps": completed,
+                        "status": "state_changed",
+                        "message": str(exc),
+                    }
+            return {
+                **base,
+                "steps": completed,
+                "status": "deferred_handoff"
+                if prepared.handoff_mode == "ci"
+                else "handoff_required",
+                "handoff": dict(step.handoff),
+            }
+        if prepared.commit and prepared.category in MUTATION_CATEGORIES:
             try:
                 require_clean_commit(prepared.repo_root, prepared.commit)
             except OperationError as exc:
@@ -360,6 +400,7 @@ def _execute_prepared_operation(prepared: PreparedOperation) -> dict[str, object
                     "message": str(exc),
                 }
         try:
+            assert step.argv is not None
             argv = list(step.argv)
             # CreateProcess does not apply PATHEXT to bare npm/pnpm commands.
             # Resolve a bare executable while leaving repository-relative paths
@@ -396,7 +437,7 @@ def _execute_prepared_operation(prepared: PreparedOperation) -> dict[str, object
                 "failed_step": step.position,
                 "diagnostic": {
                     "exit_code": code,
-                    "message": failure_excerpt("\n".join((stderr, stdout)))
+                    "message": failure_excerpt(f"{stderr}\n{stdout}")
                     or (f"Command exited with code {code}." if code is not None
                         else "Command could not start."),
                     "stdout_tail": _bounded_tail(stdout),
@@ -426,7 +467,7 @@ def _execute_prepared_operation(prepared: PreparedOperation) -> dict[str, object
     if prepared.handoff:
         result_value["handoff"] = prepared.handoff
         if prepared.handoff_mode == "skill":
-            if prepared.commit and prepared.category in {"deploy-local", "publish"}:
+            if prepared.commit and prepared.category in MUTATION_CATEGORIES:
                 try:
                     require_clean_commit(prepared.repo_root, prepared.commit)
                 except OperationError as exc:
@@ -440,8 +481,6 @@ def _execute_prepared_operation(prepared: PreparedOperation) -> dict[str, object
             result_value["status"] = "handoff_required"
         elif prepared.handoff_mode == "ci":
             result_value["status"] = "deferred_handoff"
-    if prepared.prerequisites:
-        result_value["prerequisites"] = dict(prepared.prerequisites)
     return result_value
 
 
@@ -452,6 +491,23 @@ def execute_prepared_operation(prepared: PreparedOperation) -> dict[str, object]
     before deployment. This command executor neither caches nor replays them.
     """
     return _execute_prepared_operation(prepared)
+
+
+def _combined_prerequisites(
+    prepared: Sequence[PreparedOperation],
+) -> dict[str, Any]:
+    """Merge one contract version's prerequisite records for prepare-only output."""
+
+    combined: dict[str, Any] = {}
+    for item in prepared:
+        if set(item.prerequisites).issubset({"capabilities", "packages"}):
+            for group in ("capabilities", "packages"):
+                values = item.prerequisites.get(group, {})
+                if values:
+                    combined.setdefault(group, {}).update(values)
+        else:
+            combined.update(item.prerequisites)
+    return combined
 
 
 def execute_prepared_operations(
@@ -495,7 +551,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--validation-operation",
         action="append",
-        help="Ordered validate/tests locations; v3 retains every applicable gate.",
+        help="Ordered validate/tests locations; v3 and v4 retain every applicable gate.",
     )
     parser.add_argument(
         "--validate",
@@ -533,7 +589,9 @@ def main(argv: list[str] | None = None) -> int:
             ],
             args.sdlc_contract, context=context,
         )
-        if any(item.category in {"deploy-local", "publish"} for item in prepared):
+        if not args.prepare_only and any(
+            item.category in MUTATION_CATEGORIES for item in prepared
+        ):
             commit = repository_commit(root)
             if commit:
                 require_clean_commit(root, commit)
@@ -544,7 +602,8 @@ def main(argv: list[str] | None = None) -> int:
         checking_delivery = any(item.category == "publish" or (
             item.category == "deploy-local" and (item.steps or item.handoff_mode != "legacy")
         ) for item in prepared)
-        requires_validation = args.validate or args.tests or checking_delivery
+        checking_build = any(item.category == "build" for item in prepared)
+        requires_validation = args.validate or args.tests or checking_delivery or checking_build
         validations = (
             prepare_operations(
                 root,
@@ -564,7 +623,7 @@ def main(argv: list[str] | None = None) -> int:
                     )
                     if ((args.validate and operation_category(operation) == "validate")
                         or (args.tests and operation_category(operation) == "tests")
-                        or (checking_delivery and not (args.validate or args.tests)))
+                        or ((checking_delivery or checking_build) and not (args.validate or args.tests)))
                 ],
                 args.sdlc_contract, context=context,
             )
@@ -576,11 +635,7 @@ def main(argv: list[str] | None = None) -> int:
                 "status": "prepared",
                 "operations": args.operation,
             }
-            requirements = {
-                name: data
-                for item in [*validations, *prepared]
-                for name, data in item.prerequisites.items()
-            }
+            requirements = _combined_prerequisites([*validations, *prepared])
             if requirements:
                 result["prerequisites"] = requirements
         else:

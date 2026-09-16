@@ -221,6 +221,13 @@ the validator. Managed deployment binds source validation followed by the
 transactional installer. The compatible-repository producer
 adds these skill operations only for source skills in current-format contracts;
 the generic template declares repository validation and an explicit test no-op.
+SDLC v4 also supports separate packages, tools, skills, and hooks. Its schema
+lives at `skills/ceratops-repo-lifecycle/references/schemas/sdlc.v4.schema.json`;
+`scripts/repository_operation.py` resolves action locations and returns package
+prerequisites through `--prepare-only`. Tools built directly from source may
+declare no package prerequisite. The compatibility producer and this
+repository's live declaration remain v3; v4 is not automatically migrated or
+installed.
 
 Tool deployment at `deliverables.tools.deploy-local.ceratops-managed` routes to
 `ceratops-tool-lifecycle/install`. That skill's installed executable binding
@@ -312,6 +319,14 @@ Each repository owns one lifecycle contract:
   Applying current compatibility upgrades version 2; version 1 needs explicit
   operation-ownership mapping before application. Installer release numbers
   alone do not determine SDLC compatibility.
+- Version 4 has a schema and repository-neutral template under
+  `skills/ceratops-repo-lifecycle/references/`. It separates package build
+  outputs from tools and skills, places structured lifecycle handoffs in
+  ordered steps, and exposes declared package prerequisites without executing
+  their build or installation actions. Tool installation can also run a
+  repository-owned script directly. A tool may declare one package prerequisite
+  or none. Versions 1–3 retain their existing behavior and
+  locations.
 - Operation `status: completed` records command completion. A successful step
   whose entire stdout is a JSON object with nonempty string `schema` and
   `status` fields is retained unchanged in `step_results` as

@@ -61,12 +61,19 @@ and publication.
   `repository.bootstrap.runtime` or
   `deliverables.skills.deploy-local.ceratops-managed`.
   Version 1 locations use `deploy.operations.NAME` or `release.operations.NAME`.
+- For SDLC v4, select `repository.actions.ACTION` or
+  `deliverables.KIND.NAME.actions.ACTION`. Read the package prerequisites and
+  action locations returned by `--prepare-only` before a dependent action;
+  select prerequisite actions explicitly after checking their artifact state.
+  A structured `steps.handoff` is pending work for the named lifecycle, not
+  evidence that validation, installation, or publication completed.
 - Use supported SDLC formats through the shared loader without migration.
   Require an upgrade only when the requested operation cannot run safely;
   installer release-number differences alone do not establish incompatibility.
 - Apply current compatibility with SDLC version 3 and separate validation and
-  tests. Preserve supported older formats during ordinary lifecycle execution;
-  compatibility application upgrades them only with clear operation ownership.
+  tests. Read v4 through the shared schema and operation adapter without
+  converting existing contracts; the compatibility producer upgrades older
+  formats only with clear operation ownership.
 - Read declared prerequisite metadata before setup; run only explicitly chosen
   bootstrap operations. Prerequisites and artifact identity are annotations,
   not inferred check or installation commands.

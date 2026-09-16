@@ -47,6 +47,7 @@ SCHEMA_ASSIGNMENTS = {
         CONTRACTS / "ceratops-compatibility-deterministic-contract.json",
     ),
     SCHEMAS / "sdlc.yml.schema.json": (),
+    SCHEMAS / "sdlc.v4.schema.json": (),
     SCHEMAS / "sdlc.v2.schema.json": (),
     SCHEMAS / "sdlc.v1.schema.json": (),
 }

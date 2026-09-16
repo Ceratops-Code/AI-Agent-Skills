@@ -1,0 +1,16 @@
+version: 4
+kind: ceratops-sdlc
+repository:
+  capabilities:
+    uv:
+      executable: uv
+  actions:
+    validate:
+      requires:
+        capabilities: [uv]
+      steps:
+        - run: [uv, run, --locked, scripts/validate-repository.py]
+    test:
+      requires:
+        capabilities: []
+      no-op: No repository test command has been detected or declared.

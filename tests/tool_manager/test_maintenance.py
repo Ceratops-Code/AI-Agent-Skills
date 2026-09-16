@@ -146,6 +146,53 @@ def test_cli_packages_then_installs_through_existing_engine(source_package, tmp_
     assert not list((runtime_root / identity / "staging").iterdir())
 
 
+@pytest.mark.usefixtures("deployment")
+def test_package_wheel_prerequisite_is_registered_and_installed_without_package_source(source_package, tmp_path, capsys):
+    """The tool build receives only its source; the separate package enters as a wheel."""
+    project, runtime_root, calls = source_package
+    (tmp_path / "package").mkdir()
+    bundle = make_release(tmp_path / "package", "1.0.0", tool="claims_runtime", metadata_name="claims-runtime")
+    wheel = next(bundle.glob("*.whl"))
+    lock = tmp_path / "package" / "pylock.toml"
+    lock.write_text('lock-version="1.0"\npackages=[]\n')
+    (project / "pyproject.toml").write_text(
+        '[project]\nname="fixture"\nversion="1.0.0"\ndependencies=["claims-runtime==1.0.0"]\n'
+    )
+    options = ["--source", str(project), "--package-wheel", str(wheel), "--package-lock", str(lock)]
+    assert cli.main(["package", *options]) == 0
+    registered = json.loads(capsys.readouterr().out)
+    assert len(calls) == 1 and calls[0][0][1] == "build"
+    release_dir = runtime_root / "fixture" / "artifacts" / "1.0.0" / registered["manifest_sha256"]
+    release = json.loads((release_dir / "manifest.json").read_text())
+    assert {entry["filename"] for entry in release["wheels"]} == {"fixture-1.0.0-py3-none-any.whl", wheel.name}
+    assert (release_dir / wheel.name).read_bytes() == wheel.read_bytes()
+    assert not (runtime_root / "fixture" / "current.json").exists()
+    assert cli.main(["install", *options]) == 0
+    assert json.loads(capsys.readouterr().out)["installed_version"] == "1.0.0"
+    assert len(calls) == 2  # one tool build per command; neither builds the package
+
+
+@pytest.mark.parametrize("case", ["missing-lock", "wrong-version", "undeclared"])
+def test_package_wheel_prerequisite_rejects_invalid_contract_before_build(source_package, tmp_path, capsys, case):
+    project, runtime_root, calls = source_package
+    (tmp_path / "package").mkdir()
+    bundle = make_release(tmp_path / "package", "2.0.0" if case == "wrong-version" else "1.0.0",
+                          tool="claims_runtime", metadata_name="claims-runtime")
+    wheel = next(bundle.glob("*.whl"))
+    lock = tmp_path / "package" / "pylock.toml"
+    lock.write_text('lock-version="1.0"\npackages=[]\n')
+    if case != "undeclared":
+        (project / "pyproject.toml").write_text(
+            '[project]\nname="fixture"\nversion="1.0.0"\ndependencies=["claims-runtime==1.0.0"]\n'
+        )
+    options = ["package", "--source", str(project), "--package-wheel", str(wheel)]
+    if case != "missing-lock":
+        options.extend(["--package-lock", str(lock)])
+    assert cli.main(options) == 2
+    assert capsys.readouterr().err
+    assert not calls and not (runtime_root / "fixture" / "registry.json").exists()
+
+
 def test_cli_lock_refresh_does_not_build_register_or_activate(source_package, capsys):
     project, runtime_root, calls = source_package
     (project / "pylock.toml").unlink()
@@ -284,7 +331,7 @@ def test_repository_install_preserves_previous_selection_on_failure(deployment, 
             raise contracts.DeploymentError("build failed")
         monkeypatch.setattr(package_module, "run", fail)
     elif failure == "metadata-selection":
-        monkeypatch.setattr(package_module, "package", lambda source: {"tool_name": "other", "version": "1.0.0"})
+        monkeypatch.setattr(package_module, "package", lambda source, **_options: {"tool_name": "other", "version": "1.0.0"})
     else:
         failures["phase"] = "check"
     assert cli.main(["install", "--source", str(project)]) == 2

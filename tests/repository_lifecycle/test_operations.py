@@ -128,6 +128,257 @@ def test_v3_requires_explicit_unambiguous_test_declarations(tests: object) -> No
     assert not contracts.validation_errors({"version": 3, "kind": "ceratops-sdlc", "deliverables": {"service": {"tests": {"none": {"no-op": "No executable behavior."}}}}})
 
 
+def _v4_action(*steps: dict[str, object]) -> dict[str, object]:
+    return {"requires": {"capabilities": []}, "steps": list(steps)}
+
+
+def _v4_fixture() -> dict[str, object]:
+    """Exercise package dependency records and separate lifecycle ownership."""
+
+    return {
+        "version": 4,
+        "kind": "ceratops-sdlc",
+        "repository": {
+            "capabilities": {"uv": {"executable": "uv"}},
+            "actions": {
+                "validate": _v4_action({"run": [sys.executable, "-c", "pass"]}),
+                "test": {"requires": {"capabilities": []}, "no-op": "No repository tests."},
+            },
+        },
+        "deliverables": {
+            "packages": {
+                "core": {
+                    "source": "packages/core", "project": "packages/core/pyproject.toml",
+                    "prerequisites": [],
+                    "artifact": {
+                        "type": "python-wheel", "distribution": "core-tool",
+                        "output-directory": "dist/core", "filename-pattern": "core_tool-*.whl",
+                    },
+                    "actions": {"build": _v4_action({"run": ["uv", "build", "packages/core"]})},
+                },
+                "claims": {
+                    "source": "packages/claims", "project": "packages/claims/pyproject.toml",
+                    "prerequisites": ["core"],
+                    "artifact": {
+                        "type": "python-wheel", "distribution": "claims-tool",
+                        "output-directory": "dist/claims", "filename-pattern": "claims_tool-*.whl",
+                    },
+                    "actions": {"build": _v4_action({"run": ["uv", "build", "packages/claims"]})},
+                },
+            },
+            "tools": {
+                "insurance-claims-tool": {
+                    "source": "packages/claims", "manifest": "packages/claims/tool.json",
+                    "prerequisites": ["claims"],
+                    "actions": {
+                        "validate": {"requires": {"capabilities": []}, "no-op": "Package tests cover the tool."},
+                        "install": _v4_action({"handoff": {
+                            "lifecycle": "ceratops-tool-lifecycle", "action": "install",
+                            "inputs": {"tool": "insurance-claims-tool"},
+                        }}),
+                    },
+                },
+            },
+            "skills": {
+                "claims-catalog-invoice": {
+                    "source": "skills/claims-catalog-invoice", "prerequisites": ["claims"],
+                    "actions": {
+                        "validate": _v4_action({"handoff": {
+                            "lifecycle": "ceratops-skill-lifecycle", "action": "source-validate",
+                            "inputs": {"skill": "claims-catalog-invoice"},
+                        }}),
+                        "install": _v4_action({"handoff": {
+                            "lifecycle": "ceratops-skill-lifecycle", "action": "deploy",
+                            "inputs": {"skill": "claims-catalog-invoice"},
+                        }}),
+                    },
+                },
+            },
+        },
+    }
+
+
+def test_v4_template_and_typed_operation_index(tmp_path: pathlib.Path) -> None:
+    template = (
+        ROOT / "skills/ceratops-repo-lifecycle/references/templates/sdlc.v4.yml.tmpl"
+    )
+    path = tmp_path / "sdlc.yml"
+    shutil.copyfile(template, path)
+    document = contracts.load_contract(path)
+    assert document["version"] == 4
+    assert list(contracts.operation_entries(document)) == [
+        "repository.actions.validate", "repository.actions.test",
+    ]
+
+    fixture = _v4_fixture()
+    assert contracts.validation_errors(fixture) == []
+    entries = contracts.operation_entries(fixture)
+    assert set(entries) == {
+        "repository.actions.validate", "repository.actions.test",
+        "deliverables.packages.core.actions.build",
+        "deliverables.packages.claims.actions.build",
+        "deliverables.tools.insurance-claims-tool.actions.validate",
+        "deliverables.tools.insurance-claims-tool.actions.install",
+        "deliverables.skills.claims-catalog-invoice.actions.validate",
+        "deliverables.skills.claims-catalog-invoice.actions.install",
+    }
+    assert runner.operation_category("deliverables.packages.claims.actions.build") == "build"
+    assert runner.operation_category("deliverables.tools.insurance-claims-tool.actions.install") == "deploy-local"
+    with pytest.raises(runner.OperationError, match="Invalid SDLC operation location"):
+        runner.operation_category("deliverables.skills.claims-catalog-invoice.actions.build")
+
+
+def test_v4_prerequisites_are_exposed_without_build_or_install(tmp_path: pathlib.Path) -> None:
+    fixture = _v4_fixture()
+    (tmp_path / "sdlc").mkdir()
+    (tmp_path / "sdlc/sdlc.yml").write_text(json.dumps(fixture))
+    _repository(tmp_path)
+    (tmp_path / "uncommitted.txt").write_text("inspection must remain read-only")
+    location = "deliverables.skills.claims-catalog-invoice.actions.install"
+    prepared = runner.prepare_operations(tmp_path, [runner.OperationRequest(location)])[0]
+    assert list(prepared.prerequisites["packages"]) == ["core", "claims"]
+    assert prepared.prerequisites["packages"]["claims"]["action-locations"] == {
+        "build": "deliverables.packages.claims.actions.build"
+    }
+    assert prepared.steps[0].handoff["action"] == "deploy"
+    assert runner.validation_operations(tmp_path, [location]) == [
+        "repository.actions.validate",
+        "deliverables.skills.claims-catalog-invoice.actions.validate",
+        "repository.actions.test",
+    ]
+    assert runner.validation_operations(tmp_path, [
+        "deliverables.tools.insurance-claims-tool.actions.install"
+    ]) == [
+        "repository.actions.validate",
+        "deliverables.tools.insurance-claims-tool.actions.validate",
+        "repository.actions.test",
+    ]
+    result = run_operation_cli(tmp_path, location, prepare_only=True)
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    assert list(payload["prerequisites"]["packages"]) == ["core", "claims"]
+
+
+def test_v4_source_installed_tool_needs_no_package_artifact(tmp_path: pathlib.Path) -> None:
+    fixture = _v4_fixture()
+    tool = fixture["deliverables"]["tools"]["insurance-claims-tool"]
+    tool["prerequisites"] = []
+    assert contracts.validation_errors(fixture) == []
+
+    (tmp_path / "sdlc").mkdir()
+    (tmp_path / "sdlc/sdlc.yml").write_text(json.dumps(fixture))
+    _repository(tmp_path)
+    location = "deliverables.tools.insurance-claims-tool.actions.install"
+    prepared = runner.prepare_operations(tmp_path, [runner.OperationRequest(location)])[0]
+    assert prepared.prerequisites["packages"] == {}
+    assert prepared.steps[0].handoff["action"] == "install"
+    assert not (tmp_path / "dist").exists()
+
+
+def test_v4_tool_install_can_run_standalone_script(tmp_path: pathlib.Path) -> None:
+    fixture = _v4_fixture()
+    tool = fixture["deliverables"]["tools"]["insurance-claims-tool"]
+    tool["actions"]["install"] = _v4_action({"run": [
+        sys.executable, "-c", "from pathlib import Path; Path('installed.txt').write_text('done')",
+    ]})
+    assert contracts.validation_errors(fixture) == []
+    (tmp_path / "sdlc").mkdir()
+    (tmp_path / "sdlc/sdlc.yml").write_text(json.dumps(fixture))
+    prepared = runner.prepare_operations(tmp_path, [runner.OperationRequest(
+        "deliverables.tools.insurance-claims-tool.actions.install",
+    )])[0]
+    result = runner.execute_prepared_operation(prepared)
+    assert result["status"] == "completed"
+    assert result["steps"] == [1]
+    assert (tmp_path / "installed.txt").read_text() == "done"
+
+
+@pytest.mark.parametrize("mode", ["skill", "ci", "return"])
+def test_v4_runs_commands_then_returns_structured_handoff(
+    tmp_path: pathlib.Path, mode: str,
+) -> None:
+    fixture = _v4_fixture()
+    action = fixture["deliverables"]["skills"]["claims-catalog-invoice"]["actions"]["install"]
+    action["steps"].insert(0, {"run": [
+        sys.executable, "-c", "from pathlib import Path; Path('ran.txt').write_text('done')",
+    ]})
+    (tmp_path / "sdlc").mkdir()
+    (tmp_path / "sdlc/sdlc.yml").write_text(json.dumps(fixture))
+    location = "deliverables.skills.claims-catalog-invoice.actions.install"
+    prepared = runner.prepare_operations(
+        tmp_path, [runner.OperationRequest(location)], context=mode,
+    )[0]
+    result = runner.execute_prepared_operation(prepared)
+    assert result["steps"] == [1]
+    assert result["status"] == ("deferred_handoff" if mode == "ci" else "handoff_required")
+    assert result["handoff"] == {
+        "lifecycle": "ceratops-skill-lifecycle", "action": "deploy",
+        "inputs": {"skill": "claims-catalog-invoice"},
+    }
+    assert (tmp_path / "ran.txt").read_text() == "done"
+
+
+def test_v4_package_build_waits_for_declared_test_gate(tmp_path: pathlib.Path) -> None:
+    fixture = _v4_fixture()
+    fixture["repository"]["actions"]["test"] = _v4_action({
+        "run": [sys.executable, "-c", "raise SystemExit(7)"],
+    })
+    fixture["deliverables"]["packages"]["claims"]["actions"]["build"] = _v4_action({
+        "run": [sys.executable, "-c", "from pathlib import Path; Path('built.txt').write_text('bad')"],
+    })
+    (tmp_path / "sdlc").mkdir()
+    (tmp_path / "sdlc/sdlc.yml").write_text(json.dumps(fixture))
+    result = run_operation_cli(tmp_path, "deliverables.packages.claims.actions.build")
+    assert result.returncode == 1
+    assert json.loads(result.stderr)["status"] == "tests_failed"
+    assert not (tmp_path / "built.txt").exists()
+
+
+@pytest.mark.parametrize("change, expected", [
+    (lambda x: x["deliverables"]["skills"]["claims-catalog-invoice"].update(
+        prerequisites=["missing"]), "unknown package missing"),
+    (lambda x: x["deliverables"]["packages"]["core"].update(
+        prerequisites=["claims"]), "package prerequisite cycle"),
+    (lambda x: x["deliverables"]["tools"]["insurance-claims-tool"]["actions"]["install"]["steps"][0]["handoff"].update(
+        lifecycle="ceratops-skill-lifecycle"), "must hand off to ceratops-tool-lifecycle"),
+    (lambda x: x["deliverables"]["tools"]["insurance-claims-tool"]["actions"].update(
+        install={"requires": {"capabilities": []}, "no-op": "Cannot install without lifecycle."}),
+     "must end with a handoff"),
+    (lambda x: x["deliverables"]["skills"]["claims-catalog-invoice"]["actions"]["install"].update(
+        steps=[{"handoff": {"lifecycle": "ceratops-skill-lifecycle", "action": "deploy", "inputs": {}}}, {"run": ["python"]}]),
+     "handoff must be the single final step"),
+    (lambda x: x["deliverables"]["packages"]["claims"]["artifact"].update(
+        **{"filename-pattern": "../wrong.whl"}), "filename-pattern must be a filename pattern"),
+    (lambda x: x["deliverables"]["tools"]["insurance-claims-tool"]["actions"]["install"]["steps"][0]["handoff"]["inputs"].update(
+        **{"prerequisite-packages": ["core"]}), "prerequisite-packages differ from prerequisites"),
+    (lambda x: x["repository"]["capabilities"]["uv"].update(
+        **{"version-from": {"file": "folder\\tool.toml", "key": "project.version"}}),
+     "capability uv version-from.file must be repository-relative"),
+    (lambda x: x["repository"]["capabilities"]["uv"].update(
+        version="1.0", channel="stable"), "multiple version authorities"),
+])
+def test_v4_rejects_invalid_dependency_or_lifecycle_boundary(change, expected: str) -> None:
+    fixture = _v4_fixture()
+    change(fixture)
+    assert any(expected in error for error in contracts.validation_errors(fixture))
+
+
+@pytest.mark.parametrize("change", [
+    lambda x: x["deliverables"]["tools"]["insurance-claims-tool"].update(package="claims"),
+    lambda x: x["deliverables"]["tools"]["insurance-claims-tool"].update(prerequisites=["core", "claims"]),
+    lambda x: x["deliverables"]["skills"]["claims-catalog-invoice"]["actions"]["install"].update(
+        **{"no-op": "nothing to install"}),
+    lambda x: x["deliverables"]["skills"]["claims-catalog-invoice"]["actions"]["install"]["steps"][0].update(
+        run=["python"]),
+    lambda x: x["deliverables"]["skills"]["claims-catalog-invoice"]["actions"].update(
+        build=_v4_action({"run": ["python"]})),
+])
+def test_v4_schema_rejects_ambiguous_steps_or_wrong_deliverable_actions(change) -> None:
+    fixture = _v4_fixture()
+    change(fixture)
+    assert contracts.validation_errors(fixture)
+
+
 def test_registered_skill_executor_is_portable_and_failure_is_not_completion(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1232,7 +1483,7 @@ def test_v1_absent_section_and_optional_operation_remain_no_ops(tmp_path: pathli
         runner.prepare_operations(tmp_path, [runner.OperationRequest("deploy.operations.absent")])
 
 
-@pytest.mark.parametrize("version", [None, True, 1.0, "1", 0, 4, [], {}])
+@pytest.mark.parametrize("version", [None, True, 1.0, "1", 0, 5, [], {}])
 def test_loader_rejects_unsupported_or_unversioned_contracts(
     tmp_path: pathlib.Path, version: object,
 ) -> None:

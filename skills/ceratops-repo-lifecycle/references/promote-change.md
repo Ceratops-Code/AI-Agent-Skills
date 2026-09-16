@@ -50,7 +50,7 @@ owns selected post-merge publication, deployment and cleanup.
 - Ordered complete `deploy-local` locations for `promote-and-deploy`, and
   optional `publish` and `deploy-local` locations for composed shipping.
 - Optional ordered `--validation-operation LOCATION` flags select checks.
-  SDLC version 3 always retains repository and selected-deliverable validation
+  SDLC versions 3 and 4 retain repository and selected-deliverable validation
   and tests; earlier formats preserve their original selection behavior.
 
 ## Constraints

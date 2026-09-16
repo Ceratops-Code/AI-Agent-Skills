@@ -26,7 +26,8 @@ credential-bound fixes precisely.
   `--json` only when a parser needs the full report.
 - Local health records structural compatibility separately, then uses the
   repository's SDLC to run applicable validation and tests. Version 3 uses the
-  locked uv runtime and skill-owned action bindings. Repositories without SDLC
+  locked uv runtime and skill-owned action bindings; version 4 uses declared
+  commands and returns structured lifecycle handoffs. Repositories without SDLC
   retain direct validator execution. Missing or invalid required files remain
   findings; external-only health runs no local commands. Keep failure evidence
   outside the target repository.

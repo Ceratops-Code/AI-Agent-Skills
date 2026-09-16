@@ -3,9 +3,11 @@
 Packaging alone never activates an installation. Repository installation calls
 packaging then the deployment engine with the source-declared name and version.
 Lock refresh is explicit. These build capabilities are not exposed over MCP.
-Ordinary PEP 517 tooling executes reviewed source during a build. Build scratch
-is owned here and removed on success or failure. Nothing requires a skills
-directory or an AI-Agent-Skills checkout after the manager is installed.
+Ordinary PEP 517 tooling executes reviewed tool source during a build. A declared
+local package may supply a prebuilt wheel and its third-party lock; the package
+source is never copied into the tool build. Build scratch is owned here and
+removed on success or failure. Nothing requires a skills directory or an
+AI-Agent-Skills checkout after the manager is installed.
 """
 
 from __future__ import annotations
@@ -21,8 +23,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from packaging.markers import Marker
+from packaging.requirements import Requirement
 from packaging.tags import compatible_tags, cpython_tags
-from packaging.utils import parse_wheel_filename
+from packaging.utils import canonicalize_name, parse_wheel_filename
 
 from .contracts import (
     DeploymentError,
@@ -103,19 +106,61 @@ def resolve_source(source: Path, tool_name: str | None = None) -> ToolSource:
     return selected[0]
 
 
-def install_from_source(source: Path, tool_name: str | None = None) -> dict:
-    """Build the selected checkout release, then activate only that exact release."""
+def install_from_source(source: Path, tool_name: str | None = None, *,
+                        package_wheel: Path | None = None,
+                        package_lock: Path | None = None) -> dict:
+    """Build the tool source, include its declared package wheel, then activate."""
     selected = resolve_source(source, tool_name)
-    result = package(selected.path)
+    result = package(selected.path, package_wheel=package_wheel,
+                     package_lock=package_lock)
     if (result["tool_name"], result["version"]) != (selected.tool_name, selected.version):
         raise DeploymentError("source name or version changed during packaging; installation stopped")
     return Engine().install(result["tool_name"], result["version"])
 
 
-def package(source: Path, *, lock_only: bool = False) -> dict:
-    """Prepare reviewed source without changing any tool's active selection."""
+def package(source: Path, *, lock_only: bool = False,
+            package_wheel: Path | None = None,
+            package_lock: Path | None = None) -> dict:
+    """Register a tool wheel plus an optional exact local package prerequisite."""
     selected = source_metadata(source)
     source, identity, version = selected.path, selected.tool_name, selected.version
+    if (package_wheel is None) != (package_lock is None) or (lock_only and package_wheel is not None):
+        raise DeploymentError("package wheel and lock must be supplied together, without --lock")
+    required_package: tuple[str, str] | None = None
+    if package_wheel is not None:
+        # The wheel is a release input, not a source directory. Check its exact
+        # distribution/version against the tool's PEP 508 dependency before any
+        # registry mutation, and retain a private copy during packaging.
+        assert package_lock is not None
+        if package_wheel.is_symlink() or package_lock.is_symlink():
+            raise DeploymentError("package wheel and lock must be regular files")
+        package_wheel = package_wheel.resolve(strict=True)
+        package_lock = package_lock.resolve(strict=True)
+        if not package_wheel.is_file() or not package_lock.is_file():
+            raise DeploymentError("package wheel and lock must be regular files")
+        token(package_wheel.name, "wheel")
+        required_package = wheel_metadata(package_wheel)
+        try:
+            filename_name, filename_version, _, filename_tags = parse_wheel_filename(package_wheel.name)
+        except ValueError as exc:
+            raise DeploymentError("package prerequisite must be a standard wheel") from exc
+        supported_tags = set(cpython_tags((3, 14), ["cp314"], ["win_amd64"]))
+        supported_tags.update(compatible_tags((3, 14), "cp314", ["win_amd64"]))
+        if (canonicalize_name(filename_name) != canonicalize_name(required_package[0])
+                or str(filename_version) != required_package[1]
+                or not filename_tags.intersection(supported_tags)):
+            raise DeploymentError("package wheel filename, metadata, or platform does not match")
+        project = tomllib.loads(source_file(source, "pyproject.toml").read_text(encoding="utf-8"))["project"]
+        dependencies = project.get("dependencies", [])
+        if not isinstance(dependencies, list) or not all(isinstance(value, str) for value in dependencies):
+            raise DeploymentError("tool project dependencies must be a list of requirements")
+        matching = [requirement for requirement in map(Requirement, dependencies)
+                    if canonicalize_name(requirement.name) == canonicalize_name(required_package[0])]
+        if len(matching) != 1 or matching[0].url or matching[0].extras or matching[0].marker:
+            raise DeploymentError("tool must declare the supplied package as one direct dependency")
+        specifications = list(matching[0].specifier)
+        if len(specifications) != 1 or specifications[0].operator != "==" or specifications[0].version != required_package[1]:
+            raise DeploymentError("tool package dependency must pin the supplied wheel version")
     # The stable installed launcher and readiness protocol consume schema 1.
     # Its legacy field spelling is storage, not a second source of identity.
     config = {"schema": 1, "tool_id": identity, "distribution": identity, "module": selected.module}
@@ -127,18 +172,29 @@ def package(source: Path, *, lock_only: bool = False) -> dict:
         temporary = Path(work)
         env = {k: v for k, v in os.environ.items() if not k.upper().startswith(("UV_", "PIP_", "PYTHON"))}
         env.update({"UV_CACHE_DIR": str(layout.directory("cache")), "UV_NO_CONFIG": "1", "UV_PYTHON_DOWNLOADS": "never", "TEMP": work, "TMP": work})
-        lock = source / "pylock.toml"
-        if lock.exists() or lock.is_symlink():
+        lock = package_lock if package_lock is not None else source / "pylock.toml"
+        if package_lock is None and (lock.exists() or lock.is_symlink()):
             source_file(source, "pylock.toml")
         if lock_only:
             run([str(uv), "pip", "compile", "pyproject.toml", "--python", str(python), "--python-platform", "windows",
                  "--format", "pylock.toml", "--output-file", "pylock.toml", "--no-header", "--no-config", "--no-sources"], cwd=source, env=env)
             return {"lock": str(lock)}
-        locked = tomllib.loads(source_file(source, "pylock.toml").read_text(encoding="utf-8"))
+        locked = tomllib.loads(lock.read_text(encoding="utf-8") if package_lock is not None
+                              else source_file(source, "pylock.toml").read_text(encoding="utf-8"))
         run([str(uv), "build", str(source), "--wheel", "--out-dir", str(temporary), "--python", str(python), "--no-config", "--no-sources"], cwd=source, env=env)
         wheels = list(temporary.glob("*.whl"))
         if len(wheels) != 1 or wheel_metadata(wheels[0]) != (identity.replace("-", "_"), version):
             raise DeploymentError("built wheel does not match source identity and version")
+        if package_wheel is not None:
+            if wheel_metadata(package_wheel) != required_package:
+                raise DeploymentError("package wheel changed before registration")
+            copied = temporary / package_wheel.name
+            if copied.exists():
+                raise DeploymentError("package wheel filename collides with tool wheel")
+            shutil.copyfile(package_wheel, copied)
+            if wheel_metadata(copied) != required_package or digest(copied) != digest(package_wheel):
+                raise DeploymentError("package wheel changed during copying")
+            wheels.append(copied)
         if source_metadata(source) != selected:
             raise DeploymentError("source metadata changed during the build")
         supported = list(cpython_tags((3, 14), ["cp314"], ["win_amd64"])) + list(compatible_tags((3, 14), "cp314", ["win_amd64"]))
@@ -150,6 +206,8 @@ def package(source: Path, *, lock_only: bool = False) -> dict:
         for dependency in locked.get("packages", []):
             if dependency.get("marker") and not Marker(dependency["marker"]).evaluate(marker_environment):
                 continue
+            if required_package is not None and canonicalize_name(dependency["name"]) == canonicalize_name(required_package[0]):
+                raise DeploymentError("package lock must not duplicate the supplied package wheel")
             if not dependency.get("version"):
                 raise DeploymentError("lock requires an exact package version")
             candidates = []

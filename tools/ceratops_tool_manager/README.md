@@ -64,7 +64,9 @@ writes installation files.
 | CLI command | MCP tool | Inputs |
 | --- | --- | --- |
 | `package --source <directory> [--lock]` | Not exposed | Reviewed tool source; optional lock refresh |
+| `package --source <tool-directory> --package-wheel <wheel> --package-lock <pylock.toml>` | Not exposed | Build only tool source; register its separate package wheel and locked dependencies |
 | `install [--source <directory>] [--tool-name <name>]` | Not exposed | Repository or tool source; defaults to the current directory |
+| `install --source <tool-directory> --package-wheel <wheel> --package-lock <pylock.toml>` | Not exposed | Build the tool and install it with the declared package wheel |
 | Not exposed | `install` | `tool_name`, `version` for an exact registered release |
 | `update <tool-name> <version>` | `update` | `tool_name`, `version` |
 | `versions [tool-name]` | `versions` | optional `tool_name` |
@@ -82,11 +84,11 @@ needs no Git. Otherwise Git enumerates tracked and non-ignored untracked
 `--tool-name`; duplicate names, absent matches, and failed queries stop before
 building. Ignored environments are excluded.
 
-Repository lifecycle deployment can select this install through
-`sdlc/sdlc.yml`: the tool deliverable names `ceratops-tool-lifecycle/install`,
-whose installed binding invokes the manager with `--source` set to that
-repository. The selected checkout still determines the tool name and version;
-the YAML does not supply a version override.
+The manager does not read `sdlc/sdlc.yml`. Repository lifecycle hands the
+selected tool and any package prerequisite to `ceratops-tool-lifecycle/install`.
+That action builds and validates a declared package wheel, then passes its
+wheel and lock to the manager. The selected tool source still determines its
+name and version; YAML does not supply a version override.
 
 For example, from a repository root:
 
@@ -125,9 +127,10 @@ values. Module names use lowercase Python import components. Windows device
 names, separators, traversal, malformed identities, and unknown fields fail
  validation. Source metadata must remain stable during the build, and its name
 and version
-must agree with the built wheel. Metadata and locks must stay inside the tool
- directory. Installation requires the existing `pylock.toml` and never refreshes
-it.
+must agree with the built wheel. A source-only tool keeps its lock inside its
+tool directory. A tool with a separate package dependency declares its exact
+version in `pyproject.toml` and supplies the package's prebuilt wheel and lock
+through the paired CLI flags. Installation never refreshes a lock.
 
 Use a pinned maintained build backend. The module's fixed readiness invocation
 is `python -I -B -m <module> --deployment-check`. It must return exactly:
@@ -155,8 +158,10 @@ activating it. Both commands are implemented inside the installed manager.
 Packaging executes reviewed build code and downloads dependencies; it is an
 explicit CLI capability, not an MCP operation or public-repository upload.
 The source installer uses this same implementation for first installation and
-manager updates, including upgrades from an older CLI. Other repository tools
-use CLI install. Reconnect after selecting a new manager version.
+manager updates, including upgrades from an older CLI. A package-backed tool
+uses the paired package flags and still builds its own small tool wheel from
+source. Other repository tools use CLI install. Reconnect after selecting a
+new manager version.
 
 Persistent records and the fixed readiness response retain the schema-1
 `tool_id` field required by existing launchers and installed tools. Its value
