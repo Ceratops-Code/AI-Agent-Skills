@@ -37,6 +37,7 @@ def execute_handoff(route: str, repo_root: pathlib.Path) -> dict[str, object]:
         return {"status": "handoff_required", "handoff": route, "message": "Installed skill has no executor binding."}
     root = installed_root
     binding = installed_binding
+    uses_source_bundle = False
     source_root = repo_root / "skills" / skill
     source_binding = source_root / "references" / "action-executors.json"
     if source_binding.exists():
@@ -46,6 +47,7 @@ def execute_handoff(route: str, repo_root: pathlib.Path) -> dict[str, object]:
             return {"status": "handoff_required", "handoff": route, "message": "Source skill executor binding differs from the installed authorization."}
         root = source_root
         binding = source_binding
+        uses_source_bundle = True
     completed: list[int] = []
     receipts: list[dict[str, object]] = []
     evidence: dict[str, object] = {"handoff": route, "steps": completed}
@@ -75,7 +77,7 @@ def execute_handoff(route: str, repo_root: pathlib.Path) -> dict[str, object]:
                 for token, value in values.items():
                     argument = argument.replace(token, value)
                 argv.append(argument)
-            if step["run"][0] == "{python}":
+            if step["run"][0] == "{python}" and not uses_source_bundle:
                 launcher = installed_root / "scripts/run-skill.py"
                 uv = shutil.which("uv")
                 if launcher.is_symlink() or not launcher.is_file() or uv is None:

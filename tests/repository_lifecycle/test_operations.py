@@ -199,7 +199,8 @@ def test_registered_skill_executor_uses_installed_authorized_source_bundle(
     assert pathlib.Path(calls[0][-1]).resolve() == (
         source / "scripts" / "probe.py"
     ).resolve()
-    assert str(installed / "scripts" / "run-skill.py") in calls[0]
+    assert calls[0][0] == sys.executable
+    assert str(installed / "scripts" / "run-skill.py") not in calls[0]
 
     changed_binding = json.loads(encoded)
     changed_binding["actions"]["check"]["run"].append("changed")
