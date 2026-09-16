@@ -1041,11 +1041,14 @@ def _exercise_corrective_cli(
                 elif defect in {"withdraw", "withdraw-temporary"}:
                     self.withdrawn = selected["id"]
                     raw["confirmed_findings"] = [item for item in raw["confirmed_findings"] if item["id"] != self.withdrawn]
+                    withdrawal_reason = "Retained evidence does not support positive recurring savings."
+                    if defect == "withdraw":
+                        withdrawal_reason += " " + "Further retained detail. " * 20
                     for decision in raw["candidate_decisions"]:
                         if self.withdrawn in decision["finding_ids"]:
                             decision["finding_ids"].remove(self.withdrawn)
                             decision["disposition"] = "confirmed-finding" if decision["finding_ids"] else "plausible-risk" if decision["risk_ids"] else "dismissed-candidate"
-                            decision["reason"] = "Retained evidence does not support positive recurring savings."
+                            decision["reason"] = withdrawal_reason
                     for review in raw["temporary_control_reviews"]:
                         if review["finding_id"] == self.withdrawn:
                             review["finding_id"] = None
@@ -1176,6 +1179,13 @@ def _exercise_corrective_cli(
             assert runner.withdrawn not in {item["id"] for item in accepted["confirmed_findings"]}
             assert len(accepted["confirmed_findings"]) == len(runner.responses[0]["confirmed_findings"]) - 1
             assert len(accepted["temporary_control_reviews"]) == len(runner.responses[0]["temporary_control_reviews"])
+            assert all(len(item["reason"]) <= 320 for item in accepted["candidate_decisions"])
+            assert all(
+                item["no_finding_reason"] is None
+                or len(item["no_finding_reason"]) <= 360
+                for item in accepted["temporary_control_reviews"]
+            )
+            assert all(len(item["rationale"]) <= 240 for item in accepted["call_classifications"])
         if defect in {"conflict", "retained-conflict"}:
             summaries = {item["id"]: item["problem_summary"] for item in runner.responses[0]["confirmed_findings"]}
             assert all(item["problem_summary"] == summaries[item["id"]] for item in accepted["confirmed_findings"])

@@ -57,6 +57,14 @@ def identifiers(*, nonempty: bool = False) -> dict[str, Any]:
     return result
 
 
+def _bounded_explanation(value: str, limit: int) -> str:
+    """Fit retained explanatory text to its destination without changing its judgment."""
+
+    if len(value) <= limit:
+        return value
+    return value[: limit - 3].rstrip() + "..."
+
+
 def normalize_sol_transport_mechanics(
     response: Mapping[str, Any],
 ) -> dict[str, Any]:
@@ -145,7 +153,7 @@ def normalize_sol_transport_mechanics(
             continue
         rationale = classification.get("rationale")
         if isinstance(rationale, str) and len(rationale) > 240:
-            classification["rationale"] = rationale[:237].rstrip() + "..."
+            classification["rationale"] = _bounded_explanation(rationale, 240)
     return result
 
 
@@ -899,7 +907,7 @@ def apply_response_correction(
         elif kind == "withdraw_finding":
             withdrawals[target] = edit["reason"]
         elif kind == "dismiss_temporary_review":
-            review_dismissals[target] = edit["reason"]
+            review_dismissals[target] = _bounded_explanation(edit["reason"], 360)
         else:
             call_edits[target] = {key: edit[key] for key in ("classification", "reason_code", "rationale")}
     # Descending numeric indices retain the original address of every deletion.
@@ -914,10 +922,14 @@ def apply_response_correction(
         for decision in draft["candidate_decisions"]:
             reasons = [withdrawals[identity] for identity in decision["finding_ids"] if identity in withdrawals]
             if reasons:
-                decision["reason"] = " ".join(dict.fromkeys(reasons))
+                decision["reason"] = _bounded_explanation(
+                    " ".join(dict.fromkeys(reasons)), 320
+                )
         for review in draft["temporary_control_reviews"]:
             if review["finding_id"] in withdrawals:
-                review["no_finding_reason"] = withdrawals[review["finding_id"]]
+                review["no_finding_reason"] = _bounded_explanation(
+                    withdrawals[review["finding_id"]], 360
+                )
         surviving = {call for item in draft["confirmed_findings"] if item["waste_kind"] == "model-calls"
                      for call in item["affected_call_ids"]}
         orphan_reasons = {call: withdrawals[item["id"]] for item in result["confirmed_findings"]
@@ -925,7 +937,11 @@ def apply_response_correction(
         calls = _call_details(draft)
         for identity, reason in orphan_reasons.items():
             if identity in calls and calls[identity].get("classification") in {"avoidable_implemented", "avoidable_unimplemented"}:
-                calls[identity].update(classification="unassessed", reason_code=None, rationale=reason)
+                calls[identity].update(
+                    classification="unassessed",
+                    reason_code=None,
+                    rationale=_bounded_explanation(reason, 240),
+                )
         draft["call_classifications"] = [{"call_ids": [identity], **detail} for identity, detail in calls.items()]
     if review_dismissals:
         for review in draft["temporary_control_reviews"]:
