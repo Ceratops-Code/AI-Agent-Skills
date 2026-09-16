@@ -162,6 +162,59 @@ def test_registered_skill_executor_is_portable_and_failure_is_not_completion(
     assert handoffs.execute_handoff("example-skill/check", repo)["status"] == "handoff_required"
 
 
+def test_registered_skill_executor_uses_installed_authorized_source_bundle(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    handoffs = importlib.import_module("sdlc_handoffs")
+    codex_home = tmp_path / "codex"
+    installed = codex_home / "skills" / "example-skill"
+    source_repo = tmp_path / "repository"
+    source = source_repo / "skills" / "example-skill"
+    for root in (installed, source):
+        (root / "references").mkdir(parents=True)
+        (root / "scripts").mkdir()
+    binding = {
+        "version": 1,
+        "actions": {
+            "check": {
+                "run": ["{python}", "{skill_root}/scripts/probe.py"]
+            }
+        },
+    }
+    encoded = json.dumps(binding)
+    for root in (installed, source):
+        (root / "references" / "action-executors.json").write_text(encoded)
+        (root / "scripts" / "probe.py").write_text("print('OK')\n")
+    (installed / "scripts" / "run-skill.py").write_text("# launcher\n")
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.setattr(handoffs.shutil, "which", lambda name: "uv" if name == "uv" else None)
+    calls: list[list[str]] = []
+
+    def run(argv: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(handoffs.subprocess, "run", run)
+    assert handoffs.execute_handoff("example-skill/check", source_repo)["status"] == "completed"
+    assert pathlib.Path(calls[0][-1]).resolve() == (
+        source / "scripts" / "probe.py"
+    ).resolve()
+    assert str(installed / "scripts" / "run-skill.py") in calls[0]
+
+    changed_binding = json.loads(encoded)
+    changed_binding["actions"]["check"]["run"].append("changed")
+    (source / "references" / "action-executors.json").write_text(
+        json.dumps(changed_binding)
+    )
+    result = handoffs.execute_handoff("example-skill/check", source_repo)
+    assert result == {
+        "status": "handoff_required",
+        "handoff": "example-skill/check",
+        "message": "Source skill executor binding differs from the installed authorization.",
+    }
+    assert len(calls) == 1
+
+
 @pytest.mark.parametrize("failure", [None, "candidate", "missing_manager"])
 def test_tool_install_binding_uses_checkout_metadata_and_propagates_failures(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, failure: str | None,

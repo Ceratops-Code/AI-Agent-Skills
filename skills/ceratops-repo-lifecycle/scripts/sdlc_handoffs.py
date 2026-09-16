@@ -1,8 +1,10 @@
 """Execute explicitly registered skill actions for skill callers, never CI.
 
-SDLC contains only skill/action identities. Each installed skill owns its exact
-executor binding. Missing bindings return a pending route; neither a route nor
-successful command preparation constitutes evidence that an action completed.
+SDLC contains only skill/action identities. An installed executor binding may
+authorize the identical binding in the repository's owning source bundle so
+source maintenance validates and deploys the candidate helper. Missing or
+divergent bindings return a pending route; neither a route nor successful
+command preparation constitutes evidence that an action completed.
 """
 
 from __future__ import annotations
@@ -19,16 +21,31 @@ from sdlc_results import capture_step_result
 
 
 def execute_handoff(route: str, repo_root: pathlib.Path) -> dict[str, object]:
-    """Resolve a bounded installed-skill binding and execute shell-free argv."""
+    """Resolve an installed-authorized source binding and execute shell-free argv."""
 
     if not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*/[a-z0-9]+(?:-[a-z0-9]+)*", route):
         return {"status": "handoff_required", "handoff": route, "message": "No deterministic skill/action binding."}
     skill, action = route.split("/")
     skills = pathlib.Path(os.environ.get("CODEX_HOME", str(pathlib.Path.home() / ".codex"))) / "skills"
-    root = skills / skill
-    binding = root / "references" / "action-executors.json"
-    if root.is_symlink() or binding.is_symlink() or not binding.is_file():
+    installed_root = skills / skill
+    installed_binding = installed_root / "references" / "action-executors.json"
+    if (
+        installed_root.is_symlink()
+        or installed_binding.is_symlink()
+        or not installed_binding.is_file()
+    ):
         return {"status": "handoff_required", "handoff": route, "message": "Installed skill has no executor binding."}
+    root = installed_root
+    binding = installed_binding
+    source_root = repo_root / "skills" / skill
+    source_binding = source_root / "references" / "action-executors.json"
+    if source_binding.exists():
+        if source_root.is_symlink() or source_binding.is_symlink() or not source_binding.is_file():
+            return {"status": "handoff_required", "handoff": route, "message": "Source skill executor binding is unsafe."}
+        if source_binding.read_bytes() != installed_binding.read_bytes():
+            return {"status": "handoff_required", "handoff": route, "message": "Source skill executor binding differs from the installed authorization."}
+        root = source_root
+        binding = source_binding
     completed: list[int] = []
     receipts: list[dict[str, object]] = []
     evidence: dict[str, object] = {"handoff": route, "steps": completed}
@@ -59,7 +76,7 @@ def execute_handoff(route: str, repo_root: pathlib.Path) -> dict[str, object]:
                     argument = argument.replace(token, value)
                 argv.append(argument)
             if step["run"][0] == "{python}":
-                launcher = root / "scripts/run-skill.py"
+                launcher = installed_root / "scripts/run-skill.py"
                 uv = shutil.which("uv")
                 if launcher.is_symlink() or not launcher.is_file() or uv is None:
                     return {**evidence, "status": "handoff_required", "message": "Python action requires uv and the installed run-skill.py launcher."}
