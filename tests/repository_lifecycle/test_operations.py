@@ -758,7 +758,7 @@ def test_bootstrap_and_advisory_handoffs_need_no_skill_runtime(
         payload = json.loads(result.stdout)
         assert payload["results"][0]["status"] == "advisory"
         assert payload["results"][0]["handoff"]
-        expected_handoffs = [{
+        expected_handoffs: list[dict[str, object]] = [{
             "operation": check, "commit": None, "steps": [],
             "status": "advisory", "handoff": handoff,
         }]
