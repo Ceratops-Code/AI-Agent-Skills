@@ -292,12 +292,12 @@ def _correction_schema(
 
 
 def response_correction_scope(
-    prior: Mapping[str, Any], schema: Mapping[str, Any],
+    prior: Mapping[str, Any], schema: Mapping[str, Any], source_call_count: int = 0,
 ) -> dict[str, Any]:
     """Diagnose invalid recurrence, review ROI, and accounting conflicts.
 
     This grants no new evidence or call budget. Only uniquely identified model-
-    call findings qualify. Well-formed non-positive estimates permit recurrence
+    call findings qualify. Well-formed estimates below the source-call floor permit recurrence
     reconsideration. A well-formed temporary-control subclaim that fails its ROI
     gate may be dismissed without withdrawing its independent finding.
     Contradictory call accounting permits reconsidering those calls or
@@ -349,7 +349,7 @@ def response_correction_scope(
         saved = recurrence["calls_saved_per_affected_run"]
         added = recurrence["additional_recurring_calls_per_affected_run"]
         frequency = recurrence["affected_similar_run_frequency"]
-        if all(math.isfinite(value) for value in (saved, added, frequency)) and (saved - added) * frequency <= 0:
+        if all(math.isfinite(value) for value in (saved, added, frequency)) and (saved - added) * frequency < source_call_count * 3 // 100:
             invalid.append(identity)
     scope["invalid_recurrence_finding_ids"] = invalid
     scope["conflicting_call_finding_ids"] = conflicts
@@ -406,7 +406,7 @@ def response_correction_scope(
 
 
 def _correction_comparison_values(
-    prior: Mapping[str, Any], current: Mapping[str, Any], schema: Mapping[str, Any],
+    prior: Mapping[str, Any], current: Mapping[str, Any], schema: Mapping[str, Any], source_call_count: int = 0,
 ) -> tuple[Mapping[str, Any], Mapping[str, Any]]:
     """Build comparison copies permitting only diagnosed claim-local changes.
 
@@ -425,7 +425,7 @@ def _correction_comparison_values(
         # Structural repair must finish before claim-local call permissions can
         # be derived from malformed finding coverage.
         return old, new
-    scope = response_correction_scope(prior, schema)
+    scope = response_correction_scope(prior, schema, source_call_count)
     invalid = set(scope["invalid_recurrence_finding_ids"])
     conflicts = set(scope.get("conflicting_call_finding_ids", []))
     dismissed_reviews = set(scope.get("invalid_temporary_control_review_ids", []))
@@ -535,7 +535,7 @@ def _correction_comparison_values(
 
 
 def validate_response_correction(
-    prior: Mapping[str, Any], current: Mapping[str, Any], schema: Mapping[str, Any],
+    prior: Mapping[str, Any], current: Mapping[str, Any], schema: Mapping[str, Any], source_call_count: int = 0,
 ) -> None:
     """Protect unaffected judgments through structural and diagnosed ROI repair.
 
@@ -546,7 +546,7 @@ def validate_response_correction(
     their references. Byte overflow never permits rewriting valid text.
     """
 
-    prior, current = _correction_comparison_values(prior, current, schema)
+    prior, current = _correction_comparison_values(prior, current, schema, source_call_count)
     identifier_pattern = identifier_schema()["pattern"]
     replacements: dict[str, str] = {}
 
@@ -661,7 +661,7 @@ def _corresponding_value(prior: Any, current: Any, path: str) -> Any:
 
 
 def correction_response_schema(
-    prior: Mapping[str, Any], schema: Mapping[str, Any],
+    prior: Mapping[str, Any], schema: Mapping[str, Any], source_call_count: int = 0,
 ) -> dict[str, Any]:
     """Compile a closed edit vocabulary from the rejected immutable response.
 
@@ -714,7 +714,7 @@ def correction_response_schema(
             replacement(path, selected)
 
     visit(prior, schema, [])
-    scope = response_correction_scope(prior, schema)
+    scope = response_correction_scope(prior, schema, source_call_count)
     invalid = set(scope["invalid_recurrence_finding_ids"])
     diagnosed = invalid | set(scope.get("conflicting_call_finding_ids", []))
     invalid_reviews = set(scope.get("invalid_temporary_control_review_ids", []))
@@ -855,7 +855,7 @@ def project_response_correction(
 
 
 def apply_response_correction(
-    prior: Mapping[str, Any], correction: Mapping[str, Any], schema: Mapping[str, Any],
+    prior: Mapping[str, Any], correction: Mapping[str, Any], schema: Mapping[str, Any], source_call_count: int = 0,
 ) -> dict[str, Any]:
     """Reconstruct one full response, retaining every unaffected original value.
 
@@ -863,7 +863,7 @@ def apply_response_correction(
     transport validation precedes writes, then preservation and full structural
     checks precede the caller's independent evidence and accounting validation.
     """
-    edit_schema = correction_response_schema(prior, schema)
+    edit_schema = correction_response_schema(prior, schema, source_call_count)
     allowed_paths = {branch["properties"]["path"]["const"]
                      for branch in edit_schema["properties"]["edits"]["items"].get("anyOf", [])
                      if "path" in branch["properties"]}
@@ -966,7 +966,7 @@ def apply_response_correction(
             calls[identity].update(detail)
         draft["call_classifications"] = [{"call_ids": [identity], **detail} for identity, detail in calls.items()]
     if withdrawals or review_dismissals or call_edits:
-        reconstructed, _ = _correction_comparison_values(result, draft, schema)
+        reconstructed, _ = _correction_comparison_values(result, draft, schema, source_call_count)
         result = dict(reconstructed)
     actual_calls = _call_details(result)
     for identity, detail in call_edits.items():
@@ -989,7 +989,7 @@ def apply_response_correction(
                 raise CreditAnalysisError(
                     "corrective retry temporary-review dismissal changed its diagnosed basis"
                 )
-    validate_response_correction(prior, result, schema)
+    validate_response_correction(prior, result, schema, source_call_count)
     _validate_holistic_transport_value(result, schema, "$response")
     return result
 
@@ -1148,7 +1148,7 @@ def build_sol_schema(
             },
             "affected_similar_run_frequency": {
                 **number(),
-                "description": "Evidence-supported frequency of affected similar runs; positive model-call savings require (saved minus new recurring calls) times frequency to exceed zero.",
+                "description": "Evidence-supported frequency of affected similar runs; model-call findings must meet the 3% floor, rounded down against the frozen source-call count.",
             },
             "affected_similar_run_frequency_range": {
                 "type": "array",

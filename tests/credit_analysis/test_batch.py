@@ -951,6 +951,7 @@ def _exercise_corrective_cli(
         apply_response_correction,
         correction_response_schema,
         project_response_correction,
+        response_correction_scope,
         validate_response_correction,
     )
 
@@ -1027,7 +1028,7 @@ def _exercise_corrective_cli(
                     targets = findings[:2] if defect in {"estimate", "final-estimate"} else [selected]
                     for finding in targets:
                         recurrence = finding["recurrence"]
-                        recurrence["additional_recurring_calls_per_affected_run"] = recurrence["calls_saved_per_affected_run"]
+                        recurrence["additional_recurring_calls_per_affected_run"] = recurrence["calls_saved_per_affected_run"] + 1
             else:
                 self.feedback = json.loads(kwargs["prompt"].split("\nCorrection request:\n", 1)[1])
                 if defect == "temporary-roi":
@@ -1041,7 +1042,7 @@ def _exercise_corrective_cli(
                 elif defect in {"withdraw", "withdraw-temporary"}:
                     self.withdrawn = selected["id"]
                     raw["confirmed_findings"] = [item for item in raw["confirmed_findings"] if item["id"] != self.withdrawn]
-                    withdrawal_reason = "Retained evidence does not support positive recurring savings."
+                    withdrawal_reason = "Retained evidence does not support the recurring savings floor."
                     if defect == "withdraw":
                         withdrawal_reason += " " + "Further retained detail. " * 20
                     for decision in raw["candidate_decisions"]:
@@ -1098,6 +1099,14 @@ def _exercise_corrective_cli(
         monkeypatch.setattr(execution, "_corrective_prompt", recorded_full_prompt)
         monkeypatch.setattr(execution, "_corrected_response", recorded_full_guard)
     output, errors = io.StringIO(), io.StringIO()
+    if defect == "estimate":
+        with pytest.raises(workflow.CreditAnalysisError, match="stopped before another model call"):
+            execution.command_execute_orchestration(
+                state_path, runner=runner, stop_on_validation_error=True,
+            )
+        stopped = json.loads(state_path.read_text(encoding="utf-8"))
+        assert len(stopped["execution"][runner.target]["attempts"]) == 1
+        assert stopped["execution"][runner.target]["attempts"][0]["outcome"] == "validation-error"
     with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
         exit_code = workflow.main(["execute", "--state", str(state_path)])
     saved = json.loads(state_path.read_text(encoding="utf-8"))
@@ -1139,6 +1148,18 @@ def _exercise_corrective_cli(
     assert attempts[0]["outcome"] == "validation-error"
     assert runner.feedback is not None
     scope = runner.feedback["correction_scope"]
+    if defect == "estimate":
+        zero_savings = copy.deepcopy(runner.responses[0])
+        zero_finding_ids = set()
+        for finding in zero_savings["confirmed_findings"]:
+            if finding["waste_kind"] == "model-calls":
+                zero_finding_ids.add(finding["id"])
+                recurrence = finding["recurrence"]
+                recurrence["additional_recurring_calls_per_affected_run"] = recurrence["calls_saved_per_affected_run"]
+        task = analysis._holistic_task_map(saved["manifest"])[runner.target]
+        response_schema = execution._current_response_schema(saved, task, attempts[0]["input_sha256"])
+        assert response_correction_scope(zero_savings, response_schema, 30)["invalid_recurrence_finding_ids"] == []
+        assert set(response_correction_scope(zero_savings, response_schema, 40)["invalid_recurrence_finding_ids"]) == zero_finding_ids
     if defect in {"estimate", "final-estimate"}:
         assert len(scope["invalid_recurrence_finding_ids"]) == 2
     if defect == "temporary-roi":

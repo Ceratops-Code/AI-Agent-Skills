@@ -254,9 +254,16 @@ of any run-local rules that differ from the primary rule chain.
 Every retained model candidate receives one disposition. Every selected model
 call receives a reviewed classification or remains explicitly unassessed. A
 context-volume finding may be retained even when it saves no calls and is not
-included in call-savings arithmetic.
+included in call-savings arithmetic. A model-call finding must meet the skill's
+3% floor, rounded down against the frozen source-thread call count; this floor
+allows zero recurring savings for threads with fewer than 34 source calls.
 
 ### 6.2 Correction, retry, and omission
+
+Call `command_execute_orchestration(..., stop_on_validation_error=True)` when
+the requester wants execution to stop at the first rejected model result. This
+mode runs tasks serially and preserves the rejected attempt for diagnosis
+without launching its corrective retry.
 
 The response schema is closed. Before Sol validation, the controller assigns
 canonical IDs to result-owned findings, risks, and temporary-control reviews,

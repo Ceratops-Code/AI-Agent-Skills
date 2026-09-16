@@ -4447,7 +4447,7 @@ def _validate_holistic_finding(
     workstreams: Mapping[str, str],
     surface_order: Sequence[str],
     label: str,
-    allow_source_findings: bool = False,
+    allow_source_findings: bool = False, source_call_count: int = 0,
 ) -> dict[str, Any]:
     fields = {
         "id",
@@ -4525,8 +4525,8 @@ def _validate_holistic_finding(
         abs_tol=1e-6,
     ):
         raise CreditAnalysisError(f"{label} recurrence arithmetic is invalid")
-    if finding["waste_kind"] == "model-calls" and expected_savings <= 0:
-        raise CreditAnalysisError(f"{label} has non-positive recurring savings")
+    if finding["waste_kind"] == "model-calls" and expected_savings < source_call_count * 3 // 100:
+        raise CreditAnalysisError(f"{label} recurring savings are below the 3% source-call floor")
     confidence = finding.get("confidence")
     if not isinstance(confidence, (int, float)) or isinstance(confidence, bool) or not 0 <= confidence <= 1:
         raise CreditAnalysisError(f"{label} confidence is invalid")
@@ -4794,7 +4794,7 @@ def _validate_holistic_sol_result(
             workstreams=workstreams,
             surface_order=surface_order,
             label=f"confirmed finding {index}",
-            allow_source_findings=task["phase"] == "sol-final",
+            allow_source_findings=task["phase"] == "sol-final", source_call_count=len(state["manifest"]["call_ids"]),
         )
         for index, finding in enumerate(
             _result_objects(raw.get("confirmed_findings"), "confirmed findings"),

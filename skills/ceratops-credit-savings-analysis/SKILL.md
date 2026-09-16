@@ -112,7 +112,9 @@ retry, recovery, or deployment behavior.
   review finish, run one dependent final Sol to merge their compact judgments,
   produce the report, and deeply verify the top three deduplicated owner/control
   findings against exact evidence. Each rejected Sol task receives one automatic
-  corrective retry when the sixteen-attempt ceiling permits. After a non-final
+  corrective retry when the sixteen-attempt ceiling permits. When the caller
+  requests stop-on-validation-error, run model tasks serially and stop after
+  the first rejection before another model call. After a non-final
   task fails validation twice, retain its exact unreviewed candidate, call, and
   byte inventory, exclude that inventory from final transport, and continue to
   the final merger. Plan at most eight Sol calls, excluding retries and
@@ -196,8 +198,10 @@ retry, recovery, or deployment behavior.
   call-savings fields at zero, and classify its evidence calls independently.
 - Compute net calls saved per affected run as prevented calls minus recurring
   calls introduced by the fix, and calls saved per similar run as that net
-  multiplied by estimated affected-run frequency. State assumptions, test ROI
-  at the low end of the frequency range, and reject non-positive lifetime value
+  multiplied by estimated affected-run frequency. A `model-calls` finding must
+  save at least `floor(3% × frozen source-call count)` calls per similar run;
+  zero is allowed only when that floor is zero. State assumptions, test ROI at
+  the low end of the frequency range, and reject non-positive lifetime value
   unless correctness or safety independently requires the control.
 - Report priced credit only when the controller accepted a valid caller-supplied
   pricing profile. Never describe token volume as monetary or credit cost
