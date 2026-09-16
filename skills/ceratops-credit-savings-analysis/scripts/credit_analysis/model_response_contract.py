@@ -307,7 +307,8 @@ def response_correction_scope(
     properties = definition.get("properties", {})
     if not isinstance(findings, list) or not properties:
         return scope
-    invalid, conflicts = [], []
+    invalid: list[str] = []
+    conflicts: list[str] = []
     by_call: dict[str, set[str]] = {}
     groups = prior.get("call_classifications")
     for group in groups if isinstance(groups, list) else []:
@@ -320,7 +321,8 @@ def response_correction_scope(
             continue
         identity, recurrence = finding.get("id"), finding.get("recurrence")
         if (
-            not Draft202012Validator(properties["id"]).is_valid(identity)
+            not isinstance(identity, str)
+            or not Draft202012Validator(properties["id"]).is_valid(identity)
             or sum(isinstance(item, Mapping) and item.get("id") == identity for item in findings) != 1
         ):
             continue
@@ -373,7 +375,7 @@ def response_correction_scope(
             continue
         expected = savings.get("expected_calls_saved")
         maintenance = savings.get("maintenance_model_calls")
-        numeric = (
+        if not (
             isinstance(expected, (int, float))
             and not isinstance(expected, bool)
             and math.isfinite(expected)
@@ -382,8 +384,9 @@ def response_correction_scope(
             and not isinstance(maintenance, bool)
             and math.isfinite(maintenance)
             and maintenance >= 0
-        )
-        if numeric and (
+        ):
+            continue
+        if (
             review.get("disposition") != "durable-control-missing"
             or recurrence.get("likely") is not True
             or savings.get("justifies_maintenance") is not True
