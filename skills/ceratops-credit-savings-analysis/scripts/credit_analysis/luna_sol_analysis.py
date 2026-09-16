@@ -3752,6 +3752,57 @@ def _deep_review_findings(
     return sorted(representatives.values(), key=finding_rank)[:3]
 
 
+def _final_payload_byte_budget(
+    *,
+    state: Mapping[str, Any],
+    task: Mapping[str, Any],
+    contract: Mapping[str, Any],
+    canonical_payload: Mapping[str, Any],
+    luna_candidate_ids: Sequence[str],
+    aliases: Mapping[str, Any],
+    canonical_to_alias: Mapping[str, str],
+) -> int:
+    """Reserve the exact final schema and prompt framing before fitting evidence."""
+
+    base_payload = _holistic_alias_value(
+        {**canonical_payload, "deep_review_evidence": []},
+        canonical_to_alias,
+    )
+    placeholder_digest = "0" * 64
+    alias_record = {**aliases, "input_sha256": placeholder_digest}
+    schema = _holistic_sol_schema(
+        state=state,
+        task=task,
+        input_sha256=placeholder_digest,
+        contract=contract,
+        luna_candidate_ids=luna_candidate_ids,
+        alias_record=alias_record,
+    )
+    prompt = _holistic_prompt(
+        state=state,
+        task=task,
+        input_payload=base_payload,
+        input_sha256=placeholder_digest,
+        luna_candidate_ids=luna_candidate_ids,
+    )
+    non_payload_bytes = (
+        len(prompt.encode("utf-8"))
+        - _json_bytes(base_payload)
+        + _json_bytes(schema)
+    )
+    model_spec = state["model_specs"]["sol"]
+    budget = min(
+        int(model_spec["evidence_byte_budget"]),
+        int(model_spec["input_byte_budget"]) - non_payload_bytes,
+    )
+    if budget < _json_bytes(base_payload):
+        raise CreditAnalysisError(
+            "final semantic packet plus schema and prompt framing exceeds the "
+            "proven UTF-8 byte envelope"
+        )
+    return budget
+
+
 def _holistic_sol_input(
     *,
     state: dict[str, Any],
@@ -4011,6 +4062,15 @@ def _holistic_sol_input(
     canonical_to_alias, _ = _holistic_alias_lookups(aliases)
     budget_bytes = int(state["model_specs"]["sol"]["evidence_byte_budget"])
     if task["phase"] == "sol-final":
+        budget_bytes = _final_payload_byte_budget(
+            state=state,
+            task=task,
+            contract=contract,
+            canonical_payload=canonical_payload,
+            luna_candidate_ids=[str(candidate["id"]) for candidate in candidates],
+            aliases=aliases,
+            canonical_to_alias=canonical_to_alias,
+        )
         selected_evidence, capacity_omissions = _fit_final_supplemental_evidence(
             base_payload=canonical_payload,
             evidence_groups=deep_review_evidence,

@@ -305,6 +305,23 @@ def test_full_analysis_uses_run_windows_parallel_tiers_and_exact_coverage(
     assert phases.count("sol-direct-evidence") == 1
     assert phases.count("sol-final") == 1
     final_call = next(call for call in runner.calls if call["phase"] == "sol-final")
+    final_task = next(
+        task
+        for task in manifest["sol_tasks"]
+        if task["phase"] == "sol-final"
+    )
+    final_prompt = pathlib.Path(final_task["artifacts"]["prompt"]).read_text(
+        encoding="utf-8"
+    )
+    final_schema = json.loads(
+        pathlib.Path(final_task["artifacts"]["schema"]).read_text(
+            encoding="utf-8"
+        )
+    )
+    assert (
+        len(final_prompt.encode("utf-8")) + workflow._json_bytes(final_schema)
+        <= state["model_specs"]["sol"]["input_byte_budget"]
+    )
     assert final_call["input_payload"]["canonical_state"] == []
     assert final_call["input_payload"]["surface_contracts"] == {}
     assert all(
@@ -576,6 +593,61 @@ def test_full_analysis_uses_run_windows_parallel_tiers_and_exact_coverage(
             mismatch_request,
             available_models=holistic_model_catalog(),
         )
+
+
+def test_final_payload_accounts_for_schema_and_prompt_overhead(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workflow = load_credit_analysis_workflow_module()
+    globals_ = workflow.command_plan_orchestration.__globals__
+    monkeypatch.setitem(
+        globals_,
+        "_holistic_sol_schema",
+        lambda **_: {"schema_padding": "s" * 300},
+    )
+    monkeypatch.setitem(
+        globals_,
+        "_holistic_prompt",
+        lambda **kwargs: (
+            "p" * 200
+            + json.dumps(
+                kwargs["input_payload"],
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+        ),
+    )
+    state = {
+        "model_specs": {
+            "sol": {
+                "evidence_byte_budget": 900,
+                "input_byte_budget": 1_000,
+            }
+        }
+    }
+    canonical_payload = {
+        "fixed": "x" * 100,
+        "deep_review_evidence": [{"record": "excluded-from-base"}],
+    }
+    base_payload = {**canonical_payload, "deep_review_evidence": []}
+    schema = {"schema_padding": "s" * 300}
+    expected = min(
+        900,
+        1_000 - 200 - workflow._json_bytes(schema),
+    )
+
+    budget = globals_["_final_payload_byte_budget"](
+        state=state,
+        task={},
+        contract={},
+        canonical_payload=canonical_payload,
+        luna_candidate_ids=[],
+        aliases={},
+        canonical_to_alias={},
+    )
+
+    assert budget == expected
+    assert workflow._json_bytes(base_payload) < budget < 900
 
 
 def test_removed_bounded_action_is_rejected(tmp_path: pathlib.Path) -> None:

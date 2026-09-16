@@ -126,7 +126,9 @@ Capacity estimates assume the byte-to-token and reserve values in
 [credit-analysis-contract.json](scripts/credit-analysis-contract.json). The
 controller validates the current model catalog before planning. Those values
 are conservative planning inputs, not a promise that a model provider will
-never change its limits.
+never change its limits. Before admitting final deep-review evidence, the
+controller subtracts the exact response-schema and prompt-framing bytes from
+the proven input envelope.
 
 ## 3 System context
 
