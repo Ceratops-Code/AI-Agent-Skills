@@ -186,9 +186,8 @@ model intervention for decisions and skill work that actually require it.
 
 The thread does not settle a complete architecture, security model, concurrency
 design, performance targets, every public interface, or all persistent record
-schemas. It also leaves the proposed health-audit rename and whether a separate
-`.python-version` is required unresolved in this draft. No additional research
-or design decisions are supplied here.
+schemas. It also leaves the proposed health-audit rename unresolved. No
+additional research or design decisions are supplied here.
 
 This draft has no individually assigned design owner. A later full design
 would need an owner and implementation review. Changes to the recorded contract
