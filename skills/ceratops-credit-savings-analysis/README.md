@@ -23,6 +23,10 @@ explains how those parts work together and must be updated when they change.
       "role": "Current single-thread planning, model-result validation, reconciliation, and final assembly"
     },
     {
+      "path": "skills/ceratops-credit-savings-analysis/scripts/credit_analysis/model_prompting.py",
+      "role": "Frozen Luna and Sol prompt construction, including ranked candidate selection"
+    },
+    {
       "path": "skills/ceratops-credit-savings-analysis/scripts/credit_analysis/orchestration_execution.py",
       "role": "Current attempt execution, mechanical Sol normalization, correction, retry, omission, incomplete-state, concurrency, and resume behavior"
     },
@@ -116,6 +120,11 @@ The following constraints are enforced by the skill and controller:
   invocations, including corrective attempts.
 - Invalid model output is rejected as a whole. The controller never truncates
   a valid result to make it fit.
+- Before Luna launches, each Sol reviewer's candidate budget is divided among
+  its assigned Luna tasks. Luna ranks supported issues and returns at most its
+  frozen task limit. A part that reaches its limit is flagged in final
+  accounting because lower-ranked issues may remain undiscovered. This bounds
+  candidate decisions but does not prove that Sol's output will fit.
 - All mutable state and retained evidence live below a caller-selected task
   temporary root. Requests bind the expected contract versions.
 - The host must provide a working Codex executable, the declared models, Python,
@@ -162,12 +171,13 @@ authority to edit the analyzed producer.
 
 ## 4 Solution strategy
 
-The controller separates high-recall discovery from higher-precision review:
+The controller separates prioritized discovery from higher-precision review:
 
 1. Deterministic code selects threads and completed runs, collects evidence
    once, freezes identities and hashes, and plans capacity.
 2. Luna reviews each admitted semantic run across all five waste surfaces and
-   returns candidates plus exact evidence references.
+   returns the strongest candidates within its frozen count limit, plus exact
+   evidence references.
 3. Sol reviewers adjudicate disjoint, frozen groups of Luna output. An optional
    focused recovery or direct-evidence review may run when deterministic signals
    and the call budget permit it.
@@ -204,8 +214,9 @@ deployed services.
 | Contract loader and evidence core | Validates the contract and requests, collects single-thread evidence, and retains the sequential compatibility controller | [single_thread_analysis.py](scripts/credit_analysis/single_thread_analysis.py) |
 | Session collector | Resolves active or archived sessions, descendant lineage, completed runs, model calls, token usage, and evidence references | [session_evidence_collector.py](scripts/credit_analysis/session_evidence_collector.py) |
 | Source execution context | Resolves run working directories, recovers identity-matched deleted worktrees, and snapshots effective `AGENTS.md` text and hashes once | [source_execution_context.py](scripts/credit_analysis/source_execution_context.py) |
-| Capacity planner | Partitions oversized runs, admits Luna tasks, sizes Sol reviewer bins, and enforces attempt capacity | [model_capacity_planning.py](scripts/credit_analysis/model_capacity_planning.py) |
+| Capacity planner | Partitions oversized runs, admits Luna tasks, assigns byte and candidate budgets to Sol reviewer bins, and enforces attempt capacity | [model_capacity_planning.py](scripts/credit_analysis/model_capacity_planning.py) |
 | Model input preparation | Builds bounded evidence packets and compact final-review transport | [model_input_preparation.py](scripts/credit_analysis/model_input_preparation.py) |
+| Model prompting | Builds Luna and Sol prompts, including prioritized discovery for count-bounded Luna tasks | [model_prompting.py](scripts/credit_analysis/model_prompting.py) |
 | Holistic planner and assembler | Builds the current manifest and state, validates Luna/Sol domain results, freezes routing, reconciles judgments, and assembles the final machine result | [luna_sol_analysis.py](scripts/credit_analysis/luna_sol_analysis.py) |
 | Attempt executor | Runs ready tasks concurrently, records attempts, normalizes mechanical Sol fields, applies narrow response corrections, retries diagnosed failures, records omissions, stops zero-review runs as incomplete, and checkpoints state | [orchestration_execution.py](scripts/credit_analysis/orchestration_execution.py) |
 | Response contract | Builds closed model-output schemas, assigns canonical result-owned IDs, bounds explanatory classification rationale, and limits corrective responses to the rejected fields | [model_response_contract.py](scripts/credit_analysis/model_response_contract.py) |
@@ -423,7 +434,7 @@ shape and validates that the discriminator exactly matches the contract.
 | `final_result_schema` | Final standalone or full result in the sequential compatibility path. `ceratops-credit-analysis-final-result.v1` is its exact version tag. |
 | `orchestration_state_schema` | Resumable state for the current holistic controller. |
 | `chunk_manifest_schema` | Frozen semantic-run parts, task identities, assignments, and capacity plan for the current controller. |
-| `luna_result_schema` | Validated high-recall discovery result for one admitted semantic run or ordered run part. |
+| `luna_result_schema` | Validated count-bounded discovery result for one admitted semantic run or ordered run part. |
 | `adjudication_result_schema` | Validated Sol reviewer or final synthesis result. |
 | `orchestration_final_schema` | Current holistic single-thread final machine result accepted by batch aggregation. |
 | `routing_manifest_schema` | Frozen assignment of accepted Luna output and candidates to Sol tasks. |
@@ -490,7 +501,7 @@ reported rather than hidden by unlimited retries.
 | Count model calls as the savings unit | Accepted. Credits are consumed by model calls; commands are evidence about why a call happened. | Counting repeated commands as waste, which confuses tool activity with credit consumption. |
 | Admit unfinished and archived threads | Accepted. Thread lifecycle is independent of whether it contains completed runs that can be reviewed. | Requiring task completion, which silently discards eligible evidence. |
 | Keep completed runs as semantic units | Accepted. User intent, corrections, results, and validation form one causal episode. | Reviewing independent calls or commands, which loses the reason a call was necessary. |
-| Use Luna discovery followed by Sol review | Accepted. It combines broad candidate recall with stronger adjudication under explicit limits. | One large synthesis call, which is harder to fit, validate, and recover. |
+| Use Luna discovery followed by Sol review | Accepted. It combines ranked candidate selection with stronger adjudication under explicit limits. | One large synthesis call, which is harder to fit, validate, and recover. |
 | Analyze all surfaces together | Accepted. Cross-surface causes and fixes remain connected. | One model pass per surface, which multiplies calls and creates duplicate findings. |
 | Make the controller own accepted-record transport | Accepted. Models judge and summarize; code preserves exact accepted findings, classifications, evidence, and references. | Asking the final model to copy every accepted record, which can omit valid results and cause avoidable diagnostic reruns. |
 | Preserve semantic output; bound explanatory rationale deterministically | Accepted. Raw responses remain immutable, result-owned IDs are canonicalized, and only explanatory rationale is bounded before validation. | Rejecting an otherwise valid classification for overlong prose, which spends retries and loses coverage. |
@@ -557,7 +568,7 @@ needed to claim a measured result.
   completed runs eligible for review.
 - **Surface:** One of the five fixed perspectives used to search for credit
   waste.
-- **Luna task:** A high-recall discovery review of one complete semantic run or
+- **Luna task:** A count-bounded discovery review of one complete semantic run or
   one ordered part of an oversized run.
 - **Sol reviewer:** A higher-precision adjudication task over a frozen subset of
   accepted Luna output.

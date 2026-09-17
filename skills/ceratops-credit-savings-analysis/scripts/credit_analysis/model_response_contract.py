@@ -1103,6 +1103,9 @@ def _holistic_luna_schema(
             },
         },
     }
+    candidate_limit = task.get("candidate_limit")
+    if task["phase"] == "luna-discovery" and candidate_limit is not None:
+        properties["candidates"]["maxItems"] = int(candidate_limit)
     return {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",

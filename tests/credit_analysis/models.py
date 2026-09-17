@@ -207,6 +207,13 @@ class FakeCreditModelRunner:
             ]
             if selected:
                 add(suffix, "temporary-control", records[-1], selected)
+        candidate_limit = task.get("candidate_limit")
+        if isinstance(candidate_limit, int):
+            primary = candidates[:3]
+            remaining = candidates[3:]
+            controls = [item for item in remaining if item["kind"] == "temporary-control"]
+            other = [item for item in remaining if item["kind"] != "temporary-control"]
+            candidates = [*primary, *controls, *other][:candidate_limit]
         result = {
             "schema": "ceratops-credit-analysis-luna-result.v5",
             "analysis_id": packet["analysis_id"],

@@ -100,6 +100,117 @@ def test_credit_analysis_workflow_each_surface_is_independently_callable(
     assert all(item["source_reviews"] for item in final["helper_category_reviews"])
 
 
+def test_luna_candidate_budget_is_frozen_and_enforced(
+    tmp_path: pathlib.Path,
+) -> None:
+    workflow = load_credit_analysis_workflow_module()
+    planner = workflow.command_plan_orchestration.__globals__["plan_luna_reviewers"]
+    bins = planner(
+        [
+            {
+                "task_id": f"luna-{index}",
+                "inventory_bytes": 1_000,
+                "run_ordinal": index,
+                "run_window_ordinal": 1,
+            }
+            for index in range(3)
+        ],
+        bin_count=1,
+        capacity_bytes=100_000,
+    )
+    assert [task["candidate_limit"] for task in bins[0]] == [4, 4, 4]
+    with pytest.raises(workflow.CreditAnalysisError, match="fixed Sol candidate budget"):
+        planner(
+            [
+                {
+                    "task_id": f"overflow-{index}",
+                    "inventory_bytes": 1_000,
+                    "run_ordinal": index,
+                    "run_window_ordinal": 1,
+                }
+                for index in range(13)
+            ],
+            bin_count=1,
+            capacity_bytes=100_000,
+        )
+
+    request, _, _ = credit_analysis_request(
+        tmp_path, extra_completed_turns=1, extra_calls_per_turn=20
+    )
+    runner = FakeCreditModelRunner(temporary_controls=False)
+    plan = workflow.command_plan_orchestration(
+        request, available_models=runner.available_models
+    )
+    state_path = pathlib.Path(plan["state_path"])
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    task = next(
+        task for task in state["manifest"]["luna_tasks"]
+        if state["execution"][task["task_id"]]["status"] == "pending"
+    )
+    for reviewer in state["manifest"]["sol_reviewer_plan"]["reviewers"]:
+        assigned = [
+            item for item in state["manifest"]["luna_tasks"]
+            if item["task_id"] in reviewer["luna_task_ids"]
+        ]
+        assert sum(item["candidate_limit"] for item in assigned) == max(
+            12, len(assigned)
+        )
+    workflow.command_execute_orchestration(
+        state_path,
+        runner=runner,
+        available_models=runner.available_models,
+        task_limit=1,
+    )
+    call = runner.calls[0]
+    assert call["schema"]["properties"]["candidates"]["maxItems"] == task[
+        "candidate_limit"
+    ]
+    assert f"Return no more than {task['candidate_limit']} candidates" in call["prompt"]
+    legacy_task = {**task, "candidate_limit": None}
+    legacy_prompt = workflow._holistic_prompt_prefix(
+        state=state,
+        task=legacy_task,
+        input_sha256=call["input_sha256"],
+        luna_candidate_ids=[],
+    )
+    assert "genuine candidates must not be\nsilently dropped" in legacy_prompt
+    assert "Return no more than" not in legacy_prompt
+    legacy_schema = workflow._holistic_luna_schema(
+        state=state,
+        task=legacy_task,
+        input_sha256=call["input_sha256"],
+        contract=workflow._load_contract(),
+    )
+    assert "maxItems" not in legacy_schema["properties"]["candidates"]
+    retained, _, contract, compact = workflow._holistic_read_state(state_path)
+    accepted = retained["execution"][task["task_id"]]["result"]
+    raw = json.loads(pathlib.Path(accepted["path"]).read_text(encoding="utf-8"))
+    assert len(raw["candidates"]) <= task["candidate_limit"]
+    assert raw["candidates"]
+    invalid = copy.deepcopy(raw)
+    invalid["candidates"].extend(
+        copy.deepcopy(raw["candidates"][0])
+        for _ in range(task["candidate_limit"] + 1 - len(raw["candidates"]))
+    )
+    with pytest.raises(workflow.CreditAnalysisError, match="frozen candidate limit"):
+        workflow._validate_holistic_luna_result(
+            invalid,
+            state=retained,
+            task=task,
+            input_sha256=accepted["input_sha256"],
+            contract=contract,
+            compact=compact,
+        )
+    complete = workflow.command_execute_orchestration(
+        state_path, runner=runner, available_models=runner.available_models
+    )
+    assert complete["complete"] is True
+    final = json.loads(pathlib.Path(complete["final_result_path"]).read_text())
+    reached = final["luna_discovery"]["candidate_discovery_at_limit_parts"]
+    assert reached
+    assert final["coverage"]["candidate_discovery_at_limit_parts"] == len(reached)
+
+
 def test_credit_analysis_workflow_resolves_current_and_named_threads(
     tmp_path: pathlib.Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -88,14 +88,18 @@ retry, recovery, or deployment behavior.
   Validate and durably checkpoint each completed child while siblings continue.
   Keep shared orchestration state mutations in the controller and final ordering
   deterministic.
-- Luna performs high-recall discovery across all five fixed surfaces together.
+- Luna inspects every admitted call across all five fixed surfaces and
+  selects the strongest supported candidates within a frozen count limit.
+  Disclose when a task reaches that limit so discovery is not described as
+  exhaustive.
   Run up to fifteen Luna children concurrently and admit no more than seventy
   Luna attempts for one frozen thread tree, including corrective reruns. Launch
   Luna with a retained native session so a later analysis can collect it as an
   ordinary descendant thread. Before launch, assign every admitted run part to
   one of up to six Sol reviewers. Calculate each Luna's output-byte allowance
-  from its reviewer's fixed input and remaining proven capacity, then freeze and
-  prove every assignment at its planned maximum. If a Luna result violates its
+  from its reviewer's fixed input and remaining proven capacity. Divide a
+  conservative candidate count budget among that reviewer's Luna tasks before
+  launch and validate both limits. If a Luna result violates its
   schema or allowance, rerun that task once with a smaller output allowance; if
   it still fails, report that run part as unreviewed and continue. Never
   truncate
