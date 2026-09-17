@@ -369,11 +369,12 @@ def test_promote_repository_runs_explicit_operation_ids_in_order(
     # required fields. Finalization binds that validation to these saved bytes.
     data = result_file.read_bytes()
     digest = hashlib.sha256(data).hexdigest()
+    assert digest.upper() != digest
     operation_log = log.read_text(encoding="utf-8")
     arguments = [
         "--repo-root", str(repo), "--finalize-result",
         "--result-file", str(result_file), "--task-temp-root", str(task_temp),
-        "--expected-commit", result["head"], "--verified-result-sha256", digest,
+        "--expected-commit", result["head"], "--verified-result-sha256", digest.upper(),
     ]
 
     def finalize(extra: list[str] | None = None) -> subprocess.CompletedProcess[str]:

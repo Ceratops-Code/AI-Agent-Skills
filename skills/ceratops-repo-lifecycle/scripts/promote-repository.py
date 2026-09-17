@@ -1053,6 +1053,7 @@ def finalize_result(args: argparse.Namespace) -> None:
 
     This explicit completion trigger owns the temporary result file only. The
     supplied SHA-256 binds the caller's producer validation to the bytes removed.
+    Hex letter case does not change that digest.
     All checks precede unlink; other task files and pending-work state belong to
     their respective owners. Failed cleanup can be retried without deployment.
     """
@@ -1067,7 +1068,10 @@ def finalize_result(args: argparse.Namespace) -> None:
         raise PromotionError("finalize-result requires result-file and task-temp-root.")
     if not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", args.expected_commit or ""):
         raise PromotionError("finalize-result requires a full expected-commit hash.")
-    if not getattr(args, "deployment_evidence", None) and not re.fullmatch(r"[0-9a-f]{64}", args.verified_result_sha256 or ""):
+    verified_digest = args.verified_result_sha256
+    if verified_digest is not None:
+        verified_digest = verified_digest.lower()
+    if not getattr(args, "deployment_evidence", None) and not re.fullmatch(r"[0-9a-f]{64}", verified_digest or ""):
         raise PromotionError("Supply verified-result-sha256 only after validating every producer receipt.")
     repo_root = args.repo_root.expanduser().resolve(strict=True)
     common_dir = pathlib.Path(require_output(
@@ -1094,7 +1098,7 @@ def finalize_result(args: argparse.Namespace) -> None:
         raise PromotionError("result-file must be a regular file without hard links.")
     data = path.read_bytes()
     digest = hashlib.sha256(data).hexdigest()
-    if args.verified_result_sha256 is not None and digest != args.verified_result_sha256:
+    if verified_digest is not None and digest != verified_digest:
         raise PromotionError("Result changed since producer validation; revalidate the saved result.")
     result = json.loads(data, object_pairs_hook=_unique_result_object)
     external: dict[str, dict[str, Any]] = {}
@@ -1123,7 +1127,7 @@ def finalize_result(args: argparse.Namespace) -> None:
                           record_binding={"result_file": str(path), "sha256": digest,
                                           "identity": [getattr(original_stat, key) for key in
                                                        ("st_dev", "st_ino", "st_mtime_ns", "st_size", "st_mode", "st_nlink")]},
-                          caller_verified=bool(args.verified_result_sha256))
+                          caller_verified=bool(verified_digest))
     for evidence_path, evidence in evidence_files.items():
         _cleanup_path(evidence_path)
         if evidence_path.stat().st_nlink != 1 or evidence_path.read_bytes() != evidence:
