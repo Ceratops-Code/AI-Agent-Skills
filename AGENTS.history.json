@@ -16,7 +16,7 @@
       "rules": [
         "SKILLS-CHECKOUT-01",
         "SKILLS-WORKTREE-01",
-        "SKILLS-STAGE-01",
+        "SKILLS-PROMOTE-01",
         "FILE-02",
         "FILE-03"
       ],
@@ -78,7 +78,7 @@
     },
     {
       "rules": [
-        "SKILLS-STAGE-01"
+        "SKILLS-PROMOTE-01"
       ],
       "decision": "Express local release staging as a positive authorization gate.",
       "reason": "Positive gate wording preserves the required explicit staging, shipping, or preview intent without a redundant exception form.",
@@ -144,7 +144,7 @@
         "SKILLS-FAST-01",
         "SKILLS-WORKTREE-01",
         "SKILLS-PREVIEW-01",
-        "SKILLS-STAGE-01"
+        "SKILLS-PROMOTE-01"
       ],
       "decision": "Restore fast-change as the preferred direct-release path whenever its action contract and deterministic readiness accept the complete intended scope.",
       "reason": "Eligible exact skill-local maintenance should avoid task-worktree promotion and broad deployment overhead while retaining deterministic branch, scope, and targeted-install controls.",
@@ -203,7 +203,7 @@
         "SKILLS-CHECKOUT-01",
         "SKILLS-FAST-01",
         "SKILLS-PREVIEW-01",
-        "SKILLS-STAGE-01",
+        "SKILLS-PROMOTE-01",
         "SKILLS-SHIP-01",
         "SKILLS-BATCH-01"
       ],
@@ -217,7 +217,7 @@
       ],
       "decision": "Remove the retired preview rule from SKILLS-FAST-01's override relation while preserving its worktree and staging overrides.",
       "reason": "An override must not reference a deleted rule, and fast-change still needs only its two surviving exceptions.",
-      "regression": "Preserve the complete fast-change action wording and its overrides of SKILLS-WORKTREE-01 and SKILLS-STAGE-01."
+      "regression": "Preserve the complete fast-change action wording and its overrides of SKILLS-WORKTREE-01 and SKILLS-PROMOTE-01."
     },
     {
       "rules": [
@@ -229,9 +229,9 @@
     },
     {
       "rules": [
-        "SKILLS-STAGE-01"
+        "SKILLS-PROMOTE-01"
       ],
-      "decision": "Remove SKILLS-STAGE-01's relation to the retired preview rule while preserving its authorization gate.",
+      "decision": "Remove SKILLS-PROMOTE-01's relation to the retired preview rule while preserving its authorization gate.",
       "reason": "The limits edge becomes invalid when SKILLS-PREVIEW-01 is removed and does not add an independent constraint.",
       "regression": "Continue requiring an explicit staging, shipping, or local-preview-sync request before staging skill changes."
     },
@@ -292,6 +292,16 @@
       "decision": "Name the reusable manifest template skill-sections.json.tmpl and update its active references together.",
       "reason": "The explicit template suffix identifies reusable inputs consistently while retaining repository-lifecycle ownership.",
       "regression": "Keep skills/skill-sections.json as the live manifest, skills/sections/ as its source directory, and never use the reusable template as a live manifest."
+    },
+    {
+      "rules": [
+        "SKILLS-PROMOTE-01",
+        "SKILLS-FAST-01",
+        "SKILLS-CREATE-01"
+      ],
+      "decision": "Name the release-entry gate SKILLS-PROMOTE-01, call the transition promotion, and update its two override relations. This supersedes the wording of the earlier 'Express local release staging as a positive authorization gate' decision.",
+      "reason": "Repository lifecycle calls the move into release/local promotion; staging describes the assembled release batch.",
+      "regression": "Continue requiring explicit promotion, shipping, or local-preview-sync intent before promoting skill-source changes; preserve the fast-change override, new-skill default-promotion exception, prior history decisions, and release/local shipping."
     }
   ]
 }
