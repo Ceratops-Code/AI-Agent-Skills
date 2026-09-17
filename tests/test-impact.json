@@ -154,8 +154,11 @@
   "full_suite_paths": [
     ".github/dependabot.yml",
     ".github/workflows/**",
+    ".gitignore",
     "AGENTS.history.json",
     "AGENTS.md",
+    "scripts/.markdownlint.json",
+    "scripts/.yamllint.yml",
     "scripts/package-lock.json",
     "scripts/package.json",
     "scripts/testing/run-tests.py",
