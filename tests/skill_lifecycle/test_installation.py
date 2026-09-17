@@ -1228,6 +1228,12 @@ def test_runtime_update_preserves_an_active_helper_environment(tmp_path: pathlib
         "while not release.exists(): time.sleep(0.05)\n"
         "import jsonschema\nprint('old runtime survived')\n",
     )
+    section_manifest_path = repo / "skills/skill-sections.json"
+    section_manifest = json.loads(section_manifest_path.read_text(encoding="utf-8"))
+    section_manifest["python_runtime_skills"] = ["alpha-tool"]
+    section_manifest_path.write_text(
+        json.dumps(section_manifest, indent=2) + "\n", encoding="utf-8", newline="\n",
+    )
     installed = tmp_path / "codex/skills"
     command = [sys.executable, str(BOOTSTRAP), "--repo-root", str(repo), "--install-root", str(installed), "--skill", "alpha-tool"]
     first = subprocess.run(command, capture_output=True, text=True, check=False)
