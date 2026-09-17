@@ -46,9 +46,13 @@ def _holistic_restore_alias_value(value: Any, aliases: Mapping[str, str]) -> Any
         result = value
         for alias in sorted(aliases, key=len, reverse=True):
             if alias in result:
+                # A callback preserves replacement backslashes as literal text.
+                def replace_alias(_match: re.Match[str], replacement: str = aliases[alias]) -> str:
+                    return replacement
+
                 result = re.sub(
                     rf"(?<![\w.-]){re.escape(alias)}(?![\w-]|\.[\w-])",
-                    lambda _, replacement=aliases[alias]: replacement, result,
+                    replace_alias, result,
                 )
         return result
     return value
