@@ -119,7 +119,7 @@ def test_luna_candidate_budget_is_frozen_and_enforced(
         bin_count=1,
         capacity_bytes=100_000,
     )
-    assert [task["candidate_limit"] for task in bins[0]] == [4, 4, 4]
+    assert [task["candidate_limit"] for task in bins[0]] == [10, 10, 10]
     with pytest.raises(workflow.CreditAnalysisError, match="fixed Sol candidate budget"):
         planner(
             [
@@ -129,14 +129,14 @@ def test_luna_candidate_budget_is_frozen_and_enforced(
                     "run_ordinal": index,
                     "run_window_ordinal": 1,
                 }
-                for index in range(13)
+                for index in range(31)
             ],
             bin_count=1,
             capacity_bytes=100_000,
         )
 
     request, _, _ = credit_analysis_request(
-        tmp_path, extra_completed_turns=1, extra_calls_per_turn=20
+        tmp_path, extra_completed_turns=1, extra_calls_per_turn=40
     )
     runner = FakeCreditModelRunner(temporary_controls=False)
     plan = workflow.command_plan_orchestration(
@@ -154,7 +154,7 @@ def test_luna_candidate_budget_is_frozen_and_enforced(
             if item["task_id"] in reviewer["luna_task_ids"]
         ]
         assert sum(item["candidate_limit"] for item in assigned) == max(
-            12, len(assigned)
+            30, len(assigned)
         )
     workflow.command_execute_orchestration(
         state_path,

@@ -16,9 +16,10 @@ from collections.abc import Callable
 from .single_thread_analysis import *
 
 
-# Sol also has to classify source calls. The saved 130-151-call overload showed
-# that input-byte planning alone can leave too many candidate decisions to emit.
-SOL_REVIEW_CANDIDATE_BUDGET = 12
+# Sol also has to classify source calls. Saved 38-57-candidate reviews with
+# 130-151 calls exceeded output capacity, so the count cap remains a heuristic
+# alongside input-byte planning rather than a guarantee of a complete result.
+SOL_REVIEW_CANDIDATE_BUDGET = 30
 
 
 def _capacity_json_bytes(value: Any) -> int:
