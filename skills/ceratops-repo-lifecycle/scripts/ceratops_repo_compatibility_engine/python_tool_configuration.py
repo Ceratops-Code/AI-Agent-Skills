@@ -8,13 +8,16 @@ transaction writes anything. This limited
 append operation needs no third-party TOML editor in the bootstrap environment.
 """
 
+# Tool configuration errors use the compatibility command's RuntimeError contract.
+# ruff: noqa: TRY004
 from __future__ import annotations
 
 import json
 import pathlib
 import re
-import tomllib
 from collections.abc import Iterable
+
+import tomllib
 
 
 def project_text(root: pathlib.Path, template: pathlib.Path, dependencies: Iterable[str] = ()) -> str:

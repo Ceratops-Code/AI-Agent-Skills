@@ -6,6 +6,8 @@ and source-registry references. Commands remain data until the compatibility
 apply helper renders the target validator and CI workflow.
 """
 
+# Contract validation reports malformed data as RuntimeError to its callers.
+# ruff: noqa: TRY004
 from __future__ import annotations
 
 import json

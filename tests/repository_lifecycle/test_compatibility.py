@@ -8,9 +8,9 @@ import pathlib
 import shutil
 import subprocess
 import sys
-import tomllib
 
 import pytest
+import tomllib
 import yaml
 
 from tests.repository_lifecycle.support import (
@@ -69,18 +69,12 @@ def test_compatibility_materializer_supplies_target_identity_and_assignments(
         + "- Run: `references/run.md`\n"
         + "- Check: `references/check.md`\n"
         + "\n"
-        + "\n".join(
-            [
-                "<!-- CERATOPS_SHARED_SECTIONS_START -->",
-                "<!-- SECTION SOURCE: skills/sections/core.md -->",
-                "## Generated Core",
-                "",
-                "<!-- SECTION SOURCE: skills/sections/multi-action-skill.md -->",
-                "## Generated Multi Action",
-                "<!-- CERATOPS_SHARED_SECTIONS_END -->",
-                "",
-            ]
-        ),
+        + "<!-- CERATOPS_SHARED_SECTIONS_START -->\n"
+        "<!-- SECTION SOURCE: skills/sections/core.md -->\n"
+        "## Generated Core\n\n"
+        "<!-- SECTION SOURCE: skills/sections/multi-action-skill.md -->\n"
+        "## Generated Multi Action\n"
+        "<!-- CERATOPS_SHARED_SECTIONS_END -->\n",
         encoding="utf-8",
         newline="\n",
     )
@@ -1294,35 +1288,35 @@ def test_generated_scripts_and_skill_owned_ci_keep_environments_and_tests_separa
     child_environment = dict(os.environ)
     child_environment.pop("UV_PROJECT_ENVIRONMENT", None)
     direct_command = ["uv", "run", "--locked", str(custom), "two words"]
-    direct = subprocess.run(direct_command, cwd=tmp_path, env=child_environment, capture_output=True, text=True)
+    direct = subprocess.run(direct_command, cwd=tmp_path, env=child_environment, capture_output=True, text=True, check=False)
     assert direct.returncode == 0, direct.stderr
     actual = json.loads(direct.stdout)
     assert pathlib.Path(actual["prefix"]) == repo / "scripts/.venv"
     assert pathlib.Path(actual["cwd"]) == tmp_path
     assert actual["args"] == ["two words"]
-    uninstalled = subprocess.run(["uv", "pip", "uninstall", "--python", actual["python"], "ruff"], capture_output=True, text=True)
+    uninstalled = subprocess.run(["uv", "pip", "uninstall", "--python", actual["python"], "ruff"], capture_output=True, text=True, check=False)
     assert uninstalled.returncode == 0, uninstalled.stderr
-    repaired = subprocess.run(direct_command, cwd=tmp_path, env=child_environment, capture_output=True, text=True)
+    repaired = subprocess.run(direct_command, cwd=tmp_path, env=child_environment, capture_output=True, text=True, check=False)
     assert repaired.returncode == 0, repaired.stderr
     assert json.loads(repaired.stdout) == actual
     project = repo / "scripts/pyproject.toml"
     project_before = project.read_bytes()
     lock_before = (repo / "scripts/uv.lock").read_bytes()
     project.write_text(project.read_text().replace('version = "0.0.0"', 'version = "0.1.0"'))
-    stale = subprocess.run(direct_command, cwd=tmp_path, env=child_environment, capture_output=True, text=True)
+    stale = subprocess.run(direct_command, cwd=tmp_path, env=child_environment, capture_output=True, text=True, check=False)
     assert stale.returncode != 0 and not stale.stdout.strip()
     assert (repo / "scripts/uv.lock").read_bytes() == lock_before
     project.write_bytes(project_before)
     prefix = ["uv", "run", "--locked"]
-    validation = subprocess.run([*prefix, "scripts/validate-repository.py"], cwd=repo, capture_output=True, text=True)
+    validation = subprocess.run([*prefix, "scripts/validate-repository.py"], cwd=repo, capture_output=True, text=True, check=False)
     assert validation.returncode == 0, validation.stderr
     # The generated settings must be consumed, not merely written to TOML.
     check_probe = repo / "scripts/check_probe.py"
     check_probe.write_text("import math\n")
-    lint_failure = subprocess.run([*prefix, "scripts/validate-repository.py"], cwd=repo, capture_output=True, text=True)
+    lint_failure = subprocess.run([*prefix, "scripts/validate-repository.py"], cwd=repo, capture_output=True, text=True, check=False)
     assert json.loads(lint_failure.stdout)["check"] == "ruff"
     check_probe.write_text('def value() -> int:\n    return "wrong-type"\n')
-    type_failure = subprocess.run([*prefix, "scripts/validate-repository.py"], cwd=repo, capture_output=True, text=True)
+    type_failure = subprocess.run([*prefix, "scripts/validate-repository.py"], cwd=repo, capture_output=True, text=True, check=False)
     assert json.loads(type_failure.stdout)["check"] == "mypy"
     check_probe.write_text("def value() -> int:\n    return 1\n")
     evidence = tmp_path / "sdlc-failure.json"
@@ -1355,7 +1349,7 @@ def test_generated_scripts_and_skill_owned_ci_keep_environments_and_tests_separa
     reapplied = run_compatibility_engine(REPOSITORY_LIFECYCLE_SCRIPTS, "apply", "--target-repo-root", str(repo))
     assert reapplied.returncode == 0, reapplied.stdout
     assert project.read_bytes() == configured
-    configured_check = subprocess.run([*prefix, "scripts/validate-repository.py"], cwd=repo, capture_output=True, text=True)
+    configured_check = subprocess.run([*prefix, "scripts/validate-repository.py"], cwd=repo, capture_output=True, text=True, check=False)
     assert configured_check.returncode == 0, configured_check.stdout + configured_check.stderr
     # Adding an absent table must preserve the other tool's configuration.
     without_mypy = project.read_text().split("\n[tool.mypy]", 1)[0].rstrip() + "\n"
@@ -1378,7 +1372,7 @@ def test_generated_scripts_and_skill_owned_ci_keep_environments_and_tests_separa
     assert created.returncode == 0, created.stdout
     defaults = tomllib.loads((root_configured / "scripts/pyproject.toml").read_text())["tool"]
     assert "ruff" not in defaults and "mypy" not in defaults
-    root_check = subprocess.run([*prefix, "scripts/validate-repository.py"], cwd=root_configured, capture_output=True, text=True)
+    root_check = subprocess.run([*prefix, "scripts/validate-repository.py"], cwd=root_configured, capture_output=True, text=True, check=False)
     assert root_check.returncode == 0, root_check.stdout + root_check.stderr
 
 
@@ -1409,7 +1403,7 @@ def test_generated_python_runner_cleans_owned_temp_even_with_overrides(
     result = subprocess.run([
         "uv", "run", "--locked", str(runner), "--pytest-arg=--basetemp", "--pytest-arg=" + str(outside),
         "--pytest-arg=--basetemp=" + str(repo),
-    ], cwd=repo, capture_output=True, text=True)
+    ], cwd=repo, capture_output=True, text=True, check=False)
     assert result.returncode == 1, result.stderr
     observed = pathlib.Path(json.loads(marker.read_text()))
     assert not observed.exists()

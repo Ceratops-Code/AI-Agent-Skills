@@ -10,9 +10,10 @@ from __future__ import annotations
 import fnmatch
 import os
 import pathlib
-import tomllib
 from collections.abc import Mapping
 from typing import Any
+
+import tomllib
 
 
 def discover_python_tests(root: pathlib.Path, rules: Mapping[str, Any]) -> list[str]:

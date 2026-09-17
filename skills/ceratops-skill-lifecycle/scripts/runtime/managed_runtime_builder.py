@@ -12,6 +12,8 @@ ownership, and batch state prove one safe outcome. The same affected set, or an
 all-managed install, is therefore the convergence boundary after a hard crash.
 """
 
+# Manifest validation uses ValueError so transaction callers can collect failures.
+# ruff: noqa: TRY004
 from __future__ import annotations
 
 import argparse
@@ -972,7 +974,7 @@ def recover_interrupted(
             or (all_managed and skill not in source_names)
         }
         if intended_removals != absent:
-            unresolved = sorted(absent - intended_removals)[0]
+            unresolved = min(absent - intended_removals)
             raise TransactionError(
                 "retired remnant requires the same affected set or an "
                 "all-managed installation",

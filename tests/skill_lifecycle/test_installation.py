@@ -1089,7 +1089,7 @@ def test_shared_skill_python_environment_reuses_lock_and_repairs_missing_package
     installed = subprocess.run([
         sys.executable, str(BOOTSTRAP), "--repo-root", str(ROOT), "--install-root", str(destination),
         "--skill", names[0], "--skill", names[1],
-    ], capture_output=True, text=True)
+    ], capture_output=True, text=True, check=False)
     assert installed.returncode == 0, installed.stderr
     assert INSTALLER_VERSION == runpy.run_path(str(BOOTSTRAP))["INSTALLER_VERSION"]
     uv = shutil.which("uv")
@@ -1117,7 +1117,7 @@ def test_shared_skill_python_environment_reuses_lock_and_repairs_missing_package
         return subprocess.run([
             uv, "run", "--no-project", "--python", str(runtimes[names.index(name)]), "python",
             str(destination / name / "scripts/probe.py"), "two words",
-        ], cwd=tmp_path, env=environment, capture_output=True, text=True)
+        ], cwd=tmp_path, env=environment, capture_output=True, text=True, check=False)
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         results = list(pool.map(invoke, names))
@@ -1133,7 +1133,7 @@ def test_shared_skill_python_environment_reuses_lock_and_repairs_missing_package
     failed_script.write_text("import sys\nprint('helper failure', file=sys.stderr)\nraise SystemExit(7)\n")
     failed = subprocess.run([
         uv, "run", "--no-project", "--python", str(interpreter), "python", str(failed_script),
-    ], cwd=tmp_path, env=environment, capture_output=True, text=True)
+    ], cwd=tmp_path, env=environment, capture_output=True, text=True, check=False)
     assert failed.returncode == 7 and "helper failure" in failed.stderr
 
     # A skill helper may run a target repository's uv command without sending
@@ -1146,7 +1146,7 @@ def test_shared_skill_python_environment_reuses_lock_and_repairs_missing_package
         'requires-python=">=3.14,<3.15"\ndependencies=[]\n'
         '[tool.uv]\npackage=false\n'
     )
-    locked_target = subprocess.run([uv, "lock", "--project", str(scripts)], capture_output=True, text=True)
+    locked_target = subprocess.run([uv, "lock", "--project", str(scripts)], capture_output=True, text=True, check=False)
     assert locked_target.returncode == 0, locked_target.stderr
     (scripts / "probe.py").write_text(
         "import json, pathlib, sys\n"
@@ -1163,12 +1163,12 @@ def test_shared_skill_python_environment_reuses_lock_and_repairs_missing_package
         uv, "run", "--no-project", "--python", str(interpreter), "python",
         str(destination / names[0] / "scripts/repository_operation.py"),
         "--repo-root", str(repository), "--validate", "--ci",
-    ], cwd=tmp_path, env=environment, capture_output=True, text=True)
+    ], cwd=tmp_path, env=environment, capture_output=True, text=True, check=False)
     assert through_skill.returncode == 0, through_skill.stderr
     assert pathlib.Path(json.loads((repository / "target-python.json").read_text())) == scripts / ".venv"
-    shared_import = subprocess.run([str(interpreter), "-c", "import jsonschema, yaml"], capture_output=True, text=True)
+    shared_import = subprocess.run([str(interpreter), "-c", "import jsonschema, yaml"], capture_output=True, text=True, check=False)
     assert shared_import.returncode == 0, shared_import.stderr
-    removed = subprocess.run([uv, "pip", "uninstall", "--python", str(interpreter), "jsonschema"], capture_output=True, text=True)
+    removed = subprocess.run([uv, "pip", "uninstall", "--python", str(interpreter), "jsonschema"], capture_output=True, text=True, check=False)
     assert removed.returncode == 0, removed.stderr
     legacy_scripts = destination / names[0] / "scripts"
     (legacy_scripts / "run-skill.py").write_text("# retired launcher\n")
@@ -1179,7 +1179,7 @@ def test_shared_skill_python_environment_reuses_lock_and_repairs_missing_package
     redeployed = subprocess.run([
         sys.executable, str(BOOTSTRAP), "--repo-root", str(ROOT), "--install-root", str(destination),
         "--skill", names[0], "--skill", names[1],
-    ], capture_output=True, text=True)
+    ], capture_output=True, text=True, check=False)
     assert redeployed.returncode == 0, redeployed.stderr
     assert not (legacy_scripts / "run-skill.py").exists()
     assert not legacy_project.exists()
@@ -1189,7 +1189,7 @@ def test_shared_skill_python_environment_reuses_lock_and_repairs_missing_package
     repaired = subprocess.run([
         uv, "run", "--no-project", "--python", str(new_paths[0]), "python",
         str(destination / names[0] / "scripts/probe.py"), "two words",
-    ], cwd=tmp_path, env=environment, capture_output=True, text=True)
+    ], cwd=tmp_path, env=environment, capture_output=True, text=True, check=False)
     assert repaired.returncode == 0, repaired.stderr
     assert json.loads(repaired.stdout)["python"] == str(new_paths[0])
 
@@ -1213,7 +1213,7 @@ def test_runtime_update_preserves_an_active_helper_environment(tmp_path: pathlib
     )
     installed = tmp_path / "codex/skills"
     command = [sys.executable, str(BOOTSTRAP), "--repo-root", str(repo), "--install-root", str(installed), "--skill", "alpha-tool"]
-    first = subprocess.run(command, capture_output=True, text=True)
+    first = subprocess.run(command, capture_output=True, text=True, check=False)
     assert first.returncode == 0, first.stderr
     manifest = installed / "alpha-tool/.runtime-manifest.json"
     old_python = pathlib.Path(json.loads(manifest.read_text())["python_runtime"])
@@ -1234,9 +1234,9 @@ def test_runtime_update_preserves_an_active_helper_environment(tmp_path: pathlib
             'dependencies = ["jsonschema", "markdown-it-py", "PyYAML", "tzdata"]',
             "dependencies = []",
         ))
-        locked = subprocess.run([uv, "lock", "--project", str(project)], capture_output=True, text=True)
+        locked = subprocess.run([uv, "lock", "--project", str(project)], capture_output=True, text=True, check=False)
         assert locked.returncode == 0, locked.stderr
-        second = subprocess.run(command, capture_output=True, text=True)
+        second = subprocess.run(command, capture_output=True, text=True, check=False)
         assert second.returncode == 0, second.stderr
         new_python = pathlib.Path(json.loads(manifest.read_text())["python_runtime"])
         assert new_python != old_python and new_python.is_file() and old_python.is_file()
@@ -1292,7 +1292,7 @@ def test_installer_completion_receipt_identifies_actual_transaction(tmp_path: pa
         (repo / "untracked.txt").write_text("dirty source")
     flags = ["--skill", "alpha-tool"] if mode == "selected" else ["--base-revision", commit] if mode == "no-op" else []
     result = subprocess.run([sys.executable, str(RUNTIME_INSTALLER), "--repo-root", str(repo),
-                             "--install-root", str(destination), *flags], capture_output=True, text=True)
+                             "--install-root", str(destination), *flags], capture_output=True, text=True, check=False)
     assert result.returncode == 0, result.stderr
     receipt = json.loads(result.stdout)
     assert receipt["schema"] == "ceratops-deployment-completion.v1"

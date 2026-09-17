@@ -1086,7 +1086,7 @@ def check_section_sources(manifest: dict[str, object], skill_dirs: list[pathlib.
             continue
         try:
             rendered_sections_block(skill_dir.name, manifest)
-        except Exception as exc:
+        except (OSError, KeyError, TypeError, ValueError) as exc:
             errors.append(f"{skill_dir.name}: could not render runtime shared sections: {exc}")
     return errors
 
@@ -1107,8 +1107,7 @@ def check_canonical_sections(
         )
         return (
             [
-                "repositories without skills must not retain canonical section "
-                f"declarations: {', '.join(retained)}"
+                f"repositories without skills must not retain canonical section declarations: {', '.join(retained)}"
             ]
             if retained
             else []
@@ -1289,7 +1288,7 @@ def check_skill(
     else:
         try:
             rendered_sections_block(name, manifest)
-        except Exception as exc:
+        except (OSError, KeyError, TypeError, ValueError) as exc:
             errors.append(f"{name}: could not render runtime shared sections: {exc}")
     errors.extend(check_resource_layout(skill_dir, profile))
 
@@ -1490,7 +1489,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     readme_rows = readme_skill_rows(readme_text)
     skill_names = {skill_dir.name for skill_dir in skill_dirs}
     if isinstance(workflow_hints, dict):
-        for _workflow_name, commands in workflow_hints.items():
+        for commands in workflow_hints.values():
             if isinstance(commands, list) and all(isinstance(item, str) for item in commands):
                 for command in commands:
                     errors.extend(validate_workflow_target(command, skill_names))

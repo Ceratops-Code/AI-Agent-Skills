@@ -7,6 +7,8 @@ generated marker blocks from source skills, synchronizes the bootstrap through
 the package-owned helper, and emits one compact JSON result.
 """
 
+# Compatibility rejects malformed repository input as RuntimeError for its callers.
+# ruff: noqa: TRY004
 from __future__ import annotations
 
 import argparse
@@ -462,9 +464,8 @@ def validation_surfaces(
         (validator, "repository validator"),
         (workflow, "CI validation workflow"),
     ):
-        if path.exists() or path.is_symlink():
-            if path.is_symlink() or not path.is_file():
-                raise RuntimeError(f"existing {label} must be a regular file: {path}")
+        if path.is_symlink() or (path.exists() and not path.is_file()):
+            raise RuntimeError(f"existing {label} must be a regular file: {path}")
 
     checks = contract_checks(repo_root)
     markdown_files = (

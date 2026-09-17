@@ -8,6 +8,8 @@ direct child runtime manifests and writes routing evidence to a caller-selected
 file without comparing installed files with source.
 """
 
+# This public executable has a required hyphenated filename.
+# ruff: noqa: N999
 from __future__ import annotations
 
 import argparse
@@ -433,9 +435,8 @@ def affected_from_base(
     deploy.update(_consumers(base_assignments, changed_sections) & current_names)
     deploy.update(_consumers(current_assignments, changed_sections) & current_names)
     for skill in set(base_assignments) | set(current_assignments):
-        if base_assignments.get(skill) != current_assignments.get(skill):
-            if skill in current_names:
-                deploy.add(skill)
+        if base_assignments.get(skill) != current_assignments.get(skill) and skill in current_names:
+            deploy.add(skill)
 
     base_python = base_manifest.get("python_runtime_skills")
     current_python = current_manifest.get("python_runtime_skills")
@@ -816,9 +817,7 @@ def main(argv: list[str] | None = None) -> int:
         ValueError,
         json.JSONDecodeError,
     ) as exc:
-        if isinstance(exc, runtime_builder.TransactionError):
-            payload = exc.result()
-        elif isinstance(exc, InstallerError):
+        if isinstance(exc, (runtime_builder.TransactionError, InstallerError)):
             payload = exc.result()
         else:
             payload = InstallerError(str(exc)).result()

@@ -5,6 +5,8 @@ cache. Failed initial setup removes only the newly created environment inside
 the verified target; an existing environment is never recursively discarded.
 """
 
+# Environment setup reports malformed declarations as RuntimeError.
+# ruff: noqa: TRY004
 from __future__ import annotations
 
 import os

@@ -313,9 +313,8 @@ def validate_ceratops_compatibility(repo_root: pathlib.Path) -> CompatibilityRes
         required = surface["required"] == "always" or (
             surface["required"] == "with_skills" and bool(source_skills)
         ) or (surface["required"] == "with_python_tests" and bool(python_tests))
-        if required or name in present:
-            if error := _regular_file_error(root, paths[name]):
-                errors.append(error)
+        if (required or name in present) and (error := _regular_file_error(root, paths[name])):
+            errors.append(error)
     if not _regular_file_error(root, paths["workflow"]):
         errors.extend(workflow_errors(root / paths["workflow"], contract["ci_action"]))
     python_skills: set[str] = set()
