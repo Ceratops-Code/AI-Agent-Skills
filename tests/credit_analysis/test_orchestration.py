@@ -148,13 +148,13 @@ def test_final_assembly_merges_exact_prior_findings_without_model_copy() -> None
             }],
         }
 
-    packet = {
+    packet: dict[str, Any] = {
         "luna_candidate_ids": ["l1", "l2"],
         "call_inventory": {"rows": [["x", "c1", "producer"], ["x", "c2", "producer"]]},
         "prior_adjudication_results": [source("l1", "c1", "f1"), source("l2", "c2", "f2")],
         "recovery_result": None, "deep_review_evidence": [],
     }
-    delta = {key: [] for key in (
+    delta: dict[str, Any] = {key: [] for key in (
         "candidate_decisions", "confirmed_findings", "plausible_risks",
         "temporary_control_reviews", "temporary_control_merges",
         "helper_category_reviews", "call_classifications",

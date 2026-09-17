@@ -8,7 +8,7 @@ import json
 import os
 import pathlib
 import subprocess
-from typing import Any
+from typing import Any, Mapping
 
 import pytest
 

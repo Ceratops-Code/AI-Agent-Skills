@@ -670,11 +670,11 @@ def _assemble_final_transport(
     ) -> tuple[list[dict[str, Any]], dict[str, str]]:
         merged: dict[tuple[Any, ...], dict[str, Any]] = {}
         redirects: dict[str, str] = {}
-        for item in records.values():
-            item = copy.deepcopy(dict(item))
+        for record in records.values():
+            item = copy.deepcopy(dict(record))
             workstream = str(item.get("workstream") or workstream_by_call[item["affected_call_ids"][0]])
             if key == "confirmed_findings":
-                identity = (
+                identity: tuple[Any, ...] = (
                     item["producer_owner"], item["proposed_durable_control"],
                     item["problem_summary"], item["waste_kind"],
                     item["implementation_status"], workstream,
