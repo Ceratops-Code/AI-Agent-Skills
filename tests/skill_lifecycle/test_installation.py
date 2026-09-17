@@ -34,6 +34,7 @@ from tests.support.repositories import (
     ROOT,
     create_compatible_repo,
     prepare_script_environment,
+    run_git,
 )
 
 
@@ -437,6 +438,8 @@ def test_bootstrap_full_install_materializes_lifecycle_bundle_with_source_runtim
         / "skill-sections.json.tmpl"
     ).is_file()
     assert (installed_lifecycle / "skills" / "sections" / "core.md").is_file()
+    assert (installed_lifecycle / "skills" / "sections" / "python" / "pyproject.toml").is_file()
+    assert (installed_lifecycle / "skills" / "sections" / "python" / "uv.lock").is_file()
     assert (
         installed_lifecycle / "skills" / "sections" / "multi-action-skill.md"
     ).is_file()
@@ -457,6 +460,9 @@ def test_bootstrap_full_install_materializes_lifecycle_bundle_with_source_runtim
     )
     shutil.rmtree(target_repo / "skills" / "sections")
     (target_repo / "skills" / "skill-sections.json").unlink()
+    alpha_scripts = target_repo / "skills" / "alpha-tool" / "scripts"
+    alpha_scripts.mkdir()
+    (alpha_scripts / "helper.py").write_text("print('ready')\n")
     applied = run_compatibility_engine(
         installed_lifecycle / "scripts",
         "apply",
@@ -467,6 +473,8 @@ def test_bootstrap_full_install_materializes_lifecycle_bundle_with_source_runtim
     )
     assert applied.returncode == 0, applied.stdout
     assert json.loads(applied.stdout)["runtime_source_id"] == "installed/target"
+    assert (target_repo / "skills/sections/python/pyproject.toml").is_file()
+    assert (target_repo / "skills/sections/python/uv.lock").is_file()
 
     other_checkout = tmp_path / "other-checkout"
     other_checkout.mkdir()
@@ -519,6 +527,13 @@ def test_lifecycle_only_installed_bundle_materializes_compatible_repo(
     )
     shutil.rmtree(target_repo / "skills" / "sections")
     (target_repo / "skills" / "skill-sections.json").unlink()
+    alpha_scripts = target_repo / "skills" / "alpha-tool" / "scripts"
+    alpha_scripts.mkdir()
+    (alpha_scripts / "helper.py").write_text("print('ready')\n")
+    ownership_path = install_root / "ceratops-repo-lifecycle" / ".runtime-manifest.json"
+    ownership = json.loads(ownership_path.read_text(encoding="utf-8"))
+    ownership["source_repository_root"] = str(tmp_path / "unavailable-source")
+    ownership_path.write_text(json.dumps(ownership), encoding="utf-8")
 
     result = run_compatibility_engine(
         install_root / "ceratops-repo-lifecycle" / "scripts",
@@ -531,6 +546,8 @@ def test_lifecycle_only_installed_bundle_materializes_compatible_repo(
 
     assert result.returncode == 0, result.stdout
     assert json.loads(result.stdout)["runtime_source_id"] == "installed/only"
+    assert (target_repo / "skills/sections/python/pyproject.toml").is_file()
+    assert (target_repo / "skills/sections/python/uv.lock").is_file()
 
 
 def test_bootstrap_ignores_stale_broken_installed_bundle(
@@ -573,6 +590,32 @@ def test_bootstrap_ignores_stale_broken_installed_bundle(
 
     assert result.returncode == 0, result.stderr
     assert runtime_owner(install_root, "alpha-tool") == "example/external"
+
+
+def test_python_runtime_selection_changes_only_affected_skill(
+    tmp_path: pathlib.Path,
+) -> None:
+    repo = tmp_path / "compatible"
+    create_compatible_repo(repo, "example/compatible", ["alpha-tool", "beta-tool"])
+    assert run_git(repo, "init", "-b", "task").returncode == 0
+    assert run_git(repo, "config", "user.email", "test@example.invalid").returncode == 0
+    assert run_git(repo, "config", "user.name", "Test Agent").returncode == 0
+    manifest_path = repo / "skills/skill-sections.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["python_runtime_skills"] = []
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    assert run_git(repo, "add", "-A").returncode == 0
+    assert run_git(repo, "commit", "-m", "baseline").returncode == 0
+    base = run_git(repo, "rev-parse", "HEAD").stdout.strip()
+
+    manifest["python_runtime_skills"] = ["alpha-tool"]
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    assert run_git(repo, "add", "-A").returncode == 0
+    assert run_git(repo, "commit", "-m", "select Python skill").returncode == 0
+
+    affected = runpy.run_path(str(RUNTIME_INSTALLER))["affected_from_base"](repo, base)
+    assert affected.deploy == ("alpha-tool",)
+    assert affected.remove == ()
 
 
 def test_runtime_manifest_uses_schema_without_installer_version(
@@ -1005,6 +1048,12 @@ def test_contract_review_adoption_and_all_managed_output(tmp_path: pathlib.Path)
         result = subprocess.run(command, capture_output=True, text=True, check=False)
         assert result.returncode == 0, result.stderr
         snapshots.append(rendered_snapshot(destination))
+        for skill in manifest["skills"]:
+            runtime = json.loads((destination / skill / ".runtime-manifest.json").read_text())
+            if skill in manifest["python_runtime_skills"]:
+                assert pathlib.Path(runtime["python_runtime"]).is_file()
+            else:
+                assert "python_runtime" not in runtime
         for skill, refs in expected.items():
             source = ROOT / "skills" / skill
             for relative in refs:

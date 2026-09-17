@@ -11,16 +11,17 @@ import json
 import os
 import pathlib
 import runpy
-import tomllib
 from collections.abc import Mapping
 from typing import Any, TypedDict
 
+import tomllib
 import yaml
 
 from .ci_workflow import workflow_errors
 from .compatibility_contract import load_compatibility_contract, template_path
 from .python_tests import discover_python_tests
 from .sdlc_contract_validation import operation_entries, read_contract
+from .validation_environment import detected_python_skills
 
 
 class CompatibilityResult(TypedDict):
@@ -115,17 +116,17 @@ def _manifest_errors(
     path: pathlib.Path,
     source_skills: set[str],
     profiles: list[str],
-) -> list[str]:
+) -> tuple[list[str], set[str]]:
     """Validate only generic compatibility-manifest structure and wiring."""
 
     if path.is_symlink() or not path.is_file():
-        return ["skills/skill-sections.json must be a regular file"]
+        return ["skills/skill-sections.json must be a regular file"], set()
     try:
         manifest = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        return [f"invalid skills/skill-sections.json: {exc}"]
+        return [f"invalid skills/skill-sections.json: {exc}"], set()
     if not isinstance(manifest, Mapping):
-        return ["skills/skill-sections.json root must be an object"]
+        return ["skills/skill-sections.json root must be an object"], set()
 
     errors: list[str] = []
     source_id = manifest.get("runtime_source_id")
@@ -144,6 +145,16 @@ def _manifest_errors(
     if not isinstance(assignments, Mapping):
         errors.append("section manifest skills must be an object")
         assignments = {}
+    declared_python = manifest.get("python_runtime_skills")
+    python_skills: set[str] = set()
+    if (
+        not isinstance(declared_python, list)
+        or len(declared_python) != len({item for item in declared_python if isinstance(item, str)})
+        or not all(isinstance(item, str) and item in source_skills for item in declared_python)
+    ):
+        errors.append("section manifest python_runtime_skills must list unique source skills")
+    else:
+        python_skills = set(declared_python)
     for field in ("maintenance_workflows", "runtime_payloads"):
         value = manifest.get(field, {})
         if not isinstance(value, Mapping):
@@ -188,11 +199,17 @@ def _manifest_errors(
     errors.extend(action_assignment_errors(root, manifest))
     for skill_name in sorted(source_skills - set(assignments)):
         errors.append(f"{skill_name}: missing section assignment in manifest")
-    return errors
+    payloads = manifest.get("runtime_payloads", {})
+    if isinstance(payloads, Mapping):
+        for skill_name in sorted(detected_python_skills(root, source_skills, payloads) - python_skills):
+            errors.append(f"{skill_name}: Python helper needs python_runtime_skills assignment")
+    return errors, python_skills
 
 
 
-def _environment_errors(root: pathlib.Path, contract: Mapping[str, Any]) -> list[str]:
+def _environment_errors(
+    root: pathlib.Path, contract: Mapping[str, Any], *, has_python_skills: bool,
+) -> list[str]:
     """Check declarations and the installed runtime without installing or running it.
 
     uv sync/run enforces Python and dependency resolution. Structural health
@@ -220,7 +237,14 @@ def _environment_errors(root: pathlib.Path, contract: Mapping[str, Any]) -> list
         errors.append("validator environment must contain its own Python interpreter; apply compatibility or run uv sync")
     try:
         dependabot = yaml.safe_load((root / ".github/dependabot.yml").read_text(encoding="utf-8"))
-        for registration in (contract["dependency_updates"], contract["ci_dependency_updates"]):
+        registrations = [contract["dependency_updates"], contract["ci_dependency_updates"]]
+        if has_python_skills:
+            project = pathlib.PurePosixPath(contract["skill_python_runtime"]["project"])
+            registrations.append({
+                **contract["dependency_updates"],
+                "directory": "/" + project.parent.as_posix(),
+            })
+        for registration in registrations:
             if not isinstance(dependabot, Mapping) or not any(
                 isinstance(item, Mapping) and item.get("package-ecosystem") == registration["package-ecosystem"]
                 and (item.get("directory") == registration["directory"] or registration["directory"] in item.get("directories", []))
@@ -229,6 +253,35 @@ def _environment_errors(root: pathlib.Path, contract: Mapping[str, Any]) -> list
                 errors.append("Dependabot must include " + registration["package-ecosystem"] + " at " + registration["directory"])
     except (OSError, ValueError, TypeError, yaml.YAMLError) as exc:
         errors.append("invalid validator dependency-update registration: " + str(exc))
+    return errors
+
+
+def _skill_runtime_errors(
+    root: pathlib.Path, contract: Mapping[str, Any], *, has_python_skills: bool,
+) -> list[str]:
+    """Require locked source declarations only when Python helpers are declared."""
+
+    if not has_python_skills:
+        return []
+    runtime = contract["skill_python_runtime"]
+    errors: list[str] = []
+    for relative in runtime.values():
+        if error := _regular_file_error(root, pathlib.Path(relative)):
+            errors.append(error)
+    if errors:
+        return errors
+    try:
+        project = tomllib.loads((root / runtime["project"]).read_text(encoding="utf-8"))
+        metadata = project.get("project", {})
+        if not isinstance(metadata.get("requires-python"), str) or not metadata["requires-python"].strip():
+            errors.append("skill Python project must declare requires-python")
+        if not isinstance(metadata.get("dependencies"), list):
+            errors.append("skill Python project must declare dependencies")
+        lock = tomllib.loads((root / runtime["lockfile"]).read_text(encoding="utf-8"))
+        if not isinstance(lock.get("version"), int) or not lock.get("package"):
+            errors.append("skill Python uv.lock must contain resolved packages")
+    except (OSError, ValueError, TypeError, AttributeError) as exc:
+        errors.append("invalid skill Python project or lock: " + str(exc))
     return errors
 
 
@@ -265,10 +318,12 @@ def validate_ceratops_compatibility(repo_root: pathlib.Path) -> CompatibilityRes
                 errors.append(error)
     if not _regular_file_error(root, paths["workflow"]):
         errors.extend(workflow_errors(root / paths["workflow"], contract["ci_action"]))
+    python_skills: set[str] = set()
     if "skill_manifest" in present and not _regular_file_error(root, paths["skill_manifest"]):
-        errors.extend(_manifest_errors(
+        manifest_errors, python_skills = _manifest_errors(
             root, root / paths["skill_manifest"], source_skills, contract["manifest_profiles"],
-        ))
+        )
+        errors.extend(manifest_errors)
     if "sdlc" in present and not _regular_file_error(root, paths["sdlc"]):
         sdlc, sdlc_errors = read_contract(root / paths["sdlc"])
         errors.extend(sdlc_errors)
@@ -290,7 +345,8 @@ def validate_ceratops_compatibility(repo_root: pathlib.Path) -> CompatibilityRes
                 errors.append("SDLC must declare repository tests or an explicit no-op")
             if python_tests and not any(".tests." in name and (entry.get("steps") or entry.get("handoff")) for name, entry in entries.items()):
                 errors.append("detected Python tests require an executable SDLC tests operation")
-    errors.extend(_environment_errors(root, contract))
+    errors.extend(_environment_errors(root, contract, has_python_skills=bool(python_skills)))
+    errors.extend(_skill_runtime_errors(root, contract, has_python_skills=bool(python_skills)))
     for relative in [contract["runtime"]["lockfile"]]:
         if error := _regular_file_error(root, pathlib.Path(relative)):
             errors.append(error)

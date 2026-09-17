@@ -25,7 +25,7 @@ import uuid
 from collections.abc import Mapping, Sequence
 from typing import cast
 
-INSTALLER_VERSION = 15
+INSTALLER_VERSION = 16
 MANIFEST_NAME = ".runtime-manifest.json"
 RUNTIME_MANIFEST_SCHEMA = "ceratops-runtime-skill.v3"
 START = "<!-- CERATOPS_SHARED_SECTIONS_START -->"
@@ -232,6 +232,28 @@ def declared_skills(
         if name not in assignments:
             raise ValueError(f"undeclared skill: {name}")
     return names
+
+
+def declared_python_skills(
+    repo_root: pathlib.Path, manifest: Mapping[str, object], selected: Sequence[str],
+) -> set[str]:
+    """Select only skills declared to use the shared locked Python project.
+
+    An older manifest without this field retains its prior behavior when it
+    already has the source project; compatibility application writes the field.
+    """
+
+    declared = manifest.get("python_runtime_skills")
+    if declared is None:
+        project = repo_root / "skills/sections/python"
+        return set(selected) if (project / "pyproject.toml").is_file() else set()
+    if (
+        not isinstance(declared, list)
+        or len(declared) != len({item for item in declared if isinstance(item, str)})
+        or not all(isinstance(item, str) and item in manifest["skills"] for item in declared)
+    ):
+        raise ValueError("python_runtime_skills must list unique declared skills")
+    return set(selected).intersection(declared)
 
 
 def action_assignments(
@@ -578,6 +600,7 @@ def install_batch(
     skills: Sequence[str],
     manifest: Mapping[str, object],
     python_runtime: pathlib.Path | None,
+    python_skills: set[str],
 ) -> None:
     """Render and overlay selected skills, preserving all destination-only data."""
 
@@ -591,7 +614,10 @@ def install_batch(
         lock_created = True
         staging.mkdir()
         for skill in skills:
-            build_skill(repo_root, staging, manifest, skill, python_runtime)
+            build_skill(
+                repo_root, staging, manifest, skill,
+                python_runtime if skill in python_skills else None,
+            )
         # Inspect only paths being written; retained files are not audited.
         for source in staging.rglob("*"):
             target = install_root / source.relative_to(staging)
@@ -651,8 +677,15 @@ def main() -> int:
         skills = declared_skills(manifest, args.skill)
         action_assignments(repo_root, manifest, set(skills) if args.skill else None)
         if skills:
-            python_runtime = prepare_python_runtime(repo_root, destination)
-            install_batch(repo_root, destination, skills, manifest, python_runtime)
+            python_skills = declared_python_skills(repo_root, manifest, skills)
+            python_runtime = (
+                prepare_python_runtime(repo_root, destination) if python_skills else None
+            )
+            if python_skills and python_runtime is None:
+                raise ValueError("declared Python skills require the source locked project")
+            install_batch(
+                repo_root, destination, skills, manifest, python_runtime, python_skills,
+            )
     except (
         OSError,
         UnicodeError,

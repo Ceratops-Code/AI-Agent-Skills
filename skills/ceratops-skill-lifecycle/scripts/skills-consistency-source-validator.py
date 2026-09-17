@@ -310,6 +310,22 @@ def check_runtime_payloads(
     project = ROOT / "skills/sections/python"
     declaration = project / "pyproject.toml"
     lock = project / "uv.lock"
+    declared_python = manifest.get("python_runtime_skills")
+    if (
+        not isinstance(declared_python, list)
+        or len(declared_python) != len({item for item in declared_python if isinstance(item, str)})
+        or not all(isinstance(item, str) and item in skill_names for item in declared_python)
+    ):
+        errors.append("section manifest python_runtime_skills must list unique source skills")
+        python_skills: set[str] = set()
+    else:
+        python_skills = set(declared_python)
+    for skill_name in sorted(skill_names - python_skills):
+        scripts = ROOT / "skills" / skill_name / "scripts"
+        if scripts.is_dir() and any(path.is_file() for path in scripts.rglob("*.py")):
+            errors.append(f"{skill_name}: Python helper needs python_runtime_skills assignment")
+    if python_skills and (not declaration.is_file() or not lock.is_file()):
+        errors.append("declared Python skills require source pyproject.toml and uv.lock")
     if declaration.is_file() != lock.is_file():
         errors.append("source skill Python runtime requires both pyproject.toml and uv.lock")
     elif declaration.is_file():
@@ -322,6 +338,8 @@ def check_runtime_payloads(
             errors.append(f"source skill Python runtime declaration is invalid: {exc}")
     retired_sources = {
         "skills/sections/scripts/run-skill.py",
+    }
+    template_sources = {
         "skills/sections/python/pyproject.toml",
         "skills/sections/python/uv.lock",
     }
@@ -357,7 +375,14 @@ def check_runtime_payloads(
             else:
                 errors.append(f"{label} must be a path or source-target mapping")
                 continue
-            if source in retired_sources or target in retired_targets:
+            allowed_template = (
+                skill_name == "ceratops-repo-lifecycle"
+                and source in template_sources
+                and target is None
+            )
+            if source in retired_sources or target in retired_targets or (
+                source in template_sources and not allowed_template
+            ):
                 errors.append(f"{label} still deploys the retired per-skill Python runtime")
                 continue
             source_posix = pathlib.PurePosixPath(source.replace("\\", "/"))

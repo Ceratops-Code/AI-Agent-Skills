@@ -43,6 +43,7 @@ KNOWN_MANIFEST_FIELDS = {
     "sections",
     "maintenance_workflows",
     "runtime_payloads",
+    "python_runtime_skills",
     "skills",
     "actions",
 }
@@ -435,6 +436,25 @@ def affected_from_base(
         if base_assignments.get(skill) != current_assignments.get(skill):
             if skill in current_names:
                 deploy.add(skill)
+
+    base_python = base_manifest.get("python_runtime_skills")
+    current_python = current_manifest.get("python_runtime_skills")
+    if base_python is not None or current_python is not None:
+        for label, value, names in (
+            ("base", base_python, base_names),
+            ("current", current_python, current_names),
+        ):
+            if value is not None and (
+                not isinstance(value, list)
+                or len(value) != len({item for item in value if isinstance(item, str)})
+                or not all(isinstance(item, str) and item in names for item in value)
+            ):
+                raise DecisionRequired(f"{label} python_runtime_skills is invalid")
+        changed_python = (
+            set(base_names if base_python is None else base_python)
+            ^ set(current_names if current_python is None else current_python)
+        )
+        deploy.update(changed_python & current_names)
 
     base_payloads = _payloads(base_manifest, "base")
     current_payloads = _payloads(current_manifest, "current")

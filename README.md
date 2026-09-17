@@ -630,14 +630,14 @@ explicitly.
 The sole dependency declarations for managed skill helpers are
 `skills/sections/python/pyproject.toml` and `uv.lock` in the source repository.
 Dependabot maintains this lock independently of repository tooling.
-Compatibility setup adds these source files to skill-bearing targets; their
-owners declare any additional dependencies their skills need. When compatibility
-setup runs from an installed lifecycle skill, its original source repository
-must remain available for those starter declarations. Deployment uses
-uv to prepare an environment under `$CODEX_HOME/runtimes/ceratops/versions/`.
-Each installed skill's `.runtime-manifest.json` records its exact
-`python_runtime` interpreter path. No launcher or declarations are copied into
-individual installed skills.
+Compatibility setup adds these source files only to targets with Python helper
+skills; their owners declare any additional dependencies their skills need.
+The installed repository lifecycle skill carries one copy of the starter files,
+so setup works without the original skills checkout. Deployment uses uv to
+prepare an environment under `$CODEX_HOME/runtimes/ceratops/versions/`.
+`python_runtime_skills` in the section manifest selects its users. Only their
+installed `.runtime-manifest.json` files record the exact interpreter path.
+No launcher or per-skill environment is installed.
 
 Run an installed Python helper with that interpreter, preserving its arguments:
 

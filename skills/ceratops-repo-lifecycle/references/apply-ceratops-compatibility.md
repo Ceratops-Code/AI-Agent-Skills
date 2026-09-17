@@ -164,6 +164,10 @@ Infer the source identity from stable repository evidence before asking.
 - When skills exist, the compatibility apply helper synchronizes the
   independent `scripts/deploy-skills.py`. Retain a same- or
   higher-version bootstrap and replace only a missing or lower version.
+- Declare skills with Python helpers in `python_runtime_skills`. For those
+  skills, copy one locked source project under `skills/sections/python` from
+  the lifecycle bundle and let bootstrap create a versioned shared environment.
+  The installed bundle must work without its original source checkout.
 - When no skills exist, do not add a bootstrap script or bootstrap deployment
   operation.
 

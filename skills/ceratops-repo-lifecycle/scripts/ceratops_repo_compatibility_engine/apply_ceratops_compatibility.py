@@ -17,10 +17,10 @@ import pprint
 import re
 import shutil
 import subprocess
-import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass
 
+import tomllib
 import yaml
 
 from .ci_workflow import pinned_action, resolve_action, workflow_errors
@@ -38,7 +38,9 @@ from .validate_ceratops_compatibility import (
     validate_ceratops_compatibility,
 )
 from .validation_environment import (
+    detected_python_skills,
     remove_created_environment,
+    retire_old_skill_runtime_payloads,
     runtime_files,
     setup_runtime,
     skill_runtime_files,
@@ -573,6 +575,7 @@ def validate_template(template: Mapping[str, object]) -> None:
         "sections": {"core": "skills/sections/core.md"},
         "maintenance_workflows": {},
         "runtime_payloads": {},
+        "python_runtime_skills": [],
         "skills": {},
         "actions": {},
     }
@@ -824,6 +827,7 @@ def plan_ceratops_compatibility(
                 "sections",
                 "maintenance_workflows",
                 "runtime_payloads",
+                "python_runtime_skills",
                 "skills",
                 "actions",
             )
@@ -849,6 +853,18 @@ def plan_ceratops_compatibility(
         raise RuntimeError("existing maintenance_workflows must be an object")
     if not isinstance(runtime_payloads, Mapping):
         raise RuntimeError("existing runtime_payloads must be an object")
+    updated_payloads = dict(runtime_payloads)
+    retire_old_skill_runtime_payloads(updated_payloads)
+    prior_python = existing.get("python_runtime_skills", [])
+    if (
+        not isinstance(prior_python, list)
+        or len(prior_python) != len({item for item in prior_python if isinstance(item, str)})
+        or not all(isinstance(item, str) and item in skill_names for item in prior_python)
+    ):
+        raise RuntimeError("existing python_runtime_skills must list unique source skills")
+    python_skills = sorted(
+        set(prior_python) | detected_python_skills(repo_root, skill_names, updated_payloads)
+    )
 
     assignments: dict[str, list[str]] = {}
     required_sections: set[str] = {"core"} if skill_paths else set()
@@ -939,7 +955,8 @@ def plan_ceratops_compatibility(
                 "validation_profile": profile,
                 "sections": sections,
                 "maintenance_workflows": dict(maintenance_workflows),
-                "runtime_payloads": dict(runtime_payloads),
+                "runtime_payloads": updated_payloads,
+                "python_runtime_skills": python_skills,
                 "skills": assignments,
                 "actions": existing.get("actions", {}),
             }
@@ -953,14 +970,15 @@ def plan_ceratops_compatibility(
     python_tests = discover_python_tests(repo_root, compatibility_contract["python_test_detection"])
     generated_runtime = runtime_files(
         repo_root, BUNDLE_ROOT, compatibility_contract, contract_checks(repo_root),
-        planned_files=markdown_files,
+        planned_files=markdown_files, has_python_skills=bool(python_skills),
     )
     markdown_files.pop(".gitignore", None)
     if manifest is not None:
-        # The manifest and payload files share the compatibility rollback scope.
-        updated_payloads = dict(runtime_payloads)
-        generated_runtime.update(skill_runtime_files(repo_root, canonical_sections_root(), updated_payloads))
-        manifest["runtime_payloads"] = updated_payloads
+        # The source declarations and manifest share the rollback scope.
+        generated_runtime.update(skill_runtime_files(
+            repo_root, canonical_sections_root(), compatibility_contract,
+            has_python_skills=bool(python_skills),
+        ))
     test_runner = repo_root / surface_path("python_test_runner")
     if python_tests and not test_runner.is_file():
         generated_runtime[test_runner] = template_path("python_test_runner").read_text(encoding="utf-8").replace("__TEST_TARGETS__", repr(python_tests))

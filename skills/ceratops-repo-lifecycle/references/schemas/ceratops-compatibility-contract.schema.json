@@ -15,6 +15,7 @@
     "managed_skill_operations",
     "sdlc_version",
     "runtime",
+    "skill_python_runtime",
     "python_test_detection",
     "dependency_updates",
     "ci_action",
@@ -133,6 +134,16 @@
         }
       },
       "description": "Executable: generator creates and syncs the isolated scripts project; checker verifies declarations, lock and interpreter."
+    },
+    "skill_python_runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["project", "lockfile"],
+      "properties": {
+        "project": {"$ref": "#/$defs/relative_path"},
+        "lockfile": {"$ref": "#/$defs/relative_path"}
+      },
+      "description": "Executable: generator copies the source-only pair for Python skills; checker requires its locked declarations."
     },
     "python_test_detection": {
       "type": "object",

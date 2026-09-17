@@ -199,6 +199,7 @@ def validate_manifest(
     sections = manifest.get("sections")
     assignments = manifest.get("skills")
     payloads = manifest.get("runtime_payloads", {})
+    python_skills = manifest.get("python_runtime_skills")
     if not isinstance(source_id, str) or not source_id.strip():
         errors.append("section manifest runtime_source_id must be a nonempty string")
     if profile not in VALIDATION_PROFILES:
@@ -212,6 +213,12 @@ def validate_manifest(
         errors.append("section manifest is missing a valid skills object")
     if not isinstance(payloads, Mapping):
         errors.append("section manifest runtime_payloads must be an object")
+    if python_skills is not None and (
+        not isinstance(python_skills, list)
+        or len(python_skills) != len({item for item in python_skills if isinstance(item, str)})
+        or not all(isinstance(item, str) and item in source_names for item in python_skills)
+    ):
+        errors.append("section manifest python_runtime_skills must list unique source skills")
     if errors or not isinstance(sections, Mapping) or not isinstance(assignments, Mapping):
         return errors
 
@@ -263,6 +270,19 @@ def validate_manifest(
     except (OSError, ValueError) as exc:
         errors.append(str(exc))
     return errors
+
+
+def selected_python_skills(
+    manifest: Mapping[str, object], deploy_names: set[str],
+) -> set[str]:
+    """Resolve one deployment's Python users from the validated manifest."""
+
+    declared = manifest.get("python_runtime_skills")
+    if declared is None:
+        project = ROOT / "skills/sections/python"
+        return set(deploy_names) if (project / "pyproject.toml").is_file() else set()
+    assert isinstance(declared, list)
+    return deploy_names.intersection(declared)
 
 
 def action_assignments(
@@ -1117,7 +1137,10 @@ def install_transaction(
                 )
 
         try:
-            python_runtime = prepare_python_runtime(install_root) if deploy_names else None
+            python_skills = selected_python_skills(manifest, deploy_names)
+            python_runtime = prepare_python_runtime(install_root) if python_skills else None
+            if python_skills and python_runtime is None:
+                raise ValueError("declared Python skills require the source locked project")
         except (OSError, ValueError, json.JSONDecodeError) as exc:
             raise TransactionError(str(exc), phase="runtime_prepare") from exc
 
@@ -1133,7 +1156,10 @@ def install_transaction(
                 current_skill = skill
                 staged = install_root / f".{skill}-deployed-{transaction_id}"
                 deployed_paths[skill] = staged
-                write_expected_skill(skill, staged, manifest, python_runtime=python_runtime)
+                write_expected_skill(
+                    skill, staged, manifest,
+                    python_runtime=python_runtime if skill in python_skills else None,
+                )
                 enable_windows_acl_inheritance(staged)
                 staged_manifest = read_runtime_manifest(staged)
                 if (

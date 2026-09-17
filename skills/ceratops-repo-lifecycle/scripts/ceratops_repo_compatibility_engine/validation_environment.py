@@ -7,7 +7,6 @@ the verified target; an existing environment is never recursively discarded.
 
 from __future__ import annotations
 
-import json
 import os
 import pathlib
 import re
@@ -26,6 +25,7 @@ from .python_tool_configuration import project_text
 def runtime_files(
     root: pathlib.Path, bundle: pathlib.Path, contract: Mapping[str, Any],
     checks: list[dict[str, Any]], *, planned_files: Mapping[str, str] | None = None,
+    has_python_skills: bool = False,
 ) -> dict[pathlib.Path, str]:
     """Render repository tooling declarations without copying the SDLC engine."""
 
@@ -80,8 +80,12 @@ def runtime_files(
             "package-ecosystem": "npm", "directory": npm_directory,
             "schedule": dict(contract["dependency_updates"]["schedule"]),
         })
-    if any((root / "skills").glob("*/SKILL.md")):
-        registrations.append({**contract["dependency_updates"], "directory": "/skills/sections/python"})
+    if has_python_skills:
+        project = pathlib.PurePosixPath(contract["skill_python_runtime"]["project"])
+        registrations.append({
+            **contract["dependency_updates"],
+            "directory": "/" + project.parent.as_posix(),
+        })
     if not all(isinstance(item, dict) for item in data["updates"]):
         raise RuntimeError("Dependabot updates must be objects")
     for registration in registrations:
@@ -93,8 +97,40 @@ def runtime_files(
     return files
 
 
-def skill_runtime_files(root: pathlib.Path, canonical: pathlib.Path, payloads: dict[str, Any]) -> dict[pathlib.Path, str]:
-    """Keep one source project and retire its former per-skill payload mapping."""
+def detected_python_skills(
+    root: pathlib.Path, skill_names: set[str], payloads: Mapping[str, Any],
+) -> set[str]:
+    """Find skills with installed Python helpers, including shared payloads."""
+
+    found: set[str] = set()
+    for name in skill_names:
+        scripts = root / "skills" / name / "scripts"
+        if scripts.is_dir() and any(path.is_file() for path in scripts.rglob("*.py")):
+            found.add(name)
+            continue
+        for key in ("*", name):
+            declarations = payloads.get(key, [])
+            if not isinstance(declarations, list):
+                continue
+            for item in declarations:
+                source = item if isinstance(item, str) else item.get("source") if isinstance(item, dict) else None
+                if not isinstance(source, str):
+                    continue
+                for path in root.glob(source):
+                    if (path.is_file() and path.suffix == ".py") or (
+                        path.is_dir() and any(child.is_file() for child in path.rglob("*.py"))
+                    ):
+                        found.add(name)
+                        break
+                if name in found:
+                    break
+            if name in found:
+                break
+    return found
+
+
+def retire_old_skill_runtime_payloads(payloads: dict[str, Any]) -> None:
+    """Remove the former per-skill launcher and declaration mappings."""
 
     retired = {
         "skills/sections/scripts/run-skill.py": "scripts/run-skill.py",
@@ -114,36 +150,29 @@ def skill_runtime_files(root: pathlib.Path, canonical: pathlib.Path, payloads: d
                 continue
             kept.append(item)
         payloads[key] = kept
+
+
+def skill_runtime_files(
+    root: pathlib.Path, canonical: pathlib.Path,
+    contract: Mapping[str, Any], *, has_python_skills: bool,
+) -> dict[pathlib.Path, str]:
+    """Copy the one source project only for Python skills."""
+
     files: dict[pathlib.Path, str] = {}
-    source_root: pathlib.Path | None = None
-    for relative in ("python/pyproject.toml", "python/uv.lock"):
-        destination = root / "skills/sections" / relative
+    if not has_python_skills:
+        return files
+    for declared in contract["skill_python_runtime"].values():
+        relative = pathlib.PurePosixPath(declared)
+        destination = root.joinpath(*relative.parts)
         if destination.is_symlink() or (destination.exists() and not destination.is_file()):
             raise RuntimeError(f"skill runtime source must be a regular file: {destination}")
         if not destination.is_file():
-            source = canonical / relative
-            if not source.is_file():
-                if source_root is None:
-                    installed_manifest = canonical.parent.parent / ".runtime-manifest.json"
-                    if not installed_manifest.is_file() or installed_manifest.is_symlink():
-                        raise RuntimeError("installed lifecycle bundle cannot locate its source skill runtime")
-                    ownership = json.loads(installed_manifest.read_text(encoding="utf-8"))
-                    source_value = ownership.get("source_repository_root")
-                    if not isinstance(source_value, str):
-                        raise RuntimeError("installed lifecycle bundle has no source repository")
-                    source_root = pathlib.Path(source_value)
-                    source_manifest = source_root / "skills/skill-sections.json"
-                    if not source_manifest.is_file() or source_manifest.is_symlink():
-                        raise RuntimeError("installed lifecycle source repository is unavailable")
-                    source_identity = json.loads(source_manifest.read_text(encoding="utf-8"))
-                    if source_identity.get("runtime_source_id") != ownership.get("runtime_source_id"):
-                        raise RuntimeError("installed lifecycle source identity differs")
-                source = source_root / "skills/sections" / relative
+            source = canonical.joinpath(*relative.parts[2:])
             if source.is_symlink() or not source.is_file():
                 raise RuntimeError(f"canonical skill runtime input is missing: {source}")
             files[destination] = source.read_text(encoding="utf-8")
-    project = root / "skills/sections/python/pyproject.toml"
-    lock = root / "skills/sections/python/uv.lock"
+    project = root / contract["skill_python_runtime"]["project"]
+    lock = root / contract["skill_python_runtime"]["lockfile"]
     if project.is_file() != lock.is_file():
         raise RuntimeError("existing skill runtime requires both pyproject.toml and uv.lock")
     return files

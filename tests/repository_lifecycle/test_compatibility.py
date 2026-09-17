@@ -46,6 +46,11 @@ def test_compatibility_materializer_supplies_target_identity_and_assignments(
     (repo / ".git").write_text("gitdir: test\n", encoding="utf-8", newline="\n")
     shutil.rmtree(repo / "skills" / "sections")
     (repo / "skills" / "skill-sections.json").unlink()
+    alpha_scripts = repo / "skills" / "alpha-tool" / "scripts"
+    alpha_scripts.mkdir()
+    (alpha_scripts / "helper.py").write_text(
+        "print('Python helper')\n", encoding="utf-8", newline="\n"
+    )
     beta = repo / "skills" / "beta-tool" / "SKILL.md"
     (beta.parent / "references").mkdir()
     (beta.parent / "references" / "run.md").write_text(
@@ -102,6 +107,7 @@ def test_compatibility_materializer_supplies_target_identity_and_assignments(
         "alpha-tool": ["core"],
         "beta-tool": ["core", "multi-action-skill"],
     }
+    assert manifest["python_runtime_skills"] == ["alpha-tool"]
     assert manifest["runtime_source_id"] != json.loads(
         SECTION_MANIFEST_TEMPLATE.read_text(encoding="utf-8")
     )["runtime_source_id"]
@@ -255,7 +261,8 @@ def test_compatibility_materializer_supplies_target_identity_and_assignments(
 
     # Required surfaces are structural checks, including the skill bootstrap.
     for relative in ("scripts/validate-repository.py", ".github/workflows/validate.yml",
-                     "scripts/deploy-skills.py"):
+                     "scripts/deploy-skills.py", "skills/sections/python/pyproject.toml",
+                     "skills/sections/python/uv.lock"):
         target = repo / relative
         original = target.read_bytes()
         target.unlink()
@@ -304,6 +311,44 @@ def test_compatibility_materializer_supplies_target_identity_and_assignments(
     assert actual["deliverables"]["skills"]["validate"]["ceratops-managed"] == {
         "handoff": "target-lifecycle/source-check"
     }
+
+
+def test_non_python_skill_needs_no_shared_skill_runtime(
+    tmp_path: pathlib.Path,
+) -> None:
+    repo = tmp_path / "non-python"
+    create_compatible_repo(repo, "example/non-python", ["alpha-tool"])
+    (repo / ".git").write_text("gitdir: test\n", encoding="utf-8")
+
+    result = run_compatibility_engine(
+        REPOSITORY_LIFECYCLE_SCRIPTS,
+        "apply", "--target-repo-root", str(repo),
+    )
+
+    assert result.returncode == 0, result.stdout
+    manifest = json.loads((repo / "skills/skill-sections.json").read_text())
+    assert manifest["python_runtime_skills"] == []
+    assert not (repo / "skills/sections/python").exists()
+    updates = yaml.safe_load((repo / ".github/dependabot.yml").read_text())["updates"]
+    assert not any(item.get("directory") == "/skills/sections/python" for item in updates)
+    compatibility = importlib.import_module(
+        "ceratops_repo_compatibility_engine.validate_ceratops_compatibility"
+    )
+    assert compatibility.validate_ceratops_compatibility(repo)["valid"] is True
+
+    install_root = tmp_path / "installed"
+    installed = subprocess.run(
+        [sys.executable, str(repo / "scripts/deploy-skills.py"),
+         "--repo-root", str(repo), "--install-root", str(install_root),
+         "--skill", "alpha-tool"],
+        capture_output=True, text=True, check=False,
+    )
+    assert installed.returncode == 0, installed.stderr
+    installed_manifest = json.loads(
+        (install_root / "alpha-tool/.runtime-manifest.json").read_text()
+    )
+    assert "python_runtime" not in installed_manifest
+    assert not (tmp_path / "runtimes/ceratops").exists()
 
 
 def test_compatibility_materializer_supports_repositories_without_skills(
