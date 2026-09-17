@@ -305,14 +305,14 @@ def test_promote_repository_runs_explicit_operation_ids_in_order(
     task_temp.mkdir(parents=True)
     result_file = task_temp / "promotion-result.json"
     if validation_mode == "parameter":
-        rejected = subprocess.run(
+        rejected_without_deployment = subprocess.run(
             [sys.executable, str(PROMOTE_REPOSITORY), "--repo-root", str(repo),
              "--source-branch", "approved", "--no-run-operation",
              "--parameter", "generation_id=generation-123"],
             capture_output=True, text=True, check=False, env=environment,
         )
-        assert rejected.returncode == 1
-        assert "--parameter requires --run-operation" in json.loads(rejected.stderr)["message"]
+        assert rejected_without_deployment.returncode == 1
+        assert "--parameter requires --run-operation" in json.loads(rejected_without_deployment.stderr)["message"]
         assert not log.exists()
     promoted = subprocess.run(
         [
