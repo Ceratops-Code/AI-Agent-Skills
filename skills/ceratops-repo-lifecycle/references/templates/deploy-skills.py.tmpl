@@ -247,10 +247,11 @@ def declared_python_skills(
     if declared is None:
         project = repo_root / "skills/sections/python"
         return set(selected) if (project / "pyproject.toml").is_file() else set()
+    assignments = cast(Mapping[str, object], manifest["skills"])
     if (
         not isinstance(declared, list)
         or len(declared) != len({item for item in declared if isinstance(item, str)})
-        or not all(isinstance(item, str) and item in manifest["skills"] for item in declared)
+        or not all(isinstance(item, str) and item in assignments for item in declared)
     ):
         raise ValueError("python_runtime_skills must list unique declared skills")
     return set(selected).intersection(declared)

@@ -452,8 +452,8 @@ def affected_from_base(
             ):
                 raise DecisionRequired(f"{label} python_runtime_skills is invalid")
         changed_python = (
-            set(base_names if base_python is None else base_python)
-            ^ set(current_names if current_python is None else current_python)
+            set(base_names if base_python is None else cast(list[str], base_python))
+            ^ set(current_names if current_python is None else cast(list[str], current_python))
         )
         deploy.update(changed_python & current_names)
 
