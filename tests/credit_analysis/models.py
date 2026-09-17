@@ -4,7 +4,8 @@ import importlib.util
 import json
 import pathlib
 import sys
-from typing import Any, Mapping
+from collections.abc import Mapping
+from typing import Any, ClassVar
 
 from tests.credit_analysis.paths import CREDIT_ANALYSIS_WORKFLOW
 
@@ -49,7 +50,7 @@ class FakeCreditModelRunner:
     """Return sparse Luna discovery and complete sharded Sol synthesis."""
 
     available_models = holistic_model_catalog()
-    usage_by_phase = {
+    usage_by_phase: ClassVar[dict[str, dict[str, int]]] = {
         "luna-discovery": {
             "input_tokens": 800,
             "cached_input_tokens": 0,
@@ -86,7 +87,10 @@ class FakeCreditModelRunner:
             # edit full synthetic judgments before the fake transport encodes them.
             result = full_response(**kwargs)
             if "baseline_sha256" in kwargs["schema"].get("properties", {}) and "baseline_sha256" not in result:
-                from credit_analysis.model_response_contract import _call_details, project_response_correction
+                from credit_analysis.model_response_contract import (
+                    _call_details,
+                    project_response_correction,
+                )
 
                 feedback = json.loads(kwargs["prompt"].split("\nCorrection request:\n", 1)[1])
                 prior = feedback["prior_response"]

@@ -1,5 +1,5 @@
 """Shared causal-episode planning and Luna/Sol orchestration."""
-# ruff: noqa: F401,F403,F405,I001
+# ruff: noqa: I001
 
 from __future__ import annotations
 
@@ -1008,10 +1008,10 @@ def _jsonl_event_summary(path: pathlib.Path) -> dict[str, Any]:
                 if isinstance(item["turn"].get("usage"), Mapping):
                     candidates.append(item["turn"]["usage"])
             for candidate in candidates:
-                for key in usage:
+                for key, current in usage.items():
                     value = candidate.get(key)
                     if isinstance(value, int) and not isinstance(value, bool):
-                        usage[key] = max(usage[key], value)
+                        usage[key] = max(current, value)
     return {
         "events": sum(event_types.values()),
         "event_types": dict(sorted(event_types.items())),
@@ -6116,6 +6116,7 @@ def command_run_orchestration(
 __all__ = (
     "ANALYSIS_SUMMARY_FIELDS",
     "CALL_CLASSIFICATION_FIELDS",
+    "CANONICAL_REFERENCE_RE",
     "CONFIRMATION_ASSESSMENT_FIELDS",
     "CONFIRMATION_CHILD_ASSESSMENT_FIELDS",
     "CONFIRMATION_CHILD_FINDING_FIELDS",
@@ -6143,7 +6144,6 @@ __all__ = (
     "TEMPORARY_CONTRIBUTION_FIELDS",
     "TEMPORARY_MERGE_FIELDS",
     "TEMPORARY_REVIEW_FIELDS",
-    "CANONICAL_REFERENCE_RE",
     "WORKSPACE_LOCATION_RE",
     "_aggregate_finding_volume",
     "_bind_attempt_record",
@@ -6170,7 +6170,6 @@ __all__ = (
     "_holistic_model_specs",
     "_holistic_partition",
     "_holistic_prepare_task",
-    "_prepare_bounded_evidence",
     "_holistic_prompt",
     "_holistic_prompt_prefix",
     "_holistic_public_status",
@@ -6187,11 +6186,12 @@ __all__ = (
     "_holistic_task_map",
     "_holistic_workstream_by_call",
     "_invoke_injected_runner",
-    "_persistent_descendant_references",
     "_json_bytes",
     "_jsonl_event_summary",
     "_observable_high_signal_reasons",
     "_orchestration_state_path_from_request",
+    "_persistent_descendant_references",
+    "_prepare_bounded_evidence",
     "_process_is_alive",
     "_relevant_segments",
     "_render_holistic_report",

@@ -7,11 +7,11 @@ controller state. Calls remain
 attached to their source run; transport parts are an input-capacity mechanism,
 not independent semantic runs.
 """
-# ruff: noqa: F401,F403,F405,I001
+# ruff: noqa: I001
 
 from __future__ import annotations
 
-from typing import Callable
+from collections.abc import Callable
 
 from .single_thread_analysis import *
 
@@ -472,10 +472,10 @@ def _validate_sol_call_budget(
 
 __all__ = (
     "SOL_REVIEW_CANDIDATE_BUDGET",
-    "_validate_sol_call_budget",
-    "_sol_validation_error_count",
-    "_sol_attempt_capacity",
     "_can_retry_sol_validation",
+    "_sol_attempt_capacity",
+    "_sol_validation_error_count",
+    "_validate_sol_call_budget",
     "partition_luna_inputs",
     "plan_luna_reviewers",
     "select_luna_tasks",

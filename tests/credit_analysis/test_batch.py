@@ -8,7 +8,8 @@ import json
 import os
 import pathlib
 import subprocess
-from typing import Any, Mapping
+from collections.abc import Mapping
+from typing import Any
 
 import pytest
 
@@ -664,9 +665,13 @@ def test_credit_analysis_batch_resumes_and_preserves_every_thread_finding(
         collector = workflow._load_evidence_collector()
         collect = collector.collect_session_evidence_from_rows
         for index, overread_session in enumerate((sessions[0], sessions[-1])):
-            def overread(*args: Any, **kwargs: Any) -> dict[str, Any]:
+            def overread(
+                *args: Any,
+                _expected_session: pathlib.Path = overread_session,
+                **kwargs: Any,
+            ) -> dict[str, Any]:
                 result = collect(*args, **kwargs)
-                if pathlib.Path(kwargs["session"]) == overread_session:
+                if pathlib.Path(kwargs["session"]) == _expected_session:
                     result["collection"]["session_reads"] = 2
                 return result
 

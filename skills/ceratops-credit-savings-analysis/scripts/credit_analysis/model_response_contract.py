@@ -48,7 +48,7 @@ def _holistic_restore_alias_value(value: Any, aliases: Mapping[str, str]) -> Any
             if alias in result:
                 result = re.sub(
                     rf"(?<![\w.-]){re.escape(alias)}(?![\w-]|\.[\w-])",
-                    lambda _: aliases[alias], result,
+                    lambda _, replacement=aliases[alias]: replacement, result,
                 )
         return result
     return value
