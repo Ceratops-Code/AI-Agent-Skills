@@ -236,6 +236,7 @@ def test_skill_sections_template_contains_no_live_repository_inventory() -> None
         "sections": {"core": "skills/sections/core.md"},
         "maintenance_workflows": {},
         "runtime_payloads": {},
+        "python_runtime_skills": [],
         "skills": {},
         "actions": {},
     }

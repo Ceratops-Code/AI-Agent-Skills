@@ -205,6 +205,7 @@ def write_manifest(repo: pathlib.Path, source_id: str) -> None:
         "runtime_source_id": source_id,
         "validation_profile": "ceratops-compatible",
         "sections": {"core": "skills/sections/core.md"},
+        "python_runtime_skills": [],
         "skills": {name: ["core"] for name in skill_names},
     }
     (repo / "skills" / "skill-sections.json").write_text(
