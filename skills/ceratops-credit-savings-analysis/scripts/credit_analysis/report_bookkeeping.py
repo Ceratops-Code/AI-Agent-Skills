@@ -10,6 +10,7 @@ from __future__ import annotations
 import copy
 from typing import Any, Mapping, Sequence
 
+from .model_input_preparation import FINAL_ADJUDICATION_FIELDS
 from .single_thread_analysis import CreditAnalysisError
 
 
@@ -581,3 +582,192 @@ def _holistic_category_reviews(
                 raise CreditAnalysisError(f"helper category {category} dropped supported applicability")
         normalized.append({**summary, "source_reviews": sources})
     return normalized
+
+
+def _candidate_disposition(finding_ids: Sequence[str], risk_ids: Sequence[str]) -> str:
+    """Derive one primary outcome from the candidate's linked judgments."""
+    if finding_ids:
+        return "confirmed-finding"
+    if risk_ids:
+        return "plausible-risk"
+    return "dismissed-candidate"
+
+
+def _assemble_final_transport(
+    delta: Mapping[str, Any], packet: Mapping[str, Any]
+) -> dict[str, list[dict[str, Any]]]:
+    """Carry accepted judgments into the final transport without asking Sol to copy them.
+
+    The final model may judge candidates lacking an accepted decision and revise
+    only the supplied deep-review findings. Existing candidate links remain
+    authoritative. Exact duplicate outcomes are merged with their evidence;
+    semantic differences remain separate for ordinary result validation.
+    """
+    prior = list(packet["prior_adjudication_results"])
+    recovery = packet.get("recovery_result")
+    sources = [*prior, *([recovery] if isinstance(recovery, Mapping) else [])]
+    candidate_order = list(packet["luna_candidate_ids"])
+    calls = [str(row[1]) for row in packet["call_inventory"]["rows"]]
+    call_position = {call_id: index for index, call_id in enumerate(calls)}
+    workstream_by_call = {
+        str(row[1]): str(row[2]) for row in packet["call_inventory"]["rows"]
+    }
+    decisions = {
+        str(item["luna_candidate_id"]): copy.deepcopy(dict(item))
+        for result in sources
+        for item in result["candidate_decisions"]
+    }
+    missing = set(candidate_order) - set(decisions)
+    new_decisions = list(delta["candidate_decisions"])
+    submitted = [str(item["luna_candidate_id"]) for item in new_decisions]
+    if set(submitted) != missing or len(submitted) != len(set(submitted)):
+        raise CreditAnalysisError("final Sol did not judge each new candidate exactly once")
+    for item in new_decisions:
+        finding_ids = list(item["finding_ids"])
+        risk_ids = list(item["risk_ids"])
+        decisions[str(item["luna_candidate_id"])] = {
+            **item,
+            "disposition": _candidate_disposition(finding_ids, risk_ids),
+        }
+    if set(decisions) != set(candidate_order):
+        raise CreditAnalysisError("final candidate inventory differs from accepted reviews")
+
+    def indexed_outcomes(key: str) -> dict[str, dict[str, Any]]:
+        indexed: dict[str, dict[str, Any]] = {}
+        for source in sources:
+            for item in source[key]:
+                identity = str(item["id"])
+                if identity in indexed and indexed[identity] != item:
+                    raise CreditAnalysisError(f"accepted {key} ID is conflicting: {identity}")
+                indexed[identity] = copy.deepcopy(dict(item))
+        return indexed
+
+    findings = indexed_outcomes("confirmed_findings")
+    reviewed_findings = {
+        str(item["finding_id"]) for item in packet["deep_review_evidence"]
+    }
+    for item in delta["confirmed_findings"]:
+        identity = str(item["id"])
+        if identity in findings:
+            if identity not in reviewed_findings:
+                raise CreditAnalysisError("final Sol revised a finding outside deep review")
+            original = findings[identity]
+            updated = copy.deepcopy(dict(item))
+            for field in ("affected_call_ids", "evidence_refs"):
+                updated[field] = list(dict.fromkeys([*original[field], *updated[field]]))
+            findings[identity] = {**original, **updated}
+        else:
+            findings[identity] = copy.deepcopy(dict(item))
+    risks = indexed_outcomes("plausible_risks")
+    for item in delta["plausible_risks"]:
+        identity = str(item["id"])
+        if identity in risks:
+            raise CreditAnalysisError("final Sol restated an accepted risk")
+        risks[identity] = copy.deepcopy(dict(item))
+
+    def dedupe_outcomes(
+        records: Mapping[str, Mapping[str, Any]], key: str
+    ) -> tuple[list[dict[str, Any]], dict[str, str]]:
+        merged: dict[tuple[Any, ...], dict[str, Any]] = {}
+        redirects: dict[str, str] = {}
+        for item in records.values():
+            item = copy.deepcopy(dict(item))
+            workstream = str(item.get("workstream") or workstream_by_call[item["affected_call_ids"][0]])
+            if key == "confirmed_findings":
+                identity = (
+                    item["producer_owner"], item["proposed_durable_control"],
+                    item["problem_summary"], item["waste_kind"],
+                    item["implementation_status"], workstream,
+                )
+            else:
+                identity = (
+                    item["description"], item["missing_fact"],
+                    tuple(item["verification_needed"]), workstream,
+                )
+            if identity not in merged:
+                merged[identity] = item
+                continue
+            target = merged[identity]
+            redirects[str(item["id"])] = str(target["id"])
+            for field in ("affected_call_ids", "evidence_refs"):
+                target[field] = list(dict.fromkeys([*target[field], *item[field]]))
+        values = list(merged.values())
+        for item in values:
+            item["affected_call_ids"].sort(key=call_position.__getitem__)
+        return values, redirects
+
+    merged_findings, finding_redirects = dedupe_outcomes(findings, "confirmed_findings")
+    merged_risks, risk_redirects = dedupe_outcomes(risks, "plausible_risks")
+
+    def redirected(values: Sequence[str], redirects: Mapping[str, str]) -> list[str]:
+        return list(dict.fromkeys(redirects.get(str(value), str(value)) for value in values))
+
+    ordered_decisions = []
+    for candidate_id in candidate_order:
+        decision = decisions[candidate_id]
+        decision["finding_ids"] = redirected(decision["finding_ids"], finding_redirects)
+        decision["risk_ids"] = redirected(decision["risk_ids"], risk_redirects)
+        ordered_decisions.append(decision)
+
+    reviews = indexed_outcomes("temporary_control_reviews")
+    for item in delta["temporary_control_reviews"]:
+        identity = str(item["id"])
+        if identity in reviews:
+            raise CreditAnalysisError("final Sol restated an accepted temporary-control review")
+        reviews[identity] = copy.deepcopy(dict(item))
+    for item in reviews.values():
+        if item["finding_id"] is not None:
+            item["finding_id"] = finding_redirects.get(str(item["finding_id"]), str(item["finding_id"]))
+
+    merges: dict[tuple[str, str], dict[str, Any]] = {}
+    for source in [*sources, delta]:
+        for item in source["temporary_control_merges"]:
+            key = (str(item["owning_producer"]), str(item["control_key"]))
+            finding_id = finding_redirects.get(str(item["finding_id"]), str(item["finding_id"]))
+            if key not in merges:
+                merges[key] = {**item, "finding_id": finding_id}
+            elif merges[key]["finding_id"] != finding_id:
+                raise CreditAnalysisError("final temporary-control merge has conflicting findings")
+            else:
+                merges[key]["review_ids"] = list(dict.fromkeys([
+                    *merges[key]["review_ids"], *item["review_ids"]
+                ]))
+
+    classifications: dict[str, dict[str, Any]] = {}
+    for source in [*sources, delta]:
+        for group in source["call_classifications"]:
+            detail = {key: value for key, value in group.items() if key not in {"call_ids", "workstream"}}
+            for call_id in group["call_ids"]:
+                classifications[str(call_id)] = copy.deepcopy(detail)
+    if set(classifications) != set(calls):
+        raise CreditAnalysisError("final call classifications do not cover routed calls")
+    groups: list[dict[str, Any]] = []
+    for call_id in calls:
+        detail = classifications[call_id]
+        if groups and all(groups[-1].get(key) == value for key, value in detail.items()):
+            groups[-1]["call_ids"].append(call_id)
+        else:
+            groups.append({"call_ids": [call_id], **detail})
+
+    assembled = {
+        "candidate_decisions": ordered_decisions,
+        "confirmed_findings": merged_findings,
+        "plausible_risks": merged_risks,
+        "temporary_control_reviews": list(reviews.values()),
+        "temporary_control_merges": list(merges.values()),
+        "helper_category_reviews": [],
+        "call_classifications": groups,
+    }
+    transport = {
+        key: [
+            {field: item[field] for field in FINAL_ADJUDICATION_FIELDS[key] if field in item}
+            for item in items
+        ]
+        for key, items in assembled.items()
+    }
+    for item in transport["confirmed_findings"]:
+        item["recurrence"] = {
+            key: value for key, value in item["recurrence"].items()
+            if key != "estimated_calls_saved_per_similar_run"
+        }
+    return transport

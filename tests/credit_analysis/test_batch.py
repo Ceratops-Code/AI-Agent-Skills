@@ -42,7 +42,7 @@ from tests.credit_analysis.workflow import run_credit_analysis_workflow
         ("instruction-reasoning", None),
         *[("full-analysis", case) for case in (
             "estimate", "final-estimate", "temporary-roi", "withdraw", "withdraw-temporary",
-            "conflict", "retained-conflict", "protected", "foreign-call", "malformed",
+            "conflict", "retained-estimate", "protected", "foreign-call", "malformed",
         )],
     ],
 )
@@ -85,7 +85,6 @@ def test_credit_analysis_workflow_each_surface_is_independently_callable(
         call["prompt"] for call in runner.calls if call["phase"] == "sol-adjudication"
     )
     final_call = next(call for call in runner.calls if call["phase"] == "sol-final")
-    assert "not emit helper-category reviews" in final_call["prompt"]
     assert final_call["schema"]["properties"]["helper_category_reviews"][
         "description"
     ].startswith("Return an empty array.")
@@ -970,21 +969,43 @@ def _exercise_corrective_cli(
             self.dismissed_finding: str | None = None
             self.dismissed_source: dict[str, Any] | None = None
 
+        @staticmethod
+        def _final(packet: Mapping[str, Any]) -> dict[str, Any]:
+            result = FakeCreditModelRunner._final(packet)
+            if defect in {"final-estimate", "retained-estimate", "protected"}:
+                reviewed = {item["finding_id"] for item in packet["deep_review_evidence"]}
+                assert reviewed.intersection({item["id"] for item in result["confirmed_findings"]}), (
+                    sorted(reviewed), [item["id"] for item in result["confirmed_findings"]],
+                )
+                for finding in result["confirmed_findings"]:
+                    if finding["id"] in reviewed:
+                        finding["targeted_verification"] = [
+                            *finding["targeted_verification"],
+                            "Check the supplied final evidence.",
+                        ]
+            return result
+
         def run(self, **kwargs: Any) -> dict[str, Any]:
             raw = super().run(**kwargs)
             task = kwargs["task"]
-            phase = "sol-adjudication" if defect in {"foreign-call", "withdraw", "withdraw-temporary"} else "sol-final"
+            phase = "sol-final" if defect in {"final-estimate", "retained-estimate", "protected"} else "sol-adjudication"
             eligible = True
-            if defect in {"withdraw", "withdraw-temporary"}:
-                eligible = sum(item["waste_kind"] == "model-calls" for item in raw.get("confirmed_findings", [])) >= 2
+            if defect not in {"foreign-call", "malformed"}:
+                minimum = 1 if phase == "sol-final" or defect == "temporary-roi" else 2
+                eligible = sum(item["waste_kind"] == "model-calls" for item in raw.get("confirmed_findings", [])) >= minimum
                 if defect == "withdraw-temporary":
                     eligible = eligible and any(item["id"].endswith("temporary-control-gap") for item in raw.get("confirmed_findings", []))
+                if defect == "temporary-roi":
+                    eligible = eligible and any(item["finding_id"] is None for item in raw.get("temporary_control_reviews", []))
             if task["phase"] == phase and self.target is None and eligible:
                 self.target = task["task_id"]
             if task["task_id"] != self.target:
                 return raw
             findings = [item for item in raw["confirmed_findings"] if item["waste_kind"] == "model-calls"]
-            assert len(findings) >= (1 if defect == "foreign-call" else 2)
+            assert len(findings) >= (1 if defect in {"foreign-call", "malformed", "final-estimate", "retained-estimate", "protected", "temporary-roi"} else 2), (
+                [item["finding_id"] for item in kwargs["input_payload"].get("deep_review_evidence", [])],
+                [item["id"] for item in raw["confirmed_findings"]],
+            )
             selected = next((item for item in findings if item["id"].endswith("temporary-control-gap")), findings[0]) if defect == "withdraw-temporary" else findings[0]
             if not self.responses:
                 if defect == "foreign-call":
@@ -996,7 +1017,7 @@ def _exercise_corrective_cli(
                     raw["call_classifications"][0]["call_ids"].append(foreign)
                 elif defect == "malformed":
                     raw["call_classifications"] = None
-                elif defect in {"conflict", "retained-conflict"}:
+                elif defect == "conflict":
                     groups = []
                     for group in raw["call_classifications"]:
                         for identity in group["call_ids"]:
@@ -1025,7 +1046,7 @@ def _exercise_corrective_cli(
                         justifies_maintenance=True,
                     )
                 else:
-                    targets = findings[:2] if defect in {"estimate", "final-estimate"} else [selected]
+                    targets = findings[:2] if defect == "estimate" else [selected]
                     for finding in targets:
                         recurrence = finding["recurrence"]
                         recurrence["additional_recurring_calls_per_affected_run"] = recurrence["calls_saved_per_affected_run"] + 1
@@ -1048,7 +1069,6 @@ def _exercise_corrective_cli(
                     for decision in raw["candidate_decisions"]:
                         if self.withdrawn in decision["finding_ids"]:
                             decision["finding_ids"].remove(self.withdrawn)
-                            decision["disposition"] = "confirmed-finding" if decision["finding_ids"] else "plausible-risk" if decision["risk_ids"] else "dismissed-candidate"
                             decision["reason"] = withdrawal_reason
                     for review in raw["temporary_control_reviews"]:
                         if review["finding_id"] == self.withdrawn:
@@ -1056,12 +1076,12 @@ def _exercise_corrective_cli(
                             review["no_finding_reason"] = "Positive savings remain unconfirmed."
                     raw["temporary_control_merges"] = [item for item in raw["temporary_control_merges"] if item["finding_id"] != self.withdrawn]
                 elif defect == "protected":
-                    other = next(item for item in findings if item["id"] != selected["id"])
+                    other = selected
                     self.responses.append(copy.deepcopy(raw))
                     return {"baseline_sha256": kwargs["schema"]["properties"]["baseline_sha256"]["const"],
-                            "edits": [{"path": f"/confirmed_findings/{raw['confirmed_findings'].index(other)}/recurrence",
-                                       "value": {**other["recurrence"], "calls_saved_per_affected_run": 99}}]}
-                elif defect in {"conflict", "retained-conflict"}:
+                            "edits": [{"path": f"/confirmed_findings/{raw['confirmed_findings'].index(other)}/problem_summary",
+                                       "value": "Changed outside the correction scope."}]}
+                elif defect in {"conflict", "retained-estimate"}:
                     selected["problem_summary"] += " unrelated prose drift"
                 elif defect == "estimate":
                     # Regrouping carries no new judgment and must not break repair.
@@ -1083,7 +1103,7 @@ def _exercise_corrective_cli(
     monkeypatch.setattr(execution, "_holistic_model_attempt", model_boundary)
     corrective_prompt = execution._corrective_prompt
     corrected_response = execution._corrected_response
-    if defect == "retained-conflict":
+    if defect == "retained-estimate":
         def recorded_full_prompt(**kwargs: Any) -> Any:
             prompt, _ = corrective_prompt(**kwargs)
             return prompt, kwargs["schema_path"]
@@ -1110,12 +1130,14 @@ def _exercise_corrective_cli(
     with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
         exit_code = workflow.main(["execute", "--state", str(state_path)])
     saved = json.loads(state_path.read_text(encoding="utf-8"))
-    assert runner.target is not None
+    assert runner.target is not None, (
+        errors.getvalue(), [item["phase"] for item in runner.calls],
+    )
     target = saved["execution"][runner.target]
     attempts = target["attempts"]
-    if defect == "retained-conflict":
+    if defect == "retained-estimate":
         assert exit_code != 0
-        assert attempts[-1]["outcome"] == "validation-error"
+        assert attempts[-1]["outcome"] == "validation-error", attempts[-1].get("error")
         assert "protected response field" in attempts[-1]["error"]
         retained = {item["artifacts"]["raw_output"]["path"]: pathlib.Path(item["artifacts"]["raw_output"]["path"]).read_bytes()
                     for item in attempts}
@@ -1142,6 +1164,11 @@ def _exercise_corrective_cli(
         assert len(runner.calls) == calls_before
         assert saved["model_attempts"] == budget_before
         assert target["attempts"] == attempts
+        assert target["result"] is not None, (
+            target["status"],
+            [(item["outcome"], item.get("error")) for item in target["attempts"]],
+            errors.getvalue(),
+        )
         assert target["result"]["recovered_without_model_call"] is True
         assert all(pathlib.Path(path).read_bytes() == value for path, value in retained.items())
     assert len(attempts) == 2, (errors.getvalue(), attempts)
@@ -1160,13 +1187,13 @@ def _exercise_corrective_cli(
         response_schema = execution._current_response_schema(saved, task, attempts[0]["input_sha256"])
         assert response_correction_scope(zero_savings, response_schema, 30)["invalid_recurrence_finding_ids"] == []
         assert set(response_correction_scope(zero_savings, response_schema, 40)["invalid_recurrence_finding_ids"]) == zero_finding_ids
-    if defect in {"estimate", "final-estimate"}:
-        assert len(scope["invalid_recurrence_finding_ids"]) == 2
+    if defect in {"estimate", "final-estimate", "retained-estimate"}:
+        assert len(scope["invalid_recurrence_finding_ids"]) == (2 if defect == "estimate" else 1)
     if defect == "temporary-roi":
         assert scope["invalid_temporary_control_review_ids"] == [
             runner.dismissed_review
         ]
-    if defect in {"conflict", "retained-conflict"}:
+    if defect == "conflict":
         assert len(scope["conflicting_call_finding_ids"]) >= 1
     if defect == "protected":
         assert attempts[1]["outcome"] == "validation-error"
@@ -1174,9 +1201,12 @@ def _exercise_corrective_cli(
         assert target["status"] == "pending"
         assert exit_code != 0
     else:
-        assert attempts[1]["outcome"] == ("validation-error" if defect == "retained-conflict" else "accepted"), attempts[1].get("error")
+        assert attempts[1]["outcome"] == ("validation-error" if defect == "retained-estimate" else "accepted"), attempts[1].get("error")
         accepted = json.loads(pathlib.Path(target["result"]["path"]).read_text(encoding="utf-8"))
-        assert len(accepted["candidate_decisions"]) == len(runner.responses[0]["candidate_decisions"])
+        if runner.target == "sol.final":
+            assert len(accepted["candidate_decisions"]) > len(runner.responses[0]["candidate_decisions"])
+        else:
+            assert len(accepted["candidate_decisions"]) == len(runner.responses[0]["candidate_decisions"])
         if defect == "temporary-roi":
             assert runner.dismissed_source is not None
             assert runner.dismissed_finding in {
@@ -1189,9 +1219,7 @@ def _exercise_corrective_cli(
                 == runner.dismissed_source["observed_temporary_control"]
             )
             assert review["finding_id"] is None
-            assert review["disposition"] == runner.dismissed_source["disposition"]
-            assert review["owning_producer"] == runner.dismissed_source["owning_producer"]
-            assert review["no_finding_reason"] == runner.dismissed_source["no_finding_reason"]
+            assert review["no_finding_reason"]
             assert all(
                 review["id"] not in merge["review_ids"]
                 for merge in accepted["temporary_control_merges"]
@@ -1207,19 +1235,29 @@ def _exercise_corrective_cli(
                 for item in accepted["temporary_control_reviews"]
             )
             assert all(len(item["rationale"]) <= 240 for item in accepted["call_classifications"])
-        if defect in {"conflict", "retained-conflict"}:
+        if defect in {"conflict", "retained-estimate"}:
             summaries = {item["id"]: item["problem_summary"] for item in runner.responses[0]["confirmed_findings"]}
-            assert all(item["problem_summary"] == summaries[item["id"]] for item in accepted["confirmed_findings"])
+            assert summaries
+            assert all(
+                item["problem_summary"] == summaries[item["id"]]
+                for item in accepted["confirmed_findings"] if item["id"] in summaries
+            )
             task = analysis._holistic_task_map(saved["manifest"])[runner.target]
             full_schema = execution._current_response_schema(saved, task, attempts[0]["input_sha256"])
             prior = runner.responses[0]
             edit_schema = correction_response_schema(prior, full_schema)
             patch = project_response_correction(prior, runner.responses[1], edit_schema)
-            assert patch["edits"] and all("call_id" in edit for edit in patch["edits"])
+            assert patch["edits"] and all(
+                ("call_id" if defect == "conflict" else "path") in edit
+                for edit in patch["edits"]
+            )
             unchanged_inputs = copy.deepcopy((prior, patch))
             repaired = apply_response_correction(prior, patch, full_schema)
             assert (prior, patch) == unchanged_inputs
-            assert repaired["confirmed_findings"] == prior["confirmed_findings"]
+            if defect == "conflict":
+                assert repaired["confirmed_findings"] == prior["confirmed_findings"]
+            else:
+                assert repaired["confirmed_findings"][0]["problem_summary"] == prior["confirmed_findings"][0]["problem_summary"]
             with pytest.raises(workflow.CreditAnalysisError, match="frozen constant"):
                 apply_response_correction(prior, {**patch, "baseline_sha256": "0" * 64}, full_schema)
             with pytest.raises(workflow.CreditAnalysisError, match="duplicate edit targets"):

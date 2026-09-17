@@ -171,8 +171,8 @@ The controller separates high-recall discovery from higher-precision review:
 3. Sol reviewers adjudicate disjoint, frozen groups of Luna output. An optional
    focused recovery or direct-evidence review may run when deterministic signals
    and the call budget permit it.
-4. A dependent final Sol call merges judgments, ranks and expands the strongest
-   findings, and supplies synthesis text.
+4. A dependent final Sol call judges new candidates and deeply reviews the
+   strongest findings; code ranks and assembles the result.
 5. Deterministic code copies the complete accepted finding, risk, temporary
    control, classification, and evidence records into the final result. The
    final model is not responsible for reproducing those records.
@@ -239,8 +239,8 @@ validate request and contract
         -> freeze Sol routing and exact byte allowances
         -> run Sol reviewers in parallel
         -> optionally run focused recovery or direct-evidence review
-        -> run dependent final Sol synthesis
-        -> copy accepted source records and reconcile call accounting
+        -> ask final Sol only about new candidates and the selected top findings
+        -> copy accepted judgments, apply revisions, and reconcile call accounting
         -> write machine result and compact report
         -> mark state complete
 ```
@@ -253,7 +253,13 @@ of any run-local rules that differ from the primary rule chain.
 
 Every retained model candidate receives one disposition. Every selected model
 call receives a reviewed classification or remains explicitly unassessed. A
-context-volume finding may be retained even when it saves no calls and is not
+final Sol response contains only judgments missing from accepted earlier
+reviews and evidence-backed revisions to the supplied top findings. The
+controller carries earlier decisions and outcome records into the final result;
+the model does not restate them. Code derives each candidate's disposition
+from its finding and risk links.
+
+A context-volume finding may be retained even when it saves no calls and is not
 included in call-savings arithmetic. A model-call finding must meet the skill's
 3% floor, rounded down against the frozen source-thread call count; this floor
 allows zero recurring savings for threads with fewer than 34 source calls.

@@ -21,6 +21,165 @@ from tests.credit_analysis.sessions import (
 from tests.support.repositories import run_git
 
 
+def test_final_assembly_keeps_accepted_decisions_and_derives_new_one() -> None:
+    load_credit_analysis_workflow_module()
+    from credit_analysis.report_bookkeeping import _assemble_final_transport
+    from credit_analysis.single_thread_analysis import CreditAnalysisError
+
+    prior = {
+        "candidate_decisions": [{
+            "luna_candidate_id": "old", "disposition": "dismissed-candidate",
+            "reason": "Required work", "evidence_refs": ["e1"],
+            "finding_ids": [], "risk_ids": [],
+        }],
+        "confirmed_findings": [], "plausible_risks": [],
+        "temporary_control_reviews": [], "temporary_control_merges": [],
+        "helper_category_reviews": [],
+        "call_classifications": [{
+            "call_ids": ["c1", "c2"], "classification": "necessary",
+            "reason_code": "required_for_task", "rationale": "Required work",
+            "evidence_refs": ["e1"], "workstream": "producer",
+        }],
+    }
+    packet = {
+        "luna_candidate_ids": ["old", "new"],
+        "call_inventory": {"rows": [["x", "c1", "producer"], ["x", "c2", "producer"]]},
+        "prior_adjudication_results": [prior],
+        "recovery_result": None,
+        "deep_review_evidence": [],
+    }
+    delta = {
+        "candidate_decisions": [{
+            "luna_candidate_id": "new", "reason": "Possible repeated call",
+            "evidence_refs": ["e2"], "finding_ids": [], "risk_ids": ["risk-1"],
+        }],
+        "confirmed_findings": [],
+        "plausible_risks": [{
+            "id": "risk-1", "description": "Possible repeated call",
+            "affected_call_ids": ["c2"], "evidence_refs": ["e2"],
+            "competing_explanations": ["The call may be needed"],
+            "missing_fact": "Whether state changed", "verification_needed": ["Check state"],
+        }],
+        "temporary_control_reviews": [], "temporary_control_merges": [],
+        "helper_category_reviews": [], "call_classifications": [],
+    }
+    assembled = _assemble_final_transport(delta, packet)
+    assert [item["disposition"] for item in assembled["candidate_decisions"]] == [
+        "dismissed-candidate", "plausible-risk",
+    ]
+    assert assembled["candidate_decisions"][0]["risk_ids"] == []
+    assert assembled["plausible_risks"][0]["id"] == "risk-1"
+    assert assembled["call_classifications"][0]["call_ids"] == ["c1", "c2"]
+
+    # The saved failure was a restated dismissed candidate with a stray risk ID.
+    contradictory = {**delta, "candidate_decisions": [
+        *delta["candidate_decisions"],
+        {"luna_candidate_id": "old", "reason": "Required work",
+         "evidence_refs": ["e1"], "finding_ids": [], "risk_ids": ["risk-1"]},
+    ]}
+    with pytest.raises(CreditAnalysisError, match="new candidate exactly once"):
+        _assemble_final_transport(contradictory, packet)
+
+
+def test_final_schema_accepts_only_new_candidate_judgments() -> None:
+    workflow = load_credit_analysis_workflow_module()
+    from credit_analysis.model_response_contract import build_sol_schema
+
+    schema = build_sol_schema(
+        contract=workflow._load_contract(),
+        luna_aliases=["l0001", "l0002"],
+        call_aliases=["c0001"],
+        evidence_aliases=["e0001"],
+        final_synthesis=True,
+        final_decision_aliases=["l0002"],
+    )
+    decisions = schema["properties"]["candidate_decisions"]
+    assert decisions["minItems"] == decisions["maxItems"] == 1
+    fields = decisions["items"]["properties"]
+    assert fields["luna_candidate_id"]["enum"] == ["l0002"]
+    assert "disposition" not in fields
+    shard = build_sol_schema(
+        contract=workflow._load_contract(),
+        luna_aliases=["l0001"], call_aliases=["c0001"],
+        evidence_aliases=["e0001"],
+    )
+    assert "disposition" not in shard["properties"]["candidate_decisions"]["items"]["properties"]
+
+
+def test_restored_aliases_keep_identifier_boundaries_after_split() -> None:
+    load_credit_analysis_workflow_module()
+    from credit_analysis.model_response_contract import _holistic_restore_alias_value
+
+    restored = _holistic_restore_alias_value(
+        {"id": "l0007", "text": "l0007 and xl0007 and l0007.suffix"},
+        {"l0007": "luna.source.0007"},
+    )
+    assert restored == {
+        "id": "luna.source.0007",
+        "text": "luna.source.0007 and xl0007 and l0007.suffix",
+    }
+
+
+def test_final_assembly_merges_exact_prior_findings_without_model_copy() -> None:
+    load_credit_analysis_workflow_module()
+    from credit_analysis.report_bookkeeping import _assemble_final_transport
+
+    def source(candidate: str, call: str, finding_id: str) -> dict[str, Any]:
+        return {
+            "candidate_decisions": [{
+                "luna_candidate_id": candidate, "disposition": "confirmed-finding",
+                "reason": "Repeated call", "evidence_refs": [f"e-{call}"],
+                "finding_ids": [finding_id], "risk_ids": [],
+            }],
+            "confirmed_findings": [{
+                "id": finding_id, "producer_owner": "same owner",
+                "proposed_durable_control": "same control",
+                "problem_summary": "same problem", "waste_kind": "model-calls",
+                "implementation_status": "unimplemented", "workstream": "producer",
+                "affected_call_ids": [call], "evidence_refs": [f"e-{call}"],
+                "recurrence": {"calls_saved_per_affected_run": 1},
+            }],
+            "plausible_risks": [], "temporary_control_reviews": [],
+            "temporary_control_merges": [], "helper_category_reviews": [],
+            "call_classifications": [{
+                "call_ids": [call], "classification": "avoidable_unimplemented",
+                "reason_code": None, "rationale": "Repeated call",
+                "evidence_refs": [f"e-{call}"], "workstream": "producer",
+            }],
+        }
+
+    packet = {
+        "luna_candidate_ids": ["l1", "l2"],
+        "call_inventory": {"rows": [["x", "c1", "producer"], ["x", "c2", "producer"]]},
+        "prior_adjudication_results": [source("l1", "c1", "f1"), source("l2", "c2", "f2")],
+        "recovery_result": None, "deep_review_evidence": [],
+    }
+    delta = {key: [] for key in (
+        "candidate_decisions", "confirmed_findings", "plausible_risks",
+        "temporary_control_reviews", "temporary_control_merges",
+        "helper_category_reviews", "call_classifications",
+    )}
+    assembled = _assemble_final_transport(delta, packet)
+    assert len(assembled["confirmed_findings"]) == 1
+    assert assembled["confirmed_findings"][0]["affected_call_ids"] == ["c1", "c2"]
+    assert [decision["finding_ids"] for decision in assembled["candidate_decisions"]] == [
+        ["f1"], ["f1"],
+    ]
+
+    packet["deep_review_evidence"] = [{"finding_id": "f1"}]
+    revision = {
+        **packet["prior_adjudication_results"][0]["confirmed_findings"][0],
+        "problem_summary": "More precise problem",
+        "affected_call_ids": ["c2"], "evidence_refs": ["e-c2"],
+    }
+    revised = _assemble_final_transport(
+        {**delta, "confirmed_findings": [revision]}, packet
+    )
+    assert revised["confirmed_findings"][0]["problem_summary"] == "More precise problem"
+    assert revised["confirmed_findings"][0]["affected_call_ids"] == ["c1", "c2"]
+    assert revised["confirmed_findings"][0]["evidence_refs"] == ["e-c1", "e-c2"]
+
+
 @pytest.mark.parametrize("outcome", ["success", "failure", "interruption"])
 def test_completion_checkpoint_precedes_slow_sibling_and_replays(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch, outcome: str,
@@ -1697,31 +1856,17 @@ def test_credit_analysis_workflow_end_to_end_uses_sharded_semantic_calls(
     )
     capped_state_path = pathlib.Path(capped_plan["state_path"])
 
-    class MergedRiskRunner(FakeCreditModelRunner):
-        @staticmethod
-        def _final(packet: Mapping[str, Any]) -> dict[str, Any]:
-            result = FakeCreditModelRunner._final(packet)
-            risk = result["plausible_risks"][0]
-            original_id = risk["id"]
-            risk["id"] = "merged-prior-risks"
-            risk["description"] = "The prior risks have been consolidated and rewritten."
-            for decision in result["candidate_decisions"]:
-                decision["risk_ids"] = [
-                    risk["id"] if item == original_id else item for item in decision["risk_ids"]
-                ]
-            return result
-
-    capped_runner = MergedRiskRunner()
+    capped_runner = FakeCreditModelRunner()
     current_validator = workflow._validate_holistic_task_result
 
     def previous_validator(raw: Mapping[str, Any], **kwargs: Any) -> dict[str, Any]:
         if kwargs["task"]["phase"] == "sol-final":
-            raise workflow.CreditAnalysisError("simulated prior-risk preservation failure")
+            raise workflow.CreditAnalysisError("simulated final-result validation failure")
         return current_validator(raw, **kwargs)
 
     with monkeypatch.context() as patch:
         patch.setattr(workflow, "_validate_holistic_task_result", previous_validator)
-        with pytest.raises(workflow.CreditAnalysisError, match="simulated prior-risk preservation failure"):
+        with pytest.raises(workflow.CreditAnalysisError, match="simulated final-result validation failure"):
             workflow.command_execute_orchestration(
                 capped_state_path, runner=capped_runner,
                 available_models=capped_runner.available_models,

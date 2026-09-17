@@ -13,6 +13,7 @@ import copy
 import hashlib
 import json
 import math
+import pathlib
 import re
 from collections.abc import Mapping, Sequence
 from typing import Any
@@ -22,10 +23,35 @@ from jsonschema.exceptions import ValidationError
 
 from .single_thread_analysis import (
     HOLISTIC_LUNA_RESULT_SCHEMA,
+    HOLISTIC_SOL_RESULT_SCHEMA,
     HOLISTIC_SOL_TRANSPORT_SCHEMA,
     IDENTIFIER_RE,
     CreditAnalysisError,
 )
+
+
+def _holistic_restore_alias_value(value: Any, aliases: Mapping[str, str]) -> Any:
+    """Restore whole alias tokens without changing result-owned identifiers."""
+
+    if isinstance(value, Mapping):
+        return {
+            str(key): _holistic_restore_alias_value(item, aliases)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_holistic_restore_alias_value(item, aliases) for item in value]
+    if isinstance(value, str):
+        if value in aliases:
+            return aliases[value]
+        result = value
+        for alias in sorted(aliases, key=len, reverse=True):
+            if alias in result:
+                result = re.sub(
+                    rf"(?<![\w.-]){re.escape(alias)}(?![\w-]|\.[\w-])",
+                    lambda _: aliases[alias], result,
+                )
+        return result
+    return value
 
 
 def identifier_schema(
@@ -446,10 +472,11 @@ def _correction_comparison_values(
                 if not isinstance(ids, list) or not withdrawn.intersection(ids):
                     continue
                 decision["finding_ids"] = [identity for identity in ids if identity not in withdrawn]
-                decision["disposition"] = (
-                    "confirmed-finding" if decision["finding_ids"] else
-                    "plausible-risk" if decision.get("risk_ids") else "dismissed-candidate"
-                )
+                if "disposition" in decision:
+                    decision["disposition"] = (
+                        "confirmed-finding" if decision["finding_ids"] else
+                        "plausible-risk" if decision.get("risk_ids") else "dismissed-candidate"
+                    )
                 corrected = current_decisions.get(decision.get("luna_candidate_id"), {})
                 if "reason" in corrected:
                     decision["reason"] = corrected["reason"]
@@ -1092,6 +1119,7 @@ def build_sol_schema(
     call_aliases: Sequence[str],
     evidence_aliases: Sequence[str],
     final_synthesis: bool = False,
+    final_decision_aliases: Sequence[str] = (),
 ) -> dict[str, Any]:
     """Build the one model-facing Sol contract from frozen alias inventories."""
 
@@ -1260,25 +1288,21 @@ def build_sol_schema(
                 "assessments and assembles the final category summaries."
             ),
         )
+    decision_fields = {
+        "luna_candidate_id": {
+            "type": "string",
+            "enum": list(final_decision_aliases) if final_synthesis else list(luna_aliases),
+        },
+        "reason": string(320),
+        "evidence_refs": aliases(evidence_aliases, nonempty=True),
+        "finding_ids": identifiers(),
+        "risk_ids": identifiers(),
+    }
+    decisions = objects(closed(decision_fields))
+    if final_synthesis:
+        decisions.update(minItems=len(final_decision_aliases), maxItems=len(final_decision_aliases))
     properties = {
-        "candidate_decisions": objects(
-            closed(
-                {
-                    "luna_candidate_id": {
-                        "type": "string",
-                        "enum": luna_aliases,
-                    },
-                    "disposition": {
-                        "type": "string",
-                        "enum": contract["adjudication_dispositions"],
-                    },
-                    "reason": string(320),
-                    "evidence_refs": aliases(evidence_aliases, nonempty=True),
-                    "finding_ids": identifiers(),
-                    "risk_ids": identifiers(),
-                }
-            )
-        ),
+        "candidate_decisions": decisions,
         "confirmed_findings": objects(finding),
         "plausible_risks": objects(risk),
         "temporary_control_reviews": objects(temporary_review),
@@ -1329,7 +1353,10 @@ def _holistic_sol_schema(
     verifies the frozen alias record against input_sha256 before binding.
     """
     from .luna_sol_analysis import (
-        _holistic_alias_lookups, _holistic_runtime_task, _routed_call_ids,
+        _holistic_alias_lookups,
+        _holistic_runtime_task,
+        _read_json,
+        _routed_call_ids,
     )
 
     canonical_to_alias, _ = _holistic_alias_lookups(alias_record)
@@ -1340,10 +1367,28 @@ def _holistic_sol_schema(
         call_ids = list(scoped_task["call_ids"])
     else:
         call_ids = _routed_call_ids(state)
+    accepted_decisions: set[str] = set()
+    if task["phase"] == "sol-final":
+        for prior_task in state["manifest"]["sol_tasks"][:-1]:
+            record = state["execution"][prior_task["task_id"]]["result"]
+            if not isinstance(record, Mapping):
+                continue
+            result = _read_json(pathlib.Path(str(record["path"])), "accepted Sol result")
+            if result.get("schema") != HOLISTIC_SOL_RESULT_SCHEMA:
+                continue
+            accepted_decisions.update(
+                str(item["luna_candidate_id"])
+                for item in result["candidate_decisions"]
+            )
     return build_sol_schema(
         contract=contract,
         luna_aliases=[canonical_to_alias[item] for item in luna_candidate_ids],
         call_aliases=[canonical_to_alias[item] for item in call_ids],
         evidence_aliases=list(alias_record["aliases"]["evidence"]),
         final_synthesis=task["phase"] == "sol-final",
+        final_decision_aliases=[
+            canonical_to_alias[item]
+            for item in luna_candidate_ids
+            if item not in accepted_decisions
+        ],
     )

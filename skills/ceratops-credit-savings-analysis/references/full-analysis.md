@@ -91,10 +91,12 @@ Preserve every confirmed finding and report every capacity omission.
    earlier classifications with its validated result. After the parallel
    reviewers and any recovery or direct-evidence review finish, run one
    dependent
-   final Sol. It merges compact judgments, temporary-control reviews,
-   classifications, risks, and ROI inputs; deduplicates likely owner/control
-   identity; and deeply verifies and expands the top three findings without
-   suppressing other confirmed findings. Its helper-category review array stays
+   final Sol. It judges only new direct-evidence candidates and proposes
+   evidence-backed revisions to the supplied top three findings. The controller
+   carries accepted earlier judgments, reviews, classifications, risks, and ROI
+   inputs into the final result and merges identical owner/control findings
+   without suppressing material variants or prior confirmed findings.
+   Its helper-category review array stays
    empty; the controller copies exact accepted reviewer records and assembles
    their final summaries. Before validation, code assigns canonical IDs to
    Sol-owned outcomes and rewrites their internal references. It bounds only

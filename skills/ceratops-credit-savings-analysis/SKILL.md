@@ -109,11 +109,12 @@ retry, recovery, or deployment behavior.
   the unassessed calls with their complete run-part context and replace those
   classifications; prioritize this recovery over optional direct-evidence
   review. After the parallel reviewers and any recovery or direct-evidence
-  review finish, run one dependent final Sol to merge their compact judgments,
-  produce the report, and deeply verify the top three deduplicated owner/control
-  findings against exact evidence. Each rejected Sol task receives one automatic
-  corrective retry when the sixteen-attempt ceiling permits. When the caller
-  requests stop-on-validation-error, run model tasks serially and stop after
+  review finish, run one dependent final Sol to judge candidates without an
+  accepted decision and deeply verify the top three deduplicated owner/control
+  findings against exact evidence. Code carries accepted judgments into the
+  final result and produces the report. Each rejected Sol task receives one
+  automatic corrective retry when the sixteen-attempt ceiling permits. When the
+  caller requests stop-on-validation-error, run model tasks serially and stop after
   the first rejection before another model call. After a non-final
   task fails validation twice, retain its exact unreviewed candidate, call, and
   byte inventory, exclude that inventory from final transport, and continue to
@@ -121,9 +122,10 @@ retry, recovery, or deployment behavior.
   corrective attempts; allow at most sixteen actual Sol invocations including
   initial calls, retries, and corrective attempts. The final Sol does not
   re-adjudicate every candidate or receive the complete source tree.
-- Restore canonical identifiers and derive nonsemantic summaries, ordering,
-  surfaces, workstreams, repeated evidence, final helper-category summaries,
-  and savings arithmetic in code. The final Sol returns an empty
+- Restore canonical identifiers, derive candidate dispositions from finding/risk
+  links, and derive nonsemantic summaries, ordering, surfaces, workstreams,
+  repeated evidence, final helper-category summaries, and savings arithmetic
+  in code. The final Sol returns an empty
   helper-category review array; copy exact accepted reviewer records and
   assemble that section in the controller. Sol adjudicators merge overlaps and
   temporary controls, apply recurrence and ROI rules, and classify source calls

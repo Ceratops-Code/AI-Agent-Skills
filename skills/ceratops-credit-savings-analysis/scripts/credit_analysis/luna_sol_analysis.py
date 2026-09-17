@@ -8,6 +8,7 @@ import re
 from .execution_outcomes import has_failure_telemetry, has_nonzero_process_result
 from .model_response_contract import (
     _holistic_luna_schema,
+    _holistic_restore_alias_value,
     _holistic_sol_schema,
     _validate_holistic_transport_value,
     validate_classification_reason,
@@ -22,6 +23,8 @@ from .source_execution_context import *
 from .orchestration_execution import command_execute_orchestration
 from .report_rendering import _presentation_contract, _render_holistic_report
 from .report_bookkeeping import (
+    _assemble_final_transport,
+    _candidate_disposition,
     _closed_result,
     _holistic_category_reviews,
     _holistic_preserve_finding_sources,
@@ -3998,6 +4001,14 @@ def _holistic_sol_input(
             for record in compact["records"]
         ]
     )
+    accepted_candidate_ids = {
+        decision["luna_candidate_id"]
+        for result in [
+            *adjudication_results,
+            *([recovery_result] if recovery_result is not None else []),
+        ]
+        for decision in result["candidate_decisions"]
+    }
     canonical_payload = {
         "schema": HOLISTIC_TASK_SCHEMA,
         "analysis_id": state["analysis_id"],
@@ -4015,7 +4026,14 @@ def _holistic_sol_input(
             else {}
         ),
         "luna_results": (
-            luna_results if task["phase"] == "sol-adjudication" else []
+            luna_results if task["phase"] == "sol-adjudication" else [
+                result for result in luna_results
+                if result["task_id"] in routed_luna_task_ids
+                and any(
+                    candidate["id"] not in accepted_candidate_ids
+                    for candidate in result["candidates"]
+                )
+            ]
         ),
         "luna_candidate_ids": [candidate["id"] for candidate in candidates],
         "candidate_original_evidence": (
@@ -4353,7 +4371,8 @@ traceable, but do not reconsider calls already classified by the preliminary
 reviewers. Replace each target call's preliminary `unassessed` classification
 with the strongest evidence-supported classification. Preserve `unassessed` only
 for a remaining decision-blocking gap. Return the ordinary adjudication fields
-without an analysis summary or surface summaries.
+without an analysis summary or surface summaries. Link each candidate to its
+findings or risks and give a reason; the controller derives its disposition.
 """
     elif task["phase"] == "sol-adjudication":
         instructions = f"""
@@ -4362,7 +4381,9 @@ exactly once ({len(luna_candidate_ids)} total) from its hypothesis and embedded
 evidence references. Do not independently re-read the source evidence. Review
 every supplied surface section in its fixed order,
 merge overlapping findings once by owning producer/control, and preserve every
-confirmed finding. Perform the mandatory temporary-control review for every
+confirmed finding. Give each candidate its finding/risk links and a reason;
+empty links dismiss it, and the controller derives its disposition. Perform the
+mandatory temporary-control review for every
 temporary-control candidate, using exactly one allowed disposition; transient
 work is not automatically defective, and a permanent recommendation requires
 likely recurrence plus positive maintenance-adjusted savings. Review a
@@ -4396,23 +4417,22 @@ classification.
 """
     else:
         instructions = f"""
-Act as the final synthesis tier. Preserve every prior shard candidate decision,
-confirmed finding, risk, temporary-control review, and call classification. Do
-not emit helper-category reviews; the controller copies accepted reviewer
-records and assembles their summaries. When `recovery_result` is present, use its validated
-findings and risks and replace the matching preliminary `unassessed` call
-classifications. Adjudicate only separate direct-evidence candidates. Merge true
-duplicates by likely owning producer and durable control without dropping a
-material variant. Deep-verify only the supplied owner-deduplicated top-three
-findings against their raw evidence; do not re-adjudicate all Luna candidates.
-Return the complete semantic result ({len(luna_candidate_ids)} candidate
-decisions) using the transport aliases. Keep every finding and its full evidence,
-verification, cost, complexity, risk, and ROI assessment in the machine result.
-Write self-contained problem and proposed-control text that supports later chat
-selection by supported recurring net savings and verified one- or two-line
-fixes, without a fixed quota. Chat uses Problem, Proposed fix, and Benefit and
-effort; the controller saves only the runs table in the human report. Review
-ranking does not limit presentation or finding retention.
+Act as the final review tier. Earlier accepted Sol results are authoritative:
+do not repeat their candidate decisions, findings, risks, temporary-control
+reviews, merges, or call classifications. The controller carries them forward,
+including validated recovery results, evidence, cost, and ROI inputs. Review
+only candidate IDs permitted by this output schema: separate direct-evidence
+candidates and any candidate lacking an accepted earlier judgment. For each,
+return finding/risk links, evidence references, and a reason; empty links dismiss
+it, and the controller derives its disposition. Emit only new outcomes and
+temporary-control records needed for those judgments, plus evidence-supported
+call-classification changes. Deep-verify the supplied top three findings against
+their raw evidence and emit a revised finding under its existing ID only when
+the supplied evidence warrants a change. The controller retains its earlier
+source calls and references. Keep material variants distinct. Do not emit
+helper-category reviews; the controller assembles accepted reviewer records.
+Return concise semantic fields only. The controller builds report summaries,
+deduplicates exact owner/control findings, and checks complete call accounting.
 """
     return common + instructions + "\nInput packet:\n"
 
@@ -5159,30 +5179,6 @@ def _validate_holistic_sol_result(
     }
 
 
-def _holistic_restore_alias_value(value: Any, aliases: Mapping[str, str]) -> Any:
-    """Restore whole alias tokens without changing result-owned identifiers."""
-
-    if isinstance(value, Mapping):
-        return {
-            str(key): _holistic_restore_alias_value(item, aliases)
-            for key, item in value.items()
-        }
-    if isinstance(value, list):
-        return [_holistic_restore_alias_value(item, aliases) for item in value]
-    if isinstance(value, str):
-        if value in aliases:
-            return aliases[value]
-        result = value
-        for alias in sorted(aliases, key=len, reverse=True):
-            if alias in result:
-                result = re.sub(
-                rf"(?<![\w.-]){re.escape(alias)}(?![\w-]|\.[\w-])",
-                lambda _: aliases[alias], result,
-            )
-        return result
-    return value
-
-
 def _holistic_derived_workstream(
     calls: Sequence[str], workstreams: Mapping[str, str]
 ) -> str:
@@ -5214,6 +5210,19 @@ def _holistic_restore_sol_transport(
     restored = _holistic_restore_alias_value(raw, alias_to_canonical)
     if not isinstance(restored, dict):
         raise CreditAnalysisError("Sol transport result is invalid")
+    decision_fields = schema["properties"]["candidate_decisions"]["items"]["properties"]
+    if "disposition" not in decision_fields:
+        if task["phase"] == "sol-final":
+            packet = _holistic_restore_alias_value(
+                _read_json(pathlib.Path(str(task["artifacts"]["input"])), "frozen Sol input"),
+                alias_to_canonical,
+            )
+            restored = _assemble_final_transport(restored, packet)
+        else:
+            for decision in restored["candidate_decisions"]:
+                decision["disposition"] = _candidate_disposition(
+                    decision["finding_ids"], decision["risk_ids"]
+                )
 
     surface_order = list(state["manifest"]["surface_order"])
     call_order = (
