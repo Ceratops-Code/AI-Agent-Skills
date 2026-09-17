@@ -1293,16 +1293,14 @@ def _exercise_corrective_cli(
     scope = runner.feedback["correction_scope"]
     if defect == "estimate":
         zero_savings = copy.deepcopy(runner.responses[0])
-        zero_finding_ids = set()
         for finding in zero_savings["confirmed_findings"]:
             if finding["waste_kind"] == "model-calls":
-                zero_finding_ids.add(finding["id"])
                 recurrence = finding["recurrence"]
                 recurrence["additional_recurring_calls_per_affected_run"] = recurrence["calls_saved_per_affected_run"]
         task = analysis._holistic_task_map(saved["manifest"])[runner.target]
         response_schema = execution._current_response_schema(saved, task, attempts[0]["input_sha256"])
         assert response_correction_scope(zero_savings, response_schema, 30)["invalid_recurrence_finding_ids"] == []
-        assert set(response_correction_scope(zero_savings, response_schema, 40)["invalid_recurrence_finding_ids"]) == zero_finding_ids
+        assert response_correction_scope(zero_savings, response_schema, 40)["invalid_recurrence_finding_ids"] == []
     if defect in {"estimate", "final-estimate", "retained-estimate"}:
         assert len(scope["invalid_recurrence_finding_ids"]) == (2 if defect == "estimate" else 1)
     if defect == "temporary-roi":
@@ -1343,6 +1341,15 @@ def _exercise_corrective_cli(
         if runner.withdrawn:
             assert runner.withdrawn not in {item["id"] for item in accepted["confirmed_findings"]}
             assert len(accepted["confirmed_findings"]) == len(runner.responses[0]["confirmed_findings"]) - 1
+            assert sorted(
+                group["classification"]
+                for group in accepted["call_classifications"]
+                for _ in group["call_ids"]
+            ) == sorted(
+                group["classification"]
+                for group in runner.responses[0]["call_classifications"]
+                for _ in group["call_ids"]
+            )
             assert len(accepted["temporary_control_reviews"]) == len(runner.responses[0]["temporary_control_reviews"])
             assert all(len(item["reason"]) <= 320 for item in accepted["candidate_decisions"])
             assert all(

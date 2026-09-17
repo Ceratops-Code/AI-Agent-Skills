@@ -174,9 +174,9 @@ retry, recovery, or deployment behavior.
 
 - Count spend as avoidable only when available instructions, fresh evidence,
   stable contracts, direct helper composition, same-pass revision, or a cheap
-  targeted check could have prevented or reduced it. Exclude ordinary model
-  mistakes unless a concise durable producer control would materially reduce
-  recurrence.
+  targeted check could have prevented or reduced it. Apply the same
+  preventability test to ordinary model mistakes; require a durable producer
+  control only when recommending a recurring fix.
 - Exclude calls required by active freshness, safety, verification, controlled
   iteration, or workflow gates. Record conversational tool-protocol overhead as
   necessary rather than as a helper defect. Surface passes and synthesis make
@@ -202,11 +202,12 @@ retry, recovery, or deployment behavior.
   Preserve a supported overlap as secondary evidence without double-counting
   model calls. Mark a volume-only finding as `context-volume`, keep all of its
   call-savings fields at zero, and classify its evidence calls independently.
-- Compute net calls saved per affected run as prevented calls minus recurring
-  calls introduced by the fix, and calls saved per similar run as that net
-  multiplied by estimated affected-run frequency. A `model-calls` finding must
-  save at least `floor(3% × frozen source-call count)` calls per similar run;
-  zero is allowed only when that floor is zero. State assumptions, test ROI at
+- Record each evidence-supported avoidable model call even if it occurred once
+  or has no durable fix. Compute net calls saved per affected run as prevented
+  calls minus recurring calls introduced by a proposed fix, and calls saved per
+  similar run as that net multiplied by estimated affected-run frequency. Use
+  `floor(3% × frozen source-call count)` only to prioritize recurring fixes,
+  never to dismiss observed waste. State assumptions, test durable-fix ROI at
   the low end of the frequency range, and reject non-positive lifetime value
   unless correctness or safety independently requires the control.
 - Report priced credit only when the controller accepted a valid caller-supplied
@@ -242,10 +243,12 @@ retry, recovery, or deployment behavior.
   requested scope, including earlier runs when presenting a later recheck.
   Group findings only when the same fix addresses them without hiding a
   distinct owner or failure. Give the direct result first.
-- Prioritize supported recurring net savings and verified one- or two-line
-  fixes. By default, present at most five recommendations in chat; use a
-  different limit when the user specifies one. Do not fill a quota. Keep minor
-  and verified-resolved findings in machine evidence; provide details on request.
+- Include evidence-supported observed avoidable calls even without a recurring
+  finding. Prioritize recurring fixes using the 3% floor and verified one- or
+  two-line fixes. By default, present at most five recommendations in chat;
+  use a different limit when the user specifies one. Do not fill a quota. Keep
+  minor and verified-resolved findings in machine evidence; provide details on
+  request.
 - Give each selected finding a concrete title and three short parts:
   - `Problem:` the observed episode, affected tasks and run dates, what failed,
     and the avoidable work.

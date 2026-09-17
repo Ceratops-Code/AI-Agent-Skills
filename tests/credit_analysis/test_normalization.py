@@ -5,7 +5,8 @@ import os
 import pathlib
 import subprocess
 import threading
-from typing import Any, Mapping
+from collections.abc import Mapping
+from typing import Any
 
 import pytest
 from jsonschema import Draft202012Validator
@@ -460,8 +461,22 @@ def test_credit_analysis_normalizes_sol_transport_without_changing_judgments(
         len(group["call_ids"])
         for group in final["call_classifications"]
         if group["classification"] == "unassessed"
-    ) == runner.expected_unassessed
+    ) == 0
     assert runner.expected_unassessed > runner.shard_local_unassessed_limit
+    finding_calls = {
+        call_id
+        for finding in final["confirmed_findings"]
+        if finding["waste_kind"] == "model-calls"
+        for call_id in finding["affected_call_ids"]
+    }
+    observed_without_finding = {
+        call_id
+        for group in final["call_classifications"]
+        if group["classification"].startswith("avoidable_")
+        for call_id in group["call_ids"]
+        if call_id not in finding_calls
+    }
+    assert len(observed_without_finding) >= runner.expected_unassessed
     state = json.loads(pathlib.Path(plan["state_path"]).read_text(encoding="utf-8"))
     assert runner.variation_task_id is not None
     shard_record = state["execution"][runner.variation_task_id]["result"]

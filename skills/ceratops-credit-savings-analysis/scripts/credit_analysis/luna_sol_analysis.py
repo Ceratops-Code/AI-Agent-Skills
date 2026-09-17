@@ -4407,8 +4407,8 @@ def _validate_holistic_finding(
         abs_tol=1e-6,
     ):
         raise CreditAnalysisError(f"{label} recurrence arithmetic is invalid")
-    if finding["waste_kind"] == "model-calls" and expected_savings < source_call_count * 3 // 100:
-        raise CreditAnalysisError(f"{label} recurring savings are below the 3% source-call floor")
+    if finding["waste_kind"] == "model-calls" and net < 0:
+        raise CreditAnalysisError(f"{label} recurring savings are negative")
     confidence = finding.get("confidence")
     if not isinstance(confidence, (int, float)) or isinstance(confidence, bool) or not 0 <= confidence <= 1:
         raise CreditAnalysisError(f"{label} confidence is invalid")
@@ -4570,64 +4570,6 @@ def _holistic_reconcile_findings(
     return normalized
 
 
-def _holistic_reconcile_orphaned_avoidable_calls(
-    classifications: Sequence[dict[str, Any]],
-    findings: Sequence[dict[str, Any]],
-) -> tuple[list[dict[str, Any]], dict[str, str], int]:
-    """Conservatively unassess avoidability that has no model-call finding.
-
-    The controller never invents a finding or savings claim. The caller's
-    existing unassessed-coverage gate still rejects broad inconsistencies.
-    """
-
-    finding_calls = {
-        call_id
-        for finding in findings
-        if finding["waste_kind"] == "model-calls"
-        for call_id in finding["affected_call_ids"]
-    }
-    normalized: list[dict[str, Any]] = []
-    for group in classifications:
-        for call_id in group["call_ids"]:
-            detail = {
-                key: value
-                for key, value in group.items()
-                if key != "call_ids"
-            }
-            if (
-                detail["classification"]
-                in {"avoidable_implemented", "avoidable_unimplemented"}
-                and call_id not in finding_calls
-            ):
-                detail.update(
-                    {
-                        "classification": "unassessed",
-                        "reason_code": None,
-                        "rationale": (
-                            "Sol marked this call avoidable but supplied no "
-                            "model-call finding; the controller conservatively "
-                            "left it unassessed."
-                        ),
-                    }
-                )
-            if normalized and all(
-                normalized[-1][key] == detail[key] for key in detail
-            ):
-                normalized[-1]["call_ids"].append(call_id)
-            else:
-                normalized.append({"call_ids": [call_id], **detail})
-    classification_by_call = {
-        call_id: str(group["classification"])
-        for group in normalized
-        for call_id in group["call_ids"]
-    }
-    unassessed = sum(
-        classification == "unassessed"
-        for classification in classification_by_call.values()
-    )
-    return normalized, classification_by_call, unassessed
-
-
 def _validate_holistic_sol_result(
     raw: Mapping[str, Any],
     *,
@@ -4691,9 +4633,6 @@ def _validate_holistic_sol_result(
             workstreams=workstreams,
         )
     )
-    classifications, classification_by_call, unassessed = (
-        _holistic_reconcile_orphaned_avoidable_calls(classifications, findings)
-    )
     if task["phase"] == "sol-final":
         maximum_unassessed = math.floor(
             len(call_order)
@@ -4708,19 +4647,6 @@ def _validate_holistic_sol_result(
     finding_by_id = {finding["id"]: finding for finding in findings}
     if len(finding_by_id) != len(findings):
         raise CreditAnalysisError("confirmed finding ID is duplicated")
-    avoidable_calls = {
-        call_id
-        for call_id, classification in classification_by_call.items()
-        if classification in {"avoidable_implemented", "avoidable_unimplemented"}
-    }
-    finding_calls = {
-        call_id
-        for finding in findings
-        if finding["waste_kind"] == "model-calls"
-        for call_id in finding["affected_call_ids"]
-    }
-    if avoidable_calls != finding_calls:
-        raise CreditAnalysisError("avoidable call classifications do not match findings")
     risks: list[dict[str, Any]] = []
     for index, risk in enumerate(_result_objects(raw.get("plausible_risks"), "plausible risks"), start=1):
         label = f"plausible risk {index}"

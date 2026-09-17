@@ -271,9 +271,10 @@ the model does not restate them. Code derives each candidate's disposition
 from its finding and risk links.
 
 A context-volume finding may be retained even when it saves no calls and is not
-included in call-savings arithmetic. A model-call finding must meet the skill's
-3% floor, rounded down against the frozen source-thread call count; this floor
-allows zero recurring savings for threads with fewer than 34 source calls.
+included in call-savings arithmetic. Evidence-supported avoidable model calls
+remain in per-call classifications even without a recurring finding. The 3%
+floor, rounded down against the frozen source-thread call count, prioritizes
+recurring fixes; it does not discard observed one-off waste.
 
 ### 6.2 Correction, retry, and omission
 

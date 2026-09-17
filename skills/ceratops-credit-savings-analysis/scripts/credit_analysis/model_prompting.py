@@ -74,8 +74,9 @@ silently dropped.
                 "observed temporary control for mandatory Sol review even when it appears\n"
                 "intentional or harmless.",
                 "Inspect all calls. Select the strongest plausible findings, risks, and\n"
-                "observed temporary controls. Rank them by evidence strength, likely\n"
-                "recurring credit waste, and practicality of a durable correction.\n"
+                "observed temporary controls. Rank them by evidence strength,\n"
+                "observed avoidable model calls, and likely credit savings. Retain\n"
+                "one-off waste; exclude risks without a causal credit-use link.\n"
                 "Consolidate repeated producer/control issues.",
             ).replace(
                 "target; concise hypotheses are sufficient and genuine candidates must not be\n"
@@ -114,7 +115,9 @@ exactly once ({len(luna_candidate_ids)} total) from its hypothesis and embedded
 evidence references. Do not independently re-read the source evidence. Review
 every supplied surface section in its fixed order,
 merge overlapping findings once by owning producer/control, and preserve every
-confirmed finding. Give each candidate its finding/risk links and a reason;
+confirmed finding. Retain risks only when the missing fact could change credit
+use; dismiss unrelated implementation-correctness questions. Give each
+candidate its finding/risk links and a reason;
 empty links dismiss it, and the controller derives its disposition. Perform the
 mandatory temporary-control review for every
 temporary-control candidate, using exactly one allowed disposition; transient
@@ -133,7 +136,9 @@ Keep analysis-overhead findings separate from producer findings and savings.
 Use `necessary` only for a specific active gate with a supplied reason code;
 never use it as a catch-all. Use `reviewed_no_confirmed_waste` for inspected calls
 without confirmed waste. `unassessed` is only for a decision-blocking evidence
-gap and must stay within the supplied cap. Let explicit avoidable call
+gap and must stay within the supplied cap. Classify evidenced avoidable calls
+even when a single occurrence or weak recurrence does not justify a durable
+fix; a finding is optional for those calls. Let explicit avoidable call
 classifications govern model-call finding membership and observed counts; an
 unimplemented finding may include already-implemented calls when at least one
 affected call remains unimplemented. Use Luna's supplied canonical-status
@@ -162,7 +167,8 @@ temporary-control records needed for those judgments, plus evidence-supported
 call-classification changes. Deep-verify the supplied top three findings against
 their raw evidence and emit a revised finding under its existing ID only when
 the supplied evidence warrants a change. The controller retains its earlier
-source calls and references. Keep material variants distinct. Do not emit
+source calls and references. Preserve evidenced one-off avoidable calls without
+requiring a recurring finding. Keep material variants distinct. Do not emit
 helper-category reviews; the controller assembles accepted reviewer records.
 Return concise semantic fields only. The controller builds report summaries,
 deduplicates exact owner/control findings, and checks complete call accounting.

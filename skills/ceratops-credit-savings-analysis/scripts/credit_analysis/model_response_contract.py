@@ -323,7 +323,7 @@ def response_correction_scope(
     """Diagnose invalid recurrence, review ROI, and accounting conflicts.
 
     This grants no new evidence or call budget. Only uniquely identified model-
-    call findings qualify. Well-formed estimates below the source-call floor permit recurrence
+    call findings qualify. Negative net savings permit recurrence
     reconsideration. A well-formed temporary-control subclaim that fails its ROI
     gate may be dismissed without withdrawing its independent finding.
     Contradictory call accounting permits reconsidering those calls or
@@ -375,7 +375,7 @@ def response_correction_scope(
         saved = recurrence["calls_saved_per_affected_run"]
         added = recurrence["additional_recurring_calls_per_affected_run"]
         frequency = recurrence["affected_similar_run_frequency"]
-        if all(math.isfinite(value) for value in (saved, added, frequency)) and (saved - added) * frequency < source_call_count * 3 // 100:
+        if all(math.isfinite(value) for value in (saved, added, frequency)) and saved - added < 0:
             invalid.append(identity)
     scope["invalid_recurrence_finding_ids"] = invalid
     scope["conflicting_call_finding_ids"] = conflicts
@@ -957,19 +957,6 @@ def apply_response_correction(
                 review["no_finding_reason"] = _bounded_explanation(
                     withdrawals[review["finding_id"]], 360
                 )
-        surviving = {call for item in draft["confirmed_findings"] if item["waste_kind"] == "model-calls"
-                     for call in item["affected_call_ids"]}
-        orphan_reasons = {call: withdrawals[item["id"]] for item in result["confirmed_findings"]
-                          if item["id"] in withdrawals for call in item["affected_call_ids"] if call not in surviving}
-        calls = _call_details(draft)
-        for identity, reason in orphan_reasons.items():
-            if identity in calls and calls[identity].get("classification") in {"avoidable_implemented", "avoidable_unimplemented"}:
-                calls[identity].update(
-                    classification="unassessed",
-                    reason_code=None,
-                    rationale=_bounded_explanation(reason, 240),
-                )
-        draft["call_classifications"] = [{"call_ids": [identity], **detail} for identity, detail in calls.items()]
     if review_dismissals:
         for review in draft["temporary_control_reviews"]:
             if review["id"] in review_dismissals:
@@ -1179,7 +1166,7 @@ def build_sol_schema(
             },
             "affected_similar_run_frequency": {
                 **number(),
-                "description": "Evidence-supported frequency of affected similar runs; model-call findings must meet the 3% floor, rounded down against the frozen source-call count.",
+                "description": "Evidence-supported frequency of affected similar runs; the 3% source-call floor prioritizes recurring fixes but does not exclude observed avoidable calls.",
             },
             "affected_similar_run_frequency_range": {
                 "type": "array",
