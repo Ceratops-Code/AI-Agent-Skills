@@ -116,8 +116,10 @@ def _operation_command(
 
 
 def _run_json(
-    command: list[str], *, cwd: pathlib.Path = SCRIPT_ROOT
+    command: list[str], *, cwd: pathlib.Path
 ) -> tuple[int, dict[str, Any]]:
+    """Run a lifecycle child outside the replaceable installed skill folder."""
+
     result = subprocess.run(
         command,
         cwd=cwd,
@@ -152,7 +154,7 @@ def _prepare_operation_batch(
     )
     for operation in validation_operations or []:
         command.extend(("--validation-operation", operation))
-    code, result = _run_json(command)
+    code, result = _run_json(command, cwd=repo_root)
     if code:
         raise RepositoryShipError(
             str(result.get("message", "Operation preparation failed.")),
@@ -901,7 +903,7 @@ def _validate_phase(
         command.extend(("--commit", commit))
     for operation in args.validation_operation or []:
         command.extend(("--validation-operation", operation))
-    code, result = _run_json(command)
+    code, result = _run_json(command, cwd=repo_root)
     if code:
         raise RepositoryShipError(
             str(result.get("message", "Repository validation failed.")),
@@ -978,6 +980,13 @@ def ship_repository(args: argparse.Namespace) -> dict[str, object]:
     if args.head_branch != RELEASE_BRANCH:
         raise RepositoryShipError(f"Head branch must be {RELEASE_BRANCH}.")
     repo_root = args.repo_root.expanduser().resolve(strict=True)
+    # Moving this process cannot release its parent shell's directory handle.
+    # Reject the unsafe caller before any shipping or deployment phase starts.
+    if pathlib.Path.cwd().resolve().is_relative_to(SCRIPT_ROOT.parent):
+        raise RepositoryShipError(
+            "Run ship-repository.py from the target repository directory "
+            f"{repo_root} so deployment can replace the installed skill."
+        )
     _operation_ids(args.validation_operation, "validate")
     release_operations = _operation_ids(args.publish_operation, "publish")
     deploy_operations = _operation_ids(args.deploy_operation, "deploy-local")
@@ -998,7 +1007,8 @@ def ship_repository(args: argparse.Namespace) -> dict[str, object]:
             repo_root=repo_root,
             target_branch=args.head_branch,
             target_commit=args.commit,
-        )
+        ),
+        cwd=repo_root,
     )
     if prepare_code == 2:
         return prepared
@@ -1030,7 +1040,8 @@ def ship_repository(args: argparse.Namespace) -> dict[str, object]:
             repo_root,
             pending_scope,
             prepared_target_commit,
-        )
+        ),
+        cwd=repo_root,
     )
     if ship_code == 2:
         return _with_preserved_worktrees(shipped, preserved_worktrees)
@@ -1061,7 +1072,8 @@ def ship_repository(args: argparse.Namespace) -> dict[str, object]:
                 scope=pending_scope,
                 target_branch=args.head_branch,
                 target_commit=target_commit,
-            )
+            ),
+            cwd=repo_root,
         )
         if check_code == 2:
             return _with_preserved_worktrees({

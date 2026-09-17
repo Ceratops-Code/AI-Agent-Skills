@@ -10,9 +10,11 @@ selected-source cleanup. YAML declares capabilities; this action owns timing.
 
 ### Script Bundle
 
-- (D) From the installed `ceratops-repo-lifecycle` skill root, run:
-  `python scripts/ship-repository.py --repo-root PATH --head-branch
-  release/local --base-branch main --remote-name origin --reusable-head`.
+- (D) From the target repository directory, run the installed helper:
+  `python "<skill-root>/scripts/ship-repository.py" --repo-root PATH
+  --head-branch release/local --base-branch main --remote-name origin
+  --reusable-head`.
+  `<skill-root>` is the installed `ceratops-repo-lifecycle` directory.
   The CI wait defaults to 30 minutes; `--ci-wait-seconds` overrides it.
 - Run the helper before manual readiness or implementation inspection, without
   separate helper-existence or repository-identity checks. `--repo-root`

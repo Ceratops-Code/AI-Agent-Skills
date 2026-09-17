@@ -97,6 +97,7 @@ def _setup(tmp_path: pathlib.Path, *, contract: bool = True) -> tuple[Any, ...]:
     }
 
     def run_json(command: list[str], **kwargs: Any) -> tuple[int, dict[str, Any]]:
+        assert kwargs.get("cwd") == repo
         commands.append(command)
         if len(command) > 1 and pathlib.Path(command[1]) == OPERATION_RUNNER:
             return original(command, **kwargs)
@@ -563,7 +564,10 @@ def test_repository_ship_blocks_selected_worktree_caller_before_remote_process(
         assert branch == "selected"
         return selected_path["value"]
 
-    def run_json(command: list[str]) -> tuple[int, dict[str, Any]]:
+    def run_json(
+        command: list[str], *, cwd: pathlib.Path
+    ) -> tuple[int, dict[str, Any]]:
+        assert cwd == repo
         child_calls.append(command)
         return 0, {
             "status": "ready",
@@ -624,6 +628,60 @@ def test_repository_ship_blocks_selected_worktree_caller_before_remote_process(
             }
         ],
     )
+
+
+@pytest.mark.parametrize("caller_suffix", ["", "scripts", "scripts/nested"])
+def test_repository_ship_rejects_runtime_directory_caller(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caller_suffix: str,
+) -> None:
+    loaded = runpy.run_path(str(SHIP_REPOSITORY))
+    repo = tmp_path / "repo"
+    runtime = tmp_path / "installed-skill"
+    caller = runtime / caller_suffix
+    repo.mkdir()
+    caller.mkdir(parents=True)
+    ship_repository = loaded["ship_repository"]
+    monkeypatch.setitem(ship_repository.__globals__, "SCRIPT_ROOT", runtime / "scripts")
+
+    def unexpected_run(*_args: object, **_kwargs: object) -> None:
+        pytest.fail("An unsafe caller must be rejected before any lifecycle child")
+
+    monkeypatch.setitem(ship_repository.__globals__, "_run_json", unexpected_run)
+    monkeypatch.chdir(caller)
+    args = loaded["build_parser"]().parse_args(
+        ["--repo-root", str(repo), "--head-branch", "release/local"]
+    )
+    with pytest.raises(
+        loaded["RepositoryShipError"], match="from the target repository directory"
+    ) as captured:
+        ship_repository(args)
+    assert str(repo) in str(captured.value)
+    assert list(repo.iterdir()) == []
+
+
+def test_repository_ship_child_runs_from_repository(
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loaded = runpy.run_path(str(SHIP_REPOSITORY))
+    repo = tmp_path / "repo with spaces"
+    caller = tmp_path / "caller"
+    repo.mkdir()
+    caller.mkdir()
+    monkeypatch.chdir(caller)
+    code, payload = loaded["_run_json"](
+        [
+            sys.executable,
+            "-c",
+            "import json, pathlib; print(json.dumps({'cwd': str(pathlib.Path.cwd())}))",
+        ],
+        cwd=repo,
+    )
+    assert code == 0
+    assert payload == {"cwd": str(repo.resolve())}
+    assert pathlib.Path.cwd() == caller
 
 
 def _publish_pr_setup(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Any, ...]:
