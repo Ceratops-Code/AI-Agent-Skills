@@ -26,7 +26,8 @@ owns selected post-merge publication, deployment and cleanup.
   "<skill-root>/scripts/promote-repository.py" --repo-root PATH
   --source-branch BRANCH [--source-branch BRANCH...] --main-branch main
   --release-branch release/local --remote-name origin
-  --run-operation ID [--run-operation ID...]`.
+  --run-operation ID [--run-operation ID...]
+  [--parameter name=value ...]`.
 - (D) Promotion followed by terminal shipping uses the same command with
   `--ship-after-promotion` as its complete operation choice. Do not add
   `--run-operation` or `--no-run-operation`; shipping alone publishes or
@@ -49,6 +50,9 @@ owns selected post-merge publication, deployment and cleanup.
   unchanged to shipping.
 - Ordered complete `deploy-local` locations for `promote-and-deploy`, and
   optional `publish` and `deploy-local` locations for composed shipping.
+- Required `--parameter name=value` values for promotion-time deploy-local
+  operations; the helper forwards them to the declared operation and applies
+  them only when declared by a validation or test check.
 - Optional ordered `--validation-operation LOCATION` flags select checks.
   SDLC versions 3 and 4 retain repository and selected-deliverable validation
   and tests; earlier formats preserve their original selection behavior.
@@ -71,6 +75,8 @@ owns selected post-merge publication, deployment and cleanup.
    Git ancestry with the eligible automatic rebase and run `git diff --check`.
 2. For `promote`, run the helper with `--no-run-operation`.
 3. For `promote-and-deploy`, repeat `--run-operation LOCATION` in order.
+   Repeat `--parameter name=value` for required operation inputs; it is invalid
+   without `--run-operation`.
    The helper accepts only `deliverables.<name>.deploy-local.<operation>`,
    prepares the entire selection before commands, runs applicable validation
    and tests once, and executes the prepared operations only while the checked

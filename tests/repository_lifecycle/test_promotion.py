@@ -245,7 +245,7 @@ def test_promote_repository_requires_an_explicit_deployment_choice(
 
 
 @pytest.mark.parametrize(
-    "validation_mode", ["absent", "discovered", "explicit", "invalid-selection"]
+    "validation_mode", ["absent", "discovered", "explicit", "invalid-selection", "parameter"]
 )
 def test_promote_repository_runs_explicit_operation_ids_in_order(
     tmp_path: pathlib.Path,
@@ -258,19 +258,24 @@ def test_promote_repository_runs_explicit_operation_ids_in_order(
     (repo / "ordered-operation.py").write_text(
         "import json, pathlib, sys\n"
         "with pathlib.Path(sys.argv[2]).open('a', encoding='utf-8') as stream:\n"
-        "    stream.write(sys.argv[1] + '\\n')\n"
+        "    stream.write(sys.argv[1] + (':' + sys.argv[3] if len(sys.argv) > 3 else '') + '\\n')\n"
         "print(json.dumps({'schema': 'test.deploy-receipt.v1', 'status': 'OK', 'name': sys.argv[1]}))\n",
         encoding="utf-8",
         newline="\n",
     )
 
-    def operation(name: str) -> dict[str, Any]:
-        return {"steps": [{"run": [
+    def operation(name: str, *, needs_generation: bool = False) -> dict[str, Any]:
+        selected: dict[str, Any] = {"steps": [{"run": [
             sys.executable, "ordered-operation.py", name, str(log),
+            *(["{generation_id}"] if needs_generation else []),
         ]}]}
+        if needs_generation:
+            selected["parameters"] = ["generation_id"]
+        return selected
 
     deliverable: dict[str, Any] = {"deploy-local": {
-        name: operation(name) for name in ("promotion-check", "custom-deploy")
+        name: operation(name, needs_generation=validation_mode == "parameter")
+        for name in ("promotion-check", "custom-deploy")
     }}
     repository: dict[str, Any] = {}
     selection: list[str] = []
@@ -290,6 +295,8 @@ def test_promote_repository_runs_explicit_operation_ids_in_order(
         checks = ["repository-check"]
     elif validation_mode == "invalid-selection":
         selection = ["--run-operation", "deliverables.sample.deploy-local.missing"]
+    elif validation_mode == "parameter":
+        selection = ["--parameter", "generation_id=generation-123"]
     write_sdlc_contract(repo, repository=repository, deliverables={"sample": deliverable})
     assert run_git(repo, "add", ".").returncode == 0
     assert run_git(repo, "commit", "-m", "add ordered operations").returncode == 0
@@ -297,6 +304,16 @@ def test_promote_repository_runs_explicit_operation_ids_in_order(
     task_temp = repo.parent / "tmp" / repo.name / "promotion-results"
     task_temp.mkdir(parents=True)
     result_file = task_temp / "promotion-result.json"
+    if validation_mode == "parameter":
+        rejected = subprocess.run(
+            [sys.executable, str(PROMOTE_REPOSITORY), "--repo-root", str(repo),
+             "--source-branch", "approved", "--no-run-operation",
+             "--parameter", "generation_id=generation-123"],
+            capture_output=True, text=True, check=False, env=environment,
+        )
+        assert rejected.returncode == 1
+        assert "--parameter requires --run-operation" in json.loads(rejected.stderr)["message"]
+        assert not log.exists()
     promoted = subprocess.run(
         [
             sys.executable,
@@ -337,8 +354,9 @@ def test_promote_repository_runs_explicit_operation_ids_in_order(
         "deliverables.sample.deploy-local.promotion-check",
         "deliverables.sample.deploy-local.custom-deploy",
     ]
+    suffix = ":generation-123" if validation_mode == "parameter" else ""
     assert log.read_text(encoding="utf-8").splitlines() == [
-        *checks, "promotion-check", "custom-deploy",
+        *checks, "promotion-check" + suffix, "custom-deploy" + suffix,
     ]
     assert result["operations"]["status"] == "completed"
     if validation_mode != "absent":

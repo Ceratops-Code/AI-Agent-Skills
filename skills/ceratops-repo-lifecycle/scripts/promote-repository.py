@@ -37,6 +37,7 @@ from repository_operation import (
     PreparedOperation,
     execute_prepared_operations,
     operation_category,
+    parse_parameters,
     prepare_operations,
     require_clean_commit,
 )
@@ -569,6 +570,8 @@ def _validation_command(
         command.extend(("--validation-operation", operation))
     for operation in args.run_operation or []:
         command.extend(("--operation", operation))
+    for parameter in args.parameter or []:
+        command.extend(("--parameter", parameter))
     return command
 
 
@@ -716,6 +719,9 @@ def promote(args: argparse.Namespace, *, timings: dict[str, float] | None = None
     _operation_ids(args.validation_operation, "validate")
     _operation_ids(args.publish_operation, "publish")
     _operation_ids(args.deploy_operation, "deploy-local")
+    if args.parameter and args.run_operation is None:
+        raise PromotionError("--parameter requires --run-operation.")
+    parameters = parse_parameters(args.parameter or [])
     _clean(repo_root, "before promotion")
     source_states: dict[str, SourceState] = {}
     if not args.prepare_release_only:
@@ -820,7 +826,7 @@ def promote(args: argparse.Namespace, *, timings: dict[str, float] | None = None
                 # CLI invocation that would rerun the same validation commands.
                 prepared_operations = prepare_operations(
                     repo_root,
-                    [OperationRequest(name) for name in args.run_operation],
+                    [OperationRequest(name, parameters=parameters) for name in args.run_operation],
                     args.sdlc_contract,
                 )
             validation_code, validation = _run_json(
@@ -1060,7 +1066,7 @@ def finalize_result(args: argparse.Namespace) -> None:
     execution_options = (
         args.source_branch, args.run_operation, args.no_run_operation,
         args.prepare_release_only, args.ship_after_promotion, args.validation_operation,
-        args.publish_operation, args.deploy_operation, args.title, args.body,
+        args.publish_operation, args.deploy_operation, args.parameter, args.title, args.body,
     )
     if any(option is not None and option is not False for option in execution_options):
         raise PromotionError("finalize-result cannot be combined with lifecycle execution options.")
@@ -1187,6 +1193,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-run-operation",
         action="store_true",
         help="Promote without running a deployment operation.",
+    )
+    parser.add_argument(
+        "--parameter", action="append",
+        help="Required name=value parameter for each selected deploy-local operation; repeat as needed.",
     )
     operation.add_argument(
         "--ship-after-promotion",
