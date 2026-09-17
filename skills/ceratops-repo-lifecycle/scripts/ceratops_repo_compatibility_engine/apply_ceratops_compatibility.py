@@ -42,10 +42,10 @@ from .validate_ceratops_compatibility import (
 from .validation_environment import (
     detected_python_skills,
     remove_created_environment,
+    require_skill_runtime_project,
     retire_old_skill_runtime_payloads,
     runtime_files,
     setup_runtime,
-    skill_runtime_files,
 )
 
 BUNDLE_ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -974,12 +974,9 @@ def plan_ceratops_compatibility(
         planned_files=markdown_files, has_python_skills=bool(python_skills),
     )
     markdown_files.pop(".gitignore", None)
-    if manifest is not None:
-        # The source declarations and manifest share the rollback scope.
-        generated_runtime.update(skill_runtime_files(
-            repo_root, canonical_sections_root(), compatibility_contract,
-            has_python_skills=bool(python_skills),
-        ))
+    require_skill_runtime_project(
+        repo_root, compatibility_contract, has_python_skills=bool(python_skills),
+    )
     test_runner = repo_root / surface_path("python_test_runner")
     if python_tests and not test_runner.is_file():
         generated_runtime[test_runner] = template_path("python_test_runner").read_text(encoding="utf-8").replace("__TEST_TARGETS__", repr(python_tests))

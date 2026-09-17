@@ -34,6 +34,7 @@ from tests.support.repositories import (
     ROOT,
     create_compatible_repo,
     prepare_script_environment,
+    prepare_skill_python_project,
     run_git,
 )
 
@@ -438,8 +439,7 @@ def test_bootstrap_full_install_materializes_lifecycle_bundle_with_source_runtim
         / "skill-sections.json.tmpl"
     ).is_file()
     assert (installed_lifecycle / "skills" / "sections" / "core.md").is_file()
-    assert (installed_lifecycle / "skills" / "sections" / "python" / "pyproject.toml").is_file()
-    assert (installed_lifecycle / "skills" / "sections" / "python" / "uv.lock").is_file()
+    assert not (installed_lifecycle / "skills" / "sections" / "python").exists()
     assert (
         installed_lifecycle / "skills" / "sections" / "multi-action-skill.md"
     ).is_file()
@@ -459,6 +459,7 @@ def test_bootstrap_full_install_materializes_lifecycle_bundle_with_source_runtim
         "gitdir: test\n", encoding="utf-8", newline="\n"
     )
     shutil.rmtree(target_repo / "skills" / "sections")
+    prepare_skill_python_project(target_repo)
     (target_repo / "skills" / "skill-sections.json").unlink()
     alpha_scripts = target_repo / "skills" / "alpha-tool" / "scripts"
     alpha_scripts.mkdir()
@@ -473,7 +474,7 @@ def test_bootstrap_full_install_materializes_lifecycle_bundle_with_source_runtim
     )
     assert applied.returncode == 0, applied.stdout
     assert json.loads(applied.stdout)["runtime_source_id"] == "installed/target"
-    assert (target_repo / "skills/sections/python/pyproject.toml").is_file()
+    assert "target-skill-runtime" in (target_repo / "skills/sections/python/pyproject.toml").read_text()
     assert (target_repo / "skills/sections/python/uv.lock").is_file()
 
     other_checkout = tmp_path / "other-checkout"
@@ -535,6 +536,22 @@ def test_lifecycle_only_installed_bundle_materializes_compatible_repo(
     ownership["source_repository_root"] = str(tmp_path / "unavailable-source")
     ownership_path.write_text(json.dumps(ownership), encoding="utf-8")
 
+    missing = run_compatibility_engine(
+        install_root / "ceratops-repo-lifecycle" / "scripts",
+        "apply",
+        "--target-repo-root",
+        str(target_repo),
+        "--runtime-source-id",
+        "installed/only",
+    )
+    assert missing.returncode != 0
+    blocked = json.loads(missing.stdout)
+    assert blocked["phase"] == "compatibility_planning"
+    assert "skills/sections/python/pyproject.toml" in blocked["reason"]
+    assert blocked["rollback"] == "not_started"
+    assert not (target_repo / "skills/sections/python").exists()
+    prepare_skill_python_project(target_repo)
+
     result = run_compatibility_engine(
         install_root / "ceratops-repo-lifecycle" / "scripts",
         "apply",
@@ -546,7 +563,7 @@ def test_lifecycle_only_installed_bundle_materializes_compatible_repo(
 
     assert result.returncode == 0, result.stdout
     assert json.loads(result.stdout)["runtime_source_id"] == "installed/only"
-    assert (target_repo / "skills/sections/python/pyproject.toml").is_file()
+    assert "target-skill-runtime" in (target_repo / "skills/sections/python/pyproject.toml").read_text()
     assert (target_repo / "skills/sections/python/uv.lock").is_file()
 
 

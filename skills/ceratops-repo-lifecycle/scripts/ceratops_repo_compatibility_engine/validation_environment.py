@@ -154,30 +154,19 @@ def retire_old_skill_runtime_payloads(payloads: dict[str, Any]) -> None:
         payloads[key] = kept
 
 
-def skill_runtime_files(
-    root: pathlib.Path, canonical: pathlib.Path,
-    contract: Mapping[str, Any], *, has_python_skills: bool,
-) -> dict[pathlib.Path, str]:
-    """Copy the one source project only for Python skills."""
+def require_skill_runtime_project(
+    root: pathlib.Path, contract: Mapping[str, Any], *, has_python_skills: bool,
+) -> None:
+    """Require target-owned Python declarations before compatibility writes."""
 
-    files: dict[pathlib.Path, str] = {}
     if not has_python_skills:
-        return files
-    for declared in contract["skill_python_runtime"].values():
+        return
+    for key in ("project", "lockfile"):
+        declared = contract["skill_python_runtime"][key]
         relative = pathlib.PurePosixPath(declared)
-        destination = root.joinpath(*relative.parts)
-        if destination.is_symlink() or (destination.exists() and not destination.is_file()):
-            raise RuntimeError(f"skill runtime source must be a regular file: {destination}")
-        if not destination.is_file():
-            source = canonical.joinpath(*relative.parts[2:])
-            if source.is_symlink() or not source.is_file():
-                raise RuntimeError(f"canonical skill runtime input is missing: {source}")
-            files[destination] = source.read_text(encoding="utf-8")
-    project = root / contract["skill_python_runtime"]["project"]
-    lock = root / contract["skill_python_runtime"]["lockfile"]
-    if project.is_file() != lock.is_file():
-        raise RuntimeError("existing skill runtime requires both pyproject.toml and uv.lock")
-    return files
+        path = root.joinpath(*relative.parts)
+        if path.is_symlink() or not path.is_file() or not path.resolve().is_relative_to(root.resolve()):
+            raise RuntimeError(f"Python helper skills require repository-owned {relative.as_posix()}")
 
 
 def setup_runtime(root: pathlib.Path, runtime: Mapping[str, Any]) -> None:

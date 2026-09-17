@@ -36,7 +36,7 @@ def test_compatibility_materializer_supplies_target_identity_and_assignments(
     tmp_path: pathlib.Path,
 ) -> None:
     repo = tmp_path / "compatible"
-    create_compatible_repo(repo, "stale/source", ["alpha-tool", "beta-tool"])
+    create_compatible_repo(repo, "stale/source", ["alpha-tool", "beta-tool"], skill_runtime=True)
     write_sdlc_contract(
         repo,
         deliverables={"tools": {"publish": {
@@ -44,7 +44,7 @@ def test_compatibility_materializer_supplies_target_identity_and_assignments(
         }}},
     )
     (repo / ".git").write_text("gitdir: test\n", encoding="utf-8", newline="\n")
-    shutil.rmtree(repo / "skills" / "sections")
+    (repo / "skills" / "sections" / "core.md").unlink()
     (repo / "skills" / "skill-sections.json").unlink()
     alpha_scripts = repo / "skills" / "alpha-tool" / "scripts"
     alpha_scripts.mkdir()
@@ -133,7 +133,7 @@ def test_compatibility_materializer_supplies_target_identity_and_assignments(
     }
     assert manifest["runtime_payloads"] == {}
     assert not (repo / "skills/sections/scripts/run-skill.py").exists()
-    assert (repo / "skills/sections/python/pyproject.toml").is_file()
+    assert tomllib.loads((repo / "skills/sections/python/pyproject.toml").read_text())["project"]["name"] == "target-skill-runtime"
     assert (repo / "skills/sections/python/uv.lock").is_file()
     updates = yaml.safe_load((repo / ".github/dependabot.yml").read_text())["updates"]
     assert {item["directory"] for item in updates if item["package-ecosystem"] == "uv"} == {

@@ -336,10 +336,8 @@ def check_runtime_payloads(
             tomllib.loads(lock.read_text(encoding="utf-8"))
         except (OSError, ValueError, TypeError, AttributeError) as exc:
             errors.append(f"source skill Python runtime declaration is invalid: {exc}")
-    retired_sources = {
+    forbidden_sources = {
         "skills/sections/scripts/run-skill.py",
-    }
-    template_sources = {
         "skills/sections/python/pyproject.toml",
         "skills/sections/python/uv.lock",
     }
@@ -375,15 +373,8 @@ def check_runtime_payloads(
             else:
                 errors.append(f"{label} must be a path or source-target mapping")
                 continue
-            allowed_template = (
-                skill_name == "ceratops-repo-lifecycle"
-                and source in template_sources
-                and target is None
-            )
-            if source in retired_sources or target in retired_targets or (
-                source in template_sources and not allowed_template
-            ):
-                errors.append(f"{label} still deploys the retired per-skill Python runtime")
+            if source in forbidden_sources or target in retired_targets:
+                errors.append(f"{label} must not install a runtime launcher or shared Python declarations")
                 continue
             source_posix = pathlib.PurePosixPath(source.replace("\\", "/"))
             source_windows = pathlib.PureWindowsPath(source)

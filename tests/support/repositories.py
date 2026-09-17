@@ -23,7 +23,26 @@ def prepare_script_environment(repo: pathlib.Path) -> None:
         ), encoding="utf-8",
     )
     (scripts / ".gitignore").write_text(".venv/\n__pycache__/\n", encoding="utf-8")
-    result = subprocess.run(["uv", "lock", "--project", str(scripts)], capture_output=True, text=True)
+    result = subprocess.run(["uv", "lock", "--project", str(scripts)], capture_output=True, text=True, check=False)
+    assert result.returncode == 0, result.stderr
+
+
+def prepare_skill_python_project(repo: pathlib.Path) -> None:
+    """Give a compatible source fixture its own locked skill dependencies."""
+
+    project = repo / "skills/sections/python"
+    project.mkdir(parents=True, exist_ok=True)
+    (project / "pyproject.toml").write_text(
+        '[project]\nname = "target-skill-runtime"\nversion = "0.0.0"\n'
+        'requires-python = ">=3.14,<3.15"\ndependencies = []\n\n'
+        '[tool.uv]\npackage = false\n\n[tool.uv.workspace]\nmembers = []\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    result = subprocess.run(
+        ["uv", "lock", "--project", str(project)],
+        capture_output=True, text=True, check=False,
+    )
     assert result.returncode == 0, result.stderr
 
 
@@ -35,6 +54,7 @@ def run_ci_action(
     if not action_root.exists():
         shutil.copytree(ROOT / "skills/ceratops-repo-lifecycle", action_root,
                         ignore=shutil.ignore_patterns(".venv", "__pycache__"))
+        # The action checkout carries its own project; target repositories own theirs separately.
         project = bundle / "skills/sections/python"
         project.mkdir(parents=True)
         for name in ("pyproject.toml", "uv.lock"):
@@ -139,7 +159,9 @@ def add_skill(repo: pathlib.Path, name: str) -> None:
     )
 
 
-def create_compatible_repo(repo: pathlib.Path, source_id: str, skill_names: list[str]) -> None:
+def create_compatible_repo(
+    repo: pathlib.Path, source_id: str, skill_names: list[str], *, skill_runtime: bool = False,
+) -> None:
     """Create the smallest complete Ceratops-compatible source repository."""
 
     (repo / "skills" / "sections").mkdir(parents=True)
@@ -147,6 +169,8 @@ def create_compatible_repo(repo: pathlib.Path, source_id: str, skill_names: list
         ROOT / "skills" / "sections" / "core.md",
         repo / "skills" / "sections" / "core.md",
     )
+    if skill_runtime:
+        prepare_skill_python_project(repo)
     write_sdlc_contract(
         repo,
         deliverables={"skills": {"deploy-local": {

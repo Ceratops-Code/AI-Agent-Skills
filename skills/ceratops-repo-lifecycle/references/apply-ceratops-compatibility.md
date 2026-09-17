@@ -165,8 +165,10 @@ Infer the source identity from stable repository evidence before asking.
   independent `scripts/deploy-skills.py`. Retain a same- or
   higher-version bootstrap and replace only a missing or lower version.
 - Declare skills with Python helpers in `python_runtime_skills`. For those
-  skills, copy one locked source project under `skills/sections/python` from
-  the lifecycle bundle and let bootstrap create a versioned shared environment.
+  skills, require the target repository's own
+  `skills/sections/python/pyproject.toml` and `uv.lock` before applying
+  compatibility. Report missing files without copying Ceratops dependencies.
+  Bootstrap creates a versioned shared environment from that locked project.
   The installed bundle must work without its original source checkout.
 - When no skills exist, do not add a bootstrap script or bootstrap deployment
   operation.

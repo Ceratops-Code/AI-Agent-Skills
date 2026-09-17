@@ -29,9 +29,7 @@
   },
   "runtime_payloads": {
     "ceratops-repo-lifecycle": [
-      "skills/sections/*.md",
-      "skills/sections/python/pyproject.toml",
-      "skills/sections/python/uv.lock"
+      "skills/sections/*.md"
     ],
     "ceratops-skill-lifecycle": [
       "skills/sections/*.md"
