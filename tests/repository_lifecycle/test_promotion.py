@@ -313,6 +313,15 @@ def test_promote_repository_runs_explicit_operation_ids_in_order(
         )
         assert rejected_without_deployment.returncode == 1
         assert "--parameter requires --run-operation" in json.loads(rejected_without_deployment.stderr)["message"]
+        malformed_parameter = subprocess.run(
+            [sys.executable, str(PROMOTE_REPOSITORY), "--repo-root", str(repo),
+             "--source-branch", "approved", "--run-operation",
+             "deliverables.sample.deploy-local.custom-deploy",
+             "--parameter", "generation_id"],
+            capture_output=True, text=True, check=False, env=environment,
+        )
+        assert malformed_parameter.returncode == 1
+        assert "SDLC parameters must use name=value" in json.loads(malformed_parameter.stderr)["message"]
         assert not log.exists()
     promoted = subprocess.run(
         [
