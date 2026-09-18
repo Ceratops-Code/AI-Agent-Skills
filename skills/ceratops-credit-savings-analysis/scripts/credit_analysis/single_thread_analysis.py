@@ -778,7 +778,7 @@ def _load_contract() -> dict[str, Any]:
     if next_heading:
         action_section = action_section[: next_heading.start()]
     indexed = ACTION_REFERENCE_RE.findall(action_section)
-    if indexed != references:
+    if [item for item in indexed if item in references] != references:
         raise CreditAnalysisError("parent action references do not match the contract")
     for item in public:
         reference_path = SKILL_DIR / item["reference"]
