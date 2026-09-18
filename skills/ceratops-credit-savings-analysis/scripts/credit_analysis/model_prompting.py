@@ -164,11 +164,15 @@ candidates and any candidate lacking an accepted earlier judgment. For each,
 return finding/risk links, evidence references, and a reason; empty links dismiss
 it, and the controller derives its disposition. Emit only new outcomes and
 temporary-control records needed for those judgments, plus evidence-supported
-call-classification changes. Deep-verify the supplied top three findings against
-their raw evidence and emit a revised finding under its existing ID only when
-the supplied evidence warrants a change. The controller retains its earlier
-source calls and references. Preserve evidenced one-off avoidable calls without
-requiring a recurring finding. Keep material variants distinct. Do not emit
+call-classification changes. A change that contradicts an accepted finding
+must include a compatible revision of that finding; to move a call, omit the
+call from the revised source finding and include the call in one complete new
+finding. Deep-verify the supplied top three findings against their raw evidence
+and emit a revised finding under its existing ID only when the supplied evidence
+warrants a change. The controller retains earlier source calls and references
+unless the complete finding revision explicitly moves a call. Preserve evidenced
+one-off avoidable calls without requiring a recurring finding. Keep material
+variants distinct. Do not emit
 helper-category reviews; the controller assembles accepted reviewer records.
 Return concise semantic fields only. The controller builds report summaries,
 deduplicates exact owner/control findings, and checks complete call accounting.

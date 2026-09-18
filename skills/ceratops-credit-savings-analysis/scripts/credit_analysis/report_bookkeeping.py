@@ -601,7 +601,10 @@ def _assemble_final_transport(
     The final model may judge candidates lacking an accepted decision and revise
     only the supplied deep-review findings. Existing candidate links remain
     authoritative. Exact duplicate outcomes are merged with their evidence;
-    semantic differences remain separate for ordinary result validation.
+    semantic differences remain separate for ordinary result validation. A
+    call override cannot silently invalidate an accepted finding: unsupported
+    overrides are dropped together, while genuinely conflicting revisions are
+    reported together after the complete merge has been inspected.
     """
     prior = list(packet["prior_adjudication_results"])
     recovery = packet.get("recovery_result")
@@ -612,6 +615,28 @@ def _assemble_final_transport(
     workstream_by_call = {
         str(row[1]): str(row[2]) for row in packet["call_inventory"]["rows"]
     }
+    issues: list[str] = []
+
+    def call_details(
+        results: Sequence[Mapping[str, Any]], *, reject_disagreement: bool = False,
+    ) -> dict[str, dict[str, Any]]:
+        details: dict[str, dict[str, Any]] = {}
+        for result in results:
+            for group in result["call_classifications"]:
+                detail = {
+                    key: value for key, value in group.items()
+                    if key not in {"call_ids", "workstream"}
+                }
+                for call_id in group["call_ids"]:
+                    identity = str(call_id)
+                    if reject_disagreement and identity in details and details[identity] != detail:
+                        issues.append(f"conflicting classifications for {identity}")
+                    else:
+                        details[identity] = copy.deepcopy(detail)
+        return details
+
+    accepted_calls = call_details(sources)
+    revised_calls = call_details([delta], reject_disagreement=True)
     decisions = {
         str(item["luna_candidate_id"]): copy.deepcopy(dict(item))
         for result in sources
@@ -642,19 +667,70 @@ def _assemble_final_transport(
                 indexed[identity] = copy.deepcopy(dict(item))
         return indexed
 
+    def same_outcome(proposed: Mapping[str, Any], accepted: Mapping[str, Any]) -> bool:
+        """Ignore only controller-derived fields in an exact final restatement."""
+
+        for key, value in proposed.items():
+            if key == "workstream":
+                continue
+            expected = accepted.get(key)
+            if key == "recurrence" and isinstance(expected, Mapping):
+                expected = {
+                    name: item for name, item in expected.items()
+                    if name != "estimated_calls_saved_per_similar_run"
+                }
+            if value != expected:
+                return False
+        return True
+
     findings = indexed_outcomes("confirmed_findings")
+    accepted_finding_ids = set(findings)
+    revised_finding_ids: set[str] = set()
     reviewed_findings = {
         str(item["finding_id"]) for item in packet["deep_review_evidence"]
     }
+    supplied_findings = {
+        str(item["id"]): item for item in delta["confirmed_findings"]
+    }
+    if len(supplied_findings) != len(delta["confirmed_findings"]):
+        issues.append("final response repeats a finding ID")
     for item in delta["confirmed_findings"]:
         identity = str(item["id"])
         if identity in findings:
             if identity not in reviewed_findings:
-                raise CreditAnalysisError("final Sol revised a finding outside deep review")
+                if not same_outcome(item, findings[identity]):
+                    issues.append(f"finding {identity} was revised outside deep review")
+                continue
+            revised_finding_ids.add(identity)
             original = findings[identity]
             updated = copy.deepcopy(dict(item))
-            for field in ("affected_call_ids", "evidence_refs"):
-                updated[field] = list(dict.fromkeys([*original[field], *updated[field]]))
+            # An omitted accepted call is a move only when the final response
+            # places that call in exactly one other complete finding and gives
+            # the call an explicit revised classification. Ordinary partial
+            # revisions still retain earlier source calls.
+            moved: set[str] = set()
+            for call_id in set(original["affected_call_ids"]) - set(updated["affected_call_ids"]):
+                destinations = [
+                    other_id for other_id, other in supplied_findings.items()
+                    if other_id != identity and call_id in other["affected_call_ids"]
+                ]
+                if len(destinations) > 1:
+                    issues.append(f"call {call_id} has multiple replacement findings")
+                elif len(destinations) == 1 and call_id in revised_calls:
+                    moved.add(call_id)
+            retained_calls = [
+                call_id for call_id in original["affected_call_ids"]
+                if call_id not in moved
+            ]
+            updated["affected_call_ids"] = list(dict.fromkeys([
+                *retained_calls, *updated["affected_call_ids"]
+            ]))
+            if not updated["affected_call_ids"]:
+                issues.append(f"finding {identity} would lose every affected call")
+                updated["affected_call_ids"] = list(original["affected_call_ids"])
+            updated["evidence_refs"] = list(dict.fromkeys([
+                *original["evidence_refs"], *updated["evidence_refs"]
+            ]))
             findings[identity] = {**original, **updated}
         else:
             findings[identity] = copy.deepcopy(dict(item))
@@ -662,7 +738,10 @@ def _assemble_final_transport(
     for item in delta["plausible_risks"]:
         identity = str(item["id"])
         if identity in risks:
-            raise CreditAnalysisError("final Sol restated an accepted risk")
+            if same_outcome(item, risks[identity]):
+                continue
+            issues.append(f"risk {identity} conflicts with an accepted risk")
+            continue
         risks[identity] = copy.deepcopy(dict(item))
 
     def dedupe_outcomes(
@@ -713,7 +792,10 @@ def _assemble_final_transport(
     for item in delta["temporary_control_reviews"]:
         identity = str(item["id"])
         if identity in reviews:
-            raise CreditAnalysisError("final Sol restated an accepted temporary-control review")
+            if same_outcome(item, reviews[identity]):
+                continue
+            issues.append(f"temporary-control review {identity} conflicts with an accepted review")
+            continue
         reviews[identity] = copy.deepcopy(dict(item))
     for item in reviews.values():
         if item["finding_id"] is not None:
@@ -727,20 +809,75 @@ def _assemble_final_transport(
             if key not in merges:
                 merges[key] = {**item, "finding_id": finding_id}
             elif merges[key]["finding_id"] != finding_id:
-                raise CreditAnalysisError("final temporary-control merge has conflicting findings")
+                issues.append(f"temporary-control merge {key[0]}/{key[1]} has conflicting findings")
             else:
                 merges[key]["review_ids"] = list(dict.fromkeys([
                     *merges[key]["review_ids"], *item["review_ids"]
                 ]))
 
-    classifications: dict[str, dict[str, Any]] = {}
-    for source in [*sources, delta]:
-        for group in source["call_classifications"]:
-            detail = {key: value for key, value in group.items() if key not in {"call_ids", "workstream"}}
-            for call_id in group["call_ids"]:
-                classifications[str(call_id)] = copy.deepcopy(detail)
+    classifications = {**accepted_calls, **revised_calls}
     if set(classifications) != set(calls):
-        raise CreditAnalysisError("final call classifications do not cover routed calls")
+        missing = sorted(set(calls) - set(classifications))
+        extra = sorted(set(classifications) - set(calls))
+        issues.append(f"call coverage differs: missing={missing}, extra={extra}")
+
+    # Earlier accepted findings are authoritative unless the final response
+    # explicitly revises their membership or status. Restore all unsupported
+    # conflicting overrides in one pass, then check every remaining finding.
+    protected_findings = [
+        item for item in merged_findings
+        if item["waste_kind"] == "model-calls"
+        and item["id"] in accepted_finding_ids
+        and item["id"] not in revised_finding_ids
+    ]
+    restore: set[str] = set()
+    for finding in protected_findings:
+        finding_calls = finding["affected_call_ids"]
+        for call_id in finding_calls:
+            detail = classifications.get(call_id)
+            if detail is None or call_id not in revised_calls:
+                continue
+            label = detail["classification"]
+            if label not in {"avoidable_implemented", "avoidable_unimplemented"} or (
+                finding["implementation_status"] == "implemented"
+                and label != "avoidable_implemented"
+            ):
+                restore.add(call_id)
+        if finding["implementation_status"] != "implemented" and not any(
+            classifications.get(call_id, {}).get("classification") == "avoidable_unimplemented"
+            for call_id in finding_calls
+        ):
+            restore.update(
+                call_id for call_id in finding_calls
+                if call_id in revised_calls
+                and accepted_calls.get(call_id, {}).get("classification") == "avoidable_unimplemented"
+            )
+    for call_id in restore:
+        if call_id in accepted_calls:
+            classifications[call_id] = copy.deepcopy(accepted_calls[call_id])
+        else:
+            issues.append(f"call {call_id} conflicts with an accepted finding without an accepted classification")
+
+    for finding in merged_findings:
+        if finding["waste_kind"] != "model-calls":
+            continue
+        labels = [
+            classifications.get(call_id, {}).get("classification")
+            for call_id in finding["affected_call_ids"]
+        ]
+        if any(label not in {"avoidable_implemented", "avoidable_unimplemented"} for label in labels):
+            issues.append(f"finding {finding['id']} has non-avoidable affected calls")
+        elif finding["implementation_status"] == "implemented" and any(
+            label != "avoidable_implemented" for label in labels
+        ):
+            issues.append(f"implemented finding {finding['id']} has unimplemented calls")
+        elif finding["implementation_status"] != "implemented" and (
+            "avoidable_unimplemented" not in labels
+        ):
+            issues.append(f"unimplemented finding {finding['id']} has no unimplemented calls")
+    if issues:
+        raise CreditAnalysisError("final merge conflicts: " + "; ".join(sorted(set(issues))))
+
     groups: list[dict[str, Any]] = []
     for call_id in calls:
         detail = classifications[call_id]

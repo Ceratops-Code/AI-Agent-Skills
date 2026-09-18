@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import pathlib
@@ -123,6 +124,7 @@ def test_restored_aliases_keep_identifier_boundaries_after_split() -> None:
 def test_final_assembly_merges_exact_prior_findings_without_model_copy() -> None:
     load_credit_analysis_workflow_module()
     from credit_analysis.report_bookkeeping import _assemble_final_transport
+    from credit_analysis.single_thread_analysis import CreditAnalysisError
 
     def source(candidate: str, call: str, finding_id: str) -> dict[str, Any]:
         return {
@@ -178,6 +180,107 @@ def test_final_assembly_merges_exact_prior_findings_without_model_copy() -> None
     assert revised["confirmed_findings"][0]["problem_summary"] == "More precise problem"
     assert revised["confirmed_findings"][0]["affected_call_ids"] == ["c1", "c2"]
     assert revised["confirmed_findings"][0]["evidence_refs"] == ["e-c1", "e-c2"]
+
+    # Unsupported final call overrides are rejected together while accepted
+    # findings and their original classifications remain authoritative.
+    protected = copy.deepcopy(packet)
+    protected["deep_review_evidence"] = []
+    protected["prior_adjudication_results"][1]["confirmed_findings"][0]["producer_owner"] = "second owner"
+    for result in protected["prior_adjudication_results"]:
+        result["confirmed_findings"][0]["implementation_status"] = "implemented"
+        result["call_classifications"][0]["classification"] = "avoidable_implemented"
+    conflicting = copy.deepcopy(delta)
+    conflicting["call_classifications"] = [
+        {"call_ids": [call], "classification": "avoidable_unimplemented",
+         "reason_code": None, "rationale": "Different explanation",
+         "evidence_refs": [f"e-{call}"]}
+        for call in ("c1", "c2")
+    ]
+    preserved = _assemble_final_transport(conflicting, protected)
+    assert [group["classification"] for group in preserved["call_classifications"]] == [
+        "avoidable_implemented", "avoidable_implemented",
+    ]
+    assert [finding["implementation_status"] for finding in preserved["confirmed_findings"]] == [
+        "implemented", "implemented",
+    ]
+
+    # An explicit compatible revision may supersede the earlier status.
+    protected["deep_review_evidence"] = [{"finding_id": "f1"}]
+    revision = {
+        **protected["prior_adjudication_results"][0]["confirmed_findings"][0],
+        "implementation_status": "unimplemented",
+    }
+    changed = _assemble_final_transport(
+        {**conflicting, "confirmed_findings": [revision],
+         "call_classifications": conflicting["call_classifications"][:1]}, protected,
+    )
+    assert changed["confirmed_findings"][0]["implementation_status"] == "unimplemented"
+    assert changed["call_classifications"][0]["classification"] == "avoidable_unimplemented"
+    assert changed["call_classifications"][1]["classification"] == "avoidable_implemented"
+
+    # A call move needs a source revision, one complete destination, and an
+    # explicit call judgment; partial source revisions still preserve calls.
+    move_packet = copy.deepcopy(protected)
+    move_packet["prior_adjudication_results"] = [source("l1", "c1", "f1")]
+    move_packet["prior_adjudication_results"][0]["confirmed_findings"][0]["affected_call_ids"] = ["c1", "c2"]
+    move_packet["prior_adjudication_results"][0]["confirmed_findings"][0]["implementation_status"] = "implemented"
+    move_packet["prior_adjudication_results"][0]["call_classifications"][0]["call_ids"] = ["c1", "c2"]
+    move_packet["prior_adjudication_results"][0]["call_classifications"][0]["classification"] = "avoidable_implemented"
+    moved_from = {**move_packet["prior_adjudication_results"][0]["confirmed_findings"][0], "affected_call_ids": ["c1"]}
+    moved_to = {**moved_from, "id": "f3", "affected_call_ids": ["c2"],
+                "producer_owner": "new cause", "implementation_status": "unimplemented"}
+    move_delta = {**delta,
+                  "candidate_decisions": [{"luna_candidate_id": "l2", "reason": "New cause",
+                                           "evidence_refs": ["e-c2"], "finding_ids": ["f3"], "risk_ids": []}],
+                  "plausible_risks": [], "confirmed_findings": [moved_from, moved_to],
+                  "call_classifications": conflicting["call_classifications"][1:]}
+    move_packet["luna_candidate_ids"] = ["l1", "l2"]
+    moved = _assemble_final_transport(move_delta, move_packet)
+    assert {item["id"]: item["affected_call_ids"] for item in moved["confirmed_findings"]} == {
+        "f1": ["c1"], "f3": ["c2"],
+    }
+
+    # Semantic conflicts that cannot be repaired without a new judgment are
+    # reported as one batch, including every affected finding.
+    protected["deep_review_evidence"] = [{"finding_id": "f1"}, {"finding_id": "f2"}]
+    bad_revisions = [
+        copy.deepcopy(result["confirmed_findings"][0])
+        for result in protected["prior_adjudication_results"]
+    ]
+    with pytest.raises(CreditAnalysisError, match="final merge conflicts") as error:
+        _assemble_final_transport(
+            {**conflicting, "confirmed_findings": bad_revisions}, protected,
+        )
+    assert "f1" in str(error.value) and "f2" in str(error.value)
+
+    # Exact repetitions are no-ops. Divergent outcomes and merge links are
+    # diagnosed together instead of stopping at the first ID collision.
+    repeated = copy.deepcopy(protected)
+    repeated["deep_review_evidence"] = []
+    risk = {"id": "r1", "description": "Possible issue", "affected_call_ids": ["c1"],
+            "missing_fact": "Cause", "verification_needed": ["Check cause"]}
+    review = {"id": "t1", "finding_id": "f1", "no_finding_reason": None}
+    merge = {"owning_producer": "owner", "control_key": "control",
+             "finding_id": "f1", "review_ids": ["t1"]}
+    repeated["prior_adjudication_results"][0]["plausible_risks"] = [risk]
+    repeated["prior_adjudication_results"][0]["temporary_control_reviews"] = [review]
+    repeated["prior_adjudication_results"][0]["temporary_control_merges"] = [merge]
+    duplicate_delta = {**delta,
+                       "confirmed_findings": [copy.deepcopy(repeated["prior_adjudication_results"][0]["confirmed_findings"][0])],
+                       "plausible_risks": [copy.deepcopy(risk)],
+                       "temporary_control_reviews": [copy.deepcopy(review)],
+                       "temporary_control_merges": [copy.deepcopy(merge)]}
+    duplicate = _assemble_final_transport(duplicate_delta, repeated)
+    assert len(duplicate["plausible_risks"]) == 1
+    assert len(duplicate["temporary_control_reviews"]) == 1
+    assert len(duplicate["temporary_control_merges"]) == 1
+    divergent_delta = copy.deepcopy(duplicate_delta)
+    divergent_delta["plausible_risks"][0]["description"] = "Different issue"
+    divergent_delta["temporary_control_reviews"][0]["no_finding_reason"] = "Different review"
+    divergent_delta["temporary_control_merges"][0]["finding_id"] = "f2"
+    with pytest.raises(CreditAnalysisError, match="final merge conflicts") as error:
+        _assemble_final_transport(divergent_delta, repeated)
+    assert all(name in str(error.value) for name in ("risk r1", "review t1", "merge owner/control"))
 
 
 @pytest.mark.parametrize("outcome", ["success", "failure", "interruption"])

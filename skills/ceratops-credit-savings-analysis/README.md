@@ -276,6 +276,15 @@ remain in per-call classifications even without a recurring finding. The 3%
 floor, rounded down against the frozen source-thread call count, prioritizes
 recurring fixes; it does not discard observed one-off waste.
 
+Final assembly checks all call overrides against earlier accepted findings in
+one pass. An override that would contradict an unchanged accepted finding is
+discarded; the earlier classification remains authoritative and the raw final
+response remains available as attempt evidence. A final finding revision can
+change the finding's status or move a call to one complete replacement finding.
+Exact repeated risks and temporary-control reviews are deduplicated. Remaining
+merge conflicts are reported together, without manufacturing a finding or
+silently changing accepted evidence.
+
 ### 6.2 Correction, retry, and omission
 
 Call `command_execute_orchestration(..., stop_on_validation_error=True)` when
