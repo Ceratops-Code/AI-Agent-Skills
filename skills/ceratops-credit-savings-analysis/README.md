@@ -276,14 +276,18 @@ remain in per-call classifications even without a recurring finding. The 3%
 floor, rounded down against the frozen source-thread call count, prioritizes
 recurring fixes; it does not discard observed one-off waste.
 
-Final assembly checks all call overrides against earlier accepted findings in
-one pass. An override that would contradict an unchanged accepted finding is
-discarded; the earlier classification remains authoritative and the raw final
-response remains available as attempt evidence. A final finding revision can
-change the finding's status or move a call to one complete replacement finding.
-Exact repeated risks and temporary-control reviews are deduplicated. Remaining
-merge conflicts are reported together, without manufacturing a finding or
-silently changing accepted evidence.
+Final assembly reconciles final additions against earlier accepted results in
+one controller pass. Earlier findings, classifications, risks, reviews, and
+owner/control merges win incompatible restatements. A deep-review revision can
+change a finding's status or move a call to one complete replacement finding
+when the revised call judgments remain consistent. An incompatible revision
+reverts to the accepted finding and call judgments. An incompatible new finding
+is omitted and its new candidate link is removed; a linked temporary-control
+review records why no finding was retained. Exact duplicates are deduplicated.
+The finalizer derives the observed affected-call count after consolidation.
+The raw final response remains available as attempt evidence. Missing coverage
+and contradictions inside accepted source results still fail validation; the
+controller does not manufacture a finding to conceal them.
 
 ### 6.2 Correction, retry, and omission
 

@@ -600,11 +600,11 @@ def _assemble_final_transport(
 
     The final model may judge candidates lacking an accepted decision and revise
     only the supplied deep-review findings. Existing candidate links remain
-    authoritative. Exact duplicate outcomes are merged with their evidence;
-    semantic differences remain separate for ordinary result validation. A
-    call override cannot silently invalidate an accepted finding: unsupported
-    overrides are dropped together, while genuinely conflicting revisions are
-    reported together after the complete merge has been inspected.
+    authoritative. Exact duplicate outcomes are merged with their evidence.
+    A call override cannot silently invalidate an accepted finding. Reconcile
+    incompatible final additions as one transport update: retain accepted
+    judgments, withdraw unsupported final findings and links, and leave raw
+    model output available in the saved attempt.
     """
     prior = list(packet["prior_adjudication_results"])
     recovery = packet.get("recovery_result")
@@ -629,10 +629,9 @@ def _assemble_final_transport(
                 }
                 for call_id in group["call_ids"]:
                     identity = str(call_id)
-                    if reject_disagreement and identity in details and details[identity] != detail:
-                        issues.append(f"conflicting classifications for {identity}")
-                    else:
-                        details[identity] = copy.deepcopy(detail)
+                    if reject_disagreement and identity in details:
+                        continue
+                    details[identity] = copy.deepcopy(detail)
         return details
 
     accepted_calls = call_details(sources)
@@ -689,17 +688,20 @@ def _assemble_final_transport(
     reviewed_findings = {
         str(item["finding_id"]) for item in packet["deep_review_evidence"]
     }
-    supplied_findings = {
-        str(item["id"]): item for item in delta["confirmed_findings"]
-    }
-    if len(supplied_findings) != len(delta["confirmed_findings"]):
-        issues.append("final response repeats a finding ID")
+    supplied_findings: dict[str, Mapping[str, Any]] = {}
+    ambiguous_findings: set[str] = set()
     for item in delta["confirmed_findings"]:
+        identity = str(item["id"])
+        if identity in supplied_findings and not same_outcome(item, supplied_findings[identity]):
+            ambiguous_findings.add(identity)
+        else:
+            supplied_findings.setdefault(identity, item)
+    for identity in ambiguous_findings:
+        supplied_findings.pop(identity)
+    for item in supplied_findings.values():
         identity = str(item["id"])
         if identity in findings:
             if identity not in reviewed_findings:
-                if not same_outcome(item, findings[identity]):
-                    issues.append(f"finding {identity} was revised outside deep review")
                 continue
             revised_finding_ids.add(identity)
             original = findings[identity]
@@ -714,9 +716,7 @@ def _assemble_final_transport(
                     other_id for other_id, other in supplied_findings.items()
                     if other_id != identity and call_id in other["affected_call_ids"]
                 ]
-                if len(destinations) > 1:
-                    issues.append(f"call {call_id} has multiple replacement findings")
-                elif len(destinations) == 1 and call_id in revised_calls:
+                if len(destinations) == 1 and call_id in revised_calls:
                     moved.add(call_id)
             retained_calls = [
                 call_id for call_id in original["affected_call_ids"]
@@ -726,7 +726,6 @@ def _assemble_final_transport(
                 *retained_calls, *updated["affected_call_ids"]
             ]))
             if not updated["affected_call_ids"]:
-                issues.append(f"finding {identity} would lose every affected call")
                 updated["affected_call_ids"] = list(original["affected_call_ids"])
             updated["evidence_refs"] = list(dict.fromkeys([
                 *original["evidence_refs"], *updated["evidence_refs"]
@@ -734,15 +733,100 @@ def _assemble_final_transport(
             findings[identity] = {**original, **updated}
         else:
             findings[identity] = copy.deepcopy(dict(item))
-    risks = indexed_outcomes("plausible_risks")
+    accepted_risks = indexed_outcomes("plausible_risks")
+    risks = copy.deepcopy(accepted_risks)
+    supplied_risks: dict[str, Mapping[str, Any]] = {}
+    ambiguous_risks: set[str] = set()
     for item in delta["plausible_risks"]:
         identity = str(item["id"])
-        if identity in risks:
-            if same_outcome(item, risks[identity]):
-                continue
-            issues.append(f"risk {identity} conflicts with an accepted risk")
+        if identity in supplied_risks and not same_outcome(item, supplied_risks[identity]):
+            ambiguous_risks.add(identity)
+        else:
+            supplied_risks.setdefault(identity, item)
+    withdrawn_risk_links = set(ambiguous_risks)
+    for identity, item in supplied_risks.items():
+        if identity in ambiguous_risks:
+            continue
+        if identity in accepted_risks:
+            if not same_outcome(item, accepted_risks[identity]):
+                withdrawn_risk_links.add(identity)
             continue
         risks[identity] = copy.deepcopy(dict(item))
+
+    classifications = {**accepted_calls, **revised_calls}
+    if set(classifications) != set(calls):
+        missing_calls = sorted(set(calls) - set(classifications))
+        extra_calls = sorted(set(classifications) - set(calls))
+        issues.append(f"call coverage differs: missing={missing_calls}, extra={extra_calls}")
+
+    def finding_conflicts(finding: Mapping[str, Any]) -> bool:
+        if finding["waste_kind"] != "model-calls":
+            return False
+        labels = [
+            classifications.get(call_id, {}).get("classification")
+            for call_id in finding["affected_call_ids"]
+        ]
+        if any(label not in {"avoidable_implemented", "avoidable_unimplemented"} for label in labels):
+            return True
+        if finding["implementation_status"] == "implemented":
+            return any(label != "avoidable_implemented" for label in labels)
+        return "avoidable_unimplemented" not in labels
+
+    # An unchanged accepted finding constrains its calls. Restore conflicting
+    # final overrides in a batch; a deep-review revision gets its own check.
+    protected = [
+        finding for identity, finding in findings.items()
+        if identity in accepted_finding_ids and identity not in revised_finding_ids
+        and finding["waste_kind"] == "model-calls"
+    ]
+    restore: set[str] = set()
+    for finding in protected:
+        if not finding_conflicts(finding):
+            continue
+        restore.update(
+            call_id for call_id in finding["affected_call_ids"]
+            if call_id in revised_calls and call_id in accepted_calls
+        )
+    for call_id in restore:
+        classifications[call_id] = copy.deepcopy(accepted_calls[call_id])
+
+    # Revert incompatible deep-review revisions together. Restoring an older
+    # call can affect another revision, so close that dependency inside this
+    # deterministic pass without requesting another model response.
+    accepted_findings = indexed_outcomes("confirmed_findings")
+    rejected_revisions: set[str] = set()
+    while True:
+        invalid_revisions = {
+            identity for identity in revised_finding_ids
+            if finding_conflicts(findings[identity])
+        }
+        if not invalid_revisions:
+            break
+        rejected_revisions.update(invalid_revisions)
+        for identity in invalid_revisions:
+            findings[identity] = copy.deepcopy(accepted_findings[identity])
+            for call_id in accepted_findings[identity]["affected_call_ids"]:
+                if call_id in accepted_calls:
+                    classifications[call_id] = copy.deepcopy(accepted_calls[call_id])
+        revised_finding_ids.difference_update(invalid_revisions)
+
+    withdrawn_findings = ambiguous_findings - accepted_finding_ids
+    withdrawn_findings.update(
+        identity for identity, finding in findings.items()
+        if identity not in accepted_finding_ids and finding_conflicts(finding)
+    )
+    for identity in withdrawn_findings:
+        findings.pop(identity, None)
+    withdrawn_finding_links = set(withdrawn_findings)
+    withdrawn_finding_links.update(rejected_revisions)
+    withdrawn_finding_links.update(
+        identity for identity in ambiguous_findings if identity in accepted_finding_ids
+    )
+    withdrawn_finding_links.update(
+        identity for identity, item in supplied_findings.items()
+        if identity in accepted_finding_ids and identity not in reviewed_findings
+        and not same_outcome(item, accepted_findings[identity])
+    )
 
     def dedupe_outcomes(
         records: Mapping[str, Mapping[str, Any]], key: str
@@ -784,20 +868,41 @@ def _assemble_final_transport(
     ordered_decisions = []
     for candidate_id in candidate_order:
         decision = decisions[candidate_id]
+        if candidate_id in missing:
+            removed = bool(
+                set(decision["finding_ids"]) & withdrawn_finding_links
+                or set(decision["risk_ids"]) & withdrawn_risk_links
+            )
+            decision["finding_ids"] = [
+                identity for identity in decision["finding_ids"]
+                if identity not in withdrawn_finding_links
+            ]
+            decision["risk_ids"] = [
+                identity for identity in decision["risk_ids"]
+                if identity not in withdrawn_risk_links
+            ]
+            if removed:
+                decision["reason"] += " Final outcome omitted because it conflicted with accepted accounting."
         decision["finding_ids"] = redirected(decision["finding_ids"], finding_redirects)
         decision["risk_ids"] = redirected(decision["risk_ids"], risk_redirects)
+        decision["disposition"] = _candidate_disposition(
+            decision["finding_ids"], decision["risk_ids"]
+        )
         ordered_decisions.append(decision)
 
     reviews = indexed_outcomes("temporary_control_reviews")
+    accepted_review_ids = set(reviews)
     for item in delta["temporary_control_reviews"]:
         identity = str(item["id"])
         if identity in reviews:
-            if same_outcome(item, reviews[identity]):
-                continue
-            issues.append(f"temporary-control review {identity} conflicts with an accepted review")
             continue
         reviews[identity] = copy.deepcopy(dict(item))
     for item in reviews.values():
+        if item["finding_id"] in withdrawn_findings:
+            item["finding_id"] = None
+            item["no_finding_reason"] = (
+                "The proposed finding conflicted with accepted call accounting."
+            )
         if item["finding_id"] is not None:
             item["finding_id"] = finding_redirects.get(str(item["finding_id"]), str(item["finding_id"]))
 
@@ -806,75 +911,32 @@ def _assemble_final_transport(
         for item in source["temporary_control_merges"]:
             key = (str(item["owning_producer"]), str(item["control_key"]))
             finding_id = finding_redirects.get(str(item["finding_id"]), str(item["finding_id"]))
+            if finding_id in withdrawn_findings:
+                continue
+            eligible_reviews = [
+                review_id for review_id in item["review_ids"]
+                if review_id in reviews and reviews[review_id]["finding_id"] == finding_id
+            ]
+            if not eligible_reviews:
+                continue
             if key not in merges:
-                merges[key] = {**item, "finding_id": finding_id}
+                merges[key] = {**item, "finding_id": finding_id, "review_ids": eligible_reviews}
             elif merges[key]["finding_id"] != finding_id:
-                issues.append(f"temporary-control merge {key[0]}/{key[1]} has conflicting findings")
+                # Preserve the earlier owner/control association. A final
+                # review with the displaced link becomes explicitly unlinked.
+                for review_id in eligible_reviews:
+                    if review_id not in accepted_review_ids:
+                        reviews[review_id]["finding_id"] = None
+                        reviews[review_id]["no_finding_reason"] = (
+                            "The proposed control merge conflicted with an accepted merge."
+                        )
             else:
                 merges[key]["review_ids"] = list(dict.fromkeys([
-                    *merges[key]["review_ids"], *item["review_ids"]
+                    *merges[key]["review_ids"], *eligible_reviews
                 ]))
-
-    classifications = {**accepted_calls, **revised_calls}
-    if set(classifications) != set(calls):
-        missing = sorted(set(calls) - set(classifications))
-        extra = sorted(set(classifications) - set(calls))
-        issues.append(f"call coverage differs: missing={missing}, extra={extra}")
-
-    # Earlier accepted findings are authoritative unless the final response
-    # explicitly revises their membership or status. Restore all unsupported
-    # conflicting overrides in one pass, then check every remaining finding.
-    protected_findings = [
-        item for item in merged_findings
-        if item["waste_kind"] == "model-calls"
-        and item["id"] in accepted_finding_ids
-        and item["id"] not in revised_finding_ids
-    ]
-    restore: set[str] = set()
-    for finding in protected_findings:
-        finding_calls = finding["affected_call_ids"]
-        for call_id in finding_calls:
-            detail = classifications.get(call_id)
-            if detail is None or call_id not in revised_calls:
-                continue
-            label = detail["classification"]
-            if label not in {"avoidable_implemented", "avoidable_unimplemented"} or (
-                finding["implementation_status"] == "implemented"
-                and label != "avoidable_implemented"
-            ):
-                restore.add(call_id)
-        if finding["implementation_status"] != "implemented" and not any(
-            classifications.get(call_id, {}).get("classification") == "avoidable_unimplemented"
-            for call_id in finding_calls
-        ):
-            restore.update(
-                call_id for call_id in finding_calls
-                if call_id in revised_calls
-                and accepted_calls.get(call_id, {}).get("classification") == "avoidable_unimplemented"
-            )
-    for call_id in restore:
-        if call_id in accepted_calls:
-            classifications[call_id] = copy.deepcopy(accepted_calls[call_id])
-        else:
-            issues.append(f"call {call_id} conflicts with an accepted finding without an accepted classification")
-
     for finding in merged_findings:
-        if finding["waste_kind"] != "model-calls":
-            continue
-        labels = [
-            classifications.get(call_id, {}).get("classification")
-            for call_id in finding["affected_call_ids"]
-        ]
-        if any(label not in {"avoidable_implemented", "avoidable_unimplemented"} for label in labels):
-            issues.append(f"finding {finding['id']} has non-avoidable affected calls")
-        elif finding["implementation_status"] == "implemented" and any(
-            label != "avoidable_implemented" for label in labels
-        ):
-            issues.append(f"implemented finding {finding['id']} has unimplemented calls")
-        elif finding["implementation_status"] != "implemented" and (
-            "avoidable_unimplemented" not in labels
-        ):
-            issues.append(f"unimplemented finding {finding['id']} has no unimplemented calls")
+        if finding_conflicts(finding):
+            issues.append(f"accepted finding {finding['id']} conflicts with call accounting")
     if issues:
         raise CreditAnalysisError("final merge conflicts: " + "; ".join(sorted(set(issues))))
 

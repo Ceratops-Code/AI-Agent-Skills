@@ -240,21 +240,24 @@ def test_final_assembly_merges_exact_prior_findings_without_model_copy() -> None
         "f1": ["c1"], "f3": ["c2"],
     }
 
-    # Semantic conflicts that cannot be repaired without a new judgment are
-    # reported as one batch, including every affected finding.
+    # Incompatible deep-review revisions revert together to accepted results.
     protected["deep_review_evidence"] = [{"finding_id": "f1"}, {"finding_id": "f2"}]
     bad_revisions = [
         copy.deepcopy(result["confirmed_findings"][0])
         for result in protected["prior_adjudication_results"]
     ]
-    with pytest.raises(CreditAnalysisError, match="final merge conflicts") as error:
-        _assemble_final_transport(
-            {**conflicting, "confirmed_findings": bad_revisions}, protected,
-        )
-    assert "f1" in str(error.value) and "f2" in str(error.value)
+    restored = _assemble_final_transport(
+        {**conflicting, "confirmed_findings": bad_revisions}, protected,
+    )
+    assert [item["implementation_status"] for item in restored["confirmed_findings"]] == [
+        "implemented", "implemented",
+    ]
+    assert [item["classification"] for item in restored["call_classifications"]] == [
+        "avoidable_implemented", "avoidable_implemented",
+    ]
 
-    # Exact repetitions are no-ops. Divergent outcomes and merge links are
-    # diagnosed together instead of stopping at the first ID collision.
+    # Exact repetitions are no-ops. Divergent final restatements all yield to
+    # earlier accepted risks, reviews, and owner/control associations.
     repeated = copy.deepcopy(protected)
     repeated["deep_review_evidence"] = []
     risk = {"id": "r1", "description": "Possible issue", "affected_call_ids": ["c1"],
@@ -278,9 +281,76 @@ def test_final_assembly_merges_exact_prior_findings_without_model_copy() -> None
     divergent_delta["plausible_risks"][0]["description"] = "Different issue"
     divergent_delta["temporary_control_reviews"][0]["no_finding_reason"] = "Different review"
     divergent_delta["temporary_control_merges"][0]["finding_id"] = "f2"
-    with pytest.raises(CreditAnalysisError, match="final merge conflicts") as error:
-        _assemble_final_transport(divergent_delta, repeated)
-    assert all(name in str(error.value) for name in ("risk r1", "review t1", "merge owner/control"))
+    reconciled = _assemble_final_transport(divergent_delta, repeated)
+    assert reconciled["plausible_risks"][0]["description"] == "Possible issue"
+    assert reconciled["temporary_control_reviews"][0]["no_finding_reason"] is None
+    assert reconciled["temporary_control_merges"][0]["finding_id"] == "f1"
+    conflicting_merge = _assemble_final_transport(
+        {**delta,
+         "temporary_control_reviews": [{
+             "id": "t2", "finding_id": "f2", "no_finding_reason": None,
+         }],
+         "temporary_control_merges": [{
+             **merge, "finding_id": "f2", "review_ids": ["t2"],
+         }]},
+        repeated,
+    )
+    assert conflicting_merge["temporary_control_merges"][0]["finding_id"] == "f1"
+    assert conflicting_merge["temporary_control_reviews"][1]["finding_id"] is None
+
+    # A new finding with incompatible per-call accounting is withdrawn along
+    # with its new candidate link, without changing the accepted finding.
+    new_packet = copy.deepcopy(protected)
+    new_packet["deep_review_evidence"] = []
+    new_packet["prior_adjudication_results"] = [source("l1", "c1", "f1")]
+    new_packet["luna_candidate_ids"] = ["l1", "l2"]
+    new_finding = {
+        **new_packet["prior_adjudication_results"][0]["confirmed_findings"][0],
+        "id": "f3", "producer_owner": "new cause", "affected_call_ids": ["c2"],
+    }
+    new_delta = {
+        **delta,
+        "candidate_decisions": [{
+            "luna_candidate_id": "l2", "reason": "A claimed second finding",
+            "evidence_refs": ["e-c2"], "finding_ids": ["f3"], "risk_ids": [],
+        }],
+        "confirmed_findings": [new_finding],
+        "temporary_control_reviews": [{
+            "id": "t3", "finding_id": "f3", "no_finding_reason": None,
+        }],
+        "call_classifications": [{
+            "call_ids": ["c2"], "classification": "necessary",
+            "reason_code": "required_for_task", "rationale": "Required work",
+            "evidence_refs": ["e-c2"],
+        }],
+    }
+    withdrawn = _assemble_final_transport(new_delta, new_packet)
+    assert [item["id"] for item in withdrawn["confirmed_findings"]] == ["f1"]
+    assert withdrawn["candidate_decisions"][1]["finding_ids"] == []
+    assert withdrawn["candidate_decisions"][1]["disposition"] == "dismissed-candidate"
+    assert "omitted" in withdrawn["candidate_decisions"][1]["reason"]
+    assert withdrawn["temporary_control_reviews"][0]["finding_id"] is None
+    assert "conflicted" in withdrawn["temporary_control_reviews"][0]["no_finding_reason"]
+
+    ambiguous = _assemble_final_transport(
+        {**new_delta,
+         "confirmed_findings": [new_finding, {**new_finding, "problem_summary": "Another cause"}],
+         "temporary_control_reviews": []},
+        new_packet,
+    )
+    assert [item["id"] for item in ambiguous["confirmed_findings"]] == ["f1"]
+    assert ambiguous["candidate_decisions"][1]["finding_ids"] == []
+    duplicate_call = _assemble_final_transport(
+        {**new_delta,
+         "call_classifications": [
+             *new_delta["call_classifications"],
+             {**new_delta["call_classifications"][0],
+              "classification": "avoidable_unimplemented", "reason_code": None},
+         ],
+         "temporary_control_reviews": []},
+        new_packet,
+    )
+    assert duplicate_call["candidate_decisions"][1]["finding_ids"] == []
 
 
 @pytest.mark.parametrize("outcome", ["success", "failure", "interruption"])
