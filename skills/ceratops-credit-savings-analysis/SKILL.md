@@ -226,10 +226,11 @@ The next three sections govern `deep-thread-analysis` and the five named surface
   plausible risk for that lens remains in the final result, and every capacity
   omission is explicit. Do not require a semantic dismissal record for every
   call-surface pair.
-- `deep-thread-analysis` is complete only after the frozen manifest accounts for every
-  completed run as reviewed or exactly omitted, proves ordered non-overlapping
-  parts and candidate routing, and records immutable Luna, Sol-reviewer,
-  direct-evidence-reviewer, and final-task identities and hashes.
+- `deep-thread-analysis` is complete only after the frozen manifest
+  accounts for every completed run as reviewed or exactly omitted,
+  proves ordered non-overlapping parts and candidate routing, and records
+  immutable Luna, Sol-reviewer, direct-evidence-reviewer, and final-task
+  identities and hashes.
   Temporary-control contributions are merged once by owner/control; every
   retained candidate has one disposition;
   every confirmed finding remains; every reviewed source call has one primary

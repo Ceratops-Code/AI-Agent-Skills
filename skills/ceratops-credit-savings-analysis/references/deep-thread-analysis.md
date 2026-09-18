@@ -145,9 +145,10 @@ when any omission exists.
 
 ## Output Contract
 
-Begin the chat report with the selected root and reviewed descendant counts. Then give total
-model calls, confirmed avoidable calls, and unassessed calls from retained
-results. Report confirmed context/output waste even when it saves no calls.
+Begin the chat report with the selected root and reviewed descendant counts.
+Then give total model calls, confirmed avoidable calls, and unassessed calls
+from retained results. Report confirmed context/output waste even when it
+saves no calls.
 If analysis is incomplete or blocked, report that state and the exact
 unassessed scope.
 
