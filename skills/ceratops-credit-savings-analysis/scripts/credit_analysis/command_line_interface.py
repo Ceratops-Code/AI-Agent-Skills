@@ -62,6 +62,59 @@ def command_select_recent(
     }
 
 
+def command_quick_window(
+    days: int, as_of_text: str, usage_path: pathlib.Path
+) -> dict[str, Any]:
+    """Count the completed-run suffix inside a frozen recent-days window."""
+
+    if days < 1:
+        raise CreditAnalysisError("days must be positive")
+    collector = _load_evidence_collector()
+    try:
+        as_of = collector.parse_utc_timestamp(as_of_text, "as_of")
+    except RuntimeError as exc:
+        raise CreditAnalysisError(str(exc)) from exc
+    if as_of > dt.datetime.now(dt.timezone.utc) + dt.timedelta(minutes=5):
+        raise CreditAnalysisError("as_of cannot be in the future")
+    evidence = json.loads(usage_path.expanduser().read_text(encoding="utf-8"))
+    if (
+        not isinstance(evidence, dict)
+        or evidence.get("schema") != collector.USAGE_EVIDENCE_SCHEMA
+    ):
+        raise CreditAnalysisError("quick window requires collector usage evidence")
+    window = evidence.get("window")
+    if not isinstance(window, dict) or window.get("mode") != "full_thread":
+        raise CreditAnalysisError("quick window requires full-thread usage evidence")
+    runs = evidence.get("runs")
+    if not isinstance(runs, list):
+        raise CreditAnalysisError("usage evidence runs are invalid")
+    start = as_of - dt.timedelta(days=days)
+    selected: list[str] = []
+    for index, run in enumerate(runs):
+        if (
+            not isinstance(run, dict)
+            or not isinstance(run.get("turn_id"), str)
+            or not run["turn_id"]
+        ):
+            raise CreditAnalysisError(f"usage evidence run {index + 1} is invalid")
+        try:
+            started_at = collector.parse_utc_timestamp(
+                run.get("started_at"), f"usage evidence run {index + 1} started_at"
+            )
+        except RuntimeError as exc:
+            raise CreditAnalysisError(str(exc)) from exc
+        if start < started_at <= as_of:
+            selected.append(run["turn_id"])
+    suffix = [run["turn_id"] for run in runs[-len(selected):]] if selected else []
+    if selected != suffix:
+        raise CreditAnalysisError("quick window runs are not a completed-run suffix")
+    return {
+        "last_runs": len(selected),
+        "first_run": selected[0] if selected else None,
+        "last_run": selected[-1] if selected else None,
+    }
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -102,6 +155,10 @@ def build_parser() -> argparse.ArgumentParser:
     select_recent.add_argument("--days", required=True, type=int)
     select_recent.add_argument("--as-of")
     select_recent.add_argument("--output", required=True, type=pathlib.Path)
+    quick_window = commands.add_parser("quick-window")
+    quick_window.add_argument("--days", required=True, type=int)
+    quick_window.add_argument("--as-of", required=True)
+    quick_window.add_argument("--usage-evidence", required=True, type=pathlib.Path)
     return parser
 
 
@@ -144,6 +201,8 @@ def main(argv: list[str] | None = None) -> int:
             output = command_status_batch(args.state)
         elif args.command == "select-recent":
             output = command_select_recent(args.days, args.as_of, args.output)
+        elif args.command == "quick-window":
+            output = command_quick_window(args.days, args.as_of, args.usage_evidence)
         else:
             command_finalize_batch(args.state)
             output = "OK"

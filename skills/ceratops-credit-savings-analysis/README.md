@@ -2,9 +2,9 @@
 
 This is the authoritative architecture and maintenance reference for the
 `ceratops-credit-savings-analysis` skill. The operational instructions remain
-in [SKILL.md](SKILL.md) and its action references. The versioned contract and
-Python controller remain authoritative for executable behavior; this document
-explains how those parts work together and must be updated when they change.
+in [SKILL.md](SKILL.md) and its action references. The versioned contract,
+Python controller, and session collector own their respective executable
+behavior; this document explains how they work together.
 
 ```design-document
 {
@@ -16,7 +16,7 @@ explains how those parts work together and must be updated when they change.
   "source_of_truth": [
     {
       "path": "skills/ceratops-credit-savings-analysis/scripts/credit-analysis-contract.json",
-      "role": "Versioned executable policy, model, limit, action, and schema registry"
+      "role": "Versioned deep-controller policy, model, limit, action, and schema registry"
     },
     {
       "path": "skills/ceratops-credit-savings-analysis/scripts/credit_analysis/luna_sol_analysis.py",
@@ -41,6 +41,10 @@ explains how those parts work together and must be updated when they change.
     {
       "path": "skills/ceratops-credit-savings-analysis/references/full-analysis.md",
       "role": "Full-analysis workflow and completion contract"
+    },
+    {
+      "path": "skills/ceratops-credit-savings-analysis/references/quick-analysis.md",
+      "role": "Bounded ledger scan workflow and completion contract"
     }
   ],
   "update_triggers": [
@@ -75,9 +79,9 @@ explains how those parts work together and must be updated when they change.
 
 The skill analyzes retained Codex session evidence to find avoidable **model
 calls** and avoidable context or output volume. Shell commands and tool calls
-are supporting evidence; they are not the unit being counted. The skill can
-analyze one thread, one named waste surface, or every thread selected by a
-recent-thread or recent-days batch.
+are supporting evidence; they are not the unit being counted. `quick-analysis`
+uses a compact ledger for a bounded thread or recent-thread scan. The deep
+controller analyzes one thread, one named waste surface, or a per-thread batch.
 
 Its readers are operators running an analysis and maintainers changing the
 controller. Operators need to know which sources are eligible, what gets
@@ -104,7 +108,8 @@ result keeps all confirmed findings.
 
 ## 2 Constraints and assumptions
 
-The following constraints are enforced by the skill and controller:
+The following constraints govern the deep controller. The quick action uses
+the collector and its own action reference without Luna or Sol children.
 
 - Analysis requests set `mutation_authority` to `false`.
 - A single-thread run uses an exact source identity. A batch freezes an exact
@@ -141,9 +146,11 @@ the proven input envelope.
 
 ## 3 System context
 
-The analysis controller is a local, file-backed process. It reads session and
-instruction evidence, launches read-only Codex child processes, validates their
-structured results, and writes retained evidence and reports.
+The deep analysis controller is a local, file-backed process. It reads session
+and instruction evidence, launches read-only Codex child processes, validates
+their structured results, and writes retained evidence and reports. The quick
+action reads local session evidence through the collector and uses the same
+read-only recent-thread selector without model children.
 
 ```text
 User / calling Codex thread
@@ -171,7 +178,8 @@ authority to edit the analyzed producer.
 
 ## 4 Solution strategy
 
-The controller separates prioritized discovery from higher-precision review:
+The deep controller separates prioritized discovery from higher-precision
+review:
 
 1. Deterministic code selects threads and completed runs, collects evidence
    once, freezes identities and hashes, and plans capacity.
@@ -208,7 +216,7 @@ supports ledger analysis without model orchestration.
 
 | Container | Responsibility | Implementation |
 | --- | --- | --- |
-| Public instruction layer | Selects the public action, defines policy, completion, and presentation | [SKILL.md](SKILL.md), [full-analysis.md](references/full-analysis.md), and the other action references |
+| Public instruction layer | Selects the public action, defines policy, completion, and presentation | [SKILL.md](SKILL.md), [quick-analysis.md](references/quick-analysis.md), and the other action references |
 | Stable executable entry point | Keeps one script path while forwarding to modular implementation | [credit-analysis-workflow.py](scripts/credit-analysis-workflow.py) |
 | CLI dispatcher | Parses `run`, `plan`, `execute`, compatibility, batch, and read-only recent-thread selection commands | [command_line_interface.py](scripts/credit_analysis/command_line_interface.py) |
 | Contract loader and evidence core | Validates the contract and requests, collects single-thread evidence, and retains the sequential compatibility controller | [single_thread_analysis.py](scripts/credit_analysis/single_thread_analysis.py) |
@@ -237,6 +245,18 @@ behaviors have been exercised. This README is the authoritative explanation of
 that design; it does not override the executable sources.
 
 ## 6 Runtime behavior
+
+### Quick ledger analysis
+
+`quick-analysis` uses `select-recent` only when choosing threads by a recent
+day interval. For each thread, the session collector writes a compact usage
+summary. `quick-window` reads that summary's evidence and counts the completed
+run suffix started in `(as_of - days, as_of]`; zero means that thread has no
+completed runs in the interval. The action uses the same `--last-runs` count
+for windowed summary, selected semantic evidence, and final classification.
+The collector rejects incomplete or duplicate call classifications. The quick
+action keeps detailed findings and exclusions in caller-owned machine evidence
+and presents at most three recommendations.
 
 ### 6.1 Fresh single-thread full analysis
 
@@ -352,6 +372,9 @@ recent thread identities, sessions, index fingerprint, and exclusions to a
 caller-owned file. It does not prepare controller tasks or launch models.
 `--as-of` can freeze an exact UTC boundary; otherwise selection uses the
 invocation time. The action using the selection owns the output file's cleanup.
+`quick-window` reads collector usage evidence and returns a compact completed
+run count for the same boundary and day interval. It rejects a noncontiguous
+run window instead of widening the scan.
 
 `prepare-batch --request REQUEST` reads the Codex thread index at one frozen
 `as_of` timestamp. A `recent_days` selector includes entries whose index
@@ -477,6 +500,7 @@ python scripts/credit-analysis-workflow.py plan --request REQUEST
 python scripts/credit-analysis-workflow.py execute --state STATE
 python scripts/credit-analysis-workflow.py orchestration-status --state STATE
 python scripts/credit-analysis-workflow.py select-recent --days DAYS --output OUTPUT [--as-of UTC]
+python scripts/credit-analysis-workflow.py quick-window --days DAYS --as-of UTC --usage-evidence FILE
 python scripts/credit-analysis-workflow.py prepare-batch --request REQUEST
 python scripts/credit-analysis-workflow.py status-batch --state STATE
 python scripts/credit-analysis-workflow.py advance-batch --state STATE --result RESULT
@@ -540,6 +564,7 @@ needed to claim a measured result.
 | Scenario | Stimulus and condition | Expected response and threshold | Verification |
 | --- | --- | --- | --- |
 | Deterministic recent-days selection | The same index, request, and UTC `as_of` are prepared twice | The frozen selected thread IDs and order are identical; active and archived session locations are eligible | Batch selector behavior tests and manifest comparison |
+| Bounded quick window | A selected thread has older and recent completed runs | The quick path returns only the recent completed-run suffix for `--last-runs` and rejects a noncontiguous window | Quick-window CLI behavior test |
 | Unfinished-thread coverage | A selected active thread contains completed runs and one running run | All completed runs enter evidence; the running run is reported unassessed | Session collector and batch tests |
 | Bounded discovery | Prepared evidence exceeds one Luna input but fits the global budget | The minimum ordered parts are admitted, no more than 15 run concurrently, and attempts never exceed 70 | Capacity and orchestration tests plus state totals |
 | Invalid Luna output | A Luna result violates schema or its byte allowance | The exact task is retried at most once with a smaller allowance, then omitted with identity, bytes, and reason | Response and retry tests |
@@ -580,6 +605,9 @@ needed to claim a measured result.
 - **A batch is per-thread before aggregation.** Cross-thread grouping improves
   presentation but does not retroactively change each thread's model-call
   classifications or totals.
+- **Quick analysis is a focused ledger review.** Its 80% highest-call minimum
+  prioritizes inspection; a call lacking semantic evidence is not reported as
+  classified.
 
 ## 12 Glossary and references
 
@@ -609,6 +637,7 @@ needed to claim a measured result.
 Operational references:
 
 - [Skill instructions](SKILL.md)
+- [Quick-analysis action](references/quick-analysis.md)
 - [Full-analysis action](references/full-analysis.md)
 - [Executable contract](scripts/credit-analysis-contract.json)
 - [Stable controller entry point](scripts/credit-analysis-workflow.py)

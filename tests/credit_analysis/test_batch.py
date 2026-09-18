@@ -372,7 +372,7 @@ def test_credit_analysis_batch_selects_recent_threads_and_projects_once(
         "boundary": "00000000-0000-4000-8000-000000000019",
         "future": "00000000-0000-4000-8000-00000000001a",
     }
-    indexed_credit_analysis_session(
+    alpha_session = indexed_credit_analysis_session(
         codex_home,
         thread_id=thread_ids["alpha_new"],
         thread_name="Alpha new",
@@ -482,6 +482,61 @@ def test_credit_analysis_batch_selects_recent_threads_and_projects_once(
     )
     assert invalid_result.returncode == 2
     assert not invalid_selection.exists()
+    collector = workflow._load_evidence_collector()
+    rows = collector.load_rows(alpha_session)
+    full_evidence = collector.build_session_evidence(
+        rows, session=alpha_session, last_runs=None
+    )
+    usage_evidence = tmp_path / "quick-usage.json"
+    write_json_file(
+        usage_evidence,
+        collector.build_usage_evidence(rows, full_evidence, None),
+    )
+    window_result = run_credit_analysis_workflow(
+        "quick-window",
+        "--days",
+        "1",
+        "--as-of",
+        "2026-08-02T00:00:30Z",
+        "--usage-evidence",
+        str(usage_evidence),
+    )
+    assert window_result.returncode == 0, window_result.stderr
+    assert json.loads(window_result.stdout) == {
+        "last_runs": 2,
+        "first_run": "turn-2",
+        "last_run": "turn-3",
+    }
+    noncontiguous = json.loads(usage_evidence.read_text(encoding="utf-8"))
+    noncontiguous["runs"][-1]["started_at"] = "2026-08-03T00:00:00Z"
+    noncontiguous_path = tmp_path / "quick-usage-noncontiguous.json"
+    write_json_file(noncontiguous_path, noncontiguous)
+    rejected_window = run_credit_analysis_workflow(
+        "quick-window",
+        "--days",
+        "1",
+        "--as-of",
+        "2026-08-02T00:00:30Z",
+        "--usage-evidence",
+        str(noncontiguous_path),
+    )
+    assert rejected_window.returncode == 2
+    assert "completed-run suffix" in rejected_window.stderr
+    already_windowed = json.loads(usage_evidence.read_text(encoding="utf-8"))
+    already_windowed["window"]["mode"] = "last_runs"
+    already_windowed_path = tmp_path / "quick-usage-already-windowed.json"
+    write_json_file(already_windowed_path, already_windowed)
+    rejected_subset = run_credit_analysis_workflow(
+        "quick-window",
+        "--days",
+        "1",
+        "--as-of",
+        "2026-08-02T00:00:30Z",
+        "--usage-evidence",
+        str(already_windowed_path),
+    )
+    assert rejected_subset.returncode == 2
+    assert "full-thread usage evidence" in rejected_subset.stderr
     cases: list[tuple[str, dict[str, Any], list[str]]] = [
         (
             "count-overall",

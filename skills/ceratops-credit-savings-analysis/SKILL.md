@@ -1,6 +1,6 @@
 ---
 name: ceratops-credit-savings-analysis
-description: Analyze one credit-waste surface or every completed run in one or more threads while preserving every confirmed finding without modifying the analyzed producer or workflow.
+description: Analyze avoidable credit spend with a quick recent-thread scan, a deep thread analysis, or one named waste surface without modifying the analyzed work.
 ---
 
 # Ceratops Credit Savings Analysis
@@ -8,6 +8,7 @@ description: Analyze one credit-waste surface or every completed run in one or m
 ## Goal
 
 Analyze completed model-call evidence for avoidable credit spend. Use
+`quick-analysis` for a requested quick or recent-thread scan,
 `full-analysis` for a generic single-thread or closure request, and one named
 surface only when the user names it. This skill recommends controls but never
 applies them.
@@ -22,6 +23,8 @@ retry, recovery, or deployment behavior.
 
 ### Action References
 
+- Run a bounded ledger analysis of one or more recent threads:
+  `references/quick-analysis.md`
 - Run the all-run fixed-surface analysis:
   `references/full-analysis.md`
 - Analyze deterministic helper contracts: `references/helper-contracts.md`
@@ -29,6 +32,9 @@ retry, recovery, or deployment behavior.
 - Analyze rework and validation: `references/rework-validation.md`
 - Analyze tool and handoff flow: `references/tool-flow.md`
 - Analyze instructions and reasoning flow: `references/instruction-reasoning.md`
+
+The next three sections govern `full-analysis` and the five named surfaces.
+`quick-analysis` uses its own evidence, classification, and completion rules.
 
 ## Shared Evidence And Controller Invariants
 
@@ -313,6 +319,6 @@ retry, recovery, or deployment behavior.
   chunking, consolidation, `collect`, `reconcile`, `synthesis`, `apply`, or
   `modify` as public actions.
 - Stop blocked when a selected source cannot be resolved, the completed-run
-  selection is invalid, controller evidence is stale or mismatched, or required
-  semantic evidence is unavailable. Do not substitute visible conversation
-  context for controller evidence.
+  selection is invalid, or required semantic evidence is unavailable. For
+  controller actions, stale or mismatched controller evidence also blocks.
+  Do not substitute visible conversation context for collected evidence.
