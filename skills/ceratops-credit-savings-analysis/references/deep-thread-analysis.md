@@ -1,9 +1,10 @@
-# Full Analysis Action
+# Deep Thread Analysis Action
 
 ## Goal
 
-Run the all-run controller plan. Treat every completed run as one semantic unit,
-use Luna for prioritized discovery across all five surfaces together, then use
+Analyze one selected root thread and its retained descendants. Treat every
+completed run as one semantic unit. Use Luna for prioritized discovery across all
+five surfaces together, then use
 capacity-sized Sol review, direct-evidence inspection, and final synthesis.
 Preserve every confirmed finding and report every capacity omission.
 
@@ -12,26 +13,18 @@ Preserve every confirmed finding and report every capacity omission.
 - Use the source, completed-run selection, task temporary root, retained evidence
   path inside that root, optional pricing profile, and contract version required
   by the parent.
-- For one source, accept an explicit thread ID or session path, the current
+- Accept exactly one root source: an explicit thread ID or session path, the current
   thread, or one exact thread name. Resolve the current thread only from
   `CODEX_THREAD_ID`; resolve a name against the latest thread-index records and
   stop on zero or multiple matches.
-- For a per-thread batch, accept either the latest positive thread count or all
-  threads updated during a positive day interval, optionally filtered by one
-  exact project name, absolute path, or repository URL. Freeze an exact UTC
-  `as_of` boundary. Date selection uses thread-index `updated_at`; every
-  selected thread is then analyzed over all of its completed runs.
-- Include unfinished and archived tasks in the requested selection. Report
+- Include unfinished and archived tasks when the selected root has eligible
+  completed runs. Report
   still-running runs as not yet assessed.
-- Use the controller-owned batch request schema with action `full-analysis`,
-  mode `per-thread-batch`, selector, `as_of`, caller-selected task root and
-  retained manifest output inside that root, optional pricing profile, both
-  expected contract versions, and mutation authority fixed to false.
-- Prepare with action and mode `full-analysis`. Do not run a standalone surface
+- Prepare with action and mode `deep-thread-analysis`. Do not run a standalone surface
   in parallel or collect another bundle.
 - Execute only frozen controller tasks. Luna discovers across the fixed surface
   set; Sol report reviewers, the direct-evidence review, and the final merge
-  remain internal phases of `full-analysis`.
+  remain internal phases of `deep-thread-analysis`.
 
 ## Workflow
 
@@ -137,14 +130,7 @@ request. Alternatively use `execute --state STATE`; never recollect prepared
 evidence or overwrite an accepted result. Use `plan` only for planning-only
 inspection.
 
-For a batch, run `prepare-batch` once; it freezes selection and plans one
-ordinary holistic child per selected thread. For the pending child returned by
-`status-batch`, run `execute --state CHILD_STATE`, then pass its retained final
-result to `advance-batch`. Repeat until the batch-summary phase, satisfy that
-existing summary contract, advance it, and run `finalize-batch`. This preserves
-the existing batch manifest and summary contracts and does not expose Luna
-input parts, Sol review, direct-evidence inspection, or merge as public actions.
-Never collect a child through a parallel controller or create a temporary
+Never collect a descendant through a parallel controller or create a temporary
 discovery script.
 
 ## Completion Gate
@@ -156,12 +142,10 @@ Luna candidate; every confirmed finding, plausible risk, temporary-control
 review and merge, call classification, producer group, and ROI input; and the
 exact inventory of every capacity omission. Label semantic coverage incomplete
 when any omission exists.
-For a batch, every selected child must also be finalized and indexed exactly
-once before batch finalization succeeds.
 
 ## Output Contract
 
-Begin the chat report with selected and reviewed task counts. Then give total
+Begin the chat report with the selected root and reviewed descendant counts. Then give total
 model calls, confirmed avoidable calls, and unassessed calls from retained
 results. Report confirmed context/output waste even when it saves no calls.
 If analysis is incomplete or blocked, report that state and the exact
@@ -200,7 +184,3 @@ Retain confirmed input/output-volume waste and its complete volume evidence in
 the machine result even when it saves zero model calls; exclude it from
 call-savings arithmetic. State there when none was confirmed. Preserve all
 call-accounting categories and priced cost only when available.
-
-For a batch, select across all included threads under the parent contract.
-Group similar findings only when their shared fix preserves each affected
-thread's evidence; identify those threads and retain per-thread totals.

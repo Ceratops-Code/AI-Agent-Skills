@@ -13,7 +13,7 @@ import re
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from .single_thread_analysis import _content_hash
+from .single_surface_analysis import _content_hash
 
 _CHILD_SESSION_ARRAY_RE = re.compile(
     r'"child_session_ids"\s*:\s*(\[[^\]]*\])', re.DOTALL

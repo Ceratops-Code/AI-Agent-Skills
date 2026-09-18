@@ -25,7 +25,7 @@ from tests.support.repositories import run_git
 def test_final_assembly_keeps_accepted_decisions_and_derives_new_one() -> None:
     load_credit_analysis_workflow_module()
     from credit_analysis.report_bookkeeping import _assemble_final_transport
-    from credit_analysis.single_thread_analysis import CreditAnalysisError
+    from credit_analysis.single_surface_analysis import CreditAnalysisError
 
     prior = {
         "candidate_decisions": [{
@@ -124,7 +124,6 @@ def test_restored_aliases_keep_identifier_boundaries_after_split() -> None:
 def test_final_assembly_merges_exact_prior_findings_without_model_copy() -> None:
     load_credit_analysis_workflow_module()
     from credit_analysis.report_bookkeeping import _assemble_final_transport
-    from credit_analysis.single_thread_analysis import CreditAnalysisError
 
     def source(candidate: str, call: str, finding_id: str) -> dict[str, Any]:
         return {
@@ -530,7 +529,7 @@ def test_sol_timeout_retries_only_once_for_no_result(
 def test_sol_timeout_is_ten_minutes_without_changing_luna(
     tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from credit_analysis import luna_sol_analysis
+    from credit_analysis import thread_review_orchestration
     from credit_analysis.orchestration_execution import _holistic_model_attempt
 
     deadlines: list[int] = []
@@ -539,7 +538,7 @@ def test_sol_timeout_is_ten_minutes_without_changing_luna(
         deadlines.append(kwargs["timeout_seconds"])
         raise RuntimeError("captured child deadline")
 
-    monkeypatch.setattr(luna_sol_analysis, "_run_codex_child", capture)
+    monkeypatch.setattr(thread_review_orchestration, "_run_codex_child", capture)
     for phase, role in (("luna-discovery", "luna"), ("sol-adjudication", "sol")):
         task_id = f"{role}.test"
         task = {
@@ -1356,40 +1355,6 @@ def test_luna_schema_retry_is_single_and_omission_is_exact(
     assert len(empty.splitlines()) == 3
     assert "| **Total** | **0** | **0** | **0** | **0; 0.00%" in empty
 
-    legacy = {
-        "mode": "full-analysis",
-        "confirmed_findings": display["confirmed_findings"],
-        "plausible_risks": display["plausible_risks"],
-        "primary_call_mappings": [
-            {"call_id": f"call-{index}", "classification": classification}
-            for index, classification in enumerate([
-                "avoidable_implemented", "avoidable_unimplemented", "unassessed", "necessary",
-            ])
-        ],
-    }
-    retained_evidence = {"runs": [{
-        "started_at": "2026-09-10T03:00:00+03:00",
-        "calls": [{"call_id": f"call-{index}", "tokens": display["run_accounting"][0]["tokens"] if index == 0 else {}}
-                  for index in range(5)],
-    }]}
-    legacy_before = json.dumps([legacy, retained_evidence], sort_keys=True)
-    report = workflow._render_final_report(legacy, retained_evidence)
-    assert "| 2026-09-10 00:00:00 UTC | 5 | 2 (4 reviewed; 1 omitted) | 1 (4 reviewed; 1 omitted) | 100;" in report
-    packet_path = tmp_path / "display-final.json"
-    packet_path.write_text(json.dumps(legacy), encoding="utf-8")
-    packet_state = {"finalized": True, "mode": "full-analysis", "analysis_id": "display",
-                    "final_result": {"path": str(packet_path)}, "evidence": {"path": "retained-evidence.json"}}
-    packet = workflow._final_packet(packet_state, retained_evidence, {})
-    assert packet["report_markdown"] == report
-    assert "still-actionable" in packet["presentation_contract"]
-    assert "earlier runs" in packet["presentation_contract"]
-    assert "Retain every finding" in packet["presentation_contract"]
-    assert json.dumps([legacy, retained_evidence], sort_keys=True) == legacy_before
-    assert json.loads(packet_path.read_text(encoding="utf-8")) == legacy
-    standalone = {**legacy, "mode": "standalone", "scope_limitation": "Conclusions cover only tool and handoff flow and are not a whole-thread credit reconciliation."}
-    assert workflow._render_final_report(standalone, retained_evidence) == standalone["scope_limitation"] + "\n"
-    assert workflow._render_holistic_report(standalone) == standalone["scope_limitation"] + "\n"
-
 
 def test_credit_analysis_workflow_end_to_end_uses_sharded_semantic_calls(
     tmp_path: pathlib.Path,
@@ -1476,8 +1441,8 @@ def test_credit_analysis_workflow_end_to_end_uses_sharded_semantic_calls(
         available_models=holistic_model_catalog(),
     )
     assert plan["phase"] == "planned"
-    assert plan["action"] == "full-analysis"
-    assert plan["mode"] == "full-analysis"
+    assert plan["action"] == "deep-thread-analysis"
+    assert plan["mode"] == "deep-thread-analysis"
     assert plan["analysis_scope_label"] == "full all-run analysis"
     assert plan["projected_luna_calls"] == 6
     assert plan["projected_sol_calls"] == 7

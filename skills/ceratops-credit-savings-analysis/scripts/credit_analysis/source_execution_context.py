@@ -22,7 +22,7 @@ import subprocess
 from collections.abc import Mapping, Sequence
 from typing import Any
 
-from .single_thread_analysis import (
+from .single_surface_analysis import (
     CreditAnalysisError,
     _content_hash,
 )

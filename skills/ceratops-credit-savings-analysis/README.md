@@ -19,8 +19,8 @@ behavior; this document explains how they work together.
       "role": "Versioned deep-controller policy, model, limit, action, and schema registry"
     },
     {
-      "path": "skills/ceratops-credit-savings-analysis/scripts/credit_analysis/luna_sol_analysis.py",
-      "role": "Current single-thread planning, model-result validation, reconciliation, and final assembly"
+      "path": "skills/ceratops-credit-savings-analysis/scripts/credit_analysis/thread_review_orchestration.py",
+      "role": "One-root-thread planning, model-result validation, reconciliation, and final assembly"
     },
     {
       "path": "skills/ceratops-credit-savings-analysis/scripts/credit_analysis/model_prompting.py",
@@ -31,16 +31,16 @@ behavior; this document explains how they work together.
       "role": "Current attempt execution, mechanical Sol normalization, correction, retry, omission, incomplete-state, concurrency, and resume behavior"
     },
     {
-      "path": "skills/ceratops-credit-savings-analysis/scripts/credit_analysis/multi_thread_analysis.py",
-      "role": "Recent-thread selection, per-thread batch state, aggregation, and finalization behavior"
+      "path": "skills/ceratops-credit-savings-analysis/scripts/credit_analysis/command_line_interface.py",
+      "role": "Quick recent-thread selection and command dispatch"
     },
     {
       "path": "skills/ceratops-credit-savings-analysis/SKILL.md",
       "role": "Public action routing, shared invariants, classification policy, and output contract"
     },
     {
-      "path": "skills/ceratops-credit-savings-analysis/references/full-analysis.md",
-      "role": "Full-analysis workflow and completion contract"
+      "path": "skills/ceratops-credit-savings-analysis/references/deep-thread-analysis.md",
+      "role": "One-root-thread deep workflow and completion contract"
     },
     {
       "path": "skills/ceratops-credit-savings-analysis/references/quick-analysis.md",
@@ -51,7 +51,7 @@ behavior; this document explains how they work together.
     "A public action, command, request, state, result, or schema contract changes",
     "Source selection, completed-run handling, model routing, capacity, retry, recovery, or final assembly changes",
     "A model, concurrency limit, attempt limit, output limit, or coverage threshold changes",
-    "Batch selection, aggregation, report presentation, deployment, or retention behavior changes",
+    "Quick selection, report presentation, deployment, or retention behavior changes",
     "A test establishes supported behavior that this document does not describe"
   ],
   "coverage": {
@@ -81,7 +81,8 @@ The skill analyzes retained Codex session evidence to find avoidable **model
 calls** and avoidable context or output volume. Shell commands and tool calls
 are supporting evidence; they are not the unit being counted. `quick-analysis`
 uses a compact ledger for a bounded thread or recent-thread scan. The deep
-controller analyzes one thread, one named waste surface, or a per-thread batch.
+controller analyzes one selected root thread and its retained descendants across
+all surfaces or one named surface alone.
 
 Its readers are operators running an analysis and maintainers changing the
 controller. Operators need to know which sources are eligible, what gets
@@ -112,8 +113,9 @@ The following constraints govern the deep controller. The quick action uses
 the collector and its own action reference without Luna or Sol children.
 
 - Analysis requests set `mutation_authority` to `false`.
-- A single-thread run uses an exact source identity. A batch freezes an exact
-  UTC `as_of` boundary and the selected thread list before analysis.
+- Deep and standalone surface runs use one exact root thread identity and include
+  its retained descendants. Quick recent-thread selection freezes one UTC
+  `as_of` boundary and a thread list before ledger review.
 - Unfinished and archived threads are eligible. Completed runs inside them are
   analyzed; a currently running run is reported as unassessed.
 - A completed run is the semantic unit. Oversized runs may be divided into the
@@ -149,7 +151,7 @@ the proven input envelope.
 The deep analysis controller is a local, file-backed process. It reads session
 and instruction evidence, launches read-only Codex child processes, validates
 their structured results, and writes retained evidence and reports. The quick
-action reads local session evidence through the collector and uses the same
+action reads local session evidence through the collector and uses the
 read-only recent-thread selector without model children.
 
 ```text
@@ -218,20 +220,19 @@ supports ledger analysis without model orchestration.
 | --- | --- | --- |
 | Public instruction layer | Selects the public action, defines policy, completion, and presentation | [SKILL.md](SKILL.md), [quick-analysis.md](references/quick-analysis.md), and the other action references |
 | Stable executable entry point | Keeps one script path while forwarding to modular implementation | [credit-analysis-workflow.py](scripts/credit-analysis-workflow.py) |
-| CLI dispatcher | Parses `run`, `plan`, `execute`, compatibility, batch, and read-only recent-thread selection commands | [command_line_interface.py](scripts/credit_analysis/command_line_interface.py) |
-| Contract loader and evidence core | Validates the contract and requests, collects single-thread evidence, and retains the sequential compatibility controller | [single_thread_analysis.py](scripts/credit_analysis/single_thread_analysis.py) |
+| CLI dispatcher | Parses deep-analysis, standalone-surface, and quick-selector commands | [command_line_interface.py](scripts/credit_analysis/command_line_interface.py) |
+| Surface contract and request core | Validates the contract, one root thread request, and shared artifact paths | [single_surface_analysis.py](scripts/credit_analysis/single_surface_analysis.py) |
 | Session collector | Resolves active or archived sessions, descendant lineage, completed runs, model calls, token usage, and evidence references | [session_evidence_collector.py](scripts/credit_analysis/session_evidence_collector.py) |
 | Source execution context | Resolves run working directories, recovers identity-matched deleted worktrees, and snapshots effective `AGENTS.md` text and hashes once | [source_execution_context.py](scripts/credit_analysis/source_execution_context.py) |
 | Capacity planner | Partitions oversized runs, admits Luna tasks, assigns byte and candidate budgets to Sol reviewer bins, and enforces attempt capacity | [model_capacity_planning.py](scripts/credit_analysis/model_capacity_planning.py) |
 | Model input preparation | Builds bounded evidence packets and compact final-review transport | [model_input_preparation.py](scripts/credit_analysis/model_input_preparation.py) |
 | Model prompting | Builds Luna and Sol prompts, including prioritized discovery for count-bounded Luna tasks | [model_prompting.py](scripts/credit_analysis/model_prompting.py) |
-| Holistic planner and assembler | Builds the current manifest and state, validates Luna/Sol domain results, freezes routing, reconciles judgments, and assembles the final machine result | [luna_sol_analysis.py](scripts/credit_analysis/luna_sol_analysis.py) |
+| Holistic planner and assembler | Builds the current manifest and state, validates Luna/Sol domain results, freezes routing, reconciles judgments, and assembles the final machine result | [thread_review_orchestration.py](scripts/credit_analysis/thread_review_orchestration.py) |
 | Attempt executor | Runs ready tasks concurrently, records attempts, normalizes mechanical Sol fields, applies narrow response corrections, retries diagnosed failures, records omissions, stops zero-review runs as incomplete, and checkpoints state | [orchestration_execution.py](scripts/credit_analysis/orchestration_execution.py) |
 | Response contract | Builds closed model-output schemas, assigns canonical result-owned IDs, bounds explanatory classification rationale, and limits corrective responses to the rejected fields | [model_response_contract.py](scripts/credit_analysis/model_response_contract.py) |
 | Final record transport | Copies and validates accepted source records so final synthesis cannot silently drop them | [report_bookkeeping.py](scripts/credit_analysis/report_bookkeeping.py) |
 | Report renderer | Produces the compact human runs table while leaving full detail in machine evidence | [report_rendering.py](scripts/credit_analysis/report_rendering.py) |
-| Batch controller | Freezes recent-thread selection, prepares one holistic child per thread, indexes accepted child results, and aggregates them | [multi_thread_analysis.py](scripts/credit_analysis/multi_thread_analysis.py) |
-| Artifact store | Persists request, evidence, manifest, state, attempt, routing, result, report, and batch files | Caller-selected task temporary root |
+| Artifact store | Persists request, evidence, manifest, state, attempt, routing, result, and report files | Caller-selected task temporary root |
 
 ### 5.2 Authority boundaries
 
@@ -258,9 +259,10 @@ The collector rejects incomplete or duplicate call classifications. The quick
 action keeps detailed findings and exclusions in caller-owned machine evidence
 and presents at most three recommendations.
 
-### 6.1 Fresh single-thread full analysis
+### 6.1 Fresh deep thread analysis
 
-`run --request REQUEST` is the normal single-thread entry point.
+`run --request REQUEST` is the normal entry point for one root thread and its
+retained descendants. It accepts the deep action or one named surface alone.
 
 ```text
 validate request and contract
@@ -365,9 +367,9 @@ expected identity and hash. `plan` stops after planning, `execute --state`
 continues a frozen plan, and `orchestration-status --state` reads public status
 without launching models.
 
-### 6.4 Recent-thread batch
+### 6.4 Quick recent-thread selection
 
-`select-recent --days DAYS --output OUTPUT` uses the batch selector to write
+`select-recent --days DAYS --output OUTPUT` writes
 recent thread identities, sessions, index fingerprint, and exclusions to a
 caller-owned file. It does not prepare controller tasks or launch models.
 `--as-of` can freeze an exact UTC boundary; otherwise selection uses the
@@ -375,37 +377,6 @@ invocation time. The action using the selection owns the output file's cleanup.
 `quick-window` reads collector usage evidence and returns a compact completed
 run count for the same boundary and day interval. It rejects a noncontiguous
 run window instead of widening the scan.
-
-`prepare-batch --request REQUEST` reads the Codex thread index at one frozen
-`as_of` timestamp. A `recent_days` selector includes entries whose index
-`updated_at` falls within the interval; a `recent_threads` selector takes the
-latest positive count. An optional project selector matches one exact name,
-absolute path, or repository URL.
-
-Selection does not require the thread to be finished. The collector resolves
-both active and archived session locations. For each selected thread, the
-batch prepares one ordinary holistic child request covering all completed runs.
-Threads are processed through their frozen child states and accepted final
-results are appended once to the batch index. The pending child's
-`orchestration_final_schema` identity and thread ID must match before the batch
-advances.
-
-After every child completes, the controller opens one batch-summary phase over
-the accepted findings. The summary may group findings only when the shared
-owner and recommended control preserve each member's evidence. Finalization
-keeps each thread's accounting and produces a batch machine result with the
-cross-thread presentation groups. A batch is complete only after every
-selected child and the batch summary are accepted and indexed exactly once.
-
-### 6.5 Sequential compatibility path
-
-The CLI still supports `prepare`, `advance`, `status`, and `finalize`, plus the
-older `start` and `submit` aliases. That path runs fixed surface passes followed
-by synthesis and emits the `synthesis_result_schema` and
-`final_result_schema` artifacts described below. The current default
-`run`/`plan`/`execute` full analysis uses the holistic v5 orchestration schemas.
-The compatibility commands remain for existing callers; new full analyses use
-the holistic controller.
 
 ## 7 Deployment and operations
 
@@ -451,7 +422,7 @@ The main artifact groups are:
 - **Attempts:** prompt, input, native session identity, events, raw response,
   validated response, latency, and usage for every launched child.
 - **Results:** accepted Luna and Sol outputs, omission inventory, final machine
-  result, compact human report, and batch index or batch final result.
+  result, and compact human report.
 
 Immutable artifacts are bound by path and SHA-256 or content hashes. Atomic
 state replacement makes the latest checkpoint the resume point. Schema tags
@@ -470,25 +441,17 @@ shape and validates that the discriminator exactly matches the contract.
 | --- | --- |
 | `schema` | Identifies the contract document itself as `ceratops-credit-analysis-contract.v1`. |
 | `request_schema` | Single-thread request accepted by the evidence and holistic controllers. |
-| `batch_request_schema` | Recent-thread batch request accepted by `prepare-batch`. |
-| `batch_manifest_schema` | Frozen batch selection and child inventory. |
 | `evidence_schema` | Retained normalized analysis evidence. |
-| `canonical_state_schema` | Read-only canonical implementation snapshot used by the sequential compatibility controller. |
-| `surface_result_schema` | One named-surface result in the sequential compatibility path. |
-| `synthesis_result_schema` | Internal synthesis artifact in the sequential `prepare`/`advance`/`finalize` path. `ceratops-credit-analysis-synthesis-result.v1` means “this object conforms to synthesis-result version 1”; the string does not define its fields. |
-| `final_result_schema` | Final standalone or full result in the sequential compatibility path. `ceratops-credit-analysis-final-result.v1` is its exact version tag. |
+| `canonical_state_schema` | Read-only canonical implementation snapshot used by the deep controller. |
 | `orchestration_state_schema` | Resumable state for the current holistic controller. |
 | `chunk_manifest_schema` | Frozen semantic-run parts, task identities, assignments, and capacity plan for the current controller. |
 | `luna_result_schema` | Validated count-bounded discovery result for one admitted semantic run or ordered run part. |
 | `adjudication_result_schema` | Validated Sol reviewer or final synthesis result. |
-| `orchestration_final_schema` | Current holistic single-thread final machine result accepted by batch aggregation. |
+| `orchestration_final_schema` | Final machine result for one root thread and its retained descendants. |
 | `routing_manifest_schema` | Frozen assignment of accepted Luna output and candidates to Sol tasks. |
 
-The numeric `surface_contract_version` and
-`source_selection_contract_version` version policy and selection semantics that
-must match before planning. They are separate from artifact schema versions so
-a policy-only incompatibility can invalidate a request without renaming every
-artifact type.
+The numeric `surface_contract_version` binds action and policy changes to
+each request before planning. It is separate from artifact schema versions.
 
 ### 8.2 APIs and integrations
 
@@ -501,16 +464,11 @@ python scripts/credit-analysis-workflow.py execute --state STATE
 python scripts/credit-analysis-workflow.py orchestration-status --state STATE
 python scripts/credit-analysis-workflow.py select-recent --days DAYS --output OUTPUT [--as-of UTC]
 python scripts/credit-analysis-workflow.py quick-window --days DAYS --as-of UTC --usage-evidence FILE
-python scripts/credit-analysis-workflow.py prepare-batch --request REQUEST
-python scripts/credit-analysis-workflow.py status-batch --state STATE
-python scripts/credit-analysis-workflow.py advance-batch --state STATE --result RESULT
-python scripts/credit-analysis-workflow.py finalize-batch --state STATE
 ```
 
-The compatibility interface adds `start`, `submit`, `prepare`, `advance`,
-`status`, and `finalize`. The CLI parser owns the exact command set. The JSON
-contract governs controller request and result versions, not the independent
-recent-thread selection command.
+The CLI parser owns the exact command set. The JSON contract governs deep
+controller requests and result versions; quick selection uses its own
+caller-owned output.
 
 Requests and results are local files. There is no remote service API or
 authentication exchange. Child Codex processes use the host's existing Codex
@@ -553,7 +511,7 @@ reported rather than hidden by unlimited retries.
 | Make the controller own accepted-record transport | Accepted. Models judge and summarize; code preserves exact accepted findings, classifications, evidence, and references. | Asking the final model to copy every accepted record, which can omit valid results and cause avoidable diagnostic reruns. |
 | Preserve semantic output; bound explanatory rationale deterministically | Accepted. Raw responses remain immutable, result-owned IDs are canonicalized, and only explanatory rationale is bounded before validation. | Rejecting an otherwise valid classification for overlong prose, which spends retries and loses coverage. |
 | Persist file-backed state after each boundary | Accepted. It supports inspection and idempotent resume without a service. | Memory-only orchestration or a database service, which adds operational complexity. |
-| Preserve the sequential command interface | Accepted for existing callers while new full analyses use holistic orchestration. | Immediate removal, which would break retained callers and task roots. |
+| Keep one model-orchestrated thread path | Accepted. Deep analysis and each named surface use the same one-root-thread controller. | A second sequential interface, which duplicates state and validation rules. |
 | Keep analysis read-only | Accepted. Findings must not change the evidence or producer they assess. | Automatic remediation, which would mix diagnosis, authorization, and mutation. |
 
 ## 10 Quality scenarios
@@ -563,17 +521,16 @@ needed to claim a measured result.
 
 | Scenario | Stimulus and condition | Expected response and threshold | Verification |
 | --- | --- | --- | --- |
-| Deterministic recent-days selection | The same index, request, and UTC `as_of` are prepared twice | The frozen selected thread IDs and order are identical; active and archived session locations are eligible | Batch selector behavior tests and manifest comparison |
+| Deterministic recent-days selection | The same index and UTC `as_of` are selected twice | The frozen selected thread IDs and order are identical; active and archived session locations are eligible | Quick selector behavior test |
 | Bounded quick window | A selected thread has older and recent completed runs | The quick path returns only the recent completed-run suffix for `--last-runs` and rejects a noncontiguous window | Quick-window CLI behavior test |
-| Unfinished-thread coverage | A selected active thread contains completed runs and one running run | All completed runs enter evidence; the running run is reported unassessed | Session collector and batch tests |
+| Unfinished-thread coverage | A selected active thread contains completed runs and one running run | All completed runs enter evidence; the running run is reported unassessed | Session collector and thread tests |
 | Bounded discovery | Prepared evidence exceeds one Luna input but fits the global budget | The minimum ordered parts are admitted, no more than 15 run concurrently, and attempts never exceed 70 | Capacity and orchestration tests plus state totals |
 | Invalid Luna output | A Luna result violates schema or its byte allowance | The exact task is retried at most once with a smaller allowance, then omitted with identity, bytes, and reason | Response and retry tests |
 | Invalid Sol output | A Sol result contains noncanonical result-owned IDs, oversized explanatory rationale, or a remaining schema or semantic violation | Code repairs deterministic IDs and references and bounds rationale without a retry; only diagnosed remaining fields or claims may change; an invalid temporary-control ROI subclaim is detached without withdrawing its independent finding; at most one corrective retry is used per task; zero accepted reviewers end at `incomplete`; and total Sol invocations never exceed 16 | Mechanical-normalization, correction-scope, zero-review, and attempt-budget tests |
 | Interrupted run | The controller stops after some sibling tasks complete | Completed siblings are checkpointed; resume reuses accepted outputs and launches only proven pending work | Resume and sibling-failure tests |
 | No silent copying loss | Final Sol returns synthesis judgments after reviewers accepted findings | Controller assembly contains every accepted source record exactly once or fails validation | Report bookkeeping and finalization tests |
 | Honest capacity shortfall | A run part or reviewer cannot fit or validate within limits | Final coverage is incomplete and the exact omitted calls, records, and bytes are retained; no zero is substituted for unreviewed work | Omission and final-accounting tests |
-| Read-only analysis | Any full or batch analysis runs | No analyzed producer file is changed and every child uses a read-only sandbox with no tools | Command construction tests and source-worktree status |
-| Idempotent batch advance | An accepted child result is submitted again unchanged | Status is returned without a duplicate index entry; a changed resubmission is rejected | Batch resume tests |
+| Read-only analysis | Deep or standalone surface analysis runs | No analyzed producer file is changed and every child uses a read-only sandbox with no tools | Command construction tests and source-worktree status |
 
 ## 11 Risks and limitations
 
@@ -591,9 +548,6 @@ needed to claim a measured result.
 - **The model catalog and real provider envelopes can change.** Planning checks
   the live catalog and uses reserves, but external limit changes can still
   cause a bounded failure.
-- **Compatibility code increases maintenance cost.** The sequential and
-  holistic controllers use different result families. Changes must state which
-  path they affect and keep the public command contract coherent.
 - **Retained evidence is sensitive and can be large.** There is no automatic
   archival, encryption, or expiry policy beyond local filesystem controls and
   caller-owned cleanup.
@@ -602,9 +556,6 @@ needed to claim a measured result.
 - **Compact human reports omit detail by design.** The machine result and
   retained evidence are required for full findings, classifications, coverage,
   and provenance.
-- **A batch is per-thread before aggregation.** Cross-thread grouping improves
-  presentation but does not retroactively change each thread's model-call
-  classifications or totals.
 - **Quick analysis is a focused ledger review.** Its 80% highest-call minimum
   prioritizes inspection; a call lacking semantic evidence is not reported as
   classified.
@@ -638,7 +589,7 @@ Operational references:
 
 - [Skill instructions](SKILL.md)
 - [Quick-analysis action](references/quick-analysis.md)
-- [Full-analysis action](references/full-analysis.md)
+- [Deep-thread-analysis action](references/deep-thread-analysis.md)
 - [Executable contract](scripts/credit-analysis-contract.json)
 - [Stable controller entry point](scripts/credit-analysis-workflow.py)
 - [Credit-analysis tests](../../tests/credit_analysis/)
@@ -647,8 +598,8 @@ Operational references:
 
 Behavior tests under [tests/credit_analysis](../../tests/credit_analysis/)
 cover source selection, evidence collection, schema validation, capacity
-planning, Luna and Sol routing, output correction, retries, resume, batch
-aggregation, report preservation, and failure accounting. Changes should run
+planning, Luna and Sol routing, output correction, retries, resume,
+report preservation, and failure accounting. Changes should run
 the narrowest existing test nodes that cover each modified behavior before any
 broader suite.
 

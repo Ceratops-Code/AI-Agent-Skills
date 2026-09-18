@@ -2,6 +2,7 @@
 
 ## Goal
 
+Run this surface alone for one selected root thread and its retained descendants.
 Detect avoidable artifact and validation loops while distinguishing required
 controlled iteration.
 

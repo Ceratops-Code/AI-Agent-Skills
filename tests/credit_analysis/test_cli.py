@@ -278,9 +278,9 @@ def test_model_call_ledger_keeps_full_evidence_out_of_stdout(
 
 def _assert_execution_outcome_boundaries() -> None:
     from credit_analysis import execution_outcomes as outcomes
-    from credit_analysis import luna_sol_analysis as controller
     from credit_analysis import model_input_preparation as preparation
     from credit_analysis import session_evidence_collector as collector
+    from credit_analysis import thread_review_orchestration as controller
 
     def returned(value):
         return {"type": "function_call_output", "output": json.dumps(value)}
@@ -1392,11 +1392,11 @@ def test_noncontroller_skill_action_preserves_controller_contract(
         "# Quick Analysis Action\n", encoding="utf-8"
     )
     monkeypatch.setattr(workflow, "SKILL_DIR", skill_root)
-    assert workflow._load_contract()["public_actions"][0]["id"] == "full-analysis"
+    assert workflow._load_contract()["public_actions"][0]["id"] == "deep-thread-analysis"
 
     (skill_root / "SKILL.md").write_text(
         skill_text.replace(
-            "`references/full-analysis.md`", "`references/renamed-analysis.md`"
+            "`references/deep-thread-analysis.md`", "`references/renamed-analysis.md`"
         ),
         encoding="utf-8",
     )

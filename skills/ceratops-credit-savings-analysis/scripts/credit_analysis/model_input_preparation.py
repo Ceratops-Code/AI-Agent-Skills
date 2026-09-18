@@ -8,7 +8,7 @@ from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from .execution_outcomes import structured_outcome
-from .single_thread_analysis import CreditAnalysisError
+from .single_surface_analysis import CreditAnalysisError
 
 
 def _review_record_index(evidence: Mapping[str, Any]) -> dict[str, dict[str, Any]]:

@@ -21,7 +21,7 @@ from typing import Any
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
 
-from .single_thread_analysis import (
+from .single_surface_analysis import (
     HOLISTIC_LUNA_RESULT_SCHEMA,
     HOLISTIC_SOL_RESULT_SCHEMA,
     HOLISTIC_SOL_TRANSPORT_SCHEMA,
@@ -1346,7 +1346,7 @@ def _holistic_sol_schema(
     Deferred imports avoid a schema/analysis initialization cycle. The caller
     verifies the frozen alias record against input_sha256 before binding.
     """
-    from .luna_sol_analysis import (
+    from .thread_review_orchestration import (
         _holistic_alias_lookups,
         _holistic_runtime_task,
         _read_json,

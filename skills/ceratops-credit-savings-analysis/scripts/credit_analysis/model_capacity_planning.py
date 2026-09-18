@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from .single_thread_analysis import *
+from .single_surface_analysis import *
 
 
 # Sol also has to classify source calls. Saved 38-57-candidate reviews with

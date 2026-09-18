@@ -1,13 +1,11 @@
 """Stable command-line dispatch for every credit-analysis workflow."""
-# ruff: noqa: F401,F403,F405,I001
+# ruff: noqa: I001
 
 from __future__ import annotations
 
-from .luna_sol_analysis import *
-from .multi_thread_analysis import *
-from .multi_thread_analysis import _select_batch_candidates
-from .single_thread_analysis import *
-from .single_thread_analysis import _exclusive_json, _load_evidence_collector
+from .thread_review_orchestration import *
+from .single_surface_analysis import *
+from .single_surface_analysis import _exclusive_json, _load_evidence_collector
 
 
 def command_select_recent(
@@ -28,18 +26,42 @@ def command_select_recent(
         raise CreditAnalysisError(str(exc)) from exc
     if as_of > dt.datetime.now(dt.timezone.utc) + dt.timedelta(minutes=5):
         raise CreditAnalysisError("as_of cannot be in the future")
-    index, candidates, exclusions = _select_batch_candidates(
-        {
-            "as_of": as_of,
-            "selector": {
-                "kind": "recent_days",
-                "count": None,
-                "days": days,
-                "project": None,
-            },
-        },
-        collector,
-    )
+    index = collector.load_thread_index()
+    start = as_of - dt.timedelta(days=days)
+    candidates: list[dict[str, Any]] = []
+    exclusions: list[dict[str, str]] = []
+    for entry in index["entries"]:
+        updated_at = collector.parse_utc_timestamp(
+            entry["updated_at"], "thread index updated_at"
+        )
+        if updated_at < start or updated_at > as_of:
+            continue
+        thread_id = entry["thread_id"]
+        try:
+            session = collector.resolve_thread_session(thread_id)
+            metadata = collector.read_session_source_metadata(
+                session, expected_thread_id=thread_id
+            )
+        except (OSError, RuntimeError, ValueError):
+            exclusions.append(
+                {"thread_id": thread_id, "reason": "unresolvable-session-or-metadata"}
+            )
+            continue
+        candidates.append(
+            {
+                "thread_id": thread_id,
+                "thread_name": entry["thread_name"],
+                "updated_at": entry["updated_at"],
+                "session": str(session),
+                "project": {
+                    "key": metadata["project_key"],
+                    "cwd": metadata["cwd"],
+                    "repository_url": metadata["repository_url"],
+                },
+            }
+        )
+    if not candidates:
+        raise CreditAnalysisError("recent selector matched no resolvable threads")
     target = output_path.expanduser().absolute()
     if not target.parent.is_dir():
         raise CreditAnalysisError("selection output directory does not exist")
@@ -126,31 +148,6 @@ def build_parser() -> argparse.ArgumentParser:
     execute.add_argument("--state", required=True, type=pathlib.Path)
     orchestration_status = commands.add_parser("orchestration-status")
     orchestration_status.add_argument("--state", required=True, type=pathlib.Path)
-    start = commands.add_parser("start")
-    start.add_argument("--request", required=True, type=pathlib.Path)
-    submit = commands.add_parser("submit")
-    submit.add_argument("--state", required=True, type=pathlib.Path)
-    submit.add_argument("--decision", required=True, type=pathlib.Path)
-    prepare = commands.add_parser("prepare")
-    prepare.add_argument("--request", required=True, type=pathlib.Path)
-    advance = commands.add_parser("advance")
-    advance.add_argument("--state", required=True, type=pathlib.Path)
-    advance.add_argument("--result", required=True, type=pathlib.Path)
-    status = commands.add_parser("status")
-    status.add_argument("--state", required=True, type=pathlib.Path)
-    status.add_argument("--packet", action="store_true")
-    finalize = commands.add_parser("finalize")
-    finalize.add_argument("--state", required=True, type=pathlib.Path)
-    finalize.add_argument("--result", required=True, type=pathlib.Path)
-    prepare_batch = commands.add_parser("prepare-batch")
-    prepare_batch.add_argument("--request", required=True, type=pathlib.Path)
-    advance_batch = commands.add_parser("advance-batch")
-    advance_batch.add_argument("--state", required=True, type=pathlib.Path)
-    advance_batch.add_argument("--result", required=True, type=pathlib.Path)
-    status_batch = commands.add_parser("status-batch")
-    status_batch.add_argument("--state", required=True, type=pathlib.Path)
-    finalize_batch = commands.add_parser("finalize-batch")
-    finalize_batch.add_argument("--state", required=True, type=pathlib.Path)
     select_recent = commands.add_parser("select-recent")
     select_recent.add_argument("--days", required=True, type=int)
     select_recent.add_argument("--as-of")
@@ -178,34 +175,12 @@ def main(argv: list[str] | None = None) -> int:
             output = command_execute_orchestration(args.state)
         elif args.command == "orchestration-status":
             output = command_orchestration_status(args.state)
-        elif args.command == "start":
-            output = command_start(args.request.expanduser().resolve(strict=True))
-        elif args.command == "submit":
-            output = command_submit(args.state, args.decision)
-        elif args.command == "prepare":
-            output = command_prepare(args.request.expanduser().resolve(strict=True))
-        elif args.command == "advance":
-            output = command_advance(args.state, args.result)
-        elif args.command == "status":
-            output = _pass_packet(args.state) if args.packet else command_status(args.state)
-        elif args.command == "finalize":
-            command_finalize(args.state, args.result)
-            output = "OK"
-        elif args.command == "prepare-batch":
-            output = command_prepare_batch(
-                args.request.expanduser().resolve(strict=True)
-            )
-        elif args.command == "advance-batch":
-            output = command_advance_batch(args.state, args.result)
-        elif args.command == "status-batch":
-            output = command_status_batch(args.state)
         elif args.command == "select-recent":
             output = command_select_recent(args.days, args.as_of, args.output)
         elif args.command == "quick-window":
             output = command_quick_window(args.days, args.as_of, args.usage_evidence)
         else:
-            command_finalize_batch(args.state)
-            output = "OK"
+            raise CreditAnalysisError("unsupported command")
     except (CreditAnalysisError, OSError, ValueError, json.JSONDecodeError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
